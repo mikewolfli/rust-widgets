@@ -96,6 +96,19 @@ pub struct OrderBookWidget {
     cumulative_depth: bool,
     /// Which ladder is drawn above the spread rule.
     side_order: BookSideOrder,
+    /// How many levels the visible window is scrolled past, from the touch outward.
+    ///
+    /// A book deeper than the pane used to be unreachable: `set_depth` truncated it and the
+    /// rest was simply not drawn. The offset is shared by both ladders so they stay aligned
+    /// across the spread rule (FIN-06).
+    scroll_offset: usize,
+    /// Bumped whenever the book or the visible depth changes.
+    data_generation: u64,
+    /// `(generation, decimals, max level quantity)` inferred for the current book.
+    ///
+    /// Both are pure functions of the visible levels and both are read on every frame. The
+    /// generation is what makes the cache a cache and not a stale guess (J-P15).
+    facts_cache: core::cell::Cell<Option<(u64, usize, f64)>>,
     /// Emitted with the side and the level index when a row is clicked.
     pub level_clicked: crate::signal::Signal1<(BookSide, usize)>,
     /// Emitted as the pointer moves onto a row.
@@ -122,6 +135,9 @@ impl OrderBookWidget {
             cumulative_max: 0.0,
             cumulative_depth: false,
             side_order: BookSideOrder::default(),
+            scroll_offset: 0,
+            data_generation: 0,
+            facts_cache: core::cell::Cell::new(None),
             level_clicked: crate::signal::Signal1::new(),
             level_hovered: crate::signal::Signal1::new(),
             level_unhovered: crate::signal::Signal1::new(),
@@ -140,16 +156,16 @@ impl OrderBookWidget {
     /// row that is not there would point at nothing.
     pub fn set_book(&mut self, book: OrderBook) {
         // Rows whose size changed flash, so an update is visible without the caller diffing
-        // two books itself. The comparison is per side and index against the depth shown.
+        // two books itself. The comparison is per side and index against the whole side, not
+        // the visible window: the window moves when the ladder is scrolled, and a flash must
+        // stay attached to the level it describes.
         self.flash_bid.clear();
         self.flash_ask.clear();
-        let depth = self.depth;
         for side in [BookSide::Bid, BookSide::Ask] {
             let before = match side {
                 BookSide::Bid => self.book.bids(),
                 BookSide::Ask => self.book.asks(),
             };
-            let before = &before[..before.len().min(depth)];
             let after = match side {
                 BookSide::Bid => book.bids(),
                 BookSide::Ask => book.asks(),
@@ -158,7 +174,7 @@ impl OrderBookWidget {
                 BookSide::Bid => &mut self.flash_bid,
                 BookSide::Ask => &mut self.flash_ask,
             };
-            flashes.resize(before.len(), 0);
+            flashes.resize(after.len(), 0);
             for index in 0..after.len().min(before.len()) {
                 if (before[index].quantity - after[index].quantity).abs() > f64::EPSILON {
                     flashes[index] = 255;
@@ -166,6 +182,8 @@ impl OrderBookWidget {
             }
         }
         self.book = book;
+        self.data_generation = self.data_generation.wrapping_add(1);
+        self.clamp_scroll();
         self.rebuild_cumulative();
         if let Some((side, index)) = self.hovered {
             let count = match side {
@@ -232,13 +250,57 @@ impl OrderBookWidget {
             return;
         }
         self.depth = depth;
+        self.data_generation = self.data_generation.wrapping_add(1);
+        self.clamp_scroll();
         self.rebuild_cumulative();
-        if let Some((_, index)) = self.hovered {
-            if index >= depth {
+        if let Some((side, index)) = self.hovered {
+            let count = match side {
+                BookSide::Bid => self.book.bids().len(),
+                BookSide::Ask => self.book.asks().len(),
+            };
+            if index >= count {
                 self.hovered = None;
             }
         }
         self.base.request_redraw();
+    }
+
+    /// The first visible level's absolute index.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Scrolls the ladder to start at `offset` levels below the touch.
+    ///
+    /// The offset is shared by both sides and clamped to the deeper side's range, so the
+    /// two ladders always start at the same depth step and the spread rule stays aligned
+    /// (FIN-06).
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        let deepest = self.book.bids().len().max(self.book.asks().len());
+        let max_offset = deepest.saturating_sub(self.depth);
+        let offset = offset.min(max_offset);
+        if offset == self.scroll_offset {
+            return;
+        }
+        self.scroll_offset = offset;
+        // The inferred precision reads the visible levels, so a new window is a new answer.
+        self.data_generation = self.data_generation.wrapping_add(1);
+        self.rebuild_cumulative();
+        // A row that scrolled out of the window keeps its absolute index, but the hovered
+        // marker should follow what is on screen; drop it rather than highlight a hidden row.
+        self.hovered = None;
+        self.base.request_redraw();
+    }
+
+    /// Scrolls by `delta` levels.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let next = (self.scroll_offset as isize + delta).max(0) as usize;
+        self.set_scroll_offset(next);
+    }
+
+    fn clamp_scroll(&mut self) {
+        let deepest = self.book.bids().len().max(self.book.asks().len());
+        self.scroll_offset = self.scroll_offset.min(deepest.saturating_sub(self.depth));
     }
 
     /// The explicit price precision, if one was set.
@@ -275,6 +337,64 @@ impl OrderBookWidget {
         self.hovered
     }
 
+    /// The hovered row's readings, ready for a `ChartTooltip`.
+    ///
+    /// Price, resting quantity and the cumulative depth at that level, taken from the same
+    /// cached arrays the bars are drawn from (COMP-J02 / COMP-J05).
+    pub fn hovered_summary(&self) -> Vec<crate::widget::companions::TooltipLine> {
+        use crate::widget::companions::TooltipLine;
+        let Some((side, index)) = self.hovered else { return Vec::new() };
+        let (window_start, levels) = self.level_window(side);
+        let Some(level) = index.checked_sub(window_start).and_then(|local| levels.get(local))
+        else {
+            return Vec::new();
+        };
+        let cumulative = match side {
+            BookSide::Bid => self.cumulative_bid.get(index).copied(),
+            BookSide::Ask => self.cumulative_ask.get(index).copied(),
+        }
+        .unwrap_or(0.0);
+        let decimals = self.effective_decimals();
+        let mut price = alloc::string::String::new();
+        write_price(level.price, decimals, &mut price);
+        let color = if side == BookSide::Bid { self.bid_color } else { self.ask_color };
+        alloc::vec![
+            TooltipLine::colored(
+                match side {
+                    BookSide::Bid => "bid",
+                    BookSide::Ask => "ask",
+                }
+                .to_string(),
+                color,
+            ),
+            TooltipLine::new(price),
+            TooltipLine::new(alloc::format!("qty {:.0}", level.quantity)),
+            TooltipLine::new(alloc::format!("cum {cumulative:.0}")),
+        ]
+    }
+
+    /// The tooltip text for one absolute level index, for region-based hover.
+    ///
+    /// `TooltipManager` registers text by a key; a ladder row has no widget id, so the
+    /// control supplies the text for `(side, index)` and the host maps its own region id to
+    /// that pair (COMP-J05).
+    pub fn region_text(&self, side: BookSide, index: usize) -> Option<alloc::string::String> {
+        let levels = match side {
+            BookSide::Bid => self.book.bids(),
+            BookSide::Ask => self.book.asks(),
+        };
+        let level = levels.get(index)?;
+        let cumulative = match side {
+            BookSide::Bid => self.cumulative_bid.get(index).copied(),
+            BookSide::Ask => self.cumulative_ask.get(index).copied(),
+        }
+        .unwrap_or(0.0);
+        let decimals = self.effective_decimals();
+        let mut price = alloc::string::String::new();
+        write_price(level.price, decimals, &mut price);
+        Some(alloc::format!("{price} × {:.0} × {cumulative:.0}", level.quantity))
+    }
+
     /// The levels shown on one side, best first, capped at the depth.
     pub fn levels(&self, side: BookSide) -> Vec<BookLevel> {
         self.level_slice(side).to_vec()
@@ -286,11 +406,23 @@ impl OrderBookWidget {
     /// `levels()` builds. `row_at` called `levels()` four times per pointer move and `draw`
     /// five to six times per frame, copying the same handful of rows each time.
     fn level_slice(&self, side: BookSide) -> &[BookLevel] {
+        self.level_window(side).1
+    }
+
+    /// The visible window of one side: the absolute index of its first row and the slice.
+    ///
+    /// Every index the control reports — hover, click, flash and cumulative — is an
+    /// **absolute** index into the book side, so scrolling cannot make the same row answer to
+    /// two different numbers (FIN-06).
+    fn level_window(&self, side: BookSide) -> (usize, &[BookLevel]) {
         let levels = match side {
             BookSide::Bid => self.book.bids(),
             BookSide::Ask => self.book.asks(),
         };
-        &levels[..levels.len().min(self.depth)]
+        let max_start = levels.len().saturating_sub(self.depth);
+        let start = self.scroll_offset.min(max_start);
+        let end = (start + self.depth).min(levels.len());
+        (start, &levels[start..end])
     }
 
     /// Recomputes the running depth totals the cumulative bars are scaled against.
@@ -299,23 +431,26 @@ impl OrderBookWidget {
     /// over every level on every frame just to look totals up by index; the totals are a
     /// prefix sum of the displayed levels, so two arrays hold them exactly.
     fn rebuild_cumulative(&mut self) {
-        let depth = self.depth;
-        let bids = self.book.bids();
-        let asks = self.book.asks();
-        let bids = &bids[..bids.len().min(depth)];
-        let asks = &asks[..asks.len().min(depth)];
-        Self::fill_cumulative(&mut self.cumulative_bid, bids);
-        Self::fill_cumulative(&mut self.cumulative_ask, asks);
-        let peak = |totals: &[f64]| totals.iter().copied().fold(0.0f64, f64::max);
+        let window_end_bid = (self.scroll_offset + self.depth).min(self.book.bids().len());
+        let window_end_ask = (self.scroll_offset + self.depth).min(self.book.asks().len());
+        Self::fill_cumulative(&mut self.cumulative_bid, self.book.bids(), window_end_bid);
+        Self::fill_cumulative(&mut self.cumulative_ask, self.book.asks(), window_end_ask);
+        // The scale is the cumulative total at the deepest *visible* level, which is the last
+        // entry of each prefix array. Only that level fills its bar (FIN-06).
+        let peak = |totals: &[f64]| totals.last().copied().unwrap_or(0.0).max(0.0);
         self.cumulative_max = peak(&self.cumulative_bid).max(peak(&self.cumulative_ask));
     }
 
-    /// Prefix sums one side's displayed levels into `out`.
-    fn fill_cumulative(out: &mut Vec<f64>, levels: &[BookLevel]) {
+    /// Prefix sums the first `count` levels of `levels` into `out`.
+    ///
+    /// The arrays are indexed by the **absolute** level index, so a scrolled window reads the
+    /// same numbers a full ladder would and the first visible row shows the depth already
+    /// resting above it (FIN-06).
+    fn fill_cumulative(out: &mut Vec<f64>, levels: &[BookLevel], count: usize) {
         out.clear();
-        out.reserve(levels.len());
+        out.reserve(count);
         let mut running = 0.0f64;
-        for level in levels {
+        for level in levels.iter().take(count) {
             if level.quantity.is_finite() && level.quantity > 0.0 {
                 running += level.quantity;
             }
@@ -325,9 +460,29 @@ impl OrderBookWidget {
 
     /// The precision to draw prices at.
     fn effective_decimals(&self) -> usize {
-        if let Some(decimals) = self.decimals {
-            return decimals;
+        self.visible_facts().0
+    }
+
+    /// The price precision and the largest visible quantity for the current book.
+    ///
+    /// Both are pure functions of data that only changes when the book (or the visible
+    /// depth) does, and both are read once per frame. The previous code inferred the
+    /// decimals from every level and scanned every level for the maximum on each repaint,
+    /// so a still ladder paid two full scans per frame (J-P15).
+    fn visible_facts(&self) -> (usize, f64) {
+        if let Some((generation, decimals, max)) = self.facts_cache.get() {
+            if generation == self.data_generation {
+                return (decimals, max);
+            }
         }
+        let decimals = self.decimals.unwrap_or_else(|| self.infer_decimals());
+        let max = self.book.max_level_quantity();
+        self.facts_cache.set(Some((self.data_generation, decimals, max)));
+        (decimals, max)
+    }
+
+    /// Infers the precision from the visible levels.
+    fn infer_decimals(&self) -> usize {
         // Infer from the levels, the same way the K-line pane infers from its bars: a
         // feed's precision is a property of the data, not a setting.
         for side in [BookSide::Bid, BookSide::Ask] {
@@ -399,16 +554,19 @@ impl OrderBookWidget {
         }
         let row = (offset / row_height) as usize;
         let upper = self.first_side();
-        let upper_rows = self.level_slice(upper).len();
+        let (upper_start, upper_levels) = self.level_window(upper);
+        let upper_rows = upper_levels.len();
         if row < upper_rows {
-            // The upper block is drawn from the deepest level down to the best one, so screen
+            // The upper block is drawn from its deepest level down to the best one, so screen
             // row 0 is the last slice entry and the row adjacent to the middle is index 0.
-            return Some((upper, upper_rows - 1 - row));
+            // The reported index is absolute, so a scrolled ladder names the level it shows.
+            return Some((upper, upper_start + upper_rows - 1 - row));
         }
         let lower = self.second_side();
+        let (lower_start, lower_levels) = self.level_window(lower);
         let lower_row = row - upper_rows;
-        if lower_row < self.level_slice(lower).len() {
-            return Some((lower, lower_row));
+        if lower_row < lower_levels.len() {
+            return Some((lower, lower_start + lower_row));
         }
         None
     }
@@ -566,6 +724,11 @@ impl crate::event::EventHandler for OrderBookWidget {
                     self.base.request_redraw();
                 }
             }
+            Event::Wheel { delta, .. } if delta.y != 0 => {
+                // One level per notch, the same direction the quote board scrolls. The
+                // offset is clamped to the deeper side, so both ladders stay aligned.
+                self.scroll_by(if delta.y > 0 { 1 } else { -1 });
+            }
             Event::MouseLeave { .. } => {
                 if let Some(previous) = self.hovered.take() {
                     self.level_unhovered.emit(previous);
@@ -659,12 +822,11 @@ impl Draw for OrderBookWidget {
             return;
         }
 
-        let max_quantity = self.book.max_level_quantity();
+        let (decimals, max_quantity) = self.visible_facts();
         // Cumulative depth per side is cached when the book or depth changes (see
         // `rebuild_cumulative`), so a repaint only reads the two prefix-sum arrays. The bar
         // answers "how much is available up to this price" when the mode is on.
         let row_height = self.row_height();
-        let decimals = self.effective_decimals();
         // The size column occupies the middle band; prices sit outside it, so a long bar
         // cannot run under a price and make it unreadable.
         let spine = geometry.x + geometry.width as i32 / 2;
@@ -683,7 +845,7 @@ impl Draw for OrderBookWidget {
         let mut quantity_text = alloc::string::String::new();
         let mut row = 0;
         for (block, side) in [self.first_side(), self.second_side()].into_iter().enumerate() {
-            let levels = self.level_slice(side);
+            let (window_start, levels) = self.level_window(side);
             let color = if side == BookSide::Bid { self.bid_color } else { self.ask_color };
             let level_count = levels.len();
             // The upper block runs deepest-to-best while the lower block runs best-first. One
@@ -691,8 +853,9 @@ impl Draw for OrderBookWidget {
             // `.iter()` and `.iter().rev()` would duplicate the row painter.
             #[allow(clippy::needless_range_loop)]
             for step in 0..level_count {
-                let index = if block == 0 { level_count - 1 - step } else { step };
-                let level = &levels[index];
+                let local = if block == 0 { level_count - 1 - step } else { step };
+                let index = window_start + local;
+                let level = &levels[local];
                 let y = geometry.y + row * row_height;
                 let is_hovered = self.hovered == Some((side, index));
                 if is_hovered {

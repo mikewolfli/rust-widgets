@@ -80,6 +80,22 @@ pub(crate) struct CachedLayer {
     pub(crate) foreground: Arc<Vec<u8>>,
 }
 
+/// Reusable row/column/copy buffers for one Gaussian-approximating box blur (G-07).
+///
+/// The three vectors grow to the largest region blurred and then stay allocated. A blur takes them
+/// before running and hands them back afterwards, so after the first frame the per-call
+/// allocations are gone. They live on [`BackBuffer`] for the same reason as the pixel buffers:
+/// that is the per-frame storage constructed in one place.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BoxBlurScratch {
+    /// Staged row for the horizontal pass, `region_width * 4` bytes.
+    pub(crate) row: Vec<u8>,
+    /// Staged column for the vertical pass, `region_height * 4` bytes.
+    pub(crate) col: Vec<u8>,
+    /// Untouched copy of the row/column being blurred.
+    pub(crate) copy: Vec<u8>,
+}
+
 /// One active track matte, pushed by [`RenderCommand::PushMatte`].
 ///
 /// The capture goes through three phases, which is why it holds both a backdrop and a mask:
@@ -143,6 +159,25 @@ pub struct BackBuffer {
     /// (that is the point of a cache) and are dropped on resize, when their regions no longer
     /// describe the buffer.
     pub(crate) layer_cache: Vec<(u64, CachedLayer)>,
+    /// Physical slot of the oldest entry in [`BackBuffer::layer_cache`] once it is full.
+    ///
+    /// The cache is a ring once it reaches its capacity: a new entry overwrites the slot at this
+    /// cursor instead of moving every entry down, and the cursor advances. While the cache is still
+    /// growing the cursor is zero and the physical order is the use order (G-05).
+    pub(crate) layer_cache_cursor: usize,
+    /// Reusable buffer for one layer foreground capture, `width * height * 4` bytes (G-06).
+    ///
+    /// A layer pop captures at most once at a time (inner layers are popped first), so one slot is
+    /// enough; it is taken before the capture and returned afterwards.
+    pub(crate) layer_foreground_scratch: Vec<u8>,
+    /// Reusable backdrop buffers for isolated layers and mattes (G-06).
+    ///
+    /// A pool rather than one slot because layers nest: the outer layer's backdrop is still live
+    /// while the inner layer captures its own. The pool is bounded so a deep stack cannot pin an
+    /// unbounded amount of pixel memory.
+    pub(crate) layer_backdrop_pool: Vec<Vec<u8>>,
+    /// Reusable blur row/column/copy buffers (G-07).
+    pub(crate) blur_scratch: Option<BoxBlurScratch>,
     /// How many commands are currently being suppressed because their layer was a cache hit.
     ///
     /// A non-zero depth makes [`crate::render::backend::paint::route_command_to_surface`] discard
@@ -166,6 +201,10 @@ impl BackBuffer {
             mattes: Vec::new(),
             damage: Vec::new(),
             layer_cache: Vec::new(),
+            layer_cache_cursor: 0,
+            layer_foreground_scratch: Vec::new(),
+            layer_backdrop_pool: Vec::new(),
+            blur_scratch: None,
             suppress_depth: 0,
         }
     }
@@ -185,6 +224,9 @@ impl BackBuffer {
         self.damage.clear();
         // A cached region indexes the old buffer's geometry, so it cannot survive a resize.
         self.layer_cache.clear();
+        self.layer_cache_cursor = 0;
+        // The scratch pools are geometry-independent, so they survive a resize. A blur buffer
+        // sized for the old surface is still valid grow-only storage.
         self.suppress_depth = 0;
     }
     /// Returns the buffer size in physical pixels, not in logical units.
@@ -261,9 +303,12 @@ impl BackBuffer {
         }
         // Fold this report into the existing list. Present used to copy every rectangle in the
         // list individually, so a frame that reported many overlapping small regions paid one
-        // row copy per rectangle for the same pixels (G-29). The scan restarts after each union
-        // because a union can grow to overlap a region already passed; the list is bounded by
-        // `MAX_DAMAGE_REGIONS`, so that restart is cheap in absolute terms.
+        // row copy per rectangle for the same pixels (G-29). This is a single forward pass: when a
+        // union absorbs an entry, `swap_remove` moves a not-yet-seen entry into the current slot
+        // and the loop re-tests it against the expanded region instead of restarting from zero
+        // (G-18). Earlier entries cannot become reachable later: the list is pairwise disjoint, so
+        // a region that grows by `existing` can only touch entries that already intersect
+        // `existing`, and those would have been merged before it was inserted.
         let mut index = 0;
         while index < self.damage.len() {
             let existing = self.damage[index];
@@ -274,7 +319,6 @@ impl BackBuffer {
             if regions_intersect(region, existing) {
                 region = union_region(region, existing);
                 self.damage.swap_remove(index);
-                index = 0;
                 continue;
             }
             index += 1;
@@ -448,6 +492,47 @@ pub struct SoftwareSurface {
     #[cfg(feature = "3d")]
     pub(crate) depth_dirty: bool,
 }
+
+/// How many reusable backdrop buffers a surface keeps (G-06).
+///
+/// Four covers a modal scrim, its card and a nested group without pinning an unbounded amount of
+/// pixel memory; deeper nesting falls back to an allocation, which is the same cost as before.
+const LAYER_BACKDROP_POOL_LIMIT: usize = 4;
+
+impl SoftwareSurface {
+    /// Takes the reusable blur buffers, or an empty set when none are pooled yet (G-07).
+    pub(crate) fn take_blur_scratch(&mut self) -> BoxBlurScratch {
+        self.buffer.blur_scratch.take().unwrap_or_default()
+    }
+
+    /// Returns the blur buffers for the next call. The vectors keep their capacity (G-07).
+    pub(crate) fn return_blur_scratch(&mut self, scratch: BoxBlurScratch) {
+        self.buffer.blur_scratch = Some(scratch);
+    }
+
+    /// Takes the reusable foreground capture buffer (G-06).
+    pub(crate) fn take_layer_foreground_scratch(&mut self) -> Vec<u8> {
+        core::mem::take(&mut self.buffer.layer_foreground_scratch)
+    }
+
+    /// Returns a foreground capture buffer; its capacity is retained for the next pop (G-06).
+    pub(crate) fn return_layer_foreground_scratch(&mut self, buffer: Vec<u8>) {
+        self.buffer.layer_foreground_scratch = buffer;
+    }
+
+    /// Takes a reusable backdrop buffer, or an empty one when the pool is empty (G-06).
+    pub(crate) fn take_layer_backdrop(&mut self) -> Vec<u8> {
+        self.buffer.layer_backdrop_pool.pop().unwrap_or_default()
+    }
+
+    /// Returns a backdrop buffer to the pool, dropping it when the pool is full (G-06).
+    pub(crate) fn return_layer_backdrop(&mut self, buffer: Vec<u8>) {
+        if self.buffer.layer_backdrop_pool.len() < LAYER_BACKDROP_POOL_LIMIT {
+            self.buffer.layer_backdrop_pool.push(buffer);
+        }
+    }
+}
+
 /// Public software render configuration for quality-related knobs.
 ///
 /// This type is `Copy` and cheap to pass around; a [`SoftwareSurface`] inherits
@@ -526,15 +611,11 @@ pub(crate) fn fitted_origin(bounds: Rect, advance: i32, alignment: HorizontalAli
 
 /// Where a single line of text sits inside the band it is drawn in.
 ///
-/// # Why this is not [`HorizontalAlignment`]
-///
-/// The two axes have different owners. Horizontal placement is chosen *per label* (a title
-/// is centred, a value is right-aligned), so it is a per-call argument. Vertical placement
-/// is a property of **what the band is**: the box around one line of text in a row, a cell
-/// or a button is centred by construction, and a label that is top-aligned is one whose
-/// author has a reason. Splitting the two is what lets a caller state the common case
-/// (`Centered`) and get the arithmetic right, rather than re-deriving it — which is the
-/// defect this type exists to remove.
+/// This is [`crate::core::VerticalAlignment`], re-exported under the path this module has
+/// always used: the two types had an identical variant set (principle #54), so the copy here
+/// was removed rather than kept in step by hand. The **vertical** type stays distinct from
+/// [`HorizontalAlignment`] because the two axes have different owners — horizontal placement
+/// is chosen per label, while vertical placement is a property of the band.
 ///
 /// # The contract it encodes
 ///
@@ -544,17 +625,7 @@ pub(crate) fn fitted_origin(bounds: Rect, advance: i32, alignment: HorizontalAli
 /// the band's middle line and draws the whole label half a line low — the single most
 /// repeated placement error in this crate (76 sites across 40 files before this type
 /// existed).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum VerticalAlignment {
-    /// The line box's top edge coincides with the band's top edge.
-    Top,
-    /// The line box is centred in the band. The default, because a band named for a single
-    /// line of text is almost always meant to hold it centred.
-    #[default]
-    Center,
-    /// The line box's bottom edge coincides with the band's bottom edge.
-    Bottom,
-}
+pub use crate::core::VerticalAlignment;
 
 /// The line box a single line of `font` occupies when placed in `band`.
 ///
@@ -882,16 +953,61 @@ struct RegionBuckets {
     groups: Vec<RegionGroup>,
     /// The group index each open [`RenderContext::begin_control`] writes into.
     open_groups: Vec<usize>,
+    /// Groups whose commands have already been replayed.
+    ///
+    /// A traversal records one group per ungrouped command and one per control, so a frame with
+    /// many small draws used to allocate a fresh group for each of them every time. Returning a
+    /// group here keeps its `commands` vector's capacity, and the next `record`/`begin_control`
+    /// reuses it (G-03).
+    free_groups: Vec<RegionGroup>,
+    /// Whether a traversal is in progress.
+    ///
+    /// The buckets stay owned by the context between traversals so the free-group pool survives
+    /// to the next frame; `dispatch` only records while this is true (G-03).
+    active: bool,
 }
 
 impl RegionBuckets {
     fn new(regions: Vec<Rect>) -> Self {
-        Self { regions, groups: Vec::new(), open_groups: Vec::new() }
+        Self {
+            regions,
+            groups: Vec::new(),
+            open_groups: Vec::new(),
+            free_groups: Vec::new(),
+            active: true,
+        }
+    }
+
+    /// Starts a new traversal on an existing bucket set, retaining its pooled groups (G-03).
+    fn reset(&mut self, regions: Vec<Rect>) {
+        self.regions = regions;
+        self.recycle_groups();
+        self.active = true;
+    }
+
+    /// Recycles every recorded group, keeping the capacity of its command vector (G-03).
+    fn recycle_groups(&mut self) {
+        for mut group in self.groups.drain(..) {
+            group.bounds = None;
+            group.commands.clear();
+            self.free_groups.push(group);
+        }
+        self.open_groups.clear();
+    }
+
+    /// Takes a group from the free pool (or a fresh one) with `bounds` and no commands.
+    fn take_group(&mut self, bounds: Option<Rect>) -> RegionGroup {
+        let mut group =
+            self.free_groups.pop().unwrap_or(RegionGroup { bounds: None, commands: Vec::new() });
+        group.bounds = bounds;
+        group.commands.clear();
+        group
     }
 
     fn begin_control(&mut self, bounds: Rect) {
         let index = self.groups.len();
-        self.groups.push(RegionGroup { bounds: Some(bounds), commands: Vec::new() });
+        let group = self.take_group(Some(bounds));
+        self.groups.push(group);
         self.open_groups.push(index);
     }
 
@@ -907,8 +1023,21 @@ impl RegionBuckets {
         if parent == child {
             return;
         }
-        let commands = core::mem::take(&mut self.groups[child].commands);
-        self.groups[parent].commands.extend(commands);
+        // The child is the last group pushed while it was open, so popping it keeps the parent's
+        // index stable. `append` moves the commands without allocating, and the (now empty) child
+        // vector keeps its capacity in the free pool (G-03).
+        if child + 1 == self.groups.len() {
+            let mut child_group =
+                self.groups.pop().unwrap_or(RegionGroup { bounds: None, commands: Vec::new() });
+            self.groups[parent].commands.append(&mut child_group.commands);
+            child_group.bounds = None;
+            child_group.commands.clear();
+            self.free_groups.push(child_group);
+            return;
+        }
+        // Defensive fallback for an out-of-order close; it preserves the old behaviour.
+        let mut commands = core::mem::take(&mut self.groups[child].commands);
+        self.groups[parent].commands.append(&mut commands);
     }
 
     fn record(&mut self, command: RenderCommand) {
@@ -917,12 +1046,14 @@ impl RegionBuckets {
             return;
         }
         let bounds = command.bounds();
-        self.groups.push(RegionGroup { bounds, commands: vec![command] });
+        let mut group = self.take_group(bounds);
+        group.commands.push(command);
+        self.groups.push(group);
     }
 
     /// Replays every group into each region it intersects, and returns the number of region clips
     /// issued.
-    fn flush(&self, backend: &mut dyn PaintBackend) -> usize {
+    fn flush(&mut self, backend: &mut dyn PaintBackend) -> usize {
         for region in &self.regions {
             backend.execute_command(&RenderCommand::PushClip {
                 x: region.x,
@@ -941,7 +1072,9 @@ impl RegionBuckets {
             }
             backend.execute_command(&RenderCommand::PopClip);
         }
-        self.regions.len()
+        let passes = self.regions.len();
+        self.recycle_groups();
+        passes
     }
 }
 impl<'a> RenderContext<'a> {
@@ -959,19 +1092,27 @@ impl<'a> RenderContext<'a> {
         }
     }
 
+    /// Whether a region-bucket traversal is currently recording commands.
+    ///
+    /// The bucket set is retained between traversals so its free-group pool survives (G-03), so
+    /// the `Option` being `Some` is not the same as a traversal being active.
+    fn bucket_recording(&self) -> bool {
+        self.buckets.as_ref().is_some_and(|buckets| buckets.active)
+    }
+
     /// Sends one command to the backend, or records it when region bucketing is active.
     fn dispatch(&mut self, command: &RenderCommand) {
         match self.buckets.as_mut() {
-            Some(buckets) => buckets.record(command.clone()),
-            None => self.backend.execute_command(command),
+            Some(buckets) if buckets.active => buckets.record(command.clone()),
+            _ => self.backend.execute_command(command),
         }
     }
 
     /// The owned form of [`Self::dispatch`], which an owning caller can hand over without a clone.
     fn dispatch_owned(&mut self, command: RenderCommand) {
         match self.buckets.as_mut() {
-            Some(buckets) => buckets.record(command),
-            None => self.backend.execute_command(&command),
+            Some(buckets) if buckets.active => buckets.record(command),
+            _ => self.backend.execute_command(&command),
         }
     }
 
@@ -995,7 +1136,10 @@ impl<'a> RenderContext<'a> {
                 )
             })
             .collect();
-        self.buckets = Some(RegionBuckets::new(translated));
+        // Reuse the bucket set when one exists so its free-group pool carries over to this
+        // traversal; a nested traversal still replaces the in-progress one (G-03).
+        let buckets = self.buckets.get_or_insert_with(|| RegionBuckets::new(Vec::new()));
+        buckets.reset(translated);
         self.last_region_passes = 0;
     }
 
@@ -1004,9 +1148,13 @@ impl<'a> RenderContext<'a> {
     /// A no-op when no traversal is active. Nested bucket traversals are not supported; a caller
     /// that starts one while another is active replaces it.
     pub fn end_region_buckets(&mut self) {
-        let Some(buckets) = self.buckets.take() else {
+        let Some(buckets) = self.buckets.as_mut() else {
             return;
         };
+        if !buckets.active {
+            return;
+        }
+        buckets.active = false;
         self.last_region_passes = buckets.flush(self.backend);
     }
 
@@ -1018,14 +1166,18 @@ impl<'a> RenderContext<'a> {
     pub fn begin_control(&mut self, bounds: Rect) {
         let bounds = self.offset_rect(bounds);
         if let Some(buckets) = self.buckets.as_mut() {
-            buckets.begin_control(bounds);
+            if buckets.active {
+                buckets.begin_control(bounds);
+            }
         }
     }
 
     /// Closes the innermost control group. A no-op when none is open or bucket mode is off.
     pub fn end_control(&mut self) {
         if let Some(buckets) = self.buckets.as_mut() {
-            buckets.end_control();
+            if buckets.active {
+                buckets.end_control();
+            }
         }
     }
 
@@ -1093,7 +1245,7 @@ impl<'a> RenderContext<'a> {
     /// `rect` is translated by the current offset before drawing.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         let rect = self.offset_rect(rect);
-        self.dispatch(&RenderCommand::FillRect { rect, color });
+        self.dispatch_owned(RenderCommand::FillRect { rect, color });
     }
 
     /// Draws the shadow behind a raised face.
@@ -1117,7 +1269,7 @@ impl<'a> RenderContext<'a> {
         spread: i32,
     ) {
         let rect = self.offset_rect(rect);
-        self.dispatch(&RenderCommand::BoxShadow {
+        self.dispatch_owned(RenderCommand::BoxShadow {
             rect,
             color,
             offset_x,
@@ -1142,8 +1294,8 @@ impl<'a> RenderContext<'a> {
         let rect = self.offset_rect(rect);
         // Straight to the backend, which may paint it without owning a copy; a bucket traversal
         // needs an owning handle, and an immutable gradient is shared by refcount (G-12).
-        if self.buckets.is_some() {
-            self.dispatch(&RenderCommand::DrawGradient {
+        if self.bucket_recording() {
+            self.dispatch_owned(RenderCommand::DrawGradient {
                 rect,
                 gradient: crate::compat::Arc::new(gradient.clone()),
             });
@@ -1179,7 +1331,7 @@ impl<'a> RenderContext<'a> {
     /// `rect` is translated by the current offset before drawing.
     pub fn draw_rect(&mut self, rect: Rect, color: Color) {
         let rect = self.offset_rect(rect);
-        self.dispatch(&RenderCommand::DrawRect { rect, color });
+        self.dispatch_owned(RenderCommand::DrawRect { rect, color });
     }
     /// Draws an outline of `rect` in `color` with the given stroke `width` in
     /// pixels.
@@ -1187,7 +1339,7 @@ impl<'a> RenderContext<'a> {
     /// `rect` is translated by the current offset before drawing.
     pub fn draw_rect_stroke(&mut self, rect: Rect, color: Color, width: u32) {
         let rect = self.offset_rect(rect);
-        self.dispatch(&RenderCommand::DrawRectStroke { rect, color, width });
+        self.dispatch_owned(RenderCommand::DrawRectStroke { rect, color, width });
     }
     /// Fills `rect` with `color` using rounded corners of `radius` pixels.
     ///
@@ -1196,7 +1348,7 @@ impl<'a> RenderContext<'a> {
     /// the shorter side of `rect`.
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color) {
         let rect = self.offset_rect(rect);
-        self.dispatch(&RenderCommand::FillRoundedRect { rect, radius, color });
+        self.dispatch_owned(RenderCommand::FillRoundedRect { rect, radius, color });
     }
 
     /// Paints a control's own **face**: its shadow, then its fill.
@@ -1316,7 +1468,7 @@ impl<'a> RenderContext<'a> {
     /// configured `aa_samples_per_axis` grid.
     pub fn fill_rounded_rect_aa(&mut self, rect: Rect, radius: u32, color: Color) {
         let rect = self.offset_rect(rect);
-        self.dispatch(&RenderCommand::FillRoundedRectAA { rect, radius, color });
+        self.dispatch_owned(RenderCommand::FillRoundedRectAA { rect, radius, color });
     }
     /// Strokes the rounded-rectangle outline of `rect` in `color` with the
     /// given `width` in pixels.
@@ -1325,7 +1477,7 @@ impl<'a> RenderContext<'a> {
     /// [`RenderContext::draw_rounded_rect_stroke_aa`] for smoother edges.
     pub fn draw_rounded_rect_stroke(&mut self, rect: Rect, radius: u32, color: Color, width: u32) {
         let rect = self.offset_rect(rect);
-        self.dispatch(&RenderCommand::DrawRoundedRectStroke { rect, radius, color, width });
+        self.dispatch_owned(RenderCommand::DrawRoundedRectStroke { rect, radius, color, width });
     }
     /// Anti-aliased equivalent of
     /// [`RenderContext::draw_rounded_rect_stroke`].
@@ -1337,7 +1489,7 @@ impl<'a> RenderContext<'a> {
         width: u32,
     ) {
         let rect = self.offset_rect(rect);
-        self.dispatch(&RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width });
+        self.dispatch_owned(RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width });
     }
     /// Draws a one-pixel-wide, non-anti-aliased line from `from` to `to` in
     /// `color`.
@@ -1346,26 +1498,26 @@ impl<'a> RenderContext<'a> {
     pub fn draw_line(&mut self, from: Point, to: Point, color: Color) {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
-        self.dispatch(&RenderCommand::DrawLine { from, to, color });
+        self.dispatch_owned(RenderCommand::DrawLine { from, to, color });
     }
     /// Anti-aliased equivalent of [`RenderContext::draw_line`].
     pub fn draw_line_aa(&mut self, from: Point, to: Point, color: Color) {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
-        self.dispatch(&RenderCommand::DrawLineAA { from, to, color });
+        self.dispatch_owned(RenderCommand::DrawLineAA { from, to, color });
     }
     /// Draws a line from `from` to `to` in `color` with the given `width` in
     /// pixels, without anti-aliasing.
     pub fn draw_line_stroke(&mut self, from: Point, to: Point, color: Color, width: u32) {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
-        self.dispatch(&RenderCommand::DrawLineStroke { from, to, color, width });
+        self.dispatch_owned(RenderCommand::DrawLineStroke { from, to, color, width });
     }
     /// Anti-aliased equivalent of [`RenderContext::draw_line_stroke`].
     pub fn draw_line_stroke_aa(&mut self, from: Point, to: Point, color: Color, width: u32) {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
-        self.dispatch(&RenderCommand::DrawLineStrokeAA { from, to, color, width });
+        self.dispatch_owned(RenderCommand::DrawLineStrokeAA { from, to, color, width });
     }
     /// Fills a circle centred on `center` with `radius` pixels, without
     /// anti-aliasing.
@@ -1373,24 +1525,24 @@ impl<'a> RenderContext<'a> {
     /// The centre is translated by the current offset.
     pub fn fill_circle(&mut self, center: Point, radius: u32, color: Color) {
         let center = self.offset_point(center);
-        self.dispatch(&RenderCommand::FillCircle { center, radius, color });
+        self.dispatch_owned(RenderCommand::FillCircle { center, radius, color });
     }
     /// Anti-aliased equivalent of [`RenderContext::fill_circle`].
     pub fn fill_circle_aa(&mut self, center: Point, radius: u32, color: Color) {
         let center = self.offset_point(center);
-        self.dispatch(&RenderCommand::FillCircleAA { center, radius, color });
+        self.dispatch_owned(RenderCommand::FillCircleAA { center, radius, color });
     }
     /// Draws the one-pixel outline of a circle centred on `center` with
     /// `radius` pixels, without anti-aliasing.
     pub fn draw_circle(&mut self, center: Point, radius: u32, color: Color) {
         let center = self.offset_point(center);
-        self.dispatch(&RenderCommand::DrawCircle { center, radius, color });
+        self.dispatch_owned(RenderCommand::DrawCircle { center, radius, color });
     }
     /// Draws a circular outline of `width` pixels centred on `center` with
     /// `radius` pixels, without anti-aliasing.
     pub fn draw_circle_stroke(&mut self, center: Point, radius: u32, color: Color, width: u32) {
         let center = self.offset_point(center);
-        self.dispatch(&RenderCommand::DrawCircleStroke { center, radius, color, width });
+        self.dispatch_owned(RenderCommand::DrawCircleStroke { center, radius, color, width });
     }
     /// Draw a polyline/polygon path from a list of points.
     ///
@@ -1406,8 +1558,10 @@ impl<'a> RenderContext<'a> {
         filled: bool,
         width: u32,
     ) {
-        let points = self.offset_points(points);
-        self.dispatch(&RenderCommand::DrawPath { points, closed, color, filled, width });
+        // Collect straight into the shared slice the command now carries, so the immediate path
+        // does not allocate an intermediate `Vec` (G-02).
+        let points: Arc<[Point]> = points.iter().map(|point| self.offset_point(*point)).collect();
+        self.dispatch_owned(RenderCommand::DrawPath { points, closed, color, filled, width });
     }
     /// Fills packed contours together using the non-zero winding rule.
     ///
@@ -1419,10 +1573,10 @@ impl<'a> RenderContext<'a> {
         contours: &[(usize, usize)],
         color: Color,
     ) -> Result<(), crate::render::CompoundPathError> {
-        if self.buckets.is_some() {
+        if self.bucket_recording() {
             let translated = self.offset_points(points);
             let path = crate::render::CompoundPath::new(translated, contours.to_vec())?;
-            self.dispatch(&RenderCommand::FillPathNonZero { path, color });
+            self.dispatch_owned(RenderCommand::FillPathNonZero { path, color });
             Ok(())
         } else {
             self.backend.fill_path_non_zero(points, contours, color, self.offset_x, self.offset_y)
@@ -1442,8 +1596,8 @@ impl<'a> RenderContext<'a> {
         alignment: HorizontalAlignment,
     ) {
         let origin = self.offset_point(origin);
-        if self.buckets.is_some() {
-            self.dispatch(&RenderCommand::DrawText {
+        if self.bucket_recording() {
+            self.dispatch_owned(RenderCommand::DrawText {
                 origin,
                 text: crate::compat::Arc::from(text),
                 font: font.clone(),
@@ -1600,14 +1754,14 @@ impl<'a> RenderContext<'a> {
     pub fn push_clip(&mut self, x: i32, y: i32, width: u32, height: u32) {
         let x = x + self.offset_x;
         let y = y + self.offset_y;
-        self.dispatch(&RenderCommand::PushClip { x, y, width, height });
+        self.dispatch_owned(RenderCommand::PushClip { x, y, width, height });
     }
     /// Pops the innermost clip rectangle from the backend's clip stack.
     ///
     /// A pop with an empty stack is a no-op on the software backend; unbalanced
     /// pops would otherwise widen the clip unexpectedly.
     pub fn pop_clip(&mut self) {
-        self.dispatch(&RenderCommand::PopClip);
+        self.dispatch_owned(RenderCommand::PopClip);
     }
 
     /// Begins a composed layer inside `bounds`, translated by the current offset.
@@ -1621,7 +1775,7 @@ impl<'a> RenderContext<'a> {
     /// takes the plain `(radius, tint)` pair that resolution returns.
     pub(crate) fn push_layer(&mut self, bounds: Rect, effect: Option<LayerEffect>) {
         let bounds = self.offset_rect(bounds);
-        self.dispatch(&RenderCommand::PushLayer { bounds, effect });
+        self.dispatch_owned(RenderCommand::PushLayer { bounds, effect });
     }
 
     /// Begins a material layer inside `bounds` from a plain blur radius and optional tint.
@@ -1649,7 +1803,7 @@ impl<'a> RenderContext<'a> {
     /// Ends the innermost [`RenderContext::push_layer`] / [`RenderContext::push_material_layer`]
     /// and composites it.
     pub fn pop_layer(&mut self) {
-        self.dispatch(&RenderCommand::PopLayer);
+        self.dispatch_owned(RenderCommand::PopLayer);
     }
 
     /// Begins a track matte inside `bounds`; see [`RenderCommand::PushMatte`].
@@ -1660,17 +1814,17 @@ impl<'a> RenderContext<'a> {
     /// layers needed: a partial-coverage mask cannot be expressed as a rectangular clip.
     pub fn push_matte(&mut self, bounds: Rect, mode: MatteMode) {
         let bounds = self.offset_rect(bounds);
-        self.dispatch(&RenderCommand::PushMatte { bounds, mode });
+        self.dispatch_owned(RenderCommand::PushMatte { bounds, mode });
     }
 
     /// Ends the matte drawing and starts the matted layer's foreground.
     pub fn pop_matte(&mut self) {
-        self.dispatch(&RenderCommand::PopMatte);
+        self.dispatch_owned(RenderCommand::PopMatte);
     }
 
     /// Composites the matted layer through the mask and restores the backdrop.
     pub fn end_matte(&mut self) {
-        self.dispatch(&RenderCommand::EndMatte);
+        self.dispatch_owned(RenderCommand::EndMatte);
     }
 
     /// Begins a composed layer with subtree opacity and an optional replay cache.
@@ -1687,7 +1841,7 @@ impl<'a> RenderContext<'a> {
         cache_key: Option<u64>,
     ) {
         let bounds = self.offset_rect(bounds);
-        self.dispatch(&RenderCommand::PushLayerGroup { bounds, effect, opacity, cache_key });
+        self.dispatch_owned(RenderCommand::PushLayerGroup { bounds, effect, opacity, cache_key });
     }
 
     /// Drops every cached layer foreground.
@@ -1718,8 +1872,8 @@ impl<'a> RenderContext<'a> {
     pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
         let x = x + self.offset_x;
         let y = y + self.offset_y;
-        if self.buckets.is_some() {
-            self.dispatch(&RenderCommand::DrawImage {
+        if self.bucket_recording() {
+            self.dispatch_owned(RenderCommand::DrawImage {
                 x,
                 y,
                 width,
@@ -1743,10 +1897,10 @@ impl<'a> RenderContext<'a> {
     ///
     /// A display list that is replayed every frame (a canvas, a mini canvas) keeps its
     /// commands for its whole lifetime, so handing each one to [`Self::execute_command`]
-    /// forced a deep clone per command per frame — `DrawText` owns a `String` and a `Font`,
-    /// and the path commands own their point vectors. The backends already take
-    /// `&RenderCommand`, so the owned entry point above was the only reason the clone
-    /// existed.
+    /// forced a deep clone per command per frame — `DrawText` owns a `Font`, and the path commands
+    /// carry their point lists. Text and paths are shared by refcount (G-02/G-12), but a
+    /// `Font` is still an owned value. The backends already take `&RenderCommand`, so the owned
+    /// entry point above was the only reason the clone existed.
     pub fn execute_command_ref(&mut self, command: &RenderCommand) {
         self.dispatch(command);
     }

@@ -85,6 +85,14 @@ use std::collections::HashMap;
 /// One widget handed to the registry for display by the host surface.
 struct Mounted {
     widget: Box<dyn Widget>,
+    /// The top-level `Window` this widget lives under, cached when the mount is created (G-106).
+    ///
+    /// The first field is the **direct parent** the answer was resolved from. An adoption
+    /// (`BaseWidget::add_child_linked`) rewrites that parent, so a lookup compares it before
+    /// trusting the cached window; a mismatch re-resolves instead of routing a repaint to the
+    /// window the widget used to live in. The second field is the resolved window itself, and
+    /// `None` means "no window above this widget" — an answer, not an unresolved state.
+    top_window: Option<(Option<ObjectId>, Option<ObjectId>)>,
 }
 
 /// A tiny set of widget ids used for the registry's per-drive loan markers.
@@ -446,7 +454,7 @@ pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
     let id = next_widget_id();
     let Ok(id) = id else { return None };
     let stored = MOUNTED.try_with(|map| {
-        map.borrow_mut().insert(id, Mounted { widget });
+        map.borrow_mut().insert(id, Mounted { widget, top_window: None });
     });
     if stored.is_err() {
         return None;
@@ -493,6 +501,10 @@ pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
     if read_widget(id, |widget| widget.is_animating()).unwrap_or(false) {
         note_animating(id, true);
     }
+    // Resolve and record the window this control lives under while the mount is fresh (G-106).
+    // The parent chain is stable for the mount's lifetime; a later adoption changes the direct
+    // parent and the lookup notices (see `top_level_window_of`).
+    let _ = top_level_window_of(id);
     Some(id)
 }
 
@@ -536,7 +548,7 @@ pub fn register_with_id(
         if map.contains_key(&declared_id) {
             return Err(declared_id);
         }
-        map.insert(declared_id, Mounted { widget });
+        map.insert(declared_id, Mounted { widget, top_window: None });
         Ok(declared_id)
     });
     match reserved {
@@ -581,6 +593,8 @@ pub fn register_with_id(
     if read_widget(declared_id, |widget| widget.is_animating()).unwrap_or(false) {
         note_animating(declared_id, true);
     }
+    // See `register`: resolve the mount-time window once (G-106).
+    let _ = top_level_window_of(declared_id);
     Ok(declared_id)
 }
 
@@ -588,6 +602,24 @@ pub fn register_with_id(
 pub fn unregister(id: ObjectId) -> bool {
     // A destroyed control must not keep requesting frames through the animation registry.
     note_animating(id, false);
+    // G-304: best-effort reclamation of the dead id from its parent's child list, so a long-lived
+    // container does not accumulate ids that resolve to nothing. `children()` documents the
+    // traversal obligation (skip unresolvable ids) because this lookup can miss while the widget is
+    // lent out for mutation; both together keep the list from growing without bound. Both id spaces
+    // are removed because a parent's list may hold either the registry id or the widget's own id.
+    let own_id = read_widget(id, |widget| widget.base().id());
+    let parent = read_widget(id, |widget| widget.parent()).flatten();
+    if let Some(parent) = parent {
+        let _ = with_widget_mut(parent, |parent| {
+            let base = parent.base_mut();
+            base.remove_child(id);
+            if let Some(own_id) = own_id {
+                if own_id != id {
+                    base.remove_child(own_id);
+                }
+            }
+        });
+    }
     // Drop any host-window association with the widget it belonged to, so a
     // recycled or reused id cannot inherit a stale host window.
     let removed_host = HOST_WINDOWS.try_with(|map| map.borrow_mut().remove(&id)).ok().flatten();
@@ -642,10 +674,6 @@ pub fn unregister(id: ObjectId) -> bool {
     // And the own-id reverse mapping, or a later widget built with the same
     // `BaseWidget::id()` would resolve to this dead registry id and file its damage
     // against a widget that no longer exists.
-    let own_id = MOUNTED
-        .try_with(|map| map.borrow().get(&id).map(|mounted| mounted.widget.base().id()))
-        .ok()
-        .flatten();
     if let Some(own_id) = own_id {
         let _ = OWN_IDS.try_with(|map| map.borrow_mut().remove(&own_id));
     }
@@ -939,6 +967,11 @@ thread_local! {
     // while its callback runs, so recursing inside it would make the child's `with_widget_mut`
     // panic. Depth-first painting means one buffer per live level is enough (G-36).
     static PAINT_CHILD_BUFFERS: RefCell<Vec<Vec<ObjectId>>> = const { RefCell::new(Vec::new()) };
+    // The overlay children moved to the end of the root child list, reused across frames so
+    // `ordered_root_children` allocates nothing on an otherwise static frame (G-109). Taken by
+    // value for the duration of the reorder: a re-entrant render (user code inside `read_widget`)
+    // then takes a fresh buffer instead of failing a borrow.
+    static OVERLAY_CHILD_IDS: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Takes an empty child buffer from the per-depth pool, allocating only on a cold first use.
@@ -1457,6 +1490,18 @@ impl DragCoordinator {
     }
 }
 
+thread_local! {
+    /// Single-slot memo for the last [`widget_at_point`] answer (G-103).
+    ///
+    /// The key is the *exact* query plus the content epoch. With all four equal the tree,
+    /// the geometry and every control's hit rule are unchanged, so the previous answer still
+    /// holds. An id-only cache was rejected deliberately: the contract is "deepest hit", and
+    /// after the pointer moves onto a child of the cached control an id-only answer would
+    /// return the ancestor the user is no longer pointing at.
+    static LAST_POINT_HIT: RefCell<Option<(Point, Rect, u64, Option<ObjectId>)>> =
+        const { RefCell::new(None) };
+}
+
 /// Returns the deepest mounted control whose own hit rule accepts `point`.
 ///
 /// The drag coordinator has no root id to descend from — a drag may travel between
@@ -1465,26 +1510,95 @@ impl DragCoordinator {
 /// lies inside its parent, and the pointer belongs to the most specific control under it.
 /// Equal areas are broken by the later id, matching the "later sibling paints on top"
 /// rule the renderer uses.
+///
+/// # Why the scan is bucketed (G-103)
+///
+/// The previous form walked every mounted control, paying four dynamic calls per control on
+/// every pointer move of a drag. Each mount now records its top-level window (G-106), so the
+/// scan can skip a control whose window's client area does not contain the pointer. Controls
+/// with no window, or whose cached window is stale after an adoption, stay in the scan — the
+/// filter can only *exclude* a control it has positively located in another window.
 fn widget_at_point(point: Point, viewport: Rect) -> Option<ObjectId> {
     if !viewport.contains_point(point) {
         return None;
     }
-    let mut best: Option<(ObjectId, u32)> = None;
-    for_each_mounted_widget(|id, widget| {
-        if !widget.is_visible() || !widget.is_enabled() || !widget.contains_point(point) {
-            return;
+    let epoch = renderable_epoch();
+    if let Some((cached_point, cached_viewport, cached_epoch, hit)) =
+        LAST_POINT_HIT.with(|slot| *slot.borrow())
+    {
+        if cached_point == point && cached_viewport == viewport && cached_epoch == epoch {
+            return hit;
         }
-        let rect = widget.geometry();
-        let area = rect.width.saturating_mul(rect.height);
-        let better = match best {
-            None => true,
-            Some((best_id, best_area)) => area < best_area || (area == best_area && id >= best_id),
-        };
-        if better {
-            best = Some((id, area));
+    }
+    let hit = scan_widget_at_point(point);
+    LAST_POINT_HIT.with(|slot| *slot.borrow_mut() = Some((point, viewport, epoch, hit)));
+    hit
+}
+
+/// The bucketed registry scan behind [`widget_at_point`].
+fn scan_widget_at_point(point: Point) -> Option<ObjectId> {
+    let mut best: Option<(ObjectId, u32)> = None;
+    let _ = MOUNTED.try_with(|map_cell| {
+        let map = map_cell.borrow();
+        // Windows are few, so a per-call list beats a map here. It answers "does this
+        // window's client area contain the pointer?" once per window, not once per control.
+        let mut buckets: alloc::vec::Vec<(ObjectId, bool)> = alloc::vec::Vec::new();
+        for (id, entry) in map.iter() {
+            let widget = entry.widget.as_ref();
+            // A cached window is only usable while the direct parent it was resolved from is
+            // still this widget's parent (G-106); otherwise fall back to an unbucketed scan.
+            let bucket = match entry.top_window {
+                Some((resolved_parent, window)) if resolved_parent == widget.parent() => window,
+                _ => None,
+            };
+            if let Some(window) = bucket {
+                if !bucket_contains_point(&map, window, point, &mut buckets) {
+                    continue;
+                }
+            }
+            if !widget.is_visible() || !widget.is_enabled() || !widget.contains_point(point) {
+                continue;
+            }
+            let rect = widget.geometry();
+            let area = rect.width.saturating_mul(rect.height);
+            let better = match best {
+                None => true,
+                Some((best_id, best_area)) => {
+                    area < best_area || (area == best_area && *id >= best_id)
+                }
+            };
+            if better {
+                best = Some((*id, area));
+            }
         }
     });
     best.map(|(id, _)| id)
+}
+
+/// Whether `window`'s client area contains `point`.
+///
+/// A window's children are written in **client** coordinates starting at its top left (see
+/// [`frame_origin`]), so containment is the window's size rather than its screen position.
+/// A window that cannot be resolved is treated as containing the point: excluding a live
+/// control because its bucket is unreadable would silently change the hit result.
+fn bucket_contains_point(
+    map: &HashMap<ObjectId, Mounted>,
+    window: ObjectId,
+    point: Point,
+    cache: &mut alloc::vec::Vec<(ObjectId, bool)>,
+) -> bool {
+    if let Some((_, contains)) = cache.iter().find(|(candidate, _)| *candidate == window) {
+        return *contains;
+    }
+    let contains = match map.get(&window) {
+        Some(entry) => {
+            let geometry = entry.widget.geometry();
+            Rect::new(0, 0, geometry.width, geometry.height).contains_point(point)
+        }
+        None => true,
+    };
+    cache.push((window, contains));
+    contains
 }
 
 /// Gives `id` capture of the pointer until released.
@@ -2507,8 +2621,21 @@ fn tick_animations_sweep(delta_ms: u32) -> (usize, bool) {
     let theme_moving = if delta_ms == 0 {
         false
     } else {
-        let mut manager = crate::theme::global_theme_manager();
-        manager.tick_theme_crossfade(delta_ms)
+        // H-205: the theme mutex may only be held while taking the frame-wait lock, never the
+        // reverse. `tick_theme_crossfade` therefore advances the revision without arming the
+        // repaint, and the arm happens after this guard is dropped.
+        let (moving, crossfaded) = {
+            let mut manager = crate::theme::global_theme_manager();
+            let crossfaded = manager.is_crossfading();
+            (manager.tick_theme_crossfade(delta_ms), crossfaded)
+        };
+        #[cfg(not(alloc_frugal))]
+        if crossfaded {
+            arm_global_repaint();
+        }
+        #[cfg(alloc_frugal)]
+        let _ = crossfaded;
+        moving
     };
     #[cfg(not(device_profile))]
     let theme_moving = {
@@ -3349,11 +3476,42 @@ pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
         let mut map = map.borrow_mut();
         map.entry(id).or_insert(mounted);
     });
-    // A caret-moving event (typing, arrows, a click) may have changed the insertion point.
-    // Keep the platform candidate window anchored to the control's own answer; controls with
-    // no insertion point answer `false` and cost one predicate.
-    let _ = sync_ime_candidate(id);
+    // A caret-moving event (typing, arrows, an IME update, or a click that places the insertion
+    // point) may have changed where the caret is. Keep the platform candidate window anchored to
+    // the control's own answer. This is gated by event kind (G-110): the old unconditional call
+    // paid a registry read, a `focus_reason` check, an `input_method_query` virtual call and a
+    // platform-bridge lookup for every delivered event, pointer motion included.
+    if event_can_move_caret(event) {
+        let _ = sync_ime_candidate(id);
+    }
     true
+}
+
+/// Whether `event` can move a text control's caret, which is what [`sync_ime_candidate`]
+/// anchors the platform candidate window to.
+///
+/// Keyboard, text, and IME events can; so can a pointer **press/release**, which places the
+/// insertion point where the user clicked, and a focus change, which moves the insertion point
+/// to a different control. Pointer **motion** cannot, and it is the high-frequency event the old
+/// unconditional sync ran on (G-110).
+fn event_can_move_caret(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::KeyPress { .. }
+            | Event::KeyRelease { .. }
+            | Event::KeyDown(_)
+            | Event::KeyUp(_)
+            | Event::TextInput { .. }
+            | Event::ImePreedit { .. }
+            | Event::ImeCommit { .. }
+            | Event::MousePress { .. }
+            | Event::MouseRelease { .. }
+            | Event::MouseDown(_)
+            | Event::MouseUp(_)
+            | Event::MouseDoubleClick { .. }
+            | Event::FocusGained { .. }
+            | Event::FocusLost
+    )
 }
 
 /// Owns the in-flight bookkeeping for one [`dispatch_event`] call, so it is undone even on an unwind.
@@ -3810,16 +3968,30 @@ pub fn request_repaint_rect_because(id: ObjectId, rect: Rect, reason: RepaintRea
 /// A control outside a tick should call [`request_repaint_rect`] instead: this path costs one
 /// queue entry per control per frame.
 pub fn request_repaint_rect_deferred(id: ObjectId, rect: Rect, reason: RepaintReason) {
+    // One entry per control per frame: a later rectangle supersedes an earlier one, and the
+    // damage tracker coalesces whatever the two of them recorded anyway. This is the **same
+    // merge policy** as `submit_animation_repaints` below (the other queue that folds per-frame
+    // submissions); a change to either must be mirrored in the other (G-104).
     let _ = DEFERRED_DAMAGE.try_with(|queue| {
         let mut queue = queue.borrow_mut();
-        // One entry per control per frame: a later rectangle supersedes an earlier one, and the
-        // damage tracker coalesces whatever the two of them recorded anyway.
-        if let Some(entry) = queue.iter_mut().find(|(queued, _, _)| *queued == id) {
-            entry.1 = rect;
-            entry.2 = reason;
-        } else {
-            queue.push((id, rect, reason));
+        let existing =
+            DEFERRED_DAMAGE_INDEX.try_with(|index| index.borrow().get(&id).copied()).ok().flatten();
+        if let Some(at) = existing {
+            // The index can only be stale if the queue was replaced by a caller that did not
+            // go through `flush_deferred_damage`; verify the entry before writing through it.
+            if let Some(entry) = queue.get_mut(at) {
+                if entry.0 == id {
+                    entry.1 = rect;
+                    entry.2 = reason;
+                    return;
+                }
+            }
         }
+        let at = queue.len();
+        queue.push((id, rect, reason));
+        let _ = DEFERRED_DAMAGE_INDEX.try_with(|index| {
+            index.borrow_mut().insert(id, at);
+        });
     });
 }
 
@@ -3832,6 +4004,9 @@ pub(crate) fn flush_deferred_damage() {
     let queued = DEFERRED_DAMAGE
         .try_with(|queue| core::mem::take(&mut *queue.borrow_mut()))
         .unwrap_or_default();
+    // The index describes the queue that was just taken. It is cleared in the same breath so a
+    // later submission cannot merge into an index that no longer names a live entry (G-104).
+    let _ = DEFERRED_DAMAGE_INDEX.try_with(|index| index.borrow_mut().clear());
     if queued.is_empty() {
         return;
     }
@@ -3872,6 +4047,9 @@ fn submit_animation_repaints(moved: &[ObjectId]) {
         // The control's own rectangle, and its surface when it has one.
         request_repaint_rect_because(id, rect, RepaintReason::Animation);
         if let Some(window) = top_level_window_of(id) {
+            // Same per-window merge policy as `request_repaint_rect_deferred` above: one entry
+            // per window per frame, later geometry wins. The window list is small, so this scan
+            // is kept and the two sites are cross-referenced rather than allowed to drift (G-104).
             match windows.iter_mut().find(|(candidate, _)| *candidate == window) {
                 Some((_, union)) => {
                     let merged = union.union(&rect);
@@ -4073,17 +4251,73 @@ pub fn surfaces_of(window: ObjectId) -> Vec<ObjectId> {
 /// A **mounted surface** is the exception the walk cannot answer: it is registered with
 /// no parent (the platform mounts it as its own drawing area), so the mount path records
 /// its window in `SURFACE_WINDOWS` and that link is consulted first.
+///
+/// # The cached answer (G-106)
+///
+/// Almost every setter ends in `request_redraw`, which reaches this function, so the
+/// parent-chain walk used to cost one map lookup (plus a widget borrow) per tree level on
+/// that hot path. The answer is resolved once when the control mounts and stored on its
+/// [`Mounted`] entry; a lookup then reads that entry and compares the **direct parent** the
+/// answer was resolved from. `BaseWidget::set_parent`/`add_child_linked` can move a widget
+/// after it is mounted, and a mismatch re-resolves rather than returning a stale window.
+/// A widget that is not in the registry (unmounted, or lent out to a callback) falls back to
+/// the previous walk, which is what resolves a shared loan through [`read_widget`].
 pub fn top_level_window_of(id: ObjectId) -> Option<ObjectId> {
     // A mounted surface has no parent in the widget tree, so the walk below cannot
     // reach its window; the mount path recorded that link instead.
     if let Some(window) = surface_window_for(id) {
         return Some(window);
     }
-    // A widget tree is shallow (window → containers → controls); 64 is far past any real
-    // depth and still a bound rather than a loop that trusts the data.
-    const MAX_DEPTH: usize = 64;
-    let mut current = id;
-    for _ in 0..MAX_DEPTH {
+    // Fast path: the resolution cached on the mount, valid while the direct parent it was
+    // resolved from is still the widget's parent (G-106).
+    let cached = MOUNTED
+        .try_with(|map| {
+            map.borrow()
+                .get(&id)
+                .map(|entry| (entry.widget.parent(), entry.widget.kind(), entry.top_window))
+        })
+        .ok()
+        .flatten();
+    if let Some((parent, _, Some((resolved_parent, window)))) = cached {
+        if resolved_parent == parent {
+            return window;
+        }
+    }
+    let resolved = match cached {
+        // Mounted: resolve from the entry's own kind and parent. Reading `id` again through
+        // `read_widget` would be a second map lookup on the path this cache exists to shorten.
+        Some((parent, kind, _)) => walk_top_level_window_from(id, kind, parent),
+        // Not in the registry: it is unmounted, or a callback has it lent out. The previous
+        // walk is `read_widget`-based and therefore still answers for a shared loan; nothing is
+        // cached for an id that may not stay mounted.
+        None => walk_top_level_window(id),
+    };
+    if let Some((parent, _, _)) = cached {
+        let _ = MOUNTED.try_with(|map| {
+            if let Some(entry) = map.borrow_mut().get_mut(&id) {
+                entry.top_window = Some((parent, resolved));
+            }
+        });
+    }
+    resolved
+}
+
+/// The depth bound of the parent-chain walk. A widget tree is shallow (window → containers →
+/// controls); 64 is far past any real depth and still a bound rather than a loop that trusts
+/// the data.
+const TOP_WINDOW_MAX_DEPTH: usize = 64;
+
+/// Resolves the top-level window of a **mounted** widget from its own kind and parent.
+fn walk_top_level_window_from(
+    id: ObjectId,
+    kind: crate::widget::WidgetKind,
+    parent: Option<ObjectId>,
+) -> Option<ObjectId> {
+    if kind == crate::widget::WidgetKind::Window {
+        return Some(id);
+    }
+    let mut current = parent?;
+    for _ in 0..TOP_WINDOW_MAX_DEPTH {
         let (kind, parent) = read_widget(current, |widget| (widget.kind(), widget.parent()))?;
         if kind == crate::widget::WidgetKind::Window {
             return Some(current);
@@ -4091,6 +4325,12 @@ pub fn top_level_window_of(id: ObjectId) -> Option<ObjectId> {
         current = parent?;
     }
     None
+}
+
+/// The original registry-based walk, used for an id that is not in [`MOUNTED`].
+fn walk_top_level_window(id: ObjectId) -> Option<ObjectId> {
+    let (kind, parent) = read_widget(id, |widget| (widget.kind(), widget.parent()))?;
+    walk_top_level_window_from(id, kind, parent)
 }
 
 /// Repaints a widget **and the window it lives in**.
@@ -4150,7 +4390,7 @@ pub fn request_repaint_because(id: ObjectId, reason: RepaintReason) {
     // dropping every layer, which is the safe direction.
     note_renderable_change();
     match geometry_of(id) {
-        Some(rect) => invalidate_widget_layers_in(grow_by_damage_margin(rect)),
+        Some(rect) => invalidate_widget_layers_in(id, grow_by_damage_margin(rect)),
         None => invalidate_widget_layers(),
     }
     if crate::invalidate_surface(id) {
@@ -4243,6 +4483,15 @@ struct RepaintState {
     /// counter, so settling back into a few changing controls returns to regioning on
     /// its own rather than staying latched.
     large_damage_run: u32,
+    /// Reusable buffer for the region rectangles of one incremental frame (G-72/G-102).
+    ///
+    /// `render_frame_incremental_cow` needs the damage rectangles twice (once to measure
+    /// coverage, once to hand them to `render_dirty_regions_into`), and the `_into` form writes
+    /// them into a caller-owned buffer. Holding that buffer here means a frame loop keeps its
+    /// capacity across frames instead of allocating a fresh `Vec` per frame. It is taken with
+    /// `mem::take` for the duration of the render — the fields are only borrowed together for
+    /// short bookkeeping — and returned through [`DirtyRectScratch`] on every exit path.
+    dirty_scratch: alloc::vec::Vec<Rect>,
 }
 
 /// Consecutive over-threshold frames in [`RepaintMode::Adaptive`] before it stops
@@ -4260,6 +4509,68 @@ impl RepaintState {
             mode: RepaintMode::default(),
             tracker: crate::performance::DirtyRegionTracker::new(),
             large_damage_run: 0,
+            dirty_scratch: alloc::vec::Vec::new(),
+        }
+    }
+}
+
+/// Takes the reusable region buffer out of `id`'s repaint state (G-72).
+///
+/// The state is left with an empty buffer; [`return_dirty_scratch`] puts the grown one back. A
+/// missing state (an unmounted widget) yields a fresh, empty buffer, which is correct because the
+/// caller is about to paint something the registry cannot describe.
+fn take_dirty_scratch(id: ObjectId) -> alloc::vec::Vec<Rect> {
+    REPAINT
+        .try_with(|map| {
+            map.try_borrow_mut().ok().and_then(|mut map| {
+                map.get_mut(&id).map(|state| core::mem::take(&mut state.dirty_scratch))
+            })
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+/// Returns a region buffer whose capacity is worth keeping to `id`'s repaint state (G-72).
+fn return_dirty_scratch(id: ObjectId, mut buffer: alloc::vec::Vec<Rect>) {
+    let _ = REPAINT.try_with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            if let Some(state) = map.get_mut(&id) {
+                if buffer.capacity() > state.dirty_scratch.capacity() {
+                    buffer.clear();
+                    state.dirty_scratch = buffer;
+                }
+            }
+        }
+    });
+}
+
+/// Owns the region buffer for one incremental render and returns it on every exit path (G-72).
+///
+/// The render has several early returns (unmounted, no `Draw`, full paint, nothing damaged), so
+/// the buffer is returned from `Drop` rather than from each one. `try_borrow_mut` in
+/// [`return_dirty_scratch`] keeps the drop safe even if a callback unwinds while a `REPAINT`
+/// borrow is still live: the buffer is then simply dropped instead of panicking.
+struct DirtyRectScratch {
+    id: ObjectId,
+    buffer: Option<alloc::vec::Vec<Rect>>,
+}
+
+impl DirtyRectScratch {
+    fn take(id: ObjectId) -> Self {
+        Self { id, buffer: Some(take_dirty_scratch(id)) }
+    }
+
+    fn buffer(&mut self) -> &mut alloc::vec::Vec<Rect> {
+        // `None` only while `Drop` is taking the buffer out.
+        self.buffer.get_or_insert_with(alloc::vec::Vec::new)
+    }
+}
+
+impl Drop for DirtyRectScratch {
+    fn drop(&mut self) {
+        if let Some(buffer) = self.buffer.take() {
+            return_dirty_scratch(self.id, buffer);
         }
     }
 }
@@ -4550,6 +4861,13 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static DEFERRED_DAMAGE: core::cell::RefCell<alloc::vec::Vec<(ObjectId, Rect, RepaintReason)>> =
         const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+
+    /// `ObjectId -> index in DEFERRED_DAMAGE`, so a second rectangle for the same control in one
+    /// frame is merged in place in O(1) instead of scanning the queue (G-104). Maintained only
+    /// by [`request_repaint_rect_deferred`] and cleared by [`flush_deferred_damage`], which is
+    /// the only place the queue is emptied.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static DEFERRED_DAMAGE_INDEX: RefCell<HashMap<ObjectId, usize>> = RefCell::new(HashMap::new());
 }
 
 /// The current per-widget layer epoch for this thread.
@@ -4573,9 +4891,30 @@ fn invalidate_widget_layers() {
 /// layer stale when the two overlap, so everything else keeps serving its pixels. The rule is
 /// deliberately conservative in one direction: a sibling whose bounds happen to overlap keeps
 /// being invalidated too, which costs a repaint but can never show a stale pixel.
-fn invalidate_widget_layers_in(rect: Rect) {
+///
+/// # Why it is not a whole-table operation (G-105)
+///
+/// `id` names the control that submitted the damage, so its own layer is dropped by key. The
+/// overlap scan that follows is still needed — an **ancestor** layer contains this control's
+/// pixels, which is why deleting only `id` would replay a stale parent — but it now runs only
+/// after a cheap rejection against the union of every resident layer. A frame with no layers,
+/// or damage nowhere near one, therefore pays neither the scan nor a map iteration.
+fn invalidate_widget_layers_in(id: ObjectId, rect: Rect) {
     let _ = WIDGET_LAYERS.try_with(|layers| {
-        layers.borrow_mut().retain(|_, layer| !layer.rect.intersects(&rect));
+        let mut layers = layers.borrow_mut();
+        if layers.is_empty() {
+            return;
+        }
+        // The union is a conservative superset (see `WIDGET_LAYER_BOUNDS`), so a miss here is a
+        // proof that no layer can overlap; a hit (or a missing union) falls through to the scan.
+        if let Some(bounds) = WIDGET_LAYER_BOUNDS.with(|bounds| bounds.get()) {
+            if !bounds.intersects(&rect) {
+                return;
+            }
+        }
+        // The submitting control is addressed directly; ancestors are caught by the scan below.
+        layers.remove(&id);
+        layers.retain(|_, layer| !layer.rect.intersects(&rect));
     });
 }
 
@@ -4583,8 +4922,9 @@ fn invalidate_widget_layers_in(rect: Rect) {
 ///
 /// A layer is a full RGBA copy of one widget's painted box, so the bound is on the number of
 /// boxes rather than on bytes: a small window full of tiny controls and a large window full of
-/// small controls then have the same worst case. The least recently replayed or replaced layer
-/// is dropped first, so a scrolled-away page cannot evict the page currently on screen.
+/// small controls then have the same worst case. Eviction follows insertion order (G-105), so a
+/// page that keeps repainting cannot pin the cache forever; the resident set is capped, which is
+/// the property that matters here.
 const MAX_CACHED_WIDGET_LAYERS: usize = 128;
 
 /// One widget subtree rendered into its own transparent RGBA layer.
@@ -4610,8 +4950,12 @@ struct CachedWidgetLayer {
     global_epoch: u64,
     /// Layer pixels, row-major RGBA, `width * height * 4` bytes.
     pixels: Rc<Vec<u8>>,
-    /// Monotonic use stamp for least-recently-used eviction.
-    last_used: u64,
+    /// Monotonic stamp from the moment this layer was inserted.
+    ///
+    /// Eviction is a FIFO ring ordered by this stamp (G-105). It is deliberately separate from
+    /// any "last used" notion: a lookup no longer rewrites the entry, so the ring entry that
+    /// names a layer stays identifiable until that layer is replaced.
+    insert_stamp: u64,
 }
 
 thread_local! {
@@ -4627,9 +4971,28 @@ thread_local! {
     /// Monotonic clock used to order [`WIDGET_LAYERS`] for eviction.
     #[allow(clippy::missing_const_for_thread_local)]
     static WIDGET_LAYER_CLOCK: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+
+    /// Insertion order for [`WIDGET_LAYERS`], so eviction pops the oldest entry instead of
+    /// scanning the map for a minimum (G-105). Each entry carries the stamp the layer was stored
+    /// with; a ring entry whose stamp no longer matches the resident layer has already been
+    /// replaced or removed and is skipped.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static WIDGET_LAYER_ORDER: RefCell<alloc::collections::VecDeque<(ObjectId, u64)>> =
+        RefCell::new(alloc::collections::VecDeque::new());
+
+    /// Conservative union of every resident layer's rectangle.
+    ///
+    /// Used as a fast reject before the overlap scan in [`invalidate_widget_layers_in`]: if the
+    /// damage does not intersect the union, it cannot intersect any layer. The union is never
+    /// shrunk on a removal (only recomputed when the cache is emptied), so it can be larger than
+    /// the true union — that costs at most an unnecessary scan, never a missed invalidation
+    /// (G-105).
+    #[allow(clippy::missing_const_for_thread_local)]
+    static WIDGET_LAYER_BOUNDS: core::cell::Cell<Option<Rect>> =
+        const { core::cell::Cell::new(None) };
 }
 
-/// Advances and returns the layer use stamp.
+/// Advances and returns the layer insertion stamp.
 fn next_widget_layer_clock() -> u64 {
     WIDGET_LAYER_CLOCK.with(|clock| {
         let next = clock.get().wrapping_add(1);
@@ -4650,25 +5013,27 @@ fn lookup_widget_layer(
 ) -> Option<Rc<Vec<u8>>> {
     WIDGET_LAYERS
         .try_with(|layers| {
-            let mut layers = layers.borrow_mut();
-            let layer = layers.get_mut(&id)?;
+            let layers = layers.borrow();
+            let layer = layers.get(&id)?;
             let matches = layer.rect == rect
                 && layer.clip == clip
                 && layer.frame_origin == frame_origin
                 && layer.frame_size == frame_size
                 && layer.epoch == epoch
                 && layer.global_epoch == global_epoch;
-            if !matches {
-                return None;
-            }
-            layer.last_used = next_widget_layer_clock();
-            Some(Rc::clone(&layer.pixels))
+            matches.then(|| Rc::clone(&layer.pixels))
         })
         .ok()
         .flatten()
 }
 
-/// Stores a freshly painted layer, evicting the least recently used one when full.
+/// Stores a freshly painted layer, evicting the oldest inserted one when full.
+///
+/// Eviction follows insertion order rather than scanning for a least-recently-used entry
+/// (G-105): the cache holds at most [`MAX_CACHED_WIDGET_LAYERS`] entries, so the scan and the
+/// ring differ by a constant, but the ring removes an O(N) map walk from every store past the
+/// bound. Replacing an existing id does not evict anything and appends its own ring entry; the
+/// previous entry becomes stale and is skipped when it reaches the front.
 #[allow(clippy::too_many_arguments)]
 fn store_widget_layer(
     id: ObjectId,
@@ -4683,10 +5048,25 @@ fn store_widget_layer(
     let stamp = next_widget_layer_clock();
     let _ = WIDGET_LAYERS.try_with(|layers| {
         let mut layers = layers.borrow_mut();
-        if !layers.contains_key(&id) && layers.len() >= MAX_CACHED_WIDGET_LAYERS {
-            let oldest = layers.iter().min_by_key(|(_, layer)| layer.last_used).map(|(id, _)| *id);
-            if let Some(oldest) = oldest {
-                layers.remove(&oldest);
+        if !layers.contains_key(&id) {
+            while layers.len() >= MAX_CACHED_WIDGET_LAYERS {
+                let evicted = WIDGET_LAYER_ORDER.with(|order| order.borrow_mut().pop_front());
+                let Some((oldest, old_stamp)) = evicted else {
+                    // The ring and the map disagree (only possible if a caller cleared one
+                    // without the other); fall back to a single scan rather than growing past
+                    // the bound.
+                    let oldest = layers
+                        .iter()
+                        .min_by_key(|(_, layer)| layer.insert_stamp)
+                        .map(|(id, _)| *id);
+                    if let Some(oldest) = oldest {
+                        layers.remove(&oldest);
+                    }
+                    break;
+                };
+                if layers.get(&oldest).is_some_and(|layer| layer.insert_stamp == old_stamp) {
+                    layers.remove(&oldest);
+                }
             }
         }
         layers.insert(
@@ -4699,9 +5079,18 @@ fn store_widget_layer(
                 epoch,
                 global_epoch,
                 pixels,
-                last_used: stamp,
+                insert_stamp: stamp,
             },
         );
+        // Keep the fast-reject union a superset of every resident layer (G-105).
+        WIDGET_LAYER_BOUNDS.with(|bounds| {
+            let merged = match bounds.get() {
+                Some(existing) => existing.union(&rect),
+                None => rect,
+            };
+            bounds.set(Some(merged));
+        });
+        WIDGET_LAYER_ORDER.with(|order| order.borrow_mut().push_back((id, stamp)));
     });
 }
 
@@ -4738,6 +5127,11 @@ pub(crate) fn cached_widget_layer_count_for_test() -> usize {
 #[cfg(all(test, full_widgets))]
 pub(crate) fn clear_widget_layers_for_test() {
     let _ = WIDGET_LAYERS.try_with(|layers| layers.borrow_mut().clear());
+    // The eviction ring and the fast-reject union describe the map that was just emptied, so
+    // they must be dropped with it or a later store would reason about layers that no longer
+    // exist (G-105).
+    let _ = WIDGET_LAYER_ORDER.try_with(|order| order.borrow_mut().clear());
+    let _ = WIDGET_LAYER_BOUNDS.try_with(|bounds| bounds.set(None));
     let _ = WIDGET_LAYER_REPLAYS.try_with(|count| count.set(0));
 }
 
@@ -4849,7 +5243,7 @@ pub fn mark_dirty_rect(id: ObjectId, rect: Rect) -> bool {
     // widget has no tracker, because a window-level cache is not the per-widget policy.
     note_renderable_change();
     // The layer cache is narrower: only the layers this rectangle touches can now be stale.
-    invalidate_widget_layers_in(rect);
+    invalidate_widget_layers_in(id, rect);
     let recorded = REPAINT
         .try_with(|map| {
             let mut map = map.borrow_mut();
@@ -4886,7 +5280,26 @@ pub fn mark_dirty_rect(id: ObjectId, rect: Rect) -> bool {
 /// Exposed so a backend can hand the regions to its own compositor instead of
 /// using `render_frame_incremental` — a GPU backend wants scissor rects, not a
 /// software repaint.
+///
+/// This convenience form allocates its result. A caller that asks once per frame should use
+/// [`dirty_rects_into`] with a buffer it owns, which is what the incremental render path does.
 pub fn dirty_rects(id: ObjectId) -> Vec<Rect> {
+    let mut out = alloc::vec::Vec::new();
+    let _ = dirty_rects_into(id, &mut out);
+    out
+}
+
+/// Buffer-reusing form of [`dirty_rects`]; returns whether any damage was recorded.
+///
+/// `out` is cleared first. The emptiness predicate is answered from the tracker directly, so an
+/// undamaged widget costs one map lookup and no tracker clone or merge (G-102). This is the
+/// predicate the no-damage fast path in `render_frame_cached_shared` needs, and the buffer form
+/// the incremental render needs; keeping both here is what stops the two from drifting.
+pub fn dirty_rects_into(id: ObjectId, out: &mut alloc::vec::Vec<Rect>) -> bool {
+    out.clear();
+    if !has_dirty_rects(id) {
+        return false;
+    }
     let mut tracker = REPAINT
         .try_with(|map| {
             map.borrow().get(&id).map(|state| {
@@ -4901,7 +5314,18 @@ pub fn dirty_rects(id: ObjectId) -> Vec<Rect> {
         .flatten()
         .unwrap_or_default();
     tracker.merge();
-    tracker.regions().iter().map(|region| region.rect).collect()
+    out.extend(tracker.regions().iter().map(|region| region.rect));
+    !out.is_empty()
+}
+
+/// Whether `id` has damage recorded since the last frame.
+///
+/// `merge()` never removes a region (it only unions overlapping ones), so the tracker's
+/// non-emptiness is exactly `dirty_rects(id).is_empty()` — without the clone and merge (G-102).
+fn has_dirty_rects(id: ObjectId) -> bool {
+    REPAINT
+        .try_with(|map| map.borrow().get(&id).is_some_and(|state| !state.tracker.is_empty()))
+        .unwrap_or(false)
 }
 
 /// Renders one frame, repainting only the damage when the policy allows it.
@@ -4965,14 +5389,20 @@ fn render_frame_incremental_cow(
     // rather than reading past its end.
     let carried = previous.filter(|buffer| buffer.len() == expected);
 
+    // The region buffer is the widget's own reusable one (G-72): the coverage measurement and
+    // `render_dirty_regions_into` below both write into it, so a frame allocates no region Vec.
+    // The guard returns it on every exit path, including the full-paint returns below.
+    let mut scratch = DirtyRectScratch::take(id);
     // Measured once: this used to call `dirty_rects` three times in the dirty path (once for the
-    // empty check and twice for coverage), and each call cloned the tracker and merged it.
-    let dirty = if mode != RepaintMode::Full && carried.is_some() {
-        dirty_rects(id)
+    // empty check and twice for coverage), and each call cloned the tracker and merged it. The
+    // predicate now asks the tracker directly and the rectangles go into the reusable buffer
+    // (G-102).
+    let use_dirty = if mode != RepaintMode::Full && carried.is_some() {
+        dirty_rects_into(id, scratch.buffer())
     } else {
-        alloc::vec::Vec::new()
+        scratch.buffer().clear();
+        false
     };
-    let use_dirty = !dirty.is_empty();
     if mode == RepaintMode::Full || carried.is_none() {
         if let Some(frame) = render_frame(id, size, clear) {
             let _ = REPAINT.try_with(|map| {
@@ -4989,13 +5419,16 @@ fn render_frame_incremental_cow(
         return None;
     }
 
-    // Measured *before* the regions are handed to `render_dirty_regions`, which clears
+    // Measured *before* the regions are handed to `render_dirty_regions_into`, which clears
     // the tracker as it paints. Both the `Adaptive` decision and the run counter need
     // this frame's coverage, and after the call there is nothing left to measure.
     let covered_too_much = {
         let frame_area = u64::from(size.width) * u64::from(size.height);
-        let covered: u64 =
-            dirty.iter().map(|rect| u64::from(rect.width) * u64::from(rect.height)).sum();
+        let covered: u64 = scratch
+            .buffer()
+            .iter()
+            .map(|rect| u64::from(rect.width) * u64::from(rect.height))
+            .sum();
         frame_area == 0
             || (covered as f32)
                 >= (frame_area as f32) * crate::performance::render_dirty::FULL_REPAINT_AREA_RATIO
@@ -5105,9 +5538,16 @@ fn render_frame_incremental_cow(
         {
             let mut context = RenderContext::new(&mut backend);
             context.push_offset(-origin.0, -origin.1);
-            crate::performance::render_dirty_regions(&mut tracker, &mut context, |ctx| {
-                drawable.draw(ctx);
-            });
+            // The `_into` form keeps the region buffer across frames; the convenience form
+            // allocated a fresh `Vec` for every rendered frame (G-72).
+            crate::performance::render_dirty_regions_into(
+                &mut tracker,
+                &mut context,
+                scratch.buffer(),
+                |ctx| {
+                    drawable.draw(ctx);
+                },
+            );
             context.pop_offset();
         }
         // Present the back buffer this pass drew into. Without this the frame read
@@ -5140,6 +5580,16 @@ fn render_frame_incremental_cow(
 /// to the next frame, which is what the control meant.
 ///
 /// Returns `None` under the same conditions as [`render_frame_tree`].
+///
+/// # Migration note (G-108)
+///
+/// This **owned** form clones the whole frame that [`render_frame_tree_cached_shared`] already
+/// holds — a 4K frame is about 33 MB of duplication for pixels nobody touched. It is kept only
+/// for existing callers that need an owned `Vec<u8>`. **Every new call site must use
+/// [`render_frame_tree_cached_shared`]**, which answers a refcount increment on the unchanged
+/// path. The two are not renamed here so existing callers keep compiling; once the owned form has
+/// no callers it can be collapsed into the shared entry point without changing that entry point's
+/// name.
 pub fn render_frame_tree_cached(
     id: ObjectId,
     size: Size,
@@ -5155,6 +5605,9 @@ pub fn render_frame_tree_cached(
 /// form had to duplicate it to hand the caller a buffer whose pixels nobody had touched. The cache
 /// already stores an `Rc<Vec<u8>>`, so this form answers a refcount increment. A caller that
 /// presents the frame (or reads it as `&[u8]`) needs nothing more.
+///
+/// This is the **only recommended entry point for new callers** (G-108); the owned form exists
+/// for legacy call sites and copies the frame unconditionally.
 pub fn render_frame_tree_cached_shared(
     id: ObjectId,
     size: Size,
@@ -5252,7 +5705,7 @@ pub fn render_frame_cached_shared(
     // single copy needed to hand an owned buffer to the caller is made. `Full` mode is excluded
     // because it must repaint regardless, and a missing previous cannot take this path.
     if let Some(previous) = &previous {
-        if repaint_mode(id) != RepaintMode::Full && dirty_rects(id).is_empty() {
+        if repaint_mode(id) != RepaintMode::Full && !has_dirty_rects(id) {
             // A frame with no damage also proves the surface settled, which is the `Adaptive`
             // mode's reset point — `render_frame_incremental` clears the run on this path, and
             // this fast path must do the same or `Adaptive` would stay latched after an animation
@@ -5306,7 +5759,17 @@ pub fn render_frame_cached_shared(
 pub fn forget_cached_frame(id: ObjectId) {
     let _ = LAST_FRAME.try_with(|map| map.borrow_mut().remove(&id));
     let _ = LAST_TREE_FRAME.try_with(|map| map.borrow_mut().remove(&id));
-    let _ = WIDGET_LAYERS.try_with(|map| map.borrow_mut().remove(&id));
+    let _ = WIDGET_LAYERS.try_with(|map| {
+        let mut map = map.borrow_mut();
+        map.remove(&id);
+        // The fast-reject union is only a superset, so it may stay after a removal; when the
+        // cache is empty it is reset, which is what restores the free "no layers" rejection.
+        // The eviction ring keeps the stale entry, which the pop path skips (G-105).
+        if map.is_empty() {
+            WIDGET_LAYER_BOUNDS.with(|bounds| bounds.set(None));
+            let _ = WIDGET_LAYER_ORDER.try_with(|order| order.borrow_mut().clear());
+        }
+    });
 }
 
 /// The size of the cached frame for `id`, if one is held.
@@ -5401,8 +5864,10 @@ pub fn render_frame_at_geometry(id: ObjectId, clear: crate::core::Color) -> Opti
 fn ordered_root_children(children: &mut Vec<ObjectId>) {
     // Stable partition in place: ordinary children keep their order, then the overlays keep
     // theirs. The previous implementation allocated two new vectors and copied every id, on every
-    // frame, just to move the few overlay children to the back (G-36).
-    let mut overlays = Vec::new();
+    // frame, just to move the few overlay children to the back (G-36). The overlays buffer itself
+    // is pooled as well, so a static frame allocates nothing at all (G-109).
+    let mut overlays = OVERLAY_CHILD_IDS.with(|slot| core::mem::take(&mut *slot.borrow_mut()));
+    overlays.clear();
     children.retain(|child| {
         let overlay = read_widget(*child, |widget| widget.is_visible() && widget.has_open_popup())
             .unwrap_or(false);
@@ -5413,7 +5878,14 @@ fn ordered_root_children(children: &mut Vec<ObjectId>) {
             true
         }
     });
-    children.extend(overlays);
+    children.extend(overlays.iter().copied());
+    OVERLAY_CHILD_IDS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if overlays.capacity() > slot.capacity() {
+            overlays.clear();
+            *slot = overlays;
+        }
+    });
 }
 
 /// Renders one frame of a widget **and its descendants**, returning RGBA bytes.
@@ -5588,18 +6060,21 @@ fn subtree_metrics(
     if depth >= MAX_LAYER_DEPTH {
         return empty;
     }
+    // The child list is copied into a pooled per-depth buffer rather than a fresh `Vec` per node
+    // (G-101). The copy is unavoidable: `read_widget` holds the registry borrow while this runs,
+    // so the recursion below cannot read the children through it. The pool is the same one the
+    // painter uses for its own child snapshots, and `take`/`return` survive re-entrancy because
+    // they only pop from and push to a stack.
+    let mut children = take_paint_children();
+    children.clear();
     let info = read_widget(id, |widget| {
-        (
-            widget.is_visible(),
-            widget.has_open_popup(),
-            grow_by_damage_margin(widget.geometry()),
-            widget.base().children().to_vec(),
-        )
+        children.extend_from_slice(widget.base().children());
+        (widget.is_visible(), widget.has_open_popup(), grow_by_damage_margin(widget.geometry()))
     });
     let metrics = match info {
-        Some((true, has_open_popup, mut bounds, children)) => {
+        Some((true, has_open_popup, mut bounds)) => {
             let mut has_open_popup = has_open_popup;
-            for child in children {
+            for &child in &children {
                 let child_metrics = subtree_metrics(child, depth + 1, memo);
                 has_open_popup |= child_metrics.has_open_popup;
                 if let Some(child_bounds) = child_metrics.bounds {
@@ -5612,6 +6087,7 @@ fn subtree_metrics(
         // nothing. Both are ordinary states, not errors.
         _ => empty,
     };
+    return_paint_children(children);
     memo.insert(id, metrics);
     metrics
 }
@@ -11311,5 +11787,77 @@ mod tests {
             Some(Rect::new(0, 0, 10, 10))
         );
         assert_eq!(intersect_clip(None, None), None);
+    }
+
+    /// `dirty_rects_into` is the buffer-reusing form: it answers exactly what `dirty_rects`
+    /// answers, and a second call keeps the caller's capacity (G-102).
+    #[test]
+    fn dirty_rects_into_matches_the_allocating_form_and_reuses_the_buffer() {
+        let id = register(sample_editor("fn main() {}")).expect("registry");
+        assert!(set_repaint_mode_adaptive(id));
+        assert!(mark_dirty_rect(id, Rect::new(1, 2, 3, 4)));
+        assert!(mark_dirty_rect(id, Rect::new(40, 10, 8, 8)));
+
+        let allocating = dirty_rects(id);
+        let mut reused = Vec::new();
+        assert!(dirty_rects_into(id, &mut reused), "damage was recorded");
+        assert_eq!(reused, allocating, "the buffer form must agree with the allocating form");
+        let capacity = reused.capacity();
+
+        // Reading the tracker does not consume it, so the second call reproduces the same
+        // rectangles without growing a buffer that is already large enough.
+        assert!(dirty_rects_into(id, &mut reused));
+        assert_eq!(reused, allocating);
+        assert_eq!(reused.capacity(), capacity, "a repeated read must reuse the caller's buffer");
+
+        // The no-damage predicate returns early: the caller's buffer is cleared, not filled.
+        let clean = register(sample_editor("clean")).expect("registry");
+        let mut scratch = Vec::with_capacity(4);
+        scratch.push(Rect::new(0, 0, 1, 1));
+        assert!(!dirty_rects_into(clean, &mut scratch), "nothing has asked to repaint yet");
+        assert!(scratch.is_empty(), "an undamaged widget must leave the buffer empty");
+
+        unregister(clean);
+        unregister(id);
+    }
+
+    /// The cached top-level window follows an adoption instead of pinning the window the widget
+    /// was first mounted under (G-106).
+    #[test]
+    fn top_level_window_of_re_resolves_after_an_adoption() {
+        let first = register(Box::new(crate::widget::Window::new(
+            "first".to_string(),
+            Rect::new(0, 0, 200, 150),
+        )))
+        .expect("mount first window");
+        let _first = MountGuard(first);
+        let second = register(Box::new(crate::widget::Window::new(
+            "second".to_string(),
+            Rect::new(220, 0, 200, 150),
+        )))
+        .expect("mount second window");
+        let _second = MountGuard(second);
+        let child = register(Box::new(crate::widget::Button::new(
+            "child".to_string(),
+            Rect::new(10, 10, 40, 20),
+        )))
+        .expect("mount child");
+        let _child = MountGuard(child);
+
+        with_widget_mut(first, |widget| widget.base_mut().add_child_linked(child))
+            .expect("first window is mounted");
+        assert_eq!(
+            top_level_window_of(child),
+            Some(first),
+            "the first adoption must be what the cached resolution records"
+        );
+
+        with_widget_mut(second, |widget| widget.base_mut().add_child_linked(child))
+            .expect("second window is mounted");
+        assert_eq!(
+            top_level_window_of(child),
+            Some(second),
+            "an adoption after the cache was warmed must re-resolve the window"
+        );
     }
 }

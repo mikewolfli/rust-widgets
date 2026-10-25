@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 //! Bridge that selects between objc2 and cocoa backend (BLUE11 R1.5, R2.5).
-//! Priority: objc2 (default, via objc2-macos feature) → cocoa (cocoa-legacy fallback).
+//! Priority: objc2 (when `macos` / the `objc2-macos` alias is enabled) → cocoa
+//! (cocoa-legacy fallback).
 //!
 //! This module provides a unified Platform implementation that delegates
 //! to the appropriate backend based on feature flags.
 //!
 //! # Migration Status (R2.5)
-//! - Default: objc2 backend (via `desktop` feature which includes `objc2-macos`)
+//! - objc2 backend: selected by `--features macos` (or the `objc2-macos` alias,
+//!   which enables `macos`). A bare `desktop` build does **not** enable it: the
+//!   `desktop` profile has neither `macos` nor `objc2-macos`, so macOS falls back
+//!   to the cocoa-legacy backend below.
 //! - Legacy: cocoa 0.24 backend (via `cocoa-legacy` feature)
 
 /// Default: objc2 backend (activated by `macos` feature or `objc2-macos` alias).

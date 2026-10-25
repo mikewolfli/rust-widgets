@@ -10,18 +10,24 @@ use crate::widget::Widget;
 use core::cell::RefCell;
 use core::fmt;
 
-/// Internal child entry that holds a widget ID and optionally the widget object.
-/// Ensures `add_widget` (ID only) and `add_child` (full widget) use the same list.
+/// Internal child entry: the widget id and the size the widget reported when it was added.
+///
+/// # Why no `Box<dyn Widget>`
+///
+/// Holding the widget made the layout `!Send` (so it could not join the shared layout
+/// registry) and bypassed the crate's id-based layout protocol. The hint is the one fact this
+/// layout needs from the widget, so it is captured at registration and the widget is dropped;
+/// a caller that has the live widget (or richer hints) supplies them through
+/// [`Layout::arrange`](crate::layout::Layout::arrange) (G-402).
 struct FlowChild {
     widget_id: ObjectId,
-    widget: Option<Box<dyn Widget>>,
-    /// Default size used when widget is absent (added via `add_widget`).
+    /// Default size used when no hint is supplied for this child.
     default_size: Size,
 }
 
 impl FlowChild {
     fn size_hint(&self) -> Size {
-        self.widget.as_ref().map(|w| w.size_hint()).unwrap_or(self.default_size)
+        self.default_size
     }
 }
 /// Direction of child arrangement in a flow layout.
@@ -172,38 +178,36 @@ impl FlowLayout {
     pub fn set_text_direction(&mut self, direction: TextDirection) {
         self.text_direction = direction;
     }
-    /// Appends a widget, taking ownership of it.
+    /// Appends a widget, capturing its current [`Widget::size_hint`] as its default size.
     ///
-    /// The widget's current [`Widget::size_hint`] is captured as its default
-    /// size and re-read from the widget on every layout pass, so later changes
-    /// to the hint are picked up. Children are laid out in insertion order.
+    /// The layout does not retain the widget (see the child-entry docs): a later hint change
+    /// is supplied through the hint channel, or through [`Self::set_child_size`]. Children are
+    /// laid out in insertion order.
     pub fn add_child(&mut self, child: Box<dyn Widget>) {
         let widget_id = child.id();
         let default_size = child.size_hint();
-        self.children.push(FlowChild { widget_id, widget: Some(child), default_size });
+        self.children.push(FlowChild { widget_id, default_size });
         self.invalidate_size_cache();
     }
-    /// Removes the child at `index` and returns it, or returns `None` when the
-    /// index is out of range.
+    /// Removes the child at `index`.
     ///
-    /// Returns `None` for children that were registered by id only through
-    /// [`Layout::add_widget`], because there is no owned widget to hand back.
-    /// The entry is removed from the layout either way.
+    /// Returns `None` as it always has for children registered by id only: the layout does
+    /// not own widgets, so there is nothing to hand back. The entry is removed either way.
     pub fn remove_child(&mut self, index: usize) -> Option<Box<dyn Widget>> {
         if index < self.children.len() {
-            let removed = self.children.remove(index).widget;
+            self.children.remove(index);
             self.invalidate_size_cache();
-            removed
-        } else {
-            None
         }
+        None
     }
-    /// Override the default size hint for a child added via `add_widget` (no widget ref).
+    /// Override the recorded size for a child.
     ///
-    /// The override only affects that default: a child holding a live widget
-    /// still reports the widget's own `size_hint`, so this call has no effect
-    /// on children added with [`FlowLayout::add_child`]. It is a no-op when no
-    /// child has the given id.
+    /// The recorded size is the only size source for children registered by id
+    /// ([`Layout::add_widget`]) and the size captured from a child added with
+    /// [`FlowLayout::add_child`]. Changing it is how a caller whose child's hint changed
+    /// in place tells this layout about the change; a caller that has `ChildInfo` values
+    /// can instead pass them to [`Layout::arrange`]. It is a no-op when no child has the
+    /// given id.
     pub fn set_child_size(&mut self, widget_id: ObjectId, size: Size) {
         if let Some(child) = self.children.iter_mut().find(|c| c.widget_id == widget_id) {
             if child.default_size != size {
@@ -453,12 +457,9 @@ impl Layout for FlowLayout {
         if !self.children.iter().any(|c| c.widget_id == widget_id) {
             // Use a reasonable default size (100x100) so layout doesn't collapse
             // children added without a widget reference. The caller can later
-            // set the actual size via `set_child_size` or through the Widget trait.
-            self.children.push(FlowChild {
-                widget_id,
-                widget: None,
-                default_size: Size::new(100, 100),
-            });
+            // set the actual size via `set_child_size` or by supplying `ChildInfo`
+            // through `arrange`.
+            self.children.push(FlowChild { widget_id, default_size: Size::new(100, 100) });
             self.invalidate_size_cache();
         }
     }
@@ -1256,9 +1257,10 @@ mod tests {
         assert_eq!(layout.minimum_size(), Size::new(120, 20), "no wrap means the run is the floor");
     }
 
-    /// C-26: one revision asks every child once, no matter how many consumers read the sizes.
+    /// C-26 / G-402: `add_child` captures each widget's hint exactly once, and no later
+    /// layout pass re-asks a widget the layout no longer owns.
     #[test]
-    fn child_hints_are_measured_once_per_revision() {
+    fn add_child_captures_each_hint_once_and_layout_does_not_re_ask() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
 
@@ -1266,9 +1268,9 @@ mod tests {
         let mut layout = FlowLayout::new();
         layout.add_child(Box::new(CountingWidget::new(1, 40, 20, Arc::clone(&hints))));
         layout.add_child(Box::new(CountingWidget::new(2, 60, 30, Arc::clone(&hints))));
-        // `add_child` itself reads the hint once to seed `default_size`; measure from here.
-        hints.store(0, Ordering::Relaxed);
+        assert_eq!(hints.load(Ordering::Relaxed), 2, "one hint read per registration");
 
+        hints.store(0, Ordering::Relaxed);
         let rect = Rect::new(0, 0, 400, 300);
         let _ = layout.preferred_size();
         let _ = layout.minimum_size();
@@ -1276,16 +1278,19 @@ mod tests {
         layout.arrange(rect, &[], &mut |_, _| {});
         assert_eq!(
             hints.load(Ordering::Relaxed),
-            2,
-            "two children are measured once each across preferred/minimum/layout/arrange"
+            0,
+            "the layout no longer owns the widget, so it reads the captured size instead"
         );
 
         layout.invalidate_size_cache();
         let _ = layout.preferred_size();
-        assert_eq!(
-            hints.load(Ordering::Relaxed),
-            4,
-            "a structural invalidation makes the next consumer measure again"
-        );
+        assert_eq!(hints.load(Ordering::Relaxed), 0, "invalidation does not resurrect a widget");
+    }
+
+    /// G-402: without the owned widget the flow can join a `Send` layout registry.
+    #[test]
+    fn flow_layout_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<FlowLayout>();
     }
 }

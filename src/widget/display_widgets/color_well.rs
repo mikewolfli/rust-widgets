@@ -25,11 +25,30 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// The payload type a colour well carries and accepts.
 const COLOR_PAYLOAD_TYPE: &str = "color";
 
+/// The side of one checkerboard tile, in logical pixels.
+const CHECKER_TILE: u32 = 4;
+
 /// How long two presses may be apart and still count as one double click.
 const DOUBLE_CLICK_INTERVAL_MS: u64 = 400;
 
 /// How far apart two presses may be and still count as one double click.
 const DOUBLE_CLICK_SLOP: i32 = 4;
+
+/// A pre-rendered transparency checkerboard for the well.
+///
+/// The grid is a function of two theme colours, a fixed tile size and the well's size, so the tile
+/// plan is computed once and replayed until either tone or the size changes. It is replayed as
+/// rectangles rather than as an RGBA blit because the marker exists to be visible in *every*
+/// backend: the vector exporter draws rectangles, so a bitmap-only grid silently disappeared there
+/// (and left the well looking empty).
+struct CheckerboardCache {
+    even: Color,
+    odd: Color,
+    width: u32,
+    height: u32,
+    /// `(x, y, width, height, colour)` in the well's local coordinates.
+    tiles: crate::compat::Vec<(i32, i32, u32, u32, Color)>,
+}
 
 /// A compact color swatch widget that displays a color and emits a signal
 /// when clicked.
@@ -55,6 +74,8 @@ pub struct ColorWell {
     /// Every colour-changing path — the property route, a drop, and the host's own
     /// calls — ends in `set_color`, so a mirrored copy of the well sees them all.
     pub color_changed: Signal1<Color>,
+    /// The transparency grid, rendered once per pair of tones and well size.
+    checkerboard: Option<CheckerboardCache>,
 }
 
 impl ColorWell {
@@ -70,6 +91,7 @@ impl ColorWell {
             clicked: GenericSignal::new(),
             picker_requested: GenericSignal::new(),
             color_changed: Signal1::new(),
+            checkerboard: None,
         }
     }
 
@@ -99,6 +121,34 @@ impl ColorWell {
             self.show_border = show_border;
             self.base.request_redraw();
         }
+    }
+
+    /// Rebuilds the transparency grid when either tone or the well's size changed.
+    ///
+    /// The plan carries the same rectangles the per-tile fills used, so the picture is identical
+    /// to the old loop while the per-frame work is one pass over the cached tiles.
+    fn ensure_checkerboard(&mut self, even: Color, odd: Color, width: u32, height: u32) {
+        let fresh = self.checkerboard.as_ref().is_some_and(|cache| {
+            cache.even == even && cache.odd == odd && cache.width == width && cache.height == height
+        });
+        if fresh {
+            return;
+        }
+        let mut tiles = crate::compat::Vec::new();
+        let mut y = 0u32;
+        while y < height {
+            let tile_h = CHECKER_TILE.min(height - y);
+            let mut x = 0u32;
+            while x < width {
+                let tile_w = CHECKER_TILE.min(width - x);
+                let light = ((x / CHECKER_TILE) + (y / CHECKER_TILE)).is_multiple_of(2);
+                let color = if light { even } else { odd };
+                tiles.push((x as i32, y as i32, tile_w, tile_h, color));
+                x += tile_w;
+            }
+            y += tile_h;
+        }
+        self.checkerboard = Some(CheckerboardCache { even, odd, width, height, tiles });
     }
 
     /// Records a left press and returns whether it completes a double click.
@@ -293,18 +343,12 @@ impl Draw for ColorWell {
         // Draw the checkerboard for transparency indication over the **well's own box**:
         // two steps of the resolved surface, so a translucent swatch composites over a
         // pattern that follows the appearance rather than a fixed grey-and-white pair.
-        let checker_size = 4u32;
         let even = background;
         let odd = background.blend(&border, 0.25);
-
-        for y in (well.y..(well.y + well.height as i32)).step_by(checker_size as usize) {
-            for x in (well.x..(well.x + well.width as i32)).step_by(checker_size as usize) {
-                let tile_x = (x - well.x) / checker_size as i32;
-                let tile_y = (y - well.y) / checker_size as i32;
-                let tile_color = if (tile_x + tile_y) % 2 == 0 { even } else { odd };
-                let tile_w = checker_size.min((well.x + well.width as i32 - x) as u32);
-                let tile_h = checker_size.min((well.y + well.height as i32 - y) as u32);
-                context.fill_rect(Rect::new(x, y, tile_w, tile_h), tile_color);
+        self.ensure_checkerboard(even, odd, well.width, well.height);
+        if let Some(cache) = self.checkerboard.as_ref() {
+            for &(x, y, w, h, color) in &cache.tiles {
+                context.fill_rect(Rect::new(well.x + x, well.y + y, w, h), color);
             }
         }
 
@@ -680,5 +724,31 @@ mod tests {
         cw.handle_event(&Event::mouse_release(100, 100, 1));
         let released = crate::widget::svg::render_to_svg(&mut cw);
         assert_eq!(released, idle, "leaving and releasing restores the idle drawing");
+    }
+
+    /// The transparency grid plan is rebuilt only when a tone or the size changes.
+    #[test]
+    fn the_checkerboard_is_a_cached_plan_not_a_per_tile_fill() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut cw = ColorWell::new(Color::rgba(255, 0, 0, 128), Rect::new(0, 0, 40, 40));
+        cw.ensure_checkerboard(Color::WHITE, Color::rgb(220, 220, 220), 40, 40);
+        let first = cw.checkerboard.as_ref().expect("the grid is built");
+        // 40x40 at a 4 px tile is 10x10 tiles, and the plan covers the whole box.
+        assert_eq!(first.tiles.len(), 100);
+        assert_eq!(first.tiles[0].0, 0);
+        assert_eq!(first.tiles[0].1, 0);
+        assert_eq!(first.tiles[0].2, CHECKER_TILE);
+        assert_eq!(first.tiles[0].3, CHECKER_TILE);
+        let first_ptr = first.tiles.as_ptr();
+        // The same tones and size reuse the same allocation.
+        cw.ensure_checkerboard(Color::WHITE, Color::rgb(220, 220, 220), 40, 40);
+        assert_eq!(
+            cw.checkerboard.as_ref().unwrap().tiles.as_ptr(),
+            first_ptr,
+            "an unchanged grid must not be rebuilt"
+        );
+        // A changed tone rebuilds it.
+        cw.ensure_checkerboard(Color::rgb(250, 250, 250), Color::rgb(220, 220, 220), 40, 40);
+        assert_ne!(cw.checkerboard.as_ref().unwrap().tiles.as_ptr(), first_ptr);
     }
 }

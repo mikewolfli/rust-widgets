@@ -9,12 +9,42 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::{Gradient, GradientStop};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use core::cell::RefCell;
+
+/// The inputs the cached rail paints depend on; a change in any of them rebuilds the cache.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PaintCacheKey {
+    palette: Rect,
+    hue_rect: Rect,
+    alpha_rect: Rect,
+    hue: u8,
+    color: (u8, u8, u8, u8),
+    font_size_bits: u32,
+    show_alpha: bool,
+}
+
+/// The gradients and text measurements one frame paints with (SP-P70).
+///
+/// The palette's two full-width gradients, the hue rail's seven-stop rainbow and the alpha ramp
+/// were rebuilt on **every** frame, and the hex readout was measured every frame. All four are
+/// pure functions of the rects, the hue and the colour, so they are built only when one of those
+/// moves.
+struct ColorPickerPaintCache {
+    key: PaintCacheKey,
+    horizontal: Gradient,
+    vertical: Gradient,
+    rainbow: Gradient,
+    alpha: Gradient,
+    hex_width: u32,
+    hex_height: u32,
+}
 
 /// Interactive color picker with HSV controls and preset swatches.
 pub struct ColorPicker {
@@ -37,6 +67,13 @@ pub struct ColorPicker {
     hex_editing: bool,
     /// The text in the hex field while editing.
     hex_buffer: String,
+    /// Whether the panel paints its own OK / Cancel row (SP-62).
+    show_buttons: bool,
+    /// The cached rail paints; see [`ColorPickerPaintCache`].
+    ///
+    /// `RefCell` because the cache is refreshed from inside `draw`, which already holds a shared
+    /// borrow of the widget for its resolved style.
+    paint_cache: RefCell<Option<ColorPickerPaintCache>>,
     /// Emitted when selected color changes.
     pub color_changed: Signal1<Color>,
     /// Emitted when hex text changes.
@@ -77,6 +114,8 @@ impl ColorPicker {
             drag_target: None,
             hex_editing: false,
             hex_buffer: String::new(),
+            show_buttons: false,
+            paint_cache: RefCell::new(None),
             presets: vec![
                 Color::rgb(244, 67, 54),
                 Color::rgb(33, 150, 243),
@@ -330,13 +369,65 @@ impl ColorPicker {
     /// regardless of the ratio.
     const BOTTOM_STACK: u32 = READOUT_LINE + PRESET_ROW + MARGIN * 3;
 
+    /// Height the OK / Cancel row takes when [`Self::set_show_buttons`] is on.
+    const BUTTON_ROW: u32 = 22;
+
+    /// The vertical room below the palette: the readout stack plus the button row when shown.
+    fn bottom_stack(&self) -> u32 {
+        if self.show_buttons {
+            Self::BOTTOM_STACK + Self::BUTTON_ROW
+        } else {
+            Self::BOTTOM_STACK
+        }
+    }
+
+    /// Whether the panel paints its own OK / Cancel row.
+    pub fn show_buttons(&self) -> bool {
+        self.show_buttons
+    }
+
+    /// Shows or hides the panel's own OK / Cancel row.
+    ///
+    /// It is off by default because the historical contract leaves the commit flow to the host.
+    /// Turning it on puts the two actions in the panel and makes it usable on its own (SP-62).
+    pub fn set_show_buttons(&mut self, show: bool) {
+        if self.show_buttons == show {
+            return;
+        }
+        self.show_buttons = show;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The OK button's rectangle, when the row is shown.
+    fn ok_rect(&self) -> Option<Rect> {
+        if !self.show_buttons {
+            return None;
+        }
+        let rect = self.geometry();
+        let height = (Self::BUTTON_ROW - MARGIN * 2).max(1);
+        let width = 64.min(rect.width / 2);
+        Some(Rect::new(
+            rect.x + rect.width as i32 - 8 - width as i32,
+            rect.y + rect.height as i32 - Self::BUTTON_ROW as i32 + MARGIN as i32,
+            width,
+            height,
+        ))
+    }
+
+    /// The Cancel button's rectangle, when the row is shown.
+    fn cancel_rect(&self) -> Option<Rect> {
+        let ok = self.ok_rect()?;
+        Some(Rect::new(ok.x - ok.width as i32 - 6, ok.y, ok.width, ok.height))
+    }
+
     fn palette_rect(&self) -> Rect {
         let rect = self.geometry();
         Rect::new(
             rect.x + 8,
             rect.y + 8,
             rect.width.saturating_sub(48),
-            rect.height.saturating_sub(Self::BOTTOM_STACK + 8),
+            rect.height.saturating_sub(self.bottom_stack() + 8),
         )
     }
 
@@ -346,7 +437,7 @@ impl ColorPicker {
             rect.x + rect.width as i32 - 34,
             rect.y + 8,
             12,
-            rect.height.saturating_sub(Self::BOTTOM_STACK + 8),
+            rect.height.saturating_sub(self.bottom_stack() + 8),
         )
     }
 
@@ -356,7 +447,7 @@ impl ColorPicker {
             rect.x + rect.width as i32 - 18,
             rect.y + 8,
             10,
-            rect.height.saturating_sub(Self::BOTTOM_STACK + 8),
+            rect.height.saturating_sub(self.bottom_stack() + 8),
         )
     }
 
@@ -441,7 +532,7 @@ impl Widget for ColorPicker {
 
     impl_widget_property_hooks!();
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(300, 200)
+        crate::core::Size::new(300, 200 + if self.show_buttons { Self::BUTTON_ROW } else { 0 })
     }
     /// Resolves a published event name to the control's own signal.
     ///
@@ -592,6 +683,21 @@ impl EventHandler for ColorPicker {
 
         match event {
             Event::MousePress { pos, button: 1, .. } => {
+                // The panel's own commit pair comes first: they are chrome over the rails, so a
+                // click on OK must not fall through to a colour edit (SP-62).
+                if let Some(ok) = self.ok_rect() {
+                    if Self::point_in_rect(*pos, ok) {
+                        let color = self.color;
+                        self.pick(color);
+                        return;
+                    }
+                }
+                if let Some(cancel) = self.cancel_rect() {
+                    if Self::point_in_rect(*pos, cancel) {
+                        self.cancel();
+                        return;
+                    }
+                }
                 for index in 0..self.presets.len() {
                     let Some(preset_rect) = self.preset_rect(index) else {
                         continue;
@@ -731,64 +837,94 @@ impl Draw for ColorPicker {
         context.draw_rect(rect, frame);
 
         let palette = self.palette_rect();
-        // The saturation/value square: a horizontal white-to-hue ramp overlayed with a vertical
-        // transparent-to-black ramp. That is the same two-dimensional colour space the click
-        // mapping reads, so the pixel under the pointer and the picked colour agree — the flat
-        // grey slab it replaces showed no relationship to the value being selected.
-        let base_hue = hsv_to_color(self.hue, 255, 255, 255);
-        let horizontal = crate::style::Gradient::linear(
-            Point::new(palette.x, palette.y),
-            Point::new(palette.x + palette.width as i32, palette.y),
-        )
-        .with_stops(vec![
-            crate::style::GradientStop::new(0.0, Color::WHITE),
-            crate::style::GradientStop::new(1.0, base_hue),
-        ]);
-        context.fill_gradient(palette, &horizontal);
-        let vertical = crate::style::Gradient::linear(
-            Point::new(palette.x, palette.y),
-            Point::new(palette.x, palette.y + palette.height as i32),
-        )
-        .with_stops(vec![
-            crate::style::GradientStop::new(0.0, Color::TRANSPARENT),
-            crate::style::GradientStop::new(1.0, Color::BLACK),
-        ]);
-        context.fill_gradient(palette, &vertical);
-        context.draw_rect(palette, panel.blend(&ink, 0.40));
-
-        // The hue rail is the rainbow the hue byte indexes, so the rail and the value cannot
-        // disagree about which colour a position means.
         let hue_rect = self.hue_rect();
-        let rainbow = crate::style::Gradient::linear(
-            Point::new(hue_rect.x, hue_rect.y),
-            Point::new(hue_rect.x + hue_rect.width as i32, hue_rect.y),
-        )
-        .with_stops(
-            (0..=6)
-                .map(|step| {
-                    crate::style::GradientStop::new(
-                        step as f32 / 6.0,
-                        hsv_to_color((step * 255 / 6) as u8, 255, 255, 255),
-                    )
-                })
-                .collect(),
-        );
-        context.fill_gradient(hue_rect, &rainbow);
-        context.draw_rect(hue_rect, panel.blend(&ink, 0.35));
-
-        if self.show_alpha {
-            let alpha_rect = self.alpha_rect();
-            // The alpha rail runs from the colour with no alpha to the same colour fully
-            // opaque, so the rail shows exactly what the alpha byte is choosing.
-            let ramp = crate::style::Gradient::linear(
+        let alpha_rect = self.alpha_rect();
+        let hex_font = effective_font(style);
+        let hex_text = self.hex_rgba();
+        // One cache for the four gradients and the readout's line box. They are pure functions of
+        // the rects, the hue and the colour, so a still picker rebuilds nothing (SP-P70).
+        let key = PaintCacheKey {
+            palette,
+            hue_rect,
+            alpha_rect,
+            hue: self.hue,
+            color: (self.color.r, self.color.g, self.color.b, self.color.a),
+            font_size_bits: hex_font.size().to_bits(),
+            show_alpha: self.show_alpha,
+        };
+        let stale = self.paint_cache.borrow().as_ref().is_none_or(|cache| cache.key != key);
+        if stale {
+            let base_hue = hsv_to_color(self.hue, 255, 255, 255);
+            let horizontal = Gradient::linear(
+                Point::new(palette.x, palette.y),
+                Point::new(palette.x + palette.width as i32, palette.y),
+            )
+            .with_stops(vec![
+                GradientStop::new(0.0, Color::WHITE),
+                GradientStop::new(1.0, base_hue),
+            ]);
+            let vertical = Gradient::linear(
+                Point::new(palette.x, palette.y),
+                Point::new(palette.x, palette.y + palette.height as i32),
+            )
+            .with_stops(vec![
+                GradientStop::new(0.0, Color::TRANSPARENT),
+                GradientStop::new(1.0, Color::BLACK),
+            ]);
+            // The rainbow's stops are constant values, so they are recomputed only when the rail
+            // moves — not once per frame as they were.
+            let rainbow = Gradient::linear(
+                Point::new(hue_rect.x, hue_rect.y),
+                Point::new(hue_rect.x + hue_rect.width as i32, hue_rect.y),
+            )
+            .with_stops(
+                (0..=6)
+                    .map(|step| {
+                        GradientStop::new(
+                            step as f32 / 6.0,
+                            hsv_to_color((step * 255 / 6) as u8, 255, 255, 255),
+                        )
+                    })
+                    .collect(),
+            );
+            let alpha = Gradient::linear(
                 Point::new(alpha_rect.x, alpha_rect.y),
                 Point::new(alpha_rect.x + alpha_rect.width as i32, alpha_rect.y),
             )
             .with_stops(vec![
-                crate::style::GradientStop::new(0.0, self.color.with_alpha(0)),
-                crate::style::GradientStop::new(1.0, self.color.with_alpha(255)),
+                GradientStop::new(0.0, self.color.with_alpha(0)),
+                GradientStop::new(1.0, self.color.with_alpha(255)),
             ]);
-            context.fill_gradient(alpha_rect, &ramp);
+            let metrics = context.measure_text(&hex_text, hex_font);
+            *self.paint_cache.borrow_mut() = Some(ColorPickerPaintCache {
+                key,
+                horizontal,
+                vertical,
+                rainbow,
+                alpha,
+                hex_width: metrics.width,
+                hex_height: metrics.height,
+            });
+        }
+        let cache = self.paint_cache.borrow();
+        let Some(cache) = cache.as_ref() else { return };
+        // The saturation/value square: a horizontal white-to-hue ramp overlayed with a vertical
+        // transparent-to-black ramp. That is the same two-dimensional colour space the click
+        // mapping reads, so the pixel under the pointer and the picked colour agree — the flat
+        // grey slab it replaces showed no relationship to the value being selected.
+        context.fill_gradient(palette, &cache.horizontal);
+        context.fill_gradient(palette, &cache.vertical);
+        context.draw_rect(palette, panel.blend(&ink, 0.40));
+
+        // The hue rail is the rainbow the hue byte indexes, so the rail and the value cannot
+        // disagree about which colour a position means.
+        context.fill_gradient(hue_rect, &cache.rainbow);
+        context.draw_rect(hue_rect, panel.blend(&ink, 0.35));
+
+        if self.show_alpha {
+            // The alpha rail runs from the colour with no alpha to the same colour fully
+            // opaque, so the rail shows exactly what the alpha byte is choosing.
+            context.fill_gradient(alpha_rect, &cache.alpha);
             context.draw_rect(alpha_rect, panel.blend(&ink, 0.30));
         }
 
@@ -815,10 +951,8 @@ impl Draw for ColorPicker {
 
         // The hex readout takes the row immediately below the palette, which the palette's own
         // rectangle now leaves for it.
-        let hex_font = effective_font(style);
         let hex_text = self.hex_rgba();
-        let hex_height = context.measure_text(&hex_text, hex_font).height as i32;
-        let palette = self.palette_rect();
+        let hex_height = cache.hex_height as i32;
         let hex_band = Rect::new(
             rect.x + 8,
             palette.y + palette.height as i32,
@@ -837,14 +971,58 @@ impl Draw for ColorPicker {
                 HorizontalAlignment::Left,
             );
         } else {
-            context.draw_text_fitted_cow(
-                hex_band,
-                &hex_text,
+            // The readout is chrome sitting on the panel, so it is the resolved ink rather than
+            // a literal that was tuned for one appearance.
+            let hex_ink = ink.legible_on(panel, 4.5);
+            let fit_inset = crate::render::TEXT_FIT_MARGIN as i32;
+            let available = (hex_band.width as i32 - 2 * fit_inset).max(0) as u32;
+            if cache.hex_width <= available {
+                // The cached width says the text fits, so it is drawn at the fitted origin
+                // without re-measuring or re-shaping it (SP-P70).
+                context.draw_text(
+                    Point::new(hex_band.x + fit_inset, hex_band.y),
+                    &hex_text,
+                    hex_font,
+                    hex_ink,
+                    HorizontalAlignment::Left,
+                );
+            } else {
+                context.draw_text_fitted_cow(
+                    hex_band,
+                    &hex_text,
+                    hex_font,
+                    hex_ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
+
+        // The panel's own OK / Cancel row (SP-62). The signals it emits are the ones
+        // `pick`/`cancel` already publish, so a host that used the API sees the same facts.
+        if let (Some(ok), Some(cancel)) = (self.ok_rect(), self.cancel_rect()) {
+            let button_face = panel.blend(&ink, 0.12);
+            let button_border = panel.blend(&ink, 0.28);
+            context.fill_rect(cancel, button_face);
+            context.draw_rect(cancel, button_border);
+            context.draw_text_line_cow(
+                cancel,
+                "Cancel",
                 hex_font,
-                // The readout is chrome sitting on the panel, so it is the resolved ink rather than
-                // a literal that was tuned for one appearance.
-                ink.legible_on(panel, 4.5),
-                HorizontalAlignment::Left,
+                ink,
+                HorizontalAlignment::Center,
+            );
+            let ok_face = crate::style::palette_shared()
+                .as_ref()
+                .map(|colors| colors.primary)
+                .unwrap_or(Color::PRIMARY);
+            context.fill_rect(ok, ok_face);
+            context.draw_rect(ok, button_border);
+            context.draw_text_line_cow(
+                ok,
+                "OK",
+                hex_font,
+                ok_face.contrast_color(),
+                HorizontalAlignment::Center,
             );
         }
     }

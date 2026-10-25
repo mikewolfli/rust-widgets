@@ -336,7 +336,7 @@ board.set_columns(vec![
     QuoteColumn::Volume,
 ]);
 
-board.set_sort(QuoteSort::ChangeMagnitude);  // the day's biggest movers first
+board.set_sort(QuoteSort::ChangeMagnitudeDescending);  // the day's biggest movers first
 board.quote_clicked.connect(|symbol| { /* symbol */ });
 board.selection_changed.connect(|symbol| { /* Option<String> */ });
 ```
@@ -344,9 +344,10 @@ board.selection_changed.connect(|symbol| { /* Option<String> */ });
 | Sort | Order |
 |---|---|
 | `QuoteSort::None` | **Your** order, restored exactly |
-| `QuoteSort::Symbol` | Alphabetical |
+| `QuoteSort::SymbolAscending` | Alphabetical, A→Z |
+| `QuoteSort::SymbolDescending` | Alphabetical, Z→A |
 | `QuoteSort::LastDescending` | Highest price first |
-| `QuoteSort::ChangeMagnitude` | Biggest movers first, either direction |
+| `QuoteSort::ChangeMagnitudeDescending` | Biggest movers first, either direction |
 
 `QuoteSort::None` restores the order you supplied rather than reversing whatever a
 previous sort left behind — a watchlist's order is yours. `QuoteBoard::select` emits

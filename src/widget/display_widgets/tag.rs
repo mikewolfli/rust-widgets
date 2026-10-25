@@ -21,7 +21,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{estimate_line_height, estimate_text_width};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The semantic tone of a tag: which of the theme's status colours it is painted with.
@@ -68,6 +68,10 @@ const TAG_PADDING: u32 = 8;
 const TAG_CLOSE_GAP: u32 = 6;
 /// The width of the close glyph's own box.
 const TAG_CLOSE_SIDE: u32 = 8;
+/// The side of the leading icon's slot.
+const TAG_ICON_SIDE: u32 = 12;
+/// The gap between the leading icon and the label.
+const TAG_ICON_GAP: u32 = 4;
 /// How far a hovered tag's fill moves towards its contrast colour.
 const TAG_HOVER_TINT: f32 = 0.08;
 
@@ -88,6 +92,17 @@ pub struct Tag {
     tone: TagTone,
     selected: bool,
     closable: bool,
+    /// An optional leading icon, drawn before the label.
+    ///
+    /// A tag often carries a category or status mark; without this slot the caller had to
+    /// compose an `Icon` beside the tag and own the spacing itself.
+    icon: Option<IconName>,
+    /// The resolved label face, reused while the style's font is unchanged.
+    ///
+    /// `draw` used to construct `Font::simple("Arial", 12.0)` per frame for a face that changes
+    /// only when the style changes, which is a real allocation on a control that repaints on
+    /// every hover.
+    font_cache: Option<Font>,
     /// Whether the pointer is currently over the tag.
     hovered: bool,
     /// Emitted when the close glyph is activated, with the tag's own text as the payload.
@@ -105,6 +120,8 @@ impl Tag {
             tone: TagTone::default(),
             selected: false,
             closable: false,
+            icon: None,
+            font_cache: None,
             hovered: false,
             closed: Signal1::new(),
             selected_changed: Signal1::new(),
@@ -189,6 +206,25 @@ impl Tag {
         self.hovered
     }
 
+    /// The tag's optional leading icon.
+    pub fn icon(&self) -> Option<IconName> {
+        self.icon
+    }
+
+    /// Sets the tag's leading icon, or clears it with `None`.
+    ///
+    /// The icon occupies a fixed slot before the label; it is drawn with the shared
+    /// [`crate::widget::display_widgets::icon::draw_icon_at`] primitive, so it follows the tag's
+    /// own ink and cannot disagree with an adjacent `Icon` widget.
+    pub fn set_icon(&mut self, icon: Option<IconName>) {
+        if self.icon == icon {
+            return;
+        }
+        self.icon = icon;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
     /// Sets the hover state.
     ///
     /// [`Event::MouseEnter`] and [`Event::MouseLeave`] drive this automatically; the setter
@@ -221,25 +257,23 @@ impl Tag {
     }
 
     /// The tone colour this tag resolves from the theme, falling back to its own style.
+    ///
+    /// One palette snapshot for all five status colours: the previous form took the global theme
+    /// manager's lock to read them, which is a second lock acquisition on a control that already
+    /// resolved its style this frame.
     fn tone_color(&self, style: &crate::style::WidgetStyle) -> Color {
-        let (primary, success, warning, error, outline) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(theme) => (
-                    theme.colors.primary,
-                    theme.colors.success,
-                    theme.colors.warning,
-                    theme.colors.error,
-                    theme.colors.outline,
-                ),
-                None => (
-                    Color::PRIMARY,
-                    Color::rgb(46, 160, 67),
-                    Color::rgb(210, 153, 34),
-                    Color::rgb(207, 34, 46),
-                    Color::rgb(160, 160, 160),
-                ),
+        let palette = crate::style::palette_shared();
+        let (primary, success, warning, error, outline) = match palette.as_ref() {
+            Some(colors) => {
+                (colors.primary, colors.success, colors.warning, colors.error, colors.outline)
             }
+            None => (
+                Color::PRIMARY,
+                Color::rgb(46, 160, 67),
+                Color::rgb(210, 153, 34),
+                Color::rgb(207, 34, 46),
+                Color::rgb(160, 160, 160),
+            ),
         };
         match self.tone {
             TagTone::Neutral => style.border_color.unwrap_or(outline),
@@ -248,6 +282,24 @@ impl Tag {
             TagTone::Warning => warning,
             TagTone::Error => error,
         }
+    }
+
+    /// The resolved label face for `style_font`, reusing the cached construction.
+    fn resolved_font(&mut self, style_font: Option<Font>) -> Font {
+        let reusable = style_font
+            .as_ref()
+            .is_some_and(|font| self.font_cache.as_ref().is_some_and(|cached| cached == font))
+            || (style_font.is_none()
+                && self
+                    .font_cache
+                    .as_ref()
+                    .is_some_and(|cached| cached.family() == "Arial" && cached.size() == 12.0));
+        if reusable {
+            return self.font_cache.clone().unwrap_or_default();
+        }
+        let font = style_font.unwrap_or_else(|| Font::simple("Arial", 12.0));
+        self.font_cache = Some(font.clone());
+        font
     }
 }
 
@@ -271,8 +323,9 @@ impl Widget for Tag {
         let font = self.base.style().font.clone().unwrap_or_else(|| Font::simple("Arial", 12.0));
         let label = estimate_text_width(&self.text, &font, 1.0);
         let close = if self.closable { TAG_CLOSE_GAP + TAG_CLOSE_SIDE } else { 0 };
+        let icon = if self.icon.is_some() { TAG_ICON_SIDE + TAG_ICON_GAP } else { 0 };
         Size::new(
-            label.saturating_add(2 * TAG_PADDING).saturating_add(close),
+            label.saturating_add(2 * TAG_PADDING).saturating_add(close).saturating_add(icon),
             estimate_line_height(&font, 1.0).saturating_add(8),
         )
     }
@@ -303,6 +356,9 @@ impl WidgetProperties for Tag {
             "tone" => Ok(CapabilityValue::String(self.tone.token().to_string())),
             "selected" => Ok(CapabilityValue::Bool(self.selected)),
             "closable" => Ok(CapabilityValue::Bool(self.closable)),
+            "icon" => Ok(CapabilityValue::String(
+                self.icon.map_or_else(|| "none".to_string(), |icon| icon.as_str().to_string()),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -327,12 +383,26 @@ impl WidgetProperties for Tag {
                 self.set_closable(expect_bool(value)?);
                 Ok(())
             }
+            "icon" => {
+                // The empty spelling clears the slot, because a property editor has no `Null`
+                // for a string-typed icon name. An unknown token is refused rather than
+                // silently dropped.
+                let token = expect_string(value)?;
+                if token.is_empty() || token == "none" {
+                    self.set_icon(None);
+                    return Ok(());
+                }
+                let icon =
+                    IconName::from_name(&token).ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_icon(Some(icon));
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "tone", "selected", "closable", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "tone", "selected", "closable", "icon", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -342,8 +412,9 @@ impl Draw for Tag {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
+        let style_font = self.base.style().font.clone();
+        let font = self.resolved_font(style_font);
         let style = self.base.style();
-        let font = style.font.clone().unwrap_or_else(|| Font::simple("Arial", 12.0));
         let surface = style.background_color.unwrap_or_else(|| {
             let manager = crate::style::theme_manager();
             manager.current_theme().map(|theme| theme.colors.background).unwrap_or(Color::WHITE)
@@ -371,8 +442,19 @@ impl Draw for Tag {
                 close.width.saturating_add(TAG_CLOSE_GAP).saturating_add(TAG_PADDING),
             )
         });
-        let label_band =
-            Rect::new(rect.x.saturating_add(TAG_PADDING as i32), rect.y, label_right, rect.height);
+        // The leading icon occupies a fixed slot inside the padding; the label band starts after
+        // it, so the two never overlap. The icon is vertically centred and square, matching the
+        // shared inline-icon rule.
+        let icon_side = TAG_ICON_SIDE.min(rect.height).min(rect.width);
+        let mut label_left = rect.x.saturating_add(TAG_PADDING as i32);
+        if let Some(icon) = self.icon {
+            let icon_y = rect.y.saturating_add(((rect.height - icon_side) / 2) as i32);
+            let icon_rect = Rect::new(label_left, icon_y, icon_side, icon_side);
+            crate::widget::display_widgets::icon::draw_icon_at(ctx, icon_rect, ink, icon);
+            label_left = label_left.saturating_add((icon_side + TAG_ICON_GAP) as i32);
+        }
+        let label_width = label_right.saturating_sub((label_left - rect.x) as u32);
+        let label_band = Rect::new(label_left, rect.y, label_width, rect.height);
         // Bounded text: a long label is fitted with an ellipsis rather than running past the
         // tag (and, in the SVG backend, past the control's own rectangle).
         ctx.draw_text_line(label_band, &self.text, &font, ink, HorizontalAlignment::Left);
@@ -568,5 +650,47 @@ mod tests {
 
         tag.handle_event(&Event::KeyPress { key: key_codes::DELETE, modifiers: 0 });
         assert!(seen.lock().expect("lock").is_empty(), "a non-closable tag cannot be removed");
+    }
+
+    /// A tag can carry a leading icon, and the slot grows the hint by exactly its own width.
+    #[test]
+    fn a_tag_can_carry_a_leading_icon() {
+        let mut tag = Tag::new("news", Rect::new(0, 0, 120, 24));
+        let plain = tag.size_hint().width;
+        assert_eq!(tag.icon(), None, "no icon by default");
+
+        tag.set_icon(Some(crate::widget::IconName::Check));
+        assert_eq!(tag.icon(), Some(crate::widget::IconName::Check));
+        assert_eq!(tag.size_hint().width, plain + TAG_ICON_SIDE + TAG_ICON_GAP);
+
+        // The icon paints geometry, not a glyph, so the panel gains ink beyond the label.
+        let svg = crate::widget::svg::render_to_svg(&mut tag);
+        assert!(!svg.is_empty());
+
+        tag.set_icon(None);
+        assert_eq!(tag.size_hint().width, plain, "clearing the icon restores the old hint");
+    }
+
+    /// The icon is a writable property and the empty spelling clears it.
+    #[test]
+    fn the_icon_property_round_trips() {
+        let mut tag = Tag::new("x", Rect::new(0, 0, 80, 24));
+        tag.set("icon", CapabilityValue::String("check".to_string())).expect("writable");
+        assert_eq!(tag.icon(), Some(crate::widget::IconName::Check));
+        assert_eq!(tag.get("icon"), Ok(CapabilityValue::String("check".to_string())));
+        tag.set("icon", CapabilityValue::String(String::new())).expect("clear");
+        assert_eq!(tag.icon(), None);
+        assert!(tag.set("icon", CapabilityValue::String("no-such-icon".to_string())).is_err());
+    }
+
+    /// The label face is constructed once per style, not once per frame.
+    #[test]
+    fn the_label_face_is_cached_while_the_style_font_is_unchanged() {
+        let mut tag = Tag::new("cache", Rect::new(0, 0, 80, 24));
+        let font = tag.resolved_font(None);
+        let first = tag.font_cache.as_ref().expect("the face is cached").clone();
+        assert_eq!(font, first);
+        let _ = tag.resolved_font(None);
+        assert_eq!(tag.font_cache.as_ref(), Some(&first), "a second frame reuses the cache");
     }
 }

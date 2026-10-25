@@ -17,7 +17,35 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
-use core::cell::RefCell;
+use core::cell::{Ref, RefCell};
+
+/// The chrome colours a freeform shape paints with.
+///
+/// Resolved once per canvas paint and handed to every hosted shape, so a board of `n` shapes no
+/// longer takes `n` theme-manager locks per frame (SP-P57). A standalone shape resolves its own
+/// palette through [`FreeformShapeWidget::palette`], which is the same derivation.
+pub(crate) struct ShapePalette {
+    /// The plate a shape sits on, derived one step off the resolved background.
+    pub(crate) background: Color,
+    /// The ink hover and press states step toward.
+    pub(crate) text_color: Color,
+}
+
+/// A flattened outline in shape-local coordinates, with the inputs it was built from.
+///
+/// Star vertices, polygons and flattened custom paths are pure functions of the path and the
+/// widget's size, yet the hit test rebuilt them on every pointer move and `draw` rebuilt them on
+/// every frame (SP-P55). Both read this cache instead.
+struct OutlineCache {
+    /// The path revision the vertices were built for.
+    revision: u64,
+    /// Widget width the vertices were built for.
+    width: u32,
+    /// Widget height the vertices were built for.
+    height: u32,
+    /// The flattened outline, or empty for paths that need no vertex cache.
+    vertices: Vec<Point>,
+}
 
 /// One of the eight resize handles an editable shape draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +144,11 @@ pub struct FreeformShapeWidget {
     /// outline, with the new state. A press that begins outside the shape and
     /// drags in never emits it.
     pub pressed_changed: Signal1<bool>,
+    /// Bumped whenever the path changes, so [`Self::outline_vertices`] can tell a stale
+    /// cache entry from a current one.
+    path_revision: u64,
+    /// Cached flattened outline; see [`OutlineCache`].
+    outline_cache: RefCell<Option<OutlineCache>>,
 }
 
 impl FreeformShapeWidget {
@@ -151,6 +184,8 @@ impl FreeformShapeWidget {
             clicked: GenericSignal::new(),
             hover_changed: Signal1::new(),
             pressed_changed: Signal1::new(),
+            path_revision: 1,
+            outline_cache: RefCell::new(None),
         }
     }
 
@@ -168,6 +203,8 @@ impl FreeformShapeWidget {
     /// hovered while the pointer is somewhere else.
     pub fn set_path(&mut self, path: ShapePath) {
         self.path = path;
+        self.path_revision = self.path_revision.wrapping_add(1);
+        self.outline_cache = RefCell::new(None);
         self.base.request_redraw();
     }
     /// The colour the shape's interior is painted in.
@@ -348,6 +385,8 @@ impl FreeformShapeWidget {
         let ShapePath::Polygon(vertices) = &mut self.path else { return false };
         let index = index.min(vertices.len());
         vertices.insert(index, point);
+        self.path_revision = self.path_revision.wrapping_add(1);
+        self.outline_cache = RefCell::new(None);
         self.vertex_changed.emit((index, point));
         self.base.request_redraw();
         true
@@ -362,6 +401,8 @@ impl FreeformShapeWidget {
             return false;
         }
         let removed = vertices.remove(index);
+        self.path_revision = self.path_revision.wrapping_add(1);
+        self.outline_cache = RefCell::new(None);
         self.vertex_changed.emit((index, removed));
         self.base.request_redraw();
         true
@@ -380,6 +421,8 @@ impl FreeformShapeWidget {
                     return false;
                 }
                 vertices[index] = point;
+                self.path_revision = self.path_revision.wrapping_add(1);
+                self.outline_cache = RefCell::new(None);
                 self.vertex_changed.emit((index, point));
                 self.base.request_redraw();
                 true
@@ -524,44 +567,71 @@ impl FreeformShapeWidget {
         }
         match &self.path {
             ShapePath::Heart => self.contains_heart(local, w, h),
-            ShapePath::Star { points, inner_radius } => {
-                self.contains_star(local, w, h, *points, *inner_radius)
+            ShapePath::Star { .. }
+            | ShapePath::Polygon(_)
+            | ShapePath::Custom(_)
+            | ShapePath::UnitCustom(_) => {
+                // Every one of these is a flattened polygon: the star and the polygon already are
+                // one, and the custom paths are curve-flattened. Reading the shared cache is what
+                // keeps a pointer move from re-flattening the same outline (SP-P55).
+                let vertices = self.outline_vertices(w, h);
+                self.ray_cast(local, &vertices)
             }
-            ShapePath::Polygon(v) => self.contains_polygon(local, v),
             ShapePath::RoundedRect { radius } => self.contains_rounded_rect(local, w, h, *radius),
             ShapePath::Bubble { tail_direction } => {
                 self.contains_bubble(local, w, h, *tail_direction)
             }
-            ShapePath::Custom(s) => self.contains_custom(local, s),
-            ShapePath::UnitCustom(s) => {
-                let pixels: Vec<PathSegment> =
-                    s.iter().map(|segment| segment.to_path_segment(w as f32, h as f32)).collect();
-                self.contains_custom(local, &pixels)
+        }
+    }
+
+    /// The flattened outline in shape-local coordinates, built once per path revision and size.
+    fn outline_vertices(&self, w: i32, h: i32) -> Ref<'_, Vec<Point>> {
+        let fresh = self.outline_cache.borrow().as_ref().is_some_and(|cache| {
+            cache.revision == self.path_revision
+                && cache.width == w as u32
+                && cache.height == h as u32
+        });
+        if !fresh {
+            let vertices = self.build_outline(w, h);
+            *self.outline_cache.borrow_mut() = Some(OutlineCache {
+                revision: self.path_revision,
+                width: w as u32,
+                height: h as u32,
+                vertices,
+            });
+        }
+        Ref::map(self.outline_cache.borrow(), |cache| {
+            &cache.as_ref().expect("the outline cache was just populated").vertices
+        })
+    }
+
+    /// Flattens the path into shape-local vertices; empty for shapes that need no polygon.
+    fn build_outline(&self, w: i32, h: i32) -> Vec<Point> {
+        match &self.path {
+            ShapePath::Star { points, inner_radius } => {
+                self.star_vertices(w, h, *points, *inner_radius)
+            }
+            ShapePath::Polygon(vertices) => vertices.clone(),
+            ShapePath::Custom(segments) => self.flatten_segments(segments),
+            ShapePath::UnitCustom(segments) => {
+                let pixels: Vec<PathSegment> = segments
+                    .iter()
+                    .map(|segment| segment.to_path_segment(w as f32, h as f32))
+                    .collect();
+                self.flatten_segments(&pixels)
+            }
+            ShapePath::Heart | ShapePath::RoundedRect { .. } | ShapePath::Bubble { .. } => {
+                Vec::new()
             }
         }
     }
 
-    fn contains_heart(&self, local: Point, w: i32, h: i32) -> bool {
-        let cx = w as f32 / 2.0;
-        let cy = h as f32 / 2.0;
-        let scale = (h as f32).max(1.0) / 2.0;
-        let x = (local.x as f32 - cx) / scale;
-        let y = (local.y as f32 - cy) / scale;
-        (x * x + y * y - 1.0).powi(3) - x * x * (y * y * y) <= 0.0
-    }
-
-    fn contains_star(
-        &self,
-        local: Point,
-        w: i32,
-        h: i32,
-        num_points: u8,
-        inner_ratio: f32,
-    ) -> bool {
+    /// The star's alternating outer/inner vertices, in shape-local coordinates.
+    fn star_vertices(&self, w: i32, h: i32, num_points: u8, inner_ratio: f32) -> Vec<Point> {
         let n = num_points.max(3) as usize;
         let cx = w as f32 / 2.0;
         let cy = h as f32 / 2.0;
-        let outer_r = (cx.min(cy)).max(1.0);
+        let outer_r = cx.min(cy).max(1.0);
         let inner_r = outer_r * inner_ratio.clamp(0.05, 0.95);
         let mut vertices = Vec::with_capacity(n * 2);
         let step = std::f32::consts::PI / n as f32;
@@ -578,11 +648,57 @@ impl FreeformShapeWidget {
                 (cy + inner_r * ia.sin()).round() as i32,
             ));
         }
-        self.ray_cast(local, &vertices)
+        vertices
     }
 
-    fn contains_polygon(&self, local: Point, vertices: &[Point]) -> bool {
-        self.ray_cast(local, vertices)
+    /// Flattens path segments into one polyline in shape-local coordinates.
+    fn flatten_segments(&self, segments: &[PathSegment]) -> Vec<Point> {
+        let mut vertices = Vec::new();
+        let mut current = Point::new(0, 0);
+        let mut start = Point::new(0, 0);
+        for segment in segments {
+            match segment {
+                PathSegment::MoveTo(point) => {
+                    if vertices.len() > 1 {
+                        vertices.push(start);
+                    }
+                    start = *point;
+                    current = *point;
+                    vertices.push(*point);
+                }
+                PathSegment::LineTo(point) => {
+                    current = *point;
+                    vertices.push(*point);
+                }
+                PathSegment::CurveTo(c1, c2, point) => {
+                    self.flatten_cubic_to(&mut vertices, current, *c1, *c2, *point);
+                    current = *point;
+                }
+                PathSegment::QuadTo(control, point) => {
+                    self.flatten_quad_to(&mut vertices, current, *control, *point);
+                    current = *point;
+                }
+                PathSegment::Close => {
+                    if vertices.last() != Some(&start) {
+                        vertices.push(start);
+                    }
+                    current = start;
+                }
+            }
+        }
+        if vertices.len() > 1 && vertices.last() != Some(&start) {
+            vertices.push(start);
+        }
+        vertices
+    }
+
+    fn contains_heart(&self, local: Point, w: i32, h: i32) -> bool {
+        let cx = w as f32 / 2.0;
+        let cy = h as f32 / 2.0;
+        let scale = (h as f32).max(1.0) / 2.0;
+        let x = (local.x as f32 - cx) / scale;
+        let y = (local.y as f32 - cy) / scale;
+        (x * x + y * y - 1.0).powi(3) - x * x * (y * y * y) <= 0.0
     }
 
     fn contains_rounded_rect(&self, local: Point, w: i32, h: i32, radius: u32) -> bool {
@@ -649,52 +765,6 @@ impl FreeformShapeWidget {
         let b1 = Point::new(tcx + bdx, tcy + bdy);
         let b2 = Point::new(tcx - bdx, tcy - bdy);
         self.point_in_triangle(local, tip, b1, b2)
-    }
-
-    fn contains_custom(&self, local: Point, segments: &[PathSegment]) -> bool {
-        if segments.is_empty() {
-            return false;
-        }
-        let mut pv = Vec::new();
-        let mut cur = Point::new(0, 0);
-        let mut start = Point::new(0, 0);
-        for seg in segments {
-            match seg {
-                PathSegment::MoveTo(p) => {
-                    if pv.len() > 1 {
-                        pv.push(start);
-                    }
-                    start = *p;
-                    cur = *p;
-                    pv.push(*p);
-                }
-                PathSegment::LineTo(p) => {
-                    cur = *p;
-                    pv.push(*p);
-                }
-                PathSegment::CurveTo(c1, c2, p) => {
-                    self.flatten_cubic_to(&mut pv, cur, *c1, *c2, *p);
-                    cur = *p;
-                }
-                PathSegment::QuadTo(c, p) => {
-                    self.flatten_quad_to(&mut pv, cur, *c, *p);
-                    cur = *p;
-                }
-                PathSegment::Close => {
-                    if pv.last() != Some(&start) {
-                        pv.push(start);
-                    }
-                    cur = start;
-                }
-            }
-        }
-        if pv.len() > 1 && pv.last() != Some(&start) {
-            pv.push(start);
-        }
-        if pv.len() < 3 {
-            return false;
-        }
-        self.ray_cast(local, &pv)
     }
 
     fn point_in_triangle(&self, pt: Point, a: Point, b: Point, c: Point) -> bool {
@@ -791,105 +861,65 @@ impl FreeformShapeWidget {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
+        // Every polygonal variant fills through **one** polygon call. The previous form painted a
+        // fan of 1-pixel `fill_rect` scanlines per triangle, so the primitive count grew with the
+        // shape's area — a big star cost thousands of commands per frame (SP-P56).
         match &self.path {
             ShapePath::Heart => self.draw_heart(context, rect),
-            ShapePath::Star { points, inner_radius } => {
-                self.draw_star(context, rect, *points, *inner_radius)
+            ShapePath::Star { .. }
+            | ShapePath::Polygon(_)
+            | ShapePath::Custom(_)
+            | ShapePath::UnitCustom(_) => {
+                let vertices = self.outline_vertices(rect.width as i32, rect.height as i32);
+                self.draw_polygon(context, rect, &vertices);
             }
-            ShapePath::Polygon(v) => self.draw_polygon(context, rect, v),
             ShapePath::RoundedRect { radius } => self.draw_rounded_rect(context, rect, *radius),
             ShapePath::Bubble { tail_direction } => {
                 self.draw_bubble(context, rect, *tail_direction)
             }
-            ShapePath::Custom(s) => self.draw_custom(context, rect, s),
-            ShapePath::UnitCustom(s) => {
-                let pixels: Vec<PathSegment> = s
-                    .iter()
-                    .map(|segment| segment.to_path_segment(rect.width as f32, rect.height as f32))
-                    .collect();
-                self.draw_custom(context, rect, &pixels);
-            }
         }
     }
 
+    /// Draws the heart from one polygon approximation of its outline.
+    ///
+    /// The implicit curve the hit test uses has no closed form for its outline, so the paint
+    /// samples the standard heart parametrisation instead and fills the resulting polygon once.
+    /// That keeps the ink and the hit region the same *shape* — both are the heart curve — while
+    /// turning an area-proportional command count into a single fill.
     fn draw_heart(&self, context: &mut RenderContext, rect: Rect) {
-        let cx = rect.x + rect.width as i32 / 2;
-        let cy = rect.y + rect.height as i32 / 2;
-        let r = (rect.width.min(rect.height) as i32 / 10).max(3);
-        let (lcx, lcy) = (cx - r * 2, cy - r);
-        let (rcx, rcy) = (cx + r * 2, cy - r);
-        context.fill_circle(Point::new(lcx, lcy), r as u32, self.fill_color);
-        context.fill_circle(Point::new(rcx, rcy), r as u32, self.fill_color);
-        let tip_y = cy + 2 * r;
-        let (blx, brx) = (cx - 3 * r, cx + 3 * r);
-        for x in blx..=brx {
-            let t = if brx > blx { (x - blx) as f32 / (brx - blx) as f32 } else { 0.5 };
-            let y0 = (lcy as f32 + (tip_y - lcy) as f32 * (1.0 - (t - 0.5).abs() * 2.0)) as i32;
-            if y0 <= tip_y {
-                context.fill_rect(Rect::new(x, y0, 1, (tip_y - y0 + 1) as u32), self.fill_color);
-            }
+        const SAMPLES: usize = 64;
+        let cx = rect.x as f32 + rect.width as f32 / 2.0;
+        let cy = rect.y as f32 + rect.height as f32 / 2.0;
+        let sx = rect.width as f32 / 32.0;
+        let sy = rect.height as f32 / 29.0;
+        let mut points = Vec::with_capacity(SAMPLES);
+        for sample in 0..SAMPLES {
+            let t = sample as f32 / SAMPLES as f32 * std::f32::consts::TAU;
+            let sin = t.sin();
+            let x = 16.0 * sin * sin * sin;
+            let y =
+                13.0 * t.cos() - 5.0 * (2.0 * t).cos() - 2.0 * (3.0 * t).cos() - (4.0 * t).cos();
+            // Screen y grows downward, so the curve's positive y is *above* the centre.
+            points.push(Point::new((cx + x * sx).round() as i32, (cy - y * sy).round() as i32));
         }
-        if let Some(sc) = self.stroke_color {
-            let sw = self.stroke_width;
-            context.draw_circle_stroke(Point::new(lcx, lcy), r as u32, sc, sw);
-            context.draw_circle_stroke(Point::new(rcx, rcy), r as u32, sc, sw);
-            context.draw_line_stroke(Point::new(blx, lcy), Point::new(cx, tip_y), sc, sw);
-            context.draw_line_stroke(Point::new(brx, lcy), Point::new(cx, tip_y), sc, sw);
+        context.draw_path(&points, true, self.fill_color, true, 0);
+        if let Some(stroke) = self.stroke_color {
+            context.draw_path(&points, true, stroke, false, self.stroke_width.max(1));
         }
     }
 
-    fn draw_star(&self, context: &mut RenderContext, rect: Rect, num_points: u8, inner_ratio: f32) {
-        let cx = rect.x + rect.width as i32 / 2;
-        let cy = rect.y + rect.height as i32 / 2;
-        let outer_r = (rect.width.min(rect.height) as i32 / 2).max(1) as f32;
-        let inner_r = outer_r * inner_ratio.clamp(0.05, 0.95);
-        let n = num_points.max(3) as usize;
-        let mut vertices = Vec::with_capacity(n * 2);
-        let step = std::f32::consts::PI / n as f32;
-        for i in 0..n {
-            let angle =
-                i as f32 * 2.0 * std::f32::consts::PI / n as f32 - std::f32::consts::FRAC_PI_2;
-            vertices.push(Point::new(
-                (cx as f32 + outer_r * angle.cos()).round() as i32,
-                (cy as f32 + outer_r * angle.sin()).round() as i32,
-            ));
-            let ia = angle + step;
-            vertices.push(Point::new(
-                (cx as f32 + inner_r * ia.cos()).round() as i32,
-                (cy as f32 + inner_r * ia.sin()).round() as i32,
-            ));
-        }
-        for i in 0..vertices.len() {
-            let j = (i + 1) % vertices.len();
-            self.fill_triangle_approx(context, Point::new(cx, cy), vertices[i], vertices[j]);
-        }
-        if let Some(sc) = self.stroke_color {
-            for i in 0..vertices.len() {
-                let j = (i + 1) % vertices.len();
-                context.draw_line_stroke(vertices[i], vertices[j], sc, self.stroke_width);
-            }
-        }
-    }
-
+    /// Fills and strokes one closed polygon, offset by the widget's own origin.
     fn draw_polygon(&self, context: &mut RenderContext, rect: Rect, vertices: &[Point]) {
         if vertices.len() < 3 {
             return;
         }
-        let centroid = Point::new(
-            vertices.iter().map(|v| v.x).sum::<i32>() / vertices.len() as i32,
-            vertices.iter().map(|v| v.y).sum::<i32>() / vertices.len() as i32,
-        );
-        let vs: Vec<Point> =
-            vertices.iter().map(|v| Point::new(rect.x + v.x, rect.y + v.y)).collect();
-        for i in 0..vs.len() {
-            let j = (i + 1) % vs.len();
-            self.fill_triangle_approx(context, centroid, vs[i], vs[j]);
-        }
-        if let Some(sc) = self.stroke_color {
-            for i in 0..vs.len() {
-                let j = (i + 1) % vs.len();
-                context.draw_line_stroke(vs[i], vs[j], sc, self.stroke_width);
-            }
+        let absolute: Vec<Point> = vertices
+            .iter()
+            .map(|vertex| Point::new(rect.x + vertex.x, rect.y + vertex.y))
+            .collect();
+        context.draw_path(&absolute, true, self.fill_color, true, 0);
+        if let Some(stroke) = self.stroke_color {
+            context.draw_path(&absolute, true, stroke, false, self.stroke_width.max(1));
         }
     }
 
@@ -938,116 +968,12 @@ impl FreeformShapeWidget {
         };
         let b1 = Point::new(tcx + bdx, tcy + bdy);
         let b2 = Point::new(tcx - bdx, tcy - bdy);
-        self.fill_triangle_approx(context, tip, b1, b2);
+        // The tail is one filled triangle rather than a scanline stack (SP-P56).
+        context.draw_path(&[tip, b1, b2], true, self.fill_color, true, 0);
         if let Some(sc) = self.stroke_color {
             context.draw_rounded_rect_stroke(rect, r, sc, self.stroke_width);
             context.draw_line_stroke(b1, tip, sc, self.stroke_width);
             context.draw_line_stroke(b2, tip, sc, self.stroke_width);
-        }
-    }
-
-    fn draw_custom(&self, context: &mut RenderContext, rect: Rect, segments: &[PathSegment]) {
-        let mut pv = Vec::new();
-        let mut cur = Point::new(0, 0);
-        let mut start = Point::new(0, 0);
-        for seg in segments {
-            match seg {
-                PathSegment::MoveTo(p) => {
-                    if pv.len() > 1 {
-                        pv.push(start);
-                    }
-                    start = *p;
-                    cur = *p;
-                    pv.push(*p);
-                }
-                PathSegment::LineTo(p) => {
-                    cur = *p;
-                    pv.push(*p);
-                }
-                PathSegment::CurveTo(c1, c2, p) => {
-                    self.flatten_cubic_to(&mut pv, cur, *c1, *c2, *p);
-                    cur = *p;
-                }
-                PathSegment::QuadTo(c, p) => {
-                    self.flatten_quad_to(&mut pv, cur, *c, *p);
-                    cur = *p;
-                }
-                PathSegment::Close => {
-                    if pv.last() != Some(&start) {
-                        pv.push(start);
-                    }
-                    cur = start;
-                }
-            }
-        }
-        if pv.len() > 1 && pv.last() != Some(&start) {
-            pv.push(start);
-        }
-        if pv.len() < 3 {
-            return;
-        }
-        let vs: Vec<Point> = pv.iter().map(|v| Point::new(rect.x + v.x, rect.y + v.y)).collect();
-        let centroid = Point::new(
-            vs.iter().map(|v| v.x).sum::<i32>() / vs.len() as i32,
-            vs.iter().map(|v| v.y).sum::<i32>() / vs.len() as i32,
-        );
-        for i in 0..vs.len() {
-            let j = (i + 1) % vs.len();
-            self.fill_triangle_approx(context, centroid, vs[i], vs[j]);
-        }
-        if let Some(sc) = self.stroke_color {
-            for i in 0..vs.len() {
-                let j = (i + 1) % vs.len();
-                context.draw_line_stroke(vs[i], vs[j], sc, self.stroke_width);
-            }
-        }
-    }
-
-    fn fill_triangle_approx(&self, context: &mut RenderContext, v0: Point, v1: Point, v2: Point) {
-        let mut vs = [v0, v1, v2];
-        vs.sort_by_key(|v| v.y);
-        let [a, b, c] = vs;
-        if a.y == c.y {
-            let min_x = a.x.min(b.x).min(c.x);
-            let max_x = a.x.max(b.x).max(c.x);
-            if max_x > min_x {
-                context
-                    .fill_rect(Rect::new(min_x, a.y, (max_x - min_x) as u32, 1), self.fill_color);
-            }
-            return;
-        }
-        let total_height = c.y - a.y;
-        if total_height <= 0 {
-            return;
-        }
-        let lerp_x =
-            |p1: Point, p2: Point, t: f32| -> f32 { p1.x as f32 + (p2.x - p1.x) as f32 * t };
-        for y in a.y..=c.y {
-            let (x1, x2) = if y < b.y {
-                let sub_h = b.y - a.y;
-                if sub_h == 0 {
-                    continue;
-                }
-                (
-                    lerp_x(a, c, (y - a.y) as f32 / total_height as f32),
-                    lerp_x(a, b, (y - a.y) as f32 / sub_h as f32),
-                )
-            } else {
-                let sub_h = c.y - b.y;
-                if sub_h == 0 {
-                    continue;
-                }
-                (
-                    lerp_x(a, c, (y - a.y) as f32 / total_height as f32),
-                    lerp_x(b, c, (y - b.y) as f32 / sub_h as f32),
-                )
-            };
-            let x_start = x1.min(x2).round() as i32;
-            let x_end = x1.max(x2).round() as i32;
-            if x_end > x_start {
-                context
-                    .fill_rect(Rect::new(x_start, y, (x_end - x_start) as u32, 1), self.fill_color);
-            }
         }
     }
 
@@ -1227,25 +1153,19 @@ impl WidgetProperties for FreeformShapeWidget {
     }
 }
 
-impl Draw for FreeformShapeWidget {
-    fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.base.geometry();
-
-        // Chrome colours resolve explicit style first, then the theme's resolved
-        // style for this control, and only then a literal. The theme step is what
-        // makes an appearance switch visible; previously the plate below was a
-        // hardcoded white and the shape's default fill a hardcoded blue, so light
-        // and dark rendered identically.
-        //
-        // `resolved_theme_style` takes and releases the global manager's lock
-        // internally, so no guard is held across the draw (the mutex is not
-        // re-entrant).
+impl FreeformShapeWidget {
+    /// The palette this shape paints its own chrome with, resolved from the style and theme.
+    ///
+    /// A standalone shape calls this itself; a [`ShapeCanvas`] resolves it **once** and hands the
+    /// same value to every hosted shape, so a board of `n` shapes does not take `n` theme-manager
+    /// locks per frame (SP-P57).
+    pub(crate) fn palette(&self) -> ShapePalette {
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("freeform_shape");
         // `freeform_shape` is not a control kind in the role table, so it classifies as
-        // `Surface`, whose background is `theme.colors.background` — the window's own
-        // colour. The plate behind the outline is therefore a step toward the
-        // foreground, so the widget's extent is visible.
+        // `Surface`, whose background is `theme.colors.background` — the window's own colour.
+        // The plate behind the outline is therefore a step toward the foreground, so the widget's
+        // extent is visible.
         let resolved = style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -1254,7 +1174,26 @@ impl Draw for FreeformShapeWidget {
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
-        let background = resolved.blend(&text_color, 0.08);
+        ShapePalette { background: resolved.blend(&text_color, 0.08), text_color }
+    }
+
+    /// Paints the shape using an already-resolved palette.
+    ///
+    /// Split out of [`Draw::draw`] so a canvas can resolve the theme once for every hosted shape.
+    pub(crate) fn draw_with_palette(
+        &mut self,
+        context: &mut RenderContext,
+        palette: &ShapePalette,
+    ) {
+        if self.outline_cache.borrow().is_none() {
+            // Resolve the shared outline before painting, so the first frame and the hit test that
+            // follows it cannot each flatten the same path.
+            let rect = self.base.geometry();
+            let _ = self.outline_vertices(rect.width as i32, rect.height as i32);
+        }
+        let rect = self.base.geometry();
+        let background = palette.background;
+        let text_color = palette.text_color;
 
         // A caller who set a fill owns it — that colour is the datum, so it is used
         // verbatim, and hover still acknowledges the pointer by stepping toward that colour's own
@@ -1314,6 +1253,13 @@ impl Draw for FreeformShapeWidget {
             let overlay = background.blend(&text_color, 0.25).with_alpha(128);
             context.fill_rect(rect, overlay);
         }
+    }
+}
+
+impl Draw for FreeformShapeWidget {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let palette = self.palette();
+        self.draw_with_palette(context, &palette);
     }
 }
 
@@ -1511,6 +1457,10 @@ pub struct ShapeCanvas {
     pub shape_selected: Signal1<Vec<ObjectId>>,
     /// Emitted with a shape's id after its geometry or stacking order changes.
     pub shape_modified: Signal1<ObjectId>,
+    /// Bumped when the selection or any hosted geometry changes.
+    selection_revision: u64,
+    /// Cached selection outline boxes; see [`Self::selected_rects`].
+    selection_rects: RefCell<Option<(u64, Vec<Rect>)>>,
 }
 
 impl ShapeCanvas {
@@ -1530,6 +1480,8 @@ impl ShapeCanvas {
             shape_removed: Signal1::new(),
             shape_selected: Signal1::new(),
             shape_modified: Signal1::new(),
+            selection_revision: 1,
+            selection_rects: RefCell::new(None),
         }
     }
 
@@ -1578,6 +1530,7 @@ impl ShapeCanvas {
             return false;
         };
         self.shapes.remove(position);
+        self.selection_revision = self.selection_revision.wrapping_add(1);
         if self.selection.contains(&id) {
             self.selection.retain(|selected| *selected != id);
             self.shape_selected.emit(self.selection.clone());
@@ -1651,8 +1604,32 @@ impl ShapeCanvas {
             return;
         }
         self.selection = next;
+        self.selection_revision = self.selection_revision.wrapping_add(1);
         self.shape_selected.emit(self.selection.clone());
         self.base.request_redraw();
+    }
+
+    /// The selection's outline boxes, rebuilt only when the selection or a hosted geometry moved.
+    ///
+    /// The paint used to collect these on every frame, and each miss re-walked the selection and
+    /// every hosted shape (SP-P57).
+    fn selected_rects(&self) -> Ref<'_, Vec<Rect>> {
+        let fresh = self
+            .selection_rects
+            .borrow()
+            .as_ref()
+            .is_some_and(|(revision, _)| *revision == self.selection_revision);
+        if !fresh {
+            let boxes: Vec<Rect> = self
+                .selection
+                .iter()
+                .filter_map(|id| self.shape(*id).map(|shape| shape.base().geometry()))
+                .collect();
+            *self.selection_rects.borrow_mut() = Some((self.selection_revision, boxes));
+        }
+        Ref::map(self.selection_rects.borrow(), |cache| {
+            &cache.as_ref().expect("the selection cache was just populated").1
+        })
     }
 
     /// Empties the selection.
@@ -1721,6 +1698,7 @@ impl ShapeCanvas {
     fn place(&mut self, id: ObjectId, geometry: Rect) {
         if let Some(shape) = self.shapes.iter_mut().find(|shape| shape.id == id) {
             shape.widget.base_mut().set_geometry(geometry);
+            self.selection_revision = self.selection_revision.wrapping_add(1);
         }
     }
 }
@@ -1950,6 +1928,10 @@ impl Draw for ShapeCanvas {
         );
         context.draw_rect(rect, border);
 
+        // One palette for every hosted shape: the per-shape theme resolution was `2n` manager
+        // locks per frame (SP-P57).
+        let palette = ShapePalette { background, text_color: ink };
+
         // The grid is drawn from the same `grid_step` a drag snaps to, so a shape can be placed
         // exactly on a line the reader can see. A zero step (or a disabled flag) paints nothing.
         if self.snap_to_grid && self.grid_step > 0 {
@@ -1976,23 +1958,21 @@ impl Draw for ShapeCanvas {
         }
 
         for shape in &mut self.shapes {
-            shape.widget.draw(context);
+            shape.widget.draw_with_palette(context, &palette);
         }
 
         // Selection outlines are painted after every shape so a selected shape underneath a
-        // later one still shows where it is.
-        let selected: Vec<Rect> = self
-            .selection
-            .iter()
-            .filter_map(|id| self.shape(*id).map(|shape| shape.base().geometry()))
-            .collect();
-        for box_rect in selected {
+        // later one still shows where it is. The boxes come from the cache, so a still frame does
+        // not re-walk the selection (SP-P57).
+        let selected = self.selected_rects();
+        for box_rect in selected.iter().copied() {
             context.draw_rect(box_rect, accent);
             context.draw_rect(
                 Rect::new(box_rect.x - 1, box_rect.y - 1, box_rect.width + 2, box_rect.height + 2),
                 accent.with_alpha(90),
             );
         }
+        drop(selected);
 
         if let Some((start, end)) = self.marquee {
             let marquee = Rect::from_points(start, end);

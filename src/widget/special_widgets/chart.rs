@@ -14,6 +14,7 @@ use crate::widget::metrics::{effective_font, role_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::fmt::Write as _;
 /// The chart styles [`ChartWidget`] can switch between at runtime.
 ///
@@ -173,6 +174,29 @@ pub struct ChartWidget {
     pie_wedges: Option<(Rect, u64, Vec<Option<crate::render::RenderCommand>>)>,
     /// A horizontal zoom window over the category axis, or `None` for the full axis.
     zoom_x: Option<(f64, f64)>,
+    /// A vertical zoom window over the value axis, or `None` for the full range.
+    zoom_y: Option<(f64, f64)>,
+    /// Per-series visibility, aligned with `series`. A series past this list is visible.
+    series_visible: Vec<bool>,
+    /// Bumped when a series' visibility changes, so the cached value range can key on it.
+    visibility_generation: u64,
+    /// The value range, keyed by the data and visibility generations.
+    plot_range_cache: RefCell<Option<(u64, u64, (f64, f64))>>,
+    /// Bumped when the label list changes, which the hover read-out depends on.
+    label_generation: u64,
+    /// Bumped when the legend names change.
+    names_generation: u64,
+    /// Legend rows' labels and measured widths, with the key they were built for.
+    legend_rows: Vec<(String, u32)>,
+    legend_key: Option<(u64, usize, u32)>,
+    /// The hover read-out text and its measured size, with the key it was built for.
+    readout_cache: Option<(usize, u64, String, u32, u32)>,
+    /// The legend cell rectangles on the last frame, for hit-testing.
+    legend_hits: Vec<(Rect, usize)>,
+    /// The legend row under the pointer.
+    hovered_legend: Option<usize>,
+    /// Whether the host paints the hover read-out with its own tooltip control.
+    hover_readout_external: bool,
     /// Emitted when a data point is clicked.
     pub data_point_clicked: Signal1<usize>,
     /// Emitted when pointer hover enters a data point bucket.
@@ -189,6 +213,10 @@ pub struct ChartWidget {
     pub zoom_changed: Signal1<Option<(f64, f64)>>,
     /// Emitted with the visible `[start, end)` category range after every zoom change.
     pub viewport_changed: Signal1<(usize, usize)>,
+    /// Emitted when the legend hides or shows a series, carrying `(series index, visible)`.
+    pub series_toggled: Signal1<(usize, bool)>,
+    /// Emitted with the new vertical zoom window, or `None` when it was restored.
+    pub zoom_y_changed: Signal1<Option<(f64, f64)>>,
 }
 impl ChartWidget {
     /// Creates a new chart widget.
@@ -209,11 +237,25 @@ impl ChartWidget {
             data_generation: 0,
             pie_wedges: None,
             zoom_x: None,
+            zoom_y: None,
+            series_visible: Vec::new(),
+            visibility_generation: 0,
+            plot_range_cache: RefCell::new(None),
+            label_generation: 0,
+            names_generation: 0,
+            legend_rows: Vec::new(),
+            legend_key: None,
+            readout_cache: None,
+            legend_hits: Vec::new(),
+            hovered_legend: None,
+            hover_readout_external: false,
             data_point_clicked: Signal1::new(),
             data_point_hovered: Signal1::new(),
             data_point_unhovered: Signal1::new(),
             zoom_changed: Signal1::new(),
             viewport_changed: Signal1::new(),
+            series_toggled: Signal1::new(),
+            zoom_y_changed: Signal1::new(),
         }
     }
 
@@ -270,6 +312,8 @@ impl ChartWidget {
     /// Sets the chart data as a single series.
     pub fn set_data(&mut self, data: Vec<f64>) {
         self.series = if data.is_empty() { Vec::new() } else { vec![data] };
+        self.series_visible = vec![true; self.series.len()];
+        self.visibility_generation = self.visibility_generation.wrapping_add(1);
         self.data_generation = self.data_generation.wrapping_add(1);
         self.restart_reveal();
         self.revalidate_hover();
@@ -283,6 +327,8 @@ impl ChartWidget {
     /// `set_data`.
     pub fn set_series(&mut self, series: Vec<Vec<f64>>) {
         self.series = series;
+        self.series_visible = vec![true; self.series.len()];
+        self.visibility_generation = self.visibility_generation.wrapping_add(1);
         self.data_generation = self.data_generation.wrapping_add(1);
         self.restart_reveal();
         self.revalidate_hover();
@@ -292,6 +338,7 @@ impl ChartWidget {
     /// Sets the chart data labels.
     pub fn set_labels(&mut self, labels: Vec<String>) {
         self.labels = labels;
+        self.label_generation = self.label_generation.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -301,6 +348,7 @@ impl ChartWidget {
             return;
         }
         self.series_names = names;
+        self.names_generation = self.names_generation.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -366,9 +414,108 @@ impl ChartWidget {
         self.base.request_redraw();
     }
 
-    /// Restores the full category axis.
+    /// Restores both axes to their full ranges.
     pub fn reset_zoom(&mut self) {
         self.set_zoom_range(None);
+        self.set_zoom_y(None);
+    }
+
+    /// The vertical zoom window, or `None` when the full value range is shown.
+    pub fn zoom_y(&self) -> Option<(f64, f64)> {
+        self.zoom_y
+    }
+
+    /// Sets a vertical zoom window over the value axis.
+    ///
+    /// A reversed window is ordered, and a degenerate one is treated as "no window": either would
+    /// otherwise map every mark to one pixel column.
+    pub fn set_zoom_y(&mut self, range: Option<(f64, f64)>) {
+        let range = range.map(|(low, high)| if low <= high { (low, high) } else { (high, low) });
+        let range = range.filter(|(low, high)| (high - low).abs() > f64::EPSILON);
+        if self.zoom_y == range {
+            return;
+        }
+        self.zoom_y = range;
+        self.zoom_y_changed.emit(range);
+        self.base.request_redraw();
+    }
+
+    /// Whether the series at `index` is painted.
+    pub fn is_series_visible(&self, index: usize) -> bool {
+        self.series_visible.get(index).copied().unwrap_or(true)
+    }
+
+    /// Hides or shows the series at `index`, re-deriving the value range when it changes.
+    pub fn set_series_visible(&mut self, index: usize, visible: bool) -> bool {
+        if index >= self.series.len() {
+            return false;
+        }
+        if self.series_visible.len() < self.series.len() {
+            self.series_visible.resize(self.series.len(), true);
+        }
+        if self.series_visible[index] == visible {
+            return true;
+        }
+        self.series_visible[index] = visible;
+        self.visibility_generation = self.visibility_generation.wrapping_add(1);
+        self.series_toggled.emit((index, visible));
+        self.base.request_redraw();
+        true
+    }
+
+    /// Whether the host, rather than this control, paints the hover read-out.
+    pub fn hover_readout_external(&self) -> bool {
+        self.hover_readout_external
+    }
+
+    /// Hands the hover read-out to a companion such as
+    /// [`ChartTooltip`](crate::widget::companions::ChartTooltip).
+    ///
+    /// The inline bubble is the default because a chart without a host is still readable; this
+    /// switch turns it off so a host that owns one tooltip for several controls has a single
+    /// presentation instead of two that cannot agree.
+    pub fn set_hover_readout_external(&mut self, external: bool) {
+        if self.hover_readout_external == external {
+            return;
+        }
+        self.hover_readout_external = external;
+        self.base.request_redraw();
+    }
+
+    /// The hovered bucket's anchor and suggested tooltip content, for an external read-out.
+    ///
+    /// Returns `None` when nothing is hovered. The anchor is the pointer bucket's centre in the
+    /// plot area, so a companion bubble appears beside the datum rather than at a fixed corner.
+    pub fn hover_anchor(
+        &self,
+    ) -> Option<(Point, crate::compat::Vec<crate::widget::companions::TooltipLine>)> {
+        use crate::widget::companions::TooltipLine;
+        let index = self.hovered_index?;
+        let value = self.hovered_value()?;
+        let rect = self.geometry();
+        // The anchor is a bucket centre, so the label row's height only has to be representative;
+        // the row is reserved from the same constant the axis uses.
+        let label_row = rect.height.min(12) as i32;
+        let plot = PlotArea::of(rect, label_row);
+        let points = point_count_for(self.chart_type, self.data().len()).max(1);
+        let (start, end) = self.zoom_bounds();
+        let visible = end.saturating_sub(start).max(1);
+        let offset = index.saturating_sub(start).min(visible - 1);
+        let slot = (plot.right - plot.left).max(1) / visible as i32;
+        let x = plot.left + offset as i32 * slot + slot / 2;
+        let _ = points;
+        let (min, max) = self.plot_range();
+        let y = plot.y_for(value, min, max);
+        let mut lines = crate::compat::Vec::new();
+        if let Some(label) = self.labels.get(index) {
+            lines.push(TooltipLine::colored(
+                format!("{label}: {}", format_axis_value(value)),
+                Self::series_color(0),
+            ));
+        } else {
+            lines.push(TooltipLine::colored(format_axis_value(value), Self::series_color(0)));
+        }
+        Some((Point::new(x, y), lines))
     }
 
     /// The visible `[start, end)` category range.
@@ -466,16 +613,49 @@ impl ChartWidget {
     fn value_range(&self) -> Option<(f64, f64)> {
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
-        for value in self.series.iter().flatten() {
-            if value.is_finite() {
-                min = min.min(*value);
-                max = max.max(*value);
+        for (index, series) in self.series.iter().enumerate() {
+            if !self.is_series_visible(index) {
+                continue;
+            }
+            for value in series {
+                if value.is_finite() {
+                    min = min.min(*value);
+                    max = max.max(*value);
+                }
             }
         }
         if !min.is_finite() || !max.is_finite() {
             return None;
         }
         Some((min, max))
+    }
+
+    /// Maps a value to a y coordinate under the active vertical window.
+    ///
+    /// A window clamps the mark to the plot edge: the alternative is drawing it outside its own
+    /// panel, which reads as a rendering fault rather than as "this value is off the window".
+    fn project_y(&self, area: &PlotArea, value: f64, range: (f64, f64)) -> i32 {
+        project_value_y(self.zoom_y, area, value, range)
+    }
+}
+
+/// Maps `value` to a y coordinate under an optional vertical window.
+///
+/// A free function rather than a method because the line and area renderers fill a buffer that
+/// borrows the widget mutably while they map each vertex.
+fn project_value_y(
+    zoom: Option<(f64, f64)>,
+    area: &PlotArea,
+    value: f64,
+    (min, max): (f64, f64),
+) -> i32 {
+    match zoom {
+        Some((low, high)) => {
+            let span = (high - low).max(f64::EPSILON);
+            let ratio = ((value - low) / span).clamp(0.0, 1.0);
+            area.baseline_y - (ratio * area.height_range()).round() as i32
+        }
+        None => area.y_for(value, min, max),
     }
 }
 
@@ -650,6 +830,11 @@ fn expect_chart_type(value: CapabilityValue) -> Result<ChartType, CapabilityAcce
 impl Draw for ChartWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
+        // The legend's measured labels are rebuilt before the style borrow is taken, because the
+        // refresh needs the widget mutably and resolving the style borrows it.
+        if self.show_legend && self.series.len() > 1 {
+            self.refresh_legend(context);
+        }
         // The plot panel is a surface, so it resolves like every other control's: the
         // caller's style first, then the theme's resolved style for this control, then a
         // literal. It used to be a fixed `rgb(255,255,255)` for the fill and `rgb(200,200,200)`
@@ -700,6 +885,16 @@ impl Draw for ChartWidget {
             return;
         }
 
+        // A vertical window clips the marks to the plot area; a mark clamped to the window's edge
+        // is already at the boundary, so nothing that fitted changes a pixel.
+        if self.zoom_y.is_some() {
+            context.push_clip(
+                plot.left,
+                plot.top_y,
+                (plot.right - plot.left).max(1) as u32,
+                (plot.baseline_y - plot.top_y).max(1) as u32,
+            );
+        }
         match self.chart_type {
             // The multi-series styles iterate every series, so a second series is
             // drawn beside the first rather than being ignored. The single-series
@@ -708,34 +903,70 @@ impl Draw for ChartWidget {
                 // The range is scanned once per frame and shared by the axis and every series;
                 // each renderer used to walk all series to derive it again.
                 let range = self.plot_range();
-                self.draw_value_axis(context, &plot, ink, surface, range);
+                let axis_range = self.zoom_y.unwrap_or(range);
+                self.draw_value_axis(context, &plot, ink, surface, axis_range);
                 for index in 0..self.series.len() {
-                    self.draw_bar_chart(context, rect, index, range);
+                    if !self.is_series_visible(index) {
+                        continue;
+                    }
+                    self.draw_bar_chart(context, rect, &plot, index, range);
                 }
             }
             ChartType::Line => {
                 let range = self.plot_range();
                 for index in 0..self.series.len() {
-                    self.draw_line_chart(context, rect, index, range);
+                    if !self.is_series_visible(index) {
+                        continue;
+                    }
+                    self.draw_line_chart(context, rect, &plot, index, range);
                 }
             }
             ChartType::Area => {
                 let range = self.plot_range();
                 for index in 0..self.series.len() {
-                    self.draw_area_chart(context, rect, index, range);
+                    if !self.is_series_visible(index) {
+                        continue;
+                    }
+                    self.draw_area_chart(context, rect, &plot, index, range);
                 }
             }
             ChartType::Scatter => {
                 let range = self.plot_range();
                 for index in 0..self.series.len() {
-                    self.draw_scatter_chart(context, rect, index, range);
+                    if !self.is_series_visible(index) {
+                        continue;
+                    }
+                    self.draw_scatter_chart(context, rect, &plot, index, range);
                 }
             }
-            ChartType::Pie => self.draw_pie_chart(context, rect),
-            ChartType::Waterfall => self.draw_waterfall_chart(context, rect),
-            ChartType::Funnel => self.draw_funnel_chart(context, rect),
-            ChartType::Candlestick => self.draw_candlestick_chart(context, rect),
-            ChartType::BoxPlot => self.draw_box_plot_chart(context, rect),
+            ChartType::Pie => {
+                if self.is_series_visible(0) {
+                    self.draw_pie_chart(context, rect);
+                }
+            }
+            ChartType::Waterfall => {
+                if self.is_series_visible(0) {
+                    self.draw_waterfall_chart(context, rect, &plot);
+                }
+            }
+            ChartType::Funnel => {
+                if self.is_series_visible(0) {
+                    self.draw_funnel_chart(context, rect, &plot);
+                }
+            }
+            ChartType::Candlestick => {
+                if self.is_series_visible(0) {
+                    self.draw_candlestick_chart(context, rect, &plot);
+                }
+            }
+            ChartType::BoxPlot => {
+                if self.is_series_visible(0) {
+                    self.draw_box_plot_chart(context, rect, &plot);
+                }
+            }
+        }
+        if self.zoom_y.is_some() {
+            context.pop_clip();
         }
 
         // The renderers above may borrow the chart mutably (the line/area styles refill a shared
@@ -746,36 +977,47 @@ impl Draw for ChartWidget {
         //
         // Opt-in, so a chart that never asked for it keeps its previous pixels. Rows are drawn
         // top-down from the panel's top-right corner and a swatch carries the series colour, which
-        // is the only way a multi-series chart identifies which line is which.
+        // is the only way a multi-series chart identifies which line is which. A row is also the
+        // toggle for its series: the label widths are measured once per name list, not per frame.
+        self.legend_hits.clear();
         if self.show_legend && self.series.len() > 1 {
             let font = effective_font(style);
             let line_height = context.measure_text("M", font).height.max(1) as i32 + 4;
             let mut y = rect.y + 8;
-            // A reused buffer for the generated "Series N" name: a declared name is borrowed
-            // rather than cloned, and the fallback no longer builds a `String` per row per frame.
-            let mut fallback = String::new();
-            for index in 0..self.series.len() {
-                let name = match self.series_names.get(index) {
-                    Some(name) => name.as_str(),
-                    None => {
-                        fallback.clear();
-                        let _ = write!(fallback, "Series {}", index + 1);
-                        fallback.as_str()
-                    }
-                };
-                let text_width = context.measure_text(name, font).width as i32;
-                let swatch_x = rect.x + rect.width as i32 - text_width - 26;
+            for index in 0..self.legend_rows.len() {
+                let (name, text_width) = &self.legend_rows[index];
+                let swatch_x = rect.x + rect.width as i32 - *text_width as i32 - 26;
                 if swatch_x < rect.x {
                     break;
                 }
-                context.fill_rect(Rect::new(swatch_x, y + 2, 10, 10), Self::series_color(index));
+                let visible = self.series_visible.get(index).copied().unwrap_or(true);
+                // A hidden series keeps its row, weakened: the row is how it is restored.
+                let row_ink = if visible {
+                    ink
+                } else if self.hovered_legend == Some(index) {
+                    ink.with_alpha(150)
+                } else {
+                    ink.with_alpha(110)
+                };
+                context.fill_rect(
+                    Rect::new(swatch_x, y + 2, 10, 10),
+                    if visible {
+                        Self::series_color(index)
+                    } else {
+                        Self::series_color(index).with_alpha(70)
+                    },
+                );
                 context.draw_text(
                     Point::new(swatch_x + 14, y),
                     name,
                     font,
-                    ink,
+                    row_ink,
                     HorizontalAlignment::Left,
                 );
+                self.legend_hits.push((
+                    Rect::new(swatch_x - 2, y - 2, (*text_width + 22).max(12), line_height as u32),
+                    index,
+                ));
                 y += line_height;
                 if y + line_height > rect.y + rect.height as i32 {
                     break;
@@ -784,24 +1026,48 @@ impl Draw for ChartWidget {
         }
 
         // ── Hover read-out ──
-        if self.show_tooltip {
+        //
+        // The text and its size are cached against the hovered index and the data/label
+        // generations, so a still frame with the pointer parked on a bucket formats and measures
+        // nothing.
+        if self.show_tooltip && !self.hover_readout_external {
             if let Some(index) = self.hovered_index {
-                let value = self.hovered_value();
-                if let Some(value) = value {
-                    let text = match self.labels.get(index) {
-                        Some(label) => format!("{label}: {}", format_axis_value(value)),
-                        None => format_axis_value(value),
-                    };
+                if let Some(value) = self.hovered_value() {
+                    let generation = self
+                        .data_generation
+                        .wrapping_mul(31)
+                        .wrapping_add(self.label_generation.rotate_left(17));
                     let font = effective_font(style);
-                    let metrics = context.measure_text(&text, font);
-                    let width = metrics.width as i32 + 8;
-                    let height = metrics.height.max(1) as i32 + 6;
-                    let x = (rect.x + 12).min(rect.x + rect.width as i32 - width).max(rect.x);
-                    let y = (rect.y + 8).clamp(rect.y, rect.y + rect.height as i32 - height);
-                    let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
-                    context.fill_rect(box_rect, surface);
-                    context.draw_rect(box_rect, border);
-                    context.draw_text_line(box_rect, &text, font, ink, HorizontalAlignment::Center);
+                    let fresh = matches!(
+                        &self.readout_cache,
+                        Some((cached, cached_generation, _, _, _))
+                            if *cached == index && *cached_generation == generation
+                    );
+                    if !fresh {
+                        let text = match self.labels.get(index) {
+                            Some(label) => format!("{label}: {}", format_axis_value(value)),
+                            None => format_axis_value(value),
+                        };
+                        let metrics = context.measure_text(&text, font);
+                        self.readout_cache =
+                            Some((index, generation, text, metrics.width, metrics.height.max(1)));
+                    }
+                    if let Some((_, _, text, width, height)) = &self.readout_cache {
+                        let width = *width as i32 + 8;
+                        let height = *height as i32 + 6;
+                        let x = (rect.x + 12).min(rect.x + rect.width as i32 - width).max(rect.x);
+                        let y = (rect.y + 8).clamp(rect.y, rect.y + rect.height as i32 - height);
+                        let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
+                        context.fill_rect(box_rect, surface);
+                        context.draw_rect(box_rect, border);
+                        context.draw_text_line(
+                            box_rect,
+                            text,
+                            font,
+                            ink,
+                            HorizontalAlignment::Center,
+                        );
+                    }
                 }
             }
         }
@@ -1098,15 +1364,29 @@ impl ChartWidget {
     /// baseline to be readable, so the minimum is clamped to zero when every value
     /// is non-negative — otherwise a series of `[98, 99, 100]` would be drawn with
     /// its smallest bar at the baseline and look like zero.
+    ///
+    /// The answer depends only on the data and which series are visible, so it is cached on those
+    /// two generations. It used to rescan every series on every frame, and a hidden series now
+    /// leaves the range (so hiding a tall outlier actually rescales the chart).
     fn plot_range(&self) -> (f64, f64) {
-        let Some((min, max)) = self.value_range() else {
-            return (0.0, 1.0);
-        };
-        if min >= 0.0 {
-            (0.0, if max > 0.0 { max } else { 1.0 })
-        } else {
-            (min, max)
+        if let Some((data, visibility, range)) = *self.plot_range_cache.borrow() {
+            if data == self.data_generation && visibility == self.visibility_generation {
+                return range;
+            }
         }
+        let range = match self.value_range() {
+            Some((min, max)) => {
+                if min >= 0.0 {
+                    (0.0, if max > 0.0 { max } else { 1.0 })
+                } else {
+                    (min, max)
+                }
+            }
+            None => (0.0, 1.0),
+        };
+        *self.plot_range_cache.borrow_mut() =
+            Some((self.data_generation, self.visibility_generation, range));
+        range
     }
 
     /// Draws the **value axis**: a tick column down the left of the plot area with four
@@ -1186,6 +1466,34 @@ impl ChartWidget {
         context.measure_text("M", font).height.max(1) as i32
     }
 
+    /// Rebuilds the legend rows' labels and widths when the names or the font changed.
+    ///
+    /// The rows used to be formatted and measured once per row per frame. They depend on the
+    /// series names, the series count and the font, so those form the key.
+    fn refresh_legend(&mut self, context: &mut RenderContext) {
+        let font = effective_font(self.base.style());
+        let key = (self.names_generation, self.series.len(), font.size().to_bits());
+        if self.legend_key == Some(key) {
+            return;
+        }
+        let mut rows = Vec::with_capacity(self.series.len());
+        let mut fallback = String::new();
+        for index in 0..self.series.len() {
+            let name = match self.series_names.get(index) {
+                Some(name) => name.clone(),
+                None => {
+                    fallback.clear();
+                    let _ = write!(fallback, "Series {}", index + 1);
+                    fallback.clone()
+                }
+            };
+            let width = context.measure_text(&name, font).width;
+            rows.push((name, width));
+        }
+        self.legend_rows = rows;
+        self.legend_key = Some(key);
+    }
+
     /// Draws vertical bars for series `series_index`.
     ///
     /// When the widget holds several series they are drawn side by side within
@@ -1195,6 +1503,7 @@ impl ChartWidget {
         &self,
         context: &mut RenderContext,
         rect: Rect,
+        area: &PlotArea,
         series_index: usize,
         (min, max): (f64, f64),
     ) {
@@ -1202,7 +1511,6 @@ impl ChartWidget {
             Some(data) if !data.is_empty() => data,
             _ => return,
         };
-        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let (start, end) = self.zoom_bounds();
         let visible_count = end.saturating_sub(start).max(1);
         let series_total = self.series.len().max(1);
@@ -1220,7 +1528,7 @@ impl ChartWidget {
             // `min..val` span, so the driver never has to know the data range -- it clamps to
             // 0..=1, and handing it a raw value would have it snap to 0.0 for every bar below 1.
             let val = self.grown_from_baseline(val, min);
-            let top = area.y_for(val, min, max);
+            let top = self.project_y(area, val, (min, max));
             let color = Self::series_color(series_index);
             context.fill_rect(
                 Rect {
@@ -1254,6 +1562,7 @@ impl ChartWidget {
         &mut self,
         context: &mut RenderContext,
         rect: Rect,
+        area: &PlotArea,
         series_index: usize,
         (min, max): (f64, f64),
     ) {
@@ -1261,9 +1570,9 @@ impl ChartWidget {
             Some(data) if data.len() >= 2 => data.len(),
             _ => return,
         };
-        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let color = Self::series_color(series_index);
         let progress = self.reveal.value() as f64;
+        let zoom = self.zoom_y;
         let (start, end) = self.zoom_bounds();
         let visible_count = end.saturating_sub(start).max(1);
         {
@@ -1279,7 +1588,7 @@ impl ChartWidget {
                 // Same reveal as the bars: every vertex climbs from the **axis minimum**, so a
                 // line grows out of the baseline instead of sliding in from wherever the series
                 // happened to start.
-                y: area.y_for(grow_value(val, min, progress), min, max),
+                y: project_value_y(zoom, area, grow_value(val, min, progress), (min, max)),
             }));
         }
         let _ = point_count;
@@ -1317,6 +1626,7 @@ impl ChartWidget {
         &mut self,
         context: &mut RenderContext,
         rect: Rect,
+        area: &PlotArea,
         series_index: usize,
         (min, max): (f64, f64),
     ) {
@@ -1324,9 +1634,9 @@ impl ChartWidget {
             Some(data) if data.len() >= 2 => data.len(),
             _ => return,
         };
-        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let color = Self::series_color(series_index);
         let progress = self.reveal.value() as f64;
+        let zoom = self.zoom_y;
         let (start, end) = self.zoom_bounds();
         let visible_count = end.saturating_sub(start).max(1);
         {
@@ -1339,7 +1649,7 @@ impl ChartWidget {
                 x: area.x_for(offset, visible_count, 0),
                 // Same reveal as the line: the fill tracks the polyline, so the two share the
                 // mapping rather than each computing its own height.
-                y: area.y_for(grow_value(val, min, progress), min, max),
+                y: project_value_y(zoom, area, grow_value(val, min, progress), (min, max)),
             }));
         }
         let _ = point_count;
@@ -1354,17 +1664,16 @@ impl ChartWidget {
             polygon.extend_from_slice(plot);
             polygon.extend(plot.iter().rev().map(|point| Point::new(point.x, baseline_y)));
         }
-        let mut command = crate::render::RenderCommand::DrawPath {
-            points: core::mem::take(&mut self.polygon_points),
+        // The command shares a snapshot of the polygon (G-02), so `polygon_points` stays the
+        // reusable buffer the next frame refills.
+        let command = crate::render::RenderCommand::DrawPath {
+            points: self.polygon_points.as_slice().into(),
             closed: true,
             color,
             filled: true,
             width: 0,
         };
         context.execute_command_ref(&command);
-        if let crate::render::RenderCommand::DrawPath { points, .. } = &mut command {
-            self.polygon_points = core::mem::take(points);
-        }
         for pair in self.plot_points.windows(2) {
             context.draw_line_stroke(pair[0], pair[1], color, 2);
         }
@@ -1390,12 +1699,11 @@ impl ChartWidget {
     /// Each bar spans `previous_total` to `previous_total + value`, so a negative
     /// increment draws downward from the running total — which is what makes a
     /// waterfall readable rather than a set of bars at the wrong heights.
-    fn draw_waterfall_chart(&self, context: &mut RenderContext, rect: Rect) {
+    fn draw_waterfall_chart(&self, context: &mut RenderContext, rect: Rect, area: &PlotArea) {
         let data = match self.series.first() {
             Some(data) if !data.is_empty() => data,
             _ => return,
         };
-        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let mut cumulative = 0.0f64;
         let totals: Vec<(f64, f64)> = data
             .iter()
@@ -1425,8 +1733,8 @@ impl ChartWidget {
         for (offset, &(from, to)) in totals[start..end].iter().enumerate() {
             let i = start + offset;
             let x = area.left + (offset as i32) * slot;
-            let y_from = area.baseline_y - (((from - min) / span) * area.height_range()) as i32;
-            let y_to = area.baseline_y - (((to - min) / span) * area.height_range()) as i32;
+            let y_from = self.project_y(area, from, (min, max));
+            let y_to = self.project_y(area, to, (min, max));
             let top = y_from.min(y_to);
             let height = (y_from - y_to).unsigned_abs().max(1);
             // A rise and a fall get different colours, so the sign of each
@@ -1461,7 +1769,7 @@ impl ChartWidget {
     ///
     /// The width is proportional to the value's share of the largest value, so the
     /// silhouette narrows exactly when the numbers fall.
-    fn draw_funnel_chart(&self, context: &mut RenderContext, rect: Rect) {
+    fn draw_funnel_chart(&self, context: &mut RenderContext, rect: Rect, area: &PlotArea) {
         let data = match self.series.first() {
             Some(data) if !data.is_empty() => data,
             _ => return,
@@ -1470,7 +1778,6 @@ impl ChartWidget {
         if !max.is_finite() || max <= 0.0 {
             return;
         }
-        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let (start, end) = self.zoom_bounds();
         let visible_count = end.saturating_sub(start).max(1);
         let available_height = area.baseline_y.saturating_sub(area.top_y).max(1);
@@ -1516,7 +1823,7 @@ impl ChartWidget {
     /// one in the "down" colour, which is the convention that makes a candlestick
     /// readable at a glance. A trailing group with fewer than four values is
     /// ignored, because there is no bar to draw from it.
-    fn draw_candlestick_chart(&self, context: &mut RenderContext, rect: Rect) {
+    fn draw_candlestick_chart(&self, context: &mut RenderContext, rect: Rect, area: &PlotArea) {
         const VALUES_PER_BAR: usize = 4;
         let data = match self.series.first() {
             Some(data) => data,
@@ -1526,7 +1833,6 @@ impl ChartWidget {
         if bar_count == 0 {
             return;
         }
-        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
         for bar in data.as_chunks::<VALUES_PER_BAR>().0.iter().take(bar_count) {
@@ -1557,10 +1863,10 @@ impl ChartWidget {
         {
             let (open, high, low, close) = (bar[0], bar[1], bar[2], bar[3]);
             let x = area.left + (offset as i32) * slot;
-            let y_open = area.y_for(open, min, max);
-            let y_close = area.y_for(close, min, max);
-            let y_high = area.y_for(high, min, max);
-            let y_low = area.y_for(low, min, max);
+            let y_open = self.project_y(area, open, (min, max));
+            let y_close = self.project_y(area, close, (min, max));
+            let y_high = self.project_y(area, high, (min, max));
+            let y_low = self.project_y(area, low, (min, max));
             let rising = close >= open;
             let color = if rising { Self::series_color(3) } else { Self::series_color(1) };
 
@@ -1606,7 +1912,7 @@ impl ChartWidget {
     /// Reads five consecutive values per box — `min`, `q1`, `median`, `q3`, `max` —
     /// draws the box between `q1` and `q3`, the median line through it, and the
     /// whiskers out to `min` and `max`. A trailing partial group is ignored.
-    fn draw_box_plot_chart(&self, context: &mut RenderContext, rect: Rect) {
+    fn draw_box_plot_chart(&self, context: &mut RenderContext, rect: Rect, area: &PlotArea) {
         const VALUES_PER_BOX: usize = 5;
         // The median reads as a line *through* the box, so it is painted in the panel's own
         // surface. It used to be a literal white, which is the light panel colour: on the
@@ -1620,7 +1926,6 @@ impl ChartWidget {
         if box_count == 0 {
             return;
         }
-        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
         for group in data.as_chunks::<VALUES_PER_BOX>().0.iter().take(box_count) {
@@ -1654,10 +1959,10 @@ impl ChartWidget {
             let (low, q1, median, q3, high) = (group[0], group[1], group[2], group[3], group[4]);
             let x = area.left + (offset as i32) * slot + 2;
             let cx = x + center_offset;
-            let y_low = area.y_for(low, min, max);
-            let y_high = area.y_for(high, min, max);
-            let y_q1 = area.y_for(q1, min, max);
-            let y_q3 = area.y_for(q3, min, max);
+            let y_low = self.project_y(area, low, (min, max));
+            let y_high = self.project_y(area, high, (min, max));
+            let y_q1 = self.project_y(area, q1, (min, max));
+            let y_q3 = self.project_y(area, q3, (min, max));
 
             // Whiskers first, so the box covers their inner ends.
             context.draw_line_stroke(
@@ -1678,7 +1983,7 @@ impl ChartWidget {
             );
             // Median: drawn in the background colour so it reads as a line *through*
             // the box rather than another filled band.
-            let y_median = area.y_for(median, min, max);
+            let y_median = self.project_y(area, median, (min, max));
             context.fill_rect(Rect { x, y: y_median, width: box_width as u32, height: 2 }, surface);
             if let Some(label) = self.labels.get(i) {
                 draw_truncated_label(
@@ -1756,7 +2061,7 @@ impl ChartWidget {
                         });
                     }
                     commands.push(Some(crate::render::RenderCommand::DrawPath {
-                        points: wedge,
+                        points: wedge.into(),
                         closed: true,
                         color: Self::series_color(i),
                         filled: true,
@@ -1828,6 +2133,7 @@ impl ChartWidget {
         &self,
         context: &mut RenderContext,
         rect: Rect,
+        area: &PlotArea,
         series_index: usize,
         (min, max): (f64, f64),
     ) {
@@ -1835,7 +2141,6 @@ impl ChartWidget {
             Some(data) if !data.is_empty() => data,
             _ => return,
         };
-        let area = PlotArea::of(rect, self.category_label_line_height(context));
         let color = Self::series_color(series_index);
         let (start, end) = self.zoom_bounds();
         let visible_count = end.saturating_sub(start).max(1);
@@ -1845,7 +2150,7 @@ impl ChartWidget {
             // Scatter uses the slot centre, since unconnected markers have no
             // line to sit on.
             let x = area.left + (offset as i32) * slot + slot / 2;
-            let y = area.y_for(val, min, max);
+            let y = self.project_y(area, val, (min, max));
             context.fill_circle(Point { x, y }, 3, color);
             if series_index == 0 {
                 if let Some(label) = self.labels.get(i) {
@@ -1870,6 +2175,17 @@ impl EventHandler for ChartWidget {
         }
         match event {
             Event::MouseMove { pos } => {
+                // The legend rows are controls: hovering one highlights it, and a press toggles its
+                // series below.
+                let legend = self
+                    .legend_hits
+                    .iter()
+                    .find(|(cell, _)| cell.contains_point(*pos))
+                    .map(|(_, index)| *index);
+                if legend != self.hovered_legend {
+                    self.hovered_legend = legend;
+                    self.base.request_redraw();
+                }
                 // Entering a *different* bucket must also leave the previous one, or a
                 // subscriber that highlights on `data_point_hovered` accumulates highlights.
                 let next = self.data_index_at(*pos);
@@ -1899,6 +2215,15 @@ impl EventHandler for ChartWidget {
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(true);
+                // A legend row toggles its series, which is how a multi-series chart is focused
+                // without editing the data.
+                if let Some((_, index)) =
+                    self.legend_hits.iter().find(|(cell, _)| cell.contains_point(*pos)).copied()
+                {
+                    let visible = self.is_series_visible(index);
+                    let _ = self.set_series_visible(index, !visible);
+                    return;
+                }
                 if let Some(index) = self.data_index_at(*pos) {
                     self.base.clicked.emit();
                     self.data_point_clicked.emit(index);
@@ -1907,7 +2232,24 @@ impl EventHandler for ChartWidget {
             Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
             }
-            Event::Wheel { delta, .. } => {
+            Event::Wheel { delta, modifiers, .. } => {
+                let pressed = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                if pressed.contains(crate::shortcut::Modifiers::ALT) {
+                    // The modifier turns the same gesture into a vertical zoom, so the two axes
+                    // share one input rather than inventing a second control.
+                    if delta.y == 0 {
+                        return;
+                    }
+                    let (low, high) = self.zoom_y.unwrap_or_else(|| self.plot_range());
+                    let anchor = self
+                        .hovered_value()
+                        .map_or((low + high) / 2.0, |value| value.clamp(low, high));
+                    let factor = if delta.y > 0 { 1.25 } else { 0.8 };
+                    let new_low = anchor - (anchor - low) * factor;
+                    let new_high = anchor + (high - anchor) * factor;
+                    self.set_zoom_y(Some((new_low, new_high)));
+                    return;
+                }
                 // Zoom the category axis around the pointer's bucket. A plot with one point has
                 // no axis to zoom.
                 let points = point_count_for(self.chart_type, self.data().len()) as f64;
@@ -1928,6 +2270,275 @@ impl EventHandler for ChartWidget {
             }
             _ => { /* Other events are not relevant */ }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// COMP-H01 ChartCrosshair
+// ---------------------------------------------------------------------------
+
+/// A pair of axis-aligned reference lines drawn at a chart's hovered datum.
+///
+/// The chart publishes `data_point_hovered` / `data_point_unhovered` and this control consumes
+/// them: a host calls [`Self::show_at`] on entry and [`Self::hide`] on exit. It deliberately does
+/// not own the chart — one crosshair can serve several charts, and a chart that reached into an
+/// overlay would be a second hit-testing path for the same datum.
+///
+/// # Why the position is absolute
+///
+/// The overlay is given the chart's rectangle, so its position is in the same coordinates the
+/// chart reported. That is what lets one control serve a chart mounted anywhere without the host
+/// converting coordinates twice.
+pub struct ChartCrosshair {
+    base: BaseWidget,
+    position: Option<Point>,
+    snap_to_data_point: bool,
+    show_x: bool,
+    show_y: bool,
+    follow_pointer: bool,
+    /// Emitted with the anchor when the crosshair moves.
+    pub position_changed: Signal1<Point>,
+}
+
+impl ChartCrosshair {
+    /// Creates a hidden crosshair with both reference lines enabled.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::ChartTooltip, geometry, "ChartCrosshair"),
+            position: None,
+            snap_to_data_point: true,
+            show_x: true,
+            show_y: true,
+            follow_pointer: true,
+            position_changed: Signal1::new(),
+        }
+    }
+
+    /// The anchor, or `None` when the crosshair is hidden.
+    pub fn position(&self) -> Option<Point> {
+        self.position
+    }
+
+    /// Moves the anchor, or hides the crosshair with `None`.
+    pub fn set_position(&mut self, position: Option<Point>) {
+        if self.position == position {
+            return;
+        }
+        self.position = position;
+        if let Some(position) = position {
+            self.position_changed.emit(position);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Shows the crosshair at `point`.
+    pub fn show_at(&mut self, point: Point) {
+        self.set_position(Some(point));
+    }
+
+    /// Hides the crosshair without discarding its settings.
+    pub fn hide(&mut self) {
+        self.set_position(None);
+    }
+
+    /// Whether the crosshair is visible.
+    pub fn is_visible(&self) -> bool {
+        self.position.is_some()
+    }
+
+    /// Whether the anchor is snapped to a datum's column.
+    pub fn snap_to_data_point(&self) -> bool {
+        self.snap_to_data_point
+    }
+
+    /// Enables or disables datum snapping.
+    ///
+    /// A host that supplies an already-snapped anchor (the chart's own bucket centre) is unaffected;
+    /// the flag is for a host that drives the overlay from raw pointer motion.
+    pub fn set_snap_to_data_point(&mut self, snap: bool) {
+        self.snap_to_data_point = snap;
+    }
+
+    /// Which reference lines are painted, as `(x, y)`.
+    pub fn show_axes(&self) -> (bool, bool) {
+        (self.show_x, self.show_y)
+    }
+
+    /// Enables or disables each reference line independently.
+    pub fn set_show_axes(&mut self, show_x: bool, show_y: bool) {
+        if self.show_x == show_x && self.show_y == show_y {
+            return;
+        }
+        self.show_x = show_x;
+        self.show_y = show_y;
+        self.base.request_redraw();
+    }
+
+    /// Whether the anchor follows pointer motion between hovers.
+    pub fn follow_pointer(&self) -> bool {
+        self.follow_pointer
+    }
+
+    /// Enables or disables pointer following.
+    pub fn set_follow_pointer(&mut self, follow_pointer: bool) {
+        self.follow_pointer = follow_pointer;
+    }
+}
+
+impl Widget for ChartCrosshair {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        crate::core::Size::new(240, 160)
+    }
+
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+impl EventHandler for ChartCrosshair {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+        match event {
+            Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
+                if self.follow_pointer && self.position.is_some() {
+                    self.set_position(Some(*pos));
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.follow_pointer {
+                    self.hide();
+                }
+            }
+            Event::KeyPress { key: 27, .. } => self.hide(),
+            _ => {}
+        }
+    }
+}
+
+impl Draw for ChartCrosshair {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let Some(position) = self.position else {
+            return;
+        };
+        let rect = self.geometry();
+        if !rect.contains_point(position) {
+            return;
+        }
+        // The lines take the theme's outline colour, which is the role a gridline/driver line
+        // already uses; a crosshair is chrome over data, not a datum of its own.
+        let color = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.outline_variant)
+            .unwrap_or_else(|| Color::BLACK.with_alpha(120));
+        if self.show_x {
+            context.draw_line(
+                Point::new(position.x, rect.y),
+                Point::new(position.x, rect.y + rect.height as i32),
+                color,
+            );
+        }
+        if self.show_y {
+            context.draw_line(
+                Point::new(rect.x, position.y),
+                Point::new(rect.x + rect.width as i32, position.y),
+                color,
+            );
+        }
+    }
+}
+
+impl WidgetProperties for ChartCrosshair {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            // `Null` is the published spelling of "hidden": a point a designer can express, rather
+            // than a separate visibility flag that could disagree with it.
+            "position" => Ok(match self.position {
+                Some(point) => CapabilityValue::Tuple(crate::compat::Vec::from([
+                    CapabilityValue::Int(i64::from(point.x)),
+                    CapabilityValue::Int(i64::from(point.y)),
+                ])),
+                None => CapabilityValue::Null,
+            }),
+            "snap_to_data_point" => Ok(CapabilityValue::Bool(self.snap_to_data_point)),
+            "show_x" => Ok(CapabilityValue::Bool(self.show_x)),
+            "show_y" => Ok(CapabilityValue::Bool(self.show_y)),
+            "follow_pointer" => Ok(CapabilityValue::Bool(self.follow_pointer)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            "position" => {
+                let position = match value {
+                    CapabilityValue::Null => None,
+                    CapabilityValue::Tuple(items) if items.len() == 2 => {
+                        let mut items = items.into_iter();
+                        let x = match items.next() {
+                            Some(CapabilityValue::Int(x)) => x as i32,
+                            _ => return Err(CapabilityAccessError::TypeMismatch),
+                        };
+                        let y = match items.next() {
+                            Some(CapabilityValue::Int(y)) => y as i32,
+                            _ => return Err(CapabilityAccessError::TypeMismatch),
+                        };
+                        Some(Point::new(x, y))
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_position(position);
+                Ok(())
+            }
+            "snap_to_data_point" => {
+                let snap = match value {
+                    CapabilityValue::Bool(snap) => snap,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_snap_to_data_point(snap);
+                Ok(())
+            }
+            "show_x" | "show_y" => {
+                let CapabilityValue::Bool(flag) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                if name == "show_x" {
+                    self.set_show_axes(flag, self.show_y);
+                } else {
+                    self.set_show_axes(self.show_x, flag);
+                }
+                Ok(())
+            }
+            "follow_pointer" => {
+                let CapabilityValue::Bool(follow) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                self.set_follow_pointer(follow);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "position",
+            "snap_to_data_point",
+            "show_x",
+            "show_y",
+            "follow_pointer",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -2409,5 +3020,75 @@ mod tests {
         assert!(ticks.iter().all(|value| (value - value.round()).abs() < 1e-9));
         let narrow = nice_ticks(0.0, 1.0, 4);
         assert!(narrow.windows(2).all(|pair| pair[1] > pair[0]));
+    }
+}
+
+#[cfg(test)]
+mod issue_2_8_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// SP-11: hiding a series removes it from the value range and reports the toggle.
+    #[test]
+    fn hiding_a_series_rescales_the_range_and_reports_it() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 320, 200));
+        chart.set_series(vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+        assert_eq!(chart.plot_range(), (0.0, 4.0));
+        let seen = Arc::new(Mutex::new(Vec::<(usize, bool)>::new()));
+        let sink = seen.clone();
+        chart.series_toggled.connect_ref(move |event| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*event);
+            }
+        });
+        assert!(chart.set_series_visible(1, false));
+        assert_eq!(chart.plot_range(), (0.0, 2.0));
+        assert_eq!(
+            seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec![(1, false)]
+        );
+        assert!(chart.set_series_visible(1, true));
+        assert_eq!(chart.plot_range(), (0.0, 4.0));
+    }
+
+    /// SP-12: the vertical window is a real window, not a stored value.
+    #[test]
+    fn the_vertical_zoom_window_is_stored_ordered_and_reset() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 320, 200));
+        chart.set_series(vec![vec![0.0, 10.0, 20.0]]);
+        chart.set_zoom_y(Some((15.0, 5.0)));
+        assert_eq!(chart.zoom_y(), Some((5.0, 15.0)));
+        chart.reset_zoom();
+        assert_eq!(chart.zoom_y(), None);
+        assert_eq!(chart.zoom_range(), None);
+    }
+
+    /// COMP-H01: the crosshair hides itself, and its anchor is what it was told.
+    #[test]
+    fn the_crosshair_shows_hides_and_reports_its_anchor() {
+        let mut crosshair = ChartCrosshair::new(Rect::new(0, 0, 200, 120));
+        assert!(!crosshair.is_visible());
+        crosshair.show_at(Point::new(20, 40));
+        assert!(crosshair.is_visible());
+        assert_eq!(crosshair.position(), Some(Point::new(20, 40)));
+        crosshair.hide();
+        assert!(!crosshair.is_visible());
+        crosshair.set_show_axes(false, true);
+        assert_eq!(crosshair.show_axes(), (false, true));
+    }
+
+    /// COMP-H03: the hover anchor answers where and what the host should show.
+    #[test]
+    fn the_hover_anchor_reports_the_bucket_and_its_text() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 320, 200));
+        chart.set_series(vec![vec![1.0, 2.0, 3.0]]);
+        chart.set_labels(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert!(chart.hover_anchor().is_none());
+        chart.hovered_index = Some(1);
+        let (anchor, lines) = chart.hover_anchor().expect("a hovered bucket has an anchor");
+        assert!(lines.iter().any(|line| line.text.contains("b: 2")));
+        assert!(anchor.x > 0);
+        chart.set_hover_readout_external(true);
+        assert!(chart.hover_readout_external());
     }
 }

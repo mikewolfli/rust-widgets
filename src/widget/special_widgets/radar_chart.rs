@@ -144,6 +144,11 @@ pub struct RadarChart {
     hovered_axis: Option<usize>,
     /// The `(series, axis)` vertex nearest the pointer.
     hovered_vertex: Option<(usize, usize)>,
+    /// Per-series visibility, index-aligned with `series` and short lists treated as visible.
+    ///
+    /// A hidden series is skipped by the paint and by the hit tests, which is what lets a reader
+    /// isolate two overlapping polygons on a crowded chart (SP-55).
+    series_visible: Vec<bool>,
     /// Per-axis maximum values. Empty means every axis uses the shared data maximum.
     axis_maxima: Vec<f64>,
     /// The number of concentric value rings.
@@ -160,6 +165,8 @@ pub struct RadarChart {
     pub vertex_hovered: Signal1<(usize, usize)>,
     /// Emitted when a `(series, axis)` vertex is clicked.
     pub vertex_clicked: Signal1<(usize, usize)>,
+    /// Emitted with `(series, visible)` after a series is shown or hidden.
+    pub series_visibility_changed: Signal1<(usize, bool)>,
 }
 
 impl RadarChart {
@@ -177,6 +184,7 @@ impl RadarChart {
             show_legend: true,
             hovered_axis: None,
             hovered_vertex: None,
+            series_visible: Vec::new(),
             axis_maxima: Vec::new(),
             ring_count: 4,
             animate_entry: false,
@@ -185,6 +193,7 @@ impl RadarChart {
             series_clicked: Signal1::new(),
             vertex_hovered: Signal1::new(),
             vertex_clicked: Signal1::new(),
+            series_visibility_changed: Signal1::new(),
         }
     }
 
@@ -293,7 +302,41 @@ impl RadarChart {
     /// Replaces every series.
     pub fn set_series(&mut self, series: Vec<Vec<f64>>) {
         self.series = series;
+        // A visibility flag belongs to a *position*, and replacing the list keeps the reader's
+        // per-position choices where they still address a series.
+        self.series_visible.resize(self.series.len(), true);
         self.base.request_redraw();
+    }
+
+    /// Shows or hides series `index`, returning `false` when the index is not a series.
+    pub fn set_series_visible(&mut self, index: usize, visible: bool) -> bool {
+        if index >= self.series.len() {
+            return false;
+        }
+        if self.series_visible.len() <= index {
+            self.series_visible.resize(index + 1, true);
+        }
+        if self.series_visible[index] == visible {
+            return true;
+        }
+        self.series_visible[index] = visible;
+        self.series_visibility_changed.emit((index, visible));
+        self.base.request_redraw();
+        true
+    }
+
+    /// Whether series `index` is painted; an index past the list answers `false`.
+    pub fn is_series_visible(&self, index: usize) -> bool {
+        if index >= self.series.len() {
+            return false;
+        }
+        self.series_visible.get(index).copied().unwrap_or(true)
+    }
+
+    /// Toggles series `index`, as a legend click does.
+    pub fn toggle_series_visible(&mut self, index: usize) -> bool {
+        let next = !self.is_series_visible(index);
+        self.set_series_visible(index, next)
     }
 
     /// Returns every series.
@@ -351,6 +394,7 @@ impl RadarChart {
     pub fn add_series(&mut self, values: Vec<f64>) -> usize {
         let index = self.series.len();
         self.series.push(values);
+        self.series_visible.resize(self.series.len(), true);
         self.base.request_redraw();
         index
     }
@@ -697,48 +741,55 @@ impl Draw for RadarChart {
             Color::BLACK,
         );
         context.draw_rect(rect, chrome.border);
+        // One font derivation for every piece of text the chart paints this frame.
+        let font = role_font(self.style(), 10.0);
 
         let axis_count = self.axis_count();
         let Some(max) = self.data_max() else {
-            self.draw_placeholder(context, rect);
+            self.draw_placeholder(context, rect, &font, &chrome);
             return;
         };
         let Some((center, radius)) = self.geometry_center_radius() else {
             return;
         };
         if axis_count == 0 {
-            self.draw_placeholder(context, rect);
+            self.draw_placeholder(context, rect, &font, &chrome);
             return;
         }
 
         if self.show_grid {
-            self.draw_grid(context, center, radius, axis_count);
+            self.draw_grid(context, center, radius, axis_count, &font, &chrome);
         }
         if self.show_axis_labels {
-            self.draw_axis_labels(context, center, radius, axis_count);
+            self.draw_axis_labels(context, center, radius, axis_count, &font, &chrome);
         }
         // One vertex buffer for every series: each series cleared it, so the paint allocated a
         // fresh vector per series per frame for a fixed number of points.
         let mut vertices: Vec<Point> = Vec::with_capacity(axis_count);
         for series_index in 0..self.series.len() {
+            if !self.is_series_visible(series_index) {
+                continue;
+            }
             self.draw_series(context, center, radius, max, series_index, &mut vertices);
         }
         // The hovered vertex is marked so the pointer's nearest point is visible before a
         // click commits to it.
         if let Some((series, axis)) = self.hovered_vertex {
-            if let Some(value) = self.value_at(series, axis) {
-                let axis_max = self.axis_maximum(axis).unwrap_or(max);
-                let point = self.vertex(center, radius, self.axis_angle(axis), value, axis_max);
-                context.fill_circle(point, 3, Self::series_color(series));
-                context.draw_circle_stroke(point, 5, chrome.border, 1);
+            if self.is_series_visible(series) {
+                if let Some(value) = self.value_at(series, axis) {
+                    let axis_max = self.axis_maximum(axis).unwrap_or(max);
+                    let point = self.vertex(center, radius, self.axis_angle(axis), value, axis_max);
+                    context.fill_circle(point, 3, Self::series_color(series));
+                    context.draw_circle_stroke(point, 5, chrome.border, 1);
+                }
             }
         }
         if self.show_legend && self.series.len() > 1 {
-            self.draw_legend(context, rect);
+            self.draw_legend(context, rect, &font, &chrome);
         }
         // The hovered spoke last, so it is legible over every polygon.
         if let Some(axis) = self.hovered_axis {
-            self.draw_hover_spoke(context, center, radius, axis, max);
+            self.draw_hover_spoke(context, center, radius, axis, max, &chrome);
         }
     }
 }
@@ -803,25 +854,33 @@ impl RadarChart {
     }
 
     /// Draws the "no data" caption.
-    fn draw_placeholder(&self, context: &mut RenderContext, rect: Rect) {
+    fn draw_placeholder(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        font: &crate::core::Font,
+        chrome: &RadarChrome,
+    ) {
         context.draw_text_fitted_cow(
             rect,
             "No data",
-            &role_font(self.style(), 12.0),
-            self.chrome_colors().placeholder,
+            font,
+            chrome.placeholder,
             HorizontalAlignment::Left,
         );
     }
 
-    /// Draws the concentric rings and the spokes.
+    /// Draws the concentric rings, the spokes and the value scale on the upward axis.
     fn draw_grid(
         &self,
         context: &mut RenderContext,
         center: Point,
         radius: u32,
         axis_count: usize,
+        font: &crate::core::Font,
+        chrome: &RadarChrome,
     ) {
-        let grid = self.chrome_colors().grid;
+        let grid = chrome.grid;
         let rings = self.ring_count.max(1);
         // Rings: one per quarter of the radius, so the gauge reading is easy to
         // estimate. Drawn as polylines through the axis angles, which is what makes
@@ -852,6 +911,30 @@ impl RadarChart {
             );
             context.draw_line_stroke(center, outer, grid, 1);
         }
+        // Ring values along the first spoke (straight up). A ring's radius is a fraction of the
+        // axis maximum, so without a number the reader can only guess the magnitude the rings
+        // stand for (SP-54). The first axis is used because it is the one drawn upward, which is
+        // where a scale is conventionally read.
+        let scale_axis = 0usize;
+        if let Some(max) = self.axis_maximum(scale_axis) {
+            let angle = self.axis_angle(scale_axis);
+            let ink = chrome.label.blend(&chrome.surface, 0.25);
+            for ring in 1..=rings {
+                if ring == rings {
+                    // The outermost ring's value is the axis maximum, which the axis label above
+                    // it already states; repeating it crowds the corner.
+                    continue;
+                }
+                let ring_radius = radius * ring / rings;
+                let value = max * f64::from(ring) / f64::from(rings);
+                let text = format_ring_value(value);
+                let point = Point::new(
+                    center.x + (ring_radius as f32 * angle.cos()) as i32 + 3,
+                    center.y + (ring_radius as f32 * angle.sin()) as i32 - 10,
+                );
+                context.draw_text(point, &text, font, ink, HorizontalAlignment::Left);
+            }
+        }
     }
 
     /// Draws the axis names just outside the outermost ring.
@@ -861,11 +944,12 @@ impl RadarChart {
         center: Point,
         radius: u32,
         axis_count: usize,
+        font: &crate::core::Font,
+        chrome: &RadarChrome,
     ) {
         const LABEL_GAP: u32 = 10;
         let rect = self.base.geometry();
-        let font = role_font(self.style(), 10.0);
-        let label_ink = self.chrome_colors().label;
+        let label_ink = chrome.label;
         let label_radius = radius + LABEL_GAP;
         for axis in 0..axis_count {
             let Some(label) = self.axes.get(axis) else {
@@ -874,7 +958,7 @@ impl RadarChart {
             let angle = self.axis_angle(axis);
             let anchor_x = center.x + (label_radius as f32 * angle.cos()) as i32;
             let anchor_y = center.y + (label_radius as f32 * angle.sin()) as i32;
-            let metrics = context.measure_text(label, &font);
+            let metrics = context.measure_text(label, font);
             // Centre the text on the anchor horizontally and on the spoke's vertical
             // position, then clamp the *fitted* box into the control.
             //
@@ -904,7 +988,7 @@ impl RadarChart {
             context.draw_text_fitted_cow(
                 bounds,
                 label,
-                &font,
+                font,
                 label_ink,
                 HorizontalAlignment::Left,
             );
@@ -950,13 +1034,12 @@ impl RadarChart {
         // `center→from`, `center→to` and `from→to` for every edge, so each radial line was drawn
         // twice (once as the previous edge's `to`, once as this edge's `from`) — twice the ink for
         // the same fan, and the adjacent-segment overlap made the spokes look darker than the rim.
+        // One edge per vertex, drawn once. The previous form painted the same data edge twice —
+        // once with `draw_line` and again with `draw_line_stroke` — so every polygon's rim was
+        // double ink for a single segment (SP-P61). The radial fan stays: it is what reads as a
+        // filled area on a renderer with no filled-polygon primitive.
         for vertex in vertices.iter() {
             context.draw_line(center, *vertex, color);
-        }
-        for axis in 0..axis_count {
-            let from = vertices[axis];
-            let to = vertices[(axis + 1) % axis_count];
-            context.draw_line(from, to, color);
         }
         for axis in 0..axis_count {
             let from = vertices[axis];
@@ -969,12 +1052,16 @@ impl RadarChart {
     }
 
     /// Draws the series legend down the right edge.
-    fn draw_legend(&self, context: &mut RenderContext, rect: Rect) {
+    fn draw_legend(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        font: &crate::core::Font,
+        chrome: &RadarChrome,
+    ) {
         const SWATCH: u32 = 10;
         const ROW_HEIGHT: i32 = 18;
-        let font = role_font(self.style(), 10.0);
         // One derivation for the legend's ink, shared with every other piece of chrome.
-        let chrome = self.chrome_colors();
         let legend_ink = chrome.legend_ink;
         let x = rect.x + rect.width as i32 - 90;
         let mut y = rect.y + 12;
@@ -982,7 +1069,14 @@ impl RadarChart {
         // allocation for a label that a `write!` renders in place.
         let mut label = String::new();
         for index in 0..self.series.len() {
-            context.fill_rect(Rect::new(x, y, SWATCH, SWATCH), Self::series_color(index));
+            // A hidden series' swatch is drawn faded, so the legend states which polygons are off
+            // rather than only which ones exist (SP-55).
+            let visible = self.is_series_visible(index);
+            let swatch = Self::series_color(index);
+            context.fill_rect(
+                Rect::new(x, y, SWATCH, SWATCH),
+                if visible { swatch } else { swatch.with_alpha(50) },
+            );
             label.clear();
             match self.series_name(index) {
                 Some(name) => label.push_str(name),
@@ -999,13 +1093,13 @@ impl RadarChart {
             context.draw_text_fitted_cow(
                 row,
                 label.as_str(),
-                &font,
+                font,
                 // The legend swatch's ink, taken from the same `chrome_colors()` the rest of
                 // the chart's chrome uses. A literal here was the one place a dark theme still
                 // produced dark-on-dark text: the five colours `chrome_colors()` resolves
                 // (surface, border, grid, label, placeholder) did not include the legend, so
                 // this arm bypassed them.
-                legend_ink,
+                if visible { legend_ink } else { legend_ink.blend(&chrome.surface, 0.4) },
                 HorizontalAlignment::Left,
             );
             y += ROW_HEIGHT;
@@ -1020,6 +1114,7 @@ impl RadarChart {
         radius: u32,
         axis: usize,
         max: f64,
+        chrome: &RadarChrome,
     ) {
         if axis >= self.axis_count() {
             return;
@@ -1029,7 +1124,6 @@ impl RadarChart {
             center.x + (radius as f32 * angle.cos()) as i32,
             center.y + (radius as f32 * angle.sin()) as i32,
         );
-        let chrome = self.chrome_colors();
         context.draw_line_stroke(center, outer, chrome.hover_spoke, 1);
         // The read-out for every series on this dimension, which is what makes the
         // hover worth doing on a chart whose polygons overlap.
@@ -1104,6 +1198,14 @@ impl EventHandler for RadarChart {
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(true);
+                // The inline legend is an interactive toggle when it is painted. A press there
+                // hides or shows the series it names, which is what lets a reader isolate two
+                // overlapping polygons (SP-55).
+                if let Some(index) = self.legend_entry_at(*pos) {
+                    self.toggle_series_visible(index);
+                    self.base.clicked.emit();
+                    return;
+                }
                 if let Some(vertex) = self.vertex_at(*pos) {
                     self.vertex_clicked.emit(vertex);
                 }
@@ -1126,7 +1228,7 @@ impl EventHandler for RadarChart {
 }
 
 impl RadarChart {
-    /// The series whose polygon edge is nearest `pos` among those crossing `axis`.
+    /// The series whose vertex is nearest `pos` among those crossing `axis`.
     ///
     /// \"Nearest\" is measured by the vertex the series has on the hovered axis, so
     /// the result is the series whose marker the pointer is closest to — which is
@@ -1138,6 +1240,9 @@ impl RadarChart {
         let angle = self.axis_angle(axis);
         let mut best: Option<(usize, i64)> = None;
         for series_index in 0..self.series.len() {
+            if !self.is_series_visible(series_index) {
+                continue;
+            }
             let value = self.value_at(series_index, axis).unwrap_or(0.0);
             let axis_max = self.axis_maximum(axis).unwrap_or(max);
             let vertex = self.vertex(center, radius, angle, value, axis_max);
@@ -1162,6 +1267,9 @@ impl RadarChart {
         }
         let mut best: Option<((usize, usize), i64)> = None;
         for series_index in 0..self.series.len() {
+            if !self.is_series_visible(series_index) {
+                continue;
+            }
             for axis in 0..self.axis_count() {
                 let value = self.value_at(series_index, axis).unwrap_or(0.0);
                 let axis_max = self.axis_maximum(axis).unwrap_or(max);
@@ -1175,6 +1283,39 @@ impl RadarChart {
             }
         }
         best.map(|(vertex, _)| vertex)
+    }
+
+    /// The legend row under `pos`, when the inline legend is painted.
+    fn legend_entry_at(&self, pos: Point) -> Option<usize> {
+        if !self.show_legend || self.series.len() <= 1 {
+            return None;
+        }
+        let rect = self.geometry();
+        let x = rect.x + rect.width as i32 - 90;
+        const ROW_HEIGHT: i32 = 18;
+        let top = rect.y + 12;
+        if pos.x < x || pos.y < top {
+            return None;
+        }
+        let row = (pos.y - top) / ROW_HEIGHT;
+        let index = row as usize;
+        (index < self.series.len()).then_some(index)
+    }
+}
+
+/// Formats one ring's value for the grid scale.
+///
+/// Whole numbers stay whole and fractional values keep one decimal, so a scale from `0` to `1`
+/// reads `0.25`/`0.5`/`0.75` while a scale from `0` to `100` reads `25`/`50`/`75`.
+fn format_ring_value(value: f64) -> String {
+    if !value.is_finite() {
+        return String::from("-");
+    }
+    let magnitude = value.abs();
+    if magnitude >= 100.0 || (magnitude - magnitude.round()).abs() < 0.05 {
+        format!("{}", magnitude.round() as i64)
+    } else {
+        format!("{magnitude:.1}")
     }
 }
 
@@ -1611,11 +1752,19 @@ mod tests {
         }
         recorder.end_frame();
 
-        let lines = recorder
+        // The fan is one radial per vertex, and each data edge is stroked **once**. The previous
+        // form drew every edge twice (plain and stroked), which is the double ink SP-P61 removed.
+        let radials = recorder
             .commands
             .iter()
             .filter(|command| matches!(command, crate::render::RenderCommand::DrawLine { .. }))
             .count();
-        assert_eq!(lines, 8, "4 dimensions must emit 4 radials + 4 edges, got {lines} plain lines");
+        let edges = recorder
+            .commands
+            .iter()
+            .filter(|command| matches!(command, crate::render::RenderCommand::DrawLineStroke { .. }))
+            .count();
+        assert_eq!(radials, 4, "4 dimensions must emit one radial each, got {radials}");
+        assert_eq!(edges, 4, "each data edge is stroked exactly once, got {edges}");
     }
 }

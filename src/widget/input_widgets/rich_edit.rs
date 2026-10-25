@@ -8,7 +8,7 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::undo::{UndoStack, ValueCommand};
+use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -65,6 +65,98 @@ impl CharFormat {
             && self.font_family.is_none()
             && self.font_size.is_none()
             && self.color.is_none()
+    }
+}
+
+/// A splice shared between an undo entry and the typing run that extends it (I-P55).
+#[derive(Debug, Default)]
+struct RichDelta {
+    offset: usize,
+    removed: String,
+    inserted: String,
+}
+
+/// One rich-edit splice, recorded as a delta instead of two whole documents (I-P55).
+///
+/// The delta lives in an `Rc<RefCell<_>>` so a continuous typing run can extend the *same* undo
+/// entry instead of pushing one entry per keystroke: the command reads the shared run when it is
+/// undone, so the last key of a word is the state the single undo step reverses.
+struct RichTextDeltaCommand {
+    id: CommandId,
+    target: Rc<RefCell<String>>,
+    delta: Rc<RefCell<RichDelta>>,
+}
+
+static NEXT_RICH_COMMAND_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+impl RichTextDeltaCommand {
+    fn new(target: Rc<RefCell<String>>, delta: Rc<RefCell<RichDelta>>) -> Self {
+        Self {
+            id: CommandId(NEXT_RICH_COMMAND_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)),
+            target,
+            delta,
+        }
+    }
+
+    fn splice(&self, removed_len: usize, inserted: &str) {
+        let delta = self.delta.borrow();
+        let mut text = self.target.borrow_mut();
+        let start = delta.offset.min(text.len());
+        let end = (start + removed_len).min(text.len());
+        text.replace_range(start..end, inserted);
+    }
+}
+
+/// The differing middle of a before/after pair, for programmatic replacements (I-P55).
+fn diff_delta(before: &str, after: &str) -> RichDelta {
+    let mut prefix = 0usize;
+    for (old, new) in before.chars().zip(after.chars()) {
+        if old != new {
+            break;
+        }
+        prefix += old.len_utf8();
+    }
+    let mut suffix = 0usize;
+    for ((_, old), (_, new)) in
+        before[prefix..].char_indices().rev().zip(after[prefix..].char_indices().rev())
+    {
+        if old != new {
+            break;
+        }
+        suffix += old.len_utf8();
+    }
+    RichDelta {
+        offset: prefix,
+        removed: before[prefix..before.len() - suffix].to_string(),
+        inserted: after[prefix..after.len() - suffix].to_string(),
+    }
+}
+
+impl UndoCommand for RichTextDeltaCommand {
+    fn id(&self) -> CommandId {
+        self.id
+    }
+
+    fn description(&self) -> CommandDescription {
+        CommandDescription {
+            text: "Edit text".to_string(),
+            timestamp_ms: 0,
+            command_type: "rich_edit_text",
+        }
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        let inserted = self.delta.borrow().inserted.clone();
+        let removed_len = self.delta.borrow().removed.len();
+        self.splice(removed_len, &inserted);
+        Ok(())
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        let removed = self.delta.borrow().removed.clone();
+        let inserted_len = self.delta.borrow().inserted.len();
+        self.splice(inserted_len, &removed);
+        Ok(())
     }
 }
 
@@ -140,6 +232,33 @@ pub struct RichEdit {
     /// [`Self::apply_char_format`] stores the format here when there is no selection; the next
     /// inserted run is then stamped with it. `None` inherits the editor's own style.
     typing_format: Option<CharFormat>,
+    /// Bumped on every value change (I-P56).
+    revision: u64,
+    /// Bumped whenever the styled runs change (I-P56).
+    spans_revision: u64,
+    /// The wrapped row table, keyed by the inputs that derive it (I-P56).
+    rows_cache: RefCell<Option<VisualRowsCache>>,
+    /// Contiguous format runs, keyed by the text and span revisions (I-P56).
+    format_cache: RefCell<Option<FormatRunsCache>>,
+    /// Logical line starts, keyed by the text revision (I-P56).
+    line_starts_cache: RefCell<Option<(u64, Rc<Vec<usize>>)>>,
+    /// The typing run the next keystroke may extend, so a word is one undo step (I-P55).
+    typing_run: Option<Rc<RefCell<RichDelta>>>,
+}
+
+struct VisualRowsCache {
+    revision: u64,
+    spans_revision: u64,
+    width: u32,
+    line_wrap: bool,
+    font: Font,
+    rows: Rc<Vec<(usize, usize)>>,
+}
+
+struct FormatRunsCache {
+    revision: u64,
+    spans_revision: u64,
+    runs: Rc<Vec<(usize, usize, CharFormat)>>,
 }
 impl RichEdit {
     /// Creates an empty rich editor.
@@ -165,6 +284,12 @@ impl RichEdit {
             line_wrap: false,
             placeholder_text: String::new(),
             typing_format: None,
+            revision: 0,
+            spans_revision: 0,
+            rows_cache: RefCell::new(None),
+            format_cache: RefCell::new(None),
+            line_starts_cache: RefCell::new(None),
+            typing_run: None,
         }
     }
     /// Returns current editor text.
@@ -187,15 +312,14 @@ impl RichEdit {
         }
         let before = self.text.clone();
         self.text = text;
+        self.revision = self.revision.wrapping_add(1);
+        self.clamp_spans();
+        self.typing_run = None;
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.text.clone();
-            self.undo_stack.push(Box::new(ValueCommand::new(
-                self.history_target.clone(),
-                before,
-                self.text.clone(),
-                "Edit text",
-                "rich_edit_text",
-            )));
+            let delta = Rc::new(RefCell::new(diff_delta(&before, &self.text)));
+            self.undo_stack
+                .push(Box::new(RichTextDeltaCommand::new(self.history_target.clone(), delta)));
         }
         self.selection = None;
         self.first_visible_line = 0;
@@ -204,15 +328,98 @@ impl RichEdit {
         self.base.request_redraw();
     }
 
-    /// Replaces the document for an edit, keeping the viewport where the user left it.
+    /// Applies one in-place splice, records it as a delta and keeps the spans aligned (I-P55/I-P57).
     ///
-    /// [`Self::set_text`] is the *programmatic* replacement and opens the new document at its
-    /// top; an edit at the caret must not jump the view back to the first line.
-    fn set_text_for_edit(&mut self, next: String) {
-        let scroll = self.first_visible_line;
-        self.set_text(next);
-        self.first_visible_line = scroll;
+    /// `mergeable` marks an ordinary typing insertion: consecutive insertions at the caret's own
+    /// end extend the same undo entry, so a typed word undoes as one step. The history mirror is
+    /// advanced with the same splice rather than replaced by a whole-document clone.
+    fn apply_splice(&mut self, at: usize, removed_len: usize, inserted: &str, mergeable: bool) {
+        if self.read_only {
+            return;
+        }
+        let at = floor_char_boundary(&self.text, at.min(self.text.len()));
+        let removed_len = removed_len.min(self.text.len().saturating_sub(at));
+        let removed = self.text[at..at + removed_len].to_string();
+        self.text.replace_range(at..at + removed_len, inserted);
+        self.revision = self.revision.wrapping_add(1);
+        self.shift_spans(at, removed_len, inserted.len());
+        {
+            let mut target = self.history_target.borrow_mut();
+            let start = at.min(target.len());
+            let end = (start + removed_len).min(target.len());
+            target.replace_range(start..end, inserted);
+        }
+        if !self.restoring_history {
+            let extended = if mergeable {
+                self.typing_run.as_ref().is_some_and(|run| {
+                    let run = run.borrow();
+                    run.removed.is_empty() && run.offset + run.inserted.len() == at
+                })
+            } else {
+                false
+            };
+            if extended {
+                if let Some(run) = self.typing_run.as_ref() {
+                    run.borrow_mut().inserted.push_str(inserted);
+                }
+            } else {
+                let run = Rc::new(RefCell::new(RichDelta {
+                    offset: at,
+                    removed,
+                    inserted: inserted.to_string(),
+                }));
+                self.undo_stack.push(Box::new(RichTextDeltaCommand::new(
+                    self.history_target.clone(),
+                    run.clone(),
+                )));
+                self.typing_run = mergeable.then_some(run);
+            }
+        }
+        self.text_changed.emit(self.text.clone());
         self.scroll_caret_into_view();
+        self.base.request_redraw();
+    }
+
+    /// Shifts existing spans across one splice (I-P57).
+    fn shift_spans(&mut self, at: usize, removed: usize, inserted: usize) {
+        if self.spans.is_empty() {
+            return;
+        }
+        let end = at + removed;
+        let map = |pos: usize| -> usize {
+            if pos < at || (removed > 0 && pos == at) {
+                pos
+            } else if pos >= end {
+                (pos - removed + inserted).max(at)
+            } else {
+                at
+            }
+        };
+        self.spans = self
+            .spans
+            .drain(..)
+            .filter_map(|mut span| {
+                span.range.start = map(span.range.start).min(self.text.len());
+                span.range.end = map(span.range.end).min(self.text.len());
+                (span.range.start < span.range.end).then_some(span)
+            })
+            .collect();
+        self.spans_revision = self.spans_revision.wrapping_add(1);
+    }
+
+    /// Drops spans that no longer address the document after a whole-value replacement.
+    fn clamp_spans(&mut self) {
+        let len = self.text.len();
+        self.spans = self
+            .spans
+            .drain(..)
+            .filter_map(|mut span| {
+                span.range.start = floor_char_boundary(&self.text, span.range.start.min(len));
+                span.range.end = floor_char_boundary(&self.text, span.range.end.min(len));
+                (span.range.start < span.range.end).then_some(span)
+            })
+            .collect();
+        self.spans_revision = self.spans_revision.wrapping_add(1);
     }
 
     /// The styled runs painted over the document.
@@ -238,6 +445,7 @@ impl RichEdit {
             return;
         }
         self.spans = next;
+        self.spans_revision = self.spans_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -262,6 +470,7 @@ impl RichEdit {
         }
         self.line_wrap = wrap;
         self.first_visible_line = 0;
+        self.rows_cache.borrow_mut().take();
         self.base.request_redraw();
     }
 
@@ -334,7 +543,20 @@ impl RichEdit {
     /// With wrapping off this is one row per logical line; with it on, a long line contributes as
     /// many rows as it takes to fit the interior width. Deriving both readers from this one table
     /// is what keeps a click on the row it was painted on.
-    fn visual_rows(&self) -> Vec<(usize, usize)> {
+    fn visual_rows(&self) -> Rc<Vec<(usize, usize)>> {
+        let rect = self.geometry();
+        let width = rect.width;
+        let font = effective_font(self.style()).clone();
+        if let Some(cache) = self.rows_cache.borrow().as_ref() {
+            if cache.revision == self.revision
+                && cache.spans_revision == self.spans_revision
+                && cache.width == width
+                && cache.line_wrap == self.line_wrap
+                && cache.font == font
+            {
+                return Rc::clone(&cache.rows);
+            }
+        }
         let mut rows = Vec::new();
         let mut line_start = 0usize;
         for line in self.text.split('\n') {
@@ -349,9 +571,11 @@ impl RichEdit {
                 let limit = self.content_width();
                 let mut row_start = line_start;
                 let mut width = 0.0f32;
+                let mut glyph = [0u8; 4];
                 for (index, ch) in content.char_indices() {
                     let face = self.face_at(line_start + index);
-                    let advance = estimate_text_width(&ch.to_string(), &face, 1.0) as f32;
+                    let advance =
+                        estimate_text_width(ch.encode_utf8(&mut glyph), &face, 1.0) as f32;
                     if width > 0.0 && width + advance > limit {
                         rows.push((row_start, line_start + index));
                         row_start = line_start + index;
@@ -363,7 +587,81 @@ impl RichEdit {
             }
             line_start = line_end + 1;
         }
+        let rows = Rc::new(rows);
+        *self.rows_cache.borrow_mut() = Some(VisualRowsCache {
+            revision: self.revision,
+            spans_revision: self.spans_revision,
+            width,
+            line_wrap: self.line_wrap,
+            font,
+            rows: Rc::clone(&rows),
+        });
         rows
+    }
+
+    /// Contiguous format runs over the document, cached by both revisions (I-P56).
+    ///
+    /// Built from span boundaries, so the painter sees one run per format change instead of
+    /// probing every character.
+    fn format_runs(&self) -> Rc<Vec<(usize, usize, CharFormat)>> {
+        if let Some(cache) = self.format_cache.borrow().as_ref() {
+            if cache.revision == self.revision && cache.spans_revision == self.spans_revision {
+                return Rc::clone(&cache.runs);
+            }
+        }
+        let len = self.text.len();
+        let mut bounds = vec![0usize, len];
+        for span in &self.spans {
+            bounds.push(span.range.start.min(len));
+            bounds.push(span.range.end.min(len));
+        }
+        bounds.sort_unstable();
+        bounds.dedup();
+        let mut runs: Vec<(usize, usize, CharFormat)> = Vec::new();
+        for window in bounds.windows(2) {
+            let (start, end) = (window[0], window[1]);
+            if start >= end {
+                continue;
+            }
+            let format = self
+                .spans
+                .iter()
+                .rev()
+                .find(|span| span.range.contains(&start))
+                .map_or_else(CharFormat::default, |span| span.format.clone());
+            if let Some(last) = runs.last_mut() {
+                if last.1 == start && last.2 == format {
+                    last.1 = end;
+                    continue;
+                }
+            }
+            runs.push((start, end, format));
+        }
+        let runs = Rc::new(runs);
+        *self.format_cache.borrow_mut() = Some(FormatRunsCache {
+            revision: self.revision,
+            spans_revision: self.spans_revision,
+            runs: Rc::clone(&runs),
+        });
+        runs
+    }
+
+    /// The byte offset of every logical line start, cached per revision (I-P56).
+    fn line_starts(&self) -> Rc<Vec<usize>> {
+        if let Some((revision, starts)) = self.line_starts_cache.borrow().as_ref() {
+            if *revision == self.revision {
+                return Rc::clone(starts);
+            }
+        }
+        let mut starts = vec![0usize];
+        for (index, ch) in self.text.char_indices() {
+            if ch == '\n' {
+                starts.push(index + 1);
+            }
+        }
+        let starts = Rc::new(starts);
+        *self.line_starts_cache.borrow_mut() = Some((self.revision, Rc::clone(&starts)));
+        starts
     }
 
     /// The number of rows the current wrap layout paints.
@@ -503,22 +801,21 @@ impl RichEdit {
                 (floor_char_boundary(&self.text, caret), floor_char_boundary(&self.text, caret))
             }
         };
-        let mut next = self.text.clone();
-        next.replace_range(start..end, &filtered);
-        let new_caret = start + filtered.len();
-        self.set_text_for_edit(next);
+        // The splice is applied in place and recorded as a delta; an ordinary typed run extends
+        // the previous typing step (I-P55).
+        self.apply_splice(start, end - start, &filtered, true);
+        let new_caret = (start + filtered.len()).min(self.text.len());
         // Stamp the run with the format a bare caret asked for. Insertion is the only moment the
-        // range is known, and `set_text_for_edit` leaves spans untouched, so the span survives the
-        // replacement.
+        // range is known, and the splice leaves existing spans aligned.
         if let Some(format) = self.typing_format.clone() {
             if start < new_caret {
                 self.spans.push(TextSpan { range: start..new_caret, format });
+                self.spans_revision = self.spans_revision.wrapping_add(1);
             }
         }
         self.selection = Some((new_caret, new_caret));
         self.extend_caret = new_caret;
         self.cursor_position_changed.emit(new_caret);
-        self.scroll_caret_into_view();
         self.base.request_redraw();
     }
 
@@ -560,11 +857,17 @@ impl RichEdit {
         let text = self.history_target.borrow().clone();
         self.restoring_history = true;
         self.text = text;
-        self.selection = Some((self.text.len(), self.text.len()));
-        self.first_visible_line = 0;
+        self.revision = self.revision.wrapping_add(1);
+        self.clamp_spans();
+        self.typing_run = None;
+        let caret = self.extend_caret.min(self.text.len());
+        self.selection = Some((caret, caret));
         self.restoring_history = false;
         self.text_changed.emit(self.text.clone());
-        self.cursor_position_changed.emit(self.text.len());
+        self.cursor_position_changed.emit(caret);
+        // I-P57: keep the viewport on the caret after a history replay instead of jumping to the
+        // document's first line.
+        self.scroll_caret_into_view();
         self.base.request_redraw();
     }
     /// Returns current selection range.
@@ -580,6 +883,7 @@ impl RichEdit {
         if self.read_only {
             return;
         }
+        self.typing_run = None;
         let start = start.min(self.text.len());
         let end = end.min(self.text.len());
         self.extend_caret = end;
@@ -619,6 +923,7 @@ impl RichEdit {
 
     /// Clears selection.
     pub fn clear_selection(&mut self) {
+        self.typing_run = None;
         if self.selection.is_none() {
             return;
         }
@@ -657,6 +962,7 @@ impl RichEdit {
     /// from a pixel can never leave the caret inside a multi-byte character.
     pub fn select_with_modifiers(&mut self, target: usize, modifiers: crate::shortcut::Modifiers) {
         let target = floor_char_boundary(&self.text, target.min(self.text.len()));
+        self.typing_run = None;
         // Where the caret is **now**, before it moves. This is the anchor for an extension that has
         // no live range yet: the field is showing a bare caret, and a `Shift`-movement must grow a
         // range *from that caret*. Reading the anchor off `selection` instead would pick the new
@@ -707,15 +1013,17 @@ impl RichEdit {
         let font = effective_font(self.style());
         let padding = 4;
         let target = (x - padding).max(0) as f32;
+        // One accumulated prefix instead of re-measuring the whole prefix per character, which
+        // was O(line²) for a click (I-P56).
         let mut best = 0usize;
+        let mut prefix = 0.0f32;
+        let mut glyph = [0u8; 4];
         for (index, ch) in line.char_indices() {
-            let midpoint = crate::widget::metrics::estimate_text_width(&line[..index], font, 1.0)
-                as f32
-                + crate::widget::metrics::estimate_text_width(&ch.to_string(), font, 1.0) as f32
-                    / 2.0;
-            if target < midpoint {
+            let advance = estimate_text_width(ch.encode_utf8(&mut glyph), font, 1.0) as f32;
+            if target < prefix + advance / 2.0 {
                 break;
             }
+            prefix += advance;
             best = index + ch.len_utf8();
         }
         best
@@ -744,43 +1052,29 @@ impl RichEdit {
         if self.text.is_empty() {
             return Some((0, 0));
         }
-        let offset = offset.min(self.text.len());
-        let mut line = 0usize;
-        let mut col = 0usize;
-        for (i, ch) in self.text.char_indices() {
-            if i >= offset {
-                break;
-            }
-            if ch == '\n' {
-                line += 1;
-                col = 0;
-            } else {
-                col += 1;
-            }
-        }
-        Some((line, col))
+        let offset = floor_char_boundary(&self.text, offset.min(self.text.len()));
+        let starts = self.line_starts();
+        // Binary search over the cached line starts instead of scanning the document (I-P56).
+        let line = match starts.binary_search(&offset) {
+            Ok(index) => index,
+            Err(index) => index.saturating_sub(1),
+        };
+        let start = starts.get(line).copied().unwrap_or(0).min(offset);
+        Some((line, self.text[start..offset].chars().count()))
     }
 
     /// Converts (line_index, col_index) back to a byte offset.
     fn line_col_to_byte_offset(&self, line: usize, col: usize) -> usize {
-        let mut current_line = 0usize;
-        let mut current_col = 0usize;
-        for (i, ch) in self.text.char_indices() {
-            if current_line == line && current_col == col {
-                return i;
-            }
-            if ch == '\n' {
-                current_line += 1;
-                current_col = 0;
-            } else {
-                current_col += 1;
-            }
-        }
-        // If we reached the end, return the text length if we're on the right line
-        if current_line == line {
-            self.text.len()
-        } else {
-            0
+        let starts = self.line_starts();
+        let Some(&start) = starts.get(line) else {
+            return self.text.len();
+        };
+        let end =
+            starts.get(line + 1).map(|next| next.saturating_sub(1)).unwrap_or(self.text.len());
+        let end = end.min(self.text.len()).max(start);
+        match self.text[start..end].char_indices().nth(col) {
+            Some((index, _)) => start + index,
+            None => end,
         }
     }
     /// Sets cursor position.
@@ -788,7 +1082,11 @@ impl RichEdit {
         if self.read_only {
             return;
         }
+        self.typing_run = None;
         let position = position.min(self.text.len());
+        // I-P57: the caret's own end must move with a programmatic placement, or the paint and
+        // the next edit keep using the old anchor.
+        self.extend_caret = position;
         if self.selection == Some((position, position)) {
             return;
         }
@@ -902,8 +1200,9 @@ impl WidgetProperties for RichEdit {
                 Ok(())
             }
             "read_only" => {
-                self.read_only = expect_bool(value)?;
-                self.base.request_redraw();
+                // I-109: route through the setter, so the property and method entry points emit
+                // the same `read_only_changed` signal.
+                self.set_read_only(expect_bool(value)?);
                 Ok(())
             }
             "line_wrap" => {
@@ -1004,11 +1303,13 @@ impl Draw for RichEdit {
         );
         // Draw border
         context.draw_rect(rect, if self.read_only { border.blend(&paper, 0.50) } else { border });
-        // Draw text content — all lines
+        // Draw text content — all lines. I-P57: the row height comes from the font the ink is
+        // actually drawn with, not a hardcoded 16 that disagreed with `size_hint`.
         let font = effective_font(self.style());
-        let line_height = 16i32;
+        let line_height = font.effective_line_height().max(1.0) as i32;
         let padding = 2i32;
-        let cursor_before = self.selection.map_or(0, |(start, _)| start).min(self.text.len());
+        // I-P57: the caret is the *moving* end of the range, not the range's lower bound.
+        let cursor_before = self.extend_caret.min(self.text.len());
 
         // The selection highlight is drawn as a background band **before** the ink, so the text
         // stays legible on top of it.
@@ -1028,6 +1329,13 @@ impl Draw for RichEdit {
         // line is highlighted and clicked on the row it was painted on.
         let selection = self.selection.filter(|(start, end)| start != end);
         let rows = self.visual_rows();
+        // I-P57: a long unwrapped row must not paint over the border or its neighbours.
+        context.push_clip(
+            rect.x + padding,
+            rect.y + padding,
+            rect.width.saturating_sub(padding as u32 * 2),
+            rect.height.saturating_sub(padding as u32 * 2),
+        );
         // An empty document still shows a caret and its placeholder.
         if self.text.is_empty() && !self.placeholder_text.is_empty() {
             context.draw_text(
@@ -1120,6 +1428,7 @@ impl Draw for RichEdit {
                 );
             }
         }
+        context.pop_clip();
     }
 }
 
@@ -1139,23 +1448,25 @@ impl RichEdit {
         font: &crate::core::Font,
         ink: crate::core::Color,
     ) {
-        let mut runs: Vec<(usize, usize, CharFormat)> = Vec::new();
-        let mut run_start = 0usize;
-        let mut run_format = self.format_at(line_start);
-        for (index, _) in line.char_indices() {
-            let format = self.format_at(line_start + index);
-            if format != run_format {
-                if run_start < index {
-                    runs.push((run_start, index, run_format));
-                }
-                run_start = index;
-                run_format = format;
+        // Slice the cached document-wide run table to this line (I-P56) instead of calling
+        // `format_at` — a reverse span scan — for every character painted.
+        let runs = self.format_runs();
+        let line_end = line_start + line.len();
+        let first = runs.partition_point(|(_, end, _)| *end <= line_start);
+        let mut pieces: Vec<(usize, usize, CharFormat)> = Vec::new();
+        for (start, end, format) in runs.iter().skip(first) {
+            if *start >= line_end {
+                break;
+            }
+            let start = (*start).max(line_start) - line_start;
+            let end = (*end).min(line_end) - line_start;
+            if start < end {
+                pieces.push((start, end, format.clone()));
             }
         }
-        runs.push((run_start, line.len(), run_format));
 
         let mut pen_x = origin_x;
-        for (start, end, format) in runs {
+        for (start, end, format) in pieces {
             if start >= end {
                 continue;
             }
@@ -1311,12 +1622,11 @@ impl crate::event::EventHandler for RichEdit {
                 let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
                 match *key {
                     8 if cursor > 0 => {
-                        // Backspace — delete char before cursor
+                        // Backspace — delete char before cursor, recorded as one splice (I-P55).
                         let boundary = floor_char_boundary(&self.text, cursor - 1);
-                        let mut next = self.text.clone();
-                        next.drain(boundary..cursor);
+                        let removed = cursor - boundary;
+                        self.apply_splice(boundary, removed, "", false);
                         let new_cursor = boundary;
-                        self.set_text_for_edit(next);
                         self.selection = Some((new_cursor, new_cursor));
                         self.extend_caret = new_cursor;
                         self.cursor_position_changed.emit(new_cursor);
@@ -1334,26 +1644,22 @@ impl crate::event::EventHandler for RichEdit {
                             .next()
                             .map(|ch| cursor + ch.len_utf8())
                             .unwrap_or(self.text.len());
-                        let mut next = self.text.clone();
-                        next.drain(cursor..end.min(self.text.len()));
-                        self.set_text_for_edit(next);
+                        self.apply_splice(cursor, end - cursor, "", false);
                         self.selection = Some((cursor, cursor));
                         self.extend_caret = cursor;
                         self.cursor_position_changed.emit(cursor);
                     }
                     13 => {
-                        // Enter — insert newline at cursor
-                        let mut next = self.text.clone();
-                        next.insert(cursor, '\n');
-                        self.set_text_for_edit(next);
-                        let new_cursor = cursor + 1;
+                        // Enter — insert a newline as its own undo step.
+                        self.apply_splice(cursor, 0, "\n", false);
+                        let new_cursor = (cursor + 1).min(self.text.len());
                         // A typing format asked for at a bare caret applies to the newline too.
                         if let Some(format) = self.typing_format.clone() {
                             self.spans.push(TextSpan { range: cursor..new_cursor, format });
+                            self.spans_revision = self.spans_revision.wrapping_add(1);
                         }
                         self.selection = Some((new_cursor, new_cursor));
                         self.extend_caret = new_cursor;
-                        self.text_changed.emit(self.text.clone());
                         self.cursor_position_changed.emit(new_cursor);
                     }
                     37 if cursor > 0 => {
@@ -1420,8 +1726,10 @@ impl crate::event::EventHandler for RichEdit {
                     40 => {
                         // Down — see the Up arm.
                         if let Some((line, col)) = self.byte_offset_to_line_col(cursor) {
-                            let new_cursor = self.line_col_to_byte_offset(line + 1, col);
-                            if new_cursor != cursor {
+                            // Only move when a later line exists; otherwise the cached line table
+                            // would send the caret to the document end.
+                            if line + 1 < self.line_starts().len() {
+                                let new_cursor = self.line_col_to_byte_offset(line + 1, col);
                                 self.select_with_modifiers(new_cursor, mods);
                             } else if !shift {
                                 self.select_with_modifiers(cursor, mods);
@@ -1433,7 +1741,7 @@ impl crate::event::EventHandler for RichEdit {
                         self.set_selection(0, self.text.len());
                     }
                     88 if primary => {
-                        // Primary+X: copy, then remove the selection.
+                        // Primary+X: copy, then remove the selection as one splice.
                         let _ = self.copy_selection_to_clipboard();
                         if let Some((start, end)) = self.selection.filter(|(s, e)| s != e) {
                             let (lo, hi) = if start < end { (start, end) } else { (end, start) };
@@ -1441,9 +1749,7 @@ impl crate::event::EventHandler for RichEdit {
                                 floor_char_boundary(&self.text, lo.min(self.text.len())),
                                 floor_char_boundary(&self.text, hi.min(self.text.len())),
                             );
-                            let mut next = self.text.clone();
-                            next.replace_range(lo..hi, "");
-                            self.set_text_for_edit(next);
+                            self.apply_splice(lo, hi - lo, "", false);
                             self.selection = Some((lo, lo));
                             self.extend_caret = lo;
                             self.cursor_position_changed.emit(lo);
@@ -2051,5 +2357,65 @@ mod tests {
         }
         let max_first = re.line_count().saturating_sub(re.visible_line_count());
         assert_eq!(re.first_visible_line(), max_first, "the viewport clamps at the last window");
+    }
+
+    /// I-P57: formatting after the edit point follows the characters it was applied to.
+    #[test]
+    fn edits_shift_existing_spans() {
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 300, 100)));
+        re.set_text("hello world".to_string());
+        re.set_spans(vec![TextSpan {
+            range: 6..11,
+            format: CharFormat { bold: true, ..CharFormat::default() },
+        }]);
+        re.set_selection(0, 0);
+        re.insert_committed_text("X");
+        assert_eq!(re.spans()[0].range, 7..12, "the span moves past the insertion");
+        assert!(re.spans()[0].format.bold);
+    }
+
+    /// I-P55: a continuous typed run is one undo step.
+    #[test]
+    fn a_typing_run_merges_into_one_undo_step() {
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 300, 100)));
+        re.set_selection(0, 0);
+        for ch in ["a", "b", "c"] {
+            re.handle_event(&crate::event::Event::TextInput { text: ch.to_string() });
+        }
+        assert_eq!(re.text(), "abc");
+        assert!(re.undo());
+        assert_eq!(re.text(), "", "one undo reverses the whole typed run");
+        assert!(!re.can_undo());
+    }
+
+    /// I-P57: an undo replay keeps the viewport on the caret instead of jumping to the top.
+    #[test]
+    fn undo_keeps_the_viewport_near_the_caret() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 200, 60));
+        re.set_text((0..30).map(|n| format!("line {n}\n")).collect::<String>());
+        re.set_cursor_position(20 * 8);
+        re.set_first_visible_line(0);
+        re.insert_committed_text("x");
+        assert!(re.undo());
+        assert!(re.first_visible_line() > 0, "the viewport follows the restored caret");
+    }
+
+    /// I-109: the property route emits `read_only_changed` like the method does.
+    #[test]
+    fn the_property_route_emits_read_only_changed() {
+        use crate::widget::capability::types::CapabilityValue;
+        use crate::widget::capability::WidgetProperties;
+        let mut re = RichEdit::new(Rect::new(0, 0, 200, 60));
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        re.read_only_changed.connect({
+            let seen = std::sync::Arc::clone(&seen);
+            move |flag| {
+                if *flag {
+                    seen.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        });
+        re.set("read_only", CapabilityValue::Bool(true)).expect("the property is writable");
+        assert!(seen.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

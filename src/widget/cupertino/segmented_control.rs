@@ -29,17 +29,26 @@ pub struct CupertinoSegment {
     pub label: String,
     /// An optional icon name, resolved as a bundled glyph when one matches.
     pub icon: Option<String>,
+    /// Whether the segment can be selected; a disabled segment paints in disabled ink and
+    /// ignores taps.
+    pub enabled: bool,
 }
 
 impl CupertinoSegment {
     /// A segment with a caption and no icon.
     pub fn new(label: impl Into<String>) -> Self {
-        Self { label: label.into(), icon: None }
+        Self { label: label.into(), icon: None, enabled: true }
     }
 
     /// The same segment with an icon name attached.
     pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+
+    /// The same segment, disabled.
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
         self
     }
 }
@@ -80,6 +89,8 @@ pub struct CupertinoSegmentedControl {
     slide_from: usize,
     /// Per-segment icon names, parallel to `segments`.
     segment_icons: Vec<Option<String>>,
+    /// Per-segment enabled flags, parallel to `segments`.
+    segment_enabled: Vec<bool>,
     /// How the selected segment is painted.
     tint: SegmentTint,
     /// Emitted when the selected segment changes with the new index.
@@ -102,6 +113,7 @@ impl CupertinoSegmentedControl {
             slide: PropertyDriver::at(1.0, MotionSlot::Normal),
             slide_from: 0,
             segment_icons: Vec::new(),
+            segment_enabled: Vec::new(),
             tint: SegmentTint::WhiteThumb,
             value_changed: Signal1::new(),
         }
@@ -112,6 +124,8 @@ impl CupertinoSegmentedControl {
     pub fn set_segments(&mut self, segments: Vec<String>) {
         self.segment_icons.clear();
         self.segment_icons.resize(segments.len(), None);
+        self.segment_enabled.clear();
+        self.segment_enabled.resize(segments.len(), true);
         self.segments = segments;
         if self.selected_index >= self.segments.len().max(1) {
             self.selected_index = if self.segments.is_empty() {
@@ -130,7 +144,8 @@ impl CupertinoSegmentedControl {
     /// Replaces the segments with caption + optional icon items.
     pub fn set_segment_items(&mut self, segments: Vec<CupertinoSegment>) {
         self.segments = segments.iter().map(|segment| segment.label.clone()).collect();
-        self.segment_icons = segments.into_iter().map(|segment| segment.icon).collect();
+        self.segment_icons = segments.iter().map(|segment| segment.icon.clone()).collect();
+        self.segment_enabled = segments.iter().map(|segment| segment.enabled).collect();
         if self.selected_index >= self.segments.len().max(1) {
             self.selected_index = if self.segments.is_empty() {
                 0
@@ -146,6 +161,24 @@ impl CupertinoSegmentedControl {
     /// Returns the icon name of segment `index`.
     pub fn segment_icon(&self, index: usize) -> Option<&str> {
         self.segment_icons.get(index).and_then(|icon| icon.as_deref())
+    }
+
+    /// Whether segment `index` can be selected; an out-of-range index is treated as disabled.
+    pub fn is_segment_enabled(&self, index: usize) -> bool {
+        self.segment_enabled.get(index).copied().unwrap_or(false)
+    }
+
+    /// Enables or disables one segment, returning whether the index exists.
+    pub fn set_segment_enabled(&mut self, index: usize, enabled: bool) -> bool {
+        let Some(slot) = self.segment_enabled.get_mut(index) else {
+            return false;
+        };
+        if *slot == enabled {
+            return true;
+        }
+        *slot = enabled;
+        self.base.request_redraw();
+        true
     }
 
     /// Returns how the selected segment is painted.
@@ -454,7 +487,7 @@ impl Draw for CupertinoSegmentedControl {
             // The label must contrast with what it is painted on — the selected thumb for the
             // selected segment, the track for the rest — so the two are chosen against their
             // own backdrop instead of both assuming a light one.
-            let color = if !self.base.is_enabled() {
+            let color = if !self.base.is_enabled() || !self.is_segment_enabled(i) {
                 self.base.disabled_ink_on(unselected, track_color)
             } else if i == self.selected_index {
                 indicator_color.contrast_color()
@@ -484,9 +517,10 @@ impl Draw for CupertinoSegmentedControl {
             // from one metric; a label that fits is borrowed and keeps its old origin, which
             // the fitted draw's own inset would have shifted.
             let label = fitted_segment_label(seg, text_width, &mut |text: &str| {
-                context.measure_text(text, &font).width
+                crate::widget::base_widgets::measure_cache::measure_text(context, text, &font).width
             });
-            let metrics = context.measure_text(&label, &font);
+            let metrics =
+                crate::widget::base_widgets::measure_cache::measure_text(context, &label, &font);
             let text_x = text_origin + (text_width - metrics.width as i32) / 2;
             // Centre the label in its segment. The origin is the glyph box's top edge, so the
             // offset is half the *line box*; the old ascent/descent pair began the glyph box
@@ -551,10 +585,13 @@ impl EventHandler for CupertinoSegmentedControl {
                 }
 
                 let index = (rel_x / seg_w) as usize;
-                if index < self.segments.len() && index != self.selected_index {
-                    self.selected_index = index;
-                    self.value_changed.emit(index);
-                    self.base.request_redraw();
+                if index < self.segments.len()
+                    && index != self.selected_index
+                    && self.is_segment_enabled(index)
+                {
+                    // The click goes through the same setter the property path uses, so the
+                    // highlight slides instead of jumping (MW-18).
+                    self.set_selected_index(index);
                 }
             }
             _ => {

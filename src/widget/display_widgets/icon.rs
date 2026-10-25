@@ -769,6 +769,16 @@ pub struct Icon {
     /// Scratch buffer for a state-tinted frame, reused across draws.
     #[cfg(feature = "image")]
     frame_tint: crate::compat::Vec<u8>,
+    /// Bumped whenever [`Icon::set_frames`] replaces the movie.
+    #[cfg(feature = "image")]
+    frames_generation: u64,
+    /// The frame, state and generation the tint buffer was produced from.
+    ///
+    /// A still icon in a disabled or selected state used to re-run the whole per-pixel tint on
+    /// every frame. The result is a function of the source frame and the state, so the key is
+    /// that triple; a hit means the buffer already holds the picture.
+    #[cfg(feature = "image")]
+    frame_tint_key: Option<(u64, usize, bool, bool)>,
 }
 
 #[cfg(widgets_unstripped)]
@@ -797,6 +807,10 @@ impl Icon {
             frame_interval_ms: ICON_FRAME_INTERVAL_MS,
             #[cfg(feature = "image")]
             frame_tint: crate::compat::Vec::new(),
+            #[cfg(feature = "image")]
+            frames_generation: 0,
+            #[cfg(feature = "image")]
+            frame_tint_key: None,
         }
     }
 
@@ -984,6 +998,8 @@ impl Icon {
         self.frames = frames;
         self.frame_index = 0;
         self.frame_elapsed_ms = 0;
+        self.frames_generation = self.frames_generation.wrapping_add(1);
+        self.frame_tint_key = None;
         self.base.request_redraw();
     }
 
@@ -1105,25 +1121,33 @@ impl Icon {
             ctx.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, pixels);
             return;
         }
-        self.frame_tint.clear();
-        self.frame_tint.extend_from_slice(pixels);
-        if disabled {
-            for chunk in self.frame_tint.as_chunks_mut::<4>().0 {
-                let luma = ((chunk[0] as u32 * 299 + chunk[1] as u32 * 587 + chunk[2] as u32 * 114)
-                    / 1000) as u8;
-                chunk[0] = luma;
-                chunk[1] = luma;
-                chunk[2] = luma;
-                chunk[3] /= 2;
+        // The tint is a pure function of the frame, the dither state and the source buffer's
+        // generation, so a still control re-runs the per-pixel loop only when one of those
+        // changes rather than on every frame.
+        let key = (self.frames_generation, self.frame_index, disabled, selected);
+        if self.frame_tint_key != Some(key) || self.frame_tint.is_empty() {
+            self.frame_tint.clear();
+            self.frame_tint.extend_from_slice(pixels);
+            if disabled {
+                for chunk in self.frame_tint.as_chunks_mut::<4>().0 {
+                    let luma =
+                        ((chunk[0] as u32 * 299 + chunk[1] as u32 * 587 + chunk[2] as u32 * 114)
+                            / 1000) as u8;
+                    chunk[0] = luma;
+                    chunk[1] = luma;
+                    chunk[2] = luma;
+                    chunk[3] /= 2;
+                }
+            } else {
+                let (r, g, b) =
+                    (Color::PRIMARY.r as f32, Color::PRIMARY.g as f32, Color::PRIMARY.b as f32);
+                for chunk in self.frame_tint.as_chunks_mut::<4>().0 {
+                    chunk[0] = (chunk[0] as f32 * 0.65 + r * 0.35).round() as u8;
+                    chunk[1] = (chunk[1] as f32 * 0.65 + g * 0.35).round() as u8;
+                    chunk[2] = (chunk[2] as f32 * 0.65 + b * 0.35).round() as u8;
+                }
             }
-        } else {
-            let (r, g, b) =
-                (Color::PRIMARY.r as f32, Color::PRIMARY.g as f32, Color::PRIMARY.b as f32);
-            for chunk in self.frame_tint.as_chunks_mut::<4>().0 {
-                chunk[0] = (chunk[0] as f32 * 0.65 + r * 0.35).round() as u8;
-                chunk[1] = (chunk[1] as f32 * 0.65 + g * 0.35).round() as u8;
-                chunk[2] = (chunk[2] as f32 * 0.65 + b * 0.35).round() as u8;
-            }
+            self.frame_tint_key = Some(key);
         }
         ctx.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, &self.frame_tint);
     }
@@ -2349,5 +2373,41 @@ mod tests {
         assert!(Widget::tick(&mut icon, ICON_FRAME_INTERVAL_MS));
         let third = render_icon_pixels(&mut icon, 24, 24);
         assert_eq!(&third[centre..centre + 4], &[255, 0, 0, 255], "the list loops");
+    }
+
+    /// A tinted frame is computed once per `(frame, state, generation)` key.
+    #[cfg(feature = "image")]
+    #[test]
+    fn a_tinted_frame_is_cached_between_frames() {
+        use crate::image::Image;
+
+        let mut icon = Icon::new(crate::widget::census::CENSUS_RECT);
+        let frame = Image::try_from_rgba(
+            vec![255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255],
+            2,
+            2,
+        )
+        .expect("the fixture is valid");
+        icon.set_frames(crate::compat::vec![frame]);
+        icon.set_state(IconState::Disabled);
+
+        let _ = render_icon_pixels(&mut icon, 24, 24);
+        assert!(icon.frame_tint_key.is_some(), "the first draw computes the tint");
+        let generation = icon.frames_generation;
+        let ptr = icon.frame_tint.as_ptr();
+
+        let _ = render_icon_pixels(&mut icon, 24, 24);
+        assert_eq!(icon.frame_tint.as_ptr(), ptr, "a still, same-state frame reuses the buffer");
+        assert_eq!(icon.frame_tint_key.unwrap().0, generation);
+
+        // New frames invalidate the key.
+        let other = Image::try_from_rgba(
+            vec![0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255],
+            2,
+            2,
+        )
+        .expect("the fixture is valid");
+        icon.set_frames(crate::compat::vec![other]);
+        assert!(icon.frame_tint_key.is_none(), "a new movie invalidates the tint");
     }
 }

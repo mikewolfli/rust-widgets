@@ -8,7 +8,7 @@
 //! It displays an icon as a text character (e.g., "+") and supports press
 //! animation, shadow, and click signal emission.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::style::{MotionSlot, PropertyDriver};
@@ -68,6 +68,15 @@ pub struct FAB {
     visibility: PropertyDriver,
     /// Whether downward scrolling hides the button.
     hide_on_scroll: bool,
+    /// The shadow's depth, `0.0..=8.0` (OV-07).
+    ///
+    /// The offset and the radius reservation used to be the literal `3.0`; a host on a dense
+    /// background can now ask for a deeper or shallower drop without replacing the control.
+    elevation: f32,
+    /// The cached extended-label face, keyed by its size (G-A02).
+    label_font_cache: Option<(u32, Font)>,
+    /// The cached icon-text face, keyed by its size (G-A02).
+    icon_font_cache: Option<(u32, Font)>,
 }
 
 impl FAB {
@@ -96,6 +105,9 @@ impl FAB {
             press: PropertyDriver::at(0.0, MotionSlot::Fast),
             visibility: PropertyDriver::at(1.0, MotionSlot::Normal),
             hide_on_scroll: false,
+            elevation: 3.0,
+            label_font_cache: None,
+            icon_font_cache: None,
         }
     }
 
@@ -235,6 +247,27 @@ impl FAB {
         self.press.set_target(if self.base.is_pressed() { 1.0 } else { 0.0 });
     }
 
+    /// Returns the button's shadow depth.
+    pub fn elevation(&self) -> f32 {
+        self.elevation
+    }
+
+    /// Sets the button's shadow depth, clamped to `0.0..=8.0` (OV-07).
+    ///
+    /// The default is `3.0`, which is the value every previous frame was drawn with, so a caller
+    /// that never asks keeps the historical projection.
+    pub fn set_elevation(&mut self, elevation: f32) {
+        if !elevation.is_finite() {
+            return;
+        }
+        let elevation = elevation.clamp(0.0, 8.0);
+        if (self.elevation - elevation).abs() < f32::EPSILON {
+            return;
+        }
+        self.elevation = elevation;
+        self.base.request_redraw();
+    }
+
     /// Programmatically trigger a click cycle (press then release).
     pub fn click(&mut self) {
         self.base.clicked.emit();
@@ -367,7 +400,7 @@ impl Draw for FAB {
         // snapshot showed the shadow hanging past the control while the raster backend clipped
         // it. The radius is therefore reduced by the largest offset used (the unpressed one,
         // since the pressed state shrinks the circle anyway), keeping the shadow inside too.
-        let max_shadow_offset = (3.0 * dpi).ceil() as u32;
+        let max_shadow_offset = (self.elevation * dpi).ceil() as u32;
         let base_radius =
             (rect.width.min(rect.height) / 2).saturating_sub(max_shadow_offset / 2 + 1);
 
@@ -380,8 +413,11 @@ impl Draw for FAB {
             return;
         }
         let radius = (base_radius as f32 * (1.0 - 0.1 * press)) as u32;
-        let shadow_offset =
-            if press > 0.0 { ((3.0 - press) * dpi) as u32 } else { (3.0 * dpi) as u32 };
+        let shadow_offset = if press > 0.0 {
+            ((self.elevation - press).max(0.0) * dpi) as u32
+        } else {
+            (self.elevation * dpi) as u32
+        };
         // The hide-on-scroll transition moves the button below its own band as it leaves.
         let hide_shift = ((1.0 - visibility) * rect.height as f32) as i32;
         let cy = cy + hide_shift;
@@ -410,9 +446,9 @@ impl Draw for FAB {
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or_else(|| self.accent_color.contrast_color());
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
+        let accent = crate::style::palette_shared()
+            .as_ref()
+            .map(|colors| colors.primary)
             .unwrap_or(self.accent_color);
         let caller_set_accent = self.accent_color != Self::DEFAULT_ACCENT_COLOR;
         let base_fill = if caller_set_accent {
@@ -439,8 +475,13 @@ impl Draw for FAB {
             );
             context.fill_rounded_rect(capsule, radius, fill_color);
             let font_size = (radius as f32 * 0.5).max(14.0);
-            use crate::core::Font;
-            let font = Font::new("sans-serif", font_size, false, false);
+            let bits = font_size.to_bits();
+            if self.label_font_cache.as_ref().is_none_or(|(key, _)| *key != bits) {
+                self.label_font_cache =
+                    Some((bits, Font::new("sans-serif", font_size, false, false)));
+            }
+            let font =
+                self.label_font_cache.as_ref().map(|(_, font)| font.clone()).unwrap_or_default();
             let label_band = Rect::new(
                 capsule.x + radius as i32,
                 context.text_line(capsule, &font).y,
@@ -473,16 +514,24 @@ impl Draw for FAB {
                 log::warn!("floating action button icon could not be painted: {error:?}");
             }
         } else if !self.icon_text.is_empty() {
-            // Use a default monospace-like font at a size proportional to button
             let font_size = if self.size_kind == FabSize::Mini {
                 (radius as f32 * 0.7).max(12.0)
             } else {
                 (radius as f32 * 0.7).max(16.0)
             };
-            use crate::core::Font;
-            let font = Font::new("sans-serif", font_size, false, false);
+            let bits = font_size.to_bits();
+            if self.icon_font_cache.as_ref().is_none_or(|(key, _)| *key != bits) {
+                self.icon_font_cache =
+                    Some((bits, Font::new("sans-serif", font_size, false, false)));
+            }
+            let font =
+                self.icon_font_cache.as_ref().map(|(_, font)| font.clone()).unwrap_or_default();
 
-            let metrics = context.measure_text(&self.icon_text, &font);
+            let metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                context,
+                &self.icon_text,
+                &font,
+            );
             let text_y = cy - (metrics.height as i32) / 2;
             // The inscribed square of a circle of radius `r` has a half-side of `r / sqrt(2)`,
             // which is the widest label that stays inside the disc at any rotation.
@@ -866,5 +915,19 @@ mod tests {
         fab.report_scroll(-3);
         while fab.tick(16) {}
         assert_eq!(fab.visibility_progress(), 1.0);
+    }
+
+    #[test]
+    fn elevation_is_configurable_and_clamped() {
+        let mut fab = make_fab();
+        assert_eq!(fab.elevation(), 3.0, "the historical depth is the default");
+        fab.set_elevation(6.0);
+        assert_eq!(fab.elevation(), 6.0);
+        fab.set_elevation(20.0);
+        assert_eq!(fab.elevation(), 8.0, "the upper bound keeps the shadow inside the box");
+        fab.set_elevation(-4.0);
+        assert_eq!(fab.elevation(), 0.0, "zero removes the shadow rather than inverting it");
+        fab.set_elevation(f32::NAN);
+        assert_eq!(fab.elevation(), 0.0, "a non-finite write is ignored");
     }
 }

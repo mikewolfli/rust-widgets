@@ -35,10 +35,11 @@
 //! 去按 OS 分支。
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use rust_widgets::app::{App, AppConfig, WidgetHandle, WindowHandle};
+use rust_widgets::app::{App, AppConfig, LabelHandle, WidgetHandle, WindowHandle};
 use rust_widgets::core::{ObjectId, Orientation, Rect};
 use rust_widgets::layout::Layout as LayoutTrait;
 use rust_widgets::theme::{global_theme_manager, AppearanceMode, Theme};
@@ -118,52 +119,109 @@ fn switch_appearance(dark: bool) -> Option<String> {
 // Log System — 线程安全的事件日志
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// How many recent entries the log keeps in memory.
+///
+/// This demo appends on every control event and runs for as long as its window is open, so an
+/// unbounded buffer grows with the event count. Past this limit the oldest entry is dropped:
+/// memory stays bounded and the entries a reader looks at — the most recent ones, the four the
+/// on-screen panel shows — are exactly the ones that survive.
+const EVENT_LOG_CAPACITY: usize = 200;
+
+/// One on-screen log row together with the text it currently shows.
+struct LogRow {
+    /// The label that renders this row.
+    handle: LabelHandle,
+    /// The text last written to `handle`.
+    ///
+    /// Kept so a write that would not change anything can be skipped: a burst of events that
+    /// leaves a row identical must not cost a native `set_text` per event.
+    shown: String,
+}
+
 struct EventLog {
-    entries: Mutex<Vec<String>>,
+    entries: Mutex<VecDeque<String>>,
     /// On-screen rows that mirror the most recent entries.
     ///
-    /// Held by id rather than by reference: the rows are created after most of the startup
-    /// events, and a `Mutex<Vec<LabelHandle>>` is the smallest way to let `append` keep them
+    /// Held by handle rather than by reference: the rows are created after most of the startup
+    /// events, and a `Mutex<Vec<LogRow>>` is the smallest way to let `append` keep them
     /// current without a second callback path. Every append in this demo runs on the loop
     /// thread (startup hooks and control callbacks), which is the thread the widget registry
     /// belongs to.
-    rows: Mutex<Vec<rust_widgets::app::LabelHandle>>,
+    rows: Mutex<Vec<LogRow>>,
 }
 
 impl EventLog {
     fn new() -> Self {
-        Self { entries: Mutex::new(Vec::new()), rows: Mutex::new(Vec::new()) }
+        Self { entries: Mutex::new(VecDeque::new()), rows: Mutex::new(Vec::new()) }
     }
 
     fn append(&self, msg: impl Into<String>) {
         let msg = msg.into();
         println!("[EVENT] {}", msg);
-        let mut entries = self.entries.lock().unwrap();
-        entries.push(msg);
-        // Show the tail of the log in the panel: the last N messages, oldest first, so the
-        // newest line is always the bottom row — the direction a terminal scrolls.
-        let rows = self.rows.lock().unwrap();
-        if rows.is_empty() {
-            return;
-        }
-        let start = entries.len().saturating_sub(rows.len());
-        for (row, line) in rows.iter().zip(entries[start..].iter()) {
-            row.set_text(line);
+
+        // One writer mutex order everywhere in this type: rows first, then entries.
+        let mut rows = self.rows.lock().unwrap();
+        let tail: Vec<String> = {
+            let mut entries = self.entries.lock().unwrap();
+            if entries.len() >= EVENT_LOG_CAPACITY {
+                entries.pop_front();
+            }
+            entries.push_back(msg);
+            // Show the tail of the log in the panel: the last N messages, oldest first, so the
+            // newest line is always the bottom row — the direction a terminal scrolls.
+            let start = entries.len().saturating_sub(rows.len());
+            entries.range(start..).cloned().collect()
+        };
+
+        // Only rows whose text actually changed are written. A scrolling tail shifts one line
+        // per event, so an event that really adds a new line does still rewrite the panel — that
+        // is what a four-line tail means. What this removes is the redundant half: a repeated
+        // event (the same value notified twice, a status line set to the text it already shows)
+        // leaves the four rows identical and now costs zero native writes instead of four.
+        //
+        // The row lock is held across the writes on purpose: these rows are plain labels with
+        // no callbacks registered on them, so a write cannot re-enter `append`, and every
+        // append in this demo already runs on the loop thread.
+        for (row, line) in rows.iter_mut().zip(tail.iter()) {
+            if row.shown != *line {
+                row.handle.set_text(line);
+                row.shown.clone_from(line);
+            }
         }
     }
 
     /// Wires the panel rows that mirror this log, and fills them with what is already there.
-    fn attach_rows(&self, rows: Vec<rust_widgets::app::LabelHandle>) {
-        let entries = self.entries.lock().unwrap();
-        let start = entries.len().saturating_sub(rows.len());
-        for (row, line) in rows.iter().zip(entries[start..].iter()) {
-            row.set_text(line);
-        }
-        *self.rows.lock().unwrap() = rows;
+    fn attach_rows(&self, handles: Vec<LabelHandle>) {
+        // Same lock order as `append`: rows first, then entries.
+        let mut rows = self.rows.lock().unwrap();
+        let tail: Vec<String> = {
+            let entries = self.entries.lock().unwrap();
+            let start = entries.len().saturating_sub(handles.len());
+            entries.range(start..).cloned().collect()
+        };
+        // Right-align: the newest entry belongs in the bottom row even when fewer entries
+        // exist than rows. `zip` used to put the first entry in the top row, which showed an
+        // old line at the bottom of a freshly attached panel.
+        let first_filled = handles.len().saturating_sub(tail.len());
+        *rows = handles
+            .into_iter()
+            .enumerate()
+            .map(|(index, handle)| {
+                let text = if index >= first_filled {
+                    tail[index - first_filled].clone()
+                } else {
+                    String::new()
+                };
+                if !text.is_empty() {
+                    handle.set_text(&text);
+                }
+                LogRow { handle, shown: text }
+            })
+            .collect();
     }
 
     fn snapshot(&self) -> Vec<String> {
-        self.entries.lock().unwrap().clone()
+        self.entries.lock().unwrap().iter().cloned().collect()
     }
 }
 
@@ -675,6 +733,35 @@ fn register_window_layout(
     });
 }
 
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+
+    /// The log keeps a bounded tail rather than growing with the event count.
+    ///
+    /// Nothing in this demo ever drops a control or a window, so before the cap an evening of
+    /// hovering and clicking grew the `Vec` without limit.
+    #[test]
+    fn the_event_log_keeps_only_its_most_recent_entries() {
+        let log = EventLog::new();
+        for index in 0..EVENT_LOG_CAPACITY + 50 {
+            log.append(format!("event {index}"));
+        }
+        let entries = log.snapshot();
+        assert_eq!(entries.len(), EVENT_LOG_CAPACITY, "the log must stop growing at its cap");
+        assert_eq!(
+            entries.first().map(String::as_str),
+            Some("event 50"),
+            "the oldest entries must be the ones dropped"
+        );
+        assert_eq!(
+            entries.last().cloned(),
+            Some(format!("event {}", EVENT_LOG_CAPACITY + 49)),
+            "the newest entry must be the last one kept"
+        );
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // In-memory save state — the 2.9.1 capability showcase
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -791,23 +878,37 @@ fn build_all_controls(
     log: &Arc<EventLog>,
     followers: &mut Vec<Follower>,
 ) -> Vec<Slot> {
-    // 每个控件建好后把自己的 id 与行归属登记进来，供窗口 layout 在 resize 时重排。
-    // 行号只描述「同一水平带」，列内按权重分宽度。
+    // Each control registers its own row here so the window layout can re-place it on resize.
+    // The row number only says "same horizontal band"; columns share the row's width by weight.
     let mut slots: Vec<Slot> = Vec::new();
+    // One rectangle, one control.
+    //
+    // The rectangle is written once. It is used twice — for the constructor call and for the
+    // layout's nominal box — so the control's real position and the rectangle the layout knows
+    // about cannot drift; previously the same `(x, y, w, h)` literal appeared in both places at
+    // every call site, and one edited copy silently disagreed with the other.
+    //
+    // `$constructor` names a `WindowHandle` method whose last four parameters are `(x, y, w, h)`;
+    // every constructor used for a content row has that shape. The handle is bound once, so the
+    // expression that builds the control still runs exactly once (an earlier version expanded
+    // `$handle` at each use, which constructed the control twice).
     macro_rules! row {
-        ($handle:expr, $row:expr, $weight:expr, $nominal:expr) => {{
-            // Bind the expression once. A `macro_rules!` metavariable is expanded at every
-            // use, so `$handle` appearing twice used to **construct the control twice**: the
-            // first object was registered in the layout and the second was returned to the
-            // caller. Both were children of the window, so the tree painter drew two copies
-            // — one which the layout moved and one which stayed at its creation rectangle.
-            let handle = $handle;
+        ($row:expr, $weight:expr, ($x:expr, $y:expr, $w:expr, $h:expr), $constructor:ident ( $($arg:expr),* $(,)? )) => {{
+            let nominal = ($x, $y, $w, $h);
+            let handle = WindowHandle::$constructor(
+                win,
+                $($arg,)*
+                nominal.0,
+                nominal.1,
+                nominal.2,
+                nominal.3,
+            );
             slots.push(Slot {
                 id: handle.raw_id(),
                 band: Band::Content,
                 row: $row,
                 weight: $weight,
-                nominal: $nominal,
+                nominal,
             });
             handle
         }};
@@ -839,7 +940,7 @@ fn build_all_controls(
     // ── Row 0: Button Controls ───────────────────────────────────────
     log.append("=== Row: Button Controls ===");
 
-    let btn = row!(win.new_button("点击我", 20, 20, 150, 32), 0, 1, (20, 20, 150, 32));
+    let btn = row!(0, 1, (20, 20, 150, 32), new_button("点击我"));
     let l = Arc::clone(log);
     let dialog_for_click = dialog.clone();
     btn.on_click(move || {
@@ -848,7 +949,7 @@ fn build_all_controls(
     });
     log.append("[Button] at (20,20,150,32)");
 
-    let tog = row!(win.new_button("深色模式", 180, 20, 150, 32), 0, 1, (180, 20, 150, 32));
+    let tog = row!(0, 1, (180, 20, 150, 32), new_button("深色模式"));
     let l = Arc::clone(log);
     let tog_label = tog.clone();
     tog.on_click(move || match switch_appearance(!dark_active()) {
@@ -864,14 +965,14 @@ fn build_all_controls(
     log.append("[Button] at (180,20,150,32) (toggles appearance)");
 
     // Disabled button: proves the enable/disable mirror reaches the native control.
-    let disabled = row!(win.new_button("已禁用", 340, 20, 150, 32), 0, 1, (340, 20, 150, 32));
+    let disabled = row!(0, 1, (340, 20, 150, 32), new_button("已禁用"));
     disabled.disable();
     log.append(format!("[Button] disabled sample enabled={}", disabled.is_enabled()));
 
     // ── Row 1: Toggle Controls ───────────────────────────────────────
     log.append("=== Row: Toggle Controls ===");
 
-    let cb = row!(win.new_checkbox("启用通知", 20, 64, 200, 24), 1, 1, (20, 64, 200, 24));
+    let cb = row!(1, 1, (20, 64, 200, 24), new_checkbox("启用通知"));
     let l = Arc::clone(log);
     let cb2 = cb.clone();
     cb2.on_value_changed(move |_val: &str| {
@@ -882,7 +983,7 @@ fn build_all_controls(
 
     // Tri-state check-box: all three states are reachable (Unchecked / Checked /
     // PartiallyChecked), which the mixed state requires tri-state mode to be on.
-    let tri = row!(win.new_checkbox("三态", 230, 64, 130, 24), 1, 1, (230, 64, 130, 24));
+    let tri = row!(1, 1, (230, 64, 130, 24), new_checkbox("三态"));
     tri.set_tristate(true);
     tri.set_check_state(rust_widgets::app::CheckState::PartiallyChecked);
     log.append(format!(
@@ -895,7 +996,7 @@ fn build_all_controls(
     // ── Row 2: Text Input Controls ───────────────────────────────────
     log.append("=== Row: Text Input Controls ===");
 
-    let le = row!(win.new_line_edit("", 20, 104, 200, 26), 2, 3, (20, 104, 200, 26));
+    let le = row!(2, 3, (20, 104, 200, 26), new_line_edit(""));
     le.set_placeholder("在此输入");
     le.set_max_length(32);
     let l = Arc::clone(log);
@@ -907,15 +1008,15 @@ fn build_all_controls(
 
     // Password field: echo mode is a real widget property; a platform whose text
     // control cannot express it reports so via `false`/`None` instead of lying.
-    let pw = row!(win.new_line_edit("secret", 230, 104, 150, 26), 2, 2, (230, 104, 150, 26));
+    let pw = row!(2, 2, (230, 104, 150, 26), new_line_edit("secret"));
     pw.set_echo_mode(rust_widgets::app::EchoMode::Password);
     log.append(format!("[LineEdit] echo_mode={:?}", pw.widget_echo_mode()));
 
-    let ro = row!(win.new_line_edit("只读值", 390, 104, 180, 26), 2, 3, (390, 104, 180, 26));
+    let ro = row!(2, 3, (390, 104, 180, 26), new_line_edit("只读值"));
     ro.set_read_only(true);
     log.append(format!("[LineEdit] read_only={:?}", ro.clone().is_read_only()));
 
-    let sb = row!(win.new_spin_box(580, 104, 120, 26), 2, 2, (580, 104, 120, 26));
+    let sb = row!(2, 2, (580, 104, 120, 26), new_spin_box());
     sb.set_range(0, 100);
     sb.set_value(50);
     sb.set_prefix("$");
@@ -931,7 +1032,7 @@ fn build_all_controls(
     // ── Row 3: Selection Controls ────────────────────────────────────
     log.append("=== Row: Selection Controls ===");
 
-    let cbx = row!(win.new_combo_box(20, 142, 180, 26), 3, 2, (20, 142, 180, 26));
+    let cbx = row!(3, 2, (20, 142, 180, 26), new_combo_box());
     cbx.add_item("红");
     cbx.add_item("绿");
     cbx.add_item("蓝");
@@ -946,7 +1047,7 @@ fn build_all_controls(
     });
     log.append("[ComboBox] items=[红,绿,蓝,黄]");
 
-    let lb = row!(win.new_list_box(210, 142, 200, 90), 3, 3, (210, 142, 200, 90));
+    let lb = row!(3, 3, (210, 142, 200, 90), new_list_box());
     for item in ["苹果", "香蕉", "橙子", "葡萄", "西瓜"] {
         lb.add_item(item);
     }
@@ -964,11 +1065,11 @@ fn build_all_controls(
     // Radio group: one horizontal row beside the toggle controls. Three vertical rows were
     // three separate "rows" to the old layout, which placed them at the same x and let them
     // collide with the list box; a group is one row with three equal shares.
-    let rb1 = row!(win.new_radio_button("选项 A", 420, 64, 100, 24), 1, 1, (420, 64, 100, 24));
+    let rb1 = row!(1, 1, (420, 64, 100, 24), new_radio_button("选项 A"));
     rb1.set_group("opts");
-    let rb2 = row!(win.new_radio_button("选项 B", 530, 64, 100, 24), 1, 1, (530, 64, 100, 24));
+    let rb2 = row!(1, 1, (530, 64, 100, 24), new_radio_button("选项 B"));
     rb2.set_group("opts");
-    let rb3 = row!(win.new_radio_button("选项 C", 640, 64, 100, 24), 1, 1, (640, 64, 100, 24));
+    let rb3 = row!(1, 1, (640, 64, 100, 24), new_radio_button("选项 C"));
     rb3.set_group("opts");
     let l = Arc::clone(log);
     let r2 = rb2.clone();
@@ -985,12 +1086,7 @@ fn build_all_controls(
     // Orientation is a creation-time property on every native toolkit (Win32 has
     // no runtime message for it), so it is passed at construction instead of being
     // set afterwards.
-    let sl = row!(
-        win.new_slider_with_orientation(Orientation::Horizontal, 20, 242, 260, 32),
-        4,
-        3,
-        (20, 242, 260, 32)
-    );
+    let sl = row!(4, 3, (20, 242, 260, 32), new_slider_with_orientation(Orientation::Horizontal));
     sl.set_range(0, 100);
     sl.set_value(50);
     sl.set_step(5);
@@ -1002,7 +1098,7 @@ fn build_all_controls(
     });
     log.append(format!("[Slider] value=50 orientation={:?}", sl.orientation()));
 
-    let pb = row!(win.new_progress_bar(290, 242, 200, 24), 4, 2, (290, 242, 200, 24));
+    let pb = row!(4, 2, (290, 242, 200, 24), new_progress_bar());
     pb.set_min(0u32);
     pb.set_max(100u32);
     pb.set_value(75u32);
@@ -1014,7 +1110,7 @@ fn build_all_controls(
     log.append("[ProgressBar] range=[0..100], value=75");
 
     // Indeterminate (busy) bar: a distinct native code path from a fixed fraction.
-    let busy = row!(win.new_progress_bar(500, 242, 200, 24), 4, 2, (500, 242, 200, 24));
+    let busy = row!(4, 2, (500, 242, 200, 24), new_progress_bar());
     busy.set_indeterminate(true);
     log.append(format!("[ProgressBar] indeterminate={:?}", busy.is_indeterminate()));
 
@@ -1025,7 +1121,7 @@ fn build_all_controls(
     // 只演示其中一侧会让人误以为另一侧不存在。
     //
     // 放在这里是因为它要引用 `tri`/`sl`/`busy`/`rb3`，四个控件都已创建。
-    let sync = row!(win.new_button("同步", 540, 20, 140, 32), 0, 1, (540, 20, 140, 32));
+    let sync = row!(0, 1, (540, 20, 140, 32), new_button("同步"));
     let sync_log = Arc::clone(log);
     let sync_tri = tri.clone();
     let sync_sl = sl.clone();
@@ -1065,7 +1161,7 @@ fn build_all_controls(
     // ── Row 5: Scrollable Text Area ──────────────────────────────────
     log.append("=== Row: Scrollable Text Area ===");
 
-    let area = row!(win.new_scroll_area(20, 286, 260, 90), 5, 3, (20, 286, 260, 90));
+    let area = row!(5, 3, (20, 286, 260, 90), new_scroll_area());
     // # The content extent is what makes a scrollbar possible
     //
     // `new_scroll_area` creates the **viewport** only; without a declared content
@@ -1123,9 +1219,9 @@ fn build_all_controls(
     // ── Row 6: Panel / Frame ─────────────────────────────────────────
     log.append("=== Row: Panel / Frame ===");
 
-    let panel = row!(win.new_panel(290, 286, 200, 90), 5, 2, (290, 286, 200, 90));
+    let panel = row!(5, 2, (290, 286, 200, 90), new_panel());
     panel.set_title("面板");
-    let frame = row!(win.new_frame(500, 286, 200, 90), 5, 2, (500, 286, 200, 90));
+    let frame = row!(5, 2, (500, 286, 200, 90), new_frame());
     frame.set_text("分组框");
     log.append(format!("[Panel] id={:?}  [Frame] id={:?}", panel.raw_id(), frame.raw_id()));
 
@@ -1233,7 +1329,7 @@ fn build_all_controls(
     let window_id = win.raw_id();
     let shuffle_round = Arc::new(Mutex::new(0u64));
 
-    let shuffle = row!(win.new_button("Shuffle data", 20, 556, 200, 32), 8, 1, (20, 556, 200, 32));
+    let shuffle = row!(8, 1, (20, 556, 200, 32), new_button("Shuffle data"));
     let l = Arc::clone(log);
     let round_counter = Arc::clone(&shuffle_round);
     let chart_target = chart_id;
@@ -1265,10 +1361,7 @@ fn build_all_controls(
         // something visible to return.
         if let Some(id) = pager_target {
             let page = with_widget_mut(id, |widget| {
-                let Some(bar) = (widget as &mut dyn core::any::Any).downcast_mut::<Pagination>()
-                else {
-                    return None;
-                };
+                let bar = (widget as &mut dyn core::any::Any).downcast_mut::<Pagination>()?;
                 let next = if bar.page() >= bar.last_page() { 0 } else { bar.page() + 1 };
                 bar.set_page(next);
                 Some(next + 1)
@@ -1281,9 +1374,7 @@ fn build_all_controls(
         }
 
         let selected = with_widget_mut(tabs_target, |widget| {
-            let Some(tabs) = (widget as &mut dyn core::any::Any).downcast_mut::<TabWidget>() else {
-                return None;
-            };
+            let tabs = (widget as &mut dyn core::any::Any).downcast_mut::<TabWidget>()?;
             if tabs.count() < 2 {
                 return None;
             }
@@ -1299,7 +1390,7 @@ fn build_all_controls(
     });
     log.append("[Button] 'Shuffle data' updates the chart and both saved controls");
 
-    let save = row!(win.new_button("Save state", 230, 556, 180, 32), 8, 1, (230, 556, 180, 32));
+    let save = row!(8, 1, (230, 556, 180, 32), new_button("Save state"));
     let l = Arc::clone(log);
     save.on_click(move || {
         let states = collect_demo_state(window_id, demo_key(pager_target, tabs_target));
@@ -1311,8 +1402,7 @@ fn build_all_controls(
         SAVED_STATES.with(|slot| *slot.borrow_mut() = Some(states));
     });
 
-    let restore =
-        row!(win.new_button("Restore state", 420, 556, 180, 32), 8, 1, (420, 556, 180, 32));
+    let restore = row!(8, 1, (420, 556, 180, 32), new_button("Restore state"));
     let l = Arc::clone(log);
     restore.on_click(move || {
         let saved = SAVED_STATES.with(|slot| slot.borrow().clone());
@@ -1332,15 +1422,10 @@ fn build_all_controls(
     // ── Log Panel (底部 4 行标签) ─────────────────────────────────────
     log.append("=== Log Panel ===");
 
-    let _title = row!(win.new_label("事件日志", 20, 496, 680, 18), 9, 1, (20, 496, 680, 18));
+    let _title = row!(9, 1, (20, 496, 680, 18), new_label("事件日志"));
     let mut log_rows = Vec::new();
     for i in 0..4 {
-        let entry = row!(
-            win.new_label("", 20, 518 + i * 20, 680, 18),
-            10 + i as u16,
-            1,
-            (20, 518 + i * 20, 680, 18)
-        );
+        let entry = row!(10 + i as u16, 1, (20, 518 + i * 20, 680, 18), new_label(""));
         log_rows.push(entry);
     }
     log.attach_rows(log_rows);
@@ -1406,8 +1491,13 @@ fn build_window_chrome(win: &WindowHandle, log: &Arc<EventLog>) -> Vec<Slot> {
             }
         }
     });
-    // A view-menu item that really does something; inserted before the trigger handler
-    // above so a click on it runs the theme switch rather than only logging.
+    // A View item that really does something. `on_triggered` connections are **appended** and
+    // every connection receives every trigger (see `MenuHandle::on_triggered`, which connects
+    // to the menu's `triggered` signal), so the two handlers registered above both run on a
+    // click: the logging one logs the label, and this one switches the appearance only when
+    // the label is `Toggle Appearance` (its own label test). The item's creation order relative
+    // to the handlers does not decide which of them runs — this comment previously claimed it
+    // did, which contradicted both the code order and the connection model.
     win.new_menu_item(&view, "Toggle Appearance", Some("Ctrl+Shift+D"));
 
     let menus =

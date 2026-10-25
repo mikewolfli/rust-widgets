@@ -53,12 +53,20 @@ pub struct Segment {
     pub icon: Option<String>,
     /// Whether this segment is interactive.
     pub enabled: bool,
+    /// Optional hover hint, shown when the pointer is over the segment (MISC-15).
+    pub tooltip: Option<String>,
 }
 
 impl Segment {
     /// Creates a new segment with the given label text.
     pub fn new(text: &str) -> Self {
-        Self { id: text.to_string(), text: text.to_string(), icon: None, enabled: true }
+        Self {
+            id: text.to_string(),
+            text: text.to_string(),
+            icon: None,
+            enabled: true,
+            tooltip: None,
+        }
     }
 
     /// Sets the stable identifier for this segment.
@@ -77,6 +85,20 @@ impl Segment {
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
+    }
+
+    /// Sets the segment's hover hint.
+    ///
+    /// A caption that the segment has to elide is the case a hint exists for, and there was no
+    /// way to give one (MISC-15).
+    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// The segment's hover hint, if one is set.
+    pub fn tooltip(&self) -> Option<&str> {
+        self.tooltip.as_deref()
     }
 }
 
@@ -110,9 +132,172 @@ pub struct SegmentedButton {
     group_generation: u64,
     /// Emitted when the selected segment changes. Payload is the newly selected index.
     pub current_changed: Signal1<usize>,
+    /// The segment the pointer is over, for the hover hint (MISC-15).
+    hovered_segment: Option<usize>,
+    /// The segment the keyboard is on (MISC-14).
+    focus_index: Option<usize>,
+    /// Per-segment composed label text and its measurement, refreshed only when the label's inputs
+    /// change (K-P15).
+    ///
+    /// The draw path cloned every caption, formatted the icon-name form again and measured it on
+    /// every frame, then had the fitting primitive measure it once more.
+    segment_labels: Vec<Option<SegmentLabelCache>>,
+    /// The host-side hover/delay/show pipeline for segment hints (MISC-15).
+    tooltips: crate::widget::companions::TooltipManager,
+    /// The derived hover id currently registered with the tooltip pipeline.
+    tooltip_source: Option<crate::core::ObjectId>,
+    /// Monotonic clock fed to the tooltip pipeline from [`Widget::tick`].
+    tooltip_now_ms: u64,
+}
+
+/// One segment's composed caption and the measurement of it.
+///
+/// `text` is the caption as painted (the icon-name prefix included when the icon names no glyph),
+/// and it is only rebuilt when the `.text`/`.icon` pair changes.
+struct SegmentLabelCache {
+    /// Fold of the caption and the icon name the entry was built from.
+    key: u64,
+    /// The caption to paint.
+    text: String,
+    /// Its measured advance width.
+    width: u32,
+    /// Its measured line height.
+    height: u32,
 }
 
 impl SegmentedButton {
+    /// Rebuilds one segment's composed caption when its text or icon name changes (K-P15).
+    ///
+    /// The caption is the segment's own text unless the icon names no glyph, in which case the
+    /// crate's text convention prefixes the name. Either way the string and its measurement are
+    /// kept until an input changes, so a static frame does neither the clone nor the `format!`.
+    fn refresh_segment_labels(&mut self, font: &crate::core::Font, context: &RenderContext) {
+        if self.segment_labels.len() != self.segments.len() {
+            self.segment_labels.resize_with(self.segments.len(), || None);
+        }
+        for (index, segment) in self.segments.iter().enumerate() {
+            let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+            let mut mix = |value: u64| {
+                hash ^= value;
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            };
+            for byte in segment.text.as_bytes() {
+                mix(u64::from(*byte));
+            }
+            mix(0xFF);
+            if let Some(icon) = segment.icon.as_deref() {
+                let drawable = crate::widget::icon_token_is_drawable(icon);
+                mix(u64::from(drawable));
+                for byte in icon.as_bytes() {
+                    mix(u64::from(*byte));
+                }
+            }
+            for byte in font.family().as_bytes() {
+                mix(u64::from(*byte));
+            }
+            mix(u64::from(font.size().to_bits()));
+            mix(u64::from(font.weight()));
+
+            if self.segment_labels[index].as_ref().is_some_and(|entry| entry.key == hash) {
+                continue;
+            }
+            let mut text = String::new();
+            if let Some(icon) = segment.icon.as_deref() {
+                if !crate::widget::icon_token_is_drawable(icon) && !icon.is_empty() {
+                    let _ = core::fmt::Write::write_fmt(
+                        &mut text,
+                        format_args!("{icon} {}", segment.text),
+                    );
+                }
+            }
+            if text.is_empty() {
+                text.push_str(&segment.text);
+            }
+            let metrics = context.measure_text(&text, font);
+            self.segment_labels[index] = Some(SegmentLabelCache {
+                key: hash,
+                text,
+                width: metrics.width,
+                height: metrics.height,
+            });
+        }
+    }
+
+    /// Registers the hovered segment's hint with the hover pipeline (MISC-15).
+    ///
+    /// An explicit `tooltip` wins; otherwise nothing is registered — a segment's caption is its own
+    /// label, and elided captions are the only case where the full text is otherwise unreadable,
+    /// which is why the caller can state one.
+    fn sync_hover_tooltip(&mut self) {
+        let Some(index) = self.hovered_segment else {
+            if self.tooltip_source.take().is_some() {
+                self.tooltips.note_leave();
+            }
+            return;
+        };
+        let text = self
+            .segments
+            .get(index)
+            .and_then(Segment::tooltip)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string);
+        match text {
+            Some(text) => {
+                let id = hover_id(self.base.id(), index);
+                self.tooltips.register(id, text);
+                self.tooltips.note_hover(id);
+                self.tooltip_source = Some(id);
+            }
+            None => {
+                if self.tooltip_source.take().is_some() {
+                    self.tooltips.note_leave();
+                }
+            }
+        }
+    }
+
+    /// Whether a tooltip is still waiting for its delay (or visible).
+    fn tooltip_owes_frames(&self) -> bool {
+        self.tooltip_source.is_some() || self.tooltips.tooltip().is_some()
+    }
+
+    /// Moves the keyboard focus by `delta`, wrapping inside the segment list.
+    fn move_focus(&mut self, delta: i32) {
+        let count = self.segments.len();
+        if count == 0 {
+            return;
+        }
+        let current = self.focus_index.unwrap_or(0) as i32;
+        let next = (current + delta).rem_euclid(count as i32) as usize;
+        if self.focus_index != Some(next) {
+            self.focus_index = Some(next);
+            self.base.request_redraw();
+        }
+    }
+
+    /// Toggles or selects `index` through the same state writes a click uses (MISC-14).
+    fn activate_segment(&mut self, index: usize) {
+        let Some(segment) = self.segments.get(index) else {
+            return;
+        };
+        if !segment.enabled {
+            return;
+        }
+        if self.allows_multiple {
+            if let Some(at) = self.selected.iter().position(|sel| *sel == index) {
+                self.selected.remove(at);
+            } else {
+                self.selected.push(index);
+                self.selected.sort_unstable();
+            }
+        } else {
+            self.selected.clear();
+            self.selected.push(index);
+        }
+        self.current_changed.emit(index);
+        self.base.request_redraw();
+    }
     /// Creates a new SegmentedButton widget with the given geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -123,6 +308,12 @@ impl SegmentedButton {
             group_id: None,
             group_generation: 0,
             current_changed: Signal1::new(),
+            hovered_segment: None,
+            focus_index: None,
+            segment_labels: Vec::new(),
+            tooltips: crate::widget::companions::TooltipManager::new(geometry),
+            tooltip_source: None,
+            tooltip_now_ms: 0,
         }
     }
 
@@ -373,6 +564,25 @@ impl Widget for SegmentedButton {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 32)
     }
+
+    /// Segments are individually addressable and the control has a keyboard path, so it belongs in
+    /// the tab order whatever the kind table says (MISC-14).
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    /// Advances the tooltip clocks; `true` while a hint is pending or visible.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.tooltip_now_ms = self.tooltip_now_ms.saturating_add(u64::from(delta_ms));
+        let changed = self.tooltips.tick(u64::from(delta_ms), self.tooltip_now_ms);
+        changed || self.tooltip_owes_frames()
+    }
+
+    /// Only a pending or visible tooltip owes frames.
+    fn is_animating(&self) -> bool {
+        self.tooltip_owes_frames()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -488,6 +698,14 @@ impl WidgetProperties for SegmentedButton {
     }
 }
 
+/// The stable hover id for one segment.
+///
+/// The tooltip pipeline addresses a hover source by id; a segment is not a widget, so the id is
+/// derived from the control's own and the segment's index. The mix is the toolbar's.
+fn hover_id(owner: crate::core::ObjectId, index: usize) -> crate::core::ObjectId {
+    owner.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (index as u64 + 1)
+}
+
 /// Elides a segment caption to `max_width` using the renderer's own measurement.
 ///
 /// The primitive owns the character-boundary rule and the shared `…`; a caption that fits
@@ -506,35 +724,33 @@ impl Draw for SegmentedButton {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
+        // Composed captions are refreshed before the frame borrows `self` through the style, so
+        // an unchanged segment does no cloning, formatting or measuring here (K-P15). The font
+        // the draw uses is the one the cache measures with.
+        let label_font = role_font(self.base.style(), 13.0);
+        self.refresh_segment_labels(&label_font, context);
 
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
         // this control, and only then a literal. Every colour below used to be a literal, so a
         // light/dark switch left the control unchanged — the rendering census reported it as
         // theme-blind.
         //
-        // The theme read is a separate manager lock, taken and released inside
-        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
-        // is not re-entrant.
+        // Both lookups are the cached, revision-validated forms, so this frame reads the palette
+        // once and neither call takes the manager lock (K-P17).
+        // `segmented_button` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
+        // as `Surface` and the active theme writes the window fill into `style.background_color`.
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("segmented_button");
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme.
-        let (window_fill, foreground, secondary, primary) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.secondary,
-                    active.colors.primary,
-                ),
-                None => (
-                    Color::rgb(240, 240, 240),
-                    Color::BLACK,
-                    Color::rgb(158, 158, 158),
-                    Color::rgb(33, 150, 243),
-                ),
+        let (window_fill, foreground, secondary, primary) = match crate::style::palette_shared() {
+            Some(colors) => {
+                (colors.background, colors.foreground, colors.secondary, colors.primary)
             }
+            None => (
+                Color::rgb(240, 240, 240),
+                Color::BLACK,
+                Color::rgb(158, 158, 158),
+                Color::rgb(33, 150, 243),
+            ),
         };
         let ink = style
             .text_color
@@ -663,29 +879,27 @@ impl Draw for SegmentedButton {
             // in a leading slot, and a string that names none keeps the crate's text convention so a
             // symbol a caller still passes is shown rather than silently dropped.
             let icon_side = SEGMENT_ICON_SIDE.min(track_rect.height.saturating_sub(8)).max(1);
-            let mut icon_width = 0u32;
-            let mut icon_gap = 0u32;
-            let mut label = segment.text.clone();
-            if let Some(name) = segment.icon.as_deref() {
-                if crate::widget::icon_token_is_drawable(name) {
-                    icon_width = icon_side;
-                    icon_gap = SEGMENT_ICON_GAP;
-                } else if !name.is_empty() {
-                    label = format!("{name} {}", segment.text);
-                }
-            }
+            // A drawable icon owns a leading slot; any other non-empty name was composed into the
+            // caption by the cache, which is where the formatting happens now (K-P15).
+            let drawable_icon =
+                segment.icon.as_deref().filter(|name| crate::widget::icon_token_is_drawable(name));
+            let icon_width = if drawable_icon.is_some() { icon_side } else { 0 };
+            let icon_gap = if icon_width > 0 { SEGMENT_ICON_GAP } else { 0 };
+            let cached = self.segment_labels.get(i).and_then(Option::as_ref);
+            let label = cached.map(|entry| entry.text.as_str()).unwrap_or(segment.text.as_str());
+            let label_width = cached.map(|entry| entry.width).unwrap_or(0);
+            let label_height = cached.map(|entry| entry.height).unwrap_or(0);
 
-            let metrics = context.measure_text(&label, &font);
             // The icon, its gap and the caption are centred as one group, so adding an icon does not
             // shift the caption off the segment's middle.
-            let group_width = icon_width as i32 + icon_gap as i32 + metrics.width as i32;
+            let group_width = icon_width as i32 + icon_gap as i32 + label_width as i32;
             let start_x = seg_rect.x + (seg_width as i32 - group_width) / 2;
             // The origin is the glyph box's top edge, so centring on the segment is half the
             // *line box*; the old `+ ascent` began the box half a line below the middle.
-            let text_y = seg_rect.y + (track_rect.height as i32 - metrics.height as i32) / 2;
+            let text_y = seg_rect.y + (track_rect.height as i32 - label_height as i32) / 2;
 
             if icon_width > 0 {
-                if let Some(name) = segment.icon.as_deref() {
+                if let Some(name) = drawable_icon {
                     let icon_rect = Rect::new(
                         start_x.max(seg_rect.x),
                         seg_rect.y + (track_rect.height as i32 - icon_width as i32) / 2,
@@ -708,7 +922,7 @@ impl Draw for SegmentedButton {
                 // come from one metric; a caption that fits is borrowed and drawn at its old
                 // origin.
                 let caption = fitted_caption(
-                    &label,
+                    label,
                     (label_right - label_x).max(0) as u32,
                     &mut |text: &str| context.measure_text(text, &font).width,
                 );
@@ -748,25 +962,71 @@ impl EventHandler for SegmentedButton {
                 // written as a `let Some` rather than `expect` so a future change to the guard
                 // cannot turn into a panic in an event handler.
                 if let Some(index) = self.hit_segment(*pos) {
-                    if self.allows_multiple {
-                        // Multi-select: toggle this segment and leave the others alone. The state
-                        // is a set, so a second click adds a second selection rather than
-                        // replacing the first.
-                        if let Some(at) = self.selected.iter().position(|sel| *sel == index) {
-                            self.selected.remove(at);
-                        } else {
-                            self.selected.push(index);
-                            self.selected.sort_unstable();
-                        }
-                    } else {
-                        // Single-select: the clicked segment becomes the only selection.
-                        self.selected.clear();
-                        self.selected.push(index);
-                    }
-                    self.current_changed.emit(index);
-                    self.base.request_redraw();
+                    // A press also puts the keyboard on that segment, so the two input paths
+                    // continue from the same place (MISC-14).
+                    self.focus_index = Some(index);
+                    self.activate_segment(index);
                 }
             }
+            // The hover hint follows the segment under the pointer (MISC-15).
+            Event::MouseMove { pos } => {
+                let hovered = self.hit_segment(*pos);
+                if hovered != self.hovered_segment {
+                    self.hovered_segment = hovered;
+                    self.sync_hover_tooltip();
+                    self.base.request_redraw();
+                }
+                self.tooltips.note_pointer(*pos);
+            }
+            Event::MouseLeave { .. } => {
+                self.hovered_segment = None;
+                self.tooltip_source = None;
+                self.tooltips.note_leave();
+            }
+            // The keyboard path (MISC-14): in single-select mode the arrows move the selection
+            // itself, so one key press does what one click does; in multi-select mode they move a
+            // focus and Space toggles the focused segment, because moving the selection with an
+            // arrow would silently change the value.
+            Event::KeyPress { key, .. } => match *key {
+                37 => {
+                    if self.allows_multiple {
+                        self.move_focus(-1);
+                    } else {
+                        let count = self.segments.len();
+                        if count > 0 {
+                            // With nothing selected yet, the first arrow chooses an end rather than
+                            // wrapping from an index no one chose.
+                            let next = match self.selected.first() {
+                                Some(current) => (*current + count - 1) % count,
+                                None => count - 1,
+                            };
+                            self.focus_index = Some(next);
+                            self.activate_segment(next);
+                        }
+                    }
+                }
+                39 => {
+                    if self.allows_multiple {
+                        self.move_focus(1);
+                    } else {
+                        let count = self.segments.len();
+                        if count > 0 {
+                            let next = match self.selected.first() {
+                                Some(current) => (current + 1) % count,
+                                None => 0,
+                            };
+                            self.focus_index = Some(next);
+                            self.activate_segment(next);
+                        }
+                    }
+                }
+                32 | 13 if self.allows_multiple => {
+                    if let Some(index) = self.focus_index {
+                        self.activate_segment(index);
+                    }
+                }
+                _ => {}
+            },
             _ => { /* Other events need no control-specific handling */ }
         }
     }
@@ -1063,5 +1323,47 @@ mod tests {
         assert!(!first.is_selected(0), "the second control now owns the group");
         assert_eq!(first.selected_index(), None);
         assert_eq!(second.selected_index(), Some(1));
+    }
+
+    /// Single-select: an arrow moves the selection itself (MISC-14).
+    #[test]
+    fn the_keyboard_moves_a_single_selection() {
+        let mut button = SegmentedButton::new(Rect::new(0, 0, 300, 36));
+        button.add_segment(Segment::new("One"));
+        button.add_segment(Segment::new("Two"));
+        button.add_segment(Segment::new("Three"));
+        assert_eq!(button.selected_index(), None);
+
+        button.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(button.selected_index(), Some(0), "the first arrow picks the first segment");
+        button.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(button.selected_index(), Some(1));
+        button.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(button.selected_index(), Some(2));
+        button.handle_event(&Event::key_press(crate::event::key_codes::LEFT, 0));
+        assert_eq!(button.selected_index(), Some(1));
+    }
+
+    /// Multi-select: the arrows move a focus and Space toggles the focused segment.
+    #[test]
+    fn the_keyboard_toggles_in_multi_select_mode() {
+        let mut button = SegmentedButton::new(Rect::new(0, 0, 300, 36));
+        button.set_allows_multiple(true);
+        button.add_segment(Segment::new("Bold"));
+        button.add_segment(Segment::new("Italic"));
+
+        button.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        button.handle_event(&Event::key_press(crate::event::key_codes::SPACE, 0));
+        assert_eq!(button.selected_index(), Some(1));
+        button.handle_event(&Event::key_press(crate::event::key_codes::SPACE, 0));
+        assert_eq!(button.selected_index(), None, "a second Space clears it");
+    }
+
+    /// A segment carries a hover hint (MISC-15).
+    #[test]
+    fn a_segment_can_carry_a_tooltip() {
+        let segment = Segment::new("Long caption").with_tooltip("The full sentence");
+        assert_eq!(segment.tooltip(), Some("The full sentence"));
+        assert_eq!(Segment::new("Plain").tooltip(), None);
     }
 }

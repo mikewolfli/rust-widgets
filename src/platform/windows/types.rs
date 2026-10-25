@@ -369,6 +369,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
                 // created itself and handed to this backend.
                 if lparam != 0 {
                     let hwnd_from = lparam as HWND;
+// SAFETY: `lparam` carries a control HWND for a command from a window this backend created.
                     let fallback_command_id = unsafe { GetDlgCtrlID(hwnd_from) } as u32;
                     if fallback_command_id != 0 {
                         if let Ok(map) = platform.menu_state.control_command_to_widget.lock() {
@@ -396,9 +397,12 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             if let Some(platform) = notify::active_windows_platform() {
                 let hdr = lparam as *const NMHDR;
                 if !hdr.is_null() {
+// SAFETY: `hdr` is the `NMHDR` at the start of a `WM_NOTIFY` payload, checked non-null above.
                     let hwnd_from = unsafe { (*hdr).hwndFrom };
+// SAFETY: same checked non-null `NMHDR`.
                     let notify_code = unsafe { (*hdr).code };
                     if let Some(widget_id) =
+// SAFETY: `hwnd_from` is live and `platform` was resolved for this thread.
                         unsafe { platform.widget_id_by_native_handle(hwnd_from) }
                     {
                         if let Some(kind) =
@@ -520,6 +524,9 @@ pub(crate) unsafe extern "system" fn wnd_proc(
 /// Skipping a hop would look up an id that addresses no widget and draw nothing — a
 /// silently blank window, which is the failure this function exists to remove.
 #[cfg(all(target_os = "windows", widgets_unstripped))]
+///
+/// # Safety
+/// Must run on the thread that owns `hwnd`; `hwnd` must be a live window this backend created.
 unsafe fn paint_window_tree(hwnd: HWND) {
     use winapi::um::winuser::{BeginPaint, EndPaint, PAINTSTRUCT};
 
@@ -588,6 +595,9 @@ unsafe fn paint_window_tree(hwnd: HWND) {
 /// the `HWND`, the backend binds `HWND`s against **platform** ids, and the tree is keyed by
 /// **registry** id, so both hops are required.
 #[cfg(all(target_os = "windows", widgets_unstripped))]
+///
+/// # Safety
+/// `hwnd` must be a live window handle this backend created.
 unsafe fn window_widget_for(hwnd: HWND) -> Option<u64> {
     crate::widget::runtime::widget_id_for_host_window(widget_id_by_native_handle(hwnd)?)
 }
@@ -648,6 +658,9 @@ pub(crate) fn release_library_window() -> usize {
 /// Gated with `widgets_unstripped` because its only callers are, and `widget::runtime` does not
 /// exist in a stripped profile.
 #[cfg(all(target_os = "windows", widgets_unstripped))]
+///
+/// # Safety
+/// `hwnd` must be a live window handle this backend created.
 unsafe fn key_target_for(hwnd: HWND) -> Option<u64> {
     window_widget_for(hwnd).map(key_target_for_id)
 }
@@ -660,6 +673,9 @@ fn key_target_for_id(window_id: u64) -> u64 {
 
 /// The platform's own id for `hwnd`, or `None` when this backend did not create it.
 #[cfg(all(target_os = "windows", widgets_unstripped))]
+///
+/// # Safety
+/// `hwnd` must be a live window handle whose backend association is still recorded.
 unsafe fn widget_id_by_native_handle(hwnd: HWND) -> Option<u64> {
     // SAFETY: forwarded from this function's own unsafe contract — `hwnd` is a live handle
     // Win32 handed to a callback, which is what `widget_id_by_native_handle` requires.
@@ -668,6 +684,9 @@ unsafe fn widget_id_by_native_handle(hwnd: HWND) -> Option<u64> {
 
 /// Marks `hwnd`'s whole client area as needing a repaint.
 #[cfg(all(target_os = "windows", widgets_unstripped))]
+///
+/// # Safety
+/// `hwnd` must be a live window handle.
 unsafe fn invalidate_window(hwnd: HWND) {
     // SAFETY: a null `RECT` invalidates the entire client area, which is intended.
     winapi::um::winuser::InvalidateRect(hwnd, std::ptr::null(), 0);
@@ -698,6 +717,9 @@ use crate::platform::MousePhase;
 /// on a button reaches that button. Child geometry is window-relative, which is the space
 /// `position` is already in.
 #[cfg(all(target_os = "windows", widgets_unstripped))]
+///
+/// # Safety
+/// `hwnd` must be a live window handle this backend created.
 unsafe fn forward_window_mouse(hwnd: HWND, lparam: isize, phase: MousePhase) {
     use crate::core::Point;
     let Some(window_id) = window_widget_for(hwnd) else {
@@ -803,6 +825,9 @@ const MOUSE_PRIMARY: u32 = crate::event::mouse_button::PRIMARY;
 /// when the quotient is `0` is deliberate: a delta of `-1..-119` is still a scroll in that
 /// direction, and discarding it would make a slow touchpad scroll do nothing at all.
 #[cfg(all(target_os = "windows", widgets_unstripped))]
+///
+/// # Safety
+/// `hwnd` must be a live window handle this backend created.
 unsafe fn forward_window_wheel(hwnd: HWND, wparam: usize, lparam: isize) {
     use crate::core::Point;
     use winapi::um::winuser::{ScreenToClient, GET_WHEEL_DELTA_WPARAM, WHEEL_DELTA};
@@ -856,6 +881,9 @@ unsafe fn forward_window_wheel(hwnd: HWND, wparam: usize, lparam: isize) {
 /// backend's key handler follows, and it keeps this backend from carrying a list of "text
 /// kinds" that would drift from the widget set.
 #[cfg(all(target_os = "windows", widgets_unstripped))]
+///
+/// # Safety
+/// `hwnd` must be a live window handle this backend created; `window_id` is its resolved registry id.
 unsafe fn forward_window_char(hwnd: HWND, window_id: u64, character: u32) {
     // Control characters (backspace 0x08, tab 0x09, escape 0x1B, the C0 range generally)
     // are *commands*, not text, and `WM_KEYDOWN` already delivered them as key presses.
@@ -894,6 +922,9 @@ unsafe fn forward_window_char(hwnd: HWND, window_id: u64, character: u32) {
 /// widget behind it are different faults, and collapsing them into one `None` is how a
 /// missing association goes unnoticed.
 #[cfg(all(target_os = "windows", widgets_unstripped))]
+///
+/// # Safety
+/// `hwnd` must be a live window handle this backend created.
 unsafe fn paint_target_for(hwnd: HWND) -> Option<u64> {
     let Some(host) = widget_id_by_native_handle(hwnd) else {
         log::error!("[windows] WM_PAINT for hwnd {hwnd:?}, which has no platform id bound to it");

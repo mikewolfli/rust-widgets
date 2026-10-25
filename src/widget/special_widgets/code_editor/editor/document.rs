@@ -138,6 +138,8 @@ impl CodeEditor {
         self.breakpoints.clear();
         self.invalidate_line_states();
         self.minimap_line_count = 0;
+        // The word index describes text that no longer exists.
+        self.completion_index = None;
         self.scale = DocumentScale::for_lines(self.line_count());
         // A level that forbids editing has to be reflected in the buffer the
         // widget already gates on, so every mutation entry point agrees without
@@ -151,6 +153,7 @@ impl CodeEditor {
         // unchanged counter (BLUE26 B26.08).
         self.revision = self.revision.wrapping_add(1);
         self.text_changed.emit(next);
+        self.text_change.emit(TextChange::document(self.line_count()));
         self.emit_cursor_and_selection();
         self.base.request_layout();
         self.base.request_redraw();
@@ -196,6 +199,15 @@ impl CodeEditor {
     /// Returns the line containing `offset` in the joined document.
     pub fn line_of_byte_offset(&self, offset: usize) -> usize {
         self.model.borrow().line_of_byte_offset(offset)
+    }
+
+    /// [`Self::line_of_byte_offset`] through the model's prefix index.
+    ///
+    /// The edit path already built that index while locating the splice, so the lookup is
+    /// a binary search over it instead of a walk over every line above the edit — which was
+    /// an `O(document)` scan on every keystroke (J-P03).
+    fn line_of_byte_offset_cached(&self, offset: usize) -> usize {
+        self.model.borrow_mut().line_of_byte_offset_fast(offset)
     }
 
     /// Returns the character length of a line, or 0 when out of range.
@@ -368,20 +380,23 @@ impl CodeEditor {
         head: TextPosition,
     ) {
         // An in-place edit already left the model correct, so there is nothing to
-        // write back. The document is materialised once, for the `text_changed`
-        // signal: subscribers receive the new text, and that contract is what makes
-        // the signal useful. The comparison against the buffer is only meaningful
-        // for the rebuilt path — an in-place edit is applied by definition.
-        let (after, already_applied) = match after {
+        // write back. A rebuilt edit arrives as `Some(text)` and is written below.
+        //
+        // The document is deliberately **not** materialised here: the previous form
+        // cloned the whole buffer whenever `after` was `None` (which is every typed
+        // keystroke, in-place or not) only to hand it to `text_changed`. The change is
+        // now described by [`TextChange`] instead, so the per-keystroke cost is the
+        // size of the edit rather than the size of the file.
+        let (after_text, already_applied) = match after {
             Some(text) => {
                 let same = {
                     let model = self.model.borrow();
                     let current = model.text.borrow();
                     current.as_str() == text.as_str()
                 };
-                (text, same)
+                (Some(text), same)
             }
-            None => (self.model.borrow().text.borrow().clone(), true),
+            None => (None, true),
         };
         // Everything below that reads the "before" state has to happen before the
         // write. The recorded range is in pre-edit coordinates, so slicing the
@@ -417,7 +432,9 @@ impl CodeEditor {
             Some(self.model.borrow().text.borrow().clone())
         };
         if !already_applied {
-            self.model.borrow_mut().set_text(after.clone());
+            if let Some(text) = &after_text {
+                self.model.borrow_mut().set_text(text.clone());
+            }
         }
         // The match cache can be updated from the edit's line range instead of a
         // full rescan. `dirty` is `(first_line, lines_now, lines_before)`: the
@@ -425,7 +442,7 @@ impl CodeEditor {
         // could not describe the change, which falls back to a full rescan.
         let dirty = match (&checkpoint.range, &removed) {
             (Some((start, _removed_len, inserted)), Some(removed_text)) => {
-                let first = self.line_of_byte_offset(*start);
+                let first = self.line_of_byte_offset_cached(*start);
                 let lines_now = inserted.matches('\n').count() + 1;
                 let lines_before = removed_text.matches('\n').count() + 1;
                 Some((first, lines_now, lines_before))
@@ -443,10 +460,34 @@ impl CodeEditor {
         // owned here. Used both to skip a pointless dirty flag and to keep the revision honest
         // (BLUE26 B26.08): a splice that rewrites a line with identical bytes is legitimate but is
         // not a change, and reporting one would make a host invalidate cached work for nothing.
-        let changed = match &before_snapshot {
-            Some(before) => before != &after,
-            None => true,
+        let changed = match (&before_snapshot, &after_text) {
+            (Some(before), Some(after)) => before != after,
+            _ => true,
         };
+        // The description is built before `push_checkpoint` consumes the range and the
+        // removed text; it borrows both, so nothing is copied except the inserted payload
+        // (which is the size of the edit, not of the document).
+        let change = match (&dirty, &checkpoint.range) {
+            (Some((first, lines_now, lines_before)), Some((_, _, text))) => {
+                TextChange::lines(*first, *lines_before, *lines_now, text.as_str())
+            }
+            _ => TextChange::document(self.line_count()),
+        };
+        // Keep the completion word index in step with the document instead of rebuilding
+        // it from the whole text on the next completion trigger (J-P11). The update is the
+        // size of the edit plus the word around it; a caller that could not describe the
+        // change drops the index and the next trigger builds it from the live text.
+        let next_revision = if changed { self.revision.wrapping_add(1) } else { self.revision };
+        match (&checkpoint.range, &removed) {
+            (Some((start, _, inserted)), Some(removed_text)) => {
+                let model = self.model.borrow();
+                let text = model.text.borrow();
+                if let Some(index) = self.completion_index.as_mut() {
+                    index.apply_edit(next_revision, &text, *start, removed_text, inserted);
+                }
+            }
+            _ => self.completion_index = None,
+        }
         if !self.restoring_history {
             self.push_checkpoint(checkpoint.range, removed, before_snapshot);
         }
@@ -474,7 +515,12 @@ impl CodeEditor {
         if changed {
             self.revision = self.revision.wrapping_add(1);
         }
-        self.text_changed.emit(after);
+        // A whole-document payload is emitted only on the paths that already own one
+        // (a hand-rebuilt text). Every other change is described by `text_change`.
+        if let Some(text) = after_text {
+            self.text_changed.emit(text);
+        }
+        self.text_change.emit(change);
         self.emit_cursor_and_selection();
         self.base.request_layout();
         self.base.request_redraw();

@@ -2,7 +2,7 @@
 
 本章提供完整的、按模組劃分的 `rust_widgets` 公開 API 參考文件。當您需要為任務查找正確的型別、函式或特徵時，可將其用作快速查閱手冊。
 
-此處記載的函式庫版本為 **2.9.1**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
+此處記載的函式庫版本為 **2.9.2**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
 
 ---
 
@@ -248,6 +248,23 @@ pub trait ListModel {
     fn set_text(&mut self, row: usize, col: usize, text: &str);
 }
 ```
+
+### 事件迴圈組裝
+
+`EventLoop` 要能投遞任何事件，必須先具備三個掛鉤：控制項分派函式、父級查找與快速鍵分派器。只安裝其中一部分會得到一個「看起來已接線」卻靜默丟掉某個角色的迴圈，因此 `app` 提供一次呼叫裝齊整套。
+
+```rust
+pub fn assemble_event_loop(event_loop: &mut EventLoop, runtime: &ActionRuntime);
+
+pub fn assemble_event_loop_with(
+    event_loop: &mut EventLoop,
+    runtime: &ActionRuntime,
+    parent_lookup: Option<Box<dyn Fn(ObjectId) -> Option<ObjectId> + Send + Sync>>,
+    dispatch_fn: Option<EventDispatchFn>,
+);
+```
+
+在建構迴圈之後、啟動之前呼叫一次：執行緒化迴圈在建立執行緒時捕獲這些閉包。`assemble_event_loop_with` 在對應參數為 `None` 時保留預設的父級查找與分派函式，並始終從 `runtime` 取得快速鍵掛鉤。需要不同快速鍵策略的宿主可在呼叫返回後再安裝自己的實作。
 
 ---
 
@@ -647,6 +664,40 @@ pub trait Draw {
 | `menu_toolbar/`（擴展） | `DropdownMenu`, `MenuButton` |
 | `special_widgets/`（擴展） | `Breadcrumb`, `SignaturePad`, `TimelineWidget` |
 | `view_widgets/`（擴展） | `ImageGallery`, `PropertiesPanel`, `PropertyGrid`, `TreeTable` |
+
+### 伴隨控制項 *(非 mini)*
+
+伴隨控制項（companion）是主控制項的夥伴：每個控制項只承擔主控制項旁邊的一塊介面 —— 按鈕的選單面板、媒體播放器的佇列清單 —— 並把每一次使用者意圖表達為一個信號。它們不在能力屬性表中，因此透過下表所列的模組存取，而不是透過 `WidgetFactory`。
+
+| 伴隨控制項 | 模組 | 用途 |
+|---|---|---|
+| `MenuPanel` | `companions` | 錨定的下拉列清單；發出 `item_clicked`、`highlighted_changed`、`cancelled` |
+| `SpeedDial` | `companions` | `FAB` 旁可展開的次要動作堆疊 |
+| `SwipeActions` | `companions` | 滑動列的多動作背景，分為 `leading` 與 `trailing` 兩側 |
+| `DrawerSectionHeader` | `companions` | 為抽屜項目分組的不可選取標題列 |
+| `LayerPanel` | `companions` | `Canvas` 圖層的唯讀鏡像，以圖層 id 定址 |
+| `PlaylistPanel` | `companions` | `MediaPlayer` 的佇列清單；信號中的索引是完整清單中的位置 |
+| `StickyHeader` | `container_widgets::sticky_header` | `ScrollArea` 黏性帶承載的內容；透過 `ScrollArea::set_sticky_header` 掛載 |
+| `TagGroup` | `display_widgets::tag_group` | 佈局並選取真實 `Tag` 子控制項的容器 |
+| `Chip` | `input_widgets::input_companions` | 單一可移除、帶拖曳狀態的 chip；列容器是 `TagGroup`，多項目膠囊控制項是 `special_widgets` 中另一個 `Chip` |
+| `StepButtons` | `input_widgets::input_companions` | 與數字欄位配對的增減按鈕 |
+| `Scrollbar` | `input_widgets::input_companions` | 編輯器使用的滾動指示條；與 `ScrollBar` 控制項不同 |
+| `FormatToolbar` | `input_widgets::input_companions` | 富文字編輯器的加粗/斜體/……動作集 |
+| `SuggestionPopup` | `input_widgets::suggestion_popup` | 組合框與補全欄位的候選清單，兩階段導航 |
+| `ValidationBubble` | `input_widgets::validation_bubble` | 錨定在欄位旁的驗證訊息，攜帶嚴重層級 |
+| `RecentValuesPopup` | `input_widgets::recent_values_popup` | 去重、容量受限的已提交值歷史 |
+| `ChartCrosshair` | `companions` | 圖表指標下的參考線與坐標軸標籤 |
+| `GridFindBar` | `view_widgets::grid_find_bar` | 跨表格欄的增量尋找 |
+| `ColumnChooser` | `view_widgets::column_chooser` | 顯示/隱藏並重排表格欄 |
+| `ThumbnailCache` | `view_widgets::thumbnail_cache` | 有界 LRU 的降取樣點陣圖快取；本身不繪製任何內容 |
+| `ModalHost` | `dialog::modal_host` | 決定哪個模態在最上層、關閉請求路由到何處的模態堆疊 |
+| `MediaTransportBar` | `media_widgets::media_transport` | 媒體控制項的播放/暫停、進度、音量與全螢幕列 |
+| `MediaScrubber` | `media_widgets::media_scrubber` | 帶緩衝段與章節標記的進度軌道 |
+| `WebFindBar` | `web_widgets::find_bar` | Web 檢視的尋找列 |
+| `SubtitleBar` | `media_widgets::subtitle_bar` | 自動換行的多行字幕帶 |
+| `ValueSpinBox` | `macos::value_spinbox` | 在同一控制項內提供可編輯數字欄位與步進箭頭 |
+| `PopupItemList` | `macos::popup_item_list` | 在某一點開啟的小型帶邊框項目清單 |
+| `CupertinoNavigationStack` | `cupertino::navigation_stack` | 與 `CupertinoNavigationBar` 配對的標題堆疊；發出 `popped` 與 `stack_changed` |
 
 ### Web 控制項 *(非 mini)*
 
@@ -1492,6 +1543,7 @@ pub struct WidgetStyle {
     pub border_color: Option<Color>,
     pub border_width: u32,
     pub border_radius: u32,
+    pub corner_radii: Option<CornerRadii>,
     pub padding: Padding,
     pub margin: Margin,
     pub shadow: Option<Shadow>,
@@ -1501,10 +1553,10 @@ pub struct WidgetStyle {
 ```
 
 建構子方法：`with_background(c)`, `with_text_color(c)`, `with_font(f)`,
-`with_border(c, w, r)`, `with_padding(p)`, `with_margin(m)`, `with_shadow(s)`,
-`with_touch_target(s)`, `with_gradient(g)`, `with_opacity(o)`。
+`with_border(c, w, r)`, `with_corner_radii(r)`, `with_padding(p)`, `with_margin(m)`,
+`with_shadow(s)`, `with_touch_target(s)`, `with_gradient(g)`, `with_opacity(o)`。
 
-實例方法：`inherit_from(parent)`, `merge(other)`。
+實例方法：`inherit_from(parent)`, `merge(other)`, `resolved_corner_radii()`。
 
 ### 內邊距與外邊距
 
@@ -1515,6 +1567,28 @@ pub struct Margin  { pub top: u32, pub right: u32, pub bottom: u32, pub left: u3
 
 兩者都支援：`new(top, right, bottom, left)`, `all(value)`, `symmetric(v, h)`,
 `normalized(top, right, bottom, left)` — 負值會被限制為 0。
+
+### 圓角
+
+```rust
+pub struct CornerRadii {
+    pub top_left: u32,
+    pub top_right: u32,
+    pub bottom_right: u32,
+    pub bottom_left: u32,
+}
+
+impl CornerRadii {
+    pub const fn new(top_left: u32, top_right: u32, bottom_right: u32, bottom_left: u32) -> Self;
+    pub const fn all(radius: u32) -> Self;
+    pub const fn is_uniform(&self) -> bool;
+}
+```
+
+`WidgetStyle::border_radius` 是純量寫法，含義仍然是「四角相同」。當
+`WidgetStyle::corner_radii` 也被設定時，逐角值優先；請透過
+`WidgetStyle::resolved_corner_radii` 讀取解析後的形狀，而不是直接讀任一欄位。
+`CornerRadii::new` 的參數順序與 CSS `border-radius` 一致：左上、右上、右下、左下。
 
 ### 陰影
 
@@ -1577,12 +1651,15 @@ pub struct Theme {
     pub fonts: Fonts,
     pub spacing: Spacing,
     pub borders: Borders,
+    pub icons: IconTokens,
+    // ...
 }
 
 impl Theme {
     pub fn new(name: &str) -> Self;
     pub fn dark() -> Self;                   // 內建深色主題
     pub fn light() -> Self;                  // 內建淺色主題
+    pub fn icon_size(&self, slot: IconSlot) -> u32;   // 槽位的標稱邊長（像素）
 }
 ```
 
@@ -1596,6 +1673,7 @@ impl ThemeManager {
     pub fn set_theme(&mut self, theme: Theme);
     pub fn current_theme(&self) -> Option<&Theme>;
     pub fn register_theme(&mut self, name: &str, theme: Theme) -> bool;
+    pub fn icon_size(&self, slot: IconSlot) -> Option<u32>;
 }
 ```
 
@@ -1627,21 +1705,58 @@ pub struct Fonts {
 }
 
 pub struct Spacing {
-    pub xs: u32, pub sm: u32, pub md: u32,
-    pub lg: u32, pub xl: u32, pub xxl: u32,
+    pub small: u32,
+    pub medium: u32,
+    pub large: u32,
+    pub extra_large: u32,
 }
 
 pub struct Borders {
     pub width: u32,
     pub radius: u32,
+    pub shadow: bool,
+}
+
+pub struct IconTokens {
+    pub small: u32,    // 16 px — 內聯與工具列圖示
+    pub medium: u32,   // 18 px — 按鈕圖示
+    pub large: u32,    // 32 px — 功能區或空狀態圖示
+}
+
+pub enum IconSlot { Small, Medium, Large }
+
+pub struct PaddingToken {
+    pub all: Option<u32>,
+    pub vertical: Option<u32>,
+    pub horizontal: Option<u32>,
+    pub top: Option<u32>,
+    pub right: Option<u32>,
+    pub bottom: Option<u32>,
+    pub left: Option<u32>,
 }
 ```
 
 ### 主題樣式代幣
 
 ```rust
-pub struct ThemeStyleToken { /* ... */ }
+pub struct ThemeStyleToken {
+    pub background: Option<Color>,
+    pub foreground: Option<Color>,
+    pub border: Option<Color>,
+    pub border_width: Option<u32>,
+    pub radius: Option<u32>,
+    pub padding: Option<PaddingToken>,
+    pub font: Option<Font>,
+    pub opacity: Option<f32>,
+    pub shadow: ShadowOverride,
+    // ...
+}
 ```
+
+每個欄位都是覆蓋：`None` 保留基礎解析產出的值，因此主題可以只調整某個角色的一個屬性而不必重述其餘部分。
+`ThemeStyleToken::padding` 透過 `PaddingToken::resolve` 按與樣式建構子相同的
+`邊 → 軸 → 全部 → 0` 級聯解析，因此 `"button": { "padding": { "all": 4 } }` 只移動該角色。
+`PaddingToken` 讓主題模式保持在可序列化的原始型別上，而不借用樣式層的內邊距型別。
 
 ### 樣式繼承鏈
 
@@ -1877,8 +1992,89 @@ pub struct ActionRouter { /* ... */ }
 impl ActionRouter {
     pub fn new() -> Self;
     pub fn route(&self, action_id: &str, kind: ActionHostKind) -> Option<ObjectId>;
+    pub fn connect_undo_redo_stack(&mut self, stack: Arc<Mutex<UndoManager>>) -> bool;
 }
 ```
+
+### 復原 / 重做
+
+`connect_undo_redo` 把兩個閉包綁定到平台加速鍵上。下面的堆疊型別記錄動作**做了什麼**，因此宿主不必自己搭建歷史。
+
+```rust
+pub const DEFAULT_UNDO_LIMIT: usize = 256;
+pub const GLOBAL_UNDO_CONTEXT: &str = "";
+
+pub struct Command { /* ... */ }
+impl Command {
+    pub fn new<U, R>(label: impl Into<String>, undo: U, redo: R) -> Self
+        where U: FnMut() + Send + 'static, R: FnMut() + Send + 'static;
+    pub fn label(&self) -> &str;
+    pub fn is_empty(&self) -> bool;
+}
+
+pub struct UndoStack { /* ... */ }
+impl UndoStack {
+    pub fn new() -> Self;
+    pub fn with_limit(limit: usize) -> Self;
+    pub fn limit(&self) -> usize;
+    pub fn set_limit(&mut self, limit: usize);
+    pub fn push(&mut self, command: Command);
+    pub fn record<U, R>(&mut self, label: impl Into<String>, undo: U, redo: R)
+        where U: FnMut() + Send + 'static, R: FnMut() + Send + 'static;
+    pub fn begin_group(&mut self, label: impl Into<String>);
+    pub fn end_group(&mut self) -> bool;
+    pub fn is_group_open(&self) -> bool;
+    pub fn undo(&mut self) -> Option<String>;
+    pub fn redo(&mut self) -> Option<String>;
+    pub fn can_undo(&self) -> bool;
+    pub fn can_redo(&self) -> bool;
+    pub fn undo_len(&self) -> usize;
+    pub fn redo_len(&self) -> usize;
+    pub fn is_dirty(&self) -> bool;
+    pub fn mark_saved(&mut self);
+    pub fn clear(&mut self);
+}
+
+pub struct UndoManager { /* ... */ }
+impl UndoManager {
+    pub fn new() -> Self;
+    pub fn with_limit(limit: usize) -> Self;
+    pub fn active_context(&self) -> &str;
+    pub fn set_active_context(&mut self, context: impl Into<String>) -> String;
+    pub fn stack_for(&self, context: &str) -> Option<&UndoStack>;
+    pub fn stack(&self) -> &UndoStack;
+    pub fn stack_mut(&mut self) -> &mut UndoStack;
+    pub fn contexts(&self) -> Vec<String>;
+    pub fn push(&mut self, command: Command);
+    pub fn record<U, R>(&mut self, label: impl Into<String>, undo: U, redo: R)
+        where U: FnMut() + Send + 'static, R: FnMut() + Send + 'static;
+    pub fn begin_group(&mut self, label: impl Into<String>);
+    pub fn end_group(&mut self) -> bool;
+    pub fn undo(&mut self) -> Option<String>;
+    pub fn redo(&mut self) -> Option<String>;
+    pub fn can_undo(&self) -> bool;
+    pub fn can_redo(&self) -> bool;
+    pub fn is_dirty(&self) -> bool;
+    pub fn mark_saved(&mut self);
+    pub fn clear(&mut self);
+}
+```
+
+用兩個閉包記錄一步，然後重放它：
+
+```rust
+let mut stack = UndoStack::new();
+stack.record("insert_text", move || remove(), move || insert_again());
+if stack.can_undo() {
+    stack.undo();
+}
+```
+
+新命令會清空重做堆疊（歷史已分叉）。`UndoStack::begin_group` 與 `UndoStack::end_group`
+把它們之間推入的每條命令合成一步，復原時按相反順序執行；允許巢狀，且只有最外層一對建立邊界。
+`UndoManager` 為每個焦點上下文各保留一個堆疊，並把 `undo` / `redo` 路由到活動堆疊；
+`GLOBAL_UNDO_CONTEXT` 是初始上下文，因此只用一個堆疊的宿主根本不需要呼叫 `set_active_context`。
+`ActionRouter::connect_undo_redo_stack` 把平台復原/重做加速鍵綁定到活動堆疊。
 
 ---
 
@@ -1889,13 +2085,26 @@ pub struct ShortcutManager { /* ... */ }
 
 impl ShortcutManager {
     pub fn new() -> Self;
-    pub fn register(&mut self, entry: ShortcutEntry) -> bool;
+    pub fn register(&mut self, action_id: impl Into<String>, shortcut: Shortcut, description: impl Into<String>) -> bool;
+    pub fn register_in(&mut self, scope: impl Into<String>, action_id: impl Into<String>, shortcut: Shortcut, description: impl Into<String>) -> bool;
     pub fn unregister(&mut self, id: &str) -> bool;
     pub fn trigger(&self, shortcut: &Shortcut) -> bool;
-    pub fn all_shortcuts(&self) -> Vec<&ShortcutEntry>;
+    pub fn all_shortcuts(&self) -> &HashMap<Shortcut, String>;
+    pub fn push_scope(&mut self, scope: impl Into<String>);
+    pub fn push_modal_scope(&mut self, scope: impl Into<String>);
+    pub fn pop_scope(&mut self) -> Option<String>;
+    pub fn active_scope(&self) -> Option<&str>;
+    pub fn is_scope_active(&self, scope: &str) -> bool;
+    pub fn active_scopes(&self) -> Vec<String>;
+    pub fn clear_scopes(&mut self);
     pub fn clear(&mut self);
 }
 ```
+
+`ShortcutEntry::scope` 在全域作用域中為 `None`，當綁定屬於某個上下文時為 `Some(name)`。
+作用域綁定僅在它的作用域位於 `push_scope` 推入的堆疊上時生效，並遮蔽同一按鍵組合上的全域綁定。
+`push_modal_scope` 還阻止查找到達其下方的所有作用域與全域綁定，這就是對話框能重新綁定 Enter
+而不與主視窗衝突的原因。衝突只在**同一作用域內**判定，因此同一按鍵組合可以綁定在不同作用域中。
 
 ### 快捷鍵型別
 
@@ -1906,9 +2115,11 @@ pub struct Shortcut {
 }
 
 pub struct ShortcutEntry {
-    pub id: String,
-    pub shortcut: Shortcut,
+    pub action_id: String,
     pub description: String,
+    pub shortcut: Shortcut,
+    pub enabled: bool,
+    pub scope: Option<String>,
 }
 
 pub enum Key {
@@ -2075,6 +2286,20 @@ impl CustomSignalHub {
     pub fn connect(&self, name: &str, f: impl FnMut() + 'static) -> ConnectionHandle;
 }
 ```
+
+### 接線查詢
+
+`connect_event` 回傳 `Ok` 只證明事件名已發佈，**不**證明有訂閱者能到達該控制項。兩個執行時查詢回答這個差異。
+
+```rust
+pub fn is_wired(widget_id: ObjectId, event_name: &str) -> bool;
+pub fn unwired_events(widget_id: ObjectId) -> Option<Vec<&'static str>>;
+```
+
+當控制項自身的 `EventSignalRef` 報告 `event_name` 至少有一個存活訂閱者時，`signal::is_wired` 為 `true`。
+`signal::unwired_events` 回傳該控制項所有沒有任何存活訂閱者的已發佈事件；當 id 不是已掛載控制項時回傳 `None`
+—— 這與表示「全部已接線」的 `Some(vec![])` 是不同的答案。在精簡設定檔中能力表被編譯掉，
+因此 `is_wired` 回傳 `false`，`unwired_events` 回傳 `None`。
 
 ---
 
@@ -2367,7 +2592,18 @@ pub fn render_dirty_regions(
     ctx: &mut RenderContext,
     render_all: impl FnMut(&mut RenderContext),
 );
+
+pub fn render_dirty_regions_into(
+    tracker: &mut DirtyRegionTracker,
+    ctx: &mut RenderContext,
+    regions: &mut Vec<Rect>,
+    render_all: impl FnMut(&mut RenderContext),
+);
 ```
+
+`render_dirty_regions_into` 是復用緩衝區的形式：它先清空 `regions`，再用合併後的區域矩形填充它，然後進行分桶遍歷，
+因此影格迴圈可以終生只持有一個 `Vec`，無需每幀為區域分配記憶體。當走上「超出容量」的回退路徑時，
+單一裁剪由包圍矩形構成，緩衝區則保持為空。
 
 ### 更新批次處理
 

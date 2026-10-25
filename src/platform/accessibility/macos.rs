@@ -47,6 +47,9 @@ pub struct MacOSAccessibilityBridge {
 /// SAFETY: must be called on a thread with an active autorelease pool (the
 /// AppKit main thread always has one). Callers below invoke it on the same
 /// thread that owns the accessibility elements.
+///
+/// # Safety
+/// Must be called on the main thread with an active autorelease pool.
 unsafe fn autoreleased_nsstring(s: &str) -> id {
     NSString::alloc(nil).init_str(s).autorelease()
 }

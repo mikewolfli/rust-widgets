@@ -5,6 +5,8 @@
 
 use crate::core::ObjectId;
 
+use crate::compat::Rc;
+
 use super::apply::ApplyReport;
 use super::diff::{diff, diff_scoped, DiffReport};
 use super::node::{Host, Node};
@@ -141,7 +143,12 @@ pub trait View {
 /// is proportional to the view's own output, which the caller controls by how much it
 /// describes per frame.
 pub struct ViewEngine {
-    current: Option<Node>,
+    /// The current tree, shared with the container-reuse scope during a build.
+    ///
+    /// `Rc` rather than an owned `Node` so the engine can lend the previous tree to a build
+    /// without cloning it: the reuse scope only holds a handle, and a container that is
+    /// actually reused clones just its own retained children (VW-01).
+    current: Option<Rc<Node>>,
     layout: crate::json::BoundJsonLayout,
     /// The viewport the next build is classified against, or `None` before a host has
     /// reported one.
@@ -200,6 +207,17 @@ impl core::fmt::Debug for ViewEngine {
     }
 }
 
+/// The outcome of a build request (G-165).
+///
+/// `Reused` is what makes the revision fast path **free**: the previous tree is neither
+/// cloned nor compared, because `build` would have described an identical value.
+enum BuildOutcome {
+    /// A freshly described tree.
+    Built(Node),
+    /// The view's revision and viewport are unchanged, so the mounted tree stands.
+    Reused,
+}
+
 impl ViewEngine {
     /// Create an engine with no tree mounted.
     pub fn new() -> Self {
@@ -256,27 +274,39 @@ impl ViewEngine {
     /// is a property of one function rather than of two call sites that must agree — the
     /// failure mode [`crate::view::Breakpoint::current`]'s documentation warns about, where a
     /// tier leaks from one build into the next.
-    fn build_in_force(&mut self, view: &dyn View, ctx: &Context) -> Node {
-        let revision = view.state_revision();
-        if let (Some(revision), Some(previous)) = (revision, self.current.as_ref()) {
-            if self.last_build_key == Some((revision, self.viewport)) {
-                // The view says its state has not changed and the breakpoint input is the same,
-                // so `build` would describe the identical tree. Reusing it turns the update into
-                // a no-op diff instead of a full rebuild (REND-15).
-                return previous.clone();
-            }
-        }
+    fn describe(&mut self, view: &dyn View, ctx: &Context) -> Node {
         let tier = self
             .viewport
             .map(crate::view::Breakpoint::of)
             .unwrap_or_else(crate::view::Breakpoint::current);
-        let node = crate::view::with_breakpoint(tier, || view.build_with(ctx));
-        if let Some(revision) = revision {
+        // The previous tree is lent to the build so a revisioned container can hand back its
+        // retained children instead of describing them again (VW-01). The scope ends with the
+        // build, including on unwind.
+        let previous = self.current.clone();
+        let node = super::revision::with_retained_subtrees(previous, || {
+            crate::view::with_breakpoint(tier, || view.build_with(ctx))
+        });
+        if let Some(revision) = view.state_revision() {
             self.last_build_key = Some((revision, self.viewport));
         } else {
             self.last_build_key = None;
         }
         node
+    }
+
+    /// Answer the revision fast path, or describe the tree when it does not apply.
+    ///
+    /// The `Reused` answer is deliberately **not** a clone of the previous tree: cloning and
+    /// then diffing the clone against its source was pure overhead — the comparison could never
+    /// find a difference, and the update had nothing to apply (G-165).
+    fn build_in_force(&mut self, view: &dyn View, ctx: &Context) -> BuildOutcome {
+        let revision = view.state_revision();
+        if let (Some(revision), Some(_)) = (revision, self.current.as_ref()) {
+            if self.last_build_key == Some((revision, self.viewport)) {
+                return BuildOutcome::Reused;
+            }
+        }
+        BuildOutcome::Built(self.describe(view, ctx))
     }
 
     /// The id of the default overlay layer, or `None` when no portal node has needed one.
@@ -384,7 +414,35 @@ impl ViewEngine {
         // mount, the caller asked for a fresh tree. Clearing the build key forces `build` here,
         // while `update` can still take the revision fast path.
         self.last_build_key = None;
-        let root = self.build_in_force(view, ctx);
+        let root = self.describe(view, ctx);
+        self.mount_built(root, create, resolver)
+    }
+
+    /// Mount a **pre-built** declaration tree, creating its controls (G-406).
+    ///
+    /// This is the forwarding door for a loader that already owns a [`Node`] tree: it needs no
+    /// `View` wrapper, and the engine still owns identity (keys, paths) and the patch/apply
+    /// loop. [`crate::layout::declarative`] is the production caller this exists for — its
+    /// programmatic and JSON loading should hand the produced tree here instead of keeping a
+    /// second, path-only retained tree.
+    ///
+    /// Mounting is authoritative, exactly as [`Self::mount`]: the previous tree is torn down
+    /// and the supplied tree is created from scratch.
+    pub fn mount_tree(
+        &mut self,
+        root: &Node,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+    ) -> ApplyReport {
+        self.last_build_key = None;
+        self.mount_built(root.clone(), create, None)
+    }
+
+    fn mount_built(
+        &mut self,
+        root: Node,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+        resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
+    ) -> ApplyReport {
         let mut report = ApplyReport::default();
 
         // Drop the previous tree entirely, so its controls do not linger as orphans and so
@@ -450,7 +508,7 @@ impl ViewEngine {
         // before their parent's, which is the order a callback that touches its subtree needs.
         self.run_mount_hooks(&root, root_id, &[]);
 
-        self.current = Some(root);
+        self.current = Some(Rc::new(root));
         // The mounted tree changed, so a snapshot taken before this mount is stale.
         self.generation = self.generation.wrapping_add(1);
         report
@@ -599,14 +657,54 @@ impl ViewEngine {
         resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
         scope: Option<&str>,
     ) -> DiffReport {
-        let Some(_) = self.current.as_ref() else {
+        if self.current.is_none() {
             self.mount_with_optional_icon_resolver(view, ctx, create, resolver);
             return DiffReport::default();
-        };
+        }
         // Build before taking the previous tree: `build_in_force` needs `current` to answer the
         // "revision unchanged" fast path (REND-15).
-        let next = self.build_in_force(view, ctx);
-        let previous = self.current.take().expect("checked just above");
+        match self.build_in_force(view, ctx) {
+            // `build` would describe the tree that is already mounted, so there is nothing to
+            // clone, diff or apply (G-165). The tree did not change, so the generation does not
+            // advance either — a snapshot taken before this call is still current.
+            BuildOutcome::Reused => DiffReport::default(),
+            BuildOutcome::Built(next) => self.commit_update(next, create, resolver, scope),
+        }
+    }
+
+    /// Update a **pre-built** declaration tree (G-406).
+    ///
+    /// The counterpart of [`Self::mount_tree`]: identity, diffing and patching are the engine's,
+    /// while the tree comes from the caller. Calling it before a mount mounts instead, mirroring
+    /// [`Self::update`].
+    ///
+    /// This is the door `crate::layout::declarative` needs so its JSON and programmatic loaders
+    /// can share this engine's key identity and patch minimisation instead of re-solving a
+    /// path-only retained tree on every apply.
+    pub fn update_tree(
+        &mut self,
+        root: &Node,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+    ) -> DiffReport {
+        if self.current.is_none() {
+            self.mount_tree(root, create);
+            return DiffReport::default();
+        }
+        // A raw tree bypasses the revision channel: a key recorded for a `View` does not
+        // describe this build, so the next view update must rebuild.
+        self.last_build_key = None;
+        self.commit_update(root.clone(), create, None, None)
+    }
+
+    /// Diff `next` against the mounted tree, apply the batch, and install the new tree.
+    fn commit_update(
+        &mut self,
+        next: Node,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+        resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
+        scope: Option<&str>,
+    ) -> DiffReport {
+        let previous = self.current.take().expect("the caller checked that a tree is mounted");
         let lookup = |path: &[usize], _index: usize| self.id_of_path.get(path).copied();
         // A row signal narrows the walk to one keyed container. `diff_scoped` refuses a signal
         // it cannot honour (a missing key, a differing path, a different control kind), and the
@@ -638,6 +736,14 @@ impl ViewEngine {
                     matches!(patch, super::Patch::Remove { .. } | super::Patch::Replace { .. })
                 })
             {
+                // One `id -> path` reverse table for the whole batch, built once (G-166).
+                // Looking each removed id up with a linear scan of `id_of_path` made the
+                // snapshot O(removals x nodes); this is O(nodes + removals + kept).
+                let mut id_to_path: crate::compat::HashMap<ObjectId, &[usize]> =
+                    crate::compat::HashMap::new();
+                for (path, id) in &self.id_of_path {
+                    id_to_path.insert(*id, path.as_slice());
+                }
                 let roots: Vec<&[usize]> = report
                     .patches
                     .iter()
@@ -646,9 +752,7 @@ impl ViewEngine {
                             super::Patch::Remove { id } | super::Patch::Replace { id, .. } => id,
                             _ => return None,
                         };
-                        self.id_of_path.iter().find_map(|(path, candidate)| {
-                            (candidate == id).then_some(path.as_slice())
-                        })
+                        id_to_path.get(id).copied()
                     })
                     .collect();
                 Some(
@@ -661,7 +765,9 @@ impl ViewEngine {
             } else {
                 None
             };
-        let mut reserved = self.reserve_ids_for_inserts(&next, &report.patches, create);
+        // The inserted subtrees' paths travel on the patches, so the ids are allocated by
+        // reading each patch rather than by searching the new tree for its node (G-166).
+        let mut reserved = self.reserve_ids_for_inserts(&report.patches, create);
 
         // The layer resolver is passed so an inserted portal lands in the layer exactly as it would
         // on `mount`. Without it a tooltip declared behind a breakpoint or a `child_if` was
@@ -759,13 +865,10 @@ impl ViewEngine {
 
         // Mounts run last: a hook is allowed to read the engine's own view of the tree
         // (`Self::current`) and to address siblings through `id_of_path`, both of which describe
-        // the new tree only once it is installed.
-        // Mounts run last: a hook is allowed to read the engine's own view of the tree
-        // (`Self::current`) and to address siblings through `id_of_path`, both of which describe
-        // the new tree only once it is installed. `created` is computed from `next` **before** the
-        // move into `self.current`, so no clone of the whole tree is needed.
-        let created = self.created_ids_this_batch(&next, &report.patches);
-        self.current = Some(next);
+        // the new tree only once it is installed. `created` is computed from the patch paths
+        // **before** the move into `self.current`, so no clone of the whole tree is needed.
+        let created = self.created_ids_this_batch(&report.patches);
+        self.current = Some(Rc::new(next));
         if let Some(next) = self.current.as_ref() {
             self.run_mount_hooks_for_created(next, &[], &created);
         }
@@ -776,29 +879,23 @@ impl ViewEngine {
         report
     }
 
-    /// The ids a batch created, found by locating each inserted subtree in the **new** tree.
+    /// The ids a batch created, read from the paths the patches carry (G-166).
     ///
-    /// Read from the tree rather than from `reserved`, because a `Replace` does not go through
-    /// `reserved` at all — `apply` calls `create` inline for it — and its new id is not named by
-    /// the patch. Locating by node value covers both variants with one rule.
-    ///
-    /// A `Replace`'s new control is found because the replacement subtree appears in `next` at the
-    /// replaced node's path; an `Insert`'s because the inserted subtree appears at its new path.
+    /// A `Replace` does not go through `reserved` at all — `apply` calls `create` inline for it —
+    /// and its new id is not named by the patch. Both it and `Insert` carry the replacement's
+    /// path in the **new** tree, so one rule covers both variants without searching the tree.
     fn created_ids_this_batch(
         &self,
-        next: &Node,
         patches: &[super::Patch],
     ) -> crate::compat::HashMap<ObjectId, ()> {
         let mut created = crate::compat::HashMap::new();
         for patch in patches {
-            let node = match patch {
-                super::Patch::Insert { node, .. } | super::Patch::Replace { node, .. } => node,
+            let path = match patch {
+                super::Patch::Insert { path, .. } | super::Patch::Replace { path, .. } => path,
                 _ => continue,
             };
-            if let Some(path) = find_path_of(next, node) {
-                if let Some(id) = self.id_at(&path) {
-                    created.insert(id, ());
-                }
+            if let Some(id) = self.id_at(path) {
+                created.insert(id, ());
             }
         }
         created
@@ -915,7 +1012,7 @@ impl ViewEngine {
 
     /// The tree currently mounted, if any.
     pub fn current(&self) -> Option<&Node> {
-        self.current.as_ref()
+        self.current.as_deref()
     }
 
     /// The binding between the mounted tree and the live controls.
@@ -961,7 +1058,15 @@ impl ViewEngine {
     /// caller invokes when it needs the map rather than something the engine maintains on every
     /// update. A caller that queries frequently can hold one and rebuild it when
     /// [`Self::generation`] changes.
+    ///
+    /// The walk fills both the path→id and id→path maps as it goes, sharing one `Arc` path
+    /// allocation per node (G-167): the previous shape cloned `id_of_path` wholesale and then
+    /// re-derived the reverse table from the clone, paying two maps and two passes.
     pub fn tree_index(&self) -> crate::view::TreeIndex {
+        let mut path_to_id: crate::compat::HashMap<crate::compat::Arc<[usize]>, ObjectId> =
+            crate::compat::HashMap::new();
+        let mut id_to_path: crate::compat::HashMap<ObjectId, crate::compat::Arc<[usize]>> =
+            crate::compat::HashMap::new();
         let mut widget_of = crate::compat::HashMap::new();
         let mut key_of: crate::compat::HashMap<ObjectId, String> = crate::compat::HashMap::new();
         let mut parent_of = crate::compat::HashMap::new();
@@ -972,6 +1077,8 @@ impl ViewEngine {
             self.collect_identity(
                 tree,
                 &[],
+                &mut path_to_id,
+                &mut id_to_path,
                 &mut widget_of,
                 &mut key_of,
                 &mut parent_of,
@@ -980,7 +1087,8 @@ impl ViewEngine {
         }
 
         crate::view::TreeIndex::build(
-            self.id_of_path.clone(),
+            path_to_id,
+            id_to_path,
             widget_of,
             key_of,
             parent_of,
@@ -995,16 +1103,26 @@ impl ViewEngine {
     /// The walk is driven by the **declared tree** (`current`) so the widget names are the ones the
     /// view asked for, while the ids come from `id_of_path` — the same pairing the diff uses, so the
     /// snapshot cannot describe a node that is not in the mounted tree.
+    ///
+    /// Both directions are filled here (G-167): the path `Arc` is allocated once and shared by
+    /// the forward and reverse maps, rather than the reverse table being rebuilt afterwards from
+    /// a cloned `id_of_path`.
+    #[allow(clippy::too_many_arguments)]
     fn collect_identity(
         &self,
         node: &Node,
         path: &[usize],
+        path_to_id: &mut crate::compat::HashMap<crate::compat::Arc<[usize]>, ObjectId>,
+        id_to_path: &mut crate::compat::HashMap<ObjectId, crate::compat::Arc<[usize]>>,
         widget_of: &mut crate::compat::HashMap<ObjectId, String>,
         key_of: &mut crate::compat::HashMap<ObjectId, String>,
         parent_of: &mut crate::compat::HashMap<ObjectId, ObjectId>,
         children_of: &mut crate::compat::HashMap<ObjectId, crate::compat::Vec<ObjectId>>,
     ) -> Option<ObjectId> {
         let id = self.id_of_path.get(path).copied()?;
+        let owned_path: crate::compat::Arc<[usize]> = crate::compat::Arc::from(path);
+        path_to_id.insert(crate::compat::Arc::clone(&owned_path), id);
+        id_to_path.insert(id, owned_path);
         widget_of.insert(id, node.widget.clone());
         if let Some(key) = &node.key {
             key_of.insert(id, key.clone());
@@ -1013,9 +1131,16 @@ impl ViewEngine {
         for (index, child) in node.children.iter().enumerate() {
             let mut child_path = path.to_vec();
             child_path.push(index);
-            if let Some(child_id) =
-                self.collect_identity(child, &child_path, widget_of, key_of, parent_of, children_of)
-            {
+            if let Some(child_id) = self.collect_identity(
+                child,
+                &child_path,
+                path_to_id,
+                id_to_path,
+                widget_of,
+                key_of,
+                parent_of,
+                children_of,
+            ) {
                 parent_of.insert(child_id, id);
                 child_ids.push(child_id);
             }
@@ -1225,27 +1350,27 @@ impl ViewEngine {
     /// **adopted** rather than allocated twice. `create` is the only way to learn an id, so
     /// calling it here and again inside `apply` produced two live controls per node and
     /// orphaned the first.
+    ///
+    /// The inserted subtree's path comes from the patch, which the diff recorded while walking
+    /// the new tree (G-166); the previous shape searched the tree once per inserted node.
     fn reserve_ids_for_inserts(
         &mut self,
-        next: &Node,
         patches: &[super::Patch],
         create: &dyn Fn(&Node) -> Option<ObjectId>,
     ) -> super::apply::ReservedIds {
         let mut reserved = super::apply::ReservedIds::new();
         for patch in patches {
-            if let super::Patch::Insert { node, .. } = patch {
-                if let Some(path) = find_path_of(next, node) {
-                    let mut pending = Vec::new();
-                    collect_new_ids(node, &path, create, &mut pending);
-                    for (key, p, id) in pending {
-                        self.id_of_path.insert(p, id);
-                        // A queue, not a slot: one batch can insert several subtrees sharing
-                        // a key (two keyless siblings, the same key under two parents).
-                        // Overwriting handed the first subtree the second's id and orphaned
-                        // the first allocation; `insert_subtree` consumes front-to-back in
-                        // the same order this loop pushes, so the pairing is exact.
-                        reserved.entry(key).or_default().push_back(id);
-                    }
+            if let super::Patch::Insert { path, node, .. } = patch {
+                let mut pending = Vec::new();
+                collect_new_ids(node, path, create, &mut pending);
+                for (key, p, id) in pending {
+                    self.id_of_path.insert(p, id);
+                    // A queue, not a slot: one batch can insert several subtrees sharing
+                    // a key (two keyless siblings, the same key under two parents).
+                    // Overwriting handed the first subtree the second's id and orphaned
+                    // the first allocation; `insert_subtree` consumes front-to-back in
+                    // the same order this loop pushes, so the pairing is exact.
+                    reserved.entry(key).or_default().push_back(id);
                 }
             }
         }
@@ -1357,28 +1482,6 @@ fn reindex_children(
         }
         slot += super::mounted_slots(child);
     }
-}
-
-/// Find the path of `target` within `root`, matching by key when present and by identity of
-/// the widget name otherwise.
-///
-/// The engine needs this to reserve ids for an inserted subtree, and it is a search rather
-/// than a stored inverse because the new tree has no ids yet.
-fn find_path_of(root: &Node, target: &Node) -> Option<Vec<usize>> {
-    if root.widget == target.widget && root.key == target.key {
-        return Some(Vec::new());
-    }
-    for (index, child) in root.children.iter().enumerate() {
-        if child.widget == target.widget && child.key == target.key {
-            return Some(vec![index]);
-        }
-        if let Some(mut deeper) = find_path_of(child, target) {
-            let mut path = vec![index];
-            path.append(&mut deeper);
-            return Some(path);
-        }
-    }
-    None
 }
 
 /// Allocate ids for a freshly declared subtree, in the same order the mount path would.
@@ -2935,12 +3038,165 @@ mod tests {
         engine.mount(&view, &ids.creator());
         assert_eq!(view.builds.get(), 1, "mount builds once");
 
-        engine.update(&view, &ids.creator());
+        // G-165: the fast path does not clone the previous tree and does not diff it. Neither
+        // the tree nor the generation may change, and the batch must be empty.
+        let generation = engine.generation();
+        let report = engine.update(&view, &ids.creator());
         assert_eq!(view.builds.get(), 1, "the same revision must reuse the tree");
+        assert!(report.is_unchanged(), "a reused tree produced {:?}", report.patches);
+        assert_eq!(engine.generation(), generation, "a reused tree is not a mutation");
 
         view.revision.set(1);
         engine.update(&view, &ids.creator());
         assert_eq!(view.builds.get(), 2, "a new revision must rebuild");
+    }
+
+    /// A view with two independently revisioned keyed containers (VW-01).
+    struct RevisedLists {
+        revision_a: Cell<u64>,
+        revision_b: Cell<u64>,
+        rows: Vec<usize>,
+        built_a: Cell<usize>,
+        built_b: Cell<usize>,
+    }
+
+    impl RevisedLists {
+        fn new() -> Self {
+            Self {
+                revision_a: Cell::new(0),
+                revision_b: Cell::new(0),
+                rows: vec![0, 1, 2],
+                built_a: Cell::new(0),
+                built_b: Cell::new(0),
+            }
+        }
+    }
+
+    impl View for RevisedLists {
+        fn build(&self) -> Node {
+            Node::new("window")
+                .key("root")
+                .child(
+                    Node::new("panel")
+                        .key("list_a")
+                        .revision(self.revision_a.get())
+                        .children_keyed(
+                            &self.rows,
+                            |index| format!("a{index}"),
+                            |index| {
+                                self.built_a.set(self.built_a.get() + 1);
+                                Node::new("label")
+                                    .prop("text", s(&format!("a{index}:{}", self.revision_a.get())))
+                            },
+                        ),
+                )
+                .child(
+                    Node::new("panel")
+                        .key("list_b")
+                        .revision(self.revision_b.get())
+                        .children_keyed(
+                            &self.rows,
+                            |index| format!("b{index}"),
+                            |index| {
+                                self.built_b.set(self.built_b.get() + 1);
+                                Node::new("label")
+                                    .prop("text", s(&format!("b{index}:{}", self.revision_b.get())))
+                            },
+                        ),
+                )
+        }
+    }
+
+    /// VW-01: a container whose revision did not change is not described again. The rows of the
+    /// changed container are built, and the unchanged container's controls keep their ids.
+    #[test]
+    fn a_revisioned_container_is_not_rebuilt_again() {
+        let view = RevisedLists::new();
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&view, &ids.creator());
+        assert_eq!(view.built_a.get(), 3, "mount describes list_a once");
+        assert_eq!(view.built_b.get(), 3, "mount describes list_b once");
+        let a_ids: Vec<ObjectId> = (0..3).map(|i| engine.id_at(&[0, i]).unwrap()).collect();
+
+        // Only list_b's revision changes. list_a must be reused, not described again.
+        view.revision_b.set(1);
+        let report = engine.update(&view, &ids.creator());
+        assert_eq!(view.built_a.get(), 3, "the unchanged container must not be re-described");
+        assert_eq!(view.built_b.get(), 6, "the changed container is described again");
+        assert!(
+            report
+                .patches
+                .iter()
+                .all(|patch| matches!(patch, crate::view::Patch::SetProperty { .. })),
+            "only list_b's rows may change: {:?}",
+            report.patches
+        );
+        assert_eq!(report.patch_count(), 3, "one write per rebuilt row: {:?}", report.patches);
+        for (index, id) in a_ids.iter().enumerate() {
+            assert_eq!(engine.id_at(&[0, index]), Some(*id), "list_a keeps its control");
+        }
+    }
+
+    /// VW-01: the same reuse applies to a row-scoped update. A signal for one container leaves
+    /// the other container's description untouched.
+    #[test]
+    fn a_row_signal_rebuilds_only_the_containers_rows() {
+        let view = RevisedLists::new();
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&view, &ids.creator());
+
+        view.revision_b.set(1);
+        let report = engine.update_rows(
+            &view,
+            &ids.creator(),
+            &crate::view::RowSignal::new("list_b")
+                .push(crate::view::RowChange::Update { at: 0, count: 3 }),
+        );
+        assert_eq!(view.built_a.get(), 3, "list_a is outside the signal and unchanged");
+        assert_eq!(view.built_b.get(), 6, "list_b was rebuilt");
+        assert_eq!(report.patch_count(), 3, "only list_b's rows changed: {:?}", report.patches);
+    }
+
+    /// G-167: the snapshot's forward and reverse maps are filled by one walk, so every live
+    /// control resolves both ways to the same path.
+    #[test]
+    fn the_tree_index_paths_resolve_in_both_directions() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&Rows(vec!["a", "b"]), &ids.creator());
+        let index = engine.tree_index();
+        for (path, id) in &engine.id_of_path {
+            assert_eq!(index.id_at(path), Some(*id), "forward map for {path:?}");
+            assert_eq!(index.path_of(*id), Some(path.as_slice()), "reverse map for {id}");
+        }
+        assert_eq!(index.len(), engine.id_of_path.len(), "every mounted node is indexed");
+    }
+
+    /// G-406: a pre-built tree mounts and updates through the engine, keeping key identity.
+    #[test]
+    fn a_prebuilt_tree_can_be_mounted_and_updated() {
+        let next = Cell::new(1u64);
+        let create = |_node: &Node| {
+            let id = next.get();
+            next.set(id + 1);
+            Some(id)
+        };
+        let old = Node::new("window")
+            .key("root")
+            .child(Node::new("label").key("greeting").prop("text", s("hello")));
+        let mut engine = ViewEngine::new();
+        let mounted = engine.mount_tree(&old, &create);
+        assert_eq!(mounted.widgets_created, 2, "root and label: {:?}", mounted.errors);
+        let greeting = engine.id_at(&[0]).expect("the label is mounted");
+
+        let new = Node::new("window")
+            .key("root")
+            .child(Node::new("label").key("greeting").prop("text", s("goodbye")));
+        let report = engine.update_tree(&new, &create);
+        assert_eq!(report.patch_count(), 1, "one property write: {:?}", report.patches);
+        assert_eq!(engine.id_at(&[0]), Some(greeting), "the label keeps its control");
     }
 }
 

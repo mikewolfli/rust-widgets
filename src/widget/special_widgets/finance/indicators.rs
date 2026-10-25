@@ -292,29 +292,49 @@ pub fn bollinger_bands(
     if period == 0 {
         return (lower, middle, upper);
     }
+    // Rolling first and second moments instead of re-summing the window per sample: the
+    // variance was `O(n * period)` and is now `O(n)`, the same treatment `sma` and
+    // `trailing_extremes` already had (J-P18). `gaps` counts non-finite samples in the
+    // window; while it is non-zero no value is reported (the window is undefined), and the
+    // moments are re-derived directly when the last gap leaves, so a gap cannot poison
+    // every later window the way subtracting a `NAN` would.
+    let mut sum = 0.0f64;
+    let mut sum_sq = 0.0f64;
+    let mut gaps = 0usize;
     for index in 0..values.len() {
-        if !middle[index].is_finite() {
-            continue;
+        let entering = values[index];
+        if entering.is_finite() {
+            sum += entering;
+            sum_sq += entering * entering;
+        } else {
+            gaps += 1;
         }
-        // The window is the `period` values ending at `index`, so it starts at
-        // `index + 1 - period`. That subtraction **underflows** for `index <
-        // period - 1`, which `middle[index].is_finite()` happens to exclude today
-        // only because `sma` leaves exactly the first `period - 1` entries `NAN`.
-        // Relying on that made the correctness of this function depend on another
-        // function's warm-up convention; the guard below makes the requirement
-        // local, so a change to `sma` cannot turn this into a slice panic.
-        let Some(start) = index.checked_add(1).and_then(|end| end.checked_sub(period)) else {
-            continue;
-        };
-        if start > index {
-            continue;
+        if index >= period {
+            let leaving = values[index - period];
+            if leaving.is_finite() {
+                sum -= leaving;
+                sum_sq -= leaving * leaving;
+            } else {
+                gaps -= 1;
+                if gaps == 0 {
+                    // The window is fully finite again; rebuild the moments from it so the
+                    // accumulated sums do not carry the pre-gap history.
+                    let window = &values[index + 1 - period..=index];
+                    sum = window.iter().sum();
+                    sum_sq = window.iter().map(|value| value * value).sum();
+                }
+            }
         }
-        let window = &values[start..=index];
-        if !window.iter().all(|v| v.is_finite()) {
+        if index + 1 < period || gaps > 0 || !middle[index].is_finite() {
             continue;
         }
         let mean = middle[index];
-        let variance = window.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / period as f64;
+        if !sum.is_finite() || !sum_sq.is_finite() {
+            continue;
+        }
+        // Population variance from the moments; the clamp keeps a rounding-negative value
+        // from producing a `NAN` square root on a flat window.
+        let variance = (sum_sq / period as f64 - (sum / period as f64).powi(2)).max(0.0);
         let deviation = variance.sqrt();
         lower[index] = mean - multiplier * deviation;
         upper[index] = mean + multiplier * deviation;
@@ -350,23 +370,55 @@ pub fn stochastic(
     if period == 0 {
         return (vec![f64::NAN; length], vec![f64::NAN; length]);
     }
-    // Indexed by the close's own position, because the window extends backwards from it
-    // and the result is written back at that index; `iter_mut().enumerate()` would need a
-    // skip that obscures the alignment the whole indicator depends on.
-    for (window_start, slot) in raw_k.iter_mut().enumerate().skip(period - 1) {
-        let window_high = &highs[window_start + 1 - period..=window_start];
-        let window_low = &lows[window_start + 1 - period..=window_start];
-        let close = closes[window_start];
-        if !window_high.iter().all(|v| v.is_finite())
-            || !window_low.iter().all(|v| v.is_finite())
-            || !close.is_finite()
-        {
+    // The trailing extremes come from monotonic deques, the same structure
+    // `trailing_extremes` uses: each index enters and leaves once, so the window maximum
+    // and minimum are `O(1)` amortised instead of a rescan of `period` samples per bar
+    // (J-P18). `gaps` counts non-finite samples in the window; a window is only reported
+    // when it holds none, which preserves the old "a gap poisons its windows" rule.
+    let mut max_deque: VecDeque<usize> = VecDeque::with_capacity(period);
+    let mut min_deque: VecDeque<usize> = VecDeque::with_capacity(period);
+    let mut gaps = 0usize;
+    for index in 0..length {
+        let usable = highs[index].is_finite() && lows[index].is_finite();
+        if usable {
+            while max_deque.back().is_some_and(|&back| highs[back] <= highs[index]) {
+                max_deque.pop_back();
+            }
+            max_deque.push_back(index);
+            while min_deque.back().is_some_and(|&back| lows[back] >= lows[index]) {
+                min_deque.pop_back();
+            }
+            min_deque.push_back(index);
+        } else {
+            gaps += 1;
+        }
+        if index >= period {
+            let leaving = index - period;
+            if !(highs[leaving].is_finite() && lows[leaving].is_finite()) {
+                gaps -= 1;
+            }
+        }
+        // Expire indices that left the window, whatever their finiteness.
+        while max_deque.front().is_some_and(|&front| front + period <= index) {
+            max_deque.pop_front();
+        }
+        while min_deque.front().is_some_and(|&front| front + period <= index) {
+            min_deque.pop_front();
+        }
+        if index + 1 < period || gaps > 0 {
             continue;
         }
-        let highest = window_high.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        let lowest = window_low.iter().copied().fold(f64::INFINITY, f64::min);
+        let close = closes[index];
+        let (Some(&high_slot), Some(&low_slot)) = (max_deque.front(), min_deque.front()) else {
+            continue;
+        };
+        if !close.is_finite() {
+            continue;
+        }
+        let highest = highs[high_slot];
+        let lowest = lows[low_slot];
         let range = highest - lowest;
-        *slot = if range == 0.0 { 50.0 } else { (close - lowest) / range * 100.0 };
+        raw_k[index] = if range == 0.0 { 50.0 } else { (close - lowest) / range * 100.0 };
     }
 
     let k = if k_smoothing <= 1 { raw_k } else { sma(&raw_k, k_smoothing) };
@@ -574,28 +626,53 @@ pub fn vwap(
     if period == 0 || period > length {
         return out;
     }
-    // Iterated through `out` so the value is written at the same position the window
-    // ends at; the index is the window's last bar, not an offset into it.
-    for (index, slot) in out.iter_mut().enumerate().skip(period - 1) {
-        let window_start = index + 1 - period;
-        let mut weighted = 0.0;
-        let mut total_volume = 0.0;
-        let mut clean = true;
-        for offset in window_start..=index {
-            let high = highs[offset];
-            let low = lows[offset];
-            let close = closes[offset];
-            let volume = volumes[offset];
-            if !high.is_finite() || !low.is_finite() || !close.is_finite() || !volume.is_finite() {
-                clean = false;
-                break;
-            }
-            let typical = (high + low + close) / 3.0;
-            weighted += typical * volume;
-            total_volume += volume;
+    // Two rolling sums — weighted flow and volume — with a count of non-finite samples in
+    // the window, instead of re-summing `period` samples per bar (J-P18). A window holding
+    // any gap reports `NAN`, exactly as the window rescan did.
+    let mut weighted = 0.0;
+    let mut total_volume = 0.0;
+    let mut gaps = 0usize;
+    let typical = |index: usize| -> f64 {
+        let (high, low, close, volume) = (highs[index], lows[index], closes[index], volumes[index]);
+        if high.is_finite() && low.is_finite() && close.is_finite() && volume.is_finite() {
+            (high + low + close) / 3.0 * volume
+        } else {
+            f64::NAN
         }
-        if clean && total_volume != 0.0 {
-            *slot = weighted / total_volume;
+    };
+    for index in 0..length {
+        let flow = typical(index);
+        if flow.is_finite() {
+            weighted += flow;
+            total_volume += volumes[index];
+        } else {
+            gaps += 1;
+        }
+        if index >= period {
+            let leaving = index - period;
+            let old_flow = typical(leaving);
+            if old_flow.is_finite() {
+                weighted -= old_flow;
+                total_volume -= volumes[leaving];
+            } else {
+                gaps -= 1;
+                if gaps == 0 {
+                    // Re-derive both sums once the window is clean again, so the totals do
+                    // not carry a stale offset from the gap period.
+                    let start = index + 1 - period;
+                    weighted = 0.0;
+                    total_volume = 0.0;
+                    for (offset, &volume) in
+                        volumes.iter().enumerate().take(index + 1).skip(start)
+                    {
+                        weighted += typical(offset);
+                        total_volume += volume;
+                    }
+                }
+            }
+        }
+        if index + 1 >= period && gaps == 0 && total_volume != 0.0 {
+            out[index] = weighted / total_volume;
         }
     }
     out
@@ -651,17 +728,37 @@ pub fn money_flow_index(
         }
     }
 
-    for index in period..length {
-        let window_start = index + 1 - period;
-        let positive_slice = &positive[window_start..=index];
-        let negative_slice = &negative[window_start..=index];
-        if !positive_slice.iter().all(|v| v.is_finite())
-            || !negative_slice.iter().all(|v| v.is_finite())
-        {
+    // Two rolling flow sums with a gap count, instead of re-summing both legs of the
+    // window per bar: the same `O(n)` shape `sma` uses, with the same "a gap makes its
+    // windows undefined" rule (J-P18).
+    let mut total_positive = 0.0f64;
+    let mut total_negative = 0.0f64;
+    let mut gaps = 0usize;
+    for index in 0..length {
+        let usable = positive[index].is_finite() && negative[index].is_finite();
+        if usable {
+            total_positive += positive[index];
+            total_negative += negative[index];
+        } else {
+            gaps += 1;
+        }
+        if index >= period {
+            let leaving = index - period;
+            if positive[leaving].is_finite() && negative[leaving].is_finite() {
+                total_positive -= positive[leaving];
+                total_negative -= negative[leaving];
+            } else {
+                gaps -= 1;
+                if gaps == 0 {
+                    let start = index + 1 - period;
+                    total_positive = positive[start..=index].iter().sum();
+                    total_negative = negative[start..=index].iter().sum();
+                }
+            }
+        }
+        if index < period || gaps > 0 {
             continue;
         }
-        let total_positive: f64 = positive_slice.iter().sum();
-        let total_negative: f64 = negative_slice.iter().sum();
         out[index] = if total_negative == 0.0 {
             if total_positive == 0.0 {
                 50.0

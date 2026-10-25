@@ -106,6 +106,7 @@ impl log::Log for LogcatLogger {
         }
         let tag = std::ffi::CString::new("rust_widgets").unwrap_or_default();
         let message = std::ffi::CString::new(record.args().to_string()).unwrap_or_default();
+// SAFETY: both pointers come from live `CString`s in this scope and are NUL-terminated.
         unsafe {
             let _ =
                 android_log_write(logcat_priority(record.level()), tag.as_ptr(), message.as_ptr());
@@ -129,12 +130,16 @@ extern "C" {
     ) -> i32;
 }
 
-/// Safe wrapper around `__android_log_write`.
+/// Thin FFI forwarder to `__android_log_write`.
+///
+/// # Safety
+/// `tag` and `text` must be valid NUL-terminated C strings that outlive the call.
 unsafe fn android_log_write(
     prio: i32,
     tag: *const core::ffi::c_char,
     text: *const core::ffi::c_char,
 ) -> i32 {
+// SAFETY: forwarded from `android_log_write`'s contract: both pointers are valid NUL-terminated strings.
     unsafe { __android_log_write(prio, tag, text) }
 }
 

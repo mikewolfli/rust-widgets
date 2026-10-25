@@ -14,12 +14,23 @@ use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::{expect_f64, expect_usize};
+use crate::widget::capability::coercion::{expect_f64, expect_u32_saturating, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use core::cell::{Ref, RefCell};
+
+/// Hands out the identities the render layer cache uses to recognise unchanged committed ink.
+///
+/// Globally unique because the cache is per surface: two pads that both started at `1` would
+/// reuse each other's cached pixels.
+fn next_ink_cache_key() -> u64 {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
 
 /// A single continuous pen stroke, stored as a polyline of points.
 ///
@@ -27,7 +38,7 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// point was taken, so a stroke records not just *where* the pen went but *how
 /// hard* it pressed. Mouse and touch input report a neutral pressure (see
 /// [`SignatureStroke::push`]), so a stroke drawn with them is uniform.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct SignatureStroke {
     points: Vec<Point>,
     /// Normalized tip pressure (`0.0..=1.0`) for the point at the same index in
@@ -35,16 +46,38 @@ pub struct SignatureStroke {
     pressures: Vec<f32>,
     /// Stylus tilt in degrees, `(x, y)`, for the point at the same index.
     tilts: Vec<(f32, f32)>,
+    /// The smoothed polyline, computed once per stroke (SP-P63).
+    ///
+    /// Chaikin subdivision is a pure function of `points`, yet the paint ran it for every
+    /// committed stroke on every frame — two temporary vectors per stroke per frame. Caching the
+    /// result here means a finished stroke is smoothed on its first paint and never again; the
+    /// cache is cleared whenever a point is appended, so an in-progress stroke cannot go stale.
+    smoothed: RefCell<Option<Vec<Point>>>,
 }
 
 /// The pressure a mouse or touch contact reports: neutral, so a stroke drawn with
 /// it keeps the pad's configured width (D09-POINTER-01).
 const NEUTRAL_PRESSURE: f32 = 1.0;
 
+impl PartialEq for SignatureStroke {
+    /// The smoothing cache takes no part in equality: it is derived state, and two strokes with
+    /// the same recorded points are the same stroke whether or not one of them has been painted.
+    fn eq(&self, other: &Self) -> bool {
+        self.points == other.points
+            && self.pressures == other.pressures
+            && self.tilts == other.tilts
+    }
+}
+
 impl SignatureStroke {
     /// Creates an empty stroke.
     pub fn new() -> Self {
-        Self { points: Vec::new(), pressures: Vec::new(), tilts: Vec::new() }
+        Self {
+            points: Vec::new(),
+            pressures: Vec::new(),
+            tilts: Vec::new(),
+            smoothed: RefCell::new(None),
+        }
     }
 
     /// Creates a stroke from a list of points.
@@ -55,7 +88,7 @@ impl SignatureStroke {
     pub fn from_points(points: Vec<Point>) -> Self {
         let pressures = vec![NEUTRAL_PRESSURE; points.len()];
         let tilts = vec![(0.0, 0.0); points.len()];
-        Self { points, pressures, tilts }
+        Self { points, pressures, tilts, smoothed: RefCell::new(None) }
     }
 
     /// Appends a point to the stroke with neutral pressure.
@@ -73,6 +106,8 @@ impl SignatureStroke {
         self.points.push(point);
         self.pressures.push(clamped);
         self.tilts.push((0.0, 0.0));
+        // The cached subdivision no longer describes this stroke.
+        *self.smoothed.borrow_mut() = None;
     }
 
     /// Appends a point with the pen's pressure and tilt.
@@ -117,6 +152,16 @@ impl SignatureStroke {
     /// Returns the number of points in the stroke.
     pub fn len(&self) -> usize {
         self.points.len()
+    }
+
+    /// The stroke's points after the smoothing pass, computed once and reused.
+    pub(crate) fn smoothed_points(&self) -> Ref<'_, Vec<Point>> {
+        if self.smoothed.borrow().is_none() {
+            *self.smoothed.borrow_mut() = Some(chaikin(&self.points));
+        }
+        Ref::map(self.smoothed.borrow(), |cached| {
+            cached.as_ref().expect("the smoothed polyline was just computed")
+        })
     }
 
     /// Returns true when the stroke has no points.
@@ -227,6 +272,8 @@ pub struct SignaturePad {
     smooth_strokes: bool,
     /// Strokes removed by `undo`, available to `redo`.
     redo_stack: Vec<SignatureStroke>,
+    /// Render-cache identity of the committed ink; a new identity rebuilds its pixels.
+    ink_cache_key: u64,
     /// Emitted with no payload whenever the committed stroke set changes.
     pub changed: GenericSignal,
     /// Emitted with the final stroke when a drag is released and committed.
@@ -242,7 +289,7 @@ impl SignaturePad {
             current: None,
             stroke_color: Color::rgb(20, 20, 20),
             stroke_width: 2,
-            min_point_distance: 1.5,
+            min_point_distance: 1.0,
             min_point_interval_ms: 10,
             last_point_at: None,
             last_pressure: NEUTRAL_PRESSURE,
@@ -251,9 +298,15 @@ impl SignaturePad {
             tilt_affects_width: false,
             smooth_strokes: false,
             redo_stack: Vec::new(),
+            ink_cache_key: next_ink_cache_key(),
             changed: GenericSignal::new(),
             stroke_completed: Signal1::new(),
         }
+    }
+
+    /// Drops the committed-ink render cache, because what it painted is no longer current.
+    fn invalidate_ink_cache(&mut self) {
+        self.ink_cache_key = next_ink_cache_key();
     }
 
     /// Returns the committed strokes (excluding any in-progress stroke).
@@ -276,6 +329,7 @@ impl SignaturePad {
     pub fn undo(&mut self) -> bool {
         if let Some(stroke) = self.strokes.pop() {
             self.redo_stack.push(stroke);
+            self.invalidate_ink_cache();
             self.changed.emit();
             self.base.request_redraw();
             true
@@ -293,6 +347,7 @@ impl SignaturePad {
             return false;
         };
         self.strokes.push(stroke);
+        self.invalidate_ink_cache();
         self.changed.emit();
         self.base.request_redraw();
         true
@@ -309,6 +364,7 @@ impl SignaturePad {
             return;
         }
         self.smooth_strokes = smooth;
+        self.invalidate_ink_cache();
         self.base.request_redraw();
     }
 
@@ -323,6 +379,7 @@ impl SignaturePad {
             return;
         }
         self.tilt_affects_width = affects;
+        self.invalidate_ink_cache();
         self.base.request_redraw();
     }
 
@@ -405,6 +462,7 @@ impl SignaturePad {
             // forget it too -- otherwise the next stroke's first move is compared
             // against a moment that belongs to a stroke no longer on the pad.
             self.last_point_at = None;
+            self.invalidate_ink_cache();
             self.changed.emit();
             self.base.request_redraw();
         }
@@ -421,6 +479,7 @@ impl SignaturePad {
             return;
         }
         self.stroke_color = color;
+        self.invalidate_ink_cache();
         self.base.request_redraw();
     }
 
@@ -436,6 +495,7 @@ impl SignaturePad {
             return;
         }
         self.stroke_width = width;
+        self.invalidate_ink_cache();
         self.base.request_redraw();
     }
 
@@ -474,6 +534,7 @@ impl SignaturePad {
     pub fn set_pressure_affects_width(&mut self, enabled: bool) {
         if self.pressure_affects_width != enabled {
             self.pressure_affects_width = enabled;
+            self.invalidate_ink_cache();
             self.base.request_redraw();
         }
     }
@@ -606,8 +667,12 @@ impl SignaturePad {
         let dx = (point.x - last.x) as f32;
         let dy = (point.y - last.y) as f32;
         let distance = (dx * dx + dy * dy).sqrt();
-        let far_enough = distance >= min_distance;
-        let long_enough = elapsed_ms >= min_interval_ms;
+        // Each condition can be switched off by its own zero: `min_distance == 0` means "no
+        // distance limit" and `min_interval_ms == 0` means "no time requirement". Treating the
+        // interval of zero as *always satisfied* recorded every event of a stationary pointer,
+        // which is the opposite of the density control a caller sets (SP-P64).
+        let far_enough = min_distance <= 0.0 || distance >= min_distance;
+        let long_enough = min_interval_ms > 0 && elapsed_ms >= min_interval_ms;
         if !far_enough && !long_enough {
             // Too close *and* too soon: this is the jitter the smoothing exists to
             // drop. The clock is deliberately **not** advanced, so the interval is
@@ -621,7 +686,12 @@ impl SignaturePad {
         // a fast stroke smooth: without it, a pointer that travelled 60 px between
         // two events would deposit two points and the pad would draw one straight
         // edge, which is the polygonisation this control was reported for.
-        if distance > min_distance && min_interval_ms > 0 {
+        //
+        // The distance is the whole condition: `min_interval_ms == 0` means "no time limit",
+        // an *unrestricted* setting rather than a switched-off one. Gating the fill on
+        // `min_interval_ms > 0` read that `0` as "do not fill", so a caller who asked for
+        // distance-only control got the sparsest possible sampling instead (SP-P64).
+        if min_distance > 0.0 && distance > min_distance {
             let from_pressure = current.last_pressure();
             for (step, step_pressure) in interpolation_steps_with_pressure(
                 last,
@@ -649,6 +719,7 @@ impl SignaturePad {
         // Drawing again abandons the undone branch, which is the linear-history contract
         // `redo` documents.
         self.redo_stack.clear();
+        self.invalidate_ink_cache();
         self.stroke_completed.emit(stroke);
         self.changed.emit();
         self.base.request_redraw();
@@ -742,7 +813,7 @@ impl WidgetProperties for SignaturePad {
         match name {
             "stroke_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             "stroke_width" => {
-                self.set_stroke_width(expect_usize(value)? as u32);
+                self.set_stroke_width(expect_u32_saturating(value)?);
                 Ok(())
             }
             "stroke_color" => match value {
@@ -940,17 +1011,24 @@ impl Draw for SignaturePad {
         );
         context.draw_rect(rect, border);
 
-        // Draw committed strokes.
-        for stroke in &self.strokes {
-            draw_stroke(
-                context,
-                stroke,
-                self.stroke_color,
-                self.stroke_width,
-                self.pressure_affects_width,
-                self.tilt_affects_width,
-                self.smooth_strokes,
-            );
+        // Draw committed strokes inside one render-cached layer group: their ink only changes
+        // when the stroke set, the pen settings or the transform do, so a still pad re-uses the
+        // previous frame's pixels instead of replaying every point (SP-P63).
+        if !self.strokes.is_empty() {
+            let key = self.ink_cache_key;
+            context.push_layer_group(rect, None, 1.0, Some(key));
+            for stroke in &self.strokes {
+                draw_stroke(
+                    context,
+                    stroke,
+                    self.stroke_color,
+                    self.stroke_width,
+                    self.pressure_affects_width,
+                    self.tilt_affects_width,
+                    self.smooth_strokes,
+                );
+            }
+            context.pop_layer();
         }
         // Draw the in-progress stroke on top.
         if let Some(current) = &self.current {
@@ -1041,10 +1119,12 @@ fn draw_stroke(
     tilt_affects_width: bool,
     smooth: bool,
 ) {
-    let points_owned;
+    // The smoothing pass is a pure function of the stroke's points, so the stroke caches it: a
+    // committed stroke was re-subdivided on every frame (SP-P63).
+    let smoothed;
     let points = if smooth {
-        points_owned = chaikin(stroke.points());
-        points_owned.as_slice()
+        smoothed = stroke.smoothed_points();
+        smoothed.as_slice()
     } else {
         stroke.points()
     };
@@ -1224,8 +1304,12 @@ mod tests {
     #[test]
     fn smoothing_drops_near_duplicate_points() {
         let mut p = pad();
+        // Distance-only sampling: the time rule is switched off, so the assertion does not depend
+        // on how long the test takes to run, and this is the "no time limit" case SP-P64 fixed.
+        p.set_min_point_distance(1.5);
+        p.set_min_point_interval_ms(0);
         p.handle_event(&Event::mouse_press(10, 20, 1));
-        // Two near-identical points: both within the 1.5px threshold of the
+        // Two near-identical points: both within the 1.5 px threshold of the
         // previous point, so neither is recorded.
         p.handle_event(&Event::mouse_move(10, 20));
         p.handle_event(&Event::mouse_move(10, 21));

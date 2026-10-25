@@ -70,23 +70,31 @@
 //!
 //! # Reachability
 //!
-//! **State:** Reserved: the declarative half of the retained/declarative split, complete and
-//! tested, whose consumers today are this repository's own tests. Retained deliberately
-//! rather than deleted because it is the only implementation of a capability the library
-//! otherwise lacks: expressing a tree as a function of state and carrying only the
-//! differences onto the live controls. Its cost is bounded — `Node` and `diff` are inert data
-//! and arithmetic with no registration, no global state, and no platform calls, so a caller
-//! that never rebuilds a tree links nothing extra and pays nothing at runtime.
+//! **State:** the declarative retained-tree implementation. The mounting/updating entry points
+//! are [`ViewEngine::mount`], [`ViewEngine::update`], and — for a caller that already owns a
+//! [`Node`] tree — [`ViewEngine::mount_tree`] / [`ViewEngine::update_tree`].
 //!
-//! Not duplicated by `crate::json`. The JSON loader parses *one* tree and instantiates it
-//! once; it has no previous tree to compare against, so it cannot preserve an identity across
-//! an update. This module starts where that ends — it consumes the same widget factory and
-//! the same property contract (`widget_property_set`), and `BoundJsonLayout`'s structural
-//! indexes. `grep -c "diff\|Patch" src/json/loader.rs` is `0`: the two do not overlap.
+//! Not duplicated by `crate::json`: the JSON loader parses *one* tree and instantiates it once,
+//! with no previous tree to compare against, so it cannot preserve an identity across an
+//! update. This module starts where that ends — it consumes the same widget factory and the
+//! same property contract (`widget_property_set`) — and `BoundJsonLayout`'s structural indexes
+//! are its binding to the live controls.
 //!
-//! Removal condition: if no view consumer appears by the time the declarative path is
-//! re-evaluated, and `BoundJsonLayout`'s tree indexes (their only consumer) are retired with
-//! it, this module goes too.
+//! # One implementation path (G-406)
+//!
+//! `crate::layout::declarative` still owns a second declarative retained tree: a thread-local
+//! `LAYOUT_MAP` keyed by parent id whose identity is the **path** a document happens to place a
+//! control at, re-solved in full on every `apply_layout`. This module is the one that carries
+//! key identity, minimal-move patching and scoped diffs. The decision (principle #101) is that
+//! this engine is the **single** implementation, so the declarative loader must hand its
+//! produced [`Node`] tree to [`ViewEngine::mount_tree`] / [`ViewEngine::update_tree`] instead of
+//! keeping the second registry, and the engine must own the layout registration that `LAYOUT_MAP`
+//! performs today. Until that forward lands, the two paths coexist: this one is complete and
+//! tested, and the loader's path-only tree is the one production still applies.
+//!
+//! Removal condition: this module is not a candidate for removal while the declarative loader
+//! has its own path-only retained tree. It goes only if that loader is retired together with
+//! `BoundJsonLayout`'s tree indexes (this module's other consumer).
 //!
 //! # Platform availability (BLUE18 rule #92)
 //!
@@ -119,6 +127,7 @@ mod helpers;
 mod identity;
 mod node;
 mod reactive;
+mod revision;
 mod row_signal;
 
 pub use apply::{

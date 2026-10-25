@@ -8,12 +8,12 @@
 //! within a configurable range. The region between the handles is visually
 //! highlighted.
 
-use crate::core::{Color, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{
-    expect_f64, expect_text_direction, text_direction_to_str,
+    expect_bool, expect_f64, expect_text_direction, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -64,6 +64,12 @@ pub struct RangeSlider {
     focused: bool,
     /// The handle keyboard input acts on. Defaults to the lower handle.
     active_handle: bool,
+    /// Spacing of the track's tick marks, or `None` for no ticks (I-108).
+    tick_interval: Option<f64>,
+    /// Whether numeric labels are painted beside the ticks (I-108).
+    tick_labels: bool,
+    /// Whether the active handle shows its value while being dragged (I-108).
+    value_hint_enabled: bool,
 }
 
 /// The radius of a range slider's handle, in logical pixels.
@@ -104,7 +110,53 @@ impl RangeSlider {
             dragging: None,
             focused: false,
             active_handle: true,
+            tick_interval: None,
+            tick_labels: false,
+            value_hint_enabled: false,
         }
+    }
+
+    /// The track's tick spacing, or `None` for no ticks (I-108).
+    pub fn tick_interval(&self) -> Option<f64> {
+        self.tick_interval
+    }
+
+    /// Sets the track's tick spacing; `None` removes the ticks (I-108).
+    pub fn set_tick_interval(&mut self, interval: Option<f64>) {
+        let interval = interval.filter(|value| value.is_finite() && *value > 0.0);
+        if self.tick_interval == interval {
+            return;
+        }
+        self.tick_interval = interval;
+        self.base.request_redraw();
+    }
+
+    /// Whether numeric tick labels are painted (I-108).
+    pub fn tick_labels(&self) -> bool {
+        self.tick_labels
+    }
+
+    /// Enables or disables numeric tick labels (I-108).
+    pub fn set_tick_labels(&mut self, labels: bool) {
+        if self.tick_labels == labels {
+            return;
+        }
+        self.tick_labels = labels;
+        self.base.request_redraw();
+    }
+
+    /// Whether the dragged handle shows its value (I-108).
+    pub fn value_hint_enabled(&self) -> bool {
+        self.value_hint_enabled
+    }
+
+    /// Enables or disables the dragged-handle value hint (I-108).
+    pub fn set_value_hint_enabled(&mut self, enabled: bool) {
+        if self.value_hint_enabled == enabled {
+            return;
+        }
+        self.value_hint_enabled = enabled;
+        self.base.request_redraw();
     }
 
     /// Returns the current lower value.
@@ -631,6 +683,17 @@ impl WidgetProperties for RangeSlider {
             "max_value" => Ok(CapabilityValue::Float(self.max_value())),
             "lower" => Ok(CapabilityValue::Float(self.lower_value())),
             "upper" => Ok(CapabilityValue::Float(self.upper_value())),
+            // I-107: the step and minimum gap are real constraints, so the property route
+            // must expose them like every other numeric input.
+            "step" => Ok(CapabilityValue::Float(self.step())),
+            "min_range" => Ok(CapabilityValue::Float(self.min_range())),
+            // I-108: tick and hint configuration.
+            "tick_interval" => match self.tick_interval() {
+                Some(interval) => Ok(CapabilityValue::Float(interval)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "tick_labels" => Ok(CapabilityValue::Bool(self.tick_labels())),
+            "value_hint_enabled" => Ok(CapabilityValue::Bool(self.value_hint_enabled())),
             "orientation" => Ok(CapabilityValue::String(
                 match self.orientation() {
                     RangeSliderOrientation::Horizontal => "horizontal",
@@ -663,6 +726,30 @@ impl WidgetProperties for RangeSlider {
                 self.set_upper_value(expect_f64(value)?);
                 Ok(())
             }
+            "step" => {
+                self.set_step(expect_f64(value)?);
+                Ok(())
+            }
+            "min_range" => {
+                self.set_min_range(expect_f64(value)?);
+                Ok(())
+            }
+            "tick_interval" => {
+                let interval = match value {
+                    CapabilityValue::Null => None,
+                    other => Some(expect_f64(other)?),
+                };
+                self.set_tick_interval(interval);
+                Ok(())
+            }
+            "tick_labels" => {
+                self.set_tick_labels(expect_bool(value)?);
+                Ok(())
+            }
+            "value_hint_enabled" => {
+                self.set_value_hint_enabled(expect_bool(value)?);
+                Ok(())
+            }
             "orientation" => {
                 let token = match value {
                     CapabilityValue::String(ref v) => crate::compat::String::to_string(v),
@@ -692,6 +779,11 @@ impl WidgetProperties for RangeSlider {
             "max_value",
             "lower",
             "upper",
+            "step",
+            "min_range",
+            "tick_interval",
+            "tick_labels",
+            "value_hint_enabled",
             "orientation",
             "direction",
             BASE_PROPERTY_NAMES
@@ -728,10 +820,11 @@ impl Draw for RangeSlider {
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
         let style = self.base.style();
+        let font = crate::widget::metrics::effective_font(style);
         // `range_slider` is not in the role table, so it classifies as `Surface` and its resolved
         // background is the window fill itself; the empty track below therefore derives its own
         // distinct colour rather than painting the window's.
-        let theme = crate::style::resolved_theme_style_shared("range_slider");
+        // I-P68: one theme read for every colour; the draw used to take the manager lock twice.
         let (window_fill, foreground, primary, muted, disabled) = {
             let manager = crate::style::theme_manager();
             match manager.current_theme() {
@@ -752,10 +845,7 @@ impl Draw for RangeSlider {
             }
         };
 
-        let ink = style
-            .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
-            .unwrap_or(foreground);
+        let ink = style.text_color.unwrap_or(foreground);
         // The empty run of the track: one step from the window fill toward the text colour, so it
         // is visible on either appearance rather than being the window's own colour. The filter is
         // on the **resolved** value, not only on the theme's: a control classified as `Surface`
@@ -782,11 +872,8 @@ impl Draw for RangeSlider {
         } else {
             track_color.blend(&Color::WHITE, 0.55)
         };
-        let handle_border = style
-            .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .filter(|resolved| *resolved != handle_color)
-            .unwrap_or_else(|| {
+        let handle_border =
+            style.border_color.filter(|resolved| *resolved != handle_color).unwrap_or_else(|| {
                 if is_enabled {
                     range_color
                 } else {
@@ -816,6 +903,30 @@ impl Draw for RangeSlider {
                 context.fill_rounded_rect(range_rect, track_thickness / 2, range_color);
             }
 
+            // I-108: ticks make the step visible; labels name the values.
+            if let Some(interval) = self.tick_interval {
+                let span = self.max_value - self.min_value;
+                let count = ((span / interval).floor() as usize).min(64);
+                for index in 0..=count {
+                    let value = self.min_value + interval * index as f64;
+                    let x = self.value_to_pixel(value, &rect);
+                    context.draw_line(
+                        Point::new(x, track_y + track_thickness as i32 + 2),
+                        Point::new(x, track_y + track_thickness as i32 + 6),
+                        muted,
+                    );
+                    if self.tick_labels {
+                        context.draw_text(
+                            Point::new(x, track_y + track_thickness as i32 + 8),
+                            &format!("{value:.0}"),
+                            font,
+                            muted,
+                            HorizontalAlignment::Center,
+                        );
+                    }
+                }
+            }
+
             // Draw handles
             let center_y = rect.y + rect.height as i32 / 2;
 
@@ -830,6 +941,20 @@ impl Draw for RangeSlider {
                     handle_color,
                     handle_border,
                 );
+            }
+            // I-108: the value hint follows the handle that is actually being dragged.
+            if self.value_hint_enabled {
+                if let Some(is_lower) = self.dragging {
+                    let value = if is_lower { self.lower_value } else { self.upper_value };
+                    let x = self.value_to_pixel(value, &rect);
+                    context.draw_text(
+                        Point::new(x, rect.y.saturating_sub(font.effective_line_height() as i32)),
+                        &format!("{value}"),
+                        font,
+                        ink,
+                        HorizontalAlignment::Center,
+                    );
+                }
             }
         } else {
             // Vertical

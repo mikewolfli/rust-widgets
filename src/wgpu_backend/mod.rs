@@ -13,6 +13,30 @@
 //! so it added work without accelerating anything — see `src/render/backend/scene.rs`). The
 //! renderer is kept compiled for the planned on-GPU scene rasterisation described there, not as a
 //! live code path; the rasteriser and its tests remain the reference for the command set.
+//!
+//! # Cost (G-63 / G-212)
+//!
+//! The `rgba8` entry points are **not** a hardware-accelerated scene path. They rasterise the
+//! command list on the CPU (`raster.rs`), upload the finished frame to a texture, and block on a
+//! readback. The GPU therefore only copies the frame, and the round trip makes the call expected
+//! **slower** than returning the software rasteriser's buffer directly. `read_back` bounds that
+//! wait with a timeout so a lost device reports an error instead of hanging, but it cannot remove
+//! the trip itself.
+//!
+//! # Planned on-GPU order (G-63)
+//!
+//! The module is retained as the carrier for a real GPU pipeline. The integration order is:
+//!
+//! 1. Batch the 2D rectangle path. **Done:** a run longer than one rectangle is drawn as
+//!    instanced quad batches of at most `MAX_INSTANCES_PER_DRAW` (G-64), preserving painter order.
+//! 2. Move the remaining command variants (`DrawImage`, `DrawText`, rounded rectangles, circles
+//!    and paths) from `raster.rs` onto their reserved shaders (`shaders::ShaderModule`, G-213).
+//! 3. Replace `WgpuRenderer::render_draw_commands_rgba8`'s CPU raster + upload + readback with one
+//!    GPU pass and a single readback, then delete the duplicate software implementation from this
+//!    module so the two cannot drift.
+//!
+//! Until step 3 lands, callers must treat the `rgba8` entry points as the software rasteriser plus
+//! a measurable round-trip cost, never as hardware acceleration.
 mod bridge;
 mod commands;
 mod raster;

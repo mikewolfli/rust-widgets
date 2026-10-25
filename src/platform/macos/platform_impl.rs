@@ -38,6 +38,9 @@ use std::os::raw::c_char;
 ///
 /// # SAFETY
 /// Must be called on a thread with an active autorelease pool (AppKit's main thread has one).
+///
+/// # Safety
+/// Must be called on the main thread with an active autorelease pool.
 unsafe fn autoreleased_nsstring(s: &str) -> id {
     NSString::alloc(nil).init_str(s).autorelease()
 }
@@ -80,6 +83,7 @@ struct NsEdgeInsets {
     top: f64,
     left: f64,
     bottom: f64,
+    // SAFETY: the encoding is the exact layout clang emits for `NSEdgeInsets` (four `CGFloat`s).
     right: f64,
 }
 
@@ -404,13 +408,12 @@ impl Platform for MacOSPlatform {
     ///
     /// macOS posts notifications for each of these; this backend is polled, so the revision is a
     /// hash of the values a caller would read. `0` when AppKit cannot be asked (off-main).
+    ///
+    /// [`crate::platform::locale::environment_revision`] is the shared accessor: hashing the four
+    /// facts by hand here is what kept an accent or reduced-transparency change invisible to the
+    /// style snapshot (P-03), and what made adding a fact an eight-file edit (P-06).
     fn environment_generation(&self) -> u64 {
-        crate::platform::locale::generation_hash(
-            self.system_theme(),
-            self.high_contrast(),
-            self.reduce_motion(),
-            self.system_locale(),
-        )
+        crate::platform::locale::environment_revision(self)
     }
 
     /// The font families AppKit reports; see [`super::environment::system_fonts`].
@@ -997,6 +1000,7 @@ impl Platform for MacOSPlatform {
             return self.state.set_clipboard_text(text);
         }
         // Try real NSPasteboard integration first
+// SAFETY: runs on the main thread with an autorelease pool; `catch_unwind` contains any panic.
         let result = std::panic::catch_unwind(|| unsafe {
             let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
             if pb == nil {
@@ -1017,6 +1021,7 @@ impl Platform for MacOSPlatform {
             return self.state.clipboard_text();
         }
         // Try real NSPasteboard integration first
+// SAFETY: runs on the main thread with an autorelease pool; `catch_unwind` contains any panic.
         let result = std::panic::catch_unwind(|| unsafe {
             let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
             if pb == nil {
@@ -1051,8 +1056,14 @@ impl Platform for MacOSPlatform {
         self.state.text(widget_id)
     }
 
-    fn set_widget_text(&self, widget_id: ObjectId, text: &str) {
-        self.state.set_text(widget_id, text);
+    /// Updates a control's label and, for a native window, its AppKit title.
+    ///
+    /// The answer is whether the id names a widget this backend recorded — the same answer
+    /// `BackendState::set_text` gives (P-203). The AppKit title write is best-effort on top of it
+    /// and cannot fail in a way that would change the answer: a handle that is not a window is
+    /// simply not a title to update.
+    fn set_widget_text(&self, widget_id: ObjectId, text: &str) -> bool {
+        let stored = self.state.set_text(widget_id, text);
         // Keep the live AppKit title in step when there is a native window. A
         // state-only handle has `ptr == 0`, so the message is skipped entirely.
         if let Some(handle) = self.get_handle(widget_id) {
@@ -1066,6 +1077,7 @@ impl Platform for MacOSPlatform {
                 }
             }
         }
+        stored
     }
 
     fn set_widget_enabled(&self, widget_id: ObjectId, enabled: bool) {
@@ -1076,16 +1088,25 @@ impl Platform for MacOSPlatform {
         self.state.enabled(widget_id)
     }
 
-    fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) {
-        self.state.set_visible(widget_id, visible);
+    /// Answers whether the id names a widget this backend recorded (P-203).
+    fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) -> bool {
+        self.state.set_visible(widget_id, visible)
     }
 
     fn is_widget_visible(&self, widget_id: ObjectId) -> bool {
         self.state.visible(widget_id)
     }
 
-    fn set_widget_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
-        self.state.set_geometry(widget_id, x, y, width, height);
+    /// Answers whether the id names a widget this backend recorded (P-203).
+    fn set_widget_geometry(
+        &self,
+        widget_id: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        self.state.set_geometry(widget_id, x, y, width, height)
     }
 
     /// Window state (maximised/minimised/fullscreen/resizable) round-trips

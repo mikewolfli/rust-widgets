@@ -20,6 +20,7 @@
 //! own background.
 
 use crate::compat::BTreeMap;
+use crate::style::WidgetState;
 use crate::theme::types::{Colors, ThemeStyleToken};
 
 /// Blend factor for a hovered control's fill, toward `foreground`.
@@ -68,21 +69,21 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
     // derivation at two strengths, so a theme change moves both together.
     for kind in ["button", "toggle_button", "tool_button", "split_button"] {
         styles.insert(
-            format!("{kind}:hover"),
+            format!("{kind}:{}", WidgetState::Hover.state_suffix()),
             ThemeStyleToken {
                 background: Some(colors.background.blend(&ink, HOVER_BLEND)),
                 ..ThemeStyleToken::default()
             },
         );
         styles.insert(
-            format!("{kind}:pressed"),
+            format!("{kind}:{}", WidgetState::Pressed.state_suffix()),
             ThemeStyleToken {
                 background: Some(colors.background.blend(&ink, PRESSED_BLEND)),
                 ..ThemeStyleToken::default()
             },
         );
         styles.insert(
-            format!("{kind}:disabled"),
+            format!("{kind}:{}", WidgetState::Disabled.state_suffix()),
             ThemeStyleToken {
                 background: Some(colors.disabled),
                 foreground: Some(colors.background.blend(&ink, DISABLED_FADE)),
@@ -104,7 +105,7 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
     // the consuming half.
     for kind in ["check_box", "radio_button", "switch"] {
         styles.insert(
-            format!("{kind}:checked"),
+            format!("{kind}:{}", WidgetState::Checked.state_suffix()),
             ThemeStyleToken {
                 background: Some(colors.primary),
                 foreground: Some(colors.primary.contrast_color()),
@@ -124,7 +125,7 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
     // express it, and it was unreachable: `draw` reads `style.background_color` first, and the theme
     // always supplies one, so the branch was dead code and the two states rendered identically.
     styles.insert(
-        "toggle_button:checked".to_string(),
+        format!("toggle_button:{}", WidgetState::Checked.state_suffix()),
         ThemeStyleToken {
             background: Some(colors.primary.blend(&colors.foreground, CHECKED_BLEND)),
             foreground: Some(colors.primary.contrast_color()),
@@ -135,7 +136,7 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
     // The key used to be `chip:selected`'s predecessor (`chip:checked`), which the control never
     // reported; see `Chip::widget_state`.
     styles.insert(
-        "chip:selected".to_string(),
+        format!("chip:{}", WidgetState::Selected.state_suffix()),
         ThemeStyleToken {
             background: Some(colors.primary),
             foreground: Some(colors.primary.contrast_color()),
@@ -170,7 +171,7 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
     #[allow(clippy::single_element_loop)]
     for kind in ["line_edit"] {
         styles.insert(
-            format!("{kind}:error"),
+            format!("{kind}:{}", WidgetState::Error.state_suffix()),
             ThemeStyleToken {
                 border: Some(colors.error),
                 border_width: Some(2),

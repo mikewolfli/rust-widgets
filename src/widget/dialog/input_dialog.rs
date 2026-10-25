@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Input dialog widget.
+use crate::compat::{Rc, RefCell};
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -39,6 +40,11 @@ pub enum InputMode {
     /// A choice from [`InputDialog::items`], navigated by
     /// [`InputDialog::current_item`].
     Item,
+    /// Free text drawn with one mask glyph per character (DLG-13).
+    ///
+    /// The stored value is the real text: [`InputDialog::text_value`] answers it unchanged,
+    /// and only the paint substitutes the mask.
+    Password,
 }
 
 /// The stable property spelling of [`InputMode`].
@@ -55,6 +61,7 @@ fn mode_name(mode: InputMode) -> &'static str {
         InputMode::Integer => "integer",
         InputMode::Double => "double",
         InputMode::Item => "item",
+        InputMode::Password => "password",
     }
 }
 
@@ -69,6 +76,7 @@ fn mode_from_name(name: &str) -> Result<InputMode, CapabilityAccessError> {
         "integer" => Ok(InputMode::Integer),
         "double" => Ok(InputMode::Double),
         "item" => Ok(InputMode::Item),
+        "password" => Ok(InputMode::Password),
         _ => Err(CapabilityAccessError::OutOfRange),
     }
 }
@@ -118,7 +126,14 @@ pub struct InputDialog {
     pub focus_changed: Signal1<ObjectId>,
     /// The focus target: `0` is the input field, `1 + index` is the action button at `index`.
     focus: Option<usize>,
+    /// How many text lines the field offers; `1` is the historical single line (DLG-14).
+    line_count: usize,
+    /// Cached drop-down row rectangles, keyed by its rect and the item count (G-P14).
+    dropdown_cache: DropdownCache,
 }
+
+/// The cached drop-down row rectangles and the geometry/item count they were built for.
+type DropdownCache = RefCell<Option<((Option<Rect>, usize), Rc<Vec<(usize, Rect)>>)>>;
 impl InputDialog {
     /// Creates a modal, empty dialog in [`InputMode::Text`].
     ///
@@ -155,6 +170,8 @@ impl InputDialog {
             rejected: GenericSignal::new(),
             focus_changed: Signal1::new(),
             focus: None,
+            line_count: 1,
+            dropdown_cache: RefCell::new(None),
         }
     }
     /// Creates a text-input dialog with its title, label and initial text
@@ -474,7 +491,7 @@ impl InputDialog {
 
     /// Inserts `inserted` at the caret.
     fn insert_at_caret(&mut self, inserted: &str) {
-        if self.mode != InputMode::Text {
+        if !matches!(self.mode, InputMode::Text | InputMode::Password) {
             return;
         }
         let caret = self.text_caret.min(self.text_value.chars().count());
@@ -493,7 +510,7 @@ impl InputDialog {
 
     /// Deletes the character before the caret.
     fn backspace_text(&mut self) {
-        if self.mode != InputMode::Text || self.text_caret == 0 {
+        if !matches!(self.mode, InputMode::Text | InputMode::Password) || self.text_caret == 0 {
             return;
         }
         let end = Self::byte_index(&self.text_value, self.text_caret);
@@ -506,7 +523,7 @@ impl InputDialog {
 
     /// Deletes the character after the caret.
     fn delete_text(&mut self) {
-        if self.mode != InputMode::Text {
+        if !matches!(self.mode, InputMode::Text | InputMode::Password) {
             return;
         }
         let length = self.text_value.chars().count();
@@ -778,7 +795,7 @@ impl EventHandler for InputDialog {
                 // A press on an open drop-down row picks it before anything else can consume
                 // the click; the rows are the topmost thing the dialog paints.
                 if let Some((index, _)) =
-                    self.dropdown_rows().into_iter().find(|(_, rect)| rect.contains_point(*pos))
+                    self.dropdown_rows().iter().copied().find(|(_, rect)| rect.contains_point(*pos))
                 {
                     self.current_item = index;
                     self.dropdown_open = false;
@@ -799,7 +816,7 @@ impl EventHandler for InputDialog {
                     if self.mode == InputMode::Item {
                         self.dropdown_open = !self.dropdown_open;
                         self.base.request_redraw();
-                    } else if self.mode == InputMode::Text {
+                    } else if matches!(self.mode, InputMode::Text | InputMode::Password) {
                         let input = self.input_band();
                         self.text_focused = true;
                         let advance =
@@ -821,11 +838,20 @@ impl EventHandler for InputDialog {
                     self.insert_at_caret(&filtered);
                 }
             }
-            Event::KeyPress { key, .. } => {
+            Event::KeyPress { key, modifiers } => {
                 let length = self.text_value.chars().count();
                 match *key {
                     key_codes::TAB => self.move_focus(),
                     key_codes::ENTER => {
+                        // In a multi-line text field Enter is a newline; the chorded form
+                        // (Ctrl/Cmd+Enter) is the submit gesture (DLG-14).
+                        if matches!(self.mode, InputMode::Text)
+                            && self.line_count > 1
+                            && *modifiers & 0b1010 == 0
+                        {
+                            self.insert_at_caret("\n");
+                            return;
+                        }
                         if self.mode == InputMode::Item {
                             self.dropdown_open = false;
                         }
@@ -914,7 +940,24 @@ impl InputDialog {
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         let field_band = ControlMetrics::content_below_top_band(body, label_line_h);
-        ControlMetrics::top_band(field_band, field_band.height.min(26))
+        // A multi-line field grows by whole rows, bounded by the room the label leaves.
+        let wanted = (26 * self.line_count.max(1) as u32).max(26);
+        ControlMetrics::top_band(field_band, field_band.height.min(wanted))
+    }
+
+    /// The number of text lines the field offers (DLG-14).
+    pub fn line_count(&self) -> usize {
+        self.line_count
+    }
+
+    /// Sets how many lines the text field offers; a zero is raised to one (DLG-14).
+    pub fn set_line_count(&mut self, lines: usize) {
+        let lines = lines.max(1);
+        if self.line_count == lines {
+            return;
+        }
+        self.line_count = lines;
+        self.base.request_redraw();
     }
 
     /// The height of one drop-down row.
@@ -934,23 +977,35 @@ impl InputDialog {
         (height >= Self::DROPDOWN_ROW_HEIGHT).then(|| Rect::new(input.x, top, input.width, height))
     }
 
-    /// The visible drop-down rows and their item indices.
-    fn dropdown_rows(&self) -> Vec<(usize, Rect)> {
-        let Some(rect) = self.dropdown_rect() else { return Vec::new() };
-        let visible = (rect.height / Self::DROPDOWN_ROW_HEIGHT) as usize;
-        (0..visible.min(self.items.len()))
-            .map(|index| {
-                (
-                    index,
-                    Rect::new(
-                        rect.x,
-                        rect.y + index as i32 * Self::DROPDOWN_ROW_HEIGHT as i32,
-                        rect.width,
-                        Self::DROPDOWN_ROW_HEIGHT,
-                    ),
-                )
-            })
-            .collect()
+    /// The visible drop-down rows and their item indices, served from a cache (G-P14).
+    fn dropdown_rows(&self) -> Rc<Vec<(usize, Rect)>> {
+        let key = (self.dropdown_rect(), self.items.len());
+        if let Some((cached_key, rows)) = self.dropdown_cache.borrow().as_ref() {
+            if *cached_key == key {
+                return Rc::clone(rows);
+            }
+        }
+        let rows = Rc::new(match key.0 {
+            Some(rect) => {
+                let visible = (rect.height / Self::DROPDOWN_ROW_HEIGHT) as usize;
+                (0..visible.min(self.items.len()))
+                    .map(|index| {
+                        (
+                            index,
+                            Rect::new(
+                                rect.x,
+                                rect.y + index as i32 * Self::DROPDOWN_ROW_HEIGHT as i32,
+                                rect.width,
+                                Self::DROPDOWN_ROW_HEIGHT,
+                            ),
+                        )
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        });
+        *self.dropdown_cache.borrow_mut() = Some((key, Rc::clone(&rows)));
+        rows
     }
 
     /// The action labels this dialog paints, in row order.
@@ -1156,6 +1211,11 @@ impl Draw for InputDialog {
         }
         let display_text = match self.mode {
             InputMode::Text => self.text_value.clone(),
+            // The password field paints one mask glyph per character; `text_value` keeps the
+            // real string, so `get_text` and the signals are unchanged (DLG-13).
+            InputMode::Password => {
+                self.text_value.chars().map(|ch| if ch == '\n' { '\n' } else { '*' }).collect()
+            }
             InputMode::Integer => self.int_value.to_string(),
             InputMode::Double => {
                 format!("{:.prec$}", self.double_value, prec = self.double_decimals as usize)
@@ -1167,24 +1227,47 @@ impl Draw for InputDialog {
         // shared primitive, which the old `input_y + ((26 - h) / 2)` re-derived by hand.
         if !display_text.is_empty() {
             let input_font = font;
-            let input_line = context.text_line(input_band, input_font);
-            context.draw_text_fitted_cow(
-                Rect::new(
-                    input_band.x + 4,
-                    input_line.y,
-                    input_band.width.saturating_sub(8),
-                    input_line.height.max(1),
-                ),
-                &display_text,
-                input_font,
-                ink,
-                HorizontalAlignment::Left,
-            );
+            let multiline = self.line_count > 1
+                && matches!(self.mode, InputMode::Text | InputMode::Password)
+                && self.text_value.contains('\n');
+            if multiline {
+                // One row per explicit line; Enter inserts `\n` in this mode (DLG-14).
+                let line_h = context.text_line(input_band, input_font).height.max(1);
+                let rows = display_text.split('\n');
+                let lines: Vec<&str> = rows.collect();
+                for (row_index, line_text) in lines.iter().enumerate() {
+                    let y = input_band.y + 2 + row_index as i32 * line_h as i32;
+                    if y + line_h as i32 > input_band.y + input_band.height as i32 {
+                        break;
+                    }
+                    context.draw_text_fitted_cow(
+                        Rect::new(input_band.x + 4, y, input_band.width.saturating_sub(8), line_h),
+                        line_text,
+                        input_font,
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            } else {
+                let input_line = context.text_line(input_band, input_font);
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        input_band.x + 4,
+                        input_line.y,
+                        input_band.width.saturating_sub(8),
+                        input_line.height.max(1),
+                    ),
+                    &display_text,
+                    input_font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
         // The caret is what makes the field look editable: a one-pixel line at the insertion
         // point. It is drawn in the text mode only, because the numeric and item modes are
         // stepped rather than typed into this band.
-        if self.mode == InputMode::Text && self.text_focused {
+        if matches!(self.mode, InputMode::Text | InputMode::Password) && self.text_focused {
             let advance = font.size().ceil().max(1.0) as i32;
             let caret_x = input_band.x + 4 + self.text_caret as i32 * advance;
             if caret_x < input_band.x + input_band.width as i32 - 2 {
@@ -1201,7 +1284,7 @@ impl Draw for InputDialog {
             context.fill_rect(dropdown, field);
             context.draw_rect(dropdown, border);
             context.push_clip(dropdown.x, dropdown.y, dropdown.width, dropdown.height);
-            for (index, row) in self.dropdown_rows() {
+            for (index, row) in self.dropdown_rows().iter().copied() {
                 if index == self.current_item {
                     context.fill_rect(row, accent);
                 }

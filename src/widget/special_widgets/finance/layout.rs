@@ -307,11 +307,11 @@ mod tests {
     /// An indicator pane still reuses the shared margins after the fix, and the vertical
     /// reservation stays smaller than a price pane's because it carries no index labels.
     #[test]
-    fn an_indicator_pane_keeps_the_shared_margins_and_a_shorter_bottom() {
+    fn an_indicator_pane_reserves_a_row_for_its_own_index_ticks() {
         let area = PlotArea::indicator_pane(Rect::new(0, 0, 240, 120));
         assert_eq!(area.left_margin, PlotArea::DEFAULT_LEFT_MARGIN);
         assert_eq!(area.right_margin, PlotArea::DEFAULT_RIGHT_MARGIN);
-        assert!(area.bottom_margin < PlotArea::DEFAULT_BOTTOM_MARGIN);
+        assert_eq!(area.bottom_margin, PlotArea::DEFAULT_BOTTOM_MARGIN);
     }
 
     /// The panel's ink must be legible on the panel, whatever pairing the caller supplies.
@@ -461,22 +461,34 @@ impl PlotArea {
         Self::of(rect)
     }
 
-    /// The plot area of a **volume pane**, which carries no index labels of its own.
+    /// The plot area of a **volume pane**, which carries its own index labels.
     ///
-    /// The price pane above already has them, and a second copy would be misleading about
-    /// which rows they belong to, so the bottom reservation is reduced. The **horizontal**
-    /// margins are deliberately [`Self::DEFAULT_LEFT_MARGIN`] and
+    /// The horizontal margins are deliberately [`Self::DEFAULT_LEFT_MARGIN`] and
     /// [`Self::DEFAULT_RIGHT_MARGIN`] rather than the caller's own numbers: a volume pane's
     /// bar 17 has to sit under the price pane's bar 17, which is arithmetic here or nowhere.
+    ///
+    /// The bottom reserves the shared index-tick row. It used to be 6 px on the theory that
+    /// the price pane above already carried the axis, but a volume bar that cannot be dated
+    /// from its own pane is half a reading — and the label has to come from the same
+    /// `label_at` the host supplied, which only this pane's series has (FIN-01).
     pub fn volume_pane(rect: Rect) -> Self {
-        Self::with_margins(rect, Self::DEFAULT_LEFT_MARGIN, Self::DEFAULT_RIGHT_MARGIN, 6, 6)
+        Self::with_margins(
+            rect,
+            Self::DEFAULT_LEFT_MARGIN,
+            Self::DEFAULT_RIGHT_MARGIN,
+            6,
+            // Room for its own index ticks. The pane used to reserve 6 px and draw no
+            // labels at all; a volume bar that cannot be dated against the price pane's
+            // axis is half a reading (FIN-01).
+            Self::DEFAULT_BOTTOM_MARGIN,
+        )
     }
 
     /// The plot area of an **indicator pane**.
     ///
-    /// The vertical margins are reduced for the same reason the volume pane's are: an
-    /// oscillator pane reads against reference levels and zero, not against an index axis,
-    /// so it does not need the label row. The horizontal margins are the shared ones.
+    /// The horizontal margins are the shared ones. The vertical margins reserve the same
+    /// top and bottom rows as the price pane: an oscillator reads against reference levels
+    /// and its own bar index, so it draws those labels itself (FIN-01).
     ///
     /// This used to reserve 52 px on the left while the panes above and below it reserved
     /// 48. Four pixels is small enough to miss on inspection and large enough to matter:
@@ -491,7 +503,8 @@ impl PlotArea {
             Self::DEFAULT_LEFT_MARGIN,
             Self::DEFAULT_RIGHT_MARGIN,
             Self::DEFAULT_TOP_MARGIN,
-            Self::DEFAULT_TOP_MARGIN,
+            // Same index-tick row as the volume pane (FIN-01).
+            Self::DEFAULT_BOTTOM_MARGIN,
         )
     }
 

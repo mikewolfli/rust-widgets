@@ -3,240 +3,120 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="70" y="10" width="100" height="100" fill="rgba(30,30,33,1.00)" />
-  <rect x="78" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="82" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="90" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="98" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="102" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="118" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="126" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="134" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="138" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="142" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="146" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="150" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="154" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="158" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="78" y="18" width="28" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="110" y="18" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="118" y="18" width="12" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="134" y="18" width="28" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="78" y="22" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="102" y="22" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="126" y="22" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="118" y="22" width="8" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="134" y="22" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="158" y="22" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="78" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="90" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="86" y="26" width="12" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="102" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="110" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="118" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="110" y="26" width="8" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="122" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="134" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="142" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="146" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="150" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="142" y="26" width="12" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="158" y="26" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="78" y="30" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="30" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="90" y="30" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="30" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="86" y="30" width="12" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="102" y="30" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="110" y="30" width="8" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="126" y="30" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="134" y="30" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="142" y="30" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="146" y="30" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="150" y="30" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="142" y="30" width="12" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="158" y="30" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="78" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="90" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="86" y="34" width="12" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="102" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="114" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="110" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="122" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="126" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="134" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="142" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="146" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="150" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="142" y="34" width="12" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="158" y="34" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="78" y="38" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="102" y="38" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="114" y="38" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="118" y="38" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="122" y="38" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="114" y="38" width="16" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="134" y="38" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="158" y="38" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="78" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="82" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="90" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="98" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="102" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="78" y="42" width="28" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="110" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="118" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="126" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="134" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="138" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="142" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="146" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="150" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="154" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="158" y="42" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="110" y="46" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="118" y="46" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="78" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="82" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="98" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="134" y="42" width="28" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="122" y="46" width="8" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="78" y="50" width="16" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="102" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="106" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="110" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="118" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="126" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="130" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="134" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="150" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="110" y="50" width="24" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="142" y="50" width="12" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="158" y="50" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="78" y="54" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="54" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="98" y="54" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="110" y="54" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="118" y="54" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="122" y="54" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="130" y="54" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="138" y="54" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="86" y="54" width="16" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="114" y="54" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="122" y="54" width="16" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="146" y="54" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="154" y="54" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="58" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="58" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="102" y="58" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="114" y="58" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="86" y="58" width="12" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="102" y="58" width="16" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="122" y="58" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="130" y="58" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="134" y="58" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="138" y="58" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="146" y="58" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="150" y="58" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="154" y="58" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="82" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="146" y="58" width="8" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="158" y="58" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="94" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="98" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="106" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="114" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="118" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="122" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="126" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="130" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="138" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="142" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="146" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="154" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="158" y="62" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="78" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="82" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="90" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="98" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="134" y="62" width="20" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="86" y="66" width="12" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="102" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="106" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="114" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="118" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="122" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="130" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="134" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="126" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="138" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="146" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="150" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="154" y="66" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="110" y="70" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="114" y="70" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="118" y="70" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="110" y="70" width="16" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="134" y="70" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="150" y="70" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="154" y="70" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="78" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="82" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="90" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="98" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="102" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="110" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="126" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="142" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="146" y="70" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="158" y="70" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="78" y="74" width="28" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="118" y="74" width="12" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="138" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="146" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="158" y="74" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="78" y="78" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="102" y="78" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="110" y="78" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="114" y="78" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="118" y="78" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="134" y="78" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="138" y="78" width="8" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="150" y="78" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="154" y="78" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="158" y="78" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="78" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="90" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="86" y="82" width="12" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="102" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="110" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="126" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="134" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="142" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="150" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="158" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="118" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="126" y="82" width="20" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="154" y="82" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="78" y="86" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="86" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="90" y="86" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="86" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="86" y="86" width="12" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="102" y="86" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="114" y="86" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="110" y="86" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="122" y="86" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="130" y="86" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="138" y="86" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="146" y="86" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="154" y="86" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="134" y="86" width="24" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="78" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="90" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="86" y="90" width="12" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="102" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="110" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="118" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="122" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="130" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="134" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="138" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="146" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="150" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="158" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="126" y="90" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="134" y="90" width="8" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="78" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="102" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="110" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="114" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="122" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="126" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="110" y="94" width="8" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="130" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="138" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="142" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="146" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="154" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="78" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="82" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="86" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="90" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="94" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="98" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="102" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="110" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="114" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="122" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="150" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="158" y="94" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="78" y="98" width="28" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="110" y="98" width="12" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="130" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="134" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="138" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="146" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="150" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
+  <rect x="142" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
   <rect x="154" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
-  <rect x="158" y="98" width="4" height="4" fill="rgba(225,225,225,1.00)" />
 </svg>

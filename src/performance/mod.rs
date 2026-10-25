@@ -52,6 +52,28 @@
 //! mode is `Full`; `Dirty` is opt-in; and within `Dirty`, damage is grouped by
 //! covered *area* (see `render_dirty::FULL_REPAINT_AREA_RATIO`) rather than by
 //! region count.
+//!
+//! # Timing ownership across the crate (G-214)
+//!
+//! `gpu::performance` and this module both run every frame, and the split is
+//! deliberate rather than a duplicate mechanism:
+//!
+//! * `gpu::performance` (`AdaptivePerformanceMonitor`, `PerformanceStats`, driven
+//!   by `GpuManager::end_frame`) owns **per-frame classification against the
+//!   adaptive thresholds** and the quality decision that follows. Its samples carry
+//!   GPU/CPU/memory utilisation and good/bad streaks; `PerformanceStats` is its
+//!   single statistics endpoint.
+//! * This module owns the **reporting endpoint for frame timing**: [`FrameProfiler`]
+//!   and [`Profiler`] (rolling window with average/min/max/fps and per-section
+//!   attribution) and [`FrameTimer`] (timestamp-window average FPS). A host that
+//!   displays frame statistics reads one of these; it must not read
+//!   `gpu::performance` as a second statistics table.
+//!
+//! The two sides are not interchangeable. Named-stage totals exist only here
+//! (the GPU side has no per-stage record), and GPU/CPU/memory utilisation exists
+//! only on the GPU side. Neither side feeds the other, so observing a frame still
+//! requires both outputs — by design, because each covers a metric the other cannot
+//! produce.
 /// Coalesces repaint requests so a burst of invalidations costs one frame.
 pub mod batcher;
 /// Tracks the union of regions that need repainting.
@@ -68,7 +90,7 @@ pub use dirty::*;
 pub use frame_timer::*;
 pub use profiler::*;
 pub use region::*;
-pub use render_dirty::render_dirty_regions;
+pub use render_dirty::{render_dirty_regions, render_dirty_regions_into};
 #[cfg(test)]
 mod tests {
     use super::*;

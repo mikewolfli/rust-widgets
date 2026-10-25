@@ -116,7 +116,13 @@ pub struct BaseWidget {
     /// The camera [`Self::mesh_3d`] is drawn through, or `None` until one is set.
     #[cfg(feature = "3d")]
     pub(crate) camera_3d: Option<crate::render::mesh3d::Camera>,
+    /// Authoritative minimum size bound (G-301).
+    ///
+    /// Enforced by [`BaseWidget::set_geometry`], reported through `Widget::hints`, and the
+    /// single store [`crate::widget::Window::set_min_size`] forwards into. There is no parallel
+    /// window-level copy to keep in sync.
     pub(crate) min_size: Option<Size>,
+    /// Authoritative maximum size bound (G-301); see [`BaseWidget::min_size`].
     pub(crate) max_size: Option<Size>,
     pub(crate) parent: Option<ObjectId>,
     /// Child widget IDs. Under mini, this is a fixed-capacity `MiniVec<ObjectId, 64>`
@@ -562,11 +568,17 @@ impl BaseWidget {
     }
     /// The minimum size, or `None` when unset. Enforced by `set_geometry` and reported
     /// through [`crate::widget::Widget::hints`].
+    ///
+    /// This is the authoritative bound store (G-301): [`crate::widget::Window`]'s
+    /// `min_size`/`set_min_size` read and write the same value rather than keeping a parallel
+    /// copy.
     pub fn min_size(&self) -> Option<Size> {
         self.min_size
     }
     /// The maximum size, or `None` when unset. Enforced by `set_geometry` and reported
     /// through [`crate::widget::Widget::hints`].
+    ///
+    /// Authoritative, for the same reason as [`BaseWidget::min_size`] (G-301).
     pub fn max_size(&self) -> Option<Size> {
         self.max_size
     }
@@ -611,6 +623,16 @@ impl BaseWidget {
     ///
     /// The list can contain ids of widgets that no longer exist; this type never
     /// validates or reclaims entries.
+    ///
+    /// # Traversal obligation (G-304)
+    ///
+    /// A caller walking this list **must** skip entries that no longer resolve to a mounted
+    /// widget and **must** tolerate the same id appearing more than once: [`BaseWidget::add_child`]
+    /// does not reject duplicates, and a destroyed child is not guaranteed to have been removed
+    /// from this list. The live/dead check belongs to the walker because `BaseWidget` holds only
+    /// ids and cannot consult the registry; use `crate::widget::runtime::with_widget` (or a
+    /// registry lookup) before descending into an id. Iteration order is insertion order and is
+    /// not changed by this obligation.
     pub fn children(&self) -> &[ObjectId] {
         &self.children
     }

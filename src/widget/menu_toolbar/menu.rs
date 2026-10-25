@@ -387,27 +387,34 @@ impl MenuEntry {
     }
 }
 
-/// A hover source adapter over a menu row.
+// A hover source adapter is not needed: [`MenuEntry`] stores its hint directly.
+
+/// The facts [`Menu::popup_height`] is a pure function of.
 ///
-/// The tooltip pipeline reads `WidgetProperties::tooltip`; a `MenuEntry` is presentation data,
-/// so this exposes that one property over the row's stored hint.
-struct EntryTooltipSource<'a> {
-    entry: &'a MenuEntry,
+/// Opening a menu used to re-derive the same height on every call while the reveal was in
+/// flight. The key is the list revision plus everything the height arithmetic reads, so a
+/// cached value cannot survive a change that moves a row or changes the visible window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PopupMetricsKey {
+    version: u64,
+    width: u32,
+    columns: u8,
+    tearoff: bool,
+    /// The configured visible-item cap (part of `visible_range`).
+    capacity: usize,
+    /// The resolved font size's bit pattern; the heading measurement is a function of it.
+    font_bits: u32,
 }
 
-impl WidgetProperties for EntryTooltipSource<'_> {
-    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
-        match name {
-            "tooltip" => Ok(CapabilityValue::String(self.entry.tooltip.clone())),
-            _ => Err(CapabilityAccessError::UnknownProperty),
-        }
-    }
-    fn set(&mut self, _name: &str, _value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        Err(CapabilityAccessError::UnknownProperty)
-    }
-    fn property_names(&self) -> &'static [&'static str] {
-        &["tooltip"]
-    }
+/// One row's mnemonic presentation: the stripped label and the measured underline span.
+///
+/// Stripping `&` and measuring the prefix are both functions of the label and the font, so
+/// they are derived once per list/font revision instead of on every painted frame (G-P06).
+struct MnemonicRow {
+    /// The label with its marker removed.
+    text: String,
+    /// The mnemonic letter and the `(prefix width, glyph width)` of its underline.
+    underline: Option<(char, u32, u32)>,
 }
 
 /// The facts [`Menu::item_bands`] is a pure function of.
@@ -467,7 +474,11 @@ struct SubmenuLevel {
 /// The same type serves a menu-bar drop-down and a **context menu** (the menu a
 /// right-click opens). `WidgetKind::ContextMenu` resolves to this type, so the
 /// behaviour a context menu needs lives here rather than in a second, parallel
-/// menu implementation (principle #54):
+/// menu implementation (principle #54). That resolution is recorded in one place —
+/// the `ContextMenu` arm of `capability::alias_factory_name`, paired with the
+/// `context_menu` -> `menu` row in `capability::ALIAS_OF` (G-305) — so this comment,
+/// that arm and the `WidgetKind::ContextMenu` variant comment form one anchor. The
+/// context-menu behaviour it serves:
 ///
 /// * [`Self::open_at`] places the popup at a pointer position, clamping it so the
 ///   menu stays on screen;
@@ -579,6 +590,14 @@ pub struct Menu {
     items_version: u64,
     /// The cached row boxes, keyed by [`ItemBandsKey`].
     item_bands_cache: RefCell<Option<(ItemBandsKey, Rc<Vec<Rect>>)>>,
+    /// The cached popup height, keyed by [`PopupMetricsKey`].
+    popup_metrics_cache: core::cell::Cell<Option<(PopupMetricsKey, f32)>>,
+    /// The cached mnemonic rows, keyed by `(items revision, font size bits)`.
+    mnemonic_cache: RefCell<Option<(u64, u32, Rc<Vec<MnemonicRow>>)>>,
+    /// The branch row the pointer is resting on, awaiting the hover-open delay.
+    hover_open_pending: Option<(usize, usize)>,
+    /// How long the pointer has rested on [`Self::hover_open_pending`], in milliseconds.
+    hover_open_elapsed_ms: u32,
     /// The open nested panels, deepest last. One step per level, up to
     /// [`MAX_SUBMENU_DEPTH`]; level 0 is the menu's own list.
     submenu_path: Vec<SubmenuLevel>,
@@ -638,6 +657,10 @@ impl Menu {
             popup_direction: PopupDirection::Auto,
             items_version: 0,
             item_bands_cache: RefCell::new(None),
+            popup_metrics_cache: core::cell::Cell::new(None),
+            mnemonic_cache: RefCell::new(None),
+            hover_open_pending: None,
+            hover_open_elapsed_ms: 0,
             submenu_path: Vec::new(),
             tearoff: false,
             tearoff_requested: GenericSignal::new(),
@@ -972,8 +995,9 @@ impl Menu {
 
     /// Registers the hovered row's hint with the tooltip pipeline.
     ///
-    /// The text is read through `WidgetProperties::get("tooltip")` on a row adapter, which is the
-    /// one text source the issue names. A row without a hint leaves the pipeline.
+    /// The hint is read straight off the row rather than through a property adapter: the pointer
+    /// move path runs on every frame the pointer travels, and routing it through
+    /// `WidgetProperties::get` made a hot path pay a string clone plus a dynamic name lookup (G-P06).
     fn sync_hover_tooltip(&mut self) {
         let Some(index) = self.hovered_index else {
             if self.tooltip_source.take().is_some() {
@@ -987,10 +1011,8 @@ impl Menu {
             }
             return;
         };
-        let text = EntryTooltipSource { entry }.get("tooltip").ok().and_then(|value| match value {
-            CapabilityValue::String(text) if !text.is_empty() => Some(text),
-            _ => None,
-        });
+        let text = entry.tooltip.clone();
+        let text = (!text.is_empty()).then_some(text);
         match text {
             Some(text) => {
                 let id = child_hover_id(self.base.id(), index);
@@ -1446,6 +1468,68 @@ impl Menu {
         }
         placed
     }
+
+    /// The mnemonic presentation of every row, derived once per list/font revision.
+    ///
+    /// Stripping the `&` marker and measuring the prefix used to happen for every visible row on
+    /// every frame; both are pure functions of the label and the resolved font, so the result is
+    /// cached and invalidated by the same revision that invalidates the row boxes (G-P06).
+    fn mnemonic_rows(&self, font: &crate::core::Font) -> Rc<Vec<MnemonicRow>> {
+        let font_bits = font.size().to_bits();
+        if let Some((version, cached_bits, rows)) = self.mnemonic_cache.borrow().as_ref() {
+            if *version == self.items_version && *cached_bits == font_bits {
+                return Rc::clone(rows);
+            }
+        }
+        let rows: Vec<MnemonicRow> = self
+            .items
+            .iter()
+            .map(|item| {
+                let text = strip_menu_mnemonic(item.text());
+                let underline = item.mnemonic().and_then(|mnemonic| {
+                    text.char_indices().find(|(_, ch)| ch.eq_ignore_ascii_case(&mnemonic)).map(
+                        |(byte, ch)| {
+                            let prefix = estimate_text_width(&text[..byte], font, 1.0);
+                            let through =
+                                estimate_text_width(&text[..byte + ch.len_utf8()], font, 1.0);
+                            (mnemonic, prefix, through.saturating_sub(prefix))
+                        },
+                    )
+                });
+                MnemonicRow { text, underline }
+            })
+            .collect();
+        let rows = Rc::new(rows);
+        *self.mnemonic_cache.borrow_mut() = Some((self.items_version, font_bits, Rc::clone(&rows)));
+        rows
+    }
+
+    /// Whether the panel opened by row `index` of `level` is already showing.
+    fn branch_is_open(&self, level: usize, index: usize) -> bool {
+        self.submenu_path.get(level).is_some_and(|step| step.row == index)
+    }
+
+    /// Arms the hover-open delay for the branch row `index` of `level`.
+    ///
+    /// A branch already on screen is left alone, so resting on the row that opened the panel
+    /// does not restart a timer that has nothing left to do.
+    fn note_hover_branch(&mut self, level: usize, index: usize) {
+        if self.branch_is_open(level, index) {
+            self.clear_hover_branch();
+            return;
+        }
+        if self.hover_open_pending == Some((level, index)) {
+            return;
+        }
+        self.hover_open_pending = Some((level, index));
+        self.hover_open_elapsed_ms = 0;
+    }
+
+    /// Disarms a pending hover-open, so moving off a branch cancels it.
+    fn clear_hover_branch(&mut self) {
+        self.hover_open_pending = None;
+        self.hover_open_elapsed_ms = 0;
+    }
     /// The height of the title heading the menu draws above its popup body.
     fn heading_height() -> f32 {
         20.0
@@ -1815,6 +1899,9 @@ impl Menu {
             };
             context.fill_rect(panel, face.blend(&ink, 0.16));
             context.draw_rect(panel, border);
+            // Content stays inside its own panel: a long child label or a wide icon must clip at
+            // the panel edge instead of painting over the level beside it (M-02).
+            context.push_clip(panel.x, panel.y, panel.width, panel.height);
             let mut y = panel.y + 2;
             for (index, child) in children.iter().enumerate() {
                 let height = if child.is_separator() || child.is_section() {
@@ -1902,6 +1989,7 @@ impl Menu {
                 }
                 y += height as i32;
             }
+            context.pop_clip();
         }
     }
     fn separator_height() -> f32 {
@@ -2013,6 +2101,29 @@ impl Menu {
         Rect { x: 0, y: 0, width: 0, height: 0 }
     }
     fn popup_height(&self) -> f32 {
+        // The height is a pure function of the visible window and the row kinds, so it is
+        // cached against the list revision and the geometry that selects the window. Opening
+        // a menu while its reveal animates read this on every frame (G-P01).
+        let key = PopupMetricsKey {
+            version: self.items_version,
+            width: self.geometry().width,
+            columns: self.column_count,
+            tearoff: self.tearoff,
+            capacity: Self::visible_capacity(),
+            font_bits: effective_font(self.style()).size().to_bits(),
+        };
+        if let Some((cached_key, height)) = self.popup_metrics_cache.get() {
+            if cached_key == key {
+                return height;
+            }
+        }
+        let height = self.compute_popup_height();
+        self.popup_metrics_cache.set(Some((key, height)));
+        height
+    }
+
+    /// Rebuilds the popup height; [`Self::popup_height`] is the cached entry point.
+    fn compute_popup_height(&self) -> f32 {
         let range = self.visible_range();
         let tearoff = self.tearoff_band_height() as f32;
         if self.column_count > 1 {
@@ -2082,6 +2193,8 @@ impl Widget for Menu {
         // The cached heading line height is a function of the resolved font; a theme switch
         // can change the family/weight at the same size, so the cache is dropped with it.
         self.heading_line_cache.set(None);
+        self.popup_metrics_cache.set(None);
+        *self.mnemonic_cache.borrow_mut() = None;
         crate::style::reapply_active_theme_state(self);
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -2127,6 +2240,7 @@ impl Widget for Menu {
         // leaving it set would make a reopened menu report a stale origin.
         self.invoker_position = None;
         self.hovered_index = None;
+        self.clear_hover_branch();
         self.submenu_path.clear();
         self.about_to_hide.emit();
     }
@@ -2139,11 +2253,26 @@ impl Widget for Menu {
     fn tick(&mut self, delta_ms: u32) -> bool {
         self.tooltip_now_ms = self.tooltip_now_ms.saturating_add(u64::from(delta_ms));
         let tooltip_changed = self.tooltips.tick(u64::from(delta_ms), self.tooltip_now_ms);
-        self.reveal.tick(delta_ms) || tooltip_changed || self.tooltip_owes_frames()
+        // A branch the pointer is resting on opens once the shared delay elapses. The pending
+        // pair is what makes this a delay rather than an immediate open on every pass-over.
+        let mut hover_changed = false;
+        if let Some((level, index)) = self.hover_open_pending {
+            self.hover_open_elapsed_ms = self.hover_open_elapsed_ms.saturating_add(delta_ms);
+            if self.hover_open_elapsed_ms >= super::effects::SUBMENU_HOVER_DELAY_MS {
+                self.hover_open_pending = None;
+                self.hover_open_elapsed_ms = 0;
+                hover_changed = self.open_submenu_at(level, index);
+            } else {
+                hover_changed = true;
+            }
+        }
+        self.reveal.tick(delta_ms) || tooltip_changed || self.tooltip_owes_frames() || hover_changed
     }
 
     fn is_animating(&self) -> bool {
-        self.reveal.is_animating() || self.tooltip_owes_frames()
+        self.reveal.is_animating()
+            || self.tooltip_owes_frames()
+            || self.hover_open_pending.is_some()
     }
 
     impl_draw_bridge!();
@@ -2288,18 +2417,37 @@ impl EventHandler for Menu {
                         .is_some_and(MenuEntry::is_selectable)
                     {
                         self.set_level_hovered(level, Some(index));
+                        let is_branch = self
+                            .level_entries(level)
+                            .and_then(|entries| entries.get(index))
+                            .is_some_and(MenuEntry::has_submenu);
+                        if is_branch {
+                            self.note_hover_branch(level, index);
+                        } else {
+                            self.clear_hover_branch();
+                        }
                         self.base.request_redraw();
                     }
                 } else if let Some(index) = self.item_index_at(*pos) {
                     if self.items[index].is_selectable() {
                         self.hovered_index = Some(index);
+                        // Hovering a branch opens its panel after a short rest (M-01); a
+                        // leaf cancels any pending branch the pointer just left.
+                        if self.items[index].has_submenu() {
+                            self.note_hover_branch(0, index);
+                        } else {
+                            self.clear_hover_branch();
+                        }
                     }
+                } else {
+                    self.clear_hover_branch();
                 }
                 self.sync_hover_tooltip();
             }
             Event::MouseLeave { .. } => {
                 self.hovered_index = None;
                 self.tooltip_source = None;
+                self.clear_hover_branch();
                 self.tooltips.note_leave();
             }
             Event::MousePress { pos, button: 1, .. } => {
@@ -2619,6 +2767,8 @@ impl Draw for Menu {
         // The run of rows, placed by the layout. `bands` is in popup coordinates, so it is offset by
         // the popup's own top edge once here rather than accumulated per row.
         let bands = self.item_bands();
+        // Mnemonic labels are derived once per list/font revision and read per row (G-P06).
+        let mnemonic_rows = if self.show_mnemonics { Some(self.mnemonic_rows(font)) } else { None };
         for i in self.visible_range() {
             let Some(item) = self.items.get(i) else { continue };
             let Some(row) = bands.get(i).copied() else { continue };
@@ -2709,35 +2859,24 @@ impl Draw for Menu {
             }
             // Mnemonic markers are metadata until the caller asks for them: with the flag
             // off the raw label is drawn, byte for byte as before.
-            let stripped;
-            let label_text = if self.show_mnemonics {
-                stripped = strip_menu_mnemonic(item.text());
-                stripped.as_str()
-            } else {
-                item.text()
+            let label_text = match mnemonic_rows.as_ref().and_then(|rows| rows.get(i)) {
+                Some(row) => row.text.as_str(),
+                None => item.text(),
             };
             let line = context.text_line(label, font);
             context.draw_text_fitted_cow(line, label_text, font, fg, HorizontalAlignment::Left);
-            if self.show_mnemonics {
-                if let Some(mnemonic) = item.mnemonic() {
-                    // The underline is placed from the measured prefix, so it tracks the
-                    // glyph the marker names rather than the character's index in the
-                    // string (which a wide or combining glyph would miss).
-                    if let Some((byte, ch)) =
-                        label_text.char_indices().find(|(_, ch)| ch.eq_ignore_ascii_case(&mnemonic))
-                    {
-                        let prefix = estimate_text_width(&label_text[..byte], font, 1.0);
-                        let through =
-                            estimate_text_width(&label_text[..byte + ch.len_utf8()], font, 1.0);
-                        let underline = Rect::new(
-                            line.x + prefix as i32,
-                            line.y + line.height as i32 - 1,
-                            through.saturating_sub(prefix).max(1),
-                            1,
-                        );
-                        context.fill_rect(underline, fg);
-                    }
-                }
+            if let Some((_, prefix, width)) =
+                mnemonic_rows.as_ref().and_then(|rows| rows.get(i)).and_then(|row| row.underline)
+            {
+                // The underline is placed from the **cached** measured prefix, so it tracks the
+                // glyph the marker names without re-measuring the label on every frame.
+                let underline = Rect::new(
+                    line.x + prefix as i32,
+                    line.y + line.height as i32 - 1,
+                    width.max(1),
+                    1,
+                );
+                context.fill_rect(underline, fg);
             }
             if self.row_shows_shortcut(item) {
                 // One line box for the shortcut and the arrow: they occupy one trailing column,

@@ -65,7 +65,7 @@
 //! regardless of how slowly it was released — the velocity rule only ever *adds*
 //! gestures, it never takes one away.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, ScrollPhysics, Size};
+use crate::core::{Color, HorizontalAlignment, Orientation, Point, Rect, ScrollPhysics, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -75,6 +75,8 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+use super::theme_snapshot::ThemeSnapshot;
 
 // `Instant` is the monotonic clock the gesture velocity is measured against. `std`
 // is available in every profile this control compiles in; a `no_std` clock would
@@ -253,6 +255,35 @@ impl CarouselIndicatorPosition {
 
 /// The thickness reserved for the indicator strip, in logical pixels.
 const INDICATOR_STRIP: u32 = 26;
+/// Past this many pages the indicator elides the far end instead of growing without bound.
+const MAX_VISIBLE_SLOTS: usize = 20;
+/// How many leading page slots survive the elision.
+const SIDE_SLOTS: usize = 9;
+/// Centre-to-centre distance between indicator slots, in logical pixels.
+const SLOT_SPACING: i32 = 16;
+/// Radius of a `Dots` mark.
+const DOT_RADIUS: u32 = 4;
+/// Width of a `Bars` mark along the strip.
+const BAR_WIDTH: u32 = 10;
+/// Thickness of a `Bars` mark across the strip.
+const BAR_HEIGHT: u32 = 3;
+
+/// The indicator's derived geometry for one frame.
+///
+/// Draw and hit-test share this value, so a mark the user can see and a mark the user
+/// can click are the same mark (C-01).
+struct IndicatorLayout {
+    /// The reserved band along the configured edge, in control coordinates.
+    strip_rect: Rect,
+    /// Whether the strip runs vertically (left/right edges).
+    vertical: bool,
+    /// The strip's centre along its long axis.
+    strip_center: i32,
+    /// The strip's centre across its long axis.
+    cross_center: i32,
+    /// One entry per drawn slot: `Some(page_index)` or `None` for the ellipsis mark.
+    slots: Vec<Option<usize>>,
+}
 
 /// The interaction currently in progress, if any.
 ///
@@ -263,15 +294,15 @@ const INDICATOR_STRIP: u32 = 26;
 enum DragState {
     /// No button is held.
     Idle,
-    /// A button went down at this x and the pointer is still within the drag
-    /// threshold, so the gesture is still a candidate click.
-    Pressed { start_x: i32 },
-    /// A pointer moved past the threshold; the gesture is a swipe, and the
-    /// content is offset by `offset_x` pixels while it continues.
+    /// A button went down at this primary-axis coordinate and the pointer is still within
+    /// the drag threshold, so the gesture is still a candidate click.
+    Pressed { start: i32 },
+    /// A pointer moved past the threshold; the gesture is a swipe, and the content is
+    /// offset by `offset` pixels along the primary axis while it continues.
     ///
-    /// `last_x`/`last_moved_at` are the previous sample, kept so the release can
-    /// compute a velocity rather than only a total distance (B1-2 asks for both).
-    Swiping { start_x: i32, offset_x: i32, last_x: i32, last_moved_at: Option<Instant> },
+    /// `last`/`last_moved_at` are the previous sample, kept so the release can compute a
+    /// velocity rather than only a total distance (B1-2 asks for both).
+    Swiping { start: i32, offset: i32, last: i32, last_moved_at: Option<Instant> },
 }
 
 /// Carousel — paged content with swipe, keyboard, autoplay and wrap-around.
@@ -291,6 +322,9 @@ pub struct Carousel {
     pointer_inside: bool,
     indicator_style: CarouselIndicatorStyle,
     indicator_position: CarouselIndicatorPosition,
+    /// The axis pages are laid along (C-03). Vertical pages swipe up/down and the
+    /// neighbour enters from above/below; the indicator edge is independent.
+    orientation: Orientation,
     drag: DragState,
     /// How a drag and a release feel (BLUE24 §12 U-3).
     ///
@@ -323,6 +357,7 @@ impl Carousel {
             pointer_inside: false,
             indicator_style: CarouselIndicatorStyle::Dots,
             indicator_position: CarouselIndicatorPosition::Bottom,
+            orientation: Orientation::Horizontal,
             drag: DragState::Idle,
             physics: ScrollPhysics::default(),
             rubber_band: false,
@@ -539,6 +574,29 @@ impl Carousel {
         self.indicator_position
     }
 
+    /// Sets the axis pages are laid along (C-03).
+    ///
+    /// [`Orientation::Horizontal`] is the default and pages left/right;
+    /// [`Orientation::Vertical`] pages up/down. The page slide, the swipe threshold and the
+    /// direction rule all follow this axis, so a vertical carousel behaves like a horizontal
+    /// one rotated — the indicator edge stays independently configured through
+    /// [`Self::set_indicator_position`].
+    pub fn set_orientation(&mut self, orientation: Orientation) {
+        if self.orientation == orientation {
+            return;
+        }
+        self.orientation = orientation;
+        // A drag in flight was measured on the old axis, so it cannot be continued honestly.
+        self.drag = DragState::Idle;
+        self.settle_offset = 0.0;
+        self.base.request_redraw();
+    }
+
+    /// Returns the axis pages are laid along.
+    pub fn orientation(&self) -> Orientation {
+        self.orientation
+    }
+
     /// Returns a reference to the current page, if any.
     pub fn current_page(&self) -> Option<&CarouselPage> {
         self.pages.get(self.current_index)
@@ -558,6 +616,30 @@ impl Carousel {
     /// carousel has no pages.
     pub fn current_page_title(&self) -> &str {
         self.current_page().map_or("", |page| page.title.as_str())
+    }
+
+    /// Returns page `index`'s title, or `None` when the index is out of range (C-02).
+    pub fn page_title(&self, index: usize) -> Option<&str> {
+        self.pages.get(index).map(|page| page.title.as_str())
+    }
+
+    /// Renames page `index` (C-02).
+    ///
+    /// Returns `false` for an out-of-range index. A real change requests a redraw, so a
+    /// title edited while its page is visible repaints immediately. The title occupies the
+    /// page body only for a page with no mounted content; an empty title leaves that body
+    /// as the page colour rather than reserving a blank line.
+    pub fn set_page_title(&mut self, index: usize, title: impl Into<String>) -> bool {
+        let Some(page) = self.pages.get_mut(index) else {
+            return false;
+        };
+        let title = title.into();
+        if page.title == title {
+            return true;
+        }
+        page.title = title;
+        self.base.request_redraw();
+        true
     }
 
     /// The area a page's content occupies: the control's rectangle minus the
@@ -613,10 +695,34 @@ impl Carousel {
             && self.base.is_visible()
     }
 
-    /// The pixel width a drag must exceed to count as a swipe on this geometry.
+    /// The pixel travel a drag must exceed to count as a swipe on this geometry.
     fn swipe_threshold_px(&self) -> i32 {
-        let width = self.geometry().width as f32;
-        (width * self.physics.page_fraction).max(1.0) as i32
+        let extent = self.primary_extent() as f32;
+        (extent * self.physics.page_fraction).max(1.0) as i32
+    }
+
+    /// Whether pages move vertically (C-03).
+    fn pages_vertical(&self) -> bool {
+        self.orientation == Orientation::Vertical
+    }
+
+    /// The control's extent along the page axis, in pixels.
+    fn primary_extent(&self) -> u32 {
+        let rect = self.geometry();
+        if self.pages_vertical() {
+            rect.height
+        } else {
+            rect.width
+        }
+    }
+
+    /// The pointer's coordinate along the page axis.
+    fn primary_coordinate(&self, pos: Point) -> i32 {
+        if self.pages_vertical() {
+            pos.y
+        } else {
+            pos.x
+        }
     }
 }
 
@@ -846,12 +952,11 @@ impl Carousel {
     /// `Surface` and resolves to `theme.colors.background` — the window's own fill. A
     /// panel painted in that colour is a legitimate look for this control, so the resolved
     /// surface is used as-is rather than re-derived a step away from the window.
-    fn chrome_colors(&self) -> (Color, Color, Color) {
+    fn chrome_colors(&self, theme: &ThemeSnapshot) -> (Color, Color, Color) {
         let style = self.base.style();
-        let themed = crate::style::resolved_theme_style_shared("carousel");
-        let themed_bg = themed.as_ref().and_then(|r| r.background_color);
-        let themed_border = themed.as_ref().and_then(|r| r.border_color);
-        let themed_text = themed.as_ref().and_then(|r| r.text_color);
+        let themed_bg = theme.style.as_ref().and_then(|r| r.background_color);
+        let themed_border = theme.style.as_ref().and_then(|r| r.border_color);
+        let themed_text = theme.style.as_ref().and_then(|r| r.text_color);
         // Precedence: explicit style → theme → the ORIGINAL LITERAL. The literal has to
         // stay: an inactive theme still needs a defined appearance, and keeping the old
         // value means the existing pixel baselines cannot regress.
@@ -870,6 +975,10 @@ impl Draw for Carousel {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
         let page_count = self.pages.len();
+        // One theme read for the whole frame (C-P01): the panel, the marks and the
+        // empty-state interior all derive from this snapshot, and `draw_page` /
+        // `draw_indicator` receive it instead of taking their own manager lock.
+        let theme = ThemeSnapshot::capture("carousel");
 
         if page_count == 0 {
             // An empty carousel is a chrome state, so the interior below is painted from the
@@ -880,7 +989,7 @@ impl Draw for Carousel {
             // behind it — perfectly invisible, and the census reported exactly that (P2).
             // Deriving one step off the surface keeps the panel reading as a panel on a light
             // theme and on a dark one, while the border keeps the control's extent visible.
-            let (panel, mark, border) = self.chrome_colors();
+            let (panel, mark, border) = self.chrome_colors(&theme);
             let interior = panel.blend(&mark, 0.08);
             context.face_with_gradient(
                 rect,
@@ -906,10 +1015,7 @@ impl Draw for Carousel {
         // its neighbour, which is what makes a swipe feel like a swipe rather than
         // a pair of click zones.
         let (offset, neighbour) = match self.drag {
-            DragState::Swiping { offset_x, .. } => {
-                let target = self.neighbour_for_offset(offset_x);
-                (offset_x, target)
-            }
+            DragState::Swiping { offset, .. } => (offset, self.neighbour_for_offset(offset)),
             _ if self.settle_offset.abs() > 0.5 => {
                 let offset = self.settle_offset.round() as i32;
                 (offset, self.neighbour_for_offset(offset))
@@ -930,34 +1036,19 @@ impl Draw for Carousel {
                 content_rect.width,
                 content_rect.height,
             );
-            let neighbour_x = (content_rect.x as f32
-                + offset as f32
-                + if offset > 0 { -(rect.width as f32) } else { rect.width as f32 })
-                as i32;
-            let neighbour_rect =
-                Rect::new(neighbour_x, content_rect.y, content_rect.width, content_rect.height);
-            self.draw_page(context, neighbour_index, neighbour_rect, is_enabled);
+            let neighbour_rect = self.neighbour_page_rect(content_rect, offset);
+            self.draw_page(context, neighbour_index, neighbour_rect, is_enabled, &theme);
 
-            let current_rect = Rect::new(
-                content_rect.x + offset,
-                content_rect.y,
-                content_rect.width,
-                content_rect.height,
-            );
-            self.draw_page(context, self.current_index, current_rect, is_enabled);
+            let current_rect = self.offset_rect(content_rect, offset);
+            self.draw_page(context, self.current_index, current_rect, is_enabled, &theme);
             context.pop_clip();
         } else {
-            let current_rect = Rect::new(
-                content_rect.x + offset,
-                content_rect.y,
-                content_rect.width,
-                content_rect.height,
-            );
-            self.draw_page(context, self.current_index, current_rect, is_enabled);
+            let current_rect = self.offset_rect(content_rect, offset);
+            self.draw_page(context, self.current_index, current_rect, is_enabled, &theme);
         }
 
         if self.indicator_drawn() {
-            self.draw_indicator(context, rect);
+            self.draw_indicator(context, rect, &theme);
         }
     }
 }
@@ -1054,7 +1145,7 @@ impl Carousel {
 
     /// The smallest travel, in pixels, that can ever count as a flick.
     fn min_flick_px(&self) -> i32 {
-        (self.geometry().width as f32 * self.physics.drag_min_fraction).max(1.0) as i32
+        (self.primary_extent() as f32 * self.physics.drag_min_fraction).max(1.0) as i32
     }
 
     /// The page index `step` away from the current one, honoring `loop`.
@@ -1090,6 +1181,105 @@ impl Carousel {
         self.wrapped_step(step)
     }
 
+    /// Translates `rect` by `offset` pixels along the page axis (C-03).
+    fn offset_rect(&self, rect: Rect, offset: i32) -> Rect {
+        if self.pages_vertical() {
+            Rect::new(rect.x, rect.y + offset, rect.width, rect.height)
+        } else {
+            Rect::new(rect.x + offset, rect.y, rect.width, rect.height)
+        }
+    }
+
+    /// The rectangle the revealed neighbour page occupies for a drag of `offset`.
+    fn neighbour_page_rect(&self, content_rect: Rect, offset: i32) -> Rect {
+        let extent =
+            if self.pages_vertical() { content_rect.height } else { content_rect.width } as i32;
+        let shift = offset + if offset > 0 { -extent } else { extent };
+        self.offset_rect(content_rect, shift)
+    }
+
+    /// Derives the indicator strip and its slot list once (C-01).
+    fn indicator_layout(&self, rect: Rect) -> IndicatorLayout {
+        let vertical = self.indicator_position.is_vertical();
+        let (strip_center, cross_center) = match self.indicator_position {
+            CarouselIndicatorPosition::Bottom => (
+                rect.x + rect.width as i32 / 2,
+                rect.y + rect.height as i32 - (INDICATOR_STRIP as i32 / 2),
+            ),
+            CarouselIndicatorPosition::Top => {
+                (rect.x + rect.width as i32 / 2, rect.y + INDICATOR_STRIP as i32 / 2)
+            }
+            CarouselIndicatorPosition::Left => {
+                (rect.y + rect.height as i32 / 2, rect.x + INDICATOR_STRIP as i32 / 2)
+            }
+            CarouselIndicatorPosition::Right => (
+                rect.y + rect.height as i32 / 2,
+                rect.x + rect.width as i32 - (INDICATOR_STRIP as i32 / 2),
+            ),
+        };
+        let strip_rect = match self.indicator_position {
+            CarouselIndicatorPosition::Bottom => Rect::new(
+                rect.x,
+                rect.y + rect.height as i32 - INDICATOR_STRIP as i32,
+                rect.width,
+                INDICATOR_STRIP,
+            ),
+            CarouselIndicatorPosition::Top => {
+                Rect::new(rect.x, rect.y, rect.width, INDICATOR_STRIP)
+            }
+            CarouselIndicatorPosition::Left => {
+                Rect::new(rect.x, rect.y, INDICATOR_STRIP, rect.height)
+            }
+            CarouselIndicatorPosition::Right => Rect::new(
+                rect.x + rect.width as i32 - INDICATOR_STRIP as i32,
+                rect.y,
+                INDICATOR_STRIP,
+                rect.height,
+            ),
+        };
+
+        // Past twenty pages the far end is elided, so the strip stays the same
+        // width however many pages exist — the same cap `PagerPageView` used.
+        let page_count = self.pages.len();
+        let slots: Vec<Option<usize>> = if page_count <= MAX_VISIBLE_SLOTS {
+            (0..page_count).map(Some).collect()
+        } else {
+            let mut slots: Vec<Option<usize>> = (0..SIDE_SLOTS).map(Some).collect();
+            slots.push(None); // ellipsis marker
+            for i in (page_count - (MAX_VISIBLE_SLOTS - SIDE_SLOTS - 1))..page_count {
+                slots.push(Some(i));
+            }
+            slots
+        };
+
+        IndicatorLayout { strip_rect, vertical, strip_center, cross_center, slots }
+    }
+
+    /// The page index of the indicator slot under `pos`, if any (C-01).
+    ///
+    /// A slot's click target is its whole cell — `SLOT_SPACING` along the strip and the
+    /// strip's full thickness across it — rather than the few pixels of the painted mark,
+    /// because a 4 px dot is not a usable pointer target. The ellipsis marker carries no
+    /// page and therefore no target.
+    fn indicator_slot_at(&self, pos: Point) -> Option<usize> {
+        if !self.indicator_drawn() || !self.indicator_style.is_per_page() {
+            return None;
+        }
+        let layout = self.indicator_layout(self.geometry());
+        if !layout.strip_rect.contains(pos) {
+            return None;
+        }
+        let count = layout.slots.len() as i32;
+        let span = count * SLOT_SPACING;
+        let start = layout.strip_center - span / 2;
+        let coordinate = if layout.vertical { pos.y } else { pos.x };
+        let slot = (coordinate - start).div_euclid(SLOT_SPACING);
+        if slot < 0 || slot >= count {
+            return None;
+        }
+        layout.slots[slot as usize]
+    }
+
     /// Draws one page, either its mounted control or its title card.
     ///
     /// `page.color` is the **caller's** page colour — it identifies which page this is,
@@ -1101,6 +1291,7 @@ impl Carousel {
         index: usize,
         page_rect: Rect,
         is_enabled: bool,
+        theme: &ThemeSnapshot,
     ) {
         let (color, has_content) = {
             let Some(page) = self.pages.get(index) else {
@@ -1109,7 +1300,7 @@ impl Carousel {
             (page.color, page.content.is_some())
         };
 
-        let (panel, mark, _border) = self.chrome_colors();
+        let (panel, mark, _border) = self.chrome_colors(theme);
         let bg_color = if !is_enabled {
             // A disabled control is a chrome state, so it is derived from the resolved
             // colours rather than from a second hardcoded grey.
@@ -1183,38 +1374,15 @@ impl Carousel {
     /// shares the edge arithmetic and the strip reservation but not the slot list,
     /// because a counter has one mark however many pages exist — so it branches off
     /// before the slots are built rather than inside the loop.
-    fn draw_indicator(&self, context: &mut RenderContext, rect: Rect) {
-        const MAX_VISIBLE_SLOTS: usize = 20;
-        const SIDE_SLOTS: usize = 9;
-        const SLOT_SPACING: i32 = 16;
-        const DOT_RADIUS: u32 = 4;
-        const BAR_WIDTH: u32 = 10;
-        const BAR_HEIGHT: u32 = 3;
-
+    fn draw_indicator(&self, context: &mut RenderContext, rect: Rect, theme: &ThemeSnapshot) {
         let page_count = self.pages.len();
-        let vertical = self.indicator_position.is_vertical();
+        let layout = self.indicator_layout(rect);
+        let vertical = layout.vertical;
+        let strip_center = layout.strip_center;
+        let cross_center = layout.cross_center;
         // The strip is the carousel's own chrome: it sits on the panel resolved in
         // `draw`, and its marks are resolved with it, so a theme switch repaints both.
-        let (strip, mark, _border) = self.chrome_colors();
-
-        // The slot the strip is centred on, and the cross-axis coordinate of the
-        // strip's centre. Both edges share this arithmetic; only the axis differs.
-        let (strip_center, cross_center) = match self.indicator_position {
-            CarouselIndicatorPosition::Bottom => (
-                rect.x + rect.width as i32 / 2,
-                rect.y + rect.height as i32 - (INDICATOR_STRIP as i32 / 2),
-            ),
-            CarouselIndicatorPosition::Top => {
-                (rect.x + rect.width as i32 / 2, rect.y + INDICATOR_STRIP as i32 / 2)
-            }
-            CarouselIndicatorPosition::Left => {
-                (rect.y + rect.height as i32 / 2, rect.x + INDICATOR_STRIP as i32 / 2)
-            }
-            CarouselIndicatorPosition::Right => (
-                rect.y + rect.height as i32 / 2,
-                rect.x + rect.width as i32 - (INDICATOR_STRIP as i32 / 2),
-            ),
-        };
+        let (strip, mark, _border) = self.chrome_colors(theme);
 
         if !self.indicator_style.is_per_page() {
             // `Numeric` (the only remaining visible style): `current / total`, one
@@ -1247,41 +1415,9 @@ impl Carousel {
 
         // The reserved strip is painted before the marks, so a page that is close in
         // colour to the panel still has a defined band to read the counter against.
-        let strip_rect = match self.indicator_position {
-            CarouselIndicatorPosition::Bottom => Rect::new(
-                rect.x,
-                rect.y + rect.height as i32 - INDICATOR_STRIP as i32,
-                rect.width,
-                INDICATOR_STRIP,
-            ),
-            CarouselIndicatorPosition::Top => {
-                Rect::new(rect.x, rect.y, rect.width, INDICATOR_STRIP)
-            }
-            CarouselIndicatorPosition::Left => {
-                Rect::new(rect.x, rect.y, INDICATOR_STRIP, rect.height)
-            }
-            CarouselIndicatorPosition::Right => Rect::new(
-                rect.x + rect.width as i32 - INDICATOR_STRIP as i32,
-                rect.y,
-                INDICATOR_STRIP,
-                rect.height,
-            ),
-        };
-        context.fill_rect(strip_rect, strip);
+        context.fill_rect(layout.strip_rect, strip);
 
-        // Past twenty pages the far end is elided, so the strip stays the same
-        // width however many pages exist — the same cap `PagerPageView` used.
-        let slots: Vec<Option<usize>> = if page_count <= MAX_VISIBLE_SLOTS {
-            (0..page_count).map(Some).collect()
-        } else {
-            let mut slots: Vec<Option<usize>> = (0..SIDE_SLOTS).map(Some).collect();
-            slots.push(None); // ellipsis marker
-            for i in (page_count - (MAX_VISIBLE_SLOTS - SIDE_SLOTS - 1))..page_count {
-                slots.push(Some(i));
-            }
-            slots
-        };
-
+        let slots = &layout.slots;
         let count = slots.len() as i32;
         let span = count * SLOT_SPACING;
 
@@ -1344,27 +1480,29 @@ impl EventHandler for Carousel {
 
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
-                self.drag = DragState::Pressed { start_x: pos.x };
+                self.drag = DragState::Pressed { start: self.primary_coordinate(*pos) };
                 self.base.handle_event(event);
             }
             Event::MouseMove { pos } => match self.drag {
-                DragState::Pressed { start_x } => {
-                    let offset = pos.x - start_x;
+                DragState::Pressed { start } => {
+                    let coordinate = self.primary_coordinate(*pos);
+                    let offset = coordinate - start;
                     if offset.abs() >= self.swipe_threshold_px() {
                         self.drag = DragState::Swiping {
-                            start_x,
-                            offset_x: offset,
-                            last_x: pos.x,
+                            start,
+                            offset,
+                            last: coordinate,
                             last_moved_at: Some(Instant::now()),
                         };
                         self.base.request_redraw();
                     }
                 }
-                DragState::Swiping { start_x, .. } => {
+                DragState::Swiping { start, .. } => {
                     // The offset tracks the pointer for the whole gesture; it is
                     // not clamped here, because the drawing step clips it and a
                     // spring-back animation would need the true value.
-                    let raw = pos.x - start_x;
+                    let coordinate = self.primary_coordinate(*pos);
+                    let raw = coordinate - start;
                     // Edge rubber-band: a drag that reveals no neighbour is damped, so the
                     // content moves a third of the pointer travel and visibly resists.
                     let offset = if self.rubber_band && self.step_for_offset(raw).is_none() {
@@ -1373,9 +1511,9 @@ impl EventHandler for Carousel {
                         raw
                     };
                     self.drag = DragState::Swiping {
-                        start_x,
-                        offset_x: offset,
-                        last_x: pos.x,
+                        start,
+                        offset,
+                        last: coordinate,
                         last_moved_at: Some(Instant::now()),
                     };
                     self.base.request_redraw();
@@ -1391,16 +1529,16 @@ impl EventHandler for Carousel {
                     // animated, so a release always ends with the content at rest
                     // — an animation would leave the control mid-offset wherever
                     // no frame clock is driving it.
-                    DragState::Swiping { offset_x, last_x, last_moved_at, .. } => {
+                    DragState::Swiping { offset, last, last_moved_at, .. } => {
                         let before = self.current_index;
                         let velocity = swipe_velocity_px_per_sec(
-                            last_x,
-                            pos.x,
+                            last,
+                            self.primary_coordinate(*pos),
                             last_moved_at,
                             Instant::now(),
-                            self.geometry().width as f32,
+                            self.primary_extent() as f32,
                         );
-                        match self.swipe_direction_at(offset_x, velocity) {
+                        match self.swipe_direction_at(offset, velocity) {
                             Some(step) => {
                                 if let Some(target) = self.wrapped_step(step) {
                                     self.set_current(target);
@@ -1408,13 +1546,13 @@ impl EventHandler for Carousel {
                             }
                             // Below both thresholds on release: the drag was a slip,
                             // so it is treated as a click at the release position.
-                            None => self.page_for_click(pos.x),
+                            None => self.page_for_click(*pos),
                         }
                         // A release that did not page springs back to rest. The offset is
                         // the damped one the drag actually showed, so the animation starts
                         // where the content is rather than where the pointer was.
-                        if self.rubber_band && self.current_index == before && offset_x != 0 {
-                            self.settle_offset = offset_x as f32;
+                        if self.rubber_band && self.current_index == before && offset != 0 {
+                            self.settle_offset = offset as f32;
                         }
                         self.base.request_redraw();
                     }
@@ -1422,7 +1560,7 @@ impl EventHandler for Carousel {
                     // behaviour, kept because a carousel is often driven by tapping
                     // its edges.
                     DragState::Pressed { .. } | DragState::Idle => {
-                        self.page_for_click(pos.x);
+                        self.page_for_click(*pos);
                         self.base.request_redraw();
                     }
                 }
@@ -1433,7 +1571,7 @@ impl EventHandler for Carousel {
             // drag state — a touch backend may deliver the whole gesture at once.
             #[cfg(feature = "touch")]
             Event::Swipe { start, end, .. } => {
-                let travel = end.x - start.x;
+                let travel = self.primary_coordinate(*end) - self.primary_coordinate(*start);
                 if let Some(step) = self.swipe_direction(travel) {
                     if let Some(target) = self.wrapped_step(step) {
                         self.set_current(target);
@@ -1480,12 +1618,24 @@ impl EventHandler for Carousel {
 }
 
 impl Carousel {
-    /// Applies the click-to-page rule: the left half goes back, the right half
-    /// forward.
-    fn page_for_click(&mut self, x: i32) {
+    /// Applies the click-to-page rule: the first half goes back, the second forward.
+    ///
+    /// An indicator mark under the pointer wins over the halves (C-01): the mark names a
+    /// specific page, so clicking it jumps there instead of stepping by one. The same
+    /// `set_current` path as every other navigation is used, so selection semantics and
+    /// the `page_changed` signal are unchanged.
+    fn page_for_click(&mut self, pos: Point) {
+        if let Some(index) = self.indicator_slot_at(pos) {
+            self.set_current(index);
+            return;
+        }
         let rect = self.geometry();
-        let mid_x = rect.x + (rect.width as i32) / 2;
-        if x < mid_x {
+        let mid = if self.pages_vertical() {
+            rect.y + rect.height as i32 / 2
+        } else {
+            rect.x + rect.width as i32 / 2
+        };
+        if self.primary_coordinate(pos) < mid {
             self.previous();
         } else {
             self.next();
@@ -1624,7 +1774,7 @@ mod tests {
             crate::theme::global_theme_manager().set_appearance(appearance);
             let mut carousel = default_carousel();
             carousel.set_current(0);
-            carousel.chrome_colors()
+            carousel.chrome_colors(&ThemeSnapshot::capture("carousel"))
         };
 
         let (light_panel, light_mark, light_border) = chrome(crate::theme::AppearanceMode::Light);

@@ -39,7 +39,7 @@
 // see `compat::MiniToString`'s comment.
 #[cfg(alloc_frugal)]
 use crate::compat::MiniToString;
-use crate::compat::{HashMap, RefCell, String, Vec};
+use crate::compat::{Arc, HashMap, Rc, RefCell, Vec, VecDeque};
 use crate::core::Font;
 use crate::render::text::font_assets::{active_faces, FaceBytes};
 use crate::render::{ShapedGlyphRun, TextShaper};
@@ -281,10 +281,13 @@ fn ligature_free_features() -> &'static [rustybuzz::Feature] {
 /// floats approximately equal". `weight: None` is the face's own instance, which is not the same
 /// request as any explicit weight. `ligatures` selects between the cluster renderer's
 /// ligature-free feature set and the glyph-level one.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct ShapeKey {
     face: &'static str,
-    text: String,
+    /// The request's text, **shared** rather than copied. A lookup is therefore a refcount bump
+    /// instead of a heap allocation, including on a cache hit (G-13). The same shape
+    /// `RenderCommand::DrawText.text` uses.
+    text: Arc<str>,
     font_size_bits: u32,
     scale_bits: u32,
     weight: Option<u16>,
@@ -302,7 +305,8 @@ impl ShapeKey {
     ) -> Self {
         Self {
             face,
-            text: String::from(text),
+            // A refcount bump, not a `String` allocation (G-13).
+            text: Arc::from(text),
             font_size_bits: font_size.to_bits(),
             scale_bits: scale.to_bits(),
             weight,
@@ -319,15 +323,63 @@ impl ShapeKey {
 /// better cache — it is a leak nobody measured.
 const SHAPE_CACHE_LIMIT: usize = 512;
 
+/// A bounded cache shaped exactly like `raster.rs`'s `CoverageCache`: a hash map plus a FIFO queue
+/// of the keys in insertion order.
+///
+/// Reaching `SHAPE_CACHE_LIMIT` evicts the **oldest** entry rather than clearing the table
+/// (G-205). Clearing dropped every hot caption together with the one cold entry that filled the
+/// cache, so the next frame re-shaped all of them — the amplifier G-13 describes. An evicted
+/// request is simply shaped again on its next use, which is the correct trade for a cache this
+/// small (no LRU bookkeeping on the shaping path).
+struct FifoCache<V> {
+    entries: HashMap<ShapeKey, V>,
+    order: VecDeque<ShapeKey>,
+}
+
+impl<V> FifoCache<V> {
+    fn new() -> Self {
+        Self { entries: HashMap::new(), order: VecDeque::new() }
+    }
+
+    fn get(&self, key: &ShapeKey) -> Option<&V> {
+        self.entries.get(key)
+    }
+
+    fn insert(&mut self, key: ShapeKey, value: V) {
+        // Only a key that was not already resident joins the queue, so a stale queue entry can
+        // never evict a live one (the rule `CoverageCache` documents).
+        if self.entries.insert(key.clone(), value).is_none() {
+            self.order.push_back(key);
+        }
+        while self.order.len() > SHAPE_CACHE_LIMIT {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+
+    /// Empties the cache. Only the test hooks need this; production only ever evicts by FIFO.
+    #[cfg(test)]
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+}
+
 thread_local! {
     /// Shaped runs, keyed by request. The value is the whole result, including `None`: a face that
-    /// cannot shape a request must not be re-parsed on every call just to learn that again.
-    static SHAPED_RUNS: RefCell<HashMap<ShapeKey, Option<ShapedGlyphRun>>> =
-        RefCell::new(HashMap::new());
+    /// cannot shape a request must not be re-parsed on every call just to learn that again. The run
+    /// is shared so a hit returns a handle instead of deep-copying its `Vec` buffers (G-13).
+    static SHAPED_RUNS: RefCell<FifoCache<Option<Rc<ShapedGlyphRun>>>> =
+        RefCell::new(FifoCache::new());
     /// Per-cluster advances, keyed the same way. Kept separately because this result carries the
     /// cluster partition, which a glyph run does not: one shape pass can answer both, but the two
     /// answers are different projections and reconstituting one from the other would lose data.
-    static CLUSTER_ADVANCES: RefCell<HashMap<ShapeKey, Vec<f32>>> = RefCell::new(HashMap::new());
+    static CLUSTER_ADVANCES: RefCell<FifoCache<Vec<f32>>> = RefCell::new(FifoCache::new());
+    /// Bidi levels per cluster, keyed with the shaped result so an unchanged line reuses both
+    /// (G-17). Stored as a shared slice: the caller passes it to `bidi::visual_order_from_levels`
+    /// without rebuilding `order`/`levels` or re-running the paragraph analysis.
+    static BIDI_LEVELS: RefCell<FifoCache<Rc<[u8]>>> = RefCell::new(FifoCache::new());
     /// One reusable input buffer per thread (G-19).
     ///
     /// `rustybuzz::shape` consumes a `UnicodeBuffer`, so the buffer cannot simply be reset in
@@ -378,20 +430,16 @@ fn shaping_pass_count() -> usize {
 fn clear_shape_caches() {
     let _ = SHAPED_RUNS.try_with(|cache| cache.borrow_mut().clear());
     let _ = CLUSTER_ADVANCES.try_with(|cache| cache.borrow_mut().clear());
+    let _ = BIDI_LEVELS.try_with(|cache| cache.borrow_mut().clear());
+    BIDI_LEVEL_HITS.with(|hits| hits.set(0));
 }
 
-fn cached_run(key: &ShapeKey) -> Option<Option<ShapedGlyphRun>> {
+fn cached_run(key: &ShapeKey) -> Option<Option<Rc<ShapedGlyphRun>>> {
     SHAPED_RUNS.try_with(|cache| cache.borrow().get(key).cloned()).ok().flatten()
 }
 
-fn store_run(key: ShapeKey, run: Option<ShapedGlyphRun>) {
-    let _ = SHAPED_RUNS.try_with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.len() >= SHAPE_CACHE_LIMIT {
-            cache.clear();
-        }
-        cache.insert(key, run);
-    });
+fn store_run(key: ShapeKey, run: Option<Rc<ShapedGlyphRun>>) {
+    let _ = SHAPED_RUNS.try_with(|cache| cache.borrow_mut().insert(key, run));
 }
 
 fn cached_advances(key: &ShapeKey) -> Option<Vec<f32>> {
@@ -399,13 +447,48 @@ fn cached_advances(key: &ShapeKey) -> Option<Vec<f32>> {
 }
 
 fn store_advances(key: ShapeKey, advances: Vec<f32>) {
-    let _ = CLUSTER_ADVANCES.try_with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.len() >= SHAPE_CACHE_LIMIT {
-            cache.clear();
-        }
-        cache.insert(key, advances);
-    });
+    let _ = CLUSTER_ADVANCES.try_with(|cache| cache.borrow_mut().insert(key, advances));
+}
+
+/// The bidi levels for `text`'s clusters, memoised with the same key and FIFO policy as
+/// `SHAPED_RUNS` (G-17).
+///
+/// A hit returns the shared level buffer, so repeating an unchanged line is a refcount bump rather
+/// than a `BidiInfo::new` paragraph analysis plus two fresh `Vec`s. `None` means this build resolved
+/// no face for `text`, so there is no `ShapeKey` to cache under; the caller then takes the
+/// uncached bidi entry point. `ranges` is not in the key because the crate's one clustering rule
+/// (`line::for_each_cluster`) derives the partition deterministically from the text.
+pub(crate) fn cached_bidi_levels(
+    text: &str,
+    ranges: &[(usize, usize)],
+    font: &Font,
+    scale: f32,
+) -> Option<Rc<[u8]>> {
+    let face = face_for_metrics(text, font)?;
+    let key = ShapeKey::new(face.name, text, font.size(), scale, Some(font.weight()), false);
+    if let Some(levels) =
+        BIDI_LEVELS.try_with(|cache| cache.borrow().get(&key).cloned()).ok().flatten()
+    {
+        #[cfg(test)]
+        BIDI_LEVEL_HITS.with(|hits| hits.set(hits.get() + 1));
+        return Some(levels);
+    }
+    let levels: Rc<[u8]> = Rc::from(super::bidi::levels_for(text, ranges));
+    let _ = BIDI_LEVELS.try_with(|cache| cache.borrow_mut().insert(key, levels.clone()));
+    Some(levels)
+}
+
+// Test-only count of bidi-level lookups answered from the shaping cache (G-17), so the memo is
+// observable. Per-thread because the cache itself is.
+#[cfg(test)]
+thread_local! {
+    static BIDI_LEVEL_HITS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// How many bidi-level lookups the shaping cache answered since [`clear_shape_caches`].
+#[cfg(test)]
+pub(crate) fn bidi_level_cache_hits() -> usize {
+    BIDI_LEVEL_HITS.with(core::cell::Cell::get)
 }
 
 /// A shaper backed by a real font's layout tables.
@@ -457,7 +540,7 @@ impl RustybuzzShaper {
     /// feature set, so the trait call takes the same memo as every other shaping entry point
     /// (G-19). Before this, a caller holding `&dyn TextShaper` paid a full `GSUB`/`GPOS` pass on
     /// every call while the renderer's path was cached — the same font, the same bytes, two costs.
-    fn trait_shape(&self, text: &str, font_size: f32) -> Option<ShapedGlyphRun> {
+    fn trait_shape(&self, text: &str, font_size: f32) -> Option<Rc<ShapedGlyphRun>> {
         self.shape_face(text, font_size, 1.0)
     }
 
@@ -466,7 +549,10 @@ impl RustybuzzShaper {
     /// Positions are in logical pixels; the run's `width` is the sum of the glyph advances, and
     /// its `height` is the font's line box — the same box
     /// [`crate::render::text::line`]'s model reports.
-    pub fn shape_face(&self, text: &str, font_size: f32, scale: f32) -> Option<ShapedGlyphRun> {
+    ///
+    /// The run is a shared handle from the thread's cache, so a repeated request is a refcount
+    /// bump rather than a deep copy of its glyph and position buffers (G-13).
+    pub fn shape_face(&self, text: &str, font_size: f32, scale: f32) -> Option<Rc<ShapedGlyphRun>> {
         self.shape_face_with(text, font_size, scale, ligature_free_features(), None)
     }
 
@@ -481,7 +567,7 @@ impl RustybuzzShaper {
         font_size: f32,
         scale: f32,
         weight: u16,
-    ) -> Option<ShapedGlyphRun> {
+    ) -> Option<Rc<ShapedGlyphRun>> {
         self.shape_face_with(text, font_size, scale, ligature_free_features(), Some(weight))
     }
 
@@ -497,7 +583,7 @@ impl RustybuzzShaper {
         text: &str,
         font_size: f32,
         scale: f32,
-    ) -> Option<ShapedGlyphRun> {
+    ) -> Option<Rc<ShapedGlyphRun>> {
         self.shape_face_with(text, font_size, scale, &[], None)
     }
 
@@ -511,7 +597,7 @@ impl RustybuzzShaper {
         font_size: f32,
         scale: f32,
         weight: u16,
-    ) -> Option<ShapedGlyphRun> {
+    ) -> Option<Rc<ShapedGlyphRun>> {
         self.shape_face_with(text, font_size, scale, &[], Some(weight))
     }
 
@@ -528,7 +614,7 @@ impl RustybuzzShaper {
         scale: f32,
         features: &[rustybuzz::Feature],
         weight: Option<u16>,
-    ) -> Option<ShapedGlyphRun> {
+    ) -> Option<Rc<ShapedGlyphRun>> {
         // The cache is checked before the face is parsed: a repeated caption must not walk the
         // table directory, build a `UnicodeBuffer` or run `GSUB`/`GPOS` at all (G-19). The key
         // names the face, so two shapers over different faces cannot alias each other.
@@ -580,6 +666,7 @@ impl RustybuzzShaper {
             None => super::font_assets::with_shaper_face(self.face, shape),
         }
         .flatten();
+        let shaped = shaped.map(Rc::from);
         store_run(key, shaped.clone());
         shaped
     }
@@ -598,7 +685,7 @@ pub fn glyph_run_for_family_at_weight(
     font: &Font,
     scale: f32,
     weight: u16,
-) -> Option<ShapedGlyphRun> {
+) -> Option<Rc<ShapedGlyphRun>> {
     let face = face_for_family(font.family())?;
     RustybuzzShaper::new(face)?.shape_face_with_ligatures_at_weight(
         text,
@@ -612,7 +699,8 @@ impl TextShaper for RustybuzzShaper {
     /// One run of real glyphs, or — if the face cannot be read — an empty run rather than a
     /// fabricated one.
     fn shape(&self, text: &str, font_size: f32) -> Vec<ShapedGlyphRun> {
-        self.trait_shape(text, font_size).into_iter().collect()
+        // The trait's contract is an owned run; the cache's shared handle is cloned only here.
+        self.trait_shape(text, font_size).map(|run| (*run).clone()).into_iter().collect()
     }
 
     fn measure_width(&self, text: &str, font_size: f32) -> f32 {
@@ -785,5 +873,50 @@ mod tests {
         if active_faces().is_empty() {
             assert!(RustybuzzShaper::from_active_faces("abc").is_none());
         }
+    }
+
+    /// A full cache evicts one entry, not the whole table (G-205).
+    ///
+    /// The old `clear()` discarded every hot caption along with the cold entry that filled the
+    /// cache, so the next frame re-shaped all of them. This pins the FIFO behaviour directly.
+    #[test]
+    fn the_shaping_cache_evicts_the_oldest_entry_instead_of_clearing() {
+        clear_shape_caches();
+        for index in 0..=SHAPE_CACHE_LIMIT {
+            let text = index.to_string();
+            let key = ShapeKey::new("probe", &text, 12.0, 1.0, None, false);
+            store_run(key, None);
+        }
+        let oldest = ShapeKey::new("probe", "0", 12.0, 1.0, None, false);
+        let newest = ShapeKey::new("probe", &SHAPE_CACHE_LIMIT.to_string(), 12.0, 1.0, None, false);
+        SHAPED_RUNS.with(|cache| {
+            let cache = cache.borrow();
+            assert_eq!(cache.entries.len(), SHAPE_CACHE_LIMIT, "the cache stays at its bound");
+            assert!(!cache.entries.contains_key(&oldest), "the oldest entry was evicted");
+            assert!(cache.entries.contains_key(&newest), "the newest entry is resident");
+        });
+    }
+
+    /// The bidi levels share the shaped run's cache, so a repeat is answered without the UAX #9
+    /// analysis and returns the same level buffer (G-17).
+    #[cfg(feature = "fonts-vector-latin")]
+    #[test]
+    fn bidi_levels_are_memoised_with_the_shaping_cache() {
+        let font = crate::core::Font::new("Open Sans", 12.0, false, false);
+        let text = "Hello";
+        let ranges: Vec<(usize, usize)> =
+            text.char_indices().map(|(i, ch)| (i, i + ch.len_utf8())).collect();
+
+        clear_shape_caches();
+        let first = cached_bidi_levels(text, &ranges, &font, 1.0).expect("a Latin face is enabled");
+        let after_first = bidi_level_cache_hits();
+        let second =
+            cached_bidi_levels(text, &ranges, &font, 1.0).expect("a Latin face is enabled");
+        let after_second = bidi_level_cache_hits();
+
+        assert_eq!(after_first, 0, "the first request is a miss");
+        assert_eq!(after_second, 1, "the second request is served from the cache");
+        assert_eq!(&*first, &*second, "the cached levels are the same answer");
+        assert!(first.iter().all(|level| level % 2 == 0), "Latin is all even levels");
     }
 }

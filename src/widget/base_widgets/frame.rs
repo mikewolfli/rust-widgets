@@ -118,8 +118,11 @@ pub enum FrameShadow {
 }
 
 impl FrameShadow {
-    /// The factory spelling of this shadow, matching `FRAME_PROPERTIES`.
-    pub fn as_str(self) -> &'static str {
+    /// The token this style is published as.
+    ///
+    /// The single spelling implementation: `as_str` (the frame's factory vocabulary) and the
+    /// divider line's `LineStyle` alias both read it, so the two controls cannot drift.
+    pub const fn token(self) -> &'static str {
         match self {
             FrameShadow::Plain => "plain",
             FrameShadow::Raised => "raised",
@@ -127,14 +130,24 @@ impl FrameShadow {
         }
     }
 
+    /// Parses a published token. `None` for a spelling neither control publishes.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "plain" => Some(FrameShadow::Plain),
+            "raised" => Some(FrameShadow::Raised),
+            "sunken" => Some(FrameShadow::Sunken),
+            _ => None,
+        }
+    }
+
+    /// The factory spelling of this shadow, matching `FRAME_PROPERTIES`.
+    pub fn as_str(self) -> &'static str {
+        self.token()
+    }
+
     /// Parses a factory spelling into a shadow.
     pub fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "plain" => FrameShadow::Plain,
-            "raised" => FrameShadow::Raised,
-            "sunken" => FrameShadow::Sunken,
-            _ => return None,
-        })
+        Self::from_token(name)
     }
 }
 /// Parses a `top,right,bottom,left` margin string.
@@ -963,12 +976,56 @@ impl EventHandler for Frame {
         if !self.base.is_enabled() {
             return;
         }
+        // A pointer event is only forwarded when it actually landed on the child. The frame used to
+        // take a mutable borrow of the registry for every event in the window, including pointer
+        // moves that never touched its contents (G-A11).
+        if let Some(pos) = pointer_position(event) {
+            if !self.child_hit_rect().contains_point(pos) {
+                return;
+            }
+        }
         // Forward events to widget via registry
         if let Some(widget_id) = self.widget {
             if let Some(ref reg) = self.registry {
                 reg.borrow_mut().forward_event(widget_id, event);
             }
         }
+    }
+}
+
+/// The position a pointer event carries, or `None` for events that are not positional.
+///
+/// Wheel events carry only a delta, so they keep the historical unconditional forwarding: the
+/// platform already delivers them to the pointer's target.
+fn pointer_position(event: &Event) -> Option<Point> {
+    match event {
+        Event::MousePress { pos, .. }
+        | Event::MouseRelease { pos, .. }
+        | Event::MouseMove { pos }
+        | Event::MouseEnter { pos }
+        | Event::MouseLeave { pos } => Some(*pos),
+        #[cfg(feature = "touch")]
+        Event::TouchBegin { pos, .. }
+        | Event::TouchEnd { pos, .. }
+        | Event::TouchMove { pos, .. }
+        | Event::Tap { pos } => Some(*pos),
+        _ => None,
+    }
+}
+
+impl Frame {
+    /// The rectangle a pointer event must land in to reach the child.
+    ///
+    /// The mounted child's own geometry is authoritative where the runtime is available; without
+    /// it, the frame's content box is the honest answer (the child is laid out there).
+    fn child_hit_rect(&self) -> Rect {
+        #[cfg(not(alloc_frugal))]
+        if let Some(widget_id) = self.widget {
+            if let Some(rect) = crate::widget::runtime::geometry_of(widget_id) {
+                return rect;
+            }
+        }
+        self.contents_rect()
     }
 }
 impl Draw for Frame {

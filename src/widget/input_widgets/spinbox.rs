@@ -20,7 +20,7 @@
 //! answer rather than a second copy of it, so the paint path, the hit test and the tests all read
 //! one geometry.
 use crate::compat::{format, Box, Rc, String, ToString};
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -210,6 +210,8 @@ pub struct SpinBox {
     numeric_validator: Option<Box<dyn crate::data_binding::Validator<f64>>>,
     /// The shared value/range link the slider publishes while a pair is bound.
     numeric_link: NumericLinkSlot,
+    /// Memoised prefix/suffix advances keyed by the font and the two strings (I-P65).
+    decoration_cache: RefCell<Option<(Font, String, String, u32, u32)>>,
 }
 
 /// How a spin box chooses the distance of one step.
@@ -551,6 +553,7 @@ impl SpinBox {
             repeat_elapsed: 0,
             numeric_validator: None,
             numeric_link: Rc::new(RefCell::new(None)),
+            decoration_cache: RefCell::new(None),
         }
     }
 
@@ -1340,6 +1343,29 @@ impl SpinBox {
             cache.as_ref().expect("the cache was just filled").text.as_str()
         })
     }
+
+    /// The prefix/suffix advances, measured once per (font, strings) pair (I-P65).
+    fn decoration_widths(&self, context: &RenderContext, font: &Font) -> (u32, u32) {
+        if let Some((cached_font, prefix, suffix, prefix_width, suffix_width)) =
+            self.decoration_cache.borrow().as_ref()
+        {
+            if cached_font == font && prefix == &self.prefix && suffix == &self.suffix {
+                return (*prefix_width, *suffix_width);
+            }
+        }
+        let prefix_width =
+            if self.prefix.is_empty() { 0 } else { context.measure_text(&self.prefix, font).width };
+        let suffix_width =
+            if self.suffix.is_empty() { 0 } else { context.measure_text(&self.suffix, font).width };
+        *self.decoration_cache.borrow_mut() = Some((
+            font.clone(),
+            self.prefix.clone(),
+            self.suffix.clone(),
+            prefix_width,
+            suffix_width,
+        ));
+        (prefix_width, suffix_width)
+    }
 }
 
 /// Rounds to the nearest integer, saturating instead of wrapping out of `i32`.
@@ -1762,8 +1788,19 @@ impl EventHandler for SpinBox {
             Event::MouseLeave { .. } => self.stop_repeat(),
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
+                // I-P65: touch follows the same held-button path as the mouse, so pressing and
+                // holding a stepper repeats on a touch device too.
+                if self.up_button().contains_point(*pos) {
+                    self.held_step = Some(true);
+                    self.repeat_elapsed = 0;
+                } else if self.down_button().contains_point(*pos) {
+                    self.held_step = Some(false);
+                    self.repeat_elapsed = 0;
+                }
                 self.handle_button_click(*pos);
             }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { .. } => self.stop_repeat(),
             // Platform-committed text (a printable character or an IME commit) is the input a
             // touch keyboard and an input method actually deliver. The hosted field already
             // owns that path, so the spin box only has to start an edit and pass it on.
@@ -1975,10 +2012,7 @@ impl Draw for SpinBox {
         // Widths only: the slot strings are borrowed from the control and never copied. The
         // old code built a `DecorationSlots` with two `String` clones per frame just to ask
         // for two advances, and the empty slots here carry no support row/counter to lay out.
-        let prefix_width =
-            if self.prefix.is_empty() { 0 } else { context.measure_text(&self.prefix, font).width };
-        let suffix_width =
-            if self.suffix.is_empty() { 0 } else { context.measure_text(&self.suffix, font).width };
+        let (prefix_width, suffix_width) = self.decoration_widths(context, font);
         let metrics = DecorationMetrics { prefix_width, suffix_width };
         let slots = DecorationSlots::default();
         let line_height = font.effective_line_height().max(1.0) as u32;
@@ -1991,11 +2025,11 @@ impl Draw for SpinBox {
             0,
             &slots,
         );
-        let value_text = if self.editing {
-            self.entry.text().to_string()
-        } else {
-            self.value_text_cached().to_string()
-        };
+        // I-P65: the idle path borrows the cached string instead of producing a `String` per
+        // frame.
+        let cached_value = if self.editing { None } else { Some(self.value_text_cached()) };
+        let value_text: &str =
+            if self.editing { self.entry.text() } else { cached_value.as_deref().unwrap_or("") };
         // The value's own line box and horizontal alignment, derived once: the painted run, the
         // selection band and the caret all read them, so the decorations cannot land beside the
         // glyphs they belong to.
@@ -2006,17 +2040,36 @@ impl Draw for SpinBox {
         // While an edit is open the entry's own caret and selection are painted, so
         // `entry_cursor_position` / `select_all` are visible rather than model-only state.
         let entry_origin = if self.editing {
-            let advance = context.measure_text(&value_text, font).width as i32;
+            let advance = context.measure_text(value_text, font).width as i32;
             Some(crate::render::fitted_origin(value_box, advance, align))
         } else {
             None
         };
-        if let (Some(origin), Some((start, end))) = (entry_origin, self.entry_selection_range()) {
+        // I-P65: the three prefix advances the edit frame needs are measured once and shared by
+        // the selection band and the caret.
+        let caret = self.entry.cursor_position().min(value_text.len());
+        let selection = self.entry_selection_range();
+        let (start_prefix, end_prefix, caret_prefix) = if let Some((start, end)) = selection {
+            let start_prefix = context.measure_text(&value_text[..start], font).width as i32;
+            let end_prefix = context.measure_text(&value_text[..end], font).width as i32;
+            let caret_prefix = if caret == end {
+                end_prefix
+            } else if caret == start {
+                start_prefix
+            } else {
+                context.measure_text(&value_text[..caret], font).width as i32
+            };
+            (start_prefix, end_prefix, caret_prefix)
+        } else {
+            let caret_prefix = context.measure_text(&value_text[..caret], font).width as i32;
+            (caret_prefix, caret_prefix, caret_prefix)
+        };
+        if let (Some(origin), Some(_)) = (entry_origin, selection) {
             // The selection band is derived from the field's own ink and fill, so it reads on
             // both appearances without a second theme token to keep in step.
             let selection_fill = text_color.blend(&bg, 0.3).blend(&bg, 0.25);
-            let start_x = origin.x + context.measure_text(&value_text[..start], font).width as i32;
-            let end_x = origin.x + context.measure_text(&value_text[..end], font).width as i32;
+            let start_x = origin.x + start_prefix;
+            let end_x = origin.x + end_prefix;
             let right_edge = value_box.x + value_box.width as i32;
             let left = start_x.clamp(value_box.x, right_edge);
             let right = end_x.clamp(value_box.x, right_edge).max(left);
@@ -2026,13 +2079,12 @@ impl Draw for SpinBox {
             );
         }
         if !value_text.is_empty() {
-            context.draw_text_fitted_cow(value_box, &value_text, font, text_color, align);
+            context.draw_text_fitted_cow(value_box, value_text, font, text_color, align);
         }
         if let Some(origin) = entry_origin {
-            // The insertion point, from the same origin and prefix measurement as the band and
-            // clipped to the value's box.
-            let caret = self.entry.cursor_position().min(value_text.len());
-            let caret_x = origin.x + context.measure_text(&value_text[..caret], font).width as i32;
+            // The insertion point, from the same origin and shared prefix measurement as the
+            // band, clipped to the value's box.
+            let caret_x = origin.x + caret_prefix;
             let caret_x = caret_x
                 .clamp(value_box.x, value_box.x + value_box.width as i32 - 1)
                 .max(value_box.x);

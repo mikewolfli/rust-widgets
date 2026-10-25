@@ -138,11 +138,14 @@ fn unknown_ids_are_reported_as_absent_not_as_state() {
     assert!(!Platform::is_widget_visible(platform, unknown));
     assert!(!Platform::destroy_widget(platform, unknown));
 
-    // The mutators must be safe no-ops rather than panics.
-    Platform::set_widget_text(platform, unknown, "x");
+    // The mutators must be safe no-ops rather than panics, and the five that used to answer
+    // `()` must now *report* the no-op instead of hiding it (P-203).
+    assert!(!Platform::set_widget_text(platform, unknown, "x"));
+    assert!(!Platform::set_widget_geometry(platform, unknown, 0, 0, 10, 10));
+    assert!(!Platform::set_widget_visible(platform, unknown, true));
+    assert!(!Platform::show_widget(platform, unknown));
+    assert!(!Platform::hide_widget(platform, unknown));
     Platform::set_widget_enabled(platform, unknown, true);
-    Platform::set_widget_visible(platform, unknown, true);
-    Platform::set_widget_geometry(platform, unknown, 0, 0, 10, 10);
 }
 
 /// Destroying a control must not make its id reusable.

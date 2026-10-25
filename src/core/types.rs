@@ -15,21 +15,6 @@ pub enum RuntimeProfile {
     /// Reduced profile intended for constrained environments.
     Embedded,
 }
-/// Device form-factor classification used for touch target sizing and layout adaptation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceClass {
-    /// Desktop PC: large screen, mouse+keyboard, optionally touch.
-    Desktop,
-    /// Tablet: medium screen, touch-first.
-    Tablet,
-    /// Mobile phone: small screen, touch-first.
-    Mobile,
-    /// Embedded: constrained display, limited input.
-    Embedded,
-    /// Projector/projection: large read-only display, remote control input.
-    Projector,
-}
-
 /// Platform family classification for backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformFamily {

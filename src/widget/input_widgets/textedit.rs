@@ -9,7 +9,7 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::undo::{UndoStack, ValueCommand};
+use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::capability::coercion::{
     expect_horizontal_alignment, horizontal_alignment_to_str,
 };
@@ -18,6 +18,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::text_utils::floor_char_boundary;
+use crate::widget::widget_trait::InputMethodQuery;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -70,6 +71,105 @@ impl CharFormat {
     /// Whether this format changes anything about the painted run.
     pub fn is_plain(&self) -> bool {
         !self.bold && !self.italic && !self.underline && self.color.is_none()
+    }
+}
+
+/// One text edit recorded as a splice rather than a whole-document snapshot (I-P52).
+///
+/// The old undo entry stored two full copies of the document, so every keystroke in a long
+/// document allocated twice its length and the undo stack grew by O(document) per key. A splice
+/// stores only the changed run — one character for ordinary typing — so both the entry and the
+/// replay are proportional to the edit.
+struct TextEditDeltaCommand {
+    id: CommandId,
+    target: Rc<RefCell<String>>,
+    offset: usize,
+    removed: String,
+    inserted: String,
+}
+
+/// Counter for [`TextEditDeltaCommand`] ids.
+static NEXT_TEXT_EDIT_COMMAND_ID: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(1);
+
+impl TextEditDeltaCommand {
+    /// A command for a mutation whose splice is already known.
+    fn from_splice(
+        target: Rc<RefCell<String>>,
+        offset: usize,
+        removed: String,
+        inserted: String,
+    ) -> Self {
+        Self {
+            id: CommandId(
+                NEXT_TEXT_EDIT_COMMAND_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
+            ),
+            target,
+            offset,
+            removed,
+            inserted,
+        }
+    }
+
+    /// A command derived from a before/after pair, used by `set_text`.
+    ///
+    /// Only the differing middle is recorded, so a programmatic replacement that differs by one
+    /// character does not push the whole document onto the undo stack either.
+    fn from_diff(target: Rc<RefCell<String>>, before: &str, after: &str) -> Self {
+        let mut prefix = 0usize;
+        for (old, new) in before.chars().zip(after.chars()) {
+            if old != new {
+                break;
+            }
+            prefix += old.len_utf8();
+        }
+        let mut suffix = 0usize;
+        for ((_, old), (_, new)) in
+            before[prefix..].char_indices().rev().zip(after[prefix..].char_indices().rev())
+        {
+            if old != new {
+                break;
+            }
+            suffix += old.len_utf8();
+        }
+        Self::from_splice(
+            target,
+            prefix,
+            before[prefix..before.len() - suffix].to_string(),
+            after[prefix..after.len() - suffix].to_string(),
+        )
+    }
+
+    /// Replaces the recorded range with `insert`.
+    fn splice(&self, remove_len: usize, insert: &str) {
+        let mut text = self.target.borrow_mut();
+        let start = self.offset.min(text.len());
+        let end = (start + remove_len).min(text.len());
+        text.replace_range(start..end, insert);
+    }
+}
+
+impl UndoCommand for TextEditDeltaCommand {
+    fn id(&self) -> CommandId {
+        self.id
+    }
+
+    fn description(&self) -> CommandDescription {
+        CommandDescription {
+            text: "Edit text".to_string(),
+            timestamp_ms: 0,
+            command_type: "text_edit_text",
+        }
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        self.splice(self.removed.len(), &self.inserted.clone());
+        Ok(())
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        self.splice(self.inserted.len(), &self.removed.clone());
+        Ok(())
     }
 }
 
@@ -146,6 +246,15 @@ pub struct TextEdit {
     spans: Vec<TextSpan>,
     /// Bumped on every value change, so the row cache can identify the document in O(1).
     revision: u64,
+    /// Bumped whenever `spans` change, so the format-run cache invalidates independently of the
+    /// text cache (I-P54).
+    spans_revision: u64,
+    /// Format runs for the current document, keyed by `(revision, spans_revision)` (I-P54).
+    format_cache: RefCell<Option<FormatRunCache>>,
+    /// The caret's blink state, advanced by [`TextEdit::tick`] (I-119).
+    cursor_blink: crate::style::CursorBlink,
+    /// Horizontal scroll offset in pixels, for an unwrapped row wider than the field (I-122).
+    scroll_x: i32,
 }
 
 /// Memoised output of [`TextEdit::layout_rows`].
@@ -160,6 +269,16 @@ struct RowCache {
     line_wrap: bool,
     font: Font,
     rows: Rc<Vec<RowSpan>>,
+}
+
+/// One contiguous run of a single [`CharFormat`] over the document.
+///
+/// Built from the span boundaries rather than by probing every character, so the paint path sees
+/// one run per format change instead of one `format_at` scan per glyph (I-P54).
+struct FormatRunCache {
+    revision: u64,
+    spans_revision: u64,
+    runs: Rc<Vec<(usize, usize, CharFormat)>>,
 }
 
 impl TextEdit {
@@ -189,6 +308,10 @@ impl TextEdit {
             row_cache: RefCell::new(None),
             spans: Vec::new(),
             revision: 0,
+            spans_revision: 0,
+            format_cache: RefCell::new(None),
+            cursor_blink: crate::style::CursorBlink::new(),
+            scroll_x: 0,
         }
     }
     /// Returns the current text.
@@ -220,7 +343,58 @@ impl TextEdit {
             return;
         }
         self.spans = next;
+        // The format-run cache keys on this counter as well as the text revision, so a span-only
+        // change (no text edit) still invalidates it (I-P54).
+        self.spans_revision = self.spans_revision.wrapping_add(1);
         self.base.request_redraw();
+    }
+
+    /// The format runs the paint path consumes, merged into contiguous equal formats.
+    ///
+    /// Built from the span boundaries once per `(revision, spans_revision)` pair. The old painter
+    /// called `format_at` — a reverse linear scan of `spans` — for *every character of every
+    /// painted row*, which is O(characters × spans) per frame (I-P54).
+    fn format_runs(&self) -> Rc<Vec<(usize, usize, CharFormat)>> {
+        if let Some(cache) = self.format_cache.borrow().as_ref() {
+            if cache.revision == self.revision && cache.spans_revision == self.spans_revision {
+                return Rc::clone(&cache.runs);
+            }
+        }
+        let len = self.text.len();
+        let mut bounds = vec![0usize, len];
+        for span in &self.spans {
+            bounds.push(span.range.start.min(len));
+            bounds.push(span.range.end.min(len));
+        }
+        bounds.sort_unstable();
+        bounds.dedup();
+        let mut runs: Vec<(usize, usize, CharFormat)> = Vec::new();
+        for window in bounds.windows(2) {
+            let (start, end) = (window[0], window[1]);
+            if start >= end {
+                continue;
+            }
+            let format = self
+                .spans
+                .iter()
+                .rev()
+                .find(|span| span.range.contains(&start))
+                .map_or(CharFormat::default(), |span| span.format);
+            if let Some(last) = runs.last_mut() {
+                if last.1 == start && last.2 == format {
+                    last.1 = end;
+                    continue;
+                }
+            }
+            runs.push((start, end, format));
+        }
+        let runs = Rc::new(runs);
+        *self.format_cache.borrow_mut() = Some(FormatRunCache {
+            revision: self.revision,
+            spans_revision: self.spans_revision,
+            runs: Rc::clone(&runs),
+        });
+        runs
     }
 
     /// The format that applies at `offset`, taken from the last span covering it.
@@ -397,23 +571,49 @@ impl TextEdit {
         was_dragging
     }
 
-    /// Removes the selected range if there is one, returning whether anything was removed.
+    /// Advances the caret blink by `delta_ms` and reports whether another frame is needed.
     ///
-    /// Every mutating path funnels through here, so "typing over a selection replaces it" is one
-    /// implementation rather than a rule each of `insert_str`, `backspace` and `delete_forward` has
-    /// to remember. The caret ends at the range's start and the anchor is dropped, because the
-    /// selection it described no longer exists.
-    fn replace_selection(&mut self) -> bool {
-        let selection = self.selection_range();
-        let Some(start) =
-            crate::widget::text_utils::replace_selected_range(&mut self.text, selection)
-        else {
-            self.selection_anchor = None;
+    /// The crate-wide `tick(delta_ms) -> bool` convention, so a host that renders on demand owns
+    /// the clock instead of the control reading the wall clock. A blurred editor never asks for a
+    /// frame (I-119).
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.focused {
             return false;
-        };
-        self.cursor = start;
-        self.selection_anchor = None;
-        true
+        }
+        let running = self.cursor_blink.tick(delta_ms);
+        if running {
+            self.base.request_redraw();
+        }
+        running
+    }
+
+    /// The caret's window rectangle and byte offset, as a native IME asks for them (I-120).
+    ///
+    /// The caret's row comes from [`Self::layout_rows`] — the same table the paint path uses — so
+    /// the candidate window is anchored to the row the user sees, including across soft wraps and
+    /// after scrolling. The x coordinate is the measured advance of the row prefix, the same model
+    /// the painter and the hit test use.
+    fn caret_query(&self) -> InputMethodQuery {
+        let rect = self.geometry();
+        let padding = 4;
+        let line_height = self.line_box_height();
+        let rows = self.layout_rows();
+        let row = Self::row_of_offset_in(&rows, &self.text, self.cursor);
+        let span = rows.get(row).copied().unwrap_or(RowSpan { start: 0, end: 0 });
+        let caret = floor_char_boundary(&self.text, self.cursor.min(self.text.len()));
+        let prefix = &self.text[span.start..caret.max(span.start).min(self.text.len())];
+        let advance = self.text_advance(prefix) as i32;
+        let view_row = row.saturating_sub(self.first_visible_row);
+        let top = rect.y + padding + view_row as i32 * line_height;
+        InputMethodQuery {
+            caret_rect: Rect::new(
+                rect.x + padding - self.scroll_x + advance,
+                top,
+                1,
+                line_height as u32,
+            ),
+            caret_byte: Some(caret),
+        }
     }
 
     /// The byte offset one character before `offset`.
@@ -440,56 +640,79 @@ impl TextEdit {
         if text.is_empty() {
             return;
         }
-        let before = self.text.clone();
-        self.replace_selection();
-        let at = floor_char_boundary(&self.text, self.cursor.min(self.text.len()));
-        let mut candidate = self.text.clone();
-        candidate.insert_str(at, text);
-        if !self.within_max_length(&candidate) {
+        // # The edit is applied in place, never through a candidate copy (I-P52/I-P53/I-P60)
+        //
+        // The old code cloned the whole value for the candidate and again for the undo snapshot,
+        // and the post-edit signal cloned it a third time. Here the only allocation proportional
+        // to the *edit* is the removed selection (empty for ordinary typing), and the max-length
+        // gate is checked arithmetically before the splice instead of by building a candidate.
+        let selection = self.selection_range();
+        let removed_len = selection.map_or(0, |(start, end)| end - start);
+        if !self.within_max_length_len(self.text.len() - removed_len + text.len()) {
             // Refused **whole**, so the caller knows nothing went in rather than being handed a
             // silently truncated tail (see `set_text`'s docs for why that is the honest answer).
             return;
         }
-        self.text = candidate;
+        let (at, removed) = match selection {
+            Some((start, end)) => (start, self.text[start..end].to_string()),
+            None => {
+                let at = floor_char_boundary(&self.text, self.cursor.min(self.text.len()));
+                (at, String::new())
+            }
+        };
+        if removed_len > 0 {
+            self.text.replace_range(at..at + removed_len, "");
+        }
+        self.text.insert_str(at, text);
+        // Existing spans move with the splice, so formatting after the insertion point no longer
+        // describes the wrong characters (I-P53).
+        self.shift_spans(at, removed_len, text.len());
         self.cursor = at + text.len();
         self.selection_anchor = None;
-        self.record_edit(before);
+        self.record_splice(at, removed, text.to_string());
         self.scroll_caret_into_view();
-        self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
     }
 
     /// Deletes the selection, or the character before the caret. Returns whether anything changed.
     pub fn backspace(&mut self) -> bool {
-        let before = self.text.clone();
-        if self.replace_selection() {
-            self.record_edit(before);
+        if let Some((start, end)) = self.selection_range() {
+            let removed = self.text[start..end].to_string();
+            self.text.replace_range(start..end, "");
+            self.shift_spans(start, end - start, 0);
+            self.cursor = start;
+            self.selection_anchor = None;
+            self.record_splice(start, removed, String::new());
             self.scroll_caret_into_view();
-            self.text_changed.emit(self.text.clone());
             self.base.request_redraw();
             return true;
         }
+        // A no-op backspace (caret at 0) must not pay for any snapshot (I-P60's twin).
         if self.cursor == 0 {
             return false;
         }
         let start = self.previous_char_boundary(self.cursor);
         let end = floor_char_boundary(&self.text, self.cursor);
+        let removed = self.text[start..end].to_string();
         self.text.replace_range(start..end, "");
+        self.shift_spans(start, end - start, 0);
         self.cursor = start;
-        self.record_edit(before);
+        self.record_splice(start, removed, String::new());
         self.scroll_caret_into_view();
-        self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
         true
     }
 
     /// Deletes the selection, or the character after the caret. Returns whether anything changed.
     pub fn delete_forward(&mut self) -> bool {
-        let before = self.text.clone();
-        if self.replace_selection() {
-            self.record_edit(before);
+        if let Some((start, end)) = self.selection_range() {
+            let removed = self.text[start..end].to_string();
+            self.text.replace_range(start..end, "");
+            self.shift_spans(start, end - start, 0);
+            self.cursor = start;
+            self.selection_anchor = None;
+            self.record_splice(start, removed, String::new());
             self.scroll_caret_into_view();
-            self.text_changed.emit(self.text.clone());
             self.base.request_redraw();
             return true;
         }
@@ -498,30 +721,86 @@ impl TextEdit {
         }
         let start = floor_char_boundary(&self.text, self.cursor);
         let end = self.next_char_boundary(self.cursor);
+        let removed = self.text[start..end].to_string();
         self.text.replace_range(start..end, "");
-        self.record_edit(before);
+        self.shift_spans(start, end - start, 0);
+        self.record_splice(start, removed, String::new());
         self.scroll_caret_into_view();
-        self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
         true
     }
 
-    /// Files one undo step and emits `changed`.
+    /// Shifts the existing spans across one splice (I-P53).
     ///
-    /// Shared so every mutating path records the same kind of snapshot: a path that skipped it would
-    /// make `Primary+Z` jump past the edit, and one that emitted `changed` alone would leave a host
-    /// bound to it unaware the value had moved.
-    fn record_edit(&mut self, before: String) {
+    /// Every offset that lies after the removed run moves by `inserted - removed`; an offset
+    /// inside the removed run collapses onto the splice point; and a span that the splice empties
+    /// is dropped. `set_spans` keeps its own clamp semantics — this is only for edits the user
+    /// makes, where the styled text after the caret must stay styled.
+    fn shift_spans(&mut self, at: usize, removed: usize, inserted: usize) {
+        if self.spans.is_empty() {
+            return;
+        }
+        let end = at + removed;
+        let map = |pos: usize| -> usize {
+            // A pure insertion shifts everything at or after the splice point; a deletion
+            // leaves offsets up to and including the splice point where they are (I-P53).
+            if pos < at || (removed > 0 && pos == at) {
+                pos
+            } else if pos >= end {
+                (pos - removed + inserted).max(at)
+            } else {
+                at
+            }
+        };
+        self.spans = self
+            .spans
+            .drain(..)
+            .filter_map(|mut span| {
+                span.range.start = map(span.range.start).min(self.text.len());
+                span.range.end = map(span.range.end).min(self.text.len());
+                (span.range.start < span.range.end).then_some(span)
+            })
+            .collect();
+        self.spans_revision = self.spans_revision.wrapping_add(1);
+    }
+
+    /// Drops spans that no longer address the document after a whole-value replacement.
+    fn clamp_spans(&mut self) {
+        let len = self.text.len();
+        self.spans = self
+            .spans
+            .drain(..)
+            .filter_map(|mut span| {
+                span.range.start = floor_char_boundary(&self.text, span.range.start.min(len));
+                span.range.end = floor_char_boundary(&self.text, span.range.end.min(len));
+                (span.range.start < span.range.end).then_some(span)
+            })
+            .collect();
+        self.spans_revision = self.spans_revision.wrapping_add(1);
+    }
+
+    /// Files one splice as an undo step and emits `text_changed` exactly once (I-P52).
+    ///
+    /// `history_target` is advanced with the same splice rather than replaced by a whole-document
+    /// clone, so the undo mirror stays current without a second O(document) allocation. The
+    /// revision bump here is what makes the wrap table (I-P51) and the format cache (I-P54) cover
+    /// every keyboard/IME edit path, not only `set_text` and undo.
+    fn record_splice(&mut self, offset: usize, removed: String, inserted: String) {
         if self.restoring_history {
             return;
         }
-        *self.history_target.borrow_mut() = self.text.clone();
-        self.undo_stack.push(Box::new(ValueCommand::new(
+        self.revision = self.revision.wrapping_add(1);
+        {
+            let mut target = self.history_target.borrow_mut();
+            let start = offset.min(target.len());
+            let end = (start + removed.len()).min(target.len());
+            target.replace_range(start..end, &inserted);
+        }
+        self.undo_stack.push(Box::new(TextEditDeltaCommand::from_splice(
             self.history_target.clone(),
-            before,
-            self.text.clone(),
-            "Edit text",
-            "text_edit_text",
+            offset,
+            removed,
+            inserted,
         )));
         self.text_changed.emit(self.text.clone());
         self.notify_caret_change();
@@ -570,14 +849,13 @@ impl TextEdit {
         let before = self.text.clone();
         self.text = text;
         self.revision = self.revision.wrapping_add(1);
+        self.clamp_spans();
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.text.clone();
-            self.undo_stack.push(Box::new(ValueCommand::new(
+            self.undo_stack.push(Box::new(TextEditDeltaCommand::from_diff(
                 self.history_target.clone(),
-                before,
-                self.text.clone(),
-                "Edit text",
-                "text_edit_text",
+                &before,
+                &self.text,
             )));
         }
         // The caret moves to the end, which is the position a replacement leaves it at and the one
@@ -793,6 +1071,57 @@ impl TextEdit {
             self.first_visible_row,
             self.visible_row_count(),
         );
+        self.ensure_caret_visible_horizontal();
+    }
+
+    /// Scrolls horizontally so the caret stays inside an unwrapped field (I-122).
+    ///
+    /// With `line_wrap` on there is no overflow to reveal, so the offset is reset. With it off,
+    /// the caret's own row prefix is measured and the viewport moves the minimum amount that puts
+    /// it in view — the horizontal counterpart of the vertical minimal scroll above.
+    fn ensure_caret_visible_horizontal(&mut self) {
+        if self.line_wrap {
+            self.scroll_x = 0;
+            return;
+        }
+        let padding = 4;
+        let width = self.geometry().width.saturating_sub(padding * 2).max(1) as i32;
+        let rows = self.layout_rows();
+        let row = Self::row_of_offset_in(&rows, &self.text, self.cursor);
+        let span = rows.get(row).copied().unwrap_or(RowSpan { start: 0, end: 0 });
+        let caret = floor_char_boundary(&self.text, self.cursor.min(span.end).max(span.start));
+        let advance = self.text_advance(&self.text[span.start..caret]) as i32;
+        let room = 8.min(width / 4);
+        if advance - self.scroll_x > width - room {
+            self.scroll_x = (advance - width + room).max(0);
+        } else if advance < self.scroll_x {
+            self.scroll_x = advance;
+        }
+        self.scroll_x = self.scroll_x.max(0);
+    }
+
+    /// Scrolls horizontally by `columns` characters of the body face.
+    fn scroll_columns(&mut self, columns: i32) -> bool {
+        if columns == 0 || self.line_wrap {
+            return false;
+        }
+        let padding = 4;
+        let width = self.geometry().width.saturating_sub(padding * 2).max(1) as i32;
+        let rows = self.layout_rows();
+        let widest = rows
+            .iter()
+            .map(|span| self.text_advance(&self.text[span.start..span.end]) as i32)
+            .max()
+            .unwrap_or(0);
+        let max_scroll = (widest - width + 8).max(0);
+        // Positive `columns` means the content moves right, so the viewport moves left.
+        let step = self.text_font().size().round() as i32;
+        let next = (self.scroll_x - columns.saturating_mul(step)).clamp(0, max_scroll);
+        if next == self.scroll_x {
+            return false;
+        }
+        self.scroll_x = next;
+        true
     }
 
     /// Scrolls the viewport by `rows` laid-out rows toward the end of the value.
@@ -837,7 +1166,7 @@ impl TextEdit {
         let row = ((pos.y - self.row_top(0)).max(0) / line_height) as usize;
         let row = (self.first_visible_row + row).min(rows.len() - 1);
         let span = rows[row];
-        self.offset_within_row(span, pos.x - origin_x)
+        self.offset_within_row(span, pos.x - origin_x + self.scroll_x)
     }
 
     /// The byte offset within `span` that the horizontal coordinate `x` points at.
@@ -938,8 +1267,14 @@ impl TextEdit {
     /// only the appended character would let a *paste* through, which is the case a limit most
     /// obviously exists for.
     fn within_max_length(&self, candidate: &str) -> bool {
+        self.within_max_length_len(candidate.len())
+    }
+
+    /// The length-only form of the gate, so an in-place edit can be refused before allocating a
+    /// candidate copy (I-P52).
+    fn within_max_length_len(&self, len: usize) -> bool {
         match self.max_length {
-            Some(max) => candidate.len() <= max,
+            Some(max) => len <= max,
             None => true,
         }
     }
@@ -965,6 +1300,9 @@ impl TextEdit {
             return;
         }
         self.line_wrap = wrap;
+        if wrap {
+            self.scroll_x = 0;
+        }
         self.base.request_redraw();
     }
     /// Returns number of lines in the text.
@@ -1045,6 +1383,7 @@ impl TextEdit {
         self.restoring_history = true;
         self.text = text;
         self.revision = self.revision.wrapping_add(1);
+        self.clamp_spans();
         self.cursor = self.text.len();
         self.selection_anchor = None;
         self.restoring_history = false;
@@ -1133,6 +1472,21 @@ impl Widget for TextEdit {
     }
     fn size_hint(&self) -> Size {
         Size::new(dimensions::TEXT_EDIT_DEFAULT_WIDTH, dimensions::TEXT_EDIT_DEFAULT_HEIGHT)
+    }
+
+    /// Advances the caret blink and reports whether another frame is owed (I-119).
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        TextEdit::tick(self, delta_ms)
+    }
+
+    /// A focused editor keeps a blinking caret, so the host must keep scheduling frames (I-119).
+    fn is_animating(&self) -> bool {
+        self.focused
+    }
+
+    /// Reports the caret rectangle an IME candidate window anchors to (I-120).
+    fn input_method_query(&self) -> Option<InputMethodQuery> {
+        Some(self.caret_query())
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -1307,10 +1661,13 @@ impl EventHandler for TextEdit {
         match event {
             Event::FocusGained { .. } => {
                 self.focused = true;
+                // I-119: the caret only blinks while the editor owns focus.
+                self.cursor_blink.start();
                 self.base.request_redraw();
             }
             Event::FocusLost => {
                 self.focused = false;
+                self.cursor_blink.stop();
                 self.base.request_redraw();
             }
             // A press places the caret and starts a selection. It used to do nothing at all, so the
@@ -1359,7 +1716,11 @@ impl EventHandler for TextEdit {
             // three lines per notch.
             Event::Wheel { delta, modifiers, .. } => {
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 3);
-                if self.scroll_rows(-scroll.lines_y) {
+                // I-122: the horizontal component is consumed too, so an unwrapped long line is
+                // reachable by a horizontal wheel or trackpad gesture.
+                let moved =
+                    self.scroll_rows(-scroll.lines_y) | self.scroll_columns(scroll.columns_x);
+                if moved {
                     self.base.request_redraw();
                 }
             }
@@ -1374,14 +1735,8 @@ impl EventHandler for TextEdit {
                 let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
                 let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
 
-                if primary && *key == 90 {
-                    let _ = self.undo();
-                    return;
-                }
-                if primary && *key == 89 {
-                    let _ = self.redo();
-                    return;
-                }
+                // I-121: selection and copy stay available on a read-only editor, but undo/redo
+                // must not be: the history path is still a mutation.
                 if primary && *key == 65 {
                     // Primary+A: select the whole document.
                     self.select_all();
@@ -1394,6 +1749,14 @@ impl EventHandler for TextEdit {
                     return;
                 }
                 if self.read_only {
+                    return;
+                }
+                if primary && *key == 90 {
+                    let _ = self.undo();
+                    return;
+                }
+                if primary && *key == 89 {
+                    let _ = self.redo();
                     return;
                 }
                 if primary && *key == 88 {
@@ -1556,7 +1919,9 @@ impl Draw for TextEdit {
         // Draw base widget
         let rect = self.geometry();
         let padding = 4;
-        let text_x = rect.x + padding;
+        // I-122: with wrapping off the text is a window onto a long line; the scroll offset moves
+        // the ink, the selection and the caret together.
+        let text_x = rect.x + padding - self.scroll_x;
         let text_y = rect.y + padding;
 
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
@@ -1645,11 +2010,19 @@ impl Draw for TextEdit {
                 rect.width.saturating_sub(padding as u32 * 2),
                 rect.height.saturating_sub(padding as u32 * 2),
             );
+            // A long unwrapped row must not paint over the border or its neighbours.
+            context.push_clip(
+                rect.x + padding,
+                rect.y + padding,
+                rect.width.saturating_sub(padding as u32 * 2),
+                rect.height.saturating_sub(padding as u32 * 2),
+            );
             if self.text.is_empty() {
                 self.draw_text_layout(context, display_text, interior, font, text_color);
             } else {
                 self.draw_rows(context, &rows, interior, font, text_color);
             }
+            context.pop_clip();
         }
 
         // ── The caret and the selection ──
@@ -1657,69 +2030,79 @@ impl Draw for TextEdit {
         // Drawn from the same wrap table the text was laid out with, so the marker sits on the row
         // and column the glyphs actually occupy. Measured any other way it would drift under wrapping,
         // which is the whole reason the table exists.
-        if !self.text.is_empty() {
+        if !self.text.is_empty() && self.focused && self.cursor_blink.is_visible() {
             let line_height = self.line_box_height();
             let interior_width = rect.width.saturating_sub(padding as u32 * 2);
 
-            // The selection band first, so the glyphs stay legible on top of it.
-            if let Some((sel_start, sel_end)) = self.selection_range() {
-                let selection_fill =
-                    crate::style::semantic_color(crate::style::SemanticColor::Info)
-                        .map(|accent| accent.blend(&field, 0.72))
-                        .unwrap_or_else(|| field.blend(&ink, 0.18));
-                for (index, span) in rows.iter().enumerate().skip(self.first_visible_row) {
-                    // The row's top is its position **in the viewport**, which is what the scroll
-                    // offset means: the text, the selection and the caret are all drawn from this
-                    // one row index.
-                    let top = self.row_top(index - self.first_visible_row);
-                    if top + line_height > rect.y + rect.height as i32 {
-                        break;
+            // One measurement surface for the markers (I-P54): the selection edges and the caret
+            // prefix are measured against it instead of each allocating its own backend.
+            Self::with_measurement(|measure| {
+                // The selection band first, so the glyphs stay legible on top of it.
+                if let Some((sel_start, sel_end)) = self.selection_range() {
+                    let selection_fill =
+                        crate::style::semantic_color(crate::style::SemanticColor::Info)
+                            .map(|accent| accent.blend(&field, 0.72))
+                            .unwrap_or_else(|| field.blend(&ink, 0.18));
+                    for (index, span) in rows.iter().enumerate().skip(self.first_visible_row) {
+                        // The row's top is its position **in the viewport**, which is what the scroll
+                        // offset means: the text, the selection and the caret are all drawn from this
+                        // one row index.
+                        let top = self.row_top(index - self.first_visible_row);
+                        if top + line_height > rect.y + rect.height as i32 {
+                            break;
+                        }
+                        // The overlap of the selection with this row, so a multi-row range highlights
+                        // each row only over its own part rather than as one block.
+                        let from = sel_start.max(span.start).min(span.end);
+                        let to = sel_end.min(span.end).max(from);
+                        if to <= from {
+                            continue;
+                        }
+                        let left = text_x
+                            + measure
+                                .measure_text(&self.text[span.start..from], self.text_font())
+                                .width as i32;
+                        let width =
+                            measure.measure_text(&self.text[from..to], self.text_font()).width;
+                        // The band is clipped to the interior, so a row wider than the field cannot
+                        // paint outside the box it belongs to.
+                        let width = width.min(interior_width);
+                        if width > 0 {
+                            context.fill_rect(
+                                Rect::new(left, top, width, line_height as u32),
+                                selection_fill,
+                            );
+                        }
                     }
-                    // The overlap of the selection with this row, so a multi-row range highlights
-                    // each row only over its own part rather than as one block.
-                    let from = sel_start.max(span.start).min(span.end);
-                    let to = sel_end.min(span.end).max(from);
-                    if to <= from {
-                        continue;
-                    }
-                    let left = text_x + self.text_advance(&self.text[span.start..from]) as i32;
-                    let width = self.text_advance(&self.text[from..to]);
-                    // The band is clipped to the interior, so a row wider than the field cannot
-                    // paint outside the box it belongs to.
-                    let width = width.min(interior_width);
-                    if width > 0 {
-                        context.fill_rect(
-                            Rect::new(left, top, width, line_height as u32),
-                            selection_fill,
+                }
+
+                // Then the caret, at the measured end of its row's prefix. The row it is on is translated
+                // through the scroll, so the marker follows the text instead of its document position.
+                let caret_row = Self::row_of_offset_in(&rows, &self.text, self.cursor);
+                if caret_row >= self.first_visible_row {
+                    let top = self.row_top(caret_row - self.first_visible_row);
+                    if top + line_height <= rect.y + rect.height as i32 {
+                        let span = rows
+                            .get(caret_row)
+                            .copied()
+                            .unwrap_or(RowSpan { start: self.text.len(), end: self.text.len() });
+                        let caret_in_row = floor_char_boundary(
+                            &self.text,
+                            self.cursor.min(span.end).max(span.start),
+                        );
+                        let prefix = &self.text[span.start..caret_in_row.min(self.text.len())];
+                        let advance = measure.measure_text(prefix, self.text_font()).width as i32;
+                        let caret = crate::style::semantic_color(crate::style::SemanticColor::Info)
+                            .unwrap_or(ink);
+                        let x = text_x + advance;
+                        context.draw_line(
+                            crate::core::Point::new(x, top),
+                            crate::core::Point::new(x, top + line_height - 2),
+                            caret,
                         );
                     }
                 }
-            }
-
-            // Then the caret, at the measured end of its row's prefix. The row it is on is translated
-            // through the scroll, so the marker follows the text instead of its document position.
-            let caret_row = Self::row_of_offset_in(&rows, &self.text, self.cursor);
-            if caret_row >= self.first_visible_row {
-                let top = self.row_top(caret_row - self.first_visible_row);
-                if top + line_height <= rect.y + rect.height as i32 {
-                    let span = rows
-                        .get(caret_row)
-                        .copied()
-                        .unwrap_or(RowSpan { start: self.text.len(), end: self.text.len() });
-                    let caret_in_row =
-                        floor_char_boundary(&self.text, self.cursor.min(span.end).max(span.start));
-                    let prefix = &self.text[span.start..caret_in_row.min(self.text.len())];
-                    let advance = self.text_advance(prefix) as i32;
-                    let caret = crate::style::semantic_color(crate::style::SemanticColor::Info)
-                        .unwrap_or(ink);
-                    let x = text_x + advance;
-                    context.draw_line(
-                        crate::core::Point::new(x, top),
-                        crate::core::Point::new(x, top + line_height - 2),
-                        caret,
-                    );
-                }
-            }
+            });
         }
     }
 }
@@ -1810,23 +2193,9 @@ impl TextEdit {
         if pen_y + line_height > bottom {
             return pen_y;
         }
-        // Split the row into contiguous runs of one format. `format_at` reads the last span
-        // covering an offset, so overlapping spans resolve to the newest one.
-        let mut pieces: Vec<(usize, usize, CharFormat)> = Vec::new();
-        let mut run_start = 0usize;
-        let mut run_format = self.format_at(row_start);
-        for (index, _) in row.char_indices() {
-            let format = self.format_at(row_start + index);
-            if format != run_format {
-                if run_start < index {
-                    pieces.push((run_start, index, run_format));
-                }
-                run_start = index;
-                run_format = format;
-            }
-        }
-        pieces.push((run_start, row.len(), run_format));
-
+        // Split the row into contiguous runs of one format from the cached, document-wide run
+        // table (I-P54). The old loop called `format_at` — a reverse scan of every span — once per
+        // character, and then measured every run twice and cloned its face twice.
         let face = |format: CharFormat| {
             let mut face = font.clone();
             if format.bold {
@@ -1837,26 +2206,34 @@ impl TextEdit {
             }
             face
         };
-        let mut total = 0.0f32;
-        for (start, end, format) in &pieces {
-            total += context.measure_text(&row[*start..*end], &face(*format)).width as f32;
+        let runs = self.format_runs();
+        let row_end = row_start + row.len();
+        let mut pieces: Vec<(usize, usize, CharFormat, Font, i32)> = Vec::new();
+        let first = runs.partition_point(|(_, end, _)| *end <= row_start);
+        for (run_start, run_end, format) in runs.iter().skip(first) {
+            if *run_start >= row_end {
+                break;
+            }
+            let start = (*run_start).max(row_start) - row_start;
+            let end = (*run_end).min(row_end) - row_start;
+            if start >= end {
+                continue;
+            }
+            let run_face = face(*format);
+            let advance = context.measure_text(&row[start..end], &run_face).width as i32;
+            pieces.push((start, end, *format, run_face, advance));
         }
-        let total = total.round() as i32;
+        let total: i32 = pieces.iter().map(|piece| piece.4).sum();
         let origin = match align {
             HorizontalAlignment::Center => interior.x + (interior.width as i32 - total) / 2,
             HorizontalAlignment::Right => interior.x + interior.width as i32 - total,
             HorizontalAlignment::Left => interior.x,
         };
         let mut pen_x = origin;
-        for (start, end, format) in pieces {
-            if start >= end {
-                continue;
-            }
-            let face = face(format);
+        for (start, end, format, face, advance) in pieces {
             let run = &row[start..end];
             let ink = format.color.unwrap_or(color);
             context.draw_text(Point::new(pen_x, pen_y), run, &face, ink, HorizontalAlignment::Left);
-            let advance = context.measure_text(run, &face).width as i32;
             if format.underline {
                 let underline_y = pen_y + line_height - 2;
                 context.draw_line(
@@ -2965,5 +3342,74 @@ mod tests {
         let _ = te.layout_rows();
         assert_eq!(te.row_cache.borrow().as_ref().expect("cache filled").revision, te.revision);
         assert_ne!(te.layout_rows(), first);
+    }
+
+    /// I-P51: a keyboard edit must bump the revision the wrap table is keyed by, or the next
+    /// frame reads the pre-edit breaks.
+    #[test]
+    fn keyboard_edits_refresh_the_wrap_table() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 80, 200));
+        te.set_text("aaaa aaaa aaaa".to_string());
+        te.set_cursor(0);
+        let before = te.layout_rows().len();
+        let before_revision = te.revision;
+
+        te.insert_str("\n");
+        assert!(te.revision > before_revision, "an insertion bumps the revision");
+        assert_eq!(
+            te.row_cache.borrow().as_ref().expect("cache filled").revision,
+            te.revision,
+            "the wrap cache records the post-edit revision"
+        );
+        let after_insert = te.layout_rows().len();
+        assert!(after_insert > before, "the newline adds a row: {before} -> {after_insert}");
+
+        assert!(te.backspace());
+        assert_eq!(te.layout_rows().len(), before, "deleting the newline removes the row again");
+    }
+
+    /// I-P53: formatting after the edit point follows the characters it was applied to.
+    #[test]
+    fn existing_spans_move_with_an_insertion_and_deletion() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 40));
+        te.set_text("hello world".to_string());
+        let bold = CharFormat { bold: true, ..CharFormat::default() };
+        te.set_spans(vec![TextSpan { range: 6..11, format: bold }]);
+        te.set_cursor(0);
+
+        te.insert_str("X");
+        assert_eq!(te.spans()[0].range, 7..12, "the span moves past the insertion");
+        assert_eq!(te.format_at(7), bold, "the styled run still starts at 'world'");
+
+        assert!(te.backspace(), "the inserted X is removed");
+        assert_eq!(te.spans()[0].range, 6..11, "the span returns with the deletion");
+        assert_eq!(te.format_at(6), bold);
+    }
+
+    /// I-121: undo/redo must not mutate a read-only editor, while select-all and copy still run.
+    #[test]
+    fn read_only_blocks_undo_but_not_copy() {
+        let mut te = editor("abc");
+        te.set_cursor(3);
+        te.insert_str("d");
+        te.set_read_only(true);
+        te.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
+
+        te.handle_event(&Event::KeyPress { key: 90, modifiers: PRIMARY_BIT });
+        assert_eq!(te.text(), "abcd", "a read-only editor refuses undo");
+        te.handle_event(&Event::KeyPress { key: 65, modifiers: PRIMARY_BIT });
+        assert_eq!(te.selection_range(), Some((0, 4)), "select-all still works");
+    }
+
+    /// I-120: the IME query reports the caret's row and measured column.
+    #[test]
+    fn input_method_query_reports_the_caret_rectangle() {
+        let mut te = TextEdit::new(Rect::new(10, 20, 200, 80));
+        te.set_text("abc\ndef".to_string());
+        te.set_cursor(5);
+        let query = te.input_method_query().expect("an editor has a caret");
+        assert_eq!(query.caret_byte, Some(5));
+        assert!(query.caret_rect.y >= te.geometry().y, "the query stays inside the field");
+        assert!(query.caret_rect.x >= te.geometry().x);
     }
 }

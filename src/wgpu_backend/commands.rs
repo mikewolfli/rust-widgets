@@ -104,7 +104,8 @@ pub enum WgpuDrawCommand {
         /// Text box in physical pixels; also the layout grid's origin.
         rect: PixelRect,
         /// The string to render, one glyph per grid cell. Shared so cloning a command does not
-        /// copy the text (G-10).
+        /// copy the text (G-10); the single copy at the point of consumption (G-216) is made by
+        /// the consumer, not by the queue.
         text: Arc<str>,
         /// Colour of every set bitmap dot, drawn without blending.
         color: Rgba8,
@@ -133,7 +134,8 @@ pub enum WgpuDrawCommand {
         rect: PixelRect,
         /// Source pixels, RGBA8, row-major, top row first; must be exactly
         /// `image_width * image_height * 4` bytes. Shared so cloning a command does not copy the
-        /// image (G-10).
+        /// image (G-10); the single copy at the point of consumption (G-216) is made by the
+        /// consumer, not by the queue.
         rgba8: Arc<[u8]>,
         /// Source width in pixels, used to compute the 4-bytes-per-pixel
         /// stride of `rgba8`.

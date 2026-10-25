@@ -269,8 +269,10 @@ pub mod test;
 /// # Why the widget layer no longer breaks when this is absent
 ///
 /// ~120 control files read the theme while drawing, and they also compile in
-/// `--no-default-features --features "windows desktop-runtime controls-native
-/// controls-custom"` — a full widget set with no device profile. Referencing
+/// `--no-default-features --features "windows desktop-runtime controls-custom"`
+/// — a full widget set with no device profile. (`controls-native` is a documented
+/// no-op alias and is deliberately omitted, so the example names only what it
+/// actually selects.) Referencing
 /// `crate::theme` from those files was 78 compile errors at HEAD. They now go through
 /// `crate::style`, which exposes the same lookups (and the same type *shape* where the real
 /// types are absent) and answers "no theme" there, so one path compiles in every profile
@@ -3235,8 +3237,17 @@ pub fn menu_add_item(
 /// [`Platform::supports_menu_item_icons`](crate::platform::Platform::supports_menu_item_icons) for
 /// what each platform would have to verify before answering `true`.
 #[cfg(not(alloc_frugal))]
-pub fn native_menu_item_icons_supported() -> bool {
+pub fn menu_item_icons_supported() -> bool {
     control_backend::get_control_backend().supports_menu_item_icons()
+}
+
+/// Legacy mechanism-vocabulary spelling of [`menu_item_icons_supported`].
+#[cfg(not(alloc_frugal))]
+#[deprecated(
+    note = "use `menu_item_icons_supported`; the question is about menu items, not a mechanism"
+)]
+pub fn native_menu_item_icons_supported() -> bool {
+    menu_item_icons_supported()
 }
 /// Renders a shortcut the way the current operating system writes it.
 ///
@@ -3485,14 +3496,16 @@ pub fn get_widget_accessibility_name(widget_id: crate::core::ObjectId) -> String
     control_backend::get_control_backend().get_widget_accessibility_name(widget_id)
 }
 // Re-exports from platform module for convenience
+#[allow(deprecated)]
+pub use platform::NativeCapabilityContract;
 #[cfg(not(alloc_frugal))]
 pub use platform::{
     backend_name, capabilities, dpi_scale_factor, get_platform, init as platform_init,
     quit as platform_quit, run as platform_run, runtime_gui_mode, runtime_gui_mode_for,
 };
 pub use platform::{
-    CapabilityContract, DropEvent, EmbeddedCapabilityContract, MobileBackend,
-    NativeCapabilityContract, OpenError, PlatformCapabilities, RuntimeGuiMode, WidgetTriggerEvent,
+    CapabilityContract, DropEvent, EmbeddedCapabilityContract, HostedCapabilityContract,
+    MobileBackend, OpenError, PlatformCapabilities, RuntimeGuiMode, WidgetTriggerEvent,
     WidgetTriggerKind, WindowStateFlag,
 };
 
@@ -3512,6 +3525,16 @@ pub use platform::{
 /// `rust_widgets::mount_custom_widget(...)` call keeps compiling and only gains a
 /// deprecation warning — the caller is told the name changed rather than being
 /// broken by it (principle #21).
+///
+/// # Capability vocabulary (H-318/H-319)
+///
+/// "Native" described an implementation mechanism, not the capability split the type
+/// carries. The canonical spellings are `HostedCapabilityContract`,
+/// `CapabilityContract::Hosted` and `Platform::hosted_capability_contract`; the type alias
+/// and trait method keep a deprecated forward for one release. The enum variant itself was
+/// renamed (an enum variant cannot be aliased), so `CapabilityContract::Native(..)` becomes
+/// `CapabilityContract::Hosted(..)`. `native_menu_item_icons_supported()` is now
+/// [`menu_item_icons_supported()`], with the old name forwarded and deprecated.
 #[allow(deprecated)]
 /// # Reachability
 ///

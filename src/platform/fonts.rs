@@ -21,7 +21,7 @@
 use crate::compat::{OnceLock, RwLock, String, ToString, Vec};
 use crate::platform::SystemFont;
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// The current snapshot. `None` means "not queried yet".
 ///
@@ -33,6 +33,29 @@ static SNAPSHOT: OnceLock<RwLock<Option<&'static [SystemFont]>>> = OnceLock::new
 
 /// Whether a background warm-up query is currently in flight.
 static WARMING: AtomicBool = AtomicBool::new(false);
+
+/// Revision of the backend's own font enumeration.
+///
+/// # Why this exists (P-05)
+///
+/// A backend may keep its own enumeration cache (the Unix backends cache `fc-list` inside
+/// [`crate::platform::fonts_unix`]) so that a direct `Platform::system_fonts` call does not spawn
+/// the enumerator every time. [`refresh_system_fonts`] is the **only** explicit invalidation path,
+/// so it is what advances this revision; the backend compares it and re-enumerates when it moved.
+///
+/// It is bumped on every platform rather than only where a backend consumes it: the value is a
+/// plain counter, and gating it per OS would put OS knowledge about the *consumer* into this
+/// shared module.
+static ENUMERATION_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// The current font-enumeration revision, for a backend's own cache.
+///
+/// Gated with its only consumer ([`crate::platform::fonts_unix`]): a platform whose backend has no
+/// enumeration cache of its own must not compile a reader for a value nothing consumes.
+#[cfg(all(unix_desktop, not(alloc_frugal)))]
+pub(crate) fn enumeration_epoch() -> u64 {
+    ENUMERATION_EPOCH.load(Ordering::SeqCst)
+}
 
 fn slot() -> &'static RwLock<Option<&'static [SystemFont]>> {
     SNAPSHOT.get_or_init(|| RwLock::new(None))
@@ -151,6 +174,10 @@ pub fn system_font_count_nonblocking() -> usize {
 /// that produces the same font set returns the installed slice instead of leaking another copy.
 /// Memory therefore grows with the number of **real** font-set changes, not with calls.
 pub fn refresh_system_fonts() -> &'static [SystemFont] {
+    // Advance the revision *before* asking the platform: a backend that caches its own enumeration
+    // compares the value, so this is what makes the call below reach the operating system rather
+    // than answer from that cache (P-05).
+    ENUMERATION_EPOCH.fetch_add(1, Ordering::SeqCst);
     let fresh = crate::platform::platform_facts().system_fonts();
     with_snapshot_mut(|slot| {
         if let Some(existing) = *slot {

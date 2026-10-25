@@ -595,8 +595,17 @@ pub(crate) fn blit_rgba(context: &cairo::Context, width: u32, height: u32, frame
     };
     // The data copy above is top-down; cairo's origin is top-left too, so no
     // transform is needed beyond painting at the origin.
-    let _ = context.set_source_surface(&surface, 0.0, 0.0);
-    context.paint().ok();
+    // Both cairo calls can fail, and a failed blit leaves the window showing the
+    // previous frame. Report it the same way the surface-wrapping failure above is
+    // reported; a bad frame is abandoned rather than terminating the event loop.
+    if let Err(error) = context.set_source_surface(&surface, 0.0, 0.0) {
+        log::error!("[linux] canvas: cairo could not set the frame surface: {error}");
+        surface.finish();
+        return;
+    }
+    if let Err(error) = context.paint() {
+        log::error!("[linux] canvas: cairo blit failed: {error}");
+    }
     surface.finish();
 }
 

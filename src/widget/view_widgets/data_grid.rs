@@ -3,6 +3,7 @@
 
 //! Data grid widget backed by incremental data source protocol.
 
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -16,7 +17,8 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionHandle, ConnectionScope, Signal1};
 use crate::widget::capability::access::{column_filters_to_string, sort_specs_to_string};
 use crate::widget::capability::coercion::{
-    expect_bool, expect_column_filters, expect_sort_specs, expect_string_list, expect_usize,
+    expect_bool, expect_column_filters, expect_sort_specs, expect_string_list,
+    expect_u32_saturating, expect_usize,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -197,6 +199,60 @@ struct GridWindowCache {
     projected: Option<Rc<Vec<Vec<Option<String>>>>>,
 }
 
+/// Prefix sums of column widths, rebuilt only when a width input changes.
+///
+/// `column_prefix_width` used to sum `0..upto` on every call, and `cell_rect` called it twice
+/// per painted cell — an interactive-width grid therefore cost O(rows x columns^2) per frame.
+/// The table is O(columns) to build and O(1) to read.
+#[derive(Clone, Debug)]
+struct ColumnPrefixCache {
+    revision: u64,
+    column_count: usize,
+    cells_width: u32,
+    mode: ColumnWidthMode,
+    default_width: u32,
+    prefix: Vec<i32>,
+}
+
+/// Elided header labels, keyed by `(column, painted width)`.
+#[derive(Clone, Debug, Default)]
+struct HeaderTextCache {
+    labels_revision: u64,
+    generation: u64,
+    column_count: usize,
+    entries: std::collections::HashMap<(usize, u32), String>,
+}
+
+/// A read-only, column-sliced view of the projected window the draw pass paints.
+struct ProjectedWindowView {
+    rows: Rc<ProjectedRows>,
+    row_start: usize,
+    row_len: usize,
+    col_start: usize,
+    col_len: usize,
+}
+
+impl ProjectedWindowView {
+    fn is_empty(&self) -> bool {
+        self.row_len == 0 || self.col_len == 0
+    }
+
+    fn len(&self) -> usize {
+        self.row_len
+    }
+
+    /// The window-local row `index`, sliced to the visible column span.
+    fn row(&self, index: usize) -> Option<&[Option<String>]> {
+        if index >= self.row_len {
+            return None;
+        }
+        let row = self.rows.get(self.row_start.checked_add(index)?)?;
+        let start = self.col_start.min(row.len());
+        let end = self.col_start.saturating_add(self.col_len).min(row.len());
+        row.get(start..end)
+    }
+}
+
 /// Virtualized data grid with windowed pull from incremental table data source.
 pub struct DataGrid {
     base: BaseWidget,
@@ -217,6 +273,16 @@ pub struct DataGrid {
     /// the two cannot describe different filters.
     filter_expr: FilterExpr,
     window_cache: Option<GridWindowCache>,
+    /// Prefix sums of the current column widths; see [`ColumnPrefixCache`].
+    column_prefix_cache: RefCell<Option<ColumnPrefixCache>>,
+    /// Bumped by every width-affecting setter (F-P01).
+    column_geometry_revision: u64,
+    /// Number of prefix-table rebuilds, published so a test can prove the table is reused.
+    column_prefix_rebuilds: Cell<u64>,
+    /// Elided header labels; see [`HeaderTextCache`] (F-P04).
+    header_text_cache: RefCell<HeaderTextCache>,
+    /// Bumped by `set_header_labels` / `set_header`.
+    header_text_revision: u64,
     /// Bumped by the source's `data_changed` signal and by `set_data_source`.
     ///
     /// A source whose `revision()` stays `0` still changes, and the signal is how it says so.
@@ -1013,6 +1079,11 @@ impl DataGrid {
             filters: Vec::new(),
             filter_expr: FilterExpr::MatchAll,
             window_cache: None,
+            column_prefix_cache: RefCell::new(None),
+            column_geometry_revision: 0,
+            column_prefix_rebuilds: Cell::new(0),
+            header_text_cache: RefCell::new(HeaderTextCache::default()),
+            header_text_revision: 0,
             data_generation: Arc::new(AtomicU64::new(0)),
             data_is_observable: false,
             selection: None,
@@ -1059,6 +1130,7 @@ impl DataGrid {
     /// Sets the column titles the grid paints, without binding a header control.
     pub fn set_header_labels(&mut self, labels: &[&str]) {
         self.header_labels = labels.iter().map(|label| (*label).to_string()).collect();
+        self.header_text_revision = self.header_text_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -1099,6 +1171,8 @@ impl DataGrid {
         }
         self.clear_cache();
         self.full_projection_cache = None;
+        self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
+        self.header_text_revision = self.header_text_revision.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -1672,6 +1746,7 @@ impl DataGrid {
             return;
         }
         self.column_width = next;
+        self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
         self.clear_cache();
         self.emit_visible_window_changed();
         self.base.request_layout();
@@ -1761,6 +1836,7 @@ impl DataGrid {
             return;
         }
         self.column_width_mode = mode;
+        self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
         self.clear_cache();
         self.base.request_redraw();
     }
@@ -1925,6 +2001,7 @@ impl DataGrid {
         }
         let width = width.max(1);
         self.column_width_mode = ColumnWidthMode::Interactive;
+        self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
         if self.column_widths.insert(column, width) == Some(width) {
             return true;
         }
@@ -1996,11 +2073,59 @@ impl DataGrid {
         }
     }
 
-    /// The summed width of columns `0..upto`.
+    /// The summed width of columns `0..upto`, read from a cached prefix table.
+    ///
+    /// The table is rebuilt only when a width input changes (mode, default width, an explicit
+    /// per-column width or the column count); a frame therefore pays O(columns) once instead of
+    /// summing per cell (F-P01).
     fn column_prefix_width(&self, upto: usize) -> i32 {
+        let count = self.column_count();
+        let cells_width = self.cells_box().width;
+        let mut cache = self.column_prefix_cache.borrow_mut();
+        let stale = match cache.as_ref() {
+            Some(entry) => {
+                entry.revision != self.column_geometry_revision
+                    || entry.column_count != count
+                    || entry.cells_width != cells_width
+                    || entry.mode != self.column_width_mode
+                    || entry.default_width != self.column_width
+            }
+            None => true,
+        };
+        if stale {
+            *cache = Some(self.build_column_prefixes(count, cells_width));
+            self.column_prefix_rebuilds.set(self.column_prefix_rebuilds.get().saturating_add(1));
+        }
+        let entry = cache.as_ref().expect("the prefix table was just built");
+        if upto <= entry.column_count {
+            return entry.prefix.get(upto).copied().unwrap_or(0);
+        }
         // Deliberately not clamped to `column_count()`: `cell_rect` is a pure function of its
         // indices, and a grid with no source yet still has to answer where column 2 would be.
-        (0..upto).map(|column| self.column_width_at(column) as i32).sum()
+        // Only the (rare) beyond-the-model tail is summed on demand.
+        let base = entry.prefix.get(entry.column_count).copied().unwrap_or(0);
+        base + (entry.column_count..upto)
+            .map(|column| self.column_width_at(column) as i32)
+            .sum::<i32>()
+    }
+
+    /// Builds the prefix table for the current widths.
+    fn build_column_prefixes(&self, count: usize, cells_width: u32) -> ColumnPrefixCache {
+        let mut prefix = Vec::with_capacity(count.saturating_add(1));
+        let mut sum = 0i32;
+        prefix.push(0);
+        for column in 0..count {
+            sum = sum.saturating_add(self.column_width_at(column) as i32);
+            prefix.push(sum);
+        }
+        ColumnPrefixCache {
+            revision: self.column_geometry_revision,
+            column_count: count,
+            cells_width,
+            mode: self.column_width_mode,
+            default_width: self.column_width,
+            prefix,
+        }
     }
 
     /// The column at `dx` pixels into the cells box.
@@ -2147,11 +2272,29 @@ impl DataGrid {
     /// and `sort_by` over the copy. With no filter/sort in effect the projection is the
     /// cached matrix, so returning its `Rc` makes a hit a refcount bump.
     pub fn fetch_visible_cells_shared(&mut self) -> Rc<Vec<Vec<Option<String>>>> {
-        self.normalize_projection_state();
-
         if self.full_model_projection {
             return self.fetch_full_projected_window();
         }
+        self.fetch_window_shared()
+    }
+
+    /// The draw pass's window: a borrowed, column-sliced view of the projection.
+    fn fetch_visible_window_view(&mut self) -> ProjectedWindowView {
+        self.normalize_projection_state();
+        if self.full_model_projection {
+            let projected = self.full_projection_rows();
+            let (row_start, row_len, col_start, col_len) = self.visible_window();
+            return ProjectedWindowView { rows: projected, row_start, row_len, col_start, col_len };
+        }
+        let cells = self.fetch_window_shared();
+        let row_len = cells.len();
+        let col_len = cells.first().map_or(0, Vec::len);
+        ProjectedWindowView { rows: cells, row_start: 0, row_len, col_start: 0, col_len }
+    }
+
+    /// The window-scoped fetch used when full-model projection is off.
+    fn fetch_window_shared(&mut self) -> Rc<Vec<Vec<Option<String>>>> {
+        self.normalize_projection_state();
 
         let Some(source) = self.data_source.as_ref() else {
             return Rc::new(Vec::new());
@@ -2163,9 +2306,6 @@ impl DataGrid {
         }
 
         let revision = source.revision();
-        // A source with a real revision uses it; one that only raises `data_changed` uses the
-        // generation this widget advances from that signal. When neither exists the window is
-        // fetched afresh — a cache with no invalidation contract would serve stale cells.
         let cache_revision =
             if revision > 0 { revision } else { self.data_generation.load(Ordering::Relaxed) };
         if self.data_is_observable {
@@ -2223,37 +2363,22 @@ impl DataGrid {
         }
     }
 
+    /// Marks the bound source's contents as changed and drops every derived cache.
+    pub fn refresh_data(&mut self) {
+        self.data_generation.fetch_add(1, Ordering::Relaxed);
+        self.full_projection_cache = None;
+        self.full_window_cache = None;
+        self.clear_cache();
+        self.emit_visible_window_changed();
+        self.base.request_redraw();
+    }
+
     /// Fetches the whole model, projects it once, and slices the visible window.
-    ///
-    /// A filtered/sorted projection has its own row identity, so slicing after the
-    /// projection is the only way a sort can mean "the model's order" rather than "the
-    /// window's order". The full matrix is cached under the source's revision (or the
-    /// change generation when the source has no revision).
     fn fetch_full_projected_window(&mut self) -> Rc<Vec<Vec<Option<String>>>> {
-        let Some(source) = self.data_source.as_ref() else {
+        let projected = self.full_projection_rows();
+        if projected.is_empty() {
             return Rc::new(Vec::new());
-        };
-        let revision = source.revision();
-        let cache_key =
-            if revision > 0 { revision } else { self.data_generation.load(Ordering::Relaxed) };
-        let projected = if self.data_is_observable {
-            match self.full_projection_cache.as_ref() {
-                Some((key, projected)) if *key == cache_key => Rc::clone(projected),
-                _ => {
-                    let rows = source.row_count();
-                    let columns = source.column_count();
-                    let cells = source.fetch_window(0, rows, 0, columns);
-                    let projected = Rc::new(self.apply_filter_sort(cells, 0));
-                    self.full_projection_cache = Some((cache_key, Rc::clone(&projected)));
-                    projected
-                }
-            }
-        } else {
-            let rows = source.row_count();
-            let columns = source.column_count();
-            let cells = source.fetch_window(0, rows, 0, columns);
-            Rc::new(self.apply_filter_sort(cells, 0))
-        };
+        }
         let window = self.visible_window();
         if let Some((cached_projection, cached_window, cells)) = self.full_window_cache.as_ref() {
             if Rc::ptr_eq(cached_projection, &projected) && *cached_window == window {
@@ -2263,6 +2388,27 @@ impl DataGrid {
         let window_cells = Rc::new(Self::slice_window(&projected, window));
         self.full_window_cache = Some((Rc::clone(&projected), window, Rc::clone(&window_cells)));
         window_cells
+    }
+
+    /// The filtered/sorted full projection, rebuilt only when its cache key moves.
+    fn full_projection_rows(&mut self) -> Rc<ProjectedRows> {
+        let Some(source) = self.data_source.as_ref() else {
+            return Rc::new(Vec::new());
+        };
+        let revision = source.revision();
+        let cache_key =
+            if revision > 0 { revision } else { self.data_generation.load(Ordering::Relaxed) };
+        if let Some((key, projected)) = self.full_projection_cache.as_ref() {
+            if *key == cache_key {
+                return Rc::clone(projected);
+            }
+        }
+        let rows = source.row_count();
+        let columns = source.column_count();
+        let cells = source.fetch_window(0, rows, 0, columns);
+        let projected = Rc::new(self.apply_filter_sort(cells, 0));
+        self.full_projection_cache = Some((cache_key, Rc::clone(&projected)));
+        projected
     }
 
     fn slice_window(
@@ -2663,11 +2809,11 @@ impl WidgetProperties for DataGrid {
                 Ok(())
             }
             "row_height" => {
-                self.set_row_height(expect_usize(value)? as u32);
+                self.set_row_height(expect_u32_saturating(value)?);
                 Ok(())
             }
             "column_width" => {
-                self.set_default_column_width(expect_usize(value)? as u32);
+                self.set_default_column_width(expect_u32_saturating(value)?);
                 Ok(())
             }
             "frozen_columns" => {
@@ -2820,8 +2966,10 @@ impl Draw for DataGrid {
         );
         context.draw_rect(rect, border);
 
-        let rows = self.fetch_visible_cells_shared();
-        if rows.is_empty() {
+        // The draw pass reads a borrowed view of the projection (F-P02): no per-row/`String`
+        // clone happens on a scroll, because the view addresses the cached matrix by offset.
+        let window_view = self.fetch_visible_window_view();
+        if window_view.is_empty() {
             return;
         }
 
@@ -2833,7 +2981,20 @@ impl Draw for DataGrid {
         let header_y = cells.y - GRID_HEADER_HEIGHT as i32;
         if let Some(source) = self.data_source.as_ref() {
             let cells_right = cells.x + cells.width as i32;
-            for column in self.scroll_column..self.column_count() {
+            // Header titles are static; elide each one once and reuse it (F-P04).
+            let generation = self.data_generation.load(Ordering::Relaxed);
+            let column_count = self.column_count();
+            let mut text_cache = self.header_text_cache.borrow_mut();
+            if text_cache.labels_revision != self.header_text_revision
+                || text_cache.generation != generation
+                || text_cache.column_count != column_count
+            {
+                text_cache.entries.clear();
+                text_cache.labels_revision = self.header_text_revision;
+                text_cache.generation = generation;
+                text_cache.column_count = column_count;
+            }
+            for column in self.scroll_column..column_count {
                 let x = cells.x + self.column_view_x(column);
                 if x >= cells_right {
                     break;
@@ -2841,14 +3002,18 @@ impl Draw for DataGrid {
                 let width = self.column_width_at(column).max(1);
                 let band = Rect::new(x, header_y, width, GRID_HEADER_HEIGHT);
                 context.fill_rect(band, surface.blend(&ink, 0.06));
-                let name = self
-                    .header_labels
-                    .get(column)
-                    .filter(|label| !label.is_empty())
-                    .cloned()
-                    .or_else(|| source.column_name(column));
-                if let Some(name) = name {
-                    let name = crate::widget::text_utils::elide_end(&name, 24);
+                let name = text_cache.entries.entry((column, width)).or_insert_with(|| {
+                    let raw = self
+                        .header_labels
+                        .get(column)
+                        .filter(|label| !label.is_empty())
+                        .cloned()
+                        .or_else(|| source.column_name(column));
+                    raw.map_or_else(String::new, |name| {
+                        crate::widget::text_utils::elide_end(&name, 24).into_owned()
+                    })
+                });
+                if !name.is_empty() {
                     // Leave room for the sort arrow and the filter glyph before fitting the label.
                     let filter_slot = if self.header_filter_visible
                         && self.header_columns.get(column).is_some_and(|spec| spec.filterable)
@@ -2873,7 +3038,7 @@ impl Draw for DataGrid {
                     );
                     context.draw_text_fitted_cow(
                         context.text_line(text_band, header_font),
-                        &name,
+                        name.as_str(),
                         header_font,
                         ink,
                         HorizontalAlignment::Left,
@@ -2943,7 +3108,7 @@ impl Draw for DataGrid {
         // correction is applied here.
         let (row_origin, col_origin) = self.window_origin();
         if self.alternating_rows {
-            for (row_idx, _) in rows.iter().enumerate() {
+            for row_idx in 0..window_view.len() {
                 let global_row = row_origin + row_idx;
                 if global_row % 2 == 1 {
                     let y = self.cell_rect(global_row, 0).y;
@@ -2954,11 +3119,11 @@ impl Draw for DataGrid {
                 }
             }
         }
-        for (row_idx, row) in rows.iter().enumerate() {
+        for row_idx in 0..window_view.len() {
             if self.cell_rect(row_origin + row_idx, 0).y >= cells_bottom {
                 break;
             }
-
+            let Some(row) = window_view.row(row_idx) else { continue };
             for (col_idx, cell) in row.iter().enumerate() {
                 let global_column = col_origin + col_idx;
                 // Frozen columns are painted by the overdraw pass below, after every scrolling
@@ -2986,7 +3151,8 @@ impl Draw for DataGrid {
         // come from `cell_rect`, which ignores `scroll_column` for a frozen column, so this pass
         // is also the proof that the pinned band and the hit test agree.
         if self.frozen_columns > 0 {
-            for (row_idx, row) in rows.iter().enumerate() {
+            for row_idx in 0..window_view.len() {
+                let Some(row) = window_view.row(row_idx) else { continue };
                 let global_row = row_origin + row_idx;
                 if self.cell_rect(global_row, 0).y >= cells_bottom {
                     break;
@@ -4220,5 +4386,132 @@ mod tests {
         grid.handle_event(&Event::KeyPress { key: crate::event::key_codes::DOWN, modifiers: 0 });
         assert_eq!(grid.current_cell(), Some((2, 0)), "Down reaches the last row");
         let _ = grid.fetch_visible_cells();
+    }
+
+    /// F-P01: the column prefix table is built once per width revision, not summed per cell.
+    #[test]
+    fn column_prefix_width_is_cached_until_a_width_changes() {
+        let mut grid = static_grid(50, 5);
+        grid.set_column_width_mode(ColumnWidthMode::Interactive);
+        assert!(grid.set_column_width(1, 80));
+        let expected = 120 + 80 + 120 + 120;
+        assert_eq!(grid.column_prefix_width(4), expected);
+        let builds = grid.column_prefix_rebuilds.get();
+        // Repeated reads are table lookups: no rebuild.
+        for _ in 0..100 {
+            assert_eq!(grid.column_prefix_width(4), expected);
+            assert_eq!(grid.column_prefix_width(2), 200);
+        }
+        assert_eq!(grid.column_prefix_rebuilds.get(), builds, "the table was reused");
+
+        // A width change rebuilds exactly once, and the new widths are visible immediately.
+        assert!(grid.set_column_width(1, 50));
+        assert_eq!(grid.column_prefix_width(4), 120 + 50 + 120 + 120);
+        assert_eq!(grid.column_prefix_rebuilds.get(), builds + 1);
+    }
+
+    /// F-P02: the draw path's view addresses the cached projection instead of cloning the window.
+    #[test]
+    fn draw_view_shares_the_projection_across_scroll_positions() {
+        let mut grid = static_grid(200, 4);
+        let first = grid.fetch_visible_window_view();
+        assert!(!first.is_empty());
+        let same_projection = Rc::clone(&first.rows);
+
+        grid.set_scroll_row(10);
+        let second = grid.fetch_visible_window_view();
+        assert!(
+            Rc::ptr_eq(&same_projection, &second.rows),
+            "a scroll reuses the same projected matrix instead of slicing a copy"
+        );
+        assert_ne!(first.row_start, second.row_start, "the window did move");
+        // The window starts at `scroll - overscan`, so the viewport's first row is index 2.
+        assert_eq!(second.row(2).and_then(|row| row[0].clone()), Some("10:0".to_string()));
+    }
+
+    /// F-P03: a source with neither a revision nor a signal is projected once, and
+    /// `refresh_data` is the explicit invalidation point.
+    #[test]
+    fn non_observable_projection_is_cached_until_refresh_data() {
+        struct CountingSource {
+            rows: usize,
+            columns: usize,
+            fetches: Arc<AtomicU64>,
+        }
+        impl IncrementalTableDataSource for CountingSource {
+            fn row_count(&self) -> usize {
+                self.rows
+            }
+            fn column_count(&self) -> usize {
+                self.columns
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                Some(format!("{row}:{column}"))
+            }
+            fn fetch_window(
+                &self,
+                row_start: usize,
+                row_len: usize,
+                column_start: usize,
+                column_len: usize,
+            ) -> Vec<Vec<Option<String>>> {
+                self.fetches.fetch_add(1, Ordering::Relaxed);
+                (row_start..row_start.saturating_add(row_len).min(self.rows))
+                    .map(|row| {
+                        (column_start..column_start.saturating_add(column_len).min(self.columns))
+                            .map(|column| Some(format!("{row}:{column}")))
+                            .collect()
+                    })
+                    .collect()
+            }
+        }
+
+        let fetches = Arc::new(AtomicU64::new(0));
+        let mut grid = DataGrid::new(Rect::new(0, 0, 400, 160));
+        grid.set_data_source(Arc::new(CountingSource {
+            rows: 500,
+            columns: 3,
+            fetches: Arc::clone(&fetches),
+        }));
+        assert!(!grid.data_is_observable, "the fixture has no invalidation contract");
+
+        let _ = grid.fetch_visible_cells();
+        let after_first = fetches.load(Ordering::Relaxed);
+        assert!(after_first > 0);
+
+        grid.set_scroll_row(5);
+        let _ = grid.fetch_visible_cells();
+        grid.set_scroll_row(9);
+        let _ = grid.fetch_visible_cells();
+        assert_eq!(
+            fetches.load(Ordering::Relaxed),
+            after_first,
+            "scrolling must hit the cached projection"
+        );
+
+        grid.refresh_data();
+        let _ = grid.fetch_visible_cells();
+        assert!(
+            fetches.load(Ordering::Relaxed) > after_first,
+            "refresh_data is how a non-observable source reports change"
+        );
+    }
+
+    /// F-P04: elided header labels are cached and reused across frames.
+    #[test]
+    fn header_labels_are_elided_once_and_cached() {
+        let mut grid = static_grid(4, 3);
+        grid.set_header_labels(&["Alpha", "Beta", "Gamma"]);
+        let _ = crate::widget::svg::render_to_svg(&mut grid);
+        let cached = grid.header_text_cache.borrow();
+        assert_eq!(cached.entries.get(&(0, 120)).map(String::as_str), Some("Alpha"));
+        assert_eq!(cached.entries.get(&(2, 120)).map(String::as_str), Some("Gamma"));
+
+        // A label change invalidates the cache; the next paint stores the new title.
+        drop(cached);
+        grid.set_header_labels(&["Renamed", "Beta", "Gamma"]);
+        let _ = crate::widget::svg::render_to_svg(&mut grid);
+        let cached = grid.header_text_cache.borrow();
+        assert_eq!(cached.entries.get(&(0, 120)).map(String::as_str), Some("Renamed"));
     }
 }

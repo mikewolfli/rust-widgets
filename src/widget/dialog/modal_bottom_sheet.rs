@@ -197,9 +197,34 @@ impl ModalBottomSheet {
     }
 
     /// Sets the child content widget displayed in the sheet body.
+    ///
+    /// The sheet places the child in its content well on every frame it is painted (or one
+    /// whose geometry changed), the same arrangement `BottomSheet` uses (DLG-17).
     pub fn set_content(&mut self, widget: Box<dyn Widget>) {
         self.content = Some(widget);
         self.base.request_redraw();
+    }
+
+    /// The rectangle the content well occupies, or `None` when the sheet has no room for it.
+    ///
+    /// A host that draws its own child reads this instead of reconstructing the title and
+    /// handle arithmetic (DLG-17).
+    pub fn content_rect(&self) -> Option<Rect> {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
+            return None;
+        }
+        let sheet_height = self.compute_sheet_height();
+        let title_font = effective_font(self.base.style());
+        // The title row is derived from the font the paint will use, so the well's top edge is
+        // the one the drawn title leaves behind.
+        let title_height = title_font.size().ceil() as i32 + 4;
+        let content_top =
+            rect.y + rect.height as i32 - sheet_height as i32 + 10 + 5 + 12 + title_height + 8;
+        let content_bottom = rect.y + rect.height as i32 + self.drag_offset as i32;
+        let height = (content_bottom - content_top).max(0) as u32;
+        (height > 20)
+            .then(|| Rect::new(rect.x + 8, content_top, rect.width.saturating_sub(16), height))
     }
 
     /// Returns a reference to the child content, if any.
@@ -470,31 +495,26 @@ impl Draw for ModalBottomSheet {
         let sheet_height = self.compute_sheet_height();
         let drag_offset_px = self.drag_offset as i32;
 
-        // The scrim is drawn in both states. It used to be part of the visible-only body, so
-        // a freshly constructed sheet painted nothing at all; keeping it unconditional gives
-        // the control a rendered extent at rest while leaving the sheet itself the opaque
-        // element of the open state.
-        //
-        // # Why the theme's `scrim` role is read here
-        //
-        // This used to be `ink.blend(&sheet_fill, 0.55)` — an inline derivation of the very
-        // quantity `Colors::scrim` exists to name. The two are not equivalent: the inline form
-        // blends the *ink* toward the sheet, so on a dark theme it produces a pale veil that
-        // **lightens** the background instead of dimming it, which is the BLUE21 B23 defect stated
-        // in `Colors::scrim`'s own documentation. Reading the role lets a dark theme lighten the
-        // scrim deliberately while a light theme darkens it, and it gives the role the consumer it
-        // was added for. The blend survives only as the fallback for a theme that predates the role.
-        let scrim = crate::style::layer_color(crate::style::LayerColor::Scrim)
-            .unwrap_or_else(|| ink.blend(&sheet_fill, 0.55));
-        let overlay_rect = Rect::new(rect.x, rect.y, rect.width, rect.height);
-        context.fill_rect(overlay_rect, scrim);
-
-        // A hidden sheet paints only the scrim; the panel, its handle and its title belong to
-        // the open state alone. With the transition enabled the panel keeps painting while it
-        // slides out, which is why the test is the reveal rather than the logical flag.
         let reveal = self.reveal.value();
+        // A sheet that is hidden and has finished sliding out paints nothing at all. The
+        // previous order filled the whole page with the scrim and only then returned, which
+        // cost a full-page fill on every still frame of a closed sheet (G-P11).
         if !self.is_visible && reveal <= 0.0 {
             return;
+        }
+
+        // The scrim is drawn in both states and fades with the reveal, so a freshly constructed
+        // sheet still has a rendered extent at rest while the open state keeps the sheet itself
+        // as the opaque element.
+        let scrim = crate::style::layer_color(crate::style::LayerColor::Scrim)
+            .unwrap_or_else(|| ink.blend(&sheet_fill, 0.55));
+        if reveal < 1.0 {
+            let scrim = scrim.with_alpha((scrim.a as f32 * reveal) as u8);
+            let overlay_rect = Rect::new(rect.x, rect.y, rect.width, rect.height);
+            context.fill_rect(overlay_rect, scrim);
+        } else {
+            let overlay_rect = Rect::new(rect.x, rect.y, rect.width, rect.height);
+            context.fill_rect(overlay_rect, scrim);
         }
 
         // 2. Sheet panel at the bottom, shifted by the drag offset and by however far the
@@ -551,6 +571,15 @@ impl Draw for ModalBottomSheet {
             // The content well is one step away from the sheet it sits in, so the two read as
             // separate regions in either appearance.
             context.fill_rect(content_rect, sheet_fill.blend(&ink, 0.04));
+            // Place the child in the well it is drawn into. Writing the geometry every frame
+            // is idempotent; the child owns its own internal layout, and this control owns only
+            // the box handed to it (DLG-17).
+            if let Some(content) = self.content.as_mut() {
+                content.set_geometry(content_rect);
+                content.show();
+            }
+        } else if let Some(content) = self.content.as_mut() {
+            content.hide();
         }
     }
 }

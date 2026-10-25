@@ -90,6 +90,10 @@ pub struct RefreshControl {
     /// Disabled by default: the historical mapping is 1:1, and a pull distance is a value a
     /// caller may already depend on. A control that wants the damped feel opts in.
     elastic_pull: bool,
+    /// An explicit indicator colour, overriding the theme's accent when set (OV-05).
+    accent_color: Option<Color>,
+    /// A multiplier applied to the indicator's radius and arrow size (OV-05).
+    indicator_scale: f32,
     /// Emitted when the pull distance exceeds the threshold and the user releases.
     pub refresh_triggered: GenericSignal,
 }
@@ -114,6 +118,8 @@ impl RefreshControl {
             arrow_flip: PropertyDriver::at(0.0, MotionSlot::Normal),
             elastic_indicator: false,
             elastic_pull: false,
+            accent_color: None,
+            indicator_scale: 1.0,
             refresh_triggered: GenericSignal::new(),
         }
     }
@@ -359,6 +365,38 @@ impl RefreshControl {
     pub fn refresh_state(&self) -> RefreshState {
         self.state
     }
+
+    /// Returns the explicit indicator colour, when one was set (OV-05).
+    pub fn accent_color(&self) -> Option<Color> {
+        self.accent_color
+    }
+
+    /// Overrides the indicator's colour; `None` restores the theme's accent (OV-05).
+    pub fn set_accent_color(&mut self, color: Option<Color>) {
+        if self.accent_color == color {
+            return;
+        }
+        self.accent_color = color;
+        self.base.request_redraw();
+    }
+
+    /// Returns the indicator size multiplier (OV-05).
+    pub fn indicator_scale(&self) -> f32 {
+        self.indicator_scale
+    }
+
+    /// Sets the indicator size multiplier, clamped to `0.25..=4.0` (OV-05).
+    pub fn set_indicator_scale(&mut self, scale: f32) {
+        if !scale.is_finite() {
+            return;
+        }
+        let scale = scale.clamp(0.25, 4.0);
+        if (self.indicator_scale - scale).abs() < f32::EPSILON {
+            return;
+        }
+        self.indicator_scale = scale;
+        self.base.request_redraw();
+    }
 }
 
 impl Widget for RefreshControl {
@@ -484,10 +522,13 @@ impl Draw for RefreshControl {
         // content area so the two read as separate regions.
         let indicator_background = background.blend(&text_color, 0.12);
         // The spinner is an in-progress *state*, so it reads the theme's primary
-        // token rather than a literal blue.
-        let accent = crate::style::resolved_theme_style_shared("button")
-            .and_then(|button| button.background_color)
+        // token rather than a literal blue. An explicit caller override wins (OV-05). The
+        // palette read is the cached one, so the draw no longer resolves a second role (G-A01).
+        let accent = self
+            .accent_color
+            .or_else(|| crate::style::palette_shared().as_ref().map(|colors| colors.primary))
             .unwrap_or_else(|| background.blend(&text_color, 0.55));
+        let indicator_scale = self.indicator_scale.max(0.01);
         // Below the threshold the arrow is inactive chrome, so it is muted toward the
         // resolved surface instead of the literal grey pair.
         let idle_arrow = text_color.blend(&background, 0.45);
@@ -517,7 +558,7 @@ impl Draw for RefreshControl {
                 // of short segments at the driver's phase, so the control looks busy rather
                 // than showing a frozen circle.
                 let phase = self.spin.value();
-                let radius = 10.0f32;
+                let radius = 10.0f32 * indicator_scale;
                 let sweep = core::f32::consts::PI * 1.5;
                 let start = phase * core::f32::consts::TAU;
                 let segments = 12;
@@ -542,7 +583,8 @@ impl Draw for RefreshControl {
                 // the user's text scale reach it (D09-STYLE-01).
                 let font = role_font(style, 11.0);
                 let label = "Loading...";
-                let metrics = context.measure_text(label, &font);
+                let metrics =
+                    crate::widget::base_widgets::measure_cache::measure_text(context, label, &font);
                 let text_x = center_x - (metrics.width as i32) / 2;
                 let text_y = center_y + 14;
                 context.draw_text(
@@ -569,7 +611,7 @@ impl Draw for RefreshControl {
                 let rotate = |dx: f32, dy: f32| (dx * cos - dy * sin, dx * sin + dy * cos);
 
                 // Downward arrow, rotated by the flip driver about its own centre.
-                let arrow_size = 12.0f32;
+                let arrow_size = 12.0f32 * indicator_scale;
                 let arrow_top = -arrow_size / 2.0;
                 let (x0, y0) = rotate(0.0, arrow_top);
                 let (x1, y1) = rotate(0.0, arrow_top + arrow_size);
@@ -592,7 +634,9 @@ impl Draw for RefreshControl {
                 if progress >= 1.0 {
                     let font = role_font(style, 11.0);
                     let label = "Release to refresh";
-                    let metrics = context.measure_text(label, &font);
+                    let metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                        context, label, &font,
+                    );
                     let text_x = center_x - (metrics.width as i32) / 2;
                     let text_y = center_y + 14;
                     context.draw_text(
@@ -1061,5 +1105,20 @@ mod tests {
             second < first,
             "a rubber-band pull resists the second 30 px: {first} then {second}"
         );
+    }
+
+    #[test]
+    fn the_indicator_accepts_a_colour_and_scale_override() {
+        let mut control = make_refresh_control();
+        assert_eq!(control.accent_color(), None);
+        assert_eq!(control.indicator_scale(), 1.0);
+        control.set_accent_color(Some(crate::core::Color::rgb(10, 20, 30)));
+        assert_eq!(control.accent_color(), Some(crate::core::Color::rgb(10, 20, 30)));
+        control.set_indicator_scale(2.0);
+        assert_eq!(control.indicator_scale(), 2.0);
+        control.set_indicator_scale(20.0);
+        assert_eq!(control.indicator_scale(), 4.0, "the scale is bounded to keep the band usable");
+        control.set_indicator_scale(f32::NAN);
+        assert_eq!(control.indicator_scale(), 4.0, "a non-finite write is ignored");
     }
 }

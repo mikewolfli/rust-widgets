@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.9.1"
+version = "2.9.2"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -85,7 +85,9 @@ default = ["desktop"]
 
 # ── Axis 1: DEVICE PROFILES (mutually exclusive) ──
 
-## Full desktop: native platform, GPU, touch, i18n, chart, print, PDF, A11y.
+## Full desktop: native platform, GPU, touch, i18n, chart, print, PDF.
+## Accessibility is **always compiled** (`pub mod accessibility;` in
+## `src/platform/mod.rs`); the `a11y` feature is a legacy no-op alias, not a gate.
 ##
 ## NOTE: `audio-output`, `symphonia-codecs`, and `video-codecs`
 ## are NOT enabled by default because they pull in large system-library
@@ -155,7 +157,8 @@ desktop = [
 ## Tablet: touch-first, GPU, native controls, no desktop extras.
 ##
 ## Shares the desktop UI-compilation surface (JSON, i18n hot-reload watcher,
-## chrono-backed widgets, serde) minus print/pdf/chart/a11y/js extras.
+## chrono-backed widgets, serde) minus print/pdf/chart/js extras. Accessibility is
+## always compiled, so there is no `a11y` switch to omit.
 tablet = [
     "os-auto",
     "wgpu",
@@ -317,6 +320,10 @@ ios = [
     "dep:objc2-core-text",
     "dep:objc2-ui-kit",
 ]
+# Deliberately a no-op kept for compatibility: Windows support is selected by the
+# target's `cfg(windows)` segment (see `[target.'cfg(windows)'.dependencies]`), not
+# by a feature. The name remains so historical `--features windows` invocations still
+# parse; nothing in `src/` or `build.rs` reads it.
 windows = []
 linux-gtk = ["dep:gtk"]
 linux-wayland = [
@@ -359,6 +366,12 @@ i18n = ["dep:notify", "dep:crossbeam-channel", "dep:serde", "dep:serde_json"]
 chart = []
 print = []
 pdf = []
+## Legacy no-op alias: nothing in `src/` or `build.rs` reads `feature = "a11y"`.
+## The accessibility bridges (`src/platform/accessibility*`) are unconditionally
+## compiled, so this name neither adds nor removes them. It is kept only so build
+## scripts that already pass `--features a11y` keep working; new builds should not
+## rely on it. `desktop` still lists it because that profile does carry
+## accessibility — but so does every profile.
 a11y = []
 
 ## The designer's code generator and artifact writer (BLUE19 D7-b-3).
@@ -612,11 +625,17 @@ icons = []
 desktop-runtime = ["dep:notify", "dep:crossbeam-channel"]
 quality-management = []
 mobile-api = []
+# Legacy no-op alias, like `os-auto` above: `controls-native` no longer selects
+# anything. The library paints every `WidgetKind`; the native backend wrapper is
+# reachable as the type `NativeControlBackend` (compiled under `not(alloc_frugal)`),
+# not through this feature. Kept so existing build scripts keep working.
 controls-native = []
 controls-custom = []
 advanced-widgets = ["dep:dirs"]
-# Internal runtime-profile selector referenced by `runtime_profile_name()`
-# (`src/lib.rs`); selects the "embedded-mini" profile combination.
+# Internal runtime-profile selector consumed by `profile_class()`/`engine_class()`
+# (`src/platform/profile.rs`). It classifies the build as `Surface` + self-hosted,
+# the same as `embedded`; combining it with a device profile is ignored because the
+# device branches are checked first.
 profile-embedded-mini = []
 
 # New capability features
@@ -639,6 +658,9 @@ serde_json = ["dep:serde_json"]
 # that does not need GPU interop pays neither the dependency nor the trait surface.
 raw-window-handle = ["dep:raw-window-handle"]
 
+# Legacy no-op aliases: nothing in `src/` or `build.rs` reads either name, so they
+# select nothing. Kept because the `full` and `all-desktop-features` meta-features
+# still list them; new builds should not rely on either spelling to change behaviour.
 unstable-pipeline-routing = []
 unstable-special-widgets = []
 

@@ -75,6 +75,8 @@ pub struct GridWidget {
     multi_select: bool,
     /// Cell spans as `(row, column, row_span, column_span)`.
     spans: Vec<(u32, u32, u32, u32)>,
+    /// Per-column widths, index-aligned with the columns; `None` uses the computed share (SP-69).
+    column_widths: Vec<Option<u32>>,
     /// Rows shown per page, or `None` to show every row.
     page_rows: Option<u32>,
     /// The page currently drawn when paging is enabled.
@@ -91,6 +93,8 @@ pub struct GridWidget {
     pub context_menu_requested: Signal1<(u32, u32)>,
     /// Emitted with the new page index when paging moves.
     pub page_changed: Signal1<u32>,
+    /// Emitted with the column index when the heading band is clicked (SP-69).
+    pub header_clicked: Signal1<u32>,
 }
 
 impl GridWidget {
@@ -111,6 +115,7 @@ impl GridWidget {
             selected_cells: Vec::new(),
             multi_select: false,
             spans: Vec::new(),
+            column_widths: Vec::new(),
             page_rows: None,
             page: 0,
             cells: Vec::new(),
@@ -119,6 +124,7 @@ impl GridWidget {
             cell_hovered: Signal1::new(),
             context_menu_requested: Signal1::new(),
             page_changed: Signal1::new(),
+            header_clicked: Signal1::new(),
         }
     }
 
@@ -139,6 +145,7 @@ impl GridWidget {
             selected_cells: Vec::new(),
             multi_select: false,
             spans: Vec::new(),
+            column_widths: Vec::new(),
             page_rows: None,
             page: 0,
             cells: Vec::new(),
@@ -147,6 +154,7 @@ impl GridWidget {
             cell_hovered: Signal1::new(),
             context_menu_requested: Signal1::new(),
             page_changed: Signal1::new(),
+            header_clicked: Signal1::new(),
         }
     }
 
@@ -286,6 +294,17 @@ impl GridWidget {
         Rect::new(rect.x, rect.y + header as i32, rect.width, rect.height - header)
     }
 
+    /// Whether `pos` lands in the heading band.
+    fn hit_header(&self, pos: Point) -> bool {
+        let rect = self.base.geometry();
+        let body = self.body_rect();
+        body.y > rect.y
+            && pos.y >= rect.y
+            && pos.y < body.y
+            && pos.x >= rect.x
+            && pos.x < rect.x + rect.width as i32
+    }
+
     // ── Cell info ──────────────────────────────────────────
 
     /// Returns the cached cell width computed during the last draw.
@@ -325,14 +344,68 @@ impl GridWidget {
         if self.columns == 0 || self.cell_width == 0 {
             return None;
         }
-        let local_x = (x - rect.x) as u32;
-        let step = (self.cell_width + self.spacing).max(1);
-        let col = local_x / step;
-        if col < self.columns {
-            Some(col)
-        } else {
-            None
+        // Per-column widths mean the column is no longer `local_x / step`; the walk is over the
+        // column count, not over the cells, so it stays bounded by the grid's shape.
+        let mut left = rect.x;
+        for column in 0..self.columns {
+            let width = self.column_width(column) as i32;
+            if x >= left && x < left + width {
+                return Some(column);
+            }
+            left += width + self.spacing as i32;
         }
+        None
+    }
+
+    /// The painted width of column `column`: its configured width, or the computed share.
+    pub fn column_width(&self, column: u32) -> u32 {
+        self.column_widths.get(column as usize).copied().flatten().unwrap_or(self.cell_width).max(1)
+    }
+
+    /// Sets one column's width; `None` restores the computed share (SP-69).
+    pub fn set_column_width(&mut self, column: u32, width: Option<u32>) -> bool {
+        if column >= self.columns {
+            return false;
+        }
+        if self.column_widths.len() <= column as usize {
+            self.column_widths.resize(column as usize + 1, None);
+        }
+        self.column_widths[column as usize] = width.map(|width| width.max(1));
+        self.update_cell_dimensions();
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Replaces the whole per-column width list.
+    pub fn set_column_widths(&mut self, widths: Vec<Option<u32>>) {
+        if self.column_widths == widths {
+            return;
+        }
+        self.column_widths = widths;
+        self.update_cell_dimensions();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The x offset of column `column` from the body's left edge, spacing included.
+    fn column_offset(&self, column: u32) -> i32 {
+        let mut offset = 0i32;
+        for index in 0..column {
+            offset += self.column_width(index) as i32 + self.spacing as i32;
+        }
+        offset
+    }
+
+    /// Every column's offset from the body's left edge, so a frame builds it once.
+    fn column_offsets(&self) -> Vec<i32> {
+        let mut offsets = Vec::with_capacity(self.columns as usize);
+        let mut offset = 0i32;
+        for column in 0..self.columns {
+            offsets.push(offset);
+            offset += self.column_width(column) as i32 + self.spacing as i32;
+        }
+        offsets
     }
 
     /// Returns the cell position `(row, col)` for a given point, or `None`.
@@ -344,6 +417,22 @@ impl GridWidget {
 
     /// Returns the bounding rectangle of a specific cell, including any span.
     pub fn cell_rect(&self, row: u32, col: u32) -> Option<Rect> {
+        self.cell_rect_in(row, col, None, None)
+    }
+
+    /// [`Self::cell_rect`], reading spans from a table the caller already built.
+    ///
+    /// The paint builds the span table once per frame instead of letting every cell run a linear
+    /// scan of the whole span list, which made a spanned grid `O(cells × spans)` (SP-P74). The
+    /// column offsets follow the same rule: one vector per frame rather than a cumulative walk per
+    /// cell.
+    fn cell_rect_in(
+        &self,
+        row: u32,
+        col: u32,
+        spans: Option<&crate::compat::HashMap<(u32, u32), (u32, u32)>>,
+        offsets: Option<&[i32]>,
+    ) -> Option<Rect> {
         if row >= self.rows || col >= self.columns {
             return None;
         }
@@ -352,14 +441,24 @@ impl GridWidget {
         if row < self.first_row() || visible_row >= self.visible_rows() {
             return None;
         }
-        let (row_span, column_span) = self.cell_span(row, col);
-        let x = rect.x + (col * (self.cell_width + self.spacing)) as i32;
+        let (row_span, column_span) = match spans {
+            Some(spans) => spans.get(&(row, col)).copied().unwrap_or((1, 1)),
+            None => self.cell_span(row, col),
+        };
+        let x = rect.x
+            + match offsets {
+                Some(offsets) => offsets.get(col as usize).copied().unwrap_or(0),
+                None => self.column_offset(col),
+            };
         let y = rect.y + (visible_row * (self.cell_height + self.spacing)) as i32;
-        let width = self.cell_width.saturating_mul(column_span)
-            + self.spacing.saturating_mul(column_span.saturating_sub(1));
+        // A spanning cell covers its columns' widths plus the gaps it crosses.
+        let width: u32 = (0..column_span)
+            .map(|index| self.column_width(col + index))
+            .sum::<u32>()
+            .saturating_add(self.spacing.saturating_mul(column_span.saturating_sub(1)));
         let height = self.cell_height.saturating_mul(row_span)
             + self.spacing.saturating_mul(row_span.saturating_sub(1));
-        Some(Rect::new(x, y, width, height))
+        Some(Rect::new(x, y, width.max(1), height))
     }
 
     /// Sets the span of a cell.
@@ -434,6 +533,15 @@ impl GridWidget {
             self.selected_cells.push(cell);
         }
         self.focused_cell = Some(cell);
+        // The same page follow-through as the arrow keys: a selection that lands on another page
+        // must take the page with it (SP-68).
+        if let Some(page_rows) = self.page_rows {
+            if let Some(page) = cell.0.checked_div(page_rows) {
+                if page != self.page {
+                    self.set_page(page);
+                }
+            }
+        }
         self.base.request_redraw();
     }
 
@@ -510,10 +618,22 @@ impl GridWidget {
         // the model. Dividing by `rows` made a paged grid occupy only its first `page_rows`
         // rows' worth of the control, leaving the rest of the rectangle empty.
         let rows = self.visible_rows().max(1);
-        let total_spacing_w = self.spacing.saturating_mul(cols.saturating_sub(1));
         let total_spacing_h = self.spacing.saturating_mul(rows.saturating_sub(1));
-        self.cell_width = (rect.width.saturating_sub(total_spacing_w)) / cols;
         self.cell_height = (rect.height.saturating_sub(total_spacing_h)) / rows;
+        // Columns with an explicit width take it out of the pool first; the remaining ones share
+        // what is left, so setting one column never squeezes the grid past its own width (SP-69).
+        let mut fixed = 0u32;
+        let mut auto = 0u32;
+        for column in 0..cols {
+            match self.column_widths.get(column as usize).copied().flatten() {
+                Some(width) => fixed = fixed.saturating_add(width.max(1)),
+                None => auto += 1,
+            }
+        }
+        let total_spacing_w = self.spacing.saturating_mul(cols.saturating_sub(1));
+        let free = rect.width.saturating_sub(total_spacing_w).saturating_sub(fixed);
+        let divisor = if auto == 0 { cols } else { auto };
+        self.cell_width = free.checked_div(divisor).unwrap_or(0).max(1);
     }
 }
 
@@ -585,6 +705,11 @@ impl Widget for GridWidget {
             )),
             "page_changed" => {
                 Some(EventSignalRef::mapped("page_changed", &self.page_changed, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "header_clicked" => {
+                Some(EventSignalRef::mapped("header_clicked", &self.header_clicked, |v| {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
@@ -830,12 +955,26 @@ impl Draw for GridWidget {
         let selection_fill = ink.blend(&cell_fill, 0.72);
         let hover_fill = ink.blend(&cell_fill, 0.88);
         let cell_font = crate::widget::metrics::role_font(self.style(), 12.0);
+        // One span table and one selected-cell set for the whole frame: the per-cell linear scans
+        // made a dense selection and a spanned grid `O(cells × (spans + selection))` (SP-P74).
+        let span_table: crate::compat::HashMap<(u32, u32), (u32, u32)> = self
+            .spans
+            .iter()
+            .map(|(row, column, row_span, column_span)| {
+                ((*row, *column), (*row_span, *column_span))
+            })
+            .collect();
+        let selected_table: crate::compat::HashMap<(u32, u32), ()> =
+            self.selected_cells.iter().map(|cell| (*cell, ())).collect();
+        let column_offsets = self.column_offsets();
         for row in self.first_row()..self.first_row() + self.visible_rows() {
             for column in 0..self.columns {
-                let Some(cell) = self.cell_rect(row, column) else {
+                let Some(cell) =
+                    self.cell_rect_in(row, column, Some(&span_table), Some(&column_offsets))
+                else {
                     continue;
                 };
-                if self.selected_cells.contains(&(row, column)) {
+                if selected_table.contains_key(&(row, column)) {
                     context.fill_rect(cell, selection_fill);
                 } else if self.hovered_cell == Some((row, column)) {
                     context.fill_rect(cell, hover_fill);
@@ -872,8 +1011,8 @@ impl Draw for GridWidget {
                 let Some(title) = self.headers.get(column as usize) else {
                     continue;
                 };
-                let x = body.x + (column * (self.cell_width + self.spacing)) as i32;
-                let width = self.cell_width.max(1);
+                let x = body.x + self.column_offset(column);
+                let width = self.column_width(column);
                 let line = context.text_line(Rect::new(x, band.y, width, band.height), &font);
                 context.draw_text_fitted_cow(
                     Rect::new(x + 3, line.y, width.saturating_sub(6).max(1), line.height),
@@ -909,15 +1048,16 @@ impl Draw for GridWidget {
             return;
         }
 
-        let total_w = self.columns * self.cell_width
-            + self.spacing.saturating_mul(self.columns.saturating_sub(1));
+        let total_w: u32 = (0..self.columns)
+            .map(|column| self.column_width(column))
+            .sum::<u32>()
+            .saturating_add(self.spacing.saturating_mul(self.columns.saturating_sub(1)));
         let total_h = self.visible_rows() * self.cell_height
             + self.spacing.saturating_mul(self.visible_rows().saturating_sub(1));
 
         // Vertical lines
         for col in 1..self.columns {
-            let x = body.x + (col * (self.cell_width + self.spacing)) as i32
-                - (self.spacing / 2) as i32;
+            let x = body.x + self.column_offset(col) - (self.spacing / 2) as i32;
             let x = x.max(body.x).min(body.x + total_w as i32);
             context.draw_line(
                 Point::new(x, body.y),
@@ -961,6 +1101,15 @@ impl EventHandler for GridWidget {
             }
             Event::MousePress { pos, button: 1, .. } => {
                 self.base.set_mouse_pressed(true);
+                // The heading band is a target of its own: a press there reports the column
+                // instead of selecting the first cell under it (SP-69).
+                if !self.headers.is_empty() && self.hit_header(pos) {
+                    if let Some(column) = self.cell_at_x(pos.x) {
+                        self.header_clicked.emit(column);
+                        self.base.clicked.emit();
+                    }
+                    return;
+                }
                 if let Some(cell) = self.cell_at(pos) {
                     self.base.clicked.emit();
                     self.select_cell(cell);
@@ -1002,6 +1151,16 @@ impl EventHandler for GridWidget {
                     _ => return,
                 }
                 self.focused_cell = Some((row, column));
+                // A focus that scrolls off the current page is invisible: the ring stays on a page
+                // the user is not looking at and the arrow keys appear dead. Bring the page the
+                // focused row belongs to into view (SP-68).
+                if let Some(page_rows) = self.page_rows {
+                    if let Some(page) = row.checked_div(page_rows) {
+                        if page != self.page {
+                            self.set_page(page);
+                        }
+                    }
+                }
                 if self.multi_select {
                     // Arrow navigation moves the focus only; Space/Enter commits it.
                 } else {

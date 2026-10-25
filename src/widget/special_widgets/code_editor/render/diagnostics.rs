@@ -100,6 +100,38 @@ impl CodeEditor {
                 Point::new(x + width as i32, underline_y),
                 marker.severity.color(),
             );
+            // The full message for the hovered line. The caret's line keeps its inline
+            // label below; every other line gets its message on hover, so no diagnostic is
+            // readable only by moving the caret (ED-03).
+            if self.hovered_diagnostic == Some(line) {
+                let hover = format!("{} {}", marker.severity.badge(), marker.message);
+                let available = (right - left).max(40) as u32;
+                let text_width = context.measure_text(&hover, font).width as i32;
+                let bubble_width = (text_width.min(available as i32 - 16).max(24) + 16) as u32;
+                let bubble_height = (label_height.max(12) + 12) as u32;
+                let bubble_x = x.min(right - bubble_width as i32).max(left);
+                let above = y - bubble_height as i32 - 4;
+                let bubble_y = if above >= rect.y + self.text_origin_y() {
+                    above
+                } else {
+                    y + row_height.round() as i32 + 2
+                };
+                let bubble = Rect::new(bubble_x, bubble_y, bubble_width, bubble_height);
+                context.fill_rect(bubble, chrome.chrome_background);
+                context.draw_rect(bubble, marker.severity.color());
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        bubble.x + 8,
+                        bubble.y + 6,
+                        (bubble.width.saturating_sub(16)).max(1),
+                        label_height as u32,
+                    ),
+                    &hover,
+                    font,
+                    marker.severity.color().legible_on(chrome.chrome_background, 4.5),
+                    HorizontalAlignment::Left,
+                );
+            }
             if line != active_line {
                 continue;
             }

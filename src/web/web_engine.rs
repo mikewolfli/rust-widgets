@@ -115,6 +115,23 @@ impl WebEngineViewEnhanced {
     pub fn load_progress(&self) -> u8 {
         self.core.load_progress()
     }
+
+    /// The core's load-progress signal, in percent.
+    ///
+    /// The core emits this throughout a simulated load, but until an accessor existed the
+    /// signal lived on a private field and no host could connect it — the "emitted but
+    /// unobservable" defect H-305 records. The widget-layer control publishes the same fact
+    /// as `load_progress_changed` through its capability contract.
+    pub fn loading_progress_signal(&self) -> &Signal1<u8> {
+        &self.core.loading_progress
+    }
+
+    /// The core's navigation-state signal, carrying `(can_go_back, can_go_forward)`.
+    ///
+    /// Same accessor rationale as [`Self::loading_progress_signal`].
+    pub fn navigation_state_changed_signal(&self) -> &Signal1<(bool, bool)> {
+        &self.core.navigation_state_changed
+    }
     /// Whether the session history has an entry behind the current one.
     pub fn can_go_back(&self) -> bool {
         self.core.can_go_back()

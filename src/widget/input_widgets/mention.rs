@@ -38,16 +38,22 @@
 //! `create_mention` on `ControlBackend`.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::widget::capability::coercion::{expect_string, expect_usize};
+use crate::undo::{UndoStack, ValueCommand};
+use crate::widget::capability::coercion::{
+    expect_string, expect_u32_saturating, expect_usize,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// A person who can be mentioned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +154,21 @@ pub struct Mention {
     selection_anchor: Option<usize>,
     /// Whether a pointer drag is extending the selection.
     dragging_selection: bool,
+    /// The first candidate row the popup paints, so candidates beyond `max_visible` are
+    /// reachable (I-102).
+    scroll_offset: usize,
+    /// The host's available popup area, used to flip the popup upward when there is not enough
+    /// room below (I-102). `None` leaves the popup below the field.
+    popup_viewport: Option<Rect>,
+    /// Whether the popup was flipped above the field for the current layout (I-102).
+    popup_flipped: bool,
+    /// The caret's blink state (I-101).
+    cursor_blink: crate::style::CursorBlink,
+    /// Whether the field owns focus, which starts and stops the caret blink (I-101).
+    focused: bool,
+    undo_stack: UndoStack,
+    history_target: Rc<RefCell<String>>,
+    restoring_history: bool,
 }
 
 impl Mention {
@@ -172,6 +193,14 @@ impl Mention {
             row_height: ROW_HEIGHT,
             selection_anchor: None,
             dragging_selection: false,
+            scroll_offset: 0,
+            popup_viewport: None,
+            popup_flipped: false,
+            cursor_blink: crate::style::CursorBlink::new(),
+            focused: false,
+            undo_stack: UndoStack::new(),
+            history_target: Rc::new(RefCell::new(String::new())),
+            restoring_history: false,
         }
     }
 
@@ -255,8 +284,15 @@ impl Mention {
 
     /// Replaces the text and re-derives the mention state.
     pub fn set_text(&mut self, text: impl Into<String>) {
-        self.text = text.into();
+        let text = text.into();
+        if self.text == text {
+            return;
+        }
+        let before = self.text.clone();
+        self.text = text;
+        self.record_edit(before);
         self.caret = self.text.len();
+        self.selection_anchor = None;
         self.refresh();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
@@ -324,14 +360,19 @@ impl Mention {
     fn byte_index_at_x(&self, x: i32) -> usize {
         let font = self.field_font();
         let target = (x - (self.geometry().x + 8)).max(0) as f32;
+        // I-P66: one accumulated prefix instead of re-measuring the whole prefix per glyph
+        // (which was O(line²) for a click).
         let mut best = 0usize;
+        let mut prefix = 0.0f32;
+        let mut glyph = [0u8; 4];
         for (index, ch) in self.text.char_indices() {
-            let prefix =
-                crate::widget::metrics::estimate_text_width(&self.text[..index], &font, 1.0);
-            let advance = crate::widget::metrics::estimate_text_width(&ch.to_string(), &font, 1.0);
-            if target < prefix as f32 + advance as f32 / 2.0 {
+            let advance =
+                crate::widget::metrics::estimate_text_width(ch.encode_utf8(&mut glyph), &font, 1.0)
+                    as f32;
+            if target < prefix + advance / 2.0 {
                 break;
             }
+            prefix += advance;
             best = index + ch.len_utf8();
         }
         best.min(self.text.len())
@@ -339,17 +380,121 @@ impl Mention {
 
     /// Inserts `ch` at the caret and moves the caret past it.
     pub fn insert_char(&mut self, ch: char) {
+        let mut glyph = [0u8; 4];
+        self.insert_str(ch.encode_utf8(&mut glyph));
+    }
+
+    /// Inserts a whole run at the caret in one refresh and one signal (I-P66).
+    ///
+    /// A multi-character `TextInput`/IME commit used to loop over `insert_char`, doing one
+    /// `refresh`, one whole-text clone and one signal per character.
+    pub fn insert_str(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
         if self.caret > self.text.len() || !self.text.is_char_boundary(self.caret) {
             // A caret that is not on a character boundary cannot be spliced; moving it
             // to the end is the only safe repair, and it is reported rather than done
             // silently by a panic.
             self.caret = self.text.len();
         }
-        self.text.insert(self.caret, ch);
-        self.caret += ch.len_utf8();
+        let before = self.text.clone();
+        self.text.insert_str(self.caret, text);
+        self.caret += text.len();
+        self.selection_anchor = None;
+        self.record_edit(before);
         self.refresh();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
+    }
+
+    /// Files one undo step for a text mutation (I-101).
+    fn record_edit(&mut self, before: String) {
+        if self.restoring_history {
+            return;
+        }
+        *self.history_target.borrow_mut() = self.text.clone();
+        self.undo_stack.push(Box::new(ValueCommand::new(
+            self.history_target.clone(),
+            before,
+            self.text.clone(),
+            "Edit text",
+            "mention_text",
+        )));
+    }
+
+    /// Reverts the latest text mutation (I-101).
+    pub fn undo(&mut self) -> bool {
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    /// Reapplies the latest undone mutation (I-101).
+    pub fn redo(&mut self) -> bool {
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        self.restore_history_text();
+        true
+    }
+
+    fn restore_history_text(&mut self) {
+        self.restoring_history = true;
+        self.text = self.history_target.borrow().clone();
+        self.caret = self.text.len();
+        self.selection_anchor = None;
+        self.restoring_history = false;
+        self.refresh();
+        self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
+    }
+
+    /// Copies the selected text to the platform clipboard (I-101).
+    #[cfg(not(alloc_frugal))]
+    fn copy_selection_to_clipboard(&self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        let selected = self.text[start..end].to_string();
+        if selected.is_empty() {
+            return None;
+        }
+        crate::set_clipboard_text(&selected);
+        Some(selected)
+    }
+
+    #[cfg(alloc_frugal)]
+    fn copy_selection_to_clipboard(&self) -> Option<String> {
+        None
+    }
+
+    /// Inserts the clipboard's text at the caret (I-101).
+    #[cfg(not(alloc_frugal))]
+    fn paste_from_clipboard(&mut self) {
+        let text = crate::get_clipboard_text();
+        if !text.is_empty() {
+            self.insert_str(&text);
+        }
+    }
+
+    #[cfg(alloc_frugal)]
+    fn paste_from_clipboard(&mut self) {}
+
+    /// Removes the selected range, if any (I-101).
+    fn delete_selection(&mut self) -> bool {
+        let Some((start, end)) = self.selection_range() else {
+            return false;
+        };
+        let before = self.text.clone();
+        self.text.replace_range(start..end, "");
+        self.caret = start;
+        self.selection_anchor = None;
+        self.record_edit(before);
+        self.refresh();
+        self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
+        true
     }
 
     /// Removes the character before the caret.
@@ -360,8 +505,11 @@ impl Mention {
             return false;
         }
         let previous = self.previous_char_boundary(self.caret);
+        let before = self.text.clone();
         self.text.replace_range(previous..self.caret, "");
         self.caret = previous;
+        self.selection_anchor = None;
+        self.record_edit(before);
         self.refresh();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
@@ -425,7 +573,10 @@ impl Mention {
         // is the convention every mention UI uses (`@al` becomes `@Alice`, not
         // `@@Alice`).
         let replaced = format!("{}{}", self.trigger, display);
+        let before = self.text.clone();
         self.text.replace_range(start..self.caret, &replaced);
+        self.record_edit(before);
+        self.selection_anchor = None;
         self.caret = start + replaced.len();
         self.trigger_offset = None;
         self.filtered.clear();
@@ -474,6 +625,9 @@ impl Mention {
             None => count - 1,
         };
         self.highlighted = Some(next as usize);
+        // I-102: the visible window follows the highlight, so a candidate beyond `max_visible`
+        // comes into view when the arrows reach it.
+        self.scroll_to_highlight();
         self.base.request_redraw();
     }
 
@@ -488,6 +642,8 @@ impl Mention {
     /// state-change notification.
     fn refresh(&mut self) {
         self.completed.clear();
+        // I-102: a new filter starts at the top of its own candidate list.
+        self.scroll_offset = 0;
         let was_open = self.trigger_offset.is_some();
         let token = self.active_token();
         match token {
@@ -596,33 +752,89 @@ impl Mention {
         }
     }
 
-    /// The rectangle of the popup row at `index`.
+    /// How many popup rows the visible window shows (I-102).
+    fn visible_row_count(&self) -> usize {
+        self.filtered.len().min(self.max_visible)
+    }
+
+    /// The popup's top edge and whether it was flipped above the field (I-102).
+    ///
+    /// The host may supply the available popup area through [`Self::set_popup_viewport`]. When
+    /// the rows below the field would cross its bottom edge, the popup is placed above the field
+    /// instead. Without a viewport there is no screen fact to measure against, so the popup stays
+    /// below — the same placement this control always had.
+    fn popup_top(&self, rows: usize) -> (i32, bool) {
+        let rect = self.geometry();
+        let height = (rows as u32 * self.row_height) as i32;
+        let below = rect.y + rect.height as i32;
+        let fits = self
+            .popup_viewport
+            .is_none_or(|viewport| below + height <= viewport.y + viewport.height as i32);
+        if fits {
+            (below, false)
+        } else {
+            (rect.y - height, true)
+        }
+    }
+
+    /// Sets the host's available popup area so the popup can flip upward (I-102).
+    pub fn set_popup_viewport(&mut self, viewport: Option<Rect>) {
+        if self.popup_viewport == viewport {
+            return;
+        }
+        self.popup_viewport = viewport;
+        self.base.request_redraw();
+    }
+
+    /// The rectangle of the popup row at `index` **within the visible window**.
     fn row_rect(&self, index: usize) -> Option<Rect> {
-        if index >= self.filtered.len().min(self.max_visible) {
+        if index >= self.visible_row_count() {
             return None;
         }
         let rect = self.geometry();
+        let (top, _) = self.popup_top(self.visible_row_count());
         Some(Rect::new(
             rect.x,
-            rect.y + rect.height as i32 + (index as u32 * self.row_height) as i32,
+            top + (index as u32 * self.row_height) as i32,
             rect.width,
             self.row_height,
         ))
     }
 
     fn row_at(&self, pos: Point) -> Option<usize> {
-        let rows = self.filtered.len().min(self.max_visible);
+        let rows = self.visible_row_count();
         (0..rows).find(|index| self.row_rect(*index).is_some_and(|rect| rect.contains_point(pos)))
     }
 
-    /// The x offset of the caret, in pixels, drawn from the field's left padding.
-    ///
-    /// Measured by the caller's context rather than computed here, because glyph
-    /// widths are a font fact this module does not own.
-    fn caret_x(&self, context: &RenderContext) -> i32 {
-        let before = self.text.get(..self.caret).unwrap_or("");
-        let font = self.field_font();
-        context.measure_text(before, &font).width as i32
+    /// Keeps the highlighted row inside the visible window (I-102).
+    fn scroll_to_highlight(&mut self) {
+        let Some(highlight) = self.highlighted else {
+            return;
+        };
+        if highlight < self.scroll_offset {
+            self.scroll_offset = highlight;
+        } else if highlight >= self.scroll_offset + self.max_visible {
+            self.scroll_offset = highlight + 1 - self.max_visible;
+        }
+        let max_offset = self.filtered.len().saturating_sub(self.max_visible);
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
+    /// Whether the current popup was placed above the field (I-102).
+    pub fn popup_flipped(&self) -> bool {
+        self.popup_flipped
+    }
+
+    /// Advances the caret blink by `delta_ms` (I-101).
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.focused {
+            return false;
+        }
+        let running = self.cursor_blink.tick(delta_ms);
+        if running {
+            self.base.request_redraw();
+        }
+        running
     }
 
     /// The font the mention field and its popup rows draw with: the resolved theme/caller font when
@@ -649,6 +861,16 @@ impl Widget for Mention {
 
     fn size_hint(&self) -> Size {
         Size::new(240, 30)
+    }
+
+    /// Advances the caret blink and reports whether another frame is owed (I-101).
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        Mention::tick(self, delta_ms)
+    }
+
+    /// A focused field's caret is cycling, so a frame is owed (I-101).
+    fn is_animating(&self) -> bool {
+        self.focused && self.cursor_blink.is_running()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -740,7 +962,7 @@ impl WidgetProperties for Mention {
                 Ok(())
             }
             "row_height" => {
-                self.set_row_height(expect_usize(value)? as u32);
+                self.set_row_height(expect_u32_saturating(value)?);
                 Ok(())
             }
             // Derived from the text and the candidate list.
@@ -813,13 +1035,47 @@ impl Draw for Mention {
         // no longer paint past the field's own edge. The popup below is drawn after the
         // clip is popped, so it is unaffected.
         context.push_clip(rect.x, rect.y, rect.width, rect.height);
+        // I-P66: one measured prefix table shared by the selection edges, every completed
+        // mention's underline and the caret. Each of them used to re-measure a prefix from the
+        // document start on every frame.
+        let mut offsets = vec![0usize, self.text.len(), self.caret];
+        for mention in &self.completed {
+            offsets.push(mention.start.min(self.text.len()));
+            offsets.push(mention.end.min(self.text.len()));
+        }
+        if let Some((start, end)) = self.selection_range() {
+            offsets.push(start.min(self.text.len()));
+            offsets.push(end.min(self.text.len()));
+        }
+        offsets.sort_unstable();
+        offsets.dedup();
+        let mut widths = vec![0u32; offsets.len()];
+        let mut next = 0usize;
+        let mut prefix = 0u32;
+        let mut glyph = [0u8; 4];
+        for (index, ch) in self.text.char_indices() {
+            while next < offsets.len() && offsets[next] == index {
+                widths[next] = prefix;
+                next += 1;
+            }
+            prefix += context.measure_text(ch.encode_utf8(&mut glyph), &field_font).width;
+        }
+        while next < offsets.len() {
+            widths[next] = prefix;
+            next += 1;
+        }
+        let width_at = |offset: usize| -> u32 {
+            match offsets.binary_search(&offset) {
+                Ok(index) => widths[index],
+                Err(index) => widths[index.saturating_sub(1)],
+            }
+        };
         // The selection band sits under the glyphs, measured with the same shaper the text uses.
         if let Some((start, end)) = self.selection_range() {
             let from = start.min(self.text.len());
             let to = end.min(self.text.len());
-            let x0 =
-                rect.x + 8 + context.measure_text(&self.text[..from], &field_font).width as i32;
-            let x1 = rect.x + 8 + context.measure_text(&self.text[..to], &field_font).width as i32;
+            let x0 = rect.x + 8 + width_at(from) as i32;
+            let x1 = rect.x + 8 + width_at(to) as i32;
             if x1 > x0 {
                 let fill = text_color.blend(&background, 0.3).blend(&background, 0.25);
                 context.fill_rect(
@@ -845,10 +1101,10 @@ impl Draw for Mention {
             .map(|active| active.colors.primary)
             .unwrap_or(Color::rgb(66, 133, 244));
         for mention in &self.completed {
-            let before = self.text.get(..mention.start).unwrap_or("");
-            let span = self.text.get(mention.start..mention.end).unwrap_or("");
-            let start_x = rect.x + 8 + context.measure_text(before, &field_font).width as i32;
-            let width = context.measure_text(span, &field_font).width as i32;
+            let start = mention.start.min(self.text.len());
+            let end = mention.end.min(self.text.len());
+            let start_x = rect.x + 8 + width_at(start) as i32;
+            let width = width_at(end).saturating_sub(width_at(start)) as i32;
             // The underline sits just under the line box, so it tracks the effective font rather
             // than the fixed `rect.y + 22` that assumed a 12 px face.
             let underline_y = field_line.y + field_line.height as i32;
@@ -861,14 +1117,19 @@ impl Draw for Mention {
         }
 
         if self.is_popup_open() {
-            let caret_x = rect.x + 8 + self.caret_x(context);
-            context.draw_line_stroke(
-                Point::new(caret_x, rect.y + 8),
-                Point::new(caret_x, rect.y + 8 + CARET_HEIGHT as i32),
-                text_color,
-                1,
-            );
+            // I-101: the caret is painted only during the visible half of its blink cycle.
+            if self.cursor_blink.is_visible() {
+                let caret_x = rect.x + 8 + width_at(self.caret.min(self.text.len())) as i32;
+                context.draw_line_stroke(
+                    Point::new(caret_x, rect.y + 8),
+                    Point::new(caret_x, rect.y + 8 + CARET_HEIGHT as i32),
+                    text_color,
+                    1,
+                );
+            }
             context.pop_clip();
+            // I-102: remember the placement the hit test will derive from the same inputs.
+            self.popup_flipped = self.popup_top(self.visible_row_count()).1;
             self.draw_popup(context);
         } else {
             context.pop_clip();
@@ -889,14 +1150,17 @@ impl Mention {
     /// (`surface_container`), its border is the weak separator (`outline_variant`), a highlighted row
     /// is a *selection* (the accent pair), and the secondary description is the theme's weak ink.
     fn draw_popup(&self, context: &mut RenderContext) {
-        let rows = self.filtered.len().min(self.max_visible);
+        let rows = self.visible_row_count();
         if rows == 0 {
             return;
         }
         let rect = self.geometry();
+        // I-102: the popup flips above the field when the host-reported viewport has no room
+        // below it.
+        let (top, _) = self.popup_top(rows);
         let popup = Rect::new(
             rect.x,
-            rect.y + rect.height as i32,
+            top,
             rect.width,
             (rows as u32 * self.row_height).max(self.row_height),
         );
@@ -926,15 +1190,18 @@ impl Mention {
         context.fill_rounded_rect(popup, 4, popup_surface);
         context.draw_rounded_rect_stroke(popup, 4, separator, 1);
 
-        for index in 0..rows {
-            let Some(row) = self.row_rect(index) else {
+        for row_index in 0..rows {
+            let Some(row) = self.row_rect(row_index) else {
                 continue;
             };
-            let Some(candidate) = self.filtered.get(index).and_then(|i| self.candidates.get(*i))
+            // The visible window is the filtered list offset by the scroll position.
+            let candidate_index = self.scroll_offset + row_index;
+            let Some(candidate) =
+                self.filtered.get(candidate_index).and_then(|i| self.candidates.get(*i))
             else {
                 continue;
             };
-            let highlighted = self.highlighted == Some(index);
+            let highlighted = self.highlighted == Some(candidate_index);
             if highlighted {
                 context.fill_rect(row, highlight);
             }
@@ -981,9 +1248,34 @@ impl EventHandler for Mention {
             return;
         }
         match event {
+            Event::FocusGained { .. } => {
+                self.focused = true;
+                self.cursor_blink.start();
+                self.base.request_redraw();
+            }
+            Event::FocusLost => {
+                self.focused = false;
+                self.cursor_blink.stop();
+                self.base.request_redraw();
+            }
+            Event::Wheel { delta, modifiers, .. } => {
+                // I-102: the candidate window scrolls without moving the highlight.
+                if self.is_popup_open() {
+                    let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                    let max_offset = self.filtered.len().saturating_sub(self.max_visible);
+                    let next = (self.scroll_offset as i64 - scroll.lines_y as i64)
+                        .clamp(0, max_offset as i64) as usize;
+                    if next != self.scroll_offset {
+                        self.scroll_offset = next;
+                        self.base.request_redraw();
+                    }
+                }
+            }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
                 if rect.contains_point(*pos) {
+                    self.focused = true;
+                    self.cursor_blink.start();
                     // The press places the caret where the user aimed and starts a selection, so
                     // clicking into the middle of the value inserts there instead of appending.
                     let index = self.byte_index_at_x(pos.x);
@@ -1025,28 +1317,73 @@ impl EventHandler for Mention {
             Event::TextInput { text } | Event::ImeCommit { text }
                 if text.chars().all(|ch| !ch.is_control()) && !text.is_empty() =>
             {
-                for ch in text.chars() {
-                    self.insert_char(ch);
+                // I-P66: one splice, one refresh and one signal for the whole committed run.
+                self.insert_str(text);
+            }
+            Event::KeyDown((key, _)) | Event::KeyPress { key, .. } => {
+                let mods = match event {
+                    Event::KeyPress { modifiers, .. } => {
+                        crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                    }
+                    _ => crate::shortcut::Modifiers::NONE,
+                };
+                let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
+                // I-101: clipboard and history, matching the crate's text fields.
+                if primary && (*key == 90 || *key == 122) {
+                    let _ = self.undo();
+                    return;
+                }
+                if primary && (*key == 89 || *key == 121) {
+                    let _ = self.redo();
+                    return;
+                }
+                if primary && (*key == 67 || *key == 99) {
+                    let _ = self.copy_selection_to_clipboard();
+                    return;
+                }
+                if primary && (*key == 88 || *key == 120) {
+                    let _ = self.copy_selection_to_clipboard();
+                    self.delete_selection();
+                    return;
+                }
+                if primary && (*key == 86 || *key == 118) {
+                    self.paste_from_clipboard();
+                    return;
+                }
+                if primary && (*key == 65 || *key == 97) {
+                    self.select_all();
+                    return;
+                }
+                match *key {
+                    8 => {
+                        self.backspace();
+                    }
+                    37 => self.move_caret_left(),
+                    39 => self.move_caret_right(),
+                    // I-101: Home/End reach the ends of the single-line value.
+                    36 => {
+                        self.caret = 0;
+                        self.refresh();
+                        self.base.request_redraw();
+                    }
+                    35 => {
+                        self.caret = self.text.len();
+                        self.refresh();
+                        self.base.request_redraw();
+                    }
+                    // Up/Down drive the popup when it is open, and do nothing when it is
+                    // not — a single-line field has no vertical caret movement, so
+                    // consuming the keys would be surprising.
+                    38 if self.is_popup_open() => self.move_highlight(-1),
+                    40 if self.is_popup_open() => self.move_highlight(1),
+                    13 if self.is_popup_open() => {
+                        let index = self.highlighted.unwrap_or(0);
+                        self.complete(index);
+                    }
+                    27 => self.close_popup(),
+                    _ => {}
                 }
             }
-            Event::KeyDown((key, _)) | Event::KeyPress { key, .. } => match *key {
-                8 => {
-                    self.backspace();
-                }
-                37 => self.move_caret_left(),
-                39 => self.move_caret_right(),
-                // Up/Down drive the popup when it is open, and do nothing when it is
-                // not — a single-line field has no vertical caret movement, so
-                // consuming the keys would be surprising.
-                38 if self.is_popup_open() => self.move_highlight(-1),
-                40 if self.is_popup_open() => self.move_highlight(1),
-                13 if self.is_popup_open() => {
-                    let index = self.highlighted.unwrap_or(0);
-                    self.complete(index);
-                }
-                27 => self.close_popup(),
-                _ => {}
-            },
             _ => {}
         }
     }

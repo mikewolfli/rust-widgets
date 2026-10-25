@@ -40,12 +40,17 @@ macro_rules! impl_dialog_widgets {
             // here — rather than leaving the parameter unused — is what makes the
             // dialog show the message the caller passed.
             if id != 0 {
-                crate::widget::capability::write_widget_property_by_id(
+                // A message box whose body write fails would otherwise open empty with
+                // no trace. Report it (the same way `set_widget_text` in the sibling
+                // helper module does) and keep creating the box: the title is already
+                // correct, and the host can still show something.
+                if let Err(error) = crate::widget::capability::write_widget_property_by_id(
                     id,
                     "text",
                     crate::widget::capability::CapabilityValue::String(text.to_string()),
-                )
-                .ok();
+                ) {
+                    log::warn!("custom backend: messagebox body write failed: {error:?}");
+                }
 
                 // A message box starts **hidden**: it is a modal dialog, so creating it
                 // is not the same as showing it.

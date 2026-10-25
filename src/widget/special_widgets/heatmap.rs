@@ -35,7 +35,7 @@
 //! it is reachable by name from the declarative JSON path (`"heatmap"`), from a CSS
 //! selector (`Heatmap`), and through the typed `create_heatmap` on `ControlBackend`.
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
@@ -149,6 +149,16 @@ pub struct Heatmap {
     row_order: Vec<usize>,
     /// The column indices in display order.
     column_order: Vec<usize>,
+    /// Data row to display row. Built with the order so a lookup is O(1).
+    row_position: Vec<usize>,
+    /// Data column to display column. Built with the order so a lookup is O(1).
+    column_position: Vec<usize>,
+    /// The legend's endpoint texts and label height, with the key they were built for.
+    legend_text: RefCell<Option<(u64, u64, u32, String, String, u32)>>,
+    /// The hover read-out text and measured size, with the key they were built for.
+    readout_text: ReadoutCache,
+    /// Whether the host paints the hover read-out with a companion tooltip.
+    hover_readout_external: bool,
     /// A caller-supplied colour ramp.
     ramp: Option<Box<dyn ColorRamp>>,
     /// Cached legend samples for the width they were built at.
@@ -181,6 +191,9 @@ pub struct Heatmap {
     pub cell_double_clicked: Signal1<(usize, usize)>,
 }
 
+/// The hover read-out text and measured size, with the key they were built for.
+type ReadoutCache = RefCell<Option<((usize, usize), u64, u32, String, u32, u32)>>;
+
 impl Heatmap {
     /// Creates a heat map with no rows, no columns and no values.
     ///
@@ -204,6 +217,11 @@ impl Heatmap {
             cluster_columns: false,
             row_order: Vec::new(),
             column_order: Vec::new(),
+            row_position: Vec::new(),
+            column_position: Vec::new(),
+            legend_text: RefCell::new(None),
+            readout_text: RefCell::new(None),
+            hover_readout_external: false,
             ramp: None,
             legend_cache: None,
             data_range_cache: Cell::new(None),
@@ -412,7 +430,70 @@ impl Heatmap {
         }
         self.row_order = row_order;
         self.column_order = column_order;
+        // The inverse maps are what the drag band and the hover read-out need: they are given
+        // **data** coordinates and need the display position. Recomputing it with a linear scan
+        // per call made a large matrix's read-out walk the whole axis on every frame.
+        self.row_position = vec![0; self.row_order.len()];
+        for (position, data) in self.row_order.iter().enumerate() {
+            if let Some(slot) = self.row_position.get_mut(*data) {
+                *slot = position;
+            }
+        }
+        self.column_position = vec![0; self.column_order.len()];
+        for (position, data) in self.column_order.iter().enumerate() {
+            if let Some(slot) = self.column_position.get_mut(*data) {
+                *slot = position;
+            }
+        }
         self.hovered_cell = None;
+    }
+
+    /// The display row a data row is painted at.
+    fn display_row_of(&self, row: usize) -> usize {
+        self.row_position.get(row).copied().unwrap_or(row)
+    }
+
+    /// The display column a data column is painted at.
+    fn display_column_of(&self, column: usize) -> usize {
+        self.column_position.get(column).copied().unwrap_or(column)
+    }
+
+    /// Whether the host, rather than this control, paints the hover read-out.
+    pub fn hover_readout_external(&self) -> bool {
+        self.hover_readout_external
+    }
+
+    /// Hands the hover read-out to a companion such as
+    /// [`ChartTooltip`](crate::widget::companions::ChartTooltip).
+    pub fn set_hover_readout_external(&mut self, external: bool) {
+        if self.hover_readout_external == external {
+            return;
+        }
+        self.hover_readout_external = external;
+        self.base.request_redraw();
+    }
+
+    /// The hovered cell's anchor and suggested tooltip content, for an external read-out.
+    pub fn hover_anchor(
+        &self,
+    ) -> Option<(Point, crate::compat::Vec<crate::widget::companions::TooltipLine>)> {
+        use crate::widget::companions::TooltipLine;
+        let (row, column) = self.hovered_cell?;
+        let display_row = self.display_row_of(row);
+        let display_column = self.display_column_of(column);
+        let cell = self.cell_rect(display_row, display_column);
+        let grid = self.grid_rect();
+        let anchor = cell
+            .map(|cell| Point::new(cell.x + cell.width as i32, cell.y))
+            .unwrap_or_else(|| Point::new(grid.x, grid.y));
+        let row_label = self.row_labels.get(row).map(String::as_str).unwrap_or("");
+        let column_label = self.column_labels.get(column).map(String::as_str).unwrap_or("");
+        let text = match self.cell(row, column).and_then(|cell| cell.value) {
+            Some(value) => format!("{row_label} / {column_label}: {}", format_endpoint(value)),
+            None => format!("{row_label} / {column_label}: \u{2014}"),
+        };
+        let lines = crate::compat::Vec::from([TooltipLine::new(text)]);
+        Some((anchor, lines))
     }
 
     /// The data row drawn at display row `position`.
@@ -1157,17 +1238,9 @@ impl Draw for Heatmap {
             let (row_start, row_end) = (anchor.0.min(current.0), anchor.0.max(current.0));
             let (column_start, column_end) = (anchor.1.min(current.1), anchor.1.max(current.1));
             let top_left = self
-                .row_order
-                .iter()
-                .position(|index| *index == row_start)
-                .zip(self.column_order.iter().position(|index| *index == column_start))
-                .and_then(|(row, column)| self.cell_rect(row, column));
-            let bottom_right = self
-                .row_order
-                .iter()
-                .position(|index| *index == row_end)
-                .zip(self.column_order.iter().position(|index| *index == column_end))
-                .and_then(|(row, column)| self.cell_rect(row, column));
+                .cell_rect(self.display_row_of(row_start), self.display_column_of(column_start));
+            let bottom_right =
+                self.cell_rect(self.display_row_of(row_end), self.display_column_of(column_end));
             if let (Some(top_left), Some(bottom_right)) = (top_left, bottom_right) {
                 let band = Rect::new(
                     top_left.x,
@@ -1180,53 +1253,76 @@ impl Draw for Heatmap {
         }
 
         // ── Hover read-out ──
-        if self.show_tooltip {
+        //
+        // The text and its measured size are cached against the hovered cell, so a still frame
+        // with the pointer parked on a cell formats and measures nothing.
+        if self.show_tooltip && !self.hover_readout_external {
             if let Some((row, column)) = self.hovered_cell {
-                let display_row =
-                    self.row_order.iter().position(|index| *index == row).unwrap_or(row);
-                let display_column =
-                    self.column_order.iter().position(|index| *index == column).unwrap_or(column);
+                let display_row = self.display_row_of(row);
+                let display_column = self.display_column_of(column);
                 // A hovered cell the viewport has scrolled away from has no box; the read-out is
                 // then anchored to the grid's own origin rather than to a position off the pane.
                 let cell_box = self.cell_rect(display_row, display_column);
                 let view_row = display_row.saturating_sub(self.first_row);
                 let view_column = display_column.saturating_sub(self.first_column);
                 let value = self.cell(row, column).and_then(|cell| cell.value);
-                let row_label = self.row_labels.get(row).map(String::as_str).unwrap_or("");
-                let column_label = self.column_labels.get(column).map(String::as_str).unwrap_or("");
-                let text = match value {
-                    Some(value) => {
-                        format!("{row_label} / {column_label}: {}", format_endpoint(value))
-                    }
-                    None => format!("{row_label} / {column_label}: —"),
-                };
-                let metrics = context.measure_text(&text, font);
-                let width = metrics.width as i32 + 8;
-                let height = metrics.height.max(1) as i32 + 6;
-                let mut x = cell_box
-                    .map(|cell_box| cell_box.x + cell_box.width as i32)
-                    .unwrap_or(grid.x + view_column as i32 * cell_width);
-                let mut y = cell_box
-                    .map(|cell_box| cell_box.y - height - 2)
-                    .unwrap_or(grid.y + view_row as i32 * cell_height - height - 2);
-                if x + width > rect.x + rect.width as i32 {
-                    x = grid.x + view_column as i32 * cell_width - width;
-                }
-                if y < rect.y {
-                    y = grid.y + (view_row as i32 + 1) * cell_height + 2;
-                }
-                x = x.max(rect.x);
-                y = y.max(rect.y).min(rect.y + rect.height as i32 - height);
-                let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
-                context.fill_rect(box_rect, background);
-                context.draw_rect(box_rect, border);
-                context.draw_text_line(
-                    box_rect,
-                    &text,
-                    font,
-                    text_color,
-                    HorizontalAlignment::Center,
+                let generation = value.map(f64::to_bits).unwrap_or(0);
+                let fresh = matches!(
+                    self.readout_text.borrow().as_ref(),
+                    Some((cell, cached_value, cached_font, _, _, _))
+                        if *cell == (row, column)
+                            && *cached_value == generation
+                            && *cached_font == font.size().to_bits()
                 );
+                if !fresh {
+                    let row_label = self.row_labels.get(row).map(String::as_str).unwrap_or("");
+                    let column_label =
+                        self.column_labels.get(column).map(String::as_str).unwrap_or("");
+                    let text = match value {
+                        Some(value) => {
+                            format!("{row_label} / {column_label}: {}", format_endpoint(value))
+                        }
+                        None => format!("{row_label} / {column_label}: \u{2014}"),
+                    };
+                    let metrics = context.measure_text(&text, font);
+                    *self.readout_text.borrow_mut() = Some((
+                        (row, column),
+                        generation,
+                        font.size().to_bits(),
+                        text,
+                        metrics.width,
+                        metrics.height.max(1),
+                    ));
+                }
+                let readout = self.readout_text.borrow();
+                if let Some((_, _, _, text, measured_width, measured_height)) = readout.as_ref() {
+                    let width = *measured_width as i32 + 8;
+                    let height = *measured_height as i32 + 6;
+                    let mut x = cell_box
+                        .map(|cell_box| cell_box.x + cell_box.width as i32)
+                        .unwrap_or(grid.x + view_column as i32 * cell_width);
+                    let mut y = cell_box
+                        .map(|cell_box| cell_box.y - height - 2)
+                        .unwrap_or(grid.y + view_row as i32 * cell_height - height - 2);
+                    if x + width > rect.x + rect.width as i32 {
+                        x = grid.x + view_column as i32 * cell_width - width;
+                    }
+                    if y < rect.y {
+                        y = grid.y + (view_row as i32 + 1) * cell_height + 2;
+                    }
+                    x = x.max(rect.x);
+                    y = y.max(rect.y).min(rect.y + rect.height as i32 - height);
+                    let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
+                    context.fill_rect(box_rect, background);
+                    context.draw_rect(box_rect, border);
+                    context.draw_text_line(
+                        box_rect,
+                        text,
+                        font,
+                        text_color,
+                        HorizontalAlignment::Center,
+                    );
+                }
             }
         }
 
@@ -1366,6 +1462,29 @@ impl Heatmap {
         let Some((low, high)) = self.scale_range() else {
             return;
         };
+        // The two endpoint captions and the label line's height are a function of the range and
+        // the font, so they are built once per change rather than formatted and measured on every
+        // frame.
+        let key = (low.to_bits(), high.to_bits(), font.size().to_bits());
+        let stale = !matches!(
+            self.legend_text.borrow().as_ref(),
+            Some((a, b, c, _, _, _)) if (*a, *b, *c) == key
+        );
+        if stale {
+            let label_height = context.measure_text("0", font).height;
+            *self.legend_text.borrow_mut() = Some((
+                key.0,
+                key.1,
+                key.2,
+                format_endpoint(low),
+                format_endpoint(high),
+                label_height,
+            ));
+        }
+        let legend_text = self.legend_text.borrow();
+        let Some((_, _, _, low_text, high_text, label_height)) = legend_text.as_ref() else {
+            return;
+        };
         // The two endpoint numbers take the row below the ramp.
         //
         // Two shapes of this were wrong before. Anchoring at `strip_bottom + 1` laid the
@@ -1375,20 +1494,18 @@ impl Heatmap {
         // the higher endpoint sat on the ramp colour beneath it and measured 1.15:1. Placing
         // the row after the ramp's own bottom edge makes the two adjacent by construction,
         // and `LEGEND_HEIGHT` reserves the line box the font actually has.
-        let label_height = context.measure_text("0", font).height;
         let label_top = y + strip_height + RAMP_GAP;
-        let label_band_height = label_height.max(1);
+        let label_band_height = (*label_height).max(1);
         context.draw_text_fitted_cow(
             Rect::new(strip_x, label_top, strip_width.max(1) as u32, label_band_height),
-            &format_endpoint(low),
+            low_text,
             font,
             text_color,
             HorizontalAlignment::Left,
         );
-        let high_text = format_endpoint(high);
         context.draw_text_fitted_cow(
             Rect::new(strip_x, label_top, strip_width.max(1) as u32, label_band_height),
-            &high_text,
+            high_text,
             font,
             text_color,
             HorizontalAlignment::Right,
@@ -1504,6 +1621,76 @@ impl EventHandler for Heatmap {
                 self.region_current = None;
                 self.pan_drag = None;
                 if self.hovered_cell.take().is_some() || had_region {
+                    self.base.request_redraw();
+                }
+            }
+            // Keyboard reachability: the grid is a collection, so it must be traversable without
+            // a pointer. Arrows walk the display order (the order the labels show), Enter repeats
+            // the click a press would send, and the primary modifier extends a rectangular
+            // selection from the anchor. Both signals are the pointer path's own, so a host does
+            // not have two cases to handle.
+            Event::KeyPress { key, modifiers } => {
+                let pressed = crate::shortcut::Key::from_key_code(*key);
+                let pressed_modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let extend = pressed_modifiers.contains(crate::shortcut::Modifiers::PRIMARY)
+                    || pressed_modifiers.contains(crate::shortcut::Modifiers::SHIFT);
+                let step = match pressed {
+                    Some(crate::shortcut::Key::Left) => Some((0isize, -1isize)),
+                    Some(crate::shortcut::Key::Right) => Some((0, 1)),
+                    Some(crate::shortcut::Key::Up) => Some((-1, 0)),
+                    Some(crate::shortcut::Key::Down) => Some((1, 0)),
+                    _ => None,
+                };
+                if let Some((row_delta, column_delta)) = step {
+                    if self.row_count() == 0 || self.column_count() == 0 {
+                        return;
+                    }
+                    let current = self.selected_cell.unwrap_or((0, 0));
+                    let display_row =
+                        self.display_row_of(current.0).saturating_add_signed(row_delta);
+                    let display_column =
+                        self.display_column_of(current.1).saturating_add_signed(column_delta);
+                    let display_row = display_row.min(self.row_count() - 1);
+                    let display_column = display_column.min(self.column_count() - 1);
+                    let next = (self.data_row(display_row), self.data_column(display_column));
+                    // A selection that walks past the viewport pans it, so the keyboard can
+                    // reach the whole matrix and not only what is visible.
+                    if display_row < self.first_row {
+                        self.set_pan(display_row, self.first_column);
+                    } else if display_row >= self.first_row + self.viewport_rows() {
+                        self.set_pan(display_row + 1 - self.viewport_rows(), self.first_column);
+                    }
+                    if display_column < self.first_column {
+                        self.set_pan(self.first_row, display_column);
+                    } else if display_column >= self.first_column + self.viewport_columns() {
+                        self.set_pan(self.first_row, display_column + 1 - self.viewport_columns());
+                    }
+                    if extend {
+                        let anchor = self.region_anchor.unwrap_or(current);
+                        self.region_anchor = Some(anchor);
+                        self.region_current = Some(next);
+                        let row_start = anchor.0.min(next.0);
+                        let row_end = anchor.0.max(next.0);
+                        let column_start = anchor.1.min(next.1);
+                        let column_end = anchor.1.max(next.1);
+                        self.region_selected.emit((row_start, column_start, row_end, column_end));
+                    } else {
+                        self.region_anchor = None;
+                        self.region_current = None;
+                    }
+                    self.set_selected_cell(Some(next));
+                    self.base.request_redraw();
+                    return;
+                }
+                if matches!(pressed, Some(crate::shortcut::Key::Enter)) {
+                    if let Some(cell) = self.selected_cell {
+                        self.cell_clicked.emit(cell);
+                        self.base.request_redraw();
+                    }
+                }
+                if matches!(pressed, Some(crate::shortcut::Key::Escape)) {
+                    self.region_anchor = None;
+                    self.region_current = None;
                     self.base.request_redraw();
                 }
             }
@@ -2175,5 +2362,57 @@ mod tests {
         heatmap.handle_event(&Event::mouse_double_click(cell.x + 2, cell.y + 2, 1));
         let got = clicked.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec![(2, 1)]);
+    }
+}
+
+#[cfg(test)]
+mod issue_2_8_tests {
+    use super::*;
+    use crate::event::Event;
+    use std::sync::{Arc, Mutex};
+
+    fn grid() -> Heatmap {
+        let mut grid = Heatmap::new(Rect::new(0, 0, 400, 300));
+        grid.set_data(
+            vec!["r0".to_string(), "r1".to_string()],
+            vec!["c0".to_string(), "c1".to_string()],
+            vec![
+                vec![HeatmapCell::new(1.0), HeatmapCell::new(2.0)],
+                vec![HeatmapCell::new(3.0), HeatmapCell::new(4.0)],
+            ],
+        );
+        grid
+    }
+
+    /// SP-16: arrows move the selection and Enter repeats the click semantic.
+    #[test]
+    fn arrow_keys_move_the_selection_and_enter_reports_the_cell() {
+        let mut grid = grid();
+        grid.set_selected_cell(Some((0, 0)));
+        grid.handle_event(&Event::key_press(39, 0));
+        assert_eq!(grid.selected_cell(), Some((0, 1)));
+        grid.handle_event(&Event::key_press(40, 0));
+        assert_eq!(grid.selected_cell(), Some((1, 1)));
+        let hits = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = hits.clone();
+        grid.cell_clicked.connect_ref(move |cell| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*cell);
+            }
+        });
+        grid.handle_event(&Event::key_press(13, 0));
+        assert_eq!(hits.lock().ok().map(|guard| guard.clone()).unwrap_or_default(), vec![(1, 1)]);
+    }
+
+    /// COMP-H03: the hover anchor reports the cell and its read-out text.
+    #[test]
+    fn the_hover_anchor_names_the_hovered_cell() {
+        let mut grid = grid();
+        assert!(grid.hover_anchor().is_none());
+        grid.hovered_cell = Some((1, 0));
+        let (_, lines) = grid.hover_anchor().expect("a hovered cell has an anchor");
+        assert!(lines.iter().any(|line| line.text.contains("r1 / c0: 3")));
+        grid.set_hover_readout_external(true);
+        assert!(grid.hover_readout_external());
     }
 }

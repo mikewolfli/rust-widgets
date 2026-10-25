@@ -20,7 +20,9 @@ use crate::signal::Signal1;
 use crate::widget::ScrollBar;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_i32_saturating, expect_i64, expect_string,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -136,8 +138,21 @@ pub struct ScrollArea {
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Current scroll position (x, y) in content coordinates.
     scroll_position: (i32, i32),
+    /// The inset applied inside the content box (C-21).
+    ///
+    /// Zero by default, so every existing placement and pixel is unchanged. The scroll range is
+    /// measured against the inset box, which is what keeps the last line reachable instead of
+    /// hidden under the inset.
+    content_margins: crate::style::EdgeOffsets,
+    /// Cached chrome derivation and the key it was produced under (C-P02).
+    chrome_cache: RefCell<Option<(u64, ChromeBands)>>,
     /// Content-space regions that stay pinned while their group is scrolled past.
     sticky_regions: Vec<StickyRegion>,
+    /// An optional control drawn inside each pinned band (COMP-E01), parallel to `sticky_regions`.
+    ///
+    /// The band geometry is the area's own derivation; the header only supplies the content, so a
+    /// band with no header keeps the historical plain fill and the two cannot drift.
+    sticky_headers: Vec<Option<ObjectId>>,
     /// Emitted whenever scroll position changes.
     pub scroll_position_changed: Signal1<(i32, i32)>,
     /// Whether a swipe carries momentum into a decaying fling.
@@ -318,7 +333,10 @@ impl ScrollArea {
             content_size: Size::new(0, 0),
             registry: None,
             scroll_position: (0, 0),
+            content_margins: crate::style::EdgeOffsets::default(),
+            chrome_cache: RefCell::new(None),
             sticky_regions: Vec::new(),
+            sticky_headers: Vec::new(),
             scroll_position_changed: Signal1::new(),
             inertia: false,
             fling: (0.0, 0.0),
@@ -837,12 +855,106 @@ impl ScrollArea {
             return;
         }
         self.sticky_regions.push(StickyRegion::new(group_top, group_bottom, height));
+        self.sticky_headers.push(None);
         self.base.request_redraw();
     }
 
     /// Removes every sticky band.
     pub fn clear_sticky_regions(&mut self) {
         self.sticky_regions.clear();
+        self.sticky_headers.clear();
+        self.base.request_redraw();
+    }
+
+    /// Mounts (or clears, with `None`) the control drawn inside band `index` (COMP-E01).
+    ///
+    /// Returns `false` for an out-of-range band. The control is linked as this area's child and
+    /// placed in the band rectangle the wheel/scroller derives, so it follows the pin rather than
+    /// keeping a fixed position.
+    pub fn set_sticky_header(&mut self, index: usize, header: Option<ObjectId>) -> bool {
+        if index >= self.sticky_regions.len() {
+            return false;
+        }
+        if self.sticky_headers.len() < self.sticky_regions.len() {
+            self.sticky_headers.resize(self.sticky_regions.len(), None);
+        }
+        let previous = self.sticky_headers[index];
+        if previous == header {
+            return true;
+        }
+        if let Some(previous) = previous {
+            self.base.remove_child_linked(previous);
+            #[cfg(not(alloc_frugal))]
+            crate::set_widget_visible(previous, false);
+        }
+        self.sticky_headers[index] = header;
+        if let Some(header) = header {
+            self.base.add_child_linked(header);
+            #[cfg(not(alloc_frugal))]
+            crate::set_widget_visible(header, true);
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// The control mounted in band `index`, if any.
+    pub fn sticky_header(&self, index: usize) -> Option<ObjectId> {
+        self.sticky_headers.get(index).copied().flatten()
+    }
+
+    /// Removes the sticky band at `index` (C-20). Returns `false` when the index is out of range.
+    ///
+    /// The other bands keep their order and identity, so a host tracking a band by its index can
+    /// drop one group without re-registering the rest — the flicker a full clear-and-re-add
+    /// produces between two frames.
+    pub fn remove_sticky_region(&mut self, index: usize) -> bool {
+        if index >= self.sticky_regions.len() {
+            return false;
+        }
+        self.sticky_regions.remove(index);
+        if index < self.sticky_headers.len() {
+            if let Some(header) = self.sticky_headers.remove(index) {
+                self.base.remove_child_linked(header);
+                #[cfg(not(alloc_frugal))]
+                crate::set_widget_visible(header, false);
+            }
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes the sticky band whose group starts at `group_top`, if one does (C-20).
+    pub fn remove_sticky_region_for_group(&mut self, group_top: i32) -> bool {
+        match self.sticky_regions.iter().position(|region| region.group_top == group_top) {
+            Some(index) => self.remove_sticky_region(index),
+            None => false,
+        }
+    }
+
+    /// The inset applied inside the content box (C-21): `(top, bottom, left, right)`.
+    pub fn content_margins(&self) -> (u32, u32, u32, u32) {
+        (
+            self.content_margins.top,
+            self.content_margins.bottom,
+            self.content_margins.left,
+            self.content_margins.right,
+        )
+    }
+
+    /// Sets the content inset (C-21).
+    ///
+    /// The content box shrinks by these amounts, and the scroll range is measured against the
+    /// inset box, so the last line of content is reachable rather than sitting under the inset.
+    /// The default is all zero, which is the historical full-bleed content box.
+    pub fn set_content_margins(&mut self, top: u32, bottom: u32, left: u32, right: u32) {
+        let margins = crate::style::EdgeOffsets { top, right, bottom, left };
+        if self.content_margins == margins {
+            return;
+        }
+        self.content_margins = margins;
+        // The scroll range is derived from the content box, so re-clamp before placing.
+        self.set_scroll_position(self.scroll_position.0, self.scroll_position.1);
+        self.place_content();
         self.base.request_redraw();
     }
 
@@ -889,8 +1001,18 @@ impl ScrollArea {
 
     /// Sets the scroll position, clamped within the content extent.
     pub fn set_scroll_position(&mut self, x: i32, y: i32) {
-        let view_w = self.viewport.width as i32;
-        let view_h = self.viewport.height as i32;
+        // The usable viewport is the viewport minus the content inset (C-21). Bars are
+        // deliberately *not* subtracted here: the historical contract clamps against the declared
+        // viewport, and changing that would shift every stored scroll position by the bar
+        // thickness even for a caller who never set a margin.
+        let view_w =
+            self.viewport.width.saturating_sub(
+                self.content_margins.left.saturating_add(self.content_margins.right),
+            ) as i32;
+        let view_h =
+            self.viewport.height.saturating_sub(
+                self.content_margins.top.saturating_add(self.content_margins.bottom),
+            ) as i32;
         let content_w = self.content_size.width as i32;
         let content_h = self.content_size.height as i32;
         let max_x = (content_w - view_w).max(0);
@@ -933,6 +1055,16 @@ impl ScrollArea {
     /// includes the scroll offset), so only its descendants are translated here. Every other
     /// direct child is content the host mounted itself and is translated as a whole. The list
     /// was flattened when the tree was mounted, so a step performs no allocations.
+    ///
+    /// # C-P03: what is still per-node, and why
+    ///
+    /// Each descendant costs one global geometry read and one write. A true bulk primitive —
+    /// "read-modify-write this whole id list under one lock" — belongs at the crate's runtime
+    /// geometry layer, outside this module; the second route the issue offers (stop moving the
+    /// subtree and apply one viewport offset in the painter) would change the geometry contract
+    /// every host and hit test currently relies on. The step is therefore left as an accurate
+    /// per-node translation, with the flattened list (no tree walk, no allocation) as the part
+    /// this control can own. Recorded here rather than silently claimed as closed.
     #[cfg(not(alloc_frugal))]
     fn move_content_children(&self, dx: i32, dy: i32) {
         if dx == 0 && dy == 0 {
@@ -1228,12 +1360,72 @@ impl ScrollArea {
     /// layout places boxes, it does not know how much of the content is visible. `thumb_metrics`
     /// keeps owning that.
     fn assemble_chrome(&self, rect: Rect) -> ChromeBands {
+        // C-P02: the derivation is pure arithmetic over the geometry, the two policies, the
+        // content extent and the content inset, and it was recomputed 4–6 times per frame
+        // (thumb, bar hit test, clip, child placement, draw, corner widget). One cached value
+        // feeds every caller until one of those inputs changes.
+        let fingerprint = self.chrome_fingerprint(rect);
+        if let Some((cached, bands)) = self.chrome_cache.borrow().as_ref() {
+            if *cached == fingerprint {
+                return *bands;
+            }
+        }
+        let bands = self.derive_chrome(rect);
+        *self.chrome_cache.borrow_mut() = Some((fingerprint, bands));
+        bands
+    }
+
+    /// Hashes every input [`Self::derive_chrome`] reads.
+    fn chrome_fingerprint(&self, rect: Rect) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (rect.x, rect.y, rect.width, rect.height).hash(&mut hasher);
+        (self.viewport.x, self.viewport.y, self.viewport.width, self.viewport.height)
+            .hash(&mut hasher);
+        (self.content_size.width, self.content_size.height).hash(&mut hasher);
+        (self.horizontal_scroll_bar_policy as u8).hash(&mut hasher);
+        (self.vertical_scroll_bar_policy as u8).hash(&mut hasher);
+        self.corner_widget.hash(&mut hasher);
+        (
+            self.content_margins.top,
+            self.content_margins.bottom,
+            self.content_margins.left,
+            self.content_margins.right,
+        )
+            .hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Derives the chrome bands from scratch; see [`Self::assemble_chrome`] for the cache.
+    fn derive_chrome(&self, rect: Rect) -> ChromeBands {
         let bar = dimensions::SCROLLBAR_THICKNESS;
         let h_scroll_visible = self.horizontal_scroll_bar_visible();
         let v_scroll_visible = self.vertical_scroll_bar_visible();
         // A control with no bars needs no derivation: the content *is* the rectangle.
+        let content = if !h_scroll_visible && !v_scroll_visible {
+            rect
+        } else {
+            Rect::new(
+                rect.x,
+                rect.y,
+                rect.width.saturating_sub(if v_scroll_visible { bar } else { 0 }),
+                rect.height.saturating_sub(if h_scroll_visible { bar } else { 0 }),
+            )
+        };
+        // C-21: the inset applies inside the content box, so a margin never eats the bars and a
+        // bar never eats the margin.
+        let content = Rect::new(
+            content.x + self.content_margins.left as i32,
+            content.y + self.content_margins.top as i32,
+            content.width.saturating_sub(
+                self.content_margins.left.saturating_add(self.content_margins.right),
+            ),
+            content.height.saturating_sub(
+                self.content_margins.top.saturating_add(self.content_margins.bottom),
+            ),
+        );
         if !h_scroll_visible && !v_scroll_visible {
-            return ChromeBands { content: rect, horizontal: None, vertical: None, corner: None };
+            return ChromeBands { content, horizontal: None, vertical: None, corner: None };
         }
         let h_band = if h_scroll_visible {
             Some(Rect::new(
@@ -1255,12 +1447,6 @@ impl ScrollArea {
         } else {
             None
         };
-        let content = Rect::new(
-            rect.x,
-            rect.y,
-            rect.width.saturating_sub(if v_scroll_visible { bar } else { 0 }),
-            rect.height.saturating_sub(if h_scroll_visible { bar } else { 0 }),
-        );
         // The corner is what the two bands leave. Stated once here, so a corner widget and the
         // painted grip read the same square instead of each deriving it from the thickness.
         let corner = match (h_band, v_band) {
@@ -1504,13 +1690,13 @@ impl WidgetProperties for ScrollArea {
                 Ok(())
             }
             "scroll_position_x" => {
-                let x = expect_i64(value)? as i32;
+                let x = expect_i32_saturating(value)?;
                 let (_, y) = self.scroll_position();
                 self.set_scroll_position(x, y);
                 Ok(())
             }
             "scroll_position_y" => {
-                let y = expect_i64(value)? as i32;
+                let y = expect_i32_saturating(value)?;
                 let (x, _) = self.scroll_position();
                 self.set_scroll_position(x, y);
                 Ok(())
@@ -1756,7 +1942,7 @@ impl Draw for ScrollArea {
         // clip and without the scroll offset, which is precisely what makes them
         // stay put. Drawing them with the offset (i.e. as ordinary content) would
         // make this loop a no-op.
-        for region in &self.sticky_regions {
+        for (band_index, region) in self.sticky_regions.iter().enumerate() {
             // A band whose group has not been reached yet scrolls normally, so the
             // content itself already put it in the right place; re-drawing it here
             // would double-paint it.
@@ -1776,7 +1962,34 @@ impl Draw for ScrollArea {
             if band_rect.y + band_rect.height as i32 <= chrome.content.y {
                 continue;
             }
-            self.draw_sticky_band(context, band_rect);
+            // COMP-E01: a band with a mounted header draws that control in the band box, so the
+            // group title, icon and actions are visible instead of only a colour stripe. A band
+            // without one keeps the historical fill.
+            match self.sticky_header(band_index) {
+                Some(header) => {
+                    #[cfg(not(alloc_frugal))]
+                    crate::set_widget_geometry(
+                        header,
+                        band_rect.x,
+                        band_rect.y,
+                        band_rect.width,
+                        band_rect.height,
+                    );
+                    if let Some(ref registry) = self.registry {
+                        context.push_clip(
+                            band_rect.x,
+                            band_rect.y,
+                            band_rect.width,
+                            band_rect.height,
+                        );
+                        registry.borrow_mut().draw_widget(header, context);
+                        context.pop_clip();
+                    } else {
+                        self.draw_sticky_band(context, band_rect);
+                    }
+                }
+                None => self.draw_sticky_band(context, band_rect),
+            }
         }
         context.pop_clip();
         // ── The chrome, assembled ──
@@ -2588,5 +2801,33 @@ mod tests {
         area.set_scroll_position(0, 50);
         area.set_vertical_scroll_bar(Some(ScrollBar::new(Rect::new(0, 0, 0, 0))));
         assert_eq!(area.scroll_bar(ScrollAxis::Vertical).unwrap().value(), 50);
+    }
+
+    /// C-20: a single sticky band can be removed without clearing the rest.
+    #[test]
+    fn a_sticky_band_can_be_removed_by_index() {
+        let mut area = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        area.add_sticky_region(0, 100, 20);
+        area.add_sticky_region(100, 200, 20);
+        assert!(!area.remove_sticky_region(9));
+        assert!(area.remove_sticky_region(0));
+        assert_eq!(area.sticky_regions().len(), 1);
+        assert_eq!(area.sticky_regions()[0].group_top, 100, "the other band keeps its identity");
+        assert!(area.remove_sticky_region_for_group(100));
+        assert!(area.sticky_regions().is_empty());
+    }
+
+    /// C-21: the content inset shrinks the content box and the scroll range with it.
+    #[test]
+    fn content_margins_shrink_the_content_box() {
+        let mut area = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        let full = area.assemble_chrome(area.geometry()).content;
+        area.set_content_margins(10, 10, 5, 5);
+        let inset = area.assemble_chrome(area.geometry()).content;
+        assert_eq!(inset.x - full.x, 5);
+        assert_eq!(inset.width + 10, full.width);
+        assert_eq!(inset.y - full.y, 10);
+        assert_eq!(inset.height + 20, full.height);
+        assert_eq!(area.content_margins(), (10, 10, 5, 5));
     }
 }

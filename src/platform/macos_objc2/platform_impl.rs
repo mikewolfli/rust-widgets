@@ -311,13 +311,13 @@ impl Platform for MacOSObjc2Platform {
     }
 
     /// A revision of the environment facts, derived from their current values.
+    ///
+    /// [`crate::platform::locale::environment_revision`] is the shared accessor, so the hashed fact
+    /// set is the one the style snapshot reads — including the accent colour and the
+    /// reduced-transparency preference this backend now reports (P-03). Hashing only four facts
+    /// here would hide those two changes forever (P-06).
     fn environment_generation(&self) -> u64 {
-        crate::platform::locale::generation_hash(
-            self.system_theme(),
-            self.high_contrast(),
-            self.reduce_motion(),
-            self.system_locale(),
-        )
+        crate::platform::locale::environment_revision(self)
     }
 
     /// Applies a cursor shape through `NSCursor` (BLUE28 B28.09).

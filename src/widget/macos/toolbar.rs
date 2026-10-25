@@ -57,6 +57,8 @@ pub enum ToolbarItemKind {
     Separator,
     /// A gap that absorbs the strip's spare width.
     FlexibleSpace,
+    /// A host-supplied widget occupying the slot.
+    WidgetSlot,
 }
 
 /// One toolbar slot.
@@ -72,6 +74,9 @@ pub struct MacToolbarItem {
     pub display_mode: ToolbarItemDisplayMode,
     /// Whether this slot is an action, a separator or a flexible space.
     pub kind: ToolbarItemKind,
+    /// Whether the slot's action is available. A disabled slot paints in disabled ink and is
+    /// not activated.
+    pub enabled: bool,
 }
 
 impl MacToolbarItem {
@@ -83,6 +88,7 @@ impl MacToolbarItem {
             icon: None,
             display_mode: ToolbarItemDisplayMode::TextOnly,
             kind: ToolbarItemKind::Item,
+            enabled: true,
         }
     }
 
@@ -107,10 +113,33 @@ impl MacToolbarItem {
     pub fn flexible_space(id: impl Into<String>) -> Self {
         Self { kind: ToolbarItemKind::FlexibleSpace, ..Self::new(id, "") }
     }
+
+    /// An empty slot for a host-supplied widget.
+    pub fn widget_slot(id: impl Into<String>) -> Self {
+        Self { kind: ToolbarItemKind::WidgetSlot, ..Self::new(id, "") }
+    }
+
+    /// The same slot, disabled.
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
 }
 
 /// The width of a separator slot.
 const SEPARATOR_WIDTH: u32 = 9;
+
+/// One cached toolbar layout: every slot's rectangle and the folded-away indices.
+///
+/// `item_rect` used to recompute the running x from index 0 on every call and re-scan the
+/// whole item list for each flexible space, and `overflow_indices` called `item_rect` once per
+/// item — an almost O(n^2) chain on every draw and every pointer move (L-P11).
+struct ToolbarLayout {
+    strip: Rect,
+    icon_bits: u32,
+    rects: Vec<Option<Rect>>,
+    overflow: Vec<usize>,
+}
 
 /// A horizontal toolbar strip.
 ///
@@ -133,6 +162,10 @@ pub struct MacToolbar {
     pub overflow_changed: Signal1<usize>,
     /// The overflow count last announced, so an unchanged layout stays quiet.
     last_overflow_count: usize,
+    /// Widgets installed into [`ToolbarItemKind::WidgetSlot`] slots, keyed by item index.
+    slot_widgets: Vec<(usize, crate::compat::Box<dyn Widget>)>,
+    /// Cached geometry for every slot, rebuilt when items or metrics change.
+    layout_cache: Option<ToolbarLayout>,
 }
 
 impl MacToolbar {
@@ -150,6 +183,8 @@ impl MacToolbar {
             overflow_activated: Signal1::new(),
             overflow_changed: Signal1::new(),
             last_overflow_count: 0,
+            slot_widgets: Vec::new(),
+            layout_cache: None,
         }
     }
 
@@ -159,6 +194,7 @@ impl MacToolbar {
             return;
         }
         self.items = items;
+        self.layout_cache = None;
         self.hovered_index = self.hovered_index.filter(|index| *index < self.items.len());
         self.pressed_index = self.pressed_index.filter(|index| *index < self.items.len());
         self.selected_index = self.selected_index.filter(|index| *index < self.items.len());
@@ -193,6 +229,7 @@ impl MacToolbar {
             return;
         }
         self.icon_size = size;
+        self.layout_cache = None;
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -262,8 +299,16 @@ impl MacToolbar {
 
     /// The rectangle of slot `index`, or `None` when it is absent or runs past the strip.
     fn item_rect(&self, index: usize) -> Option<Rect> {
+        if let Some(layout) = self.layout_cache.as_ref() {
+            if layout.icon_bits == self.icon_size.to_bits()
+                && layout.strip == self.strip()
+                && layout.rects.len() == self.items.len()
+            {
+                return layout.rects.get(index).copied().flatten();
+            }
+        }
         let item = self.items.get(index)?;
-        if item.kind != ToolbarItemKind::Item {
+        if !matches!(item.kind, ToolbarItemKind::Item | ToolbarItemKind::WidgetSlot) {
             return None;
         }
         let strip = self.strip();
@@ -281,6 +326,81 @@ impl MacToolbar {
             return None;
         }
         Some(rect)
+    }
+
+    /// Rebuilds [`Self::layout_cache`] when the items or metrics changed.
+    fn ensure_layout(&mut self) {
+        let strip = self.strip();
+        let icon_bits = self.icon_size.to_bits();
+        if let Some(layout) = self.layout_cache.as_ref() {
+            if layout.icon_bits == icon_bits
+                && layout.strip == strip
+                && layout.rects.len() == self.items.len()
+            {
+                return;
+            }
+        }
+        let width = self.slot_width();
+        let height = self.slot_height();
+        let flexible = self.flexible_extent();
+        let mut x = strip.x + MAC_TOOLBAR_INSET;
+        let mut rects = vec![None; self.items.len()];
+        for (index, item) in self.items.iter().enumerate() {
+            let extent = match item.kind {
+                ToolbarItemKind::Separator => SEPARATOR_WIDTH,
+                ToolbarItemKind::FlexibleSpace => flexible,
+                ToolbarItemKind::Item | ToolbarItemKind::WidgetSlot => width,
+            };
+            if matches!(item.kind, ToolbarItemKind::Item | ToolbarItemKind::WidgetSlot) {
+                let rect =
+                    Rect::new(x, strip.y + ((strip.height - height) / 2) as i32, width, height);
+                if rect.x >= strip.x && rect.right() <= strip.right() {
+                    rects[index] = Some(rect);
+                }
+            }
+            x += extent as i32 + SLOT_GAP;
+        }
+        let overflow = (0..self.items.len())
+            .filter(|index| {
+                self.items[*index].kind == ToolbarItemKind::Item && rects[*index].is_none()
+            })
+            .collect();
+        self.layout_cache = Some(ToolbarLayout { strip, icon_bits, rects, overflow });
+    }
+
+    /// Installs a widget into the [`ToolbarItemKind::WidgetSlot`] at `index`.
+    ///
+    /// Returns `false` when the index does not name a widget slot, so a caller cannot put a
+    /// widget into an action slot where nothing would paint it.
+    pub fn set_slot_widget(
+        &mut self,
+        index: usize,
+        widget: crate::compat::Box<dyn Widget>,
+    ) -> bool {
+        if self.items.get(index).map(|item| item.kind) != Some(ToolbarItemKind::WidgetSlot) {
+            return false;
+        }
+        if let Some(slot) = self.slot_widgets.iter_mut().find(|(slot, _)| *slot == index) {
+            slot.1 = widget;
+        } else {
+            self.slot_widgets.push((index, widget));
+        }
+        if let Some(rect) = self.item_rect(index) {
+            if let Some((_, widget)) = self.slot_widgets.iter_mut().find(|(slot, _)| *slot == index)
+            {
+                widget.set_geometry(rect);
+            }
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// The widget installed in slot `index`, when one exists.
+    pub fn slot_widget_mut(&mut self, index: usize) -> Option<&mut (dyn Widget + '_)> {
+        self.slot_widgets
+            .iter_mut()
+            .find(|(slot, _)| *slot == index)
+            .map(|(_, widget)| widget.as_mut())
     }
 
     /// The x of slot `index`, accounting for separators and flexible space.
@@ -317,7 +437,7 @@ impl MacToolbar {
             .map(|item| match item.kind {
                 ToolbarItemKind::Separator => SEPARATOR_WIDTH as i32,
                 ToolbarItemKind::FlexibleSpace => 0,
-                ToolbarItemKind::Item => self.slot_width() as i32,
+                ToolbarItemKind::Item | ToolbarItemKind::WidgetSlot => self.slot_width() as i32,
             })
             .sum::<i32>()
             + SLOT_GAP * self.items.len().saturating_sub(1) as i32;
@@ -327,6 +447,14 @@ impl MacToolbar {
 
     /// The indices of action slots that do not fit in the strip.
     pub fn overflow_indices(&self) -> Vec<usize> {
+        if let Some(layout) = self.layout_cache.as_ref() {
+            if layout.icon_bits == self.icon_size.to_bits()
+                && layout.strip == self.strip()
+                && layout.rects.len() == self.items.len()
+            {
+                return layout.overflow.clone();
+            }
+        }
         (0..self.items.len())
             .filter(|index| {
                 self.items[*index].kind == ToolbarItemKind::Item && self.item_rect(*index).is_none()
@@ -363,7 +491,10 @@ impl MacToolbar {
 
     /// Activates slot `index`: selects it when selectable, then emits its activation.
     fn activate(&mut self, index: usize) {
-        if index >= self.items.len() || self.items[index].kind != ToolbarItemKind::Item {
+        if index >= self.items.len()
+            || self.items[index].kind != ToolbarItemKind::Item
+            || !self.items[index].enabled
+        {
             return;
         }
         if self.selectable {
@@ -485,6 +616,7 @@ impl Draw for MacToolbar {
         if strip.width == 0 || strip.height == 0 {
             return;
         }
+        self.ensure_layout();
 
         let colors = palette();
         let style = self.base.style();
@@ -516,20 +648,39 @@ impl Draw for MacToolbar {
                     continue;
                 }
                 ToolbarItemKind::Item => {}
+                // A widget slot paints the host's widget in the slot rectangle below.
+                ToolbarItemKind::WidgetSlot => {}
             }
             let Some(slot) = self.item_rect(index) else {
                 continue;
             };
+            if item.kind == ToolbarItemKind::WidgetSlot {
+                if let Some((_, widget)) =
+                    self.slot_widgets.iter_mut().find(|(slot_index, _)| *slot_index == index)
+                {
+                    widget.set_geometry(slot);
+                    if let Some(drawable) = crate::widget::draw_bridge::draw_of(widget.as_mut()) {
+                        drawable.draw(context);
+                    }
+                }
+                continue;
+            }
             let selected = self.selected_index() == Some(index);
             let active = selected || self.pressed_index == Some(index);
             let hovered = self.hovered_index == Some(index);
             if active {
                 context.fill_rounded_rect(slot, self.slot_radius(), colors.accent);
-            } else if hovered {
+            } else if hovered && item.enabled {
                 context.fill_rounded_rect(slot, self.slot_radius(), colors.surface);
             }
 
-            let label_ink = if active { colors.accent.contrast_color() } else { ink };
+            let label_ink = if active {
+                colors.accent.contrast_color()
+            } else if !item.enabled {
+                colors.muted
+            } else {
+                ink
+            };
             let available = slot.width.saturating_sub(2 * MAC_TOOLBAR_ITEM_PADDING as u32);
             if available == 0 {
                 continue;
@@ -633,6 +784,16 @@ impl EventHandler for MacToolbar {
                     }
                 }
                 if let Some(index) = self.item_at(*pos) {
+                    if self.items.get(index).map(|item| item.kind)
+                        == Some(ToolbarItemKind::WidgetSlot)
+                    {
+                        if let Some((_, widget)) =
+                            self.slot_widgets.iter_mut().find(|(slot, _)| *slot == index)
+                        {
+                            widget.handle_event(event);
+                        }
+                        return;
+                    }
                     self.pressed_index = Some(index);
                     self.activate(index);
                 }

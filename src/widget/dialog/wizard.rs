@@ -15,6 +15,7 @@
 //! to a build error: a caller looking for the wizard reaches this module, and a caller looking for
 //! the numeric spinner reaches `container_widgets/stepper.rs`. No control is missing.
 
+use crate::compat::{Rc, RefCell};
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{key_codes, Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -166,7 +167,12 @@ pub struct WizardDialog {
     pressed_button: Option<NavAction>,
     /// The navigation action the keyboard is on, for the focus ring and Enter.
     focused_button: Option<NavAction>,
+    /// Cached navigation slots, keyed by the row's geometry and the action set (G-P17).
+    nav_cache: NavCache,
 }
+
+/// The cached navigation slots and the key they were built under.
+type NavCache = RefCell<Option<(u64, Rc<Vec<(NavAction, Rect)>>)>>;
 
 impl WizardDialog {
     /// Creates a new WizardDialog with geometry and no title.
@@ -199,6 +205,7 @@ impl WizardDialog {
             custom_button_clicked: Signal1::new(),
             pressed_button: None,
             focused_button: None,
+            nav_cache: RefCell::new(None),
         }
     }
 
@@ -737,7 +744,8 @@ impl WizardDialog {
     fn nav_button_at(&self, pos: Point) -> Option<NavAction> {
         let rect = self.nav_area(self.geometry());
         self.nav_slots(rect)
-            .into_iter()
+            .iter()
+            .copied()
             .find(|(_, rect)| rect.contains_point(pos))
             .map(|(action, _)| action)
     }
@@ -752,49 +760,70 @@ impl WizardDialog {
     /// a generic n-column formula would move the buttons. The generic formula is therefore
     /// used only when the row actually differs — an option removed, Help added, or a custom
     /// action installed. Both the paint and the hit test read this one function.
-    fn nav_slots(&self, rect: Rect) -> Vec<(NavAction, Rect)> {
+    fn nav_slots(&self, rect: Rect) -> Rc<Vec<(NavAction, Rect)>> {
+        // The row is a pure function of the band and the action set; every keyboard move,
+        // press and frame read it, so it is cached rather than rebuilt per call (G-P17).
+        let mut signature = (rect.x as u32 as u64).rotate_left(7)
+            ^ (rect.y as u32 as u64).rotate_left(15)
+            ^ (rect.width as u64).rotate_left(27)
+            ^ (rect.height as u64).rotate_left(39);
+        for option in &self.options {
+            signature ^= (*option as u8 as u64).wrapping_add(1).rotate_left(3);
+        }
+        for button in &self.custom_buttons {
+            for byte in button.bytes() {
+                signature = signature.rotate_left(5) ^ byte as u64;
+            }
+        }
+        if let Some((cached, slots)) = self.nav_cache.borrow().as_ref() {
+            if *cached == signature {
+                return Rc::clone(slots);
+            }
+        }
         let plain = self.custom_buttons.is_empty()
             && !self.has_option(WizardOption::HelpButton)
             && !self.has_option(WizardOption::NoCancelButton)
             && !self.has_option(WizardOption::NoBackButton);
-        if plain {
+        let slots = Rc::new(if plain {
             let legacy = self.nav_button_rects(rect);
-            return vec![
+            vec![
                 (NavAction::Cancel, legacy[0]),
                 (NavAction::Back, legacy[1]),
                 (NavAction::Next, legacy[2]),
-            ];
-        }
+            ]
+        } else {
+            let mut actions: Vec<NavAction> =
+                (0..self.custom_buttons.len()).map(NavAction::Custom).collect();
+            if self.has_option(WizardOption::HelpButton) {
+                actions.push(NavAction::Help);
+            }
+            if !self.has_option(WizardOption::NoCancelButton) {
+                actions.push(NavAction::Cancel);
+            }
+            if !self.has_option(WizardOption::NoBackButton) {
+                actions.push(NavAction::Back);
+            }
+            actions.push(NavAction::Next);
 
-        let mut actions: Vec<NavAction> =
-            (0..self.custom_buttons.len()).map(NavAction::Custom).collect();
-        if self.has_option(WizardOption::HelpButton) {
-            actions.push(NavAction::Help);
-        }
-        if !self.has_option(WizardOption::NoCancelButton) {
-            actions.push(NavAction::Cancel);
-        }
-        if !self.has_option(WizardOption::NoBackButton) {
-            actions.push(NavAction::Back);
-        }
-        actions.push(NavAction::Next);
-
-        // The row's own vertical placement is the audited one: the same baseline the
-        // three-button layout uses, so adding an action changes the columns, not the band.
-        let legacy = self.nav_button_rects(rect);
-        let btn_y = legacy[0].y;
-        let count = actions.len() as i32;
-        let available =
-            (rect.width as i32 - Self::NAV_MARGIN * 2 - Self::NAV_GAP * (count - 1)).max(count);
-        let btn_w = (available / count).clamp(1, Self::NAV_MAX_BUTTON_WIDTH as i32);
-        actions
-            .into_iter()
-            .enumerate()
-            .map(|(index, action)| {
-                let x = rect.x + Self::NAV_MARGIN + index as i32 * (btn_w + Self::NAV_GAP);
-                (action, Rect::new(x, btn_y, btn_w as u32, Self::NAV_BUTTON_HEIGHT))
-            })
-            .collect()
+            // The row's own vertical placement is the audited one: the same baseline the
+            // three-button layout uses, so adding an action changes the columns, not the band.
+            let legacy = self.nav_button_rects(rect);
+            let btn_y = legacy[0].y;
+            let count = actions.len() as i32;
+            let available =
+                (rect.width as i32 - Self::NAV_MARGIN * 2 - Self::NAV_GAP * (count - 1)).max(count);
+            let btn_w = (available / count).clamp(1, Self::NAV_MAX_BUTTON_WIDTH as i32);
+            actions
+                .into_iter()
+                .enumerate()
+                .map(|(index, action)| {
+                    let x = rect.x + Self::NAV_MARGIN + index as i32 * (btn_w + Self::NAV_GAP);
+                    (action, Rect::new(x, btn_y, btn_w as u32, Self::NAV_BUTTON_HEIGHT))
+                })
+                .collect()
+        });
+        *self.nav_cache.borrow_mut() = Some((signature, Rc::clone(&slots)));
+        slots
     }
 
     /// Performs a navigation action.
@@ -853,7 +882,7 @@ impl WizardDialog {
         if slots.is_empty() {
             return;
         }
-        let actions: Vec<NavAction> = slots.into_iter().map(|(action, _)| action).collect();
+        let actions: Vec<NavAction> = slots.iter().map(|(action, _)| *action).collect();
         let position = self
             .focused_button
             .and_then(|focused| actions.iter().position(|action| *action == focused));
@@ -1545,7 +1574,7 @@ impl Draw for WizardDialog {
         let next_font = role_font(style, 12.0).with_bold(true);
 
         let slots = self.nav_slots(self.nav_area(rect));
-        for (action, button) in slots {
+        for (action, button) in slots.iter().copied() {
             match action {
                 NavAction::Next => {
                     context.fill_rounded_rect(button, 4, btn_color);
@@ -2014,7 +2043,8 @@ mod tests {
 
         let custom_rect = wiz
             .nav_slots(wiz.geometry())
-            .into_iter()
+            .iter()
+            .copied()
             .find(|(action, _)| *action == NavAction::Custom(0))
             .map(|(_, rect)| rect)
             .expect("a custom slot");

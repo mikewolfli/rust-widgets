@@ -130,6 +130,12 @@ pub enum WidgetKind {
     #[cfg(widgets_unstripped)]
     MenuItem,
     /// Menu opened at the pointer position in response to a secondary click.
+    ///
+    /// Alias kind: `ContextMenu` is [`Self::Menu`] in its role spelling
+    /// (`pub type ContextMenu = Menu`). The resolution lives in exactly one place — the
+    /// `ContextMenu` arm of `capability::alias_factory_name`, paired with the
+    /// `context_menu` -> `menu` row in `capability::ALIAS_OF` (G-305). That arm is the
+    /// fact source; this comment only points at it.
     #[cfg(widgets_unstripped)]
     ContextMenu,
     /// Strip of icon buttons and other controls for quick actions.

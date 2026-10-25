@@ -158,10 +158,11 @@ macro_rules! impl_helpers {
                 .unwrap_or(false);
                 if is_window {
                     if let Some(host) = crate::widget::runtime::host_window_for(widget_id) {
-                        // `Platform::set_widget_text` is one of the uniform state setters and
-                        // returns `()`; the backends that own a native window apply the title in
-                        // their own override (cocoa already does), so there is no result to read.
-                        crate::platform::get_platform().set_widget_text(host, text);
+                        // `Platform::set_widget_text` reports whether the write landed; the host
+                        // window's title is applied by the backend's own override, so the answer here
+                        // describes the platform record and is deliberately not used as a failure
+                        // signal (P-203).
+                        let _ = crate::platform::get_platform().set_widget_text(host, text);
                         // Keep assistive technology in step with the visible title, the same
                         // rule the platform backends follow for their own window objects.
                         let _ = crate::set_widget_accessibility_name(widget_id, text);

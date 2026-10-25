@@ -24,6 +24,7 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 /// Returns true when a key press is `expected` with exactly the host's primary
@@ -181,7 +182,16 @@ pub struct ShortcutEditor {
     capture_id: Option<String>,
     /// Keys captured so far in the current recording.
     capture_keys: Vec<String>,
+    /// Per-row display text and conflict flag, cached by the table generation (I-P67).
+    row_display_cache: RowDisplayCache,
+    /// First content row the list paints, so rows below the viewport are reachable (I-112).
+    scroll_offset: usize,
+    /// Whether the filter field owns the pointer's keyboard focus (I-112).
+    filter_focused: bool,
 }
+
+/// The cached per-row display text and conflict flag, keyed by table generation.
+type RowDisplayCache = RefCell<Option<(u64, Rc<Vec<(String, bool)>>)>>;
 
 /// Cached category grouping for one table generation and filter string.
 ///
@@ -213,6 +223,9 @@ impl ShortcutEditor {
             grouping_cache: RefCell::new(GroupingCache::default()),
             capture_id: None,
             capture_keys: Vec::new(),
+            row_display_cache: RefCell::new(None),
+            scroll_offset: 0,
+            filter_focused: false,
         }
     }
 
@@ -301,6 +314,8 @@ impl ShortcutEditor {
         let text = text.to_string();
         if self.filter_text != text {
             self.filter_text = text;
+            // I-112: a new filter starts at the top of its own result set.
+            self.scroll_offset = 0;
             self.base.request_redraw();
         }
     }
@@ -362,6 +377,90 @@ impl ShortcutEditor {
     /// This is the draw path's form of [`Self::shortcuts_by_category`]: it caches indices instead
     /// of borrowed rows and returns them without allocating a new grouping per frame. The borrow
     /// is shared, so the caller may read `self.shortcuts` while holding it.
+    /// The formatted key text and conflict flag for every shortcut (I-P67).
+    ///
+    /// The display form and the collision scan used to be recomputed for every visible row on
+    /// every frame, and the scan was O(rows²). Here each row is formatted once per table
+    /// generation and the collisions come from one hash index.
+    /// The y at which the first content row starts, after the filter controls (I-112).
+    fn content_top(&self) -> i32 {
+        let mut y = self.geometry().y + 8;
+        if self.is_capturing() {
+            y += 20;
+        }
+        y + 24 + 8
+    }
+
+    /// The shortcut index whose row contains `pos`, in the scrolled layout (I-112).
+    fn hit_row(&self, pos: Point) -> Option<usize> {
+        if pos.y < self.content_top() {
+            return None;
+        }
+        let row_height = 22i32;
+        let grouped = self.grouped();
+        let mut y = self.content_top();
+        let mut skip = self.scroll_offset;
+        for (_, indices) in &grouped.groups {
+            // Category header row.
+            if skip > 0 {
+                skip -= 1;
+            } else {
+                if pos.y >= y && pos.y < y + row_height {
+                    return None;
+                }
+                y += row_height;
+            }
+            for &index in indices {
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                if pos.y >= y && pos.y < y + row_height {
+                    return Some(index);
+                }
+                y += row_height;
+            }
+        }
+        None
+    }
+
+    /// Total laid-out rows (category headers plus visible entries) (I-112).
+    fn total_rows(&self) -> usize {
+        let grouped = self.grouped();
+        grouped.groups.len() + grouped.groups.iter().map(|(_, rows)| rows.len()).sum::<usize>()
+    }
+
+    fn row_display(&self) -> Rc<Vec<(String, bool)>> {
+        if let Some((generation, rows)) = self.row_display_cache.borrow().as_ref() {
+            if *generation == self.table_generation {
+                return Rc::clone(rows);
+            }
+        }
+        let mut counts: HashMap<&Vec<String>, usize> = HashMap::new();
+        for entry in &self.shortcuts {
+            if !entry.keys.is_empty() {
+                *counts.entry(&entry.keys).or_insert(0) += 1;
+            }
+        }
+        let rows: Vec<(String, bool)> = self
+            .shortcuts
+            .iter()
+            .map(|entry| {
+                let text = if entry.keys.is_empty() {
+                    "unbound".to_string()
+                } else {
+                    Self::format_keys(&entry.keys)
+                };
+                let conflict =
+                    !entry.keys.is_empty() && counts.get(&entry.keys).copied().unwrap_or(0) > 1;
+                (text, conflict)
+            })
+            .collect();
+        let rows = Rc::new(rows);
+        *self.row_display_cache.borrow_mut() = Some((self.table_generation, Rc::clone(&rows)));
+        rows
+    }
+
     fn grouped(&self) -> std::cell::Ref<'_, GroupingCache> {
         let stale = {
             let cache = self.grouping_cache.borrow();
@@ -816,6 +915,9 @@ impl Draw for ShortcutEditor {
         );
 
         let margin = 8;
+        // I-112: the list is a window; rows scrolled past the bottom must not paint over the
+        // control's neighbours.
+        context.push_clip(rect.x, rect.y, rect.width, rect.height);
         let mut y = rect.y + margin;
 
         // A recording session is announced before the rows: the user needs to know the next
@@ -874,26 +976,36 @@ impl Draw for ShortcutEditor {
         let name_font = role_font(style, 12.0);
         let key_font = role_font(style, 11.0);
         let row_height = 22;
-        // Reused row buffers: the name was cloned and the key join allocated a `String` for
-        // every visible row on every frame.
-        let mut key_text = String::new();
+        // I-P67: formatted keys and conflict flags for the whole table, rebuilt only when the
+        // table changes.
+        let display = self.row_display();
+        // I-112: rows above the viewport are skipped rather than painted under the filter bar.
+        let mut skip = self.scroll_offset;
 
         for (category, indices) in &grouped.groups {
-            if y + row_height > rect.y + rect.height as i32 {
-                break;
+            if skip > 0 {
+                skip -= 1;
+            } else {
+                if y + row_height > rect.y + rect.height as i32 {
+                    break;
+                }
+
+                // Category header
+                context.draw_text(
+                    Point::new(rect.x + margin + 4, y),
+                    category,
+                    &cat_font,
+                    header_ink,
+                    HorizontalAlignment::Left,
+                );
+                y += row_height;
             }
 
-            // Category header
-            context.draw_text(
-                Point::new(rect.x + margin + 4, y),
-                category,
-                &cat_font,
-                header_ink,
-                HorizontalAlignment::Left,
-            );
-            y += row_height;
-
             for &index in indices {
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
                 let Some(entry) = self.shortcuts.get(index) else {
                     // The cache is keyed by a generation that every writer bumps, so this is
                     // unreachable; skipping is still the honest response to an index that no
@@ -909,21 +1021,9 @@ impl Draw for ShortcutEditor {
                 // three ASCII dot glyphs for the ellipsis.
                 let name_text: Cow<'_, str> = elide_end(&entry.name, 30);
 
-                // Key binding (right-aligned)
-                key_text.clear();
-                if entry.keys.is_empty() {
-                    key_text.push_str("unbound");
-                } else {
-                    // The display form uses the platform's modifier symbols, so a binding
-                    // reads as `⌃⇧T` rather than as concatenated English words.
-                    key_text.push_str(&Self::format_keys(&entry.keys));
-                }
-                // A collision is called out on the row it affects, because the conflict is the
-                // one thing about a binding that must be noticed before saving.
-                let conflict = !entry.keys.is_empty()
-                    && self.shortcuts.iter().any(|other| {
-                        other.id != entry.id && !other.keys.is_empty() && other.keys == entry.keys
-                    });
+                // Key binding and collision flag come from the per-generation cache.
+                let (key_text, conflict) =
+                    display.get(index).cloned().unwrap_or_else(|| (String::new(), false));
                 // Unbound rows are de-emphasised rather than hidden, so "this shortcut has no key"
                 // reads differently from "this shortcut has a key".
                 let key_color = if entry.keys.is_empty() {
@@ -971,6 +1071,7 @@ impl Draw for ShortcutEditor {
                 y += row_height;
             }
         }
+        context.pop_clip();
     }
 }
 
@@ -980,8 +1081,64 @@ impl EventHandler for ShortcutEditor {
             return;
         }
         match event {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
+                let rect = self.geometry();
+                if !rect.contains_point(*pos) {
+                    return;
+                }
+                // I-112: a press in the filter bar focuses it; a press on a row enters that
+                // row's capture state.
+                let filter_top = rect.y + 8 + if self.is_capturing() { 20 } else { 0 };
+                if pos.y >= filter_top && pos.y < filter_top + 24 {
+                    self.filter_focused = true;
+                    self.base.request_redraw();
+                    return;
+                }
+                self.filter_focused = false;
+                if let Some(index) = self.hit_row(*pos) {
+                    if let Some(entry) = self.shortcuts.get(index) {
+                        self.capture_id = Some(entry.id.clone());
+                        self.capture_keys.clear();
+                        self.base.request_redraw();
+                    }
+                }
+            }
+            Event::Wheel { delta, modifiers, .. } => {
+                // I-112: wheel scrolls the visible window of rows.
+                let scroll = crate::event::wheel::WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y != 0 {
+                    let max_offset = self.total_rows().saturating_sub(1);
+                    let next = (self.scroll_offset as i64 - scroll.lines_y as i64)
+                        .clamp(0, max_offset as i64) as usize;
+                    if next != self.scroll_offset {
+                        self.scroll_offset = next;
+                        self.base.request_redraw();
+                    }
+                }
+            }
             Event::KeyPress { key, modifiers } => {
                 let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                // I-112: a focused filter bar consumes printable input and Backspace.
+                if self.filter_focused && !self.is_capturing() {
+                    match *key {
+                        8 => {
+                            self.filter_text.pop();
+                            self.base.request_redraw();
+                        }
+                        27 => {
+                            self.filter_focused = false;
+                            self.base.request_redraw();
+                        }
+                        32..=126 => {
+                            if let Some(ch) = char::from_u32(*key) {
+                                self.filter_text.push(ch);
+                                self.base.request_redraw();
+                            }
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
                 // A recording session owns every key: Escape cancels it, Backspace clears the
                 // captured sequence, Primary+Enter commits it, and anything else is appended.
                 if self.is_capturing() {

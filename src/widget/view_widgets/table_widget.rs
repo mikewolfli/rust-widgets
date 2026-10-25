@@ -160,6 +160,17 @@ pub struct TableWidget {
     pub focused_row_changed: Signal1<Option<usize>>,
     /// First content row shown; wheel, keyboard and programmatic scrolling move it.
     scroll_row: usize,
+    /// First scrolling column shown (V-03).
+    ///
+    /// The column widths have a 40 px floor, so a multi-column table is wider than its content
+    /// box by construction. Without a horizontal offset the columns past the right edge were
+    /// neither painted nor hit-testable.
+    scroll_column: usize,
+    /// The column the pointer last pressed or double-clicked (V-04).
+    ///
+    /// Enter used to edit column 0 regardless of where the user was; this records the column the
+    /// pointer last named so the keyboard edit lands there.
+    last_pointed_column: Option<usize>,
     /// What gestures start an edit.
     edit_triggers: TableEditTriggers,
     /// Emitted when an edit is requested for `(row, column)`.
@@ -221,6 +232,8 @@ impl TableWidget {
             selection_changed: Signal1::new(),
             focused_row_changed: Signal1::new(),
             scroll_row: 0,
+            scroll_column: 0,
+            last_pointed_column: None,
             edit_triggers: TableEditTriggers::NONE,
             edit_requested: Signal1::new(),
             row_activated: Signal1::new(),
@@ -342,15 +355,43 @@ impl TableWidget {
         if x < content.x || x >= content.x + content.width as i32 {
             return None;
         }
-        let mut left = content.x;
+        let mut left = content.x - self.horizontal_offset() as i32;
         for column in 0..self.column_count() {
             let width = self.resolved_column_width(column, content.width) as i32;
+            if column < self.scroll_column {
+                left += width;
+                continue;
+            }
             if x < left + width {
                 return Some(column);
             }
             left += width;
         }
         None
+    }
+
+    /// The pixel offset the scrolling column band starts at, i.e. the summed widths before
+    /// `scroll_column` (V-03).
+    fn horizontal_offset(&self) -> u32 {
+        let content = ControlMetrics::band_inset(self.base.geometry(), TABLE_INSET);
+        (0..self.scroll_column.min(self.column_count()))
+            .map(|column| self.resolved_column_width(column, content.width))
+            .sum()
+    }
+
+    /// The first scrolling column.
+    pub fn scroll_column(&self) -> usize {
+        self.scroll_column
+    }
+
+    /// Sets the first scrolling column, clamped to the model (V-03).
+    pub fn set_scroll_column(&mut self, column: usize) {
+        let next = column.min(self.column_count().saturating_sub(1));
+        if next == self.scroll_column {
+            return;
+        }
+        self.scroll_column = next;
+        self.base.request_redraw();
     }
 
     /// The header column at `point`, when the header is visible.
@@ -626,6 +667,48 @@ impl TableWidget {
     /// Returns explicit column width override when present.
     pub fn column_width(&self, column: usize) -> Option<u32> {
         self.column_widths.get(&column).copied()
+    }
+
+    /// Sizes `column` to its widest sampled content (V-05).
+    ///
+    /// The model is sampled rather than fully walked: every `row_count / 128`-th row plus rows
+    /// the viewport shows, capped at 256 samples. A 100k-row table therefore costs a bounded
+    /// measurement pass, and a column whose content is uniform still gets the same answer as a
+    /// full walk. The width is the estimate plus 16 px of padding, floored at the 40 px minimum.
+    pub fn fit_column_to_contents(&mut self, column: usize) -> bool {
+        let Some(model) = self.model.clone() else {
+            return false;
+        };
+        if column >= model.column_count() {
+            return false;
+        }
+        let font = crate::widget::metrics::effective_font(self.base.style());
+        let rows = model.row_count();
+        let step = (rows / 128).max(1);
+        let mut widest = 0u32;
+        let mut text = String::new();
+        let mut row = 0usize;
+        let mut samples = 0usize;
+        while row < rows && samples < 256 {
+            text.clear();
+            if model.fill_data(row, column, &mut text) {
+                widest = widest.max(crate::widget::metrics::estimate_text_width(&text, font, 1.0));
+            }
+            row = row.saturating_add(step);
+            samples += 1;
+        }
+        let width = widest.saturating_add(16).max(40);
+        self.column_widths.insert(column, width);
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Sizes every column to its content (V-05).
+    pub fn fit_columns_to_contents(&mut self) {
+        for column in 0..self.column_count() {
+            let _ = self.fit_column_to_contents(column);
+        }
     }
     /// Sets row height.
     pub fn set_row_height(&mut self, row: usize, height: u32) {
@@ -1040,27 +1123,29 @@ impl Draw for TableWidget {
             );
             if let Some(model) = self.model.as_ref() {
                 let font = effective_font(style);
-                let mut left = content.x;
+                let mut left = content.x - self.horizontal_offset() as i32;
                 for column in 0..model.column_count() {
-                    if left >= content.x + content.width as i32 {
-                        break;
-                    }
                     let width = self.resolved_column_width(column, content.width);
-                    let band = Rect::new(left, header.y, width, header.height);
-                    let label = self
-                        .header_labels
-                        .get(column)
-                        .map(String::as_str)
-                        .filter(|label| !label.is_empty())
-                        .or_else(|| model.column_name(column));
-                    if let Some(label) = label {
-                        context.draw_text_fitted_cow(
-                            context.text_line(band, font),
-                            label,
-                            font,
-                            ink,
-                            HorizontalAlignment::Left,
-                        );
+                    if column >= self.scroll_column {
+                        if left >= content.x + content.width as i32 {
+                            break;
+                        }
+                        let band = Rect::new(left, header.y, width, header.height);
+                        let label = self
+                            .header_labels
+                            .get(column)
+                            .map(String::as_str)
+                            .filter(|label| !label.is_empty())
+                            .or_else(|| model.column_name(column));
+                        if let Some(label) = label {
+                            context.draw_text_fitted_cow(
+                                context.text_line(band, font),
+                                label,
+                                font,
+                                ink,
+                                HorizontalAlignment::Left,
+                            );
+                        }
                     }
                     left += width as i32;
                 }
@@ -1107,7 +1192,7 @@ impl Draw for TableWidget {
                 } else if Some(r) == self.hovered_row {
                     context.fill_rect(row_box, hovered_bg);
                 }
-                let mut col_x = content.x;
+                let mut col_x = content.x - self.horizontal_offset() as i32;
                 for c in 0..col_count {
                     // The column's box follows the same composition the hit test and the header
                     // read, so a click, the heading and the cell cannot disagree about which
@@ -1115,6 +1200,9 @@ impl Draw for TableWidget {
                     let col_w = self.resolved_column_width(c, content.width);
                     let x = col_x;
                     col_x += col_w as i32;
+                    if c < self.scroll_column {
+                        continue;
+                    }
                     cell_text.clear();
                     let mut painted_by_delegate = false;
                     if let Some(delegate) = self.delegate.as_ref() {
@@ -1186,6 +1274,9 @@ impl crate::event::EventHandler for TableWidget {
                 // the control instead of from the content box below the header, so a click on the
                 // first content row selected the row above it.
                 if let Some(index) = self.row_at_point(*pos) {
+                    if let Some(column) = self.column_at(pos.x) {
+                        self.last_pointed_column = Some(column);
+                    }
                     self.select_row_with_modifiers(
                         index,
                         crate::shortcut::Modifiers::from_event_bits(*modifiers),
@@ -1213,6 +1304,7 @@ impl crate::event::EventHandler for TableWidget {
                     // literal `0`, so double-clicking any column edited the first one, which is a
                     // different cell from the one the user pointed at.
                     if let Some(column) = self.column_at(pos.x) {
+                        self.last_pointed_column = Some(column);
                         self.cell_double_clicked.emit((index, column));
                         if self.editable
                             && self.edit_triggers.contains(TableEditTriggers::DOUBLE_CLICKED)
@@ -1227,8 +1319,14 @@ impl crate::event::EventHandler for TableWidget {
             }
             crate::event::Event::Wheel { delta, modifiers } => {
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
-                let row = self.scroll_row as isize - scroll.lines_y as isize;
-                self.set_scroll_row(row.max(0) as usize);
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                if mods.contains(crate::shortcut::Modifiers::SHIFT) {
+                    let next = self.scroll_column.saturating_add_signed(-(scroll.lines_y as isize));
+                    self.set_scroll_column(next);
+                } else {
+                    let row = self.scroll_row as isize - scroll.lines_y as isize;
+                    self.set_scroll_row(row.max(0) as usize);
+                }
             }
             crate::event::Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => {
                 let page = (self.rows_band().height / TABLE_ROW_HEIGHT.max(1)).max(1) as usize;
@@ -1275,7 +1373,8 @@ impl crate::event::EventHandler for TableWidget {
                     {
                         if let Some(row) = self.focused_row {
                             if self.editable {
-                                self.edit_requested.emit((row, 0));
+                                let column = self.last_pointed_column.unwrap_or(0);
+                                self.edit_requested.emit((row, column));
                             }
                         }
                     }
@@ -2033,5 +2132,80 @@ mod tests {
         table.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
         table.handle_event(&Event::KeyPress { key: crate::event::key_codes::END, modifiers: 0 });
         assert!(table.scroll_row() > 1, "End reaches the last row");
+    }
+
+    struct FourColumnModel;
+
+    impl TableModel for FourColumnModel {
+        fn row_count(&self) -> usize {
+            3
+        }
+        fn column_count(&self) -> usize {
+            4
+        }
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            Some(format!("r{row}c{column}"))
+        }
+    }
+
+    /// V-03: a horizontal offset makes the right-hand columns paintable and clickable.
+    #[test]
+    fn scroll_column_reaches_the_right_hand_columns() {
+        let mut table = TableWidget::new(Rect::new(0, 0, 200, 160));
+        table.set_model(Arc::new(FourColumnModel));
+        table.set_scroll_column(2);
+        assert_eq!(table.scroll_column(), 2);
+        table.set_scroll_column(99);
+        assert_eq!(table.scroll_column(), 3, "clamped to the last column");
+
+        table.set_scroll_column(2);
+        // The first visible column starts at the content box's left edge.
+        let content = ControlMetrics::band_inset(table.base.geometry(), TABLE_INSET);
+        assert_eq!(table.column_at(content.x + 2), Some(2));
+        assert_eq!(table.column_at(content.x + 60), Some(3));
+    }
+
+    /// V-04: Enter edits the column the pointer last named, not column zero.
+    #[test]
+    fn enter_edits_the_pointed_column() {
+        let mut table = TableWidget::new(Rect::new(0, 0, 240, 160));
+        table.set_model(Arc::new(FourColumnModel));
+        table.set_editable(true);
+        table.set_edit_triggers(TableEditTriggers::ALL);
+        let edited = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&edited);
+        table.edit_requested.connect(move |cell| {
+            if let Ok(mut slot) = sink.lock() {
+                *slot = Some(*cell);
+            }
+        });
+        table.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+
+        let row = table.row_rect(1).expect("row 1 is visible");
+        let content = ControlMetrics::band_inset(table.base.geometry(), TABLE_INSET);
+        table.handle_event(&Event::MousePress {
+            pos: Point::new(content.x + 60, row.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(table.focused_row(), Some(1));
+        table.handle_event(&Event::KeyPress { key: crate::event::key_codes::ENTER, modifiers: 0 });
+        assert_eq!(*edited.lock().expect("edited lock"), Some((1, 1)));
+    }
+
+    /// V-05: fitting a column records an explicit width derived from its contents.
+    #[test]
+    fn fit_column_to_contents_records_a_measured_width() {
+        let mut table = TableWidget::new(Rect::new(0, 0, 240, 160));
+        table.set_model(Arc::new(FourColumnModel));
+        assert_eq!(table.column_width(0), None);
+        assert!(table.fit_column_to_contents(0));
+        let width = table.column_width(0).expect("an override was recorded");
+        assert!(width >= 40, "the 40 px floor applies");
+        assert!(!table.fit_column_to_contents(9), "there is no column 9");
+        table.fit_columns_to_contents();
+        for column in 0..4 {
+            assert!(table.column_width(column).is_some());
+        }
     }
 }

@@ -135,10 +135,21 @@ impl CodeEditor {
                 };
                 // One geometry for every element of this row: backdrops, guides,
                 // glyphs, whitespace marks and the caret all read it.
+                //
+                // A wrapped segment is measured as its own string, and that measurement used
+                // to run on every frame even when nothing had changed — so scrolling and
+                // caret-blink frames paid a full re-shape of the viewport. It is now cached
+                // per `(line, segment)` for as long as the layout key holds (J-P06).
                 let segment_layout = if wrapped {
-                    let from = grid.byte_of_char(segment_start);
-                    let to = grid.byte_of_char(segment_end);
-                    Some(self.measure_piece_layout(context, &text[from..to]))
+                    if let Some(cached) = self.cached_segment_layout(line, segment) {
+                        Some(cached)
+                    } else {
+                        let from = grid.byte_of_char(segment_start);
+                        let to = grid.byte_of_char(segment_end);
+                        let measured = self.measure_piece_layout(context, &text[from..to]);
+                        self.remember_segment_layout(line, segment, measured.clone());
+                        Some(measured)
+                    }
                 } else {
                     layout.clone()
                 };
@@ -272,6 +283,7 @@ impl CodeEditor {
         // Layouts for rows that scrolled away are dropped: the cache is bounded by
         // the viewport, not by the document.
         self.prune_row_layouts(&painted);
+        self.prune_segment_layouts(&painted);
         painted
     }
 
@@ -432,6 +444,31 @@ impl CodeEditor {
         // `painted` ascends (the paint loop walks rows top to bottom), so membership is
         // a binary search; a linear `contains` scanned it once per cached entry.
         self.row_layouts.borrow_mut().retain(|(line, _)| painted.binary_search(line).is_ok());
+    }
+
+    /// Returns the cached layout of one soft-wrapped segment.
+    pub(super) fn cached_segment_layout(&self, line: usize, segment: usize) -> Option<RowLayout> {
+        let cache = self.segment_layouts.borrow();
+        cache
+            .binary_search_by_key(&(line, segment), |(key, _)| *key)
+            .ok()
+            .map(|index| cache[index].1.clone())
+    }
+
+    /// Stores one segment's measured geometry.
+    pub(super) fn remember_segment_layout(&self, line: usize, segment: usize, layout: RowLayout) {
+        let mut cache = self.segment_layouts.borrow_mut();
+        match cache.binary_search_by_key(&(line, segment), |(key, _)| *key) {
+            Ok(index) => cache[index].1 = layout,
+            Err(index) => cache.insert(index, ((line, segment), layout)),
+        }
+    }
+
+    /// Drops segment layouts whose line is no longer painted.
+    pub(super) fn prune_segment_layouts(&self, painted: &[usize]) {
+        self.segment_layouts
+            .borrow_mut()
+            .retain(|((line, _), _)| painted.binary_search(line).is_ok());
     }
 
     /// Measured x of a character boundary, when the line has been painted.

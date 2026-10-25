@@ -3,7 +3,7 @@
 
 //! Form layout manager — two-column label/field row pairs.
 use super::{ChildInfo, Layout};
-use crate::compat::{Any, Vec};
+use crate::compat::{Any, HashMap, Vec};
 use crate::core::{ObjectId, Rect};
 use crate::style::EdgeOffsets;
 
@@ -41,19 +41,33 @@ pub enum RowWrapPolicy {
     WrapAllRows,
 }
 
+/// How a form divides the available height between its rows.
+///
+/// The default is [`Self::EqualSplit`], which is the behaviour this layout had before the
+/// choice existed: every entry receives the same height. [`Self::FromHints`] instead gives
+/// each row the largest preferred height its members state, so a multi-line field can be
+/// taller than the row next to it. When the hints do not fit the available height, the form
+/// falls back to the even split — the alternative would starve the later rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RowHeightPolicy {
+    /// Every row receives the same share of the available height. The default.
+    #[default]
+    EqualSplit,
+    /// Each row takes the largest `hints.height.pref` of its members (or its own entry for a
+    /// standalone item), with the leftover shared evenly. A missing hint falls back to the
+    /// even split's value.
+    FromHints,
+}
+
 /// Two-column form layout storing `(label, field)` row pairs
 /// plus standalone items added via the `Layout` trait.
 /// How a form's label column places a label narrower than the column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FormLabelAlignment {
-    /// Left-aligned in the label column (the historical behaviour).
-    #[default]
-    Left,
-    /// Centred in the label column.
-    Center,
-    /// Right-aligned against the field gap.
-    Right,
-}
+///
+/// This is [`crate::core::HorizontalAlignment`], not a second spelling of the same three
+/// variants (principle #54): the offset computation in `arrange` is the one horizontal
+/// alignment implementation, and the public name is kept as an alias so existing
+/// `form::FormLabelAlignment` paths keep working.
+pub use crate::core::HorizontalAlignment as FormLabelAlignment;
 
 /// The role of an entry in a form row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +88,7 @@ pub struct FormLayout {
     margins: Option<EdgeOffsets>,
     growth_policy: FieldGrowthPolicy,
     row_wrap_policy: RowWrapPolicy,
+    row_height_policy: RowHeightPolicy,
     label_alignment: FormLabelAlignment,
     rows: Vec<(ObjectId, ObjectId)>,
     /// Standalone items added via the `Layout` trait (widget_id, stretch).
@@ -89,6 +104,7 @@ impl FormLayout {
             margins: None,
             growth_policy: FieldGrowthPolicy::default(),
             row_wrap_policy: RowWrapPolicy::default(),
+            row_height_policy: RowHeightPolicy::default(),
             label_alignment: FormLabelAlignment::default(),
             rows: Vec::new(),
             items: Vec::new(),
@@ -113,6 +129,16 @@ impl FormLayout {
     /// The row wrap policy.
     pub fn row_wrap_policy(&self) -> RowWrapPolicy {
         self.row_wrap_policy
+    }
+
+    /// Sets how the available height is divided between rows.
+    pub fn set_row_height_policy(&mut self, policy: RowHeightPolicy) {
+        self.row_height_policy = policy;
+    }
+
+    /// The row height policy.
+    pub fn row_height_policy(&self) -> RowHeightPolicy {
+        self.row_height_policy
     }
 
     /// How a label narrower than its column is positioned.
@@ -241,6 +267,45 @@ impl FormLayout {
         (a as u64 + b as u64).min(u32::MAX as u64) as u32
     }
 
+    /// The height of each of `entries` slots under the configured [`RowHeightPolicy`].
+    ///
+    /// `desired[i]` is the row's preferred height (`0` means "no hint"); `update` passes an
+    /// empty slice because it has no hint channel, and the empty slice reads as "all zero".
+    /// Both entry points therefore share one height rule instead of two copies.
+    fn entry_heights(&self, entries: usize, budget: u32, desired: &[u32]) -> Vec<u32> {
+        if entries == 0 {
+            return Vec::new();
+        }
+        let equal = (budget / entries as u32).max(1);
+        if self.row_height_policy != RowHeightPolicy::FromHints {
+            return vec![equal; entries];
+        }
+        let resolved: Vec<u32> = (0..entries)
+            .map(|index| match desired.get(index).copied().unwrap_or(0) {
+                0 => equal,
+                height => height,
+            })
+            .collect();
+        let total: u64 = resolved.iter().map(|height| *height as u64).sum();
+        if total > budget as u64 {
+            // The stated heights do not fit. Starving the later rows would silently hide
+            // controls, so the even split is the bounded answer.
+            return vec![equal; entries];
+        }
+        let surplus = budget - total as u32;
+        let share = surplus / entries as u32;
+        let mut remainder = surplus % entries as u32;
+        let mut heights = resolved;
+        for height in &mut heights {
+            *height += share;
+            if remainder > 0 {
+                *height += 1;
+                remainder -= 1;
+            }
+        }
+        heights
+    }
+
     /// Remove a row by its index. Returns false if index is out of bounds.
     ///
     /// # What this removes, and what it must not
@@ -298,6 +363,14 @@ impl Layout for FormLayout {
             return;
         }
 
+        // One pass over the hint channel, so the wrap decision, the label measurement and
+        // the per-row height below do not each re-scan the child slice. A later duplicate is
+        // ignored: `ChildInfo::find` reports the first entry, and so does this index (G-160).
+        let mut hint_index: HashMap<ObjectId, &ChildInfo> = HashMap::new();
+        for info in children {
+            hint_index.entry(info.id).or_insert(info);
+        }
+
         // Whether each pair occupies two rows. `WrapLongRows` asks the two children how wide
         // they want to be; a missing hint counts as zero, which keeps the row unwrapped (the
         // lenient answer, matching the rest of this parser).
@@ -308,9 +381,8 @@ impl Layout for FormLayout {
                 RowWrapPolicy::DontWrapRows => false,
                 RowWrapPolicy::WrapAllRows => true,
                 RowWrapPolicy::WrapLongRows => {
-                    let wanted = |id: ObjectId| {
-                        ChildInfo::find(children, id).map(|c| c.hints.width.pref).unwrap_or(0)
-                    };
+                    let wanted =
+                        |id: ObjectId| hint_index.get(&id).map(|c| c.hints.width.pref).unwrap_or(0);
                     wanted(*label).saturating_add(self.spacing).saturating_add(wanted(*field))
                         > inner_width
                 }
@@ -328,7 +400,29 @@ impl Layout for FormLayout {
             return;
         }
         let spacing_total = Self::spacing_budget(entries, self.spacing);
-        let entry_height = (available_height.saturating_sub(spacing_total) / entries as u32).max(1);
+        let height_budget = available_height.saturating_sub(spacing_total);
+
+        // The preferred height of each slot, in emission order. A non-wrapped pair shares one
+        // slot, so it asks for the taller of its two members; a wrapped pair costs one slot
+        // per member; a standalone item owns its slot.
+        let desired: Vec<u32> = {
+            let mut desired = Vec::with_capacity(entries);
+            for ((label, field), wrapped) in self.rows.iter().zip(&wraps) {
+                let height_of =
+                    |id: ObjectId| hint_index.get(&id).map(|c| c.hints.height.pref).unwrap_or(0);
+                if *wrapped {
+                    desired.push(height_of(*label));
+                    desired.push(height_of(*field));
+                } else {
+                    desired.push(height_of(*label).max(height_of(*field)));
+                }
+            }
+            for (id, _) in &self.items {
+                desired.push(hint_index.get(id).map(|c| c.hints.height.pref).unwrap_or(0));
+            }
+            desired
+        };
+        let heights = self.entry_heights(entries, height_budget, &desired);
 
         // Measure the label column instead of assuming one third of the form. A form of
         // short captions wasted most of that third; a form of long ones clipped them. The
@@ -337,7 +431,7 @@ impl Layout for FormLayout {
         let measured_label = self
             .rows
             .iter()
-            .filter_map(|(label, _)| ChildInfo::find(children, *label))
+            .filter_map(|(label, _)| hint_index.get(label).copied())
             .map(|info| info.hints.width.pref)
             .max()
             .unwrap_or(0);
@@ -350,20 +444,22 @@ impl Layout for FormLayout {
         let remaining_field_width = inner_width.saturating_sub(Self::sum_budget(label_width, gap));
         let origin_x = rect.x.saturating_add(left as i32);
         let spacing = Self::clamped_i32(gap);
-        let entry_height_i32 = entry_height as i32;
         let mut cursor_y = rect.y.saturating_add(top as i32);
+        let mut slot = 0usize;
 
         for ((label, field), wrapped) in self.rows.iter().zip(&wraps) {
             let row_y = cursor_y;
             if *wrapped {
-                out(*label, Rect::new(origin_x, row_y, inner_width, entry_height));
-                let field_y = row_y.saturating_add(entry_height_i32).saturating_add(spacing);
-                out(*field, Rect::new(origin_x, field_y, inner_width, entry_height));
-                cursor_y = field_y.saturating_add(entry_height_i32).saturating_add(spacing);
+                let label_height = heights.get(slot).copied().unwrap_or(1);
+                let field_height = heights.get(slot + 1).copied().unwrap_or(1);
+                out(*label, Rect::new(origin_x, row_y, inner_width, label_height));
+                let field_y = row_y.saturating_add(label_height as i32).saturating_add(spacing);
+                out(*field, Rect::new(origin_x, field_y, inner_width, field_height));
+                cursor_y = field_y.saturating_add(field_height as i32).saturating_add(spacing);
+                slot += 2;
             } else {
-                let wanted = ChildInfo::find(children, *label)
-                    .map(|info| info.hints.width.pref)
-                    .unwrap_or(0);
+                let entry_height = heights.get(slot).copied().unwrap_or(1);
+                let wanted = hint_index.get(label).map(|info| info.hints.width.pref).unwrap_or(0);
                 let label_rect = if wanted > 0 && wanted < label_width {
                     let offset = match self.label_alignment {
                         FormLabelAlignment::Left => 0,
@@ -379,7 +475,8 @@ impl Layout for FormLayout {
                     FieldGrowthPolicy::AllNonFixed | FieldGrowthPolicy::ExpandingFieldsGrow => {
                         remaining_field_width
                     }
-                    FieldGrowthPolicy::FieldsStayAtSize => ChildInfo::find(children, *field)
+                    FieldGrowthPolicy::FieldsStayAtSize => hint_index
+                        .get(field)
                         .map(|c| c.hints.width.pref.min(remaining_field_width))
                         .unwrap_or(remaining_field_width),
                 };
@@ -392,13 +489,16 @@ impl Layout for FormLayout {
                         entry_height,
                     ),
                 );
-                cursor_y = row_y.saturating_add(entry_height_i32).saturating_add(spacing);
+                cursor_y = row_y.saturating_add(entry_height as i32).saturating_add(spacing);
+                slot += 1;
             }
         }
 
         for (id, _stretch) in &self.items {
+            let entry_height = heights.get(slot).copied().unwrap_or(1);
             out(*id, Rect::new(origin_x, cursor_y, inner_width, entry_height));
-            cursor_y = cursor_y.saturating_add(entry_height_i32).saturating_add(spacing);
+            cursor_y = cursor_y.saturating_add(entry_height as i32).saturating_add(spacing);
+            slot += 1;
         }
     }
 
@@ -464,8 +564,11 @@ impl Layout for FormLayout {
         // Keep every entry addressable when the form is smaller than the
         // minimum spacing budget; the parent clip/scroll container owns the
         // visual overflow rather than receiving zero-height child rects.
-        let entry_height =
-            (available_height.saturating_sub(spacing_total) / total_entries as u32).max(1);
+        //
+        // `update` has no hint channel, so the desired list is empty and a `FromHints`
+        // form falls back to the same even split it has always produced (LAY-02).
+        let heights =
+            self.entry_heights(total_entries, available_height.saturating_sub(spacing_total), &[]);
 
         // Layout rows: each row has a label (1/3 width) and a field (2/3 width), measured
         // against the same inner box the standalone items use — the parent minus *both*
@@ -486,34 +589,39 @@ impl Layout for FormLayout {
         // `spacing` positions the field and advances the rows. Clamped to the inner box so a huge
         // value cannot wrap the painted `x`/`y` (D09-LAYOUT-02).
         let spacing = Self::clamped_i32(gap);
-        let entry_height_i32 = entry_height as i32;
-        // The per-entry stride is `entry_height + spacing`; both are already `i32`-bounded, but
-        // their sum can still overflow, so saturate it once and reuse it for every row. The
-        // cumulative `y` likewise saturates rather than wrapping (D09-LAYOUT-02).
-        let stride = entry_height_i32.saturating_add(spacing);
         let origin_x = rect.x.saturating_add(margin);
 
-        let mut index: i32 = 0;
+        // `update` gives a label and its field one row each in the entry budget, but paints
+        // them on the same line (the historical shape). The cursor therefore advances by both
+        // heights plus the two gaps that budget already reserved.
+        let mut cursor_y = rect.y.saturating_add(margin_top);
+        let mut index: usize = 0;
         for (label, field) in &self.rows {
-            let y = rect.y.saturating_add(margin_top).saturating_add(index.saturating_mul(stride));
-            widgets(*label, Rect::new(origin_x, y, label_width, entry_height));
+            let label_height = heights.get(index).copied().unwrap_or(1);
+            let field_height = heights.get(index + 1).copied().unwrap_or(1);
+            widgets(*label, Rect::new(origin_x, cursor_y, label_width, label_height));
             widgets(
                 *field,
                 Rect::new(
                     origin_x.saturating_add(label_width as i32).saturating_add(spacing),
-                    y,
+                    cursor_y,
                     field_width,
-                    entry_height,
+                    field_height,
                 ),
             );
+            cursor_y = cursor_y
+                .saturating_add(label_height as i32)
+                .saturating_add(field_height as i32)
+                .saturating_add(spacing.saturating_mul(2));
             index = index.saturating_add(2);
         }
 
         // Layout standalone items: each gets the full inner width, sharing the same box
         // the label/field pairs use.
         for (id, _stretch) in &self.items {
-            let y = rect.y.saturating_add(margin_top).saturating_add(index.saturating_mul(stride));
-            widgets(*id, Rect::new(origin_x, y, inner_width, entry_height));
+            let entry_height = heights.get(index).copied().unwrap_or(1);
+            widgets(*id, Rect::new(origin_x, cursor_y, inner_width, entry_height));
+            cursor_y = cursor_y.saturating_add(entry_height as i32).saturating_add(spacing);
             index = index.saturating_add(1);
         }
     }
@@ -732,5 +840,92 @@ mod tests {
         assert_eq!(layout.field_for_label(1), Some(2));
         assert_eq!(layout.label_for_field(2), Some(1));
         assert_eq!(layout.item_at(0, FormItemRole::Field), Some(2));
+    }
+
+    // ── LAY-02: row heights from hints ────────────────────────────────────────────
+
+    #[test]
+    fn the_default_row_height_policy_is_equal_split() {
+        let layout = FormLayout::new(0, 0);
+        assert_eq!(layout.row_height_policy(), RowHeightPolicy::EqualSplit);
+    }
+
+    #[test]
+    fn from_hints_gives_each_row_its_tallest_member_and_fills_the_height() {
+        let mut layout = FormLayout::new(0, 0);
+        layout.add_row_pair(1, 2);
+        layout.add_row_pair(3, 4);
+        layout.set_row_height_policy(RowHeightPolicy::FromHints);
+        let children = [
+            ChildInfo::new(1, crate::layout::Hints::fixed(50, 20)),
+            ChildInfo::new(2, crate::layout::Hints::fixed(40, 60)),
+            ChildInfo::new(3, crate::layout::Hints::fixed(50, 20)),
+            ChildInfo::new(4, crate::layout::Hints::fixed(40, 20)),
+        ];
+        let mut out = Vec::new();
+        layout.arrange(Rect::new(0, 0, 200, 100), &children, &mut |id, rect| out.push((id, rect)));
+        let rect_of = |id: ObjectId| out.iter().find(|(i, _)| *i == id).unwrap().1;
+
+        // Desired 60 + 20 = 80 in a 100 px box: the 20 px surplus is split evenly.
+        assert_eq!(rect_of(1).height, 70, "row 1 takes its taller member's hint plus its share");
+        assert_eq!(rect_of(2).height, 70);
+        assert_eq!(rect_of(3).height, 30, "row 2 starts from its own hint");
+        assert_eq!(rect_of(3).y, 70, "the second row starts after the first");
+        assert_eq!(rect_of(4).y, 70);
+    }
+
+    #[test]
+    fn from_hints_makes_a_tall_field_taller_than_its_row_neighbour() {
+        let mut layout = FormLayout::new(0, 0);
+        layout.add_row_pair(1, 2);
+        layout.add_row_pair(3, 4);
+        layout.set_row_height_policy(RowHeightPolicy::FromHints);
+        let children = [
+            ChildInfo::new(1, crate::layout::Hints::fixed(50, 20)),
+            ChildInfo::new(2, crate::layout::Hints::fixed(40, 80)),
+            ChildInfo::new(3, crate::layout::Hints::fixed(50, 20)),
+            ChildInfo::new(4, crate::layout::Hints::fixed(40, 20)),
+        ];
+        let mut out = Vec::new();
+        layout.arrange(Rect::new(0, 0, 200, 100), &children, &mut |id, rect| out.push((id, rect)));
+        let rect_of = |id: ObjectId| out.iter().find(|(i, _)| *i == id).unwrap().1;
+        assert_eq!(rect_of(2).height, 80, "the multi-line field keeps its height");
+        assert_eq!(rect_of(4).height, 20, "the short row is not stretched to match");
+    }
+
+    #[test]
+    fn from_hints_falls_back_to_the_even_split_when_the_hints_do_not_fit() {
+        let mut layout = FormLayout::new(0, 0);
+        layout.add_row_pair(1, 2);
+        layout.add_row_pair(3, 4);
+        layout.set_row_height_policy(RowHeightPolicy::FromHints);
+        let children = [
+            ChildInfo::new(1, crate::layout::Hints::fixed(50, 120)),
+            ChildInfo::new(2, crate::layout::Hints::fixed(40, 120)),
+            ChildInfo::new(3, crate::layout::Hints::fixed(50, 120)),
+            ChildInfo::new(4, crate::layout::Hints::fixed(40, 120)),
+        ];
+        let mut out = Vec::new();
+        layout.arrange(Rect::new(0, 0, 200, 100), &children, &mut |id, rect| out.push((id, rect)));
+        let rect_of = |id: ObjectId| out.iter().find(|(i, _)| *i == id).unwrap().1;
+        assert_eq!(rect_of(1).height, 50, "the even split is the bounded answer");
+        assert_eq!(rect_of(3).height, 50);
+    }
+
+    #[test]
+    fn update_is_unchanged_by_the_row_height_policy() {
+        let mut equal = FormLayout::new(0, 0);
+        equal.add_row_pair(1, 2);
+        equal.add_row_pair(3, 4);
+        let mut from_hints = FormLayout::new(0, 0);
+        from_hints.add_row_pair(1, 2);
+        from_hints.add_row_pair(3, 4);
+        from_hints.set_row_height_policy(RowHeightPolicy::FromHints);
+
+        let mut a = Vec::new();
+        equal.update(Rect::new(0, 0, 200, 100), &mut |id, rect| a.push((id, rect)));
+        let mut b = Vec::new();
+        from_hints.update(Rect::new(0, 0, 200, 100), &mut |id, rect| b.push((id, rect)));
+        assert_eq!(a, b, "update has no hints, so both policies agree");
     }
 }

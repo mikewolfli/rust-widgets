@@ -14,7 +14,7 @@ use crate::widget::menu_toolbar::popup_reveal::PopupReveal;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use core::fmt::Write as _;
+use core::cell::{Ref, RefCell};
 
 /// Notification severity level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +81,11 @@ impl NotificationItem {
 pub struct NotificationCenter {
     base: BaseWidget,
     items: Vec<NotificationItem>,
+    /// Bumped whenever something the row layout depends on changes.
+    layout_revision: u64,
+    /// The laid-out rows and their day headers, recomputed only when the revision or the
+    /// geometry moves.
+    layout_cache: LayoutCache,
     selected_index: Option<usize>,
     row_height: u32,
     /// The newest notification's slide-in, so an arriving item is seen to arrive.
@@ -97,14 +102,17 @@ pub struct NotificationCenter {
     show_timestamps: bool,
     /// Whether the header paints a "Clear all" button.
     show_clear_all: bool,
+    /// Whether the header paints a "Mark all read" button.
+    show_mark_all_read: bool,
+    /// Whether the caller set [`Self::show_mark_all_read`] explicitly, which stops it from
+    /// following `show_clear_all`.
+    mark_all_read_explicit: bool,
     /// Whether rows are preceded by a day header.
     group_by_day: bool,
     /// Only rows whose level matches are shown; `None` shows every level.
     level_filter: Option<NotificationLevel>,
     /// Maximum retained notifications; zero keeps every item.
     max_items: usize,
-    /// Reused `HH:MM` buffer for the paint path, so a still frame does not format-allocate.
-    stamp_buf: String,
     /// Emitted when selected notification changes. Payload is id.
     pub notification_selected: Signal1<String>,
     /// Emitted when notification is activated. Payload is id.
@@ -115,7 +123,27 @@ pub struct NotificationCenter {
     pub notification_dismissed: Signal1<String>,
     /// Emitted when the "Clear all" affordance is activated.
     pub clear_all_requested: Signal1<()>,
+    /// Emitted when the "Mark all read" affordance is activated.
+    pub all_read_requested: Signal1<()>,
 }
+
+/// One laid-out notification row, with the day header it follows.
+struct RowLayout {
+    /// Index into [`NotificationCenter::items`].
+    item: usize,
+    /// The row's rectangle.
+    rect: Rect,
+    /// The day-header text drawn above this row, if it starts a day group.
+    ///
+    /// The label used to be `format!`-ed on every frame for every header (SP-P68); it is built
+    /// with the row layout instead and therefore once per item change.
+    day_label: Option<String>,
+    /// The row's `HH:MM` stamp, when timestamps are on and the item has a time.
+    stamp: Option<String>,
+}
+
+/// The laid-out rows and day headers, with the key they were built for.
+type LayoutCache = RefCell<Option<((u64, Rect, u32, usize, bool), Vec<RowLayout>)>>;
 
 impl NotificationCenter {
     /// Creates empty notification center.
@@ -123,21 +151,25 @@ impl NotificationCenter {
         Self {
             base: BaseWidget::new(WidgetKind::ListView, geometry, "NotificationCenter"),
             items: Vec::new(),
+            layout_revision: 1,
+            layout_cache: RefCell::new(None),
             selected_index: None,
             row_height: 36,
             reveal: PopupReveal::new(true),
             scroll_offset: 0,
             show_timestamps: false,
             show_clear_all: false,
+            show_mark_all_read: false,
+            mark_all_read_explicit: false,
             group_by_day: false,
             level_filter: None,
             max_items: 0,
-            stamp_buf: String::new(),
             notification_selected: Signal1::new(),
             notification_activated: Signal1::new(),
             unread_count_changed: Signal1::new(),
             notification_dismissed: Signal1::new(),
             clear_all_requested: Signal1::new(),
+            all_read_requested: Signal1::new(),
         }
     }
 
@@ -147,6 +179,7 @@ impl NotificationCenter {
             return;
         }
         self.show_timestamps = show;
+        self.invalidate_layout();
         self.base.request_redraw();
     }
 
@@ -161,6 +194,12 @@ impl NotificationCenter {
             return;
         }
         self.show_clear_all = show;
+        // The mark-all action is the same header row's sibling, so it follows the clear-all
+        // switch unless a caller has set it itself (SP-59).
+        if !self.mark_all_read_explicit {
+            self.show_mark_all_read = show;
+        }
+        self.invalidate_layout();
         self.base.request_redraw();
     }
 
@@ -169,12 +208,33 @@ impl NotificationCenter {
         self.show_clear_all
     }
 
+    /// Enables the header's "Mark all read" button (SP-59).
+    ///
+    /// The action existed as `mark_all_read()` and as a published command but had no affordance
+    /// in the panel, so a user could not mark the list read without host code. It defaults to the
+    /// same value as [`Self::set_show_clear_all`] so the two header actions appear together.
+    pub fn set_show_mark_all_read(&mut self, show: bool) {
+        self.mark_all_read_explicit = true;
+        if self.show_mark_all_read == show {
+            return;
+        }
+        self.show_mark_all_read = show;
+        self.invalidate_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns whether the "Mark all read" button is shown.
+    pub fn show_mark_all_read(&self) -> bool {
+        self.show_mark_all_read
+    }
+
     /// Enables a day header before the first row of each day.
     pub fn set_group_by_day(&mut self, group: bool) {
         if self.group_by_day == group {
             return;
         }
         self.group_by_day = group;
+        self.invalidate_layout();
         self.base.request_redraw();
     }
 
@@ -197,6 +257,7 @@ impl NotificationCenter {
             return;
         }
         self.scroll_offset = next;
+        self.invalidate_layout();
         self.base.request_redraw();
     }
 
@@ -218,14 +279,21 @@ impl NotificationCenter {
         if !removed.read {
             self.unread_count_changed.emit(self.unread_count());
         }
+        self.invalidate_layout();
         self.base.request_layout();
         self.base.request_redraw();
         true
     }
 
-    /// The header height reserved for the "Clear all" button, or zero when it is hidden.
+    /// Marks the row layout stale; the next paint or hit test rebuilds it.
+    fn invalidate_layout(&mut self) {
+        self.layout_revision = self.layout_revision.wrapping_add(1);
+    }
+
+    /// The header height reserved for the header buttons, or zero when none is shown.
     fn header_height(&self) -> i32 {
-        if self.show_clear_all && !self.items.is_empty() {
+        let has_action = (self.show_clear_all || self.show_mark_all_read) && !self.items.is_empty();
+        if has_action {
             18
         } else {
             0
@@ -237,14 +305,52 @@ impl NotificationCenter {
         if !self.show_clear_all || self.items.is_empty() {
             return None;
         }
-        let rect = self.geometry();
-        let width = 64.min(rect.width);
-        Some(Rect::new(rect.x + rect.width as i32 - width as i32 - 4, rect.y + 2, width, 14))
+        self.header_button_rect(0)
     }
 
-    /// The laid-out rows, in paint and hit-test order.
-    fn layout_rows(&self) -> Vec<(usize, Rect)> {
+    /// The "Mark all read" button rectangle, placed beside "Clear all".
+    fn mark_all_read_rect(&self) -> Option<Rect> {
+        if !self.show_mark_all_read || self.items.is_empty() {
+            return None;
+        }
+        let slot = i32::from(self.show_clear_all);
+        self.header_button_rect(slot)
+    }
+
+    /// One header button, counted from the trailing edge.
+    fn header_button_rect(&self, slot: i32) -> Option<Rect> {
         let rect = self.geometry();
+        let width = 64.min(rect.width);
+        let gap = 4;
+        Some(Rect::new(
+            rect.x + rect.width as i32 - width as i32 - 4 - slot * (width as i32 + gap),
+            rect.y + 2,
+            width,
+            14,
+        ))
+    }
+
+    /// The laid-out rows and day headers, cached until something they depend on changes.
+    ///
+    /// Both the paint and the hit test read this; they used to build the whole row vector
+    /// independently, so a click frame paid for it twice (SP-P67). The day labels are built
+    /// here too, which is what stops them from being `format!`-ed on every frame (SP-P68).
+    fn layout_rows(&self) -> Ref<'_, Vec<RowLayout>> {
+        let rect = self.geometry();
+        let key =
+            (self.layout_revision, rect, self.row_height, self.scroll_offset, self.group_by_day);
+        let fresh = self.layout_cache.borrow().as_ref().is_some_and(|(cached, _)| *cached == key);
+        if !fresh {
+            let rows = self.build_rows(rect);
+            *self.layout_cache.borrow_mut() = Some((key, rows));
+        }
+        Ref::map(self.layout_cache.borrow(), |cache| {
+            &cache.as_ref().expect("the row layout was just built").1
+        })
+    }
+
+    /// Builds the row layout and the day-header labels in one pass.
+    fn build_rows(&self, rect: Rect) -> Vec<RowLayout> {
         let mut y = rect.y + self.header_height();
         let mut rows = Vec::new();
         let mut previous_day = None;
@@ -252,8 +358,10 @@ impl NotificationCenter {
             if !self.item_matches_filter(item) {
                 continue;
             }
+            let mut day_label = None;
             if self.group_by_day && item.day_index().is_some() && item.day_index() != previous_day {
                 y += 14;
+                day_label = Self::day_label(item);
             }
             if item.day_index().is_some() {
                 previous_day = item.day_index();
@@ -261,10 +369,24 @@ impl NotificationCenter {
             if y >= rect.y + rect.height as i32 {
                 break;
             }
-            rows.push((index, Rect::new(rect.x, y, rect.width, self.row_height)));
+            rows.push(RowLayout {
+                item: index,
+                rect: Rect::new(rect.x, y, rect.width, self.row_height),
+                day_label,
+                stamp: (self.show_timestamps && item.timestamp_ms > 0)
+                    .then(|| Self::stamp_label(item.timestamp_ms)),
+            });
             y += self.row_height as i32;
         }
         rows
+    }
+
+    /// The `HH:MM` label for a timestamp, in the row's own unit.
+    fn stamp_label(timestamp_ms: u64) -> String {
+        let seconds = timestamp_ms / 1000;
+        let hour = (seconds / 3600) % 24;
+        let minute = (seconds / 60) % 60;
+        format!("{hour:02}:{minute:02}")
     }
 
     /// The day-header label for `item`, or `None` when grouping is off or the item has no time.
@@ -293,6 +415,7 @@ impl NotificationCenter {
         self.reveal.set_open(true);
         self.enforce_item_cap();
         self.clamp_scroll_to_visible();
+        self.invalidate_layout();
         self.unread_count_changed.emit(self.unread_count());
         self.base.request_layout();
         self.base.request_redraw();
@@ -302,6 +425,7 @@ impl NotificationCenter {
     pub fn clear(&mut self) {
         self.items.clear();
         self.selected_index = None;
+        self.invalidate_layout();
         self.unread_count_changed.emit(0);
         self.base.request_layout();
         self.base.request_redraw();
@@ -314,6 +438,7 @@ impl NotificationCenter {
         }
         self.level_filter = level;
         self.clamp_scroll_to_visible();
+        self.invalidate_layout();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -333,6 +458,7 @@ impl NotificationCenter {
         }
         self.max_items = max_items;
         self.enforce_item_cap();
+        self.invalidate_layout();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -456,10 +582,8 @@ impl NotificationCenter {
     }
 
     fn row_at(&self, pos: Point) -> Option<usize> {
-        self.layout_rows()
-            .into_iter()
-            .find(|(_, rect)| rect.contains_point(pos))
-            .map(|(index, _)| index)
+        let rows = self.layout_rows();
+        rows.iter().find(|row| row.rect.contains_point(pos)).map(|row| row.item)
     }
 
     /// Returns the height of one notification row, in logical pixels.
@@ -477,6 +601,7 @@ impl NotificationCenter {
             return;
         }
         self.row_height = row_height;
+        self.invalidate_layout();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -676,9 +801,18 @@ impl EventHandler for NotificationCenter {
                     self.clear_all_requested.emit(());
                     return;
                 }
-                if let Some((index, rect)) =
-                    self.layout_rows().into_iter().find(|(_, rect)| rect.contains_point(*pos))
-                {
+                if self.mark_all_read_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.all_read_requested.emit(());
+                    self.mark_all_read();
+                    return;
+                }
+                let hit = {
+                    let rows = self.layout_rows();
+                    rows.iter()
+                        .find(|row| row.rect.contains_point(*pos))
+                        .map(|row| (row.item, row.rect))
+                };
+                if let Some((index, rect)) = hit {
                     // The trailing band is the row's remove affordance.
                     if pos.x >= rect.x + rect.width as i32 - 22 {
                         let id = self.items[index].id.clone();
@@ -795,28 +929,37 @@ impl Draw for NotificationCenter {
                 HorizontalAlignment::Center,
             );
         }
+        if let Some(button) = self.mark_all_read_rect() {
+            context.fill_rect(button, background.blend(&text_color, 0.10));
+            context.draw_rect(button, separator);
+            context.draw_text_line_cow(
+                button,
+                "Mark all read",
+                effective_font(style),
+                text_color,
+                HorizontalAlignment::Center,
+            );
+        }
 
-        let mut previous_day = None;
-        for (index, row_rect) in self.layout_rows() {
+        let rows = self.layout_rows();
+        for row in rows.iter() {
+            let index = row.item;
+            let row_rect = row.rect;
             let Some(item) = self.items.get(index) else {
                 continue;
             };
-            // A day header is drawn in the strip `layout_rows` reserved above the first row of
-            // that day. Grouping is a reading aid, so it is opt-in.
-            if self.group_by_day && item.day_index().is_some() && item.day_index() != previous_day {
+            // A day header is drawn in the strip `build_rows` reserved above the first row of
+            // that day. Grouping is a reading aid, so it is opt-in. The label itself was built
+            // with the row layout, so a still frame does not format it again (SP-P68).
+            if let Some(label) = row.day_label.as_deref() {
                 let header = Rect::new(row_rect.x + 4, row_rect.y - 14, row_rect.width, 12);
-                if let Some(label) = Self::day_label(item) {
-                    context.draw_text_line_cow(
-                        header,
-                        &label,
-                        effective_font(style),
-                        text_color.blend(&background, 0.2),
-                        HorizontalAlignment::Left,
-                    );
-                }
-            }
-            if item.day_index().is_some() {
-                previous_day = item.day_index();
+                context.draw_text_line_cow(
+                    header,
+                    label,
+                    effective_font(style),
+                    text_color.blend(&background, 0.2),
+                    HorizontalAlignment::Left,
+                );
             }
             let y = row_rect.y;
             let rect = self.geometry();
@@ -928,12 +1071,7 @@ impl Draw for NotificationCenter {
                 close_ink,
                 1,
             );
-            if self.show_timestamps && item.timestamp_ms > 0 {
-                let seconds = item.timestamp_ms / 1000;
-                let hour = (seconds / 3600) % 24;
-                let minute = (seconds / 60) % 60;
-                self.stamp_buf.clear();
-                let _ = write!(self.stamp_buf, "{hour:02}:{minute:02}");
+            if let Some(stamp) = row.stamp.as_deref() {
                 let band = Rect::new(
                     row_rect.x + row_rect.width as i32 - 56,
                     row_rect.y,
@@ -942,7 +1080,7 @@ impl Draw for NotificationCenter {
                 );
                 context.draw_text_line_cow(
                     band,
-                    &self.stamp_buf,
+                    stamp,
                     effective_font(style),
                     text_color.blend(&background, 0.25),
                     HorizontalAlignment::Right,
@@ -996,9 +1134,13 @@ mod tests {
     fn level_filter_and_item_cap_bound_the_list() {
         let mut center = sample_center();
         center.set_level_filter(Some(NotificationLevel::Warning));
-        let rows = center.layout_rows();
-        assert_eq!(rows.len(), 1, "only the warning row is laid out");
-        assert_eq!(center.items()[rows[0].0].id, "n2");
+        {
+            // Scoped: `layout_rows` hands out a borrow of the layout cache, which must be
+            // released before the setters below take `&mut center`.
+            let rows = center.layout_rows();
+            assert_eq!(rows.len(), 1, "only the warning row is laid out");
+            assert_eq!(center.items()[rows[0].item].id, "n2");
+        }
 
         center.set_level_filter(None);
         let dismissed = Arc::new(Mutex::new(Vec::<String>::new()));

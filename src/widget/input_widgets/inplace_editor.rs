@@ -18,6 +18,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::text_utils::byte_index_of_char;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -186,8 +187,17 @@ impl InplaceEditor {
     /// Sets the text content.
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();
-        let before = self.text.clone();
-        self.text = text;
+        // The old value moves out rather than being cloned for the undo record (I-P02).
+        let before = core::mem::replace(&mut self.text, text);
+        self.cursor_position = self.text.chars().count();
+        self.publish_text_change(before);
+    }
+
+    /// Publishes a value already written to `self.text`, recording `before` as one undo step.
+    ///
+    /// Every edit path writes the value **in place** and hands the previous value here, instead
+    /// of building a fresh `String` from a `Vec<char>` for each keystroke (I-P02).
+    fn publish_text_change(&mut self, before: String) {
         if !self.restoring_history && before != self.text {
             *self.history_target.borrow_mut() = self.text.clone();
             self.undo_stack.push(Box::new(ValueCommand::new(
@@ -198,7 +208,6 @@ impl InplaceEditor {
                 "inplace_editor_text",
             )));
         }
-        self.cursor_position = self.text.chars().count();
         self.base.request_redraw();
     }
 
@@ -321,13 +330,12 @@ impl InplaceEditor {
                 return;
             }
             if self.cursor_position > 0 {
-                let mut chars: Vec<char> = self.text.chars().collect();
-                chars.remove(self.cursor_position - 1);
-                let next = chars.into_iter().collect::<String>();
-                let next_cursor = self.cursor_position.saturating_sub(1);
-                self.set_text(&next);
-                self.cursor_position = next_cursor.min(self.text.chars().count());
-                self.base.request_redraw();
+                let caret = byte_index_of_char(&self.text, self.cursor_position);
+                let previous = crate::widget::text_utils::previous_char_boundary(&self.text, caret);
+                let before = self.text.clone();
+                self.text.replace_range(previous..caret, "");
+                self.cursor_position = self.cursor_position.saturating_sub(1);
+                self.publish_text_change(before);
             }
         } else if c == '\u{ffff}' {
             // Forward delete, routed through the dedicated method so the sentinel remains only a
@@ -337,27 +345,38 @@ impl InplaceEditor {
             // Typing over a selection replaces it, which is the one edit every text field owes
             // the user after a drag.
             self.delete_selection();
-            let mut chars: Vec<char> = self.text.chars().collect();
-            let at = self.cursor_position.min(chars.len());
-            chars.insert(at, c);
-            let next = chars.into_iter().collect::<String>();
-            self.set_text(&next);
-            self.cursor_position = (at + 1).min(self.text.chars().count());
-            self.base.request_redraw();
+            let mut buffer = [0u8; 4];
+            let encoded = c.encode_utf8(&mut buffer);
+            let at = byte_index_of_char(&self.text, self.cursor_position);
+            let before = self.text.clone();
+            self.text.replace_range(at..at, encoded);
+            self.cursor_position = (self.cursor_position + 1).min(self.text.chars().count());
+            self.publish_text_change(before);
         }
     }
 
-    /// Inserts committed text through the same `insert_char` path the keyboard uses
-    /// (D09-INPUT-01).
+    /// Inserts committed text as **one** edit (D09-INPUT-01, I-P14).
     ///
     /// The desktop backends deliver a printable character or an IME commit as
-    /// `Event::TextInput`/`ImeCommit`, not as a `KeyPress`. Each committed character is inserted
-    /// with `insert_char`, so the caret advance and the undo push are identical to typing. Control
-    /// characters are filtered so a stray one does not enter the value.
+    /// `Event::TextInput`/`ImeCommit`. Routing a phrase through the per-character path made one
+    /// committed word N undo steps and N signals with a caret that walked character by
+    /// character; this writes the whole string with one `replace_range`, one history entry and
+    /// one caret advance. Control characters are filtered so a stray one does not enter the value.
     fn insert_committed_text(&mut self, text: &str) {
-        for c in text.chars().filter(|c| !c.is_control()) {
-            self.insert_char(c);
+        let filtered: String = text.chars().filter(|c| !c.is_control()).collect();
+        if filtered.is_empty() {
+            return;
         }
+        let (start_char, end_char) =
+            self.selection_range().unwrap_or((self.cursor_position, self.cursor_position));
+        self.selection_anchor = None;
+        let start = byte_index_of_char(&self.text, start_char);
+        let end = byte_index_of_char(&self.text, end_char);
+        let before = self.text.clone();
+        self.text.replace_range(start..end, &filtered);
+        self.cursor_position =
+            (start_char + filtered.chars().count()).min(self.text.chars().count());
+        self.publish_text_change(before);
     }
 
     /// Moves the cursor left by one character.
@@ -407,13 +426,13 @@ impl InplaceEditor {
             self.selection_anchor = None;
             return false;
         };
-        let mut chars: Vec<char> = self.text.chars().collect();
-        chars.drain(start..end);
-        let next: String = chars.into_iter().collect();
-        self.set_text(&next);
+        let start_byte = byte_index_of_char(&self.text, start);
+        let end_byte = byte_index_of_char(&self.text, end);
+        let before = self.text.clone();
+        self.text.replace_range(start_byte..end_byte, "");
         self.cursor_position = start.min(self.text.chars().count());
         self.selection_anchor = None;
-        self.base.request_redraw();
+        self.publish_text_change(before);
         true
     }
 
@@ -430,13 +449,12 @@ impl InplaceEditor {
         if self.cursor_position >= char_count {
             return false;
         }
-        let at = self.cursor_position;
-        let mut chars: Vec<char> = self.text.chars().collect();
-        chars.remove(at);
-        let next: String = chars.into_iter().collect();
-        self.set_text(&next);
-        self.cursor_position = at.min(self.text.chars().count());
-        self.base.request_redraw();
+        let at = byte_index_of_char(&self.text, self.cursor_position);
+        let next = crate::widget::text_utils::next_char_boundary(&self.text, at);
+        let before = self.text.clone();
+        self.text.replace_range(at..next, "");
+        self.cursor_position = self.cursor_position.min(self.text.chars().count());
+        self.publish_text_change(before);
         true
     }
 
@@ -457,41 +475,59 @@ impl InplaceEditor {
 
     /// The character index a horizontal position points at.
     ///
-    /// Measured through the shared metric model rather than a fixed advance, so a proportional face
-    /// or a wider glyph does not move the click target away from the character under the pointer.
+    /// One pass over the value accumulating each character's advance, stopping at the character
+    /// whose midpoint the pointer crossed (I-P04). It used to rebuild a prefix string for every
+    /// character — n prefix allocations plus n whole-string measurements per hit test, and a
+    /// drag re-ran it on every pointer step.
     fn char_index_at_x(&self, x: i32) -> usize {
-        let font = self
-            .base
-            .style()
-            .font
-            .clone()
-            .unwrap_or_else(|| crate::core::Font::simple("sans-serif", self.font_size));
+        let measured_font;
+        let font = match self.base.style().font.as_ref() {
+            Some(font) => font,
+            None => {
+                measured_font = crate::core::Font::simple("sans-serif", self.font_size);
+                &measured_font
+            }
+        };
         let target = (x - self.text_rect().x).max(0) as f32;
-        let mut best = 0usize;
+        let mut advance = 0f32;
         let mut ordinal = 0usize;
+        let mut buffer = [0u8; 4];
         for ch in self.text.chars() {
-            let prefix: String = self.text.chars().take(ordinal).collect();
-            let before = crate::widget::metrics::estimate_text_width(&prefix, &font, 1.0);
-            let advance = crate::widget::metrics::estimate_text_width(&ch.to_string(), &font, 1.0);
-            if target < before as f32 + advance as f32 / 2.0 {
+            let width =
+                crate::widget::metrics::estimate_text_width(ch.encode_utf8(&mut buffer), font, 1.0)
+                    as f32;
+            if target < advance + width / 2.0 {
                 break;
             }
+            advance += width;
             ordinal += 1;
-            best = ordinal;
         }
-        best
+        ordinal
     }
 
     /// The advance, in pixels, of the first `count` characters of the value.
+    ///
+    /// Accumulated with the **same per-character ruler** [`Self::char_index_at_x`] uses, so the
+    /// paint's caret and the pointer's caret land on the same boundary (I-P04).
     fn advance_of_prefix(&self, count: usize) -> i32 {
-        let font = self
-            .base
-            .style()
-            .font
-            .clone()
-            .unwrap_or_else(|| crate::core::Font::simple("sans-serif", self.font_size));
-        let prefix: String = self.text.chars().take(count).collect();
-        crate::widget::metrics::estimate_text_width(&prefix, &font, 1.0) as i32
+        let measured_font;
+        let font = match self.base.style().font.as_ref() {
+            Some(font) => font,
+            None => {
+                measured_font = crate::core::Font::simple("sans-serif", self.font_size);
+                &measured_font
+            }
+        };
+        let mut advance = 0i32;
+        let mut buffer = [0u8; 4];
+        for ch in self.text.chars().take(count) {
+            advance = advance.saturating_add(crate::widget::metrics::estimate_text_width(
+                ch.encode_utf8(&mut buffer),
+                font,
+                1.0,
+            ) as i32);
+        }
+        advance
     }
 }
 
@@ -700,24 +736,20 @@ impl Draw for InplaceEditor {
             .clone()
             .unwrap_or_else(|| crate::core::Font::simple("sans-serif", self.font_size));
         let theme = crate::style::resolved_theme_style_shared("inplace_editor");
-        // `inplace_editor` classifies as `Input`, which *does* carry a surface
-        // (`Colors::input_background`), so the resolved background is already a visible step
-        // from the window. It falls back to the theme's `background` when a theme supplies
-        // none, which is what reaches this arm at all.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        // One palette read for the whole frame (I-P07): the window fill and the accent used to
+        // take the theme manager's lock in two separate calls after the resolved style. The
+        // palette is copied out as values so the guard is released before anything is painted.
+        let (window_fill, accent) = {
+            let manager = crate::style::theme_manager();
+            match manager.current_theme() {
+                Some(active) => (active.colors.background, active.colors.primary),
+                None => (Color::WHITE, Color::rgb(0, 120, 255)),
+            }
+        };
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::rgb(50, 50, 50));
-        // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
-        // the edit-mode frame follows the appearance rather than staying a literal blue.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::rgb(0, 120, 255));
         let surface = match style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -753,12 +785,17 @@ impl Draw for InplaceEditor {
             // in the field rather than positioned by two unrelated offsets.
             let text_x = text_box.x;
             let line = context.text_line(text_box, &font);
+            // The visible window follows the caret: a value wider than the box is scrolled by the
+            // caret's overflow instead of painting past the field (I-19). A value that fits keeps
+            // `scroll == 0`, i.e. exactly the previous pixels but now elided to the box.
+            let caret_advance = self.advance_of_prefix(self.cursor_position);
+            let scroll = (caret_advance - text_box.width as i32).max(0);
             // The selection band is painted under the glyphs, with both edges measured by the same
             // ruler the caret uses. It used to be invisible: the control had no selection state at
             // all, so a drag or a shift-extension only moved an invisible anchor.
             if let Some((start, end)) = self.selection_range() {
-                let left = text_x + self.advance_of_prefix(start);
-                let right = text_x + self.advance_of_prefix(end);
+                let left = text_x + self.advance_of_prefix(start) - scroll;
+                let right = text_x + self.advance_of_prefix(end) - scroll;
                 if right > left {
                     let highlight = ink.blend(&surface, 0.3).blend(&surface, 0.25);
                     context.fill_rect(
@@ -767,19 +804,33 @@ impl Draw for InplaceEditor {
                     );
                 }
             }
-            context.draw_text(
-                Point::new(text_x, line.y),
-                &self.text,
-                &font,
-                ink,
-                HorizontalAlignment::Left,
-            );
+            if scroll == 0 {
+                context.draw_text_fitted_cow(
+                    Rect::new(text_x, line.y, text_box.width, line.height.max(1)),
+                    &self.text,
+                    &font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            } else {
+                context.push_clip(text_x, line.y, text_box.width, line.height.max(1));
+                context.draw_text(
+                    Point::new(text_x - scroll, line.y),
+                    &self.text,
+                    &font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+                context.pop_clip();
+            }
 
             // Draw the caret, but only during the visible half of its cycle. The state comes from
             // the control's `CursorBlink`, which `tick` advances; drawing it unconditionally was
             // the "blinking cursor" that never blinked.
             if self.cursor_blink.is_visible() {
-                let cursor_x = text_x + self.advance_of_prefix(self.cursor_position);
+                let cursor_x = (text_x + caret_advance - scroll)
+                    .min(text_x + text_box.width as i32 - 1)
+                    .max(text_x);
                 context.draw_line(
                     Point::new(cursor_x, line.y),
                     Point::new(cursor_x, line.y + line.height as i32),
@@ -801,8 +852,10 @@ impl Draw for InplaceEditor {
 
             let text_x = text_box.x;
             let line = context.text_line(text_box, &font);
-            context.draw_text(
-                Point::new(text_x, line.y),
+            // Fitted to the field: the display value used to paint straight past the box edge
+            // when it was wider than the field (I-19).
+            context.draw_text_fitted_cow(
+                Rect::new(text_x, line.y, text_box.width, line.height.max(1)),
                 &self.text,
                 &font,
                 ink,
@@ -902,10 +955,17 @@ impl EventHandler for InplaceEditor {
                         self.selection_anchor = None;
                         self.finish_edit(false);
                     }
-                    0x0D | 0x09 => {
-                        // Enter or Tab - accept
+                    0x0D => {
+                        // Enter — accept. Tab is **not** an accept: it must reach the focus
+                        // navigation path, so a user can leave the cell without committing the
+                        // edit (I-18).
                         self.selection_anchor = None;
                         self.finish_edit(true);
+                    }
+                    0x09 => {
+                        // Tab hands the event back to the base widget's focus router (I-18).
+                        self.selection_anchor = None;
+                        self.base.handle_event(event);
                     }
                     0x08 => {
                         // Backspace
@@ -1220,6 +1280,19 @@ mod tests {
         ie.insert_char('\u{7f}');
         assert_eq!(ie.text(), "AB");
         assert_eq!(ie.cursor_position, 2);
+    }
+
+    #[test]
+    fn a_committed_phrase_is_one_undo_step() {
+        // I-P14: a phrase used to be inserted one character at a time, so one IME commit became N
+        // undo steps with a caret that walked through them.
+        let mut ie = InplaceEditor::new("", Rect::new(0, 0, 200, 30));
+        ie.start_edit();
+        ie.insert_committed_text("hello");
+        assert_eq!(ie.text(), "hello");
+        assert_eq!(ie.cursor_position, 5);
+        assert!(ie.undo());
+        assert_eq!(ie.text(), "");
     }
 
     /// `padding` moves the value: the text box is the field inset by the caller's padding.

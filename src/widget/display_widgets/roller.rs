@@ -7,8 +7,8 @@
 //! center. Supports mouse wheel scrolling and click-to-select interaction.
 
 use crate::compat::{String, Vec};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler, WheelScroll};
+use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::event::{key_codes, Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::style::{MotionCurve, MotionSlot, PropertyDriver, SpringPreset};
@@ -43,17 +43,8 @@ pub struct Roller {
     /// A pointer press that may become a drag: the press's y coordinate and the selection
     /// it started from, in row terms.
     drag_origin: Option<(i32, usize)>,
-    /// Measured widths of `options` for the face and scale they were last measured under.
-    line_widths: Option<RollerWidthCache>,
     /// Signal emitted when selection changes.
     pub changed_signal: GenericSignal,
-}
-
-/// Cached option widths for one face and device scale.
-struct RollerWidthCache {
-    font: Font,
-    dpi_scale_bits: u32,
-    widths: Vec<u32>,
 }
 
 impl Roller {
@@ -80,7 +71,6 @@ impl Roller {
                 MotionCurve::Spring(SpringPreset::Settle),
             ),
             drag_origin: None,
-            line_widths: None,
             changed_signal: GenericSignal::new(),
         }
     }
@@ -94,7 +84,6 @@ impl Roller {
     pub fn set_options(&mut self, options: Vec<String>) {
         self.options = options;
         // The cached widths describe the replaced list, so they cannot be reused.
-        self.line_widths = None;
         if !self.options.is_empty() {
             self.selected_index = self.selected_index.min(self.options.len() - 1);
         } else {
@@ -280,22 +269,6 @@ impl Roller {
 
     /// Measures every option once per face, scale and list, so the draw pass does not
     /// repeat the same `measure_text` for each visible row every frame.
-    fn refresh_line_widths(&mut self, context: &RenderContext, font: &Font) {
-        let dpi_scale_bits = context.dpi_scale().to_bits();
-        let unchanged = self.line_widths.as_ref().is_some_and(|cache| {
-            cache.dpi_scale_bits == dpi_scale_bits
-                && cache.font == *font
-                && cache.widths.len() == self.options.len()
-        });
-        if unchanged {
-            return;
-        }
-
-        let widths: Vec<u32> =
-            self.options.iter().map(|option| context.measure_text(option, font).width).collect();
-        self.line_widths = Some(RollerWidthCache { font: font.clone(), dpi_scale_bits, widths });
-    }
-
     /// The total content height for all visible items.
     ///
     /// Fixed at [`dimensions::ROLLER_WHEEL_HEIGHT`] for the default wheel — five rows —
@@ -469,6 +442,22 @@ impl EventHandler for Roller {
                     self.set_selected_index(next);
                 }
             }
+            // The wheel is keyboard-reachable through the same `set_selected_index` path the
+            // wheel notch and the drag use, so the inertia tween applies to all three.
+            Event::KeyPress { key, .. } => {
+                let last = self.options.len().saturating_sub(1);
+                let page = self.visible_count.max(1) as i64;
+                let target = match *key {
+                    key_codes::UP => self.selected_index as i64 - 1,
+                    key_codes::DOWN => self.selected_index as i64 + 1,
+                    key_codes::PAGE_UP => self.selected_index as i64 - page,
+                    key_codes::PAGE_DOWN => self.selected_index as i64 + page,
+                    key_codes::HOME => 0,
+                    key_codes::END => last as i64,
+                    _ => return,
+                };
+                self.set_selected_index(target.clamp(0, last as i64) as usize);
+            }
             // Mouse press: determine which item was clicked relative to the
             // center of the visible wheel.
             Event::MousePress { pos, .. } => {
@@ -580,12 +569,6 @@ impl Draw for Roller {
         // One source of truth for the drawn face (`wheel_font`): the inline choice here
         // could drift from the one `item_height` and `size_hint` measure with.
         let font = self.wheel_font();
-        // Measure the rows once for this face and list, then read the cached widths below.
-        self.refresh_line_widths(context, &font);
-        let line_widths = match self.line_widths.as_ref() {
-            Some(cache) if cache.widths.len() == self.options.len() => cache.widths.as_slice(),
-            _ => return,
-        };
         // `item_height` derives its row from the same font, so the wheel band cannot clip the
         // glyphs it draws (D09-STYLE-02).
 
@@ -598,7 +581,6 @@ impl Draw for Roller {
         let band = self.wheel_band();
         let item_h = self.item_height() as i32;
         let half_visible = (self.visible_count / 2) as usize;
-        let center_x = band.x + (band.width as i32) / 2;
         let center_y = band.y + (band.height as i32) / 2;
 
         // Draw a background fill for the wheel's own band, not for the whole control.
@@ -643,14 +625,6 @@ impl Draw for Roller {
                     context.fill_rect(highlight_rect, selected_bg);
                 }
 
-                // Draw the option text, centred with the width cached for this face.
-                let text_x = center_x - (line_widths[idx] as i32) / 2;
-                // Vertically center the text in the row through the shared primitive: a
-                // glyph origin is the box's **top** edge, so `y - metrics.height / 2` put
-                // that edge on the row's middle line and drew every label half a line low.
-                let row_line = context.text_line(item_rect, &font);
-                let text_y = row_line.y;
-
                 let color = if is_selected {
                     selected_text_color
                 } else {
@@ -664,12 +638,21 @@ impl Draw for Roller {
                     )
                 };
 
-                context.draw_text(
-                    Point::new(text_x, text_y),
+                // Bounded text: a long option is fitted with an ellipsis inside the wheel band
+                // rather than cut at an arbitrary glyph by the clip. The same rule the tag's
+                // label uses, and the same for the selected row and its neighbours.
+                let text_band = Rect::new(
+                    item_rect.x + 6,
+                    item_rect.y,
+                    item_rect.width.saturating_sub(12),
+                    item_rect.height,
+                );
+                context.draw_text_line(
+                    text_band,
                     &self.options[idx],
                     &font,
                     color,
-                    HorizontalAlignment::Left,
+                    HorizontalAlignment::Center,
                 );
             }
         }
@@ -1100,5 +1083,33 @@ mod tests {
         });
         roller.handle_event(&Event::MouseMove { pos: Point::new(x, center_y - 4 * item_h) });
         assert_eq!(roller.selected_index(), Some(2), "a released drag must not stay armed");
+    }
+
+    /// The wheel is keyboard-reachable: arrows step one row, Page keys step a page and Home/End
+    /// jump to the ends, all through `set_selected_index`.
+    #[test]
+    fn the_keyboard_steps_the_wheel() {
+        let mut roller = make_roller();
+        roller.handle_event(&Event::KeyPress { key: crate::event::key_codes::DOWN, modifiers: 0 });
+        assert_eq!(roller.selected_index(), Some(1));
+        roller.handle_event(&Event::KeyPress { key: crate::event::key_codes::UP, modifiers: 0 });
+        assert_eq!(roller.selected_index(), Some(0));
+
+        roller.handle_event(&Event::KeyPress {
+            key: crate::event::key_codes::PAGE_DOWN,
+            modifiers: 0,
+        });
+        assert_eq!(
+            roller.selected_index(),
+            Some(roller.options().len() - 1),
+            "one page steps past the end and clamps"
+        );
+        roller.handle_event(&Event::KeyPress { key: crate::event::key_codes::END, modifiers: 0 });
+        assert_eq!(roller.selected_index(), Some(roller.options().len() - 1));
+        roller.handle_event(&Event::KeyPress { key: crate::event::key_codes::HOME, modifiers: 0 });
+        assert_eq!(roller.selected_index(), Some(0));
+        // An unrelated key is ignored rather than resetting the selection.
+        roller.handle_event(&Event::KeyPress { key: crate::event::key_codes::LEFT, modifiers: 0 });
+        assert_eq!(roller.selected_index(), Some(0));
     }
 }

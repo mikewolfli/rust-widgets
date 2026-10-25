@@ -10,7 +10,9 @@ pub mod bezier_curve_editor;
 pub mod date_range_picker;
 pub mod date_utils;
 pub mod drop_zone;
+pub mod drum_column;
 pub mod mobile_date_picker;
+pub mod preset_chip_bar;
 pub mod qr_code;
 pub mod segmented_button;
 
@@ -20,6 +22,8 @@ pub use barcode_scanner::{BarcodeFormat, BarcodeResult, BarcodeScanner};
 pub use bezier_curve_editor::BezierCurveEditor;
 pub use date_range_picker::DateRangePicker;
 pub use drop_zone::DropZone;
+pub use drum_column::DrumColumn;
 pub use mobile_date_picker::MobileDatePicker;
+pub use preset_chip_bar::{ChipOrientation, PresetChip, PresetChipBar};
 pub use qr_code::QRCode;
 pub use segmented_button::{Segment, SegmentedButton};

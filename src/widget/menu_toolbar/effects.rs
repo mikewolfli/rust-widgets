@@ -12,6 +12,14 @@ use crate::core::{Color, Rect};
 use crate::render::{RenderCommand, RenderContext};
 use crate::style::MenuEffects;
 
+/// How long the pointer must rest on a branch row before its child panel opens.
+///
+/// The delay is shared by the whole menu family: a `Menu`, a `DropdownMenu` and a
+/// `MenuButton` that opened a branch at different speeds would read as three different
+/// controls. A short delay is what distinguishes "passing over" a branch from "asking
+/// for" it, which is the habit the baseline toolkit establishes.
+pub(crate) const SUBMENU_HOVER_DELAY_MS: u32 = 300;
+
 #[cfg(test)]
 thread_local! {
     /// A per-thread effect override, so a test can exercise a policy without changing the

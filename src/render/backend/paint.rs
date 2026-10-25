@@ -4,13 +4,13 @@
 #![allow(clippy::chunks_exact_to_as_chunks)]
 //! Paint backend trait and software implementation.
 use super::batch::BatchState;
+#[cfg(test)]
 use crate::compat::vec;
-use crate::compat::Arc;
-use crate::compat::Rc;
-use crate::compat::Vec;
+use crate::compat::{Arc, Rc, Vec};
 use crate::core::{Color, Font, Rect, Size};
 use crate::render::pipeline::{
-    sat_add_i32, sat_mul_i32, sat_neg_i32, set_pixel, u32_to_i32_saturating,
+    fill_conic_ramp, ramp_lut_for_stops, sat_add_i32, sat_mul_i32, sat_neg_i32,
+    u32_to_i32_saturating, ConicWrite,
 };
 use crate::render::{
     blend_pixel_with_mode, BlendMode, MatteMode, RenderCommand, ShapedText, SoftwareRenderConfig,
@@ -294,6 +294,7 @@ impl SoftwarePaintBackend {
     /// content must clear the cache between uses. Resizing the surface also clears it.
     pub fn clear_layer_cache(&mut self) {
         self.surface.buffer.layer_cache.clear();
+        self.surface.buffer.layer_cache_cursor = 0;
     }
 
     /// The number of cached layer foregrounds currently held.
@@ -332,6 +333,7 @@ impl PaintBackend for SoftwarePaintBackend {
     }
     fn clear_layer_cache(&mut self) {
         self.surface.buffer.layer_cache.clear();
+        self.surface.buffer.layer_cache_cursor = 0;
     }
     #[cfg(test)]
     fn cached_layer_count(&self) -> usize {
@@ -639,8 +641,19 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
                     let blur_w = (blur_right - blur_x0 as i64).max(0) as usize;
                     let blur_h = (blur_bottom - blur_y0 as i64).max(0) as usize;
                     if blur_w > 0 && blur_h > 0 {
-                        let back = surface.buffer.back_mut();
-                        box_blur_region(back, w, h, blur_x0, blur_y0, blur_w, blur_h, radius);
+                        let mut scratch = surface.take_blur_scratch();
+                        {
+                            let back = surface.buffer.back_mut();
+                            box_blur_region(
+                                back,
+                                w,
+                                h,
+                                (blur_x0, blur_y0, blur_w, blur_h),
+                                radius,
+                                &mut scratch,
+                            );
+                        }
+                        surface.return_blur_scratch(scratch);
                     }
                 }
             }
@@ -673,8 +686,12 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
                 }
                 None => (0, 0, w, h),
             };
-            let back = surface.buffer.back_mut();
-            box_blur_region(back, w, h, bx, by, bw, bh, r);
+            let mut scratch = surface.take_blur_scratch();
+            {
+                let back = surface.buffer.back_mut();
+                box_blur_region(back, w, h, (bx, by, bw, bh), r, &mut scratch);
+            }
+            surface.return_blur_scratch(scratch);
         }
         RenderCommand::ClipPath { points } => {
             // Exact path clipping: the surface restricts drawing to the path's bounds and records a
@@ -694,8 +711,8 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
                 return;
             }
             let size = surface.size();
-            let w = size.width as usize;
-            let h = size.height as usize;
+            let w = size.width;
+            let h = size.height;
             if w == 0 || h == 0 {
                 return;
             }
@@ -704,10 +721,10 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
             // `atan2` plus a stop search over the full frame (G-03).
             let (x0, y0, x1, y1) = match surface.current_clip() {
                 Some((clip_x, clip_y, clip_w, clip_h)) => {
-                    let x0 = clip_x.max(0) as usize;
-                    let y0 = clip_y.max(0) as usize;
-                    let x1 = (clip_x as i64 + i64::from(clip_w)).clamp(0, w as i64) as usize;
-                    let y1 = (clip_y as i64 + i64::from(clip_h)).clamp(0, h as i64) as usize;
+                    let x0 = clip_x.max(0) as u32;
+                    let y0 = clip_y.max(0) as u32;
+                    let x1 = (clip_x as i64 + i64::from(clip_w)).clamp(0, w as i64) as u32;
+                    let y1 = (clip_y as i64 + i64::from(clip_h)).clamp(0, h as i64) as u32;
                     (x0.min(w), y0.min(h), x1, y1)
                 }
                 None => (0, 0, w, h),
@@ -715,34 +732,19 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
             if x1 <= x0 || y1 <= y0 {
                 return;
             }
-            // Resolve the angle ramp once. The per-pixel loop then performs one table lookup
-            // instead of a binary search over the stops (G-03).
-            const CONIC_LUT_SIZE: usize = 256;
-            let mut lut = [Color::TRANSPARENT; CONIC_LUT_SIZE];
-            for (index, slot) in lut.iter_mut().enumerate() {
-                let pos = index as f32 / (CONIC_LUT_SIZE - 1) as f32;
-                *slot = conic_stop_color(stops, pos);
-            }
-            let lut_index = |pos: f32| -> usize {
-                ((pos.clamp(0.0, 1.0) * (CONIC_LUT_SIZE - 1) as f32) as usize)
-                    .min(CONIC_LUT_SIZE - 1)
-            };
-            let cx = center.x as f32;
-            let cy = center.y as f32;
-            let angle_offset = *start_angle;
-            // Take the back buffer once rather than re-borrowing it per pixel: the writes are
-            // sequential and non-overlapping, so one borrow covers the whole loop.
-            let back = surface.buffer.back_mut();
-            for py in y0..y1 {
-                let dy = py as f32 - cy;
-                for px in x0..x1 {
-                    let dx = px as f32 - cx;
-                    let mut t = dy.atan2(dx) + core::f32::consts::PI;
-                    t = (t + angle_offset) % (2.0 * core::f32::consts::PI);
-                    let pos = t / (2.0 * core::f32::consts::PI);
-                    set_pixel(back, size.width, px as u32, py as u32, lut[lut_index(pos)]);
-                }
-            }
+            // One content-cached ramp and one kernel, both shared with `fill_rect_gradient`'s
+            // conic branch, so the two software paths cannot drift (G-203). The command arm keeps
+            // its historical verbatim write; `fill_rect_gradient` keeps the blend-aware one.
+            let lut = ramp_lut_for_stops(stops);
+            fill_conic_ramp(
+                surface.buffer.back_mut(),
+                size.width,
+                (x0, y0, x1, y1),
+                *center,
+                *start_angle,
+                &lut,
+                ConicWrite::Replace,
+            );
         }
     }
 }
@@ -814,30 +816,39 @@ fn begin_layer(
     let isolated = effect.is_some() || opacity < 1.0 || cache_key.is_some();
     let cached_foreground = match cache_key {
         Some(key) => {
+            let cursor = surface.buffer.layer_cache_cursor;
             let cache = &mut surface.buffer.layer_cache;
-            // Touch on hit: move the entry to the back so eviction follows *use* order. The old
-            // list was evicted from the front in insertion order, so a hot layer could be pushed
-            // out by a cold one registered later (G-13).
+            // Touch on hit: move the entry to the newest slot so eviction follows *use* order. The
+            // old list was evicted from the front in insertion order, so a hot layer could be
+            // pushed out by a cold one registered later (G-13). A swap keeps the cost bounded;
+            // it is ring-relative once the cache is full (G-05).
             let position = cache.iter().position(|(cached_key, entry)| {
                 *cached_key == key && entry.rect == rect && entry.opacity == opacity
             });
             position.map(|position| {
-                let entry = cache.remove(position);
-                let foreground = Arc::clone(&entry.1.foreground);
-                cache.push(entry);
-                foreground
+                let newest = newest_cache_slot(cache.len(), cursor);
+                if position != newest {
+                    cache.swap(position, newest);
+                }
+                Arc::clone(&cache[newest].1.foreground)
             })
         }
         None => None,
     };
     let backdrop = if isolated {
-        capture_region(surface.buffer.back_mut(), size.width as usize, rect)
+        // Capture and clear in one sweep: the previous form read the region out and then made a
+        // second pass to zero it, while a reusable buffer removes the per-layer allocation (G-06).
+        let mut buffer = surface.take_layer_backdrop();
+        capture_and_clear_region_into(
+            surface.buffer.back_mut(),
+            size.width as usize,
+            rect,
+            &mut buffer,
+        );
+        buffer
     } else {
         crate::compat::Vec::new()
     };
-    if isolated {
-        clear_region(surface.buffer.back_mut(), size.width as usize, rect);
-    }
     if cached_foreground.is_some() {
         // The caller asserted the enclosed commands are unchanged; discard them and reuse the
         // previous frame's foreground.
@@ -874,8 +885,14 @@ fn push_matte(surface: &mut SoftwareSurface, bounds: Rect, mode: MatteMode) {
         });
         return;
     };
-    let backdrop = capture_region(surface.buffer.back_mut(), size.width as usize, rect);
-    clear_region(surface.buffer.back_mut(), size.width as usize, rect);
+    // Capture and clear in one sweep, into a pooled buffer (G-06).
+    let mut backdrop = surface.take_layer_backdrop();
+    capture_and_clear_region_into(
+        surface.buffer.back_mut(),
+        size.width as usize,
+        rect,
+        &mut backdrop,
+    );
     surface.buffer.mattes.push(super::surface::MatteCapture {
         rect,
         backdrop,
@@ -894,10 +911,17 @@ fn pop_matte(surface: &mut SoftwareSurface) {
         return;
     }
     let surface_width = surface.size().width as usize;
-    let drawn = capture_region(surface.buffer.back_mut(), surface_width, capture.rect);
+    let mut drawn = surface.take_layer_foreground_scratch();
+    // The matte source has served its purpose; the matted layer starts from a clean region, and
+    // both happen in one read-and-zero sweep (G-06).
+    capture_and_clear_region_into(
+        surface.buffer.back_mut(),
+        surface_width,
+        capture.rect,
+        &mut drawn,
+    );
     capture.mask = matte_coverage(&drawn, capture.mode);
-    // The matte source has served its purpose; the matted layer starts from a clean region.
-    clear_region(surface.buffer.back_mut(), surface_width, capture.rect);
+    surface.return_layer_foreground_scratch(drawn);
     surface.buffer.mattes.push(capture);
 }
 
@@ -907,14 +931,17 @@ fn end_matte(surface: &mut SoftwareSurface) {
     surface.pop_clip();
     let (_, _, width, height) = capture.rect;
     if width == 0 || height == 0 {
+        surface.return_layer_backdrop(capture.backdrop);
         return;
     }
     let pixel_count = width as usize * height as usize;
     if capture.backdrop.len() != pixel_count * 4 || capture.mask.len() != pixel_count {
+        surface.return_layer_backdrop(capture.backdrop);
         return;
     }
     let surface_width = surface.size().width as usize;
-    let mut matted = capture_region(surface.buffer.back_mut(), surface_width, capture.rect);
+    let mut matted = surface.take_layer_foreground_scratch();
+    capture_region_into(surface.buffer.back_mut(), surface_width, capture.rect, &mut matted);
     for (index, pixel) in matted.chunks_exact_mut(4).enumerate() {
         let coverage = capture.mask[index] as u32;
         pixel[3] = ((pixel[3] as u32 * coverage) / 255) as u8;
@@ -927,6 +954,8 @@ fn end_matte(surface: &mut SoftwareSurface) {
         &matted,
         1.0,
     );
+    surface.return_layer_foreground_scratch(matted);
+    surface.return_layer_backdrop(capture.backdrop);
 }
 
 /// Per-pixel coverage for a captured matte drawing.
@@ -987,46 +1016,63 @@ fn pop_layer(surface: &mut SoftwareSurface) {
     let expected = width as usize * height as usize * 4;
     let surface_width = surface.size().width as usize;
     let was_cached = layer.cached_foreground.is_some();
-    let foreground = match layer.cached_foreground {
-        Some(foreground) if foreground.len() == expected => foreground,
-        _ => Arc::new(capture_region(surface.buffer.back_mut(), surface_width, layer.rect)),
-    };
-    // Store the freshly drawn foreground for the next frame. A cached foreground is already in
-    // the cache, so storing it again would only churn the entry list. The buffer is shared by
-    // refcount, so keeping it here costs no copy of the region (G-01).
-    if let Some(key) = layer.cache_key {
-        if !was_cached && foreground.len() == expected {
-            store_cached_layer(surface, key, layer.rect, layer.opacity, Arc::clone(&foreground));
+    let mut cached = layer.cached_foreground.filter(|foreground| foreground.len() == expected);
+    // Capture into the reusable foreground slot. The `Arc` is built only when the bytes are going
+    // into the cache, so an uncached layer never allocates one (G-06).
+    let mut scratch = Vec::new();
+    let mut scratch_owned = false;
+    if cached.is_none() {
+        let mut buffer = surface.take_layer_foreground_scratch();
+        capture_region_into(surface.buffer.back_mut(), surface_width, layer.rect, &mut buffer);
+        if let (Some(key), false) = (layer.cache_key, was_cached) {
+            let shared = Arc::new(buffer);
+            store_cached_layer(surface, key, layer.rect, layer.opacity, Arc::clone(&shared));
+            cached = Some(shared);
+        } else {
+            scratch = buffer;
+            scratch_owned = true;
         }
     }
+    let foreground: &[u8] = match &cached {
+        Some(foreground) => foreground.as_slice(),
+        None => scratch.as_slice(),
+    };
+    let mut backdrop = layer.backdrop;
     // A fully transparent subtree shows neither its foreground nor its backdrop effect, but the
     // backdrop itself must come back: the layer cleared the region at push, and leaving it cleared
     // would punch a transparent hole through everything behind the group.
     if layer.opacity <= 0.0 {
-        if layer.backdrop.len() == expected {
-            restore_region(surface.buffer.back_mut(), surface_width, layer.rect, &layer.backdrop);
+        if backdrop.len() == expected {
+            restore_region(surface.buffer.back_mut(), surface_width, layer.rect, &backdrop);
+        }
+        surface.return_layer_backdrop(backdrop);
+        if scratch_owned {
+            surface.return_layer_foreground_scratch(scratch);
         }
         return;
     }
-    if layer.backdrop.len() != expected {
+    if backdrop.len() != expected {
+        surface.return_layer_backdrop(backdrop);
+        if scratch_owned {
+            surface.return_layer_foreground_scratch(scratch);
+        }
         return;
     }
-    let mut backdrop = layer.backdrop;
     if let Some(effect) = layer.effect {
         // The same clamp `RenderCommand::Blur` applies: a radius beyond the kernel's useful reach
         // only costs time, and the command's range is already a public, untrusted input.
         let radius = effect.radius().min(100) as usize;
         if radius > 0 {
+            let mut blur = surface.take_blur_scratch();
             box_blur_region(
                 &mut backdrop,
                 width as usize,
                 height as usize,
-                0,
-                0,
-                width as usize,
-                height as usize,
+                (0, 0, width as usize, height as usize),
                 radius,
+                &mut blur,
             );
+            surface.return_blur_scratch(blur);
         }
         if let Some((tint, weight)) = effect.tint() {
             tint_region(&mut backdrop, tint, weight);
@@ -1037,9 +1083,26 @@ fn pop_layer(surface: &mut SoftwareSurface) {
         surface_width,
         layer.rect,
         &backdrop,
-        foreground.as_slice(),
+        foreground,
         layer.opacity,
     );
+    surface.return_layer_backdrop(backdrop);
+    if scratch_owned {
+        surface.return_layer_foreground_scratch(scratch);
+    }
+}
+
+/// Physical slot of the newest entry in `layer_cache` (G-05).
+///
+/// While the cache is still growing the physical order is the use order, so the newest entry is
+/// last. Once full the vector is a ring whose oldest slot is `layer_cache_cursor`, which makes the
+/// slot before the cursor the newest.
+fn newest_cache_slot(len: usize, cursor: usize) -> usize {
+    if len < LAYER_CACHE_CAPACITY {
+        len.saturating_sub(1)
+    } else {
+        (cursor + len - 1) % LAYER_CACHE_CAPACITY
+    }
 }
 
 /// Inserts or replaces one cache entry, dropping the oldest when the cache is full.
@@ -1050,18 +1113,30 @@ fn store_cached_layer(
     opacity: f32,
     foreground: Arc<Vec<u8>>,
 ) {
-    let cache = &mut surface.buffer.layer_cache;
-    if let Some(position) = cache.iter().position(|(cached_key, _)| *cached_key == key) {
-        // Replace and move to the back: a refreshed entry is the most recently used one.
-        let mut entry = cache.remove(position);
-        entry.1 = super::surface::CachedLayer { rect, opacity, foreground };
-        cache.push(entry);
-        return;
-    }
-    if cache.len() >= LAYER_CACHE_CAPACITY {
-        cache.remove(0);
-    }
-    cache.push((key, super::surface::CachedLayer { rect, opacity, foreground }));
+    let capacity = LAYER_CACHE_CAPACITY;
+    let cursor = surface.buffer.layer_cache_cursor;
+    let entry = super::surface::CachedLayer { rect, opacity, foreground };
+    let next_cursor = {
+        let cache = &mut surface.buffer.layer_cache;
+        if let Some(position) = cache.iter().position(|(cached_key, _)| *cached_key == key) {
+            // A refreshed entry becomes the most recently used one.
+            let newest = newest_cache_slot(cache.len(), cursor);
+            if position != newest {
+                cache.swap(position, newest);
+            }
+            cache[newest].1 = entry;
+            cursor
+        } else if cache.len() < capacity {
+            cache.push((key, entry));
+            cursor
+        } else {
+            // Full: overwrite the oldest slot in place instead of shifting every entry down. The
+            // written slot becomes the newest and the cursor advances to the next-oldest (G-05).
+            cache[cursor] = (key, entry);
+            (cursor + 1) % capacity
+        }
+    };
+    surface.buffer.layer_cache_cursor = next_cursor;
 }
 
 /// The part of `clip` that lies inside `size`, or `None` when there is no visible part.
@@ -1081,14 +1156,29 @@ fn clipped_region(clip: Option<(i32, i32, u32, u32)>, size: Size) -> Option<(i32
 }
 
 /// Copies a clipped region out of `back` into a tightly packed RGBA buffer.
-fn capture_region(
+///
+/// Exposed at crate visibility so `pipeline::containers` can reuse this implementation instead of
+/// keeping a second copy (G-201); the destination-owning form below is what the paint paths use.
+pub(crate) fn capture_region(
     back: &[u8],
     surface_width: usize,
     rect: (i32, i32, u32, u32),
 ) -> crate::compat::Vec<u8> {
+    let mut out = crate::compat::Vec::new();
+    capture_region_into(back, surface_width, rect, &mut out);
+    out
+}
+
+/// Copies a clipped region out of `back` into `out`, reusing its allocation (G-06).
+fn capture_region_into(
+    back: &[u8],
+    surface_width: usize,
+    rect: (i32, i32, u32, u32),
+    out: &mut crate::compat::Vec<u8>,
+) {
     let (x, y, width, height) = rect;
     let row_bytes = width as usize * 4;
-    let mut out = vec![0u8; row_bytes * height as usize];
+    out.resize(row_bytes * height as usize, 0);
     for row in 0..height as usize {
         let src = (y as usize + row) * surface_width * 4 + x as usize * 4;
         let dst = row * row_bytes;
@@ -1096,9 +1186,40 @@ fn capture_region(
             (back.get(src..src + row_bytes), out.get_mut(dst..dst + row_bytes))
         {
             target.copy_from_slice(source);
+        } else if let Some(target) = out.get_mut(dst..dst + row_bytes) {
+            // A recycled buffer holds the previous capture; a row the source cannot supply must
+            // read as transparent black, exactly as the old zero-initialised buffer did.
+            target.fill(0);
         }
     }
-    out
+}
+
+/// Copies a clipped region out of `back` and zeroes it in the same sweep (G-06).
+///
+/// A capture followed by a clear reads and then writes every row. Both operations touch exactly
+/// the same bytes, so folding them into one loop halves the passes over the region.
+fn capture_and_clear_region_into(
+    back: &mut [u8],
+    surface_width: usize,
+    rect: (i32, i32, u32, u32),
+    out: &mut crate::compat::Vec<u8>,
+) {
+    let (x, y, width, height) = rect;
+    let row_bytes = width as usize * 4;
+    out.resize(row_bytes * height as usize, 0);
+    for row in 0..height as usize {
+        let src = (y as usize + row) * surface_width * 4 + x as usize * 4;
+        let dst = row * row_bytes;
+        if let Some(source) = back.get_mut(src..src + row_bytes) {
+            if let Some(target) = out.get_mut(dst..dst + row_bytes) {
+                target.copy_from_slice(source);
+            }
+            source.fill(0);
+        } else if let Some(target) = out.get_mut(dst..dst + row_bytes) {
+            // See `capture_region_into`: a row the source cannot supply is transparent black.
+            target.fill(0);
+        }
+    }
 }
 
 /// Overwrites a clipped region of `back` with a tightly packed RGBA buffer.
@@ -1117,18 +1238,6 @@ fn restore_region(
             (back.get_mut(dst..dst + row_bytes), source.get(src..src + row_bytes))
         {
             target.copy_from_slice(pixels);
-        }
-    }
-}
-
-/// Sets every byte of a clipped region to zero, i.e. transparent black.
-fn clear_region(back: &mut [u8], surface_width: usize, rect: (i32, i32, u32, u32)) {
-    let (x, y, width, height) = rect;
-    let row_bytes = width as usize * 4;
-    for row in 0..height as usize {
-        let start = (y as usize + row) * surface_width * 4 + x as usize * 4;
-        if let Some(slice) = back.get_mut(start..start + row_bytes) {
-            slice.fill(0);
         }
     }
 }
@@ -1211,39 +1320,6 @@ fn tint_region(region: &mut [u8], tint: Color, weight: f32) {
     }
 }
 
-/// Samples a conic gradient's stops at ramp position `pos`.
-///
-/// The stops are assumed sorted (the command's contract). This is the search the per-pixel loop
-/// used to run; it is now paid once per lookup-table entry instead of once per pixel (G-03).
-fn conic_stop_color(stops: &[(f32, Color)], pos: f32) -> Color {
-    if pos <= stops[0].0 {
-        return stops[0].1;
-    }
-    let Some(last) = stops.last() else { return Color::TRANSPARENT };
-    if pos >= last.0 {
-        return last.1;
-    }
-    let mut lo = 0usize;
-    let mut hi = stops.len() - 1;
-    while hi - lo > 1 {
-        let mid = (lo + hi) / 2;
-        if stops[mid].0 <= pos {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    let t_local = (pos - stops[lo].0) / (stops[hi].0 - stops[lo].0).max(0.0001);
-    let ca = stops[lo].1;
-    let cb = stops[hi].1;
-    Color::rgba(
-        (ca.r as f32 + (cb.r as f32 - ca.r as f32) * t_local) as u8,
-        (ca.g as f32 + (cb.g as f32 - ca.g as f32) * t_local) as u8,
-        (ca.b as f32 + (cb.b as f32 - ca.b as f32) * t_local) as u8,
-        (ca.a as f32 + (cb.a as f32 - ca.a as f32) * t_local) as u8,
-    )
-}
-
 /// Apply a **Gaussian-approximating** blur to a rectangular region of an RGBA pixel buffer.
 ///
 /// # Why a box blur is not what the command asks for
@@ -1281,12 +1357,11 @@ fn box_blur_region(
     back: &mut [u8],
     w: usize,
     h: usize,
-    region_x: usize,
-    region_y: usize,
-    region_w: usize,
-    region_h: usize,
+    region: (usize, usize, usize, usize),
     radius: usize,
+    scratch_buffers: &mut super::surface::BoxBlurScratch,
 ) {
+    let (region_x, region_y, region_w, region_h) = region;
     if w == 0 || h == 0 || region_w == 0 || region_h == 0 || radius == 0 {
         return;
     }
@@ -1313,17 +1388,21 @@ fn box_blur_region(
 
     // One scratch row and one scratch column, reused across all three passes.
     //
-    // The previous implementation copied the whole expanded region into a `Vec` and ran both passes
-    // over that copy. A sliding window does not need the copy — it needs somewhere to stage the
-    // values a horizontal pass is about to overwrite while the pass is still reading them, which is
-    // one row (and one column for the vertical pass). That is a *bounded* allocation per call rather
-    // than one proportional to the blurred area, which matters because a full-surface `Blur` command
-    // is the common case for a modal scrim.
-    let mut row = vec![0u8; ew * 4];
-    let mut col = vec![0u8; eh * 4];
+    // A sliding window does not need a copy of the region — it needs somewhere to stage the values
+    // a horizontal pass is about to overwrite while the pass is still reading them (one row, and one
+    // column for the vertical pass). These buffers live on the surface and are taken/returned by the
+    // caller, so they grow to the largest region once and then cost no allocation at all (G-07).
+    let row_len = ew * 4;
+    let col_len = eh * 4;
+    let copy_len = ew.max(eh) * 4;
+    scratch_buffers.row.resize(row_len, 0);
+    scratch_buffers.col.resize(col_len, 0);
+    scratch_buffers.copy.resize(copy_len, 0);
+    let row = &mut scratch_buffers.row[..row_len];
+    let col = &mut scratch_buffers.col[..col_len];
     // The untouched row/column being blurred, kept because a pass writes into the same buffer it
     // slides its window over (see `blur_row`).
-    let mut scratch = vec![0u8; ew.max(eh) * 4];
+    let copy = &mut scratch_buffers.copy[..copy_len];
 
     let stride = w * 4;
     for width in [b0, b1, b2] {
@@ -1333,10 +1412,10 @@ fn box_blur_region(
         // Horizontal pass: stage each row, blur it, write it back.
         for y in ey0..ey1 {
             let base = y * stride + ex0 * 4;
-            row.copy_from_slice(&back[base..base + ew * 4]);
-            scratch[..ew * 4].copy_from_slice(&row);
-            blur_row(&mut row, ew, width, &scratch[..ew * 4]);
-            back[base..base + ew * 4].copy_from_slice(&row);
+            row.copy_from_slice(&back[base..base + row_len]);
+            copy[..row_len].copy_from_slice(row);
+            blur_row(row, ew, width, &copy[..row_len]);
+            back[base..base + row_len].copy_from_slice(row);
         }
         // Vertical pass: stage each column, blur it, write it back.
         for x in ex0..ex1 {
@@ -1344,8 +1423,8 @@ fn box_blur_region(
                 let si = (ey0 + y) * stride + x * 4;
                 col[y * 4..y * 4 + 4].copy_from_slice(&back[si..si + 4]);
             }
-            scratch[..eh * 4].copy_from_slice(&col[..eh * 4]);
-            blur_row(&mut col, eh, width, &scratch[..eh * 4]);
+            copy[..col_len].copy_from_slice(&col[..col_len]);
+            blur_row(col, eh, width, &copy[..col_len]);
             for y in 0..eh {
                 let di = (ey0 + y) * stride + x * 4;
                 back[di..di + 4].copy_from_slice(&col[y * 4..y * 4 + 4]);
@@ -2049,9 +2128,11 @@ mod tests {
         let mut buf: Vec<u8> =
             (0..w * h * 4).map(|i| ((i as f32 * 0.37).sin().abs() * 255.0) as u8).collect();
 
+        // One scratch set, reused exactly as the surface does at runtime (G-07).
+        let mut scratch = crate::render::backend::surface::BoxBlurScratch::default();
         let mut blur = |radius: usize| {
             let start = Instant::now();
-            box_blur_region(&mut buf, w, h, 0, 0, w, h, radius);
+            box_blur_region(&mut buf, w, h, (0, 0, w, h), radius, &mut scratch);
             start.elapsed()
         };
 
@@ -2239,7 +2320,14 @@ mod tests {
             (0..w * h * 4).map(|i| ((i as f32 * 91.0).cos().abs() * 180.0 + 30.0) as u8).collect();
 
         let mut horizontal_first = source.clone();
-        box_blur_region(&mut horizontal_first, w, h, 0, 0, w, h, 6);
+        box_blur_region(
+            &mut horizontal_first,
+            w,
+            h,
+            (0, 0, w, h),
+            6,
+            &mut crate::render::backend::surface::BoxBlurScratch::default(),
+        );
 
         // The same region blurred after a vertical translation of the *source* by zero pixels is
         // the only honest comparison: `box_blur_region` always runs x then y, so "y then x" is
@@ -2251,7 +2339,14 @@ mod tests {
                     .copy_from_slice(&source[(y * w + x) * 4..(y * w + x) * 4 + 4]);
             }
         }
-        box_blur_region(&mut transposed, h, w, 0, 0, h, w, 6);
+        box_blur_region(
+            &mut transposed,
+            h,
+            w,
+            (0, 0, h, w),
+            6,
+            &mut crate::render::backend::surface::BoxBlurScratch::default(),
+        );
 
         // A box blur is symmetric, so transposing the result back is a reference for the original.
         // Tolerated by one level: the three boxes are applied in a different order, so integer

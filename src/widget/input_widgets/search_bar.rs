@@ -75,6 +75,14 @@ pub struct SearchBar {
     show_recent: bool,
     /// When true, the value is drawn as one chip per whitespace-separated term.
     tokenizing: bool,
+    /// Memoised token list keyed by the input string (I-P64).
+    tokens_cache: RefCell<Option<(String, Rc<Vec<String>>)>>,
+    /// Memoised cancel-button width keyed by the resolved font (I-P63).
+    cancel_width_cache: RefCell<Option<(crate::core::Font, u32)>>,
+    /// The IME composition string painted inline before commit (I-111).
+    preedit: String,
+    /// First recent-search row the menu shows (I-111).
+    recent_scroll: usize,
 }
 
 impl SearchBar {
@@ -100,6 +108,10 @@ impl SearchBar {
             recent_searches: Vec::new(),
             show_recent: false,
             tokenizing: false,
+            tokens_cache: RefCell::new(None),
+            cancel_width_cache: RefCell::new(None),
+            preedit: String::new(),
+            recent_scroll: 0,
         }
     }
 
@@ -339,21 +351,42 @@ impl SearchBar {
 
     /// The value split into its terms, or an empty list when the value is blank.
     pub fn tokens(&self) -> Vec<String> {
-        self.text.split_whitespace().map(|term| term.to_string()).collect()
+        self.tokens_cached().as_ref().clone()
+    }
+
+    /// The token list, rebuilt only when the input string changes (I-P64).
+    fn tokens_cached(&self) -> Rc<Vec<String>> {
+        if let Some((text, tokens)) = self.tokens_cache.borrow().as_ref() {
+            if *text == self.text {
+                return Rc::clone(tokens);
+            }
+        }
+        let tokens = Rc::new(
+            self.text.split_whitespace().map(|term| term.to_string()).collect::<Vec<String>>(),
+        );
+        *self.tokens_cache.borrow_mut() = Some((self.text.clone(), Rc::clone(&tokens)));
+        tokens
     }
 
     /// The width of the cancel button, measured from its label rather than assumed.
     ///
     /// The field reserves this much room when active, so a translated or larger-font label
-    /// cannot be clipped by a literal 60 px reservation.
+    /// cannot be clipped by a literal 60 px reservation. The measurement is cached by the
+    /// resolved font, because draw and the press test each asked for it every frame (I-P63).
     fn cancel_button_width(&self) -> u32 {
+        let font = effective_font(self.style());
+        if let Some((cached_font, width)) = self.cancel_width_cache.borrow().as_ref() {
+            if cached_font == font {
+                return *width;
+            }
+        }
         let mut measurement =
             crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
         let context = RenderContext::new(&mut measurement);
-        let font = effective_font(self.style());
-        let text = "Cancel";
-        let measured = context.measure_text(text, font).width;
-        (measured + 16).max(44)
+        let measured = context.measure_text("Cancel", font).width;
+        let width = (measured + 16).max(44);
+        *self.cancel_width_cache.borrow_mut() = Some((font.clone(), width));
+        width
     }
 
     /// Sets whether the cancel button is visible when active.
@@ -515,6 +548,16 @@ impl Widget for SearchBar {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 36)
+    }
+
+    /// Advances the caret blink so an on-demand host keeps the animation alive (I-P64).
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        SearchBar::tick(self, delta_ms)
+    }
+
+    /// A focused field has a blinking caret and therefore owes frames (I-P64).
+    fn is_animating(&self) -> bool {
+        self.focused
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -790,8 +833,9 @@ impl Draw for SearchBar {
                     // plain space-separated text, so submitting and querying are unchanged.
                     let mut chip_x = text_left;
                     let chip_fill = accent.unwrap_or(Color::rgba(52, 120, 246, 255)).with_alpha(40);
-                    for token in self.tokens() {
-                        let advance = context.measure_text(&token, font).width as i32;
+                    let tokens = self.tokens_cached();
+                    for token in tokens.iter() {
+                        let advance = context.measure_text(token, font).width as i32;
                         let chip_width = (advance + 12).max(1) as u32;
                         if chip_x + chip_width as i32 > text_left + text_width as i32 {
                             break;
@@ -803,7 +847,7 @@ impl Draw for SearchBar {
                         );
                         context.draw_text(
                             Point::new(chip_x + 6, text_y),
-                            &token,
+                            token,
                             font,
                             field_ink,
                             HorizontalAlignment::Left,
@@ -838,6 +882,25 @@ impl Draw for SearchBar {
                     Point::new(caret_x, value_box.y + value_box.height as i32 - 4),
                     field_ink,
                 );
+                // I-111: the IME composition is painted inline with an underline.
+                if !self.preedit.is_empty() {
+                    let preedit_x = caret_x + 1;
+                    context.draw_text(
+                        Point::new(preedit_x, value_box.y + 2),
+                        &self.preedit,
+                        font,
+                        field_ink,
+                        HorizontalAlignment::Left,
+                    );
+                    context.draw_line(
+                        Point::new(preedit_x, value_box.y + value_box.height as i32 - 4),
+                        Point::new(
+                            preedit_x + context.measure_text(&self.preedit, font).width as i32,
+                            value_box.y + value_box.height as i32 - 4,
+                        ),
+                        field_ink,
+                    );
+                }
             }
 
             // Draw clear button (X)
@@ -863,10 +926,12 @@ impl Draw for SearchBar {
         // same state the hit test reads, so a row cannot be clickable somewhere it is not drawn.
         if self.show_recent {
             let menu_top = rect.y + rect.height as i32;
-            for (index, search) in self.recent_searches.iter().enumerate() {
+            for (row_index, search) in
+                self.recent_searches.iter().skip(self.recent_scroll).enumerate()
+            {
                 let row = Rect::new(
                     rect.x,
-                    menu_top + (index as i32) * RECENT_ROW_HEIGHT as i32,
+                    menu_top + (row_index as i32) * RECENT_ROW_HEIGHT as i32,
                     rect.width,
                     RECENT_ROW_HEIGHT,
                 );
@@ -913,11 +978,21 @@ impl SearchBar {
             advance,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
-        let dx = (x - origin.x).clamp(0, advance.max(1));
-        let chars = self.text.chars().count().max(1) as f32;
-        let boundary =
-            ((dx as f32 * chars / advance.max(1) as f32).round() as usize).min(chars as usize);
-        self.text.char_indices().nth(boundary).map(|(index, _)| index).unwrap_or(self.text.len())
+        let dx = (x - origin.x).max(0);
+        // Accumulate the real per-glyph advances; the old proportional mapping put the caret on
+        // the wrong glyph for any non-monospaced face (I-P63).
+        let mut best = 0usize;
+        let mut prefix = 0i32;
+        let mut glyph = [0u8; 4];
+        for (index, ch) in self.text.char_indices() {
+            let advance = context.measure_text(ch.encode_utf8(&mut glyph), font).width as i32;
+            if dx < prefix + advance / 2 {
+                break;
+            }
+            prefix += advance;
+            best = index + ch.len_utf8();
+        }
+        best
     }
 }
 
@@ -1060,10 +1135,29 @@ impl EventHandler for SearchBar {
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
                 if self.focused && !text.is_empty() {
+                    self.preedit.clear();
                     self.insert_text(text);
                 }
             }
-            Event::ImePreedit { .. } => {}
+            Event::Wheel { delta, modifiers, .. } => {
+                // I-111: the history layer scrolls with the wheel while it is open.
+                if self.show_recent && !self.recent_searches.is_empty() {
+                    let scroll =
+                        crate::event::wheel::WheelScroll::from_event(*delta, *modifiers, 1);
+                    let max = self.recent_searches.len().saturating_sub(1);
+                    let next = (self.recent_scroll as i64 - scroll.lines_y as i64)
+                        .clamp(0, max as i64) as usize;
+                    if next != self.recent_scroll {
+                        self.recent_scroll = next;
+                        self.base.request_redraw();
+                    }
+                }
+            }
+            Event::ImePreedit { text, .. } => {
+                // I-111: show the composition string inline without committing it.
+                self.preedit = text.clone();
+                self.base.request_redraw();
+            }
             _ => {
                 self.base.handle_event(event);
             }

@@ -29,6 +29,15 @@ pub(crate) struct EditorModel {
     pub(crate) active_tab: usize,
     /// Fold regions of the active buffer.
     pub(crate) folds: Vec<FoldRegion>,
+    /// The union of the folded regions as sorted, disjoint `[start, end]` line ranges.
+    ///
+    /// [#`is_hidden`] answers "is this line inside a fold" for every visible line on every
+    /// frame. The regions can nest (a folded block inside another folded block), so
+    /// "the last region that starts before this line" is not enough to decide — one earlier
+    /// region may extend past several later ones. Their union is disjoint by construction,
+    /// which makes the query two binary searches. It is rebuilt whenever the fold set
+    /// changes (J-P04).
+    hidden_ranges: Vec<(usize, usize)>,
     /// Mirror of the active buffer used by undo commands.
     pub(crate) text: Rc<RefCell<String>>,
     /// Pristine text of the active buffer's save point.
@@ -62,6 +71,7 @@ impl EditorModel {
             all_buffers: Vec::new(),
             active_tab: 0,
             folds: Vec::new(),
+            hidden_ranges: Vec::new(),
             text: Rc::new(RefCell::new(String::new())),
             saved: String::new(),
             dirty: false,
@@ -141,8 +151,12 @@ impl EditorModel {
     ///
     /// Used by [`Self::apply_tab_switch`] and by the editor's close path when
     /// the buffer being closed is not the active one.
+    ///
+    /// The text is **moved** out of the mirror into the slot: the switch immediately loads
+    /// the incoming buffer into the mirror, so nothing can observe the empty moment, and a
+    /// tab switch no longer pays a whole-document copy on the way out (J-P12).
     pub(crate) fn persist_active(&mut self) {
-        let outgoing = self.text.borrow().clone();
+        let outgoing = core::mem::take(&mut *self.text.borrow_mut());
         let outgoing_dirty = self.dirty;
         if let Some(active) = self.all_buffers.get_mut(self.active_tab) {
             active.modified = outgoing_dirty;
@@ -155,12 +169,34 @@ impl EditorModel {
     ///
     /// Used by [`Self::apply_tab_switch`] and by the editor's close path, where
     /// the outgoing buffer has already been removed and must not be written back.
+    ///
+    /// The incoming text is moved into the mirror; the slot is left empty because the
+    /// active buffer's authoritative text *is* the mirror. [`EditorModel::active_text`]
+    /// and the editor's `buffers()` restore it for a reader that wants the whole text.
     pub(crate) fn load_buffer(&mut self, tab: usize) {
-        let incoming = self.all_buffers[tab].text.clone();
+        let incoming = core::mem::take(&mut self.all_buffers[tab].text);
         self.active_tab = tab;
-        self.set_text(incoming);
-        self.saved = self.all_buffers[tab].text.clone();
+        self.set_text_owned(incoming);
+        self.saved = self.text.borrow().clone();
         self.dirty = self.all_buffers[tab].modified;
+    }
+
+    /// Replaces the document from an owned string without copying it into the tab slot.
+    ///
+    /// The mirror is the active document: the slot is where a *inactive* buffer's text
+    /// lives, and it is filled on switch-out by [`Self::persist_active`]. Splitting the
+    /// text into lines is unavoidable (the index is part of the model), but the extra
+    /// mirror copy is not.
+    pub(crate) fn set_text_owned(&mut self, text: String) {
+        if text.contains('\r') {
+            self.line_ending = LineEnding::Crlf;
+        }
+        let text = normalize_line_endings(text);
+        self.lines = split_lines(&text);
+        *self.text.borrow_mut() = text;
+        self.lines_replaced();
+        self.refresh_dirty();
+        self.normalize_folds();
     }
 
     /// Returns the joined document text.
@@ -208,10 +244,13 @@ impl EditorModel {
     }
 
     /// Returns whether a line is hidden by a folded region.
+    ///
+    /// Two binary searches over the merged fold ranges: the last range starting at or
+    /// before `line`, then a containment test. The old form scanned every fold for every
+    /// line, which made scrolling a long folded file `O(lines x folds)` (J-P04).
     pub(crate) fn is_hidden(&self, line: usize) -> bool {
-        self.folds
-            .iter()
-            .any(|region| region.folded && line > region.start_line && line <= region.end_line)
+        let index = self.hidden_ranges.partition_point(|(start, _)| *start <= line);
+        index > 0 && self.hidden_ranges[index - 1].1 >= line
     }
 
     /// Returns the index of the fold region starting at `start_line`.
@@ -225,6 +264,10 @@ impl EditorModel {
     }
 
     /// Drops fold regions that no longer span more than one line after an edit.
+    ///
+    /// The list is also put in `start_line` order here. [`Self::is_hidden`] binary-searches
+    /// it, and fold commands append regions in document order anyway — sorting is what keeps
+    /// that an invariant of the type rather than a property the callers happen to have.
     pub(crate) fn normalize_folds(&mut self) {
         let last = self.lines.len().saturating_sub(1);
         for region in &mut self.folds {
@@ -232,6 +275,31 @@ impl EditorModel {
             region.end_line = region.end_line.clamp(region.start_line, last);
         }
         self.folds.retain(|region| region.end_line > region.start_line);
+        self.folds.sort_by_key(|region| region.start_line);
+        // Rebuild the merged view the visibility query reads. Regions are sorted by start,
+        // so a single pass unions them: overlapping and adjacent ranges collapse into one
+        // entry, which is what makes a nested fold queryable in `O(log folds)`.
+        self.hidden_ranges.clear();
+        for region in &self.folds {
+            if !region.folded || region.end_line <= region.start_line {
+                continue;
+            }
+            // `start_line` itself stays visible (it carries the fold marker).
+            let start = region.start_line + 1;
+            match self.hidden_ranges.last_mut() {
+                Some((_, last_end)) if start <= *last_end + 1 => {
+                    *last_end = (*last_end).max(region.end_line);
+                }
+                _ => self.hidden_ranges.push((start, region.end_line)),
+            }
+        }
+    }
+
+    /// Replaces the fold set and refreshes the derived visibility ranges.
+    #[cfg(test)]
+    pub(crate) fn set_folds(&mut self, folds: Vec<FoldRegion>) {
+        self.folds = folds;
+        self.normalize_folds();
     }
 
     /// Returns the indices of all lines that are not hidden by a fold.
@@ -410,6 +478,9 @@ impl EditorModel {
     /// Clamped, so an offset past the end reports the last line rather than
     /// panicking. This is the inverse of [`Self::total_byte_offset`] for the one
     /// direction the edit paths need: a byte offset in, a line number out.
+    ///
+    /// This form walks the line index; callers on the edit path use
+    /// [`Self::line_of_byte_offset_fast`], which searches the prefix index instead.
     pub(crate) fn line_of_byte_offset(&self, offset: usize) -> usize {
         let mut consumed = 0usize;
         for (index, line) in self.lines.iter().enumerate() {
@@ -420,6 +491,30 @@ impl EditorModel {
             consumed = end + 1;
         }
         self.lines.len().saturating_sub(1)
+    }
+
+    /// [`Self::line_of_byte_offset`] answered from the prefix index.
+    ///
+    /// A binary search over the line starts, which the index already holds in block
+    /// summary form. The index is created on demand, and the splice that produced the
+    /// offset builds it first, so the common keystroke path pays `O(log n)` rather than
+    /// rescanning every line above the edit (J-P03).
+    pub(crate) fn line_of_byte_offset_fast(&mut self, offset: usize) -> usize {
+        let count = self.line_count();
+        if count <= 1 {
+            return 0;
+        }
+        let mut low = 0usize;
+        let mut high = count - 1;
+        while low < high {
+            let mid = (low + high).div_ceil(2);
+            if self.prefix_offset(mid) <= offset {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        low
     }
 
     /// Returns the byte offset where `line` starts, using the prefix cache.
@@ -678,7 +773,7 @@ mod tests {
     fn folds_hide_only_interior_lines_and_normalize_after_edits() {
         let mut model = EditorModel::new();
         model.set_text("a\nb\nc\nd".to_string());
-        model.folds.push(FoldRegion::new(1, 2, true));
+        model.set_folds(vec![FoldRegion::new(1, 2, true)]);
         assert!(!model.is_hidden(0));
         assert!(!model.is_hidden(1), "the fold header stays visible");
         assert!(model.is_hidden(2));
@@ -689,6 +784,37 @@ mod tests {
         // Shrinking the document must clamp the region, not panic.
         model.set_text("only".to_string());
         assert!(model.folds.is_empty());
+    }
+
+    #[test]
+    fn nested_folds_hide_their_interiors() {
+        let mut model = EditorModel::new();
+        model.set_text("a\nb\nc\nd\ne\nf".to_string());
+        // A fold inside a fold: the union is one range, so the inner region's lines stay
+        // hidden even though a later region ends before them (J-P04).
+        model.set_folds(vec![FoldRegion::new(0, 4, true), FoldRegion::new(2, 3, true)]);
+        assert!(!model.is_hidden(0), "the outer header stays visible");
+        assert!(model.is_hidden(1));
+        assert!(model.is_hidden(2));
+        assert!(model.is_hidden(4));
+        assert!(!model.is_hidden(5));
+        assert_eq!(model.visible_lines(), vec![0, 5]);
+    }
+
+    #[test]
+    fn the_fast_offset_lookup_matches_the_walk() {
+        let mut model = EditorModel::new();
+        model.set_text("aé\n日本\nxyz".to_string());
+        let length = model.full_text().len();
+        // Building the prefix index is what the edit path does before asking.
+        let _ = model.total_byte_offset(TextPosition::new(1, 1));
+        for offset in 0..=length {
+            assert_eq!(
+                model.line_of_byte_offset(offset),
+                model.line_of_byte_offset_fast(offset),
+                "offset {offset}"
+            );
+        }
     }
 
     #[test]

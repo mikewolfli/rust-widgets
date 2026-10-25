@@ -35,7 +35,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Padding between the title's own box and the band that erases the border behind it.
@@ -92,6 +92,13 @@ pub struct GroupBox {
     flat: bool,
     /// Optional content size, used to make the size hint content-driven.
     content_size_hint: Option<Size>,
+    /// Whether the group can be collapsed down to its title band (C-08).
+    collapsible: bool,
+    /// Whether the content is currently collapsed away.
+    collapsed: bool,
+    /// Emitted with the new collapsed state when it changes.
+    /// Mirrors `toggled`: only a real edge emits.
+    pub collapse_changed: Signal1<bool>,
 }
 impl GroupBox {
     /// Creates a group box.
@@ -106,10 +113,73 @@ impl GroupBox {
             cached_title_width: None,
             flat: false,
             content_size_hint: None,
+            collapsible: false,
+            collapsed: false,
+            collapse_changed: Signal1::new(),
             #[cfg(device_profile)]
             material: crate::theme::Material::None,
             registry: None,
         }
+    }
+    /// Whether this group can be collapsed to its title band (C-08).
+    pub fn is_collapsible(&self) -> bool {
+        self.collapsible
+    }
+
+    /// Enables or disables the collapsible form (C-08).
+    ///
+    /// Turning the capability off expands the group, because there would otherwise be no
+    /// affordance left that could bring the content back.
+    pub fn set_collapsible(&mut self, collapsible: bool) {
+        if self.collapsible == collapsible {
+            return;
+        }
+        self.collapsible = collapsible;
+        if !collapsible && self.collapsed {
+            self.collapsed = false;
+            self.apply_content_visibility();
+            self.collapse_changed.emit(false);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether the content is currently collapsed away.
+    pub fn is_collapsed(&self) -> bool {
+        self.collapsed
+    }
+
+    /// Collapses or expands the content (C-08).
+    ///
+    /// Refused on a group that was not made collapsible: the state would be unreachable
+    /// from the UI, which is the same reason [`Self::set_checked`] refuses on a plain box.
+    /// Collapsing hides every mounted child and gives [`Self::content_rect`] zero height,
+    /// so a layout that follows the rect also gives the space back.
+    pub fn set_collapsed(&mut self, collapsed: bool) {
+        if !self.collapsible || self.collapsed == collapsed {
+            return;
+        }
+        self.collapsed = collapsed;
+        self.apply_content_visibility();
+        self.base.request_redraw();
+        self.collapse_changed.emit(collapsed);
+    }
+
+    /// Toggles the collapsed state; no-op when not collapsible.
+    pub fn toggle_collapsed(&mut self) {
+        self.set_collapsed(!self.collapsed);
+    }
+
+    /// Pushes the collapsed state onto every mounted child.
+    fn apply_content_visibility(&self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            for child in self.base.children.iter().copied() {
+                crate::set_widget_visible(child, !self.collapsed);
+            }
+        }
+        // A sized profile holds no mounted surfaces, so there is no visibility flag to write.
+        #[cfg(alloc_frugal)]
+        let _ = self.collapsed;
     }
     /// Whether the group box draws without a frame or face.
     pub fn is_flat(&self) -> bool {
@@ -497,9 +567,20 @@ impl GroupBox {
     /// Bounded by the title band above, the frame's own padding on the three other edges, and
     /// the same padding below — so it is the frame's content box minus the title, and it can
     /// never describe a negative extent when the control is squeezed.
+    ///
+    /// A collapsed group (C-08) reports a zero-height rect at the content top: the content
+    /// band has been given back to the caller's layout, not merely hidden behind the title.
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
         let top = self.content_top();
+        if self.collapsed {
+            return Rect::new(
+                rect.x + FRAME_PADDING as i32,
+                top,
+                rect.width.saturating_sub(FRAME_PADDING * 2),
+                0,
+            );
+        }
         Rect::new(
             rect.x + FRAME_PADDING as i32,
             top,
@@ -509,6 +590,18 @@ impl GroupBox {
                 .saturating_sub(FRAME_PADDING as i32)
                 .max(0) as u32,
         )
+    }
+
+    /// The title band a click is accepted on (C-09).
+    ///
+    /// It spans the frame's full width from its top edge down to where the content starts —
+    /// including the inter-row gap, because that gap is visually part of the title row. The
+    /// checkbox square lies inside this band, so the shared target cannot make the box
+    /// itself unclickable.
+    fn title_band_rect(&self) -> Rect {
+        let frame = self.geometry();
+        let height = self.content_top().saturating_sub(frame.y).max(0) as u32;
+        Rect::new(frame.x, frame.y, frame.width, height)
     }
 
     /// The content control that owns `pos`, searched back to front.
@@ -580,10 +673,18 @@ fn apply_subtree_enabled(id: ObjectId, enabled: bool, depth: u32) {
             return;
         }
         crate::set_widget_enabled(id, enabled);
-        let children = crate::widget::runtime::with_widget(id, |widget| widget.children().to_vec())
-            .unwrap_or_default();
-        for child in children {
-            apply_subtree_enabled(child, enabled, depth + 1);
+        // C-P11: read each child by index instead of cloning the child list. The old
+        // `children().to_vec()` allocated one Vec per visited node, so a deep or wide
+        // subtree paid O(nodes) allocations for every enable transition.
+        let count =
+            crate::widget::runtime::with_widget(id, |widget| widget.children().len()).unwrap_or(0);
+        for index in 0..count {
+            let child = crate::widget::runtime::with_widget(id, |widget| {
+                widget.children().get(index).copied()
+            });
+            if let Some(Some(child)) = child {
+                apply_subtree_enabled(child, enabled, depth + 1);
+            }
         }
     }
     #[cfg(alloc_frugal)]
@@ -726,21 +827,22 @@ impl EventHandler for GroupBox {
         if !self.base.is_enabled() {
             return;
         }
-        // Handle checkbox toggle
-        if self.checkable {
-            if let Event::MousePress { pos, button, .. } = event {
-                if *button == 1 {
-                    if let Some(checkbox_rect) = self.checkbox_rect() {
-                        if checkbox_rect.contains(*pos) {
-                            self.toggle();
-                        }
-                    }
+        // Handle the title band (C-09) before the content link below: clicking the caption
+        // toggles the group, exactly as clicking its checkbox does. A collapsible group uses
+        // the same gesture to collapse, because that is the affordance the title band is for.
+        if let Event::MousePress { pos, button, .. } = event {
+            if *button == 1 && self.title_band_rect().contains(*pos) {
+                if self.collapsible {
+                    self.toggle_collapsed();
+                } else if self.checkable {
+                    self.toggle();
                 }
+                return;
             }
         }
-        // An unchecked checkable group is disabled content: the press that just re-checked it must
-        // not also reach a field the user could not have meant to click.
-        if self.checkable && !self.checked {
+        // An unchecked checkable group is disabled content, and a collapsed group has no
+        // content band at all: the press must not reach a field the user could not see.
+        if (self.checkable && !self.checked) || self.collapsed {
             return;
         }
         let content = self.content_rect();
@@ -940,12 +1042,38 @@ impl Draw for GroupBox {
                 HorizontalAlignment::Left,
             );
         }
+        // A collapsible group advertises its affordance at the trailing edge of the title
+        // band: a downward arrow while expanded ("this can fold away") and a rightward one
+        // while collapsed ("this can unfold"). It is painted from the same ink the caption
+        // uses, so it recedes with the title on a disabled group.
+        if self.collapsible {
+            let size = dimensions::CHECKBOX_BOX.min(title_rect.height.max(1));
+            let arrow = Rect::new(
+                (rect.x + rect.width as i32 - TITLE_PADDING - size as i32).max(rect.x),
+                title_rect.y + title_rect.height.saturating_sub(size) as i32 / 2,
+                size,
+                size,
+            );
+            let ink = style.text_color.unwrap_or(Color::BLACK);
+            crate::widget::draw_icon_at(
+                context,
+                arrow,
+                if self.base.is_enabled() {
+                    ink
+                } else {
+                    self.base.disabled_ink_on(ink, style.background_color.unwrap_or(Color::WHITE))
+                },
+                if self.collapsed { IconName::ArrowRight } else { IconName::ArrowDown },
+            );
+        }
         if let Some(ref reg) = self.registry {
-            context.push_clip(content.x, content.y, content.width, content.height);
-            for child_id in &self.base.children {
-                reg.borrow_mut().draw_widget(*child_id, context);
+            if !self.collapsed {
+                context.push_clip(content.x, content.y, content.width, content.height);
+                for child_id in &self.base.children {
+                    reg.borrow_mut().draw_widget(*child_id, context);
+                }
+                context.pop_clip();
             }
-            context.pop_clip();
         }
     }
 }
@@ -1394,5 +1522,43 @@ mod tests {
         assert!(gb.is_flat());
         let svg = crate::widget::svg::render_widget_to_svg(&mut gb, Rect::new(0, 0, 200, 100));
         assert!(!svg.is_empty());
+    }
+
+    /// C-09: a press anywhere on the title band toggles the group, not only on the checkbox.
+    #[test]
+    fn a_title_band_click_toggles_the_group() {
+        let mut gb = GroupBox::new(Rect::new(0, 0, 200, 120));
+        gb.set_title("Group".to_string());
+        gb.set_checkable(true);
+        assert!(gb.is_checked());
+        // Far to the right of the checkbox, so only the widened band can explain the toggle.
+        gb.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(150, 4),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(!gb.is_checked(), "a title-band press toggles the checkbox state");
+    }
+
+    /// C-08: collapsing hides the content band and the title band brings it back.
+    #[test]
+    fn a_collapsible_group_gives_its_content_band_back() {
+        let mut gb = GroupBox::new(Rect::new(0, 0, 200, 120));
+        gb.set_title("Group".to_string());
+        assert!(!gb.is_collapsed());
+        gb.set_collapsed(true);
+        assert!(!gb.is_collapsed(), "a plain box refuses a state it cannot express");
+        gb.set_collapsible(true);
+        gb.set_collapsed(true);
+        assert!(gb.is_collapsed());
+        assert_eq!(gb.content_rect().height, 0, "a collapsed band reserves no extent");
+        // The title band is the affordance that reopens it.
+        gb.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(150, 4),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(!gb.is_collapsed(), "a title-band press expands the group");
+        assert!(gb.content_rect().height > 0);
     }
 }

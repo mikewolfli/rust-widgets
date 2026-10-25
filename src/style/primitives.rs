@@ -280,6 +280,55 @@ impl PaddingSpec {
 /// Outer widget margin. Alias for EdgeOffsets for semantic clarity.
 pub type Margin = EdgeOffsets;
 
+/// Per-corner border radii, in logical pixels (STY-01).
+///
+/// # Why four values rather than one
+///
+/// [`WidgetStyle::border_radius`] is a single `Option<u32>`, so it can only describe a
+/// control whose four corners agree. A card with one rounded corner and a speech bubble
+/// pointing at its origin are both ordinary designs that the scalar cannot express.
+///
+/// The historical scalar is retained and keeps meaning "all four corners": a reader that
+/// only knows the scalar keeps working, and [`WidgetStyle::resolved_corner_radii`] is the
+/// single place that turns either spelling into the four values a painter needs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CornerRadii {
+    /// Radius of the top-left corner.
+    pub top_left: u32,
+    /// Radius of the top-right corner.
+    pub top_right: u32,
+    /// Radius of the bottom-right corner.
+    pub bottom_right: u32,
+    /// Radius of the bottom-left corner.
+    pub bottom_left: u32,
+}
+
+impl CornerRadii {
+    /// Creates per-corner radii in CSS `border-radius` shorthand order.
+    ///
+    /// The order is top-left, top-right, bottom-right, bottom-left — the same clockwise
+    /// order the crate's `padding`/`margin` shorthands use (top, right, bottom, left), so a
+    /// caller reading one shorthand does not have to relearn the order for the other.
+    pub const fn new(top_left: u32, top_right: u32, bottom_right: u32, bottom_left: u32) -> Self {
+        Self { top_left, top_right, bottom_right, bottom_left }
+    }
+
+    /// Creates the same radius on all four corners.
+    ///
+    /// This is the normalisation of the historical single-value spelling: see
+    /// [`WidgetStyle::resolved_corner_radii`].
+    pub const fn all(radius: u32) -> Self {
+        Self::new(radius, radius, radius, radius)
+    }
+
+    /// Whether every corner carries the same radius, so the scalar spelling can describe it.
+    pub const fn is_uniform(&self) -> bool {
+        self.top_left == self.top_right
+            && self.top_left == self.bottom_right
+            && self.top_left == self.bottom_left
+    }
+}
+
 impl Default for EdgeOffsets {
     fn default() -> Self {
         Self::all(0)
@@ -374,6 +423,24 @@ impl TouchTargetSize {
     }
 }
 
+/// How a border is drawn (G-404).
+///
+/// The CSS parser accepts `border-style` and this is the value it produces. `Solid` is the
+/// default because a border with no declared style has always been painted solid here, so a
+/// style that never mentions the property renders exactly as it did before the field existed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BorderStyle {
+    /// A continuous line. The default, and the only style the crate painted before this enum.
+    #[default]
+    Solid,
+    /// A line made of dashes.
+    Dashed,
+    /// A line made of dots.
+    Dotted,
+    /// No border is drawn, even when a width and colour are set.
+    None,
+}
+
 /// Resolved style values applied to a widget.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WidgetStyle {
@@ -390,7 +457,23 @@ pub struct WidgetStyle {
     /// Border width in logical pixels. `None` = inherit from parent.
     pub border_width: Option<u32>,
     /// Border radius in logical pixels. `None` = inherit from parent.
+    ///
+    /// This is the historical **single-value** spelling and it means "all four corners". When
+    /// [`WidgetStyle::corner_radii`] is also set the per-corner value wins; read the resolved
+    /// shape through [`WidgetStyle::resolved_corner_radii`] rather than either field directly.
     pub border_radius: Option<u32>,
+    /// Per-corner border radii (STY-01).
+    ///
+    /// Set by the 1–4 value CSS `border-radius` shorthand and by
+    /// [`WidgetStyle::with_corner_radii`]. A style that only knows
+    /// [`WidgetStyle::border_radius`] still resolves to four equal corners, so this field is
+    /// purely additive: nothing that read the scalar had to change to keep working.
+    pub corner_radii: Option<CornerRadii>,
+    /// How the border line is drawn. `None` = inherit.
+    ///
+    /// Added for G-404: `border-style` was listed as a known CSS property with no arm that
+    /// implemented it, so a stylesheet could set it and the value was silently discarded.
+    pub border_style: Option<BorderStyle>,
     /// Inner content padding.
     pub padding: Padding,
     /// Outer widget margin.
@@ -488,6 +571,8 @@ impl WidgetStyle {
             self.border_color = other.border_color;
             self.border_width = other.border_width;
             self.border_radius = other.border_radius;
+            self.corner_radii = other.corner_radii;
+            self.border_style = other.border_style;
             // The metrics the theme authored travel with the colours: `padding` / `margin`
             // are the theme's `spacing` tokens and `spacing` is a control's
             // indicator-to-label gap, so a second application replaces them exactly as it
@@ -532,12 +617,50 @@ impl WidgetStyle {
         self
     }
     /// Sets the border.
+    ///
+    /// The `radius` argument is the single-value spelling, so it means "all four corners":
+    /// both [`WidgetStyle::border_radius`] and the uniform [`WidgetStyle::corner_radii`] are
+    /// written, keeping the scalar reader and the four-value reader in agreement (STY-01).
     pub fn with_border(mut self, color: Color, width: u32, radius: u32) -> Self {
         self.border_color = Some(color);
         self.border_width = Some(width);
         self.border_radius = Some(radius);
+        self.corner_radii = Some(CornerRadii::all(radius));
         self.theme_derived = false;
         self
+    }
+    /// Sets per-corner radii (STY-01).
+    ///
+    /// `border_radius` is only updated when the four corners agree, because that is the only
+    /// shape the scalar can describe honestly; a non-uniform set leaves it untouched rather
+    /// than writing one corner's value and pretending it speaks for all four.
+    pub fn with_corner_radii(mut self, radii: CornerRadii) -> Self {
+        self.corner_radii = Some(radii);
+        if radii.is_uniform() {
+            self.border_radius = Some(radii.top_left);
+        }
+        self.theme_derived = false;
+        self
+    }
+    /// Sets how the border line is drawn (G-404).
+    pub fn with_border_style(mut self, style: BorderStyle) -> Self {
+        self.border_style = Some(style);
+        self.theme_derived = false;
+        self
+    }
+    /// The four corner radii a painter should draw, whatever spelling the style used.
+    ///
+    /// This is the single read point that keeps the two spellings from disagreeing: a
+    /// per-corner value wins, a scalar is spread over all four corners, and a style that
+    /// declared neither is square.
+    pub fn resolved_corner_radii(&self) -> CornerRadii {
+        if let Some(radii) = self.corner_radii {
+            return radii;
+        }
+        match self.border_radius {
+            Some(radius) => CornerRadii::all(radius),
+            None => CornerRadii::all(0),
+        }
     }
     /// Sets the padding.
     pub fn with_padding(mut self, p: Padding) -> Self {
@@ -611,6 +734,8 @@ impl WidgetStyle {
             border_color: self.border_color.or(parent.border_color),
             border_width: self.border_width.or(parent.border_width),
             border_radius: self.border_radius.or(parent.border_radius),
+            corner_radii: self.corner_radii.or(parent.corner_radii),
+            border_style: self.border_style.or(parent.border_style),
             padding: self.padding,
             margin: self.margin,
             // Like `padding`, a control's indicator-to-label gap is a fact about the
@@ -690,6 +815,12 @@ impl WidgetStyle {
         }
         if self.border_radius.is_none() {
             self.border_radius = other.border_radius;
+        }
+        if self.corner_radii.is_none() {
+            self.corner_radii = other.corner_radii;
+        }
+        if self.border_style.is_none() {
+            self.border_style = other.border_style;
         }
         // `padding` and `margin` are not `Option`, so "unset" is their `Default` — an
         // all-zero box. Filling only that case is what lets a control that chose its own
@@ -839,5 +970,74 @@ mod tests {
         assert_eq!(style.padding.top, 8);
         assert_eq!(style.padding.horizontal_total(), 24);
         assert_eq!(style.spacing, Some(6));
+    }
+
+    // ── Per-corner radii (STY-01) ────────────────────────────────────────
+
+    /// The historical scalar spelling means "all four corners", and that is what the single
+    /// read point hands a painter. Without this normalisation a renderer switching to
+    /// `corner_radii` would lose every radius a theme authored through `border_radius`.
+    #[test]
+    fn the_single_radius_spelling_resolves_to_four_equal_corners() {
+        let mut style = WidgetStyle::default();
+        style.border_radius = Some(6);
+        assert_eq!(style.resolved_corner_radii(), CornerRadii::all(6));
+
+        let mut square = WidgetStyle::default();
+        square.border_radius = None;
+        assert_eq!(square.resolved_corner_radii(), CornerRadii::all(0));
+    }
+
+    /// A per-corner set wins over the scalar, and it only writes the scalar back when the four
+    /// corners agree (that is the only shape the scalar can describe without lying).
+    #[test]
+    fn per_corner_radii_win_over_the_scalar_and_only_normalise_when_uniform() {
+        let per_corner = CornerRadii::new(1, 2, 3, 4);
+        let style = WidgetStyle::default().with_corner_radii(per_corner);
+        assert_eq!(style.corner_radii, Some(per_corner));
+        assert_eq!(style.border_radius, None, "a non-uniform set cannot speak through the scalar");
+        assert_eq!(style.resolved_corner_radii(), per_corner);
+
+        let uniform = WidgetStyle::default().with_corner_radii(CornerRadii::all(5));
+        assert_eq!(uniform.border_radius, Some(5));
+        assert_eq!(uniform.resolved_corner_radii(), CornerRadii::all(5));
+    }
+
+    /// Everything a style can inherit or merge must carry the new radii and the border style,
+    /// or a sheet that styles a parent would stop reaching a child.
+    #[test]
+    fn corner_radii_and_border_style_survive_inherit_and_merge() {
+        let parent = WidgetStyle::default()
+            .with_corner_radii(CornerRadii::new(4, 0, 4, 0))
+            .with_border_style(BorderStyle::Dashed);
+        let inherited = WidgetStyle::default().inherit_from(&parent);
+        assert_eq!(inherited.corner_radii, Some(CornerRadii::new(4, 0, 4, 0)));
+        assert_eq!(inherited.border_style, Some(BorderStyle::Dashed));
+
+        let mut merged = WidgetStyle::default();
+        merged.merge(&parent);
+        assert_eq!(merged.corner_radii, Some(CornerRadii::new(4, 0, 4, 0)));
+        assert_eq!(merged.border_style, Some(BorderStyle::Dashed));
+
+        // A second theme application replaces what the first one wrote.
+        let mut themed = parent.clone();
+        themed.theme_derived = true;
+        themed.merge_theme(
+            &WidgetStyle::default()
+                .with_corner_radii(CornerRadii::all(2))
+                .with_border_style(BorderStyle::Dotted),
+        );
+        assert_eq!(themed.resolved_corner_radii(), CornerRadii::all(2));
+        assert_eq!(themed.border_style, Some(BorderStyle::Dotted));
+    }
+
+    /// The historical `with_border(color, width, radius)` still means a uniform radius, and the
+    /// two spellings it writes agree.
+    #[test]
+    fn with_border_writes_both_radius_spellings() {
+        let style = WidgetStyle::default().with_border(Color::BLACK, 2, 7);
+        assert_eq!(style.border_radius, Some(7));
+        assert_eq!(style.corner_radii, Some(CornerRadii::all(7)));
+        assert_eq!(style.resolved_corner_radii(), CornerRadii::all(7));
     }
 }

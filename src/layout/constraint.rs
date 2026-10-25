@@ -10,6 +10,21 @@ use super::Layout;
 use crate::compat::{Any, HashMap, Rc, RefCell, Vec};
 use crate::core::{ObjectId, Rect};
 
+/// A cached resolution plan: the topological order, that order sorted by priority, and
+/// the set of subjects that have at least one constraint.
+///
+/// All three are functions of the constraint list, which only changes through the
+/// add/remove/clear entry points. Caching them keeps `update` from rebuilding a
+/// dependency map and re-sorting on every pass (G-157).
+#[derive(Debug)]
+struct ConstraintOrder {
+    /// The application order: a constraint on a target is applied before one that references
+    /// it, stably sorted by priority (lowest first).
+    ranked: Vec<usize>,
+    /// Subjects that carry at least one constraint.
+    constrained: HashMap<ObjectId, ()>,
+}
+
 /// Describes the type of spatial relationship between two widgets.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConstraintType {
@@ -79,7 +94,7 @@ pub struct ConstraintLayout {
     /// expensive part of `update` (a full dependency scan per constraint). `None` means "not
     /// computed"; a cyclic graph is not cached, because its fallback is declaration order and
     /// the warning is part of the observable behaviour.
-    order_cache: RefCell<Option<Rc<Vec<usize>>>>,
+    order_cache: RefCell<Option<Rc<ConstraintOrder>>>,
 }
 
 impl ConstraintLayout {
@@ -122,13 +137,13 @@ impl ConstraintLayout {
     ///
     /// The result is cached: the constraints only change through the add/remove/clear
     /// entry points, each of which invalidates the cache.
-    fn resolve_order(&self) -> Option<Rc<Vec<usize>>> {
+    fn resolve_order(&self) -> Option<Rc<ConstraintOrder>> {
         if let Some(cached) = self.order_cache.borrow().as_ref() {
             return Some(Rc::clone(cached));
         }
-        let order = Rc::new(self.compute_resolve_order()?);
-        *self.order_cache.borrow_mut() = Some(Rc::clone(&order));
-        Some(order)
+        let plan = Rc::new(self.compute_resolve_order()?);
+        *self.order_cache.borrow_mut() = Some(Rc::clone(&plan));
+        Some(plan)
     }
 
     /// Drops the cached resolution order after a constraint mutation.
@@ -136,43 +151,62 @@ impl ConstraintLayout {
         self.order_cache.get_mut().take();
     }
 
-    fn compute_resolve_order(&self) -> Option<Vec<usize>> {
-        const UNVISITED: u8 = 0;
-        const VISITING: u8 = 1;
-        const DONE: u8 = 2;
+    /// Orders the constraints with Kahn's algorithm.
+    ///
+    /// The previous body was a depth-first walk that, at every node, scanned the whole
+    /// constraint list for the constraints whose subject was that node's target — O(V·E) over
+    /// a graph that only changes on add/remove. The reverse index below turns each lookup
+    /// into one bucket of successors, so the walk is O(V+E).
+    ///
+    /// A constraint whose subject is also its own target is ignored, matching the previous
+    /// `other != index` guard (such an entry says "this widget relates to itself" and is
+    /// resolvable against the already-seeded parent rect).
+    fn compute_resolve_order(&self) -> Option<ConstraintOrder> {
         let count = self.constraints.len();
-        let mut marks = vec![UNVISITED; count];
-        let mut order = Vec::with_capacity(count);
-        fn visit(
-            index: usize,
-            constraints: &[(ObjectId, ConstraintRef)],
-            marks: &mut [u8],
-            order: &mut Vec<usize>,
-        ) -> bool {
-            match marks[index] {
-                DONE => return true,
-                VISITING => return false,
-                _ => {}
-            }
-            marks[index] = VISITING;
-            let target = constraints[index].1.target_id;
-            for (other, (subject, _)) in constraints.iter().enumerate() {
-                if other != index && *subject == target && !visit(other, constraints, marks, order)
-                {
-                    return false;
+        // subject -> indices of constraints that have that subject.
+        let mut by_subject: HashMap<ObjectId, Vec<usize>> = HashMap::new();
+        for (index, (subject, _)) in self.constraints.iter().enumerate() {
+            by_subject.entry(*subject).or_default().push(index);
+        }
+
+        // Edge `dependency -> dependent`: `dependent` references `dependency`'s subject.
+        let mut indegree = vec![0usize; count];
+        let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); count];
+        for (index, (_, constraint)) in self.constraints.iter().enumerate() {
+            if let Some(dependencies) = by_subject.get(&constraint.target_id) {
+                for &dependency in dependencies {
+                    if dependency != index {
+                        indegree[index] += 1;
+                        dependents[dependency].push(index);
+                    }
                 }
             }
-            marks[index] = DONE;
-            order.push(index);
-            true
         }
-        for index in 0..count {
-            if marks[index] == UNVISITED && !visit(index, &self.constraints, &mut marks, &mut order)
-            {
-                return None;
+
+        // A deque implemented as a vector plus a read cursor: every index is appended once,
+        // so the total work is linear.
+        let mut queue: Vec<usize> = (0..count).filter(|index| indegree[*index] == 0).collect();
+        let mut head = 0usize;
+        let mut order = Vec::with_capacity(count);
+        while head < queue.len() {
+            let index = queue[head];
+            head += 1;
+            order.push(index);
+            for &dependent in &dependents[index] {
+                indegree[dependent] -= 1;
+                if indegree[dependent] == 0 {
+                    queue.push(dependent);
+                }
             }
         }
-        Some(order)
+        if order.len() != count {
+            return None;
+        }
+
+        let mut ranked = order;
+        ranked.sort_by_key(|index| self.constraints[*index].1.priority);
+        let constrained = self.constraints.iter().map(|(id, _)| (*id, ())).collect();
+        Some(ConstraintOrder { ranked, constrained })
     }
 
     /// Add a constraint linking `widget_id` to `target_id`.
@@ -386,19 +420,24 @@ impl Layout for ConstraintLayout {
         // Apply constraints in dependency order, lowest priority first, so a stronger
         // constraint is the one that survives on a shared edge. A cycle is broken by
         // falling back to declaration order; the layout still terminates.
-        let order: Rc<Vec<usize>> = match self.resolve_order() {
-            Some(order) => order,
+        let plan = self.resolve_order();
+        let (ranked, constrained): (Vec<usize>, HashMap<ObjectId, ()>) = match plan {
+            Some(plan) => {
+                // `ranked` borrows the cached vectors but is consumed below; cloning it is
+                // cheaper than re-building the dependency graph and re-sorting (G-157).
+                (plan.ranked.clone(), plan.constrained.clone())
+            }
             None => {
                 log::warn!(
                     "constraint layout has a dependency cycle; resolving in declaration order"
                 );
-                Rc::new((0..self.constraints.len()).collect())
+                let mut ranked: Vec<usize> = (0..self.constraints.len()).collect();
+                ranked.sort_by_key(|index| self.constraints[*index].1.priority);
+                let constrained = self.constraints.iter().map(|(id, _)| (*id, ())).collect();
+                (ranked, constrained)
             }
         };
-        let mut ranked: Vec<(usize, i32)> =
-            order.iter().map(|index| (*index, self.constraints[*index].1.priority)).collect();
-        ranked.sort_by_key(|(_, priority)| *priority);
-        for (index, _) in ranked {
+        for index in ranked {
             let (subject_id, constraint_ref) = &self.constraints[index];
             if let Some(mut widget_rect) = resolved.get(subject_id).copied() {
                 Self::resolve_rect(&mut widget_rect, constraint_ref, rect, &resolved);
@@ -408,8 +447,6 @@ impl Layout for ConstraintLayout {
 
         // Second pass: for children that were referenced but have no constraint
         // defined, still emit them at the parent rect position.
-        let constrained: HashMap<ObjectId, ()> =
-            self.constraints.iter().map(|(id, _)| (*id, ())).collect();
         for &child_id in &self.children {
             if let Some(widget_rect) = resolved.get(&child_id).copied() {
                 // If the child has no constraints, its rect will still be the parent rect.

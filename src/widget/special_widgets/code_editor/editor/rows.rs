@@ -29,7 +29,10 @@ impl CodeEditor {
     /// Returns the visible document lines within the viewport window, plus slack.
     ///
     /// This is the iterator the paint loop should use: it never materialises the
-    /// document, so its cost depends on the viewport.
+    /// document, so its cost depends on the viewport. With folds present the walk starts
+    /// at the line the viewport actually begins on (read off the row-prefix table) instead
+    /// of filtering every line of the file into a `Vec` first — that allocation was the
+    /// folded counterpart of the full-document scan `visible_document_lines` avoids (J-P04).
     pub(crate) fn viewport_document_lines(&self) -> alloc::vec::IntoIter<usize> {
         if self.folded_lines.is_empty() {
             let slack = self.visible_rows.max(1) + 1;
@@ -40,9 +43,22 @@ impl CodeEditor {
         let slack = self.visible_rows.max(1) + 1;
         let first_row = self.scroll_visual_row.saturating_sub(slack);
         let last_row = self.scroll_visual_row + slack * 2;
-        let mut rows = 0usize;
+        let count = self.line_count();
+        // The prefix table holds the exact start row of every line; without it (a caller
+        // that reads coordinates before any refresh) the walk starts at the top, which is
+        // correct at the old cost.
+        let start_line = if self.visual_row_prefix.len() == count + 1 {
+            self.visual_row_to_line(first_row)
+        } else {
+            0
+        };
+        let mut rows = self.line_to_visual_row(start_line);
         let mut out = Vec::new();
-        for line in self.visible_document_lines() {
+        let model = self.model.borrow();
+        for line in start_line..count {
+            if model.is_hidden(line) {
+                continue;
+            }
             let segments = self.wrap_segments(line);
             if rows + segments > first_row && rows <= last_row {
                 out.push(line);
@@ -415,13 +431,63 @@ impl CodeEditor {
     /// are equal, and paying O(document) for a table that would only restate that
     /// would put the cost straight back on the hot path.
     pub(crate) fn rebuild_visual_row_prefix(&mut self) {
-        self.visual_row_prefix.clear();
+        self.rebuild_visual_row_prefix_after(None);
+    }
+
+    /// [`Self::rebuild_visual_row_prefix`] with an incremental hint.
+    ///
+    /// `dirty` is `(first_line, lines_now, lines_before)` for a single contiguous edit. A
+    /// row's contribution only depends on its own text, so every prefix value **above**
+    /// the edit is still correct, and the values below it only change by the shift the
+    /// edit introduced. Recomputing from `first_line` and stopping at the first line where
+    /// the running total matches the recorded one therefore costs O(rows from the edit to
+    /// the first unchanged wrap count) instead of O(document) per keystroke (J-P05).
+    ///
+    /// A line-count change invalidates the table's length, and a caller that cannot
+    /// describe the edit passes `None`; both fall back to the full rebuild.
+    pub(crate) fn rebuild_visual_row_prefix_after(&mut self, dirty: Option<(usize, usize, usize)>) {
+        let count = self.line_count();
         if self.folded_lines.is_empty() && !self.config.word_wrap {
+            self.visual_row_prefix.clear();
             return;
         }
-        let count = self.line_count();
         let columns = self.text_columns().max(1);
         let folded = !self.folded_lines.is_empty();
+        if let Some((first, inserted, removed)) = dirty {
+            if inserted == removed
+                && self.visual_row_prefix.len() == count + 1
+                && first < count
+                && !self.visual_row_prefix.is_empty()
+            {
+                // Clone the handle so the model borrow is not tied to `self`; the loop
+                // below mutates the prefix table while reading line text.
+                let model = Rc::clone(&self.model);
+                let model = model.borrow();
+                let prefix = &mut self.visual_row_prefix;
+                let mut row = prefix[first];
+                let mut line = first;
+                while line < count {
+                    if !(folded && model.is_hidden(line)) {
+                        row += if self.config.word_wrap {
+                            LineGrid::new(model.line(line), self.config.tab_width)
+                                .segments(columns)
+                                .max(1)
+                        } else {
+                            1
+                        };
+                    }
+                    let previous = prefix[line + 1];
+                    prefix[line + 1] = row;
+                    line += 1;
+                    // Re-converged: from here on every line contributes what it did
+                    // before, so the recorded tail is already correct.
+                    if line > first && row == previous && line < count {
+                        break;
+                    }
+                }
+                return;
+            }
+        }
         let mut prefix = Vec::with_capacity(count + 1);
         let mut row = 0usize;
         {

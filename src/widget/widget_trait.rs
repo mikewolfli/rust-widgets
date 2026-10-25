@@ -1017,6 +1017,10 @@ pub trait Widget: EventHandler + Any {
     ///   and the explicit lower bound from `BaseWidget::min_size`.
     /// * `max` is the explicit upper bound from `BaseWidget::max_size`, or unbounded.
     ///
+    /// `BaseWidget`'s bounds are the single authoritative store (G-301): `Window`'s
+    /// host-facing `min_size`/`max_size` pair forwards to the same values, so a platform
+    /// request and this layout hint cannot diverge.
+    ///
     /// A widget that overrides neither `minimum_size_hint` nor the base setters therefore
     /// reports exactly what it reported before: `min == pref`, `max == u32::MAX`. Once a
     /// caller sets a bound, the layout consumes it — `AxisHints` normalises

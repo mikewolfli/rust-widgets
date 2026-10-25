@@ -70,6 +70,9 @@ fn expect_wheel_scroll_mode(
     }
 }
 
+/// One cached window row, shared so a vertical scroll can reuse it instead of re-fetching.
+type CachedRow = Arc<Vec<Option<String>>>;
+
 /// Lightweight virtual table with pull-based window fetch.
 pub struct VirtualTable {
     base: BaseWidget,
@@ -80,7 +83,12 @@ pub struct VirtualTable {
     column_width: u32,
     overscan_rows: usize,
     overscan_columns: usize,
-    window_cache: Option<Arc<Vec<Vec<Option<String>>>>>,
+    window_cache: Option<Arc<Vec<CachedRow>>>,
+    /// The `(row_start, row_len, col_start, col_len)` window `window_cache` holds.
+    ///
+    /// A scroll keeps the overlap and fetches only the new side, so the cache needs to know which
+    /// rows it already has (F-P06).
+    window_key: Option<(usize, usize, usize, usize)>,
     /// Revision of the data source that produced `window_cache`. A source can change in
     /// place without any setter running (it bumps `revision()`), so a cache validated only
     /// by scroll position would keep painting stale cells.
@@ -101,14 +109,20 @@ pub struct VirtualTable {
     hovered_row: Option<usize>,
     /// Emitted when visible window changes `(row_start,row_len,col_start,col_len)`.
     pub visible_window_changed: Signal1<(usize, usize, usize, usize)>,
-    /// The selected absolute `(row, column)`, if any.
-    selected_cell: Option<(usize, usize)>,
     /// Whether a column-title row is painted above the first data row.
     show_header: bool,
     /// Whether a vertical scroll-bar thumb is painted.
     show_scrollbar: bool,
     /// Emitted when the selected cell changes.
     pub selection_changed: Signal1<Option<(usize, usize)>>,
+    /// Emitted with the full selection set whenever it changes (V-06).
+    ///
+    /// `selection_changed` keeps its original single-value payload so existing subscribers keep
+    /// working; a multi-select host reads the complete set from here or from
+    /// [`VirtualTable::selected_cells`].
+    pub selection_set_changed: Signal1<Vec<(usize, usize)>>,
+    /// The selection set, stored as linearised cell indices so one model serves every mode.
+    selection: crate::widget::view_widgets::list_view::SelectionModel,
     /// Optional per-cell painter.
     delegate: Option<Arc<dyn VirtualCellDelegate>>,
     /// Labels supplied through [`VirtualTable::set_header_labels`].
@@ -130,16 +144,18 @@ impl VirtualTable {
             overscan_rows: 2,
             overscan_columns: 1,
             window_cache: None,
+            window_key: None,
             window_revision: 0,
             data_source_connection_scope: ConnectionScope::new(),
             data_generation: Arc::new(AtomicU64::new(0)),
             data_is_observable: false,
             hovered_row: None,
             visible_window_changed: Signal1::new(),
-            selected_cell: None,
             show_header: false,
             show_scrollbar: false,
             selection_changed: Signal1::new(),
+            selection_set_changed: Signal1::new(),
+            selection: crate::widget::view_widgets::list_view::SelectionModel::new(),
             delegate: None,
             header_labels: Vec::new(),
             wheel_scroll_mode: WheelScrollMode::PerRow,
@@ -223,7 +239,6 @@ impl VirtualTable {
             return;
         }
         self.scroll_row = next;
-        self.window_cache = None;
         self.emit_visible_window();
         self.base.request_redraw();
     }
@@ -236,7 +251,6 @@ impl VirtualTable {
             return;
         }
         self.scroll_column = next;
-        self.window_cache = None;
         self.emit_visible_window();
         self.base.request_redraw();
     }
@@ -336,7 +350,7 @@ impl VirtualTable {
     /// the same cached matrix without even cloning the handle.
     pub fn fetch_visible_window(&mut self) -> Vec<Vec<Option<String>>> {
         match self.visible_window_cells() {
-            Some(window) => window.as_ref().clone(),
+            Some(window) => window.iter().map(|row| row.as_ref().clone()).collect(),
             None => Vec::new(),
         }
     }
@@ -351,7 +365,7 @@ impl VirtualTable {
     /// a hit hands out a cheap shared handle and the draw loop reads the matrix in place. The
     /// fetch count is unchanged (misses still hit the source), so only the per-redraw copies are
     /// removed.
-    fn visible_window_cells(&mut self) -> Option<&Arc<Vec<Vec<Option<String>>>>> {
+    fn visible_window_cells(&mut self) -> Option<&Arc<Vec<CachedRow>>> {
         let revision = self.data_source.as_ref()?.revision();
         // A source with a real revision uses it; one without falls back to the generation this
         // widget advances from `data_changed` — the same contract as `VirtualList`/`DataGrid`.
@@ -359,15 +373,72 @@ impl VirtualTable {
         // every call instead of being served stale.
         let cache_revision =
             if revision > 0 { revision } else { self.data_generation.load(Ordering::Relaxed) };
+        let window = self.visible_window();
+
+        // F-P06: a scroll that keeps the column span slides the row cache. The overlapping rows
+        // are reused behind their `Arc`, and only the newly exposed side is fetched.
+        if self.data_is_observable
+            && self.window_cache.is_some()
+            && self.window_revision == cache_revision
+        {
+            if self.window_key == Some(window) {
+                return self.window_cache.as_ref();
+            }
+            if let Some((old_start, old_len, old_col_start, old_col_len)) = self.window_key {
+                if old_col_start == window.2 && old_col_len == window.3 {
+                    let (new_start, new_len, _, _) = window;
+                    let old_end = old_start.saturating_add(old_len);
+                    let new_end = new_start.saturating_add(new_len);
+                    let overlap_start = old_start.max(new_start);
+                    let overlap_end = old_end.min(new_end);
+                    if overlap_start < overlap_end {
+                        let source = self.data_source.as_ref()?;
+                        let mut rows: Vec<CachedRow> = Vec::with_capacity(new_len);
+                        if new_start < overlap_start {
+                            let gap = overlap_start - new_start;
+                            rows.extend(
+                                source
+                                    .fetch_window(new_start, gap, window.2, window.3)
+                                    .into_iter()
+                                    .map(Arc::new),
+                            );
+                        }
+                        {
+                            let cached = self.window_cache.as_ref()?;
+                            for row in overlap_start..overlap_end {
+                                if let Some(cached_row) = cached.get(row.saturating_sub(old_start))
+                                {
+                                    rows.push(Arc::clone(cached_row));
+                                }
+                            }
+                        }
+                        if overlap_end < new_end {
+                            let gap = new_end - overlap_end;
+                            rows.extend(
+                                source
+                                    .fetch_window(overlap_end, gap, window.2, window.3)
+                                    .into_iter()
+                                    .map(Arc::new),
+                            );
+                        }
+                        self.window_cache = Some(Arc::new(rows));
+                        self.window_key = Some(window);
+                        return self.window_cache.as_ref();
+                    }
+                }
+            }
+        }
+
         if !self.data_is_observable
             || self.window_cache.is_none()
             || self.window_revision != cache_revision
+            || self.window_key != Some(window)
         {
             let source = self.data_source.as_ref()?;
-            let (row_start, row_len, col_start, col_len) = self.visible_window();
-            let data = source.fetch_window(row_start, row_len, col_start, col_len);
-            self.window_cache = Some(Arc::new(data));
+            let data = source.fetch_window(window.0, window.1, window.2, window.3);
+            self.window_cache = Some(Arc::new(data.into_iter().map(Arc::new).collect()));
             self.window_revision = cache_revision;
+            self.window_key = Some(window);
         }
         self.window_cache.as_ref()
     }
@@ -434,29 +505,140 @@ impl VirtualTable {
         }
     }
 
-    /// The selected absolute cell.
+    /// The selected absolute cell (the current cell of the selection set).
     pub fn selected_cell(&self) -> Option<(usize, usize)> {
-        self.selected_cell
+        self.selection.current_row().and_then(|index| self.decode_cell_index(index))
+    }
+
+    /// The number of columns a linearised cell index is divided by.
+    fn cell_columns(&self) -> usize {
+        self.column_count().max(1)
+    }
+
+    /// Maps an absolute cell to the linear index the selection model stores.
+    fn encode_cell_index(&self, row: usize, column: usize) -> Option<usize> {
+        if row >= self.row_count() || column >= self.column_count() {
+            return None;
+        }
+        Some(row.saturating_mul(self.cell_columns()).saturating_add(column))
+    }
+
+    /// Maps a linearised selection index back to `(row, column)`.
+    fn decode_cell_index(&self, index: usize) -> Option<(usize, usize)> {
+        let columns = self.column_count();
+        if columns == 0 {
+            return None;
+        }
+        let row = index / columns;
+        let column = index % columns;
+        (row < self.row_count()).then_some((row, column))
+    }
+
+    /// The selection mode (V-06).
+    pub fn selection_mode(&self) -> crate::widget::view_widgets::list_view::SelectionMode {
+        self.selection.mode()
+    }
+
+    /// Sets how many cells one gesture may select (V-06).
+    pub fn set_selection_mode(
+        &mut self,
+        mode: crate::widget::view_widgets::list_view::SelectionMode,
+    ) {
+        self.selection.set_mode(mode);
+        self.base.request_redraw();
+    }
+
+    /// Every selected cell, in row-major order.
+    pub fn selected_cells(&self) -> Vec<(usize, usize)> {
+        self.selection
+            .rows()
+            .into_iter()
+            .filter_map(|index| self.decode_cell_index(index))
+            .collect()
     }
 
     /// Selects an absolute cell. Out-of-range cells are ignored.
     pub fn select_cell(&mut self, row: usize, column: usize) -> bool {
-        if row >= self.row_count() || column >= self.column_count() {
+        let Some(index) = self.encode_cell_index(row, column) else {
             return false;
-        }
-        if self.selected_cell == Some((row, column)) {
+        };
+        if self.selection.current_row() == Some(index) && self.selection.rows() == vec![index] {
             return true;
         }
-        self.selected_cell = Some((row, column));
-        self.selection_changed.emit(self.selected_cell);
+        self.selection.select_row(index);
+        self.emit_selection_changed();
         self.base.request_redraw();
         true
     }
 
+    /// Selects a cell honouring keyboard modifiers (V-06).
+    ///
+    /// `Shift` extends the contiguous cell range from the anchor, `Ctrl`/`Meta` toggles the cell,
+    /// and an unmodified call replaces the selection — the same model `ListView` uses.
+    pub fn select_cell_with_modifiers(
+        &mut self,
+        row: usize,
+        column: usize,
+        modifiers: crate::shortcut::Modifiers,
+    ) -> bool {
+        let Some(index) = self.encode_cell_index(row, column) else {
+            return false;
+        };
+        self.selection.select_with_modifiers(index, modifiers);
+        self.emit_selection_changed();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Emits the single-value and set-value selection signals.
+    fn emit_selection_changed(&mut self) {
+        let current = self.selected_cell();
+        self.selection_changed.emit(current);
+        self.selection_set_changed.emit(self.selected_cells());
+    }
+
+    /// Moves the current cell by `(row_delta, column_delta)` and keeps it on screen (V-07).
+    ///
+    /// The arrow keys used to scroll the viewport without selecting anything, so a keyboard user
+    /// could not move or create a selection at all. Selection goes through the same model the
+    /// pointer uses, so `Shift` extends in extended mode for free.
+    fn move_current_cell(&mut self, row_delta: isize, column_delta: isize, modifiers: u32) {
+        let rows = self.row_count();
+        let columns = self.column_count();
+        if rows == 0 || columns == 0 {
+            return;
+        }
+        let (row, column) = self.selected_cell().unwrap_or((0, 0));
+        let next_row = (row as isize + row_delta).clamp(0, rows as isize - 1) as usize;
+        let next_column = (column as isize + column_delta).clamp(0, columns as isize - 1) as usize;
+        let modifiers = crate::shortcut::Modifiers::from_event_bits(modifiers);
+        self.select_cell_with_modifiers(next_row, next_column, modifiers);
+        self.ensure_cell_visible(next_row, next_column);
+    }
+
+    /// Scrolls the smallest amount that puts `(row, column)` inside the viewport.
+    fn ensure_cell_visible(&mut self, row: usize, column: usize) {
+        let (visible_rows, visible_columns) = self.visible_grid(self.geometry());
+        let visible_rows = visible_rows.max(1);
+        if row < self.scroll_row {
+            self.set_scroll_row(row);
+        } else if row >= self.scroll_row.saturating_add(visible_rows) {
+            self.set_scroll_row(row.saturating_add(1).saturating_sub(visible_rows));
+        }
+        let visible_columns = visible_columns.max(1);
+        if column < self.scroll_column {
+            self.set_scroll_column(column);
+        } else if column >= self.scroll_column.saturating_add(visible_columns) {
+            self.set_scroll_column(column.saturating_add(1).saturating_sub(visible_columns));
+        }
+    }
+
     /// Clears the selection.
     pub fn clear_selection(&mut self) {
-        if self.selected_cell.take().is_some() {
+        if self.selection.current_row().is_some() || !self.selection.rows().is_empty() {
+            self.selection.clear();
             self.selection_changed.emit(None);
+            self.selection_set_changed.emit(Vec::new());
             self.base.request_redraw();
         }
     }
@@ -801,9 +983,10 @@ impl EventHandler for VirtualTable {
         }
 
         match event {
-            Event::MousePress { pos, button: 1, .. } => {
+            Event::MousePress { pos, button: 1, modifiers } => {
                 if let Some((row, column)) = self.cell_at(*pos) {
-                    self.select_cell(row, column);
+                    let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                    self.select_cell_with_modifiers(row, column, modifiers);
                 } else {
                     self.clear_selection();
                 }
@@ -852,26 +1035,32 @@ impl EventHandler for VirtualTable {
                     self.set_scroll_column(next);
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                37 => self.set_scroll_column(self.scroll_column.saturating_sub(1)),
-                39 => self.set_scroll_column(self.scroll_column.saturating_add(1)),
-                38 => self.set_scroll_row(self.scroll_row.saturating_sub(1)),
-                40 => self.set_scroll_row(self.scroll_row.saturating_add(1)),
-                crate::event::key_codes::PAGE_UP => {
-                    let page = self.visible_grid(self.geometry()).0.max(1);
-                    self.set_scroll_row(self.scroll_row.saturating_sub(page));
+            Event::KeyPress { key, modifiers } => {
+                let (page_rows, _) = self.visible_grid(self.geometry());
+                let page = page_rows.max(1) as isize;
+                let last = self.row_count().saturating_sub(1) as isize;
+                match *key {
+                    37 => self.move_current_cell(0, -1, *modifiers),
+                    39 => self.move_current_cell(0, 1, *modifiers),
+                    38 => self.move_current_cell(-1, 0, *modifiers),
+                    40 => self.move_current_cell(1, 0, *modifiers),
+                    crate::event::key_codes::PAGE_UP => {
+                        self.move_current_cell(-page, 0, *modifiers)
+                    }
+                    crate::event::key_codes::PAGE_DOWN => {
+                        self.move_current_cell(page, 0, *modifiers)
+                    }
+                    crate::event::key_codes::HOME => {
+                        let current = self.selected_cell().map_or(0, |(row, _)| row) as isize;
+                        self.move_current_cell(-current, 0, *modifiers);
+                    }
+                    crate::event::key_codes::END => {
+                        let current = self.selected_cell().map_or(0, |(row, _)| row) as isize;
+                        self.move_current_cell(last - current, 0, *modifiers);
+                    }
+                    _ => { /* Other keys are not relevant */ }
                 }
-                crate::event::key_codes::PAGE_DOWN => {
-                    let page = self.visible_grid(self.geometry()).0.max(1);
-                    let last = self.row_count().saturating_sub(1);
-                    self.set_scroll_row(self.scroll_row.saturating_add(page).min(last));
-                }
-                crate::event::key_codes::HOME => self.set_scroll_row(0),
-                crate::event::key_codes::END => {
-                    self.set_scroll_row(self.row_count().saturating_sub(1))
-                }
-                _ => { /* Other keys are not relevant */ }
-            },
+            }
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -1036,16 +1225,20 @@ impl Draw for VirtualTable {
                 hovered_bg,
             );
         }
+        // One font resolution for the whole grid (F-P07): the loop used to resolve the face twice
+        // per visible cell, so a full screen paid hundreds of resolutions per frame.
+        let cell_font = effective_font(self.style());
         for (row_index, row) in visible.enumerate() {
             for (column_index, cell) in row.enumerate() {
                 let cell_rect = self.cell_rect(rect, row_index, column_index);
-                if self.selected_cell
-                    == Some((self.scroll_row + row_index, self.scroll_column + column_index))
+                let absolute = (self.scroll_row + row_index, self.scroll_column + column_index);
+                if self
+                    .encode_cell_index(absolute.0, absolute.1)
+                    .is_some_and(|index| self.selection.is_selected(index))
                 {
                     context.fill_rect(cell_rect, surface.blend(&accent, 0.30));
                 }
                 context.draw_rect(cell_rect, cell_border);
-                let absolute = (self.scroll_row + row_index, self.scroll_column + column_index);
                 let painted_by_delegate = match self.delegate.as_ref() {
                     Some(delegate) => {
                         delegate.paint(context, cell_rect, absolute.0, absolute.1, cell.as_deref())
@@ -1058,9 +1251,9 @@ impl Draw for VirtualTable {
                     // a line low; `text_line` derives the centred box. Fitting keeps a wide value
                     // from spilling into the next column.
                     context.draw_text_fitted_cow(
-                        context.text_line(cell_rect, effective_font(self.style())),
+                        context.text_line(cell_rect, cell_font),
                         value.as_str(),
-                        effective_font(self.style()),
+                        cell_font,
                         ink,
                         HorizontalAlignment::Left,
                     );
@@ -1879,5 +2072,103 @@ mod tests {
         assert!(delegate.painted.load(Ordering::Relaxed) > 0, "the delegate owned the cells");
         table.clear_delegate();
         assert!(!table.has_delegate());
+    }
+
+    /// F-P06: a one-row scroll keeps the overlapping rows and fetches only the new row.
+    #[test]
+    fn a_small_scroll_fetches_only_the_new_rows() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct RowCountingSource {
+            rows: Arc<AtomicUsize>,
+        }
+        impl IncrementalTableDataSource for RowCountingSource {
+            fn row_count(&self) -> usize {
+                200
+            }
+            fn column_count(&self) -> usize {
+                3
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                Some(format!("{row}:{column}"))
+            }
+            fn revision(&self) -> u64 {
+                1
+            }
+            fn fetch_window(
+                &self,
+                row_start: usize,
+                row_len: usize,
+                column_start: usize,
+                column_len: usize,
+            ) -> Vec<Vec<Option<String>>> {
+                self.rows.fetch_add(row_len, Ordering::SeqCst);
+                (row_start..row_start.saturating_add(row_len).min(self.row_count()))
+                    .map(|row| {
+                        (column_start..column_start.saturating_add(column_len))
+                            .map(|column| self.data(row, column))
+                            .collect()
+                    })
+                    .collect()
+            }
+        }
+
+        let fetched_rows = Arc::new(AtomicUsize::new(0));
+        let mut table = VirtualTable::new(Rect::new(0, 0, 240, 80));
+        table.set_overscan_rows(0);
+        table.set_data_source(Arc::new(RowCountingSource { rows: Arc::clone(&fetched_rows) }));
+
+        let first = table.fetch_visible_window();
+        assert_eq!(first.len(), 4, "80 px / 20 px shows four rows");
+        assert_eq!(fetched_rows.load(Ordering::SeqCst), 4);
+
+        table.set_scroll_row(1);
+        let scrolled = table.fetch_visible_window();
+        assert_eq!(scrolled.len(), 4);
+        assert_eq!(scrolled[0][0], Some("1:0".to_string()), "the window slid by one row");
+        assert_eq!(
+            fetched_rows.load(Ordering::SeqCst),
+            5,
+            "only the newly exposed row was fetched from the source"
+        );
+    }
+
+    /// V-06: the selection model supports extended ranges and ctrl toggles.
+    #[test]
+    fn multi_select_ranges_and_toggles_cells() {
+        use crate::shortcut::Modifiers;
+        use crate::widget::view_widgets::list_view::SelectionMode;
+
+        let mut table = VirtualTable::new(Rect::new(0, 0, 320, 200));
+        table.set_data_source(Arc::new(StaticSource));
+        table.set_selection_mode(SelectionMode::Extended);
+        assert_eq!(table.selection_mode(), SelectionMode::Extended);
+
+        assert!(table.select_cell(0, 0));
+        assert!(table.select_cell_with_modifiers(0, 2, Modifiers::SHIFT));
+        assert_eq!(table.selected_cells(), vec![(0, 0), (0, 1), (0, 2)]);
+
+        // Ctrl toggles the middle cell off, and the current cell follows the gesture.
+        assert!(table.select_cell_with_modifiers(0, 1, Modifiers::CTRL));
+        assert_eq!(table.selected_cells(), vec![(0, 0), (0, 2)]);
+        assert_eq!(table.selected_cell(), Some((0, 1)));
+    }
+
+    /// V-07: the arrow keys move the current cell and the viewport follows it.
+    #[test]
+    fn arrow_keys_move_the_current_cell() {
+        use crate::event::key_codes::{DOWN, END, RIGHT};
+
+        let mut table = VirtualTable::new(Rect::new(0, 0, 320, 200));
+        table.set_data_source(Arc::new(StaticSource));
+        table.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+
+        table.handle_event(&Event::KeyPress { key: DOWN, modifiers: 0 });
+        assert_eq!(table.selected_cell(), Some((1, 0)), "Down selects the next row");
+        table.handle_event(&Event::KeyPress { key: RIGHT, modifiers: 0 });
+        assert_eq!(table.selected_cell(), Some((1, 1)), "Right selects the next column");
+        table.handle_event(&Event::KeyPress { key: END, modifiers: 0 });
+        assert_eq!(table.selected_cell().map(|(row, _)| row), Some(99));
+        assert!(table.scroll_row() > 0, "the viewport followed the cell");
     }
 }

@@ -14,7 +14,7 @@
 //! The distinction matters because the two have opposite ownership: a page view
 //! owns pages, a pagination bar owns only a number.
 
-use crate::compat::{format, String, Vec};
+use crate::compat::{format, Rc, RefCell, String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{key_codes, mouse_button, Event, EventHandler};
 use crate::render::RenderContext;
@@ -84,6 +84,10 @@ pub struct Pagination {
     show_page_size_selector: bool,
     /// Normalized, ascending options the selector offers.
     page_size_options: Vec<usize>,
+    /// Bumped whenever the option list changes, so the layout cache can tell.
+    options_revision: u32,
+    /// The cached layout and cell plan, shared by draw, hit testing and `size_hint` (G-A04).
+    layout_cache: RefCell<Option<PaginationCache>>,
     /// When true, the page-size popup is visible.
     page_size_menu_open: bool,
     /// Index of the option under the pointer while the popup is open.
@@ -104,6 +108,7 @@ pub struct Pagination {
 ///
 /// `draw`, `cell_at`, `size_hint` and the page-size popup all read this one value, so
 /// the cells that are painted are exactly the cells that answer a click.
+#[derive(Clone, Copy)]
 struct BarLayout {
     /// The band the numbered cells share.
     numbered_rect: Rect,
@@ -111,6 +116,27 @@ struct BarLayout {
     page_size_rect: Option<Rect>,
     /// The jump-to-page cell, when it is shown.
     jump_rect: Option<Rect>,
+}
+
+/// The inputs a cached bar layout and cell plan were derived from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PaginationCacheKey {
+    total: usize,
+    page_size: usize,
+    page: usize,
+    sibling_count: usize,
+    show_nav_buttons: bool,
+    show_jump_input: bool,
+    show_page_size_selector: bool,
+    options_revision: u32,
+    bar: Rect,
+}
+
+/// One cached layout plus the cell plan that goes with it.
+struct PaginationCache {
+    key: PaginationCacheKey,
+    layout: BarLayout,
+    plan: Rc<Vec<Cell>>,
 }
 
 impl BarLayout {
@@ -135,6 +161,8 @@ impl Pagination {
             jump_buffer: String::new(),
             show_page_size_selector: false,
             page_size_options: Vec::new(),
+            options_revision: 0,
+            layout_cache: RefCell::new(None),
             page_size_menu_open: false,
             page_size_hover: None,
             hovered_page: None,
@@ -371,6 +399,7 @@ impl Pagination {
             return;
         }
         self.page_size_options = normalized;
+        self.options_revision = self.options_revision.wrapping_add(1);
         if self.page_size_options.is_empty() {
             self.page_size_menu_open = false;
             self.page_size_hover = None;
@@ -449,7 +478,12 @@ impl Pagination {
     }
 
     /// The typed cell plan.
-    fn cell_plan(&self) -> Vec<Cell> {
+    fn cell_plan(&self) -> Rc<Vec<Cell>> {
+        self.plan_and_layout().1
+    }
+
+    /// The typed cell plan, without the cache wrapper.
+    fn compute_cell_plan(&self) -> Vec<Cell> {
         let last = self.last_page();
         let mut plan = Vec::new();
         if self.show_nav_buttons {
@@ -487,11 +521,45 @@ impl Pagination {
     /// [`Self::layout`] derivation so the plan always fits inside the band the control
     /// actually paints.
     fn cell_width(&self) -> u32 {
-        self.layout().cell_width(self.cell_plan().len())
+        let (layout, plan) = self.plan_and_layout();
+        layout.cell_width(plan.len())
     }
 
-    /// The bar's one geometry derivation: the numbered band plus the optional trailing
-    /// controls.
+    /// The bar's cached geometry and cell plan.
+    ///
+    /// Hit testing used to run `layout` twice and `cell_plan` twice per pointer move — each
+    /// allocating a fresh plan — even though neither depends on the pointer (G-A04). One keyed
+    /// cache now serves the draw, the hit test, `size_hint` and the popup.
+    fn plan_and_layout(&self) -> (BarLayout, Rc<Vec<Cell>>) {
+        let key = PaginationCacheKey {
+            total: self.total,
+            page_size: self.page_size,
+            page: self.page,
+            sibling_count: self.sibling_count,
+            show_nav_buttons: self.show_nav_buttons,
+            show_jump_input: self.show_jump_input,
+            show_page_size_selector: self.show_page_size_selector,
+            options_revision: self.options_revision,
+            bar: self.bar_rect(),
+        };
+        if let Some(cache) = self.layout_cache.borrow().as_ref() {
+            if cache.key == key {
+                return (cache.layout, Rc::clone(&cache.plan));
+            }
+        }
+        let layout = self.compute_layout();
+        let plan = Rc::new(self.compute_cell_plan());
+        *self.layout_cache.borrow_mut() =
+            Some(PaginationCache { key, layout, plan: Rc::clone(&plan) });
+        (layout, plan)
+    }
+
+    /// The bar's resolved layout, read from the shared cache.
+    fn layout(&self) -> BarLayout {
+        self.plan_and_layout().0
+    }
+
+    /// The bar's one geometry derivation, without the cache.
     ///
     /// # Layout order
     ///
@@ -501,7 +569,7 @@ impl Pagination {
     /// for its suggested width but is capped at 40% of the bar (and at whatever is left),
     /// which keeps the numbers legible on a narrow bar. With both features off the
     /// numbered band is the whole bar, so every existing measurement is unchanged.
-    fn layout(&self) -> BarLayout {
+    fn compute_layout(&self) -> BarLayout {
         let bar = self.bar_rect();
         let left = bar.x;
         let mut right = bar.x.saturating_add(bar.width as i32);

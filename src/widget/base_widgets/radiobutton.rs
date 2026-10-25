@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 //! Radio button widget.
-use crate::compat::{String, ToString, Vec};
+use crate::compat::{Rc, String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::base_widgets::button_group::{self, GroupKey, GroupMember};
+use crate::widget::base_widgets::button_group::{self, GroupKey};
 use crate::widget::base_widgets::AutoRepeat;
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -71,7 +71,7 @@ fn vertical_line_box(rect: Rect, font: &Font) -> Rect {
 pub struct RadioButton {
     base: BaseWidget,
     checked: bool,
-    group_id: Option<String>,
+    group_id: Option<Rc<str>>,
     /// Whether radios under one parent exclude each other without a `group_id`.
     ///
     /// On by default, matching the reference toolkit: a radio button in a group *is* exclusive,
@@ -254,7 +254,7 @@ impl RadioButton {
             return Some(key);
         }
         if let Some(id) = self.group_id.as_ref() {
-            return Some(GroupKey::Name(id.clone()));
+            return Some(GroupKey::Name(Rc::clone(id)));
         }
         if !self.auto_exclusive {
             return None;
@@ -334,11 +334,11 @@ impl RadioButton {
     }
     /// Sets optional group identifier.
     pub fn set_group_id(&mut self, group_id: Option<String>) {
-        if self.group_id == group_id {
+        if self.group_id.as_deref() == group_id.as_deref() {
             return;
         }
         let previous_key = self.exclusive_key();
-        self.group_id = group_id;
+        self.group_id = group_id.map(|id| Rc::from(id.as_str()));
         if let Some(key) = previous_key {
             button_group::unregister(&key, self.id());
         }
@@ -408,19 +408,11 @@ impl RadioButton {
             return false;
         };
         self.sync_group_registration();
-        let mut peers: Vec<GroupMember> =
-            button_group::members(&key).into_iter().filter(|member| member.enabled).collect();
-        if peers.len() < 2 {
+        // One registry call resolves the visual order and the next member; building and sorting
+        // the peer list here was a per-key-press allocation (G-A09).
+        let Some(target) = button_group::next_enabled_member(&key, self.id(), forward) else {
             return false;
-        }
-        peers.sort_by_key(|member| (member.rect.y, member.rect.x));
-        let index = peers.iter().position(|member| member.id == self.id()).unwrap_or(0);
-        let next = if forward {
-            (index + 1) % peers.len()
-        } else {
-            (index + peers.len() - 1) % peers.len()
         };
-        let target = peers[next].id;
         if target == self.id() {
             // Wrapped back to this control: make sure it is the selected one and stop.
             self.set_checked(true);
@@ -1058,9 +1050,9 @@ impl Draw for RadioButton {
             // with that primary fill, so the control's own resolved background is not the surface
             // the label is drawn on. `legible_on` keeps a theme's own label ink when it already
             // clears the AA floor and repairs it when it does not.
-            let page = crate::style::theme_manager()
-                .current_theme()
-                .map(|active| active.colors.background)
+            let page = crate::style::palette_shared()
+                .as_ref()
+                .map(|colors| colors.background)
                 .unwrap_or_else(|| style.background_color.unwrap_or(Color::WHITE));
             let label_ink = if enabled {
                 ink.legible_on(page, 4.5)

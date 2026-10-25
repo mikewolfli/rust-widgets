@@ -31,6 +31,14 @@ struct EventEnvelope {
 pub struct EventSender {
     inner: Sender<EventEnvelope>,
     next_sequence: crate::compat::Arc<core::sync::atomic::AtomicU64>,
+    /// Whether a wake-up is already in flight for the events posted since the consumer last
+    /// drained the queue (W-P06).
+    ///
+    /// Both the queue and every sender clone share the flag. A post flips it and wakes only on the
+    /// false-to-true transition; the consumer clears it before draining. A burst of N posts
+    /// therefore costs one wake-up instead of N, while a post that lands after the consumer has
+    /// cleared the flag still produces a fresh wake-up, so no event is stranded.
+    wake_pending: crate::compat::Arc<core::sync::atomic::AtomicBool>,
 }
 impl EventSender {
     /// Post event for a target object id.
@@ -55,7 +63,11 @@ impl EventSender {
                 )
             });
         // A backend loop may be blocked between frames; a new event is a reason to run one.
-        crate::platform::frame_wait::wake();
+        // Only the transition from "no wake in flight" to "wake in flight" calls the waker; the
+        // consumer clears the flag at the top of its drain (see `EventQueue::clear_wake_pending`).
+        if !self.wake_pending.swap(true, core::sync::atomic::Ordering::SeqCst) {
+            crate::platform::frame_wait::wake();
+        }
         result
     }
     /// Post idle-priority event.
@@ -86,6 +98,7 @@ impl EventQueue {
             sender: EventSender {
                 inner: tx,
                 next_sequence: crate::compat::Arc::new(core::sync::atomic::AtomicU64::new(0)),
+                wake_pending: crate::compat::Arc::new(core::sync::atomic::AtomicBool::new(false)),
             },
             receiver: rx,
             buckets: RefCell::new([VecDeque::new(), VecDeque::new(), VecDeque::new()]),
@@ -94,6 +107,16 @@ impl EventQueue {
     /// Returns a cloneable sender handle for posting events.
     pub fn sender(&self) -> EventSender {
         self.sender.clone()
+    }
+
+    /// Clears the "wake already sent" flag before the consumer drains (W-P06).
+    ///
+    /// This must run **before** taking events out of the queue: a post that lands after the clear
+    /// sees `false`, sends a fresh wake-up, and is therefore not stranded behind a consumer that
+    /// has already gone back to sleep. Callers are the threaded loop (at the top of each turn) and
+    /// the `mini` pump (before selecting the next event).
+    pub fn clear_wake_pending(&self) {
+        self.sender.wake_pending.store(false, core::sync::atomic::Ordering::SeqCst);
     }
 
     /// Moves everything currently queued into the priority buckets, preserving arrival order.
@@ -249,6 +272,33 @@ mod tests {
     fn test_event_queue_new_is_empty() {
         let q = EventQueue::new();
         assert!(q.dequeue().is_none());
+    }
+
+    /// W-P06: a burst of posts shares one in-flight wake-up; the consumer's clear re-arms it.
+    #[test]
+    fn the_wake_flag_dedups_a_burst_and_rearms_after_the_consumer_clears_it() {
+        let queue = EventQueue::new();
+        let sender = queue.sender();
+        assert!(!queue.sender.wake_pending.load(core::sync::atomic::Ordering::SeqCst));
+
+        sender.post(7, Event::Paint).expect("post");
+        assert!(
+            queue.sender.wake_pending.load(core::sync::atomic::Ordering::SeqCst),
+            "the first post arms the wake"
+        );
+        // A second post in the same burst must not issue another wake-up.
+        sender.post(7, Event::Paint).expect("post");
+        assert!(
+            queue.sender.wake_pending.load(core::sync::atomic::Ordering::SeqCst),
+            "the flag stays set while a wake is in flight"
+        );
+
+        queue.clear_wake_pending();
+        assert!(!queue.sender.wake_pending.load(core::sync::atomic::Ordering::SeqCst));
+
+        // The next post after the clear is a fresh wake, not a swallowed one.
+        sender.post(7, Event::Paint).expect("post");
+        assert!(queue.sender.wake_pending.load(core::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

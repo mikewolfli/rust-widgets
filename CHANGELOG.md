@@ -5,6 +5,53 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.9.2 (2026-10-26) — full-scan hardening: render/text caches, platform facts, widget contracts
+
+Full-scan round over `docs/issues/issue-20261025.md`. The work is grouped the way the scan is: render pipeline, platform facts, widget contracts, companions, docs.
+
+### Render pipeline and text
+
+- Conic gradients record `stops` as a shared `Arc<[(f32, Color)]>`, and one content-addressed 256-entry ramp cache now serves both the command path and `fill_rect_gradient`; the duplicate `conic_stop_color` sampler is gone.
+- `DrawPath`/`ClipPath` hold `Arc<[Point]>`, so bucket recording and per-region replay no longer deep-copy point vectors.
+- Region bucketing reuses pooled command groups and emits through `dispatch_owned`; the damage merge is a single forward absorption pass.
+- Layer cache hit/overflow paths no longer memmove the table (swap-to-newest on hit, ring overwrite on overflow); layer capture, isolated-layer clear and box blur use reusable surface scratch buffers.
+- Batched `DrawImageSubrect` replay caches cropped subrects by source identity, and every bounded cache in the pipeline (`SHAPED_RUNS`, `CLUSTER_ADVANCES`, `BIDI_LEVELS`, `BAKED_IMAGES`, cropped images) now evicts FIFO instead of clearing.
+- Rounded-rect fills split each row into corner bands and a solid middle band; axis-aligned wide lines fill by row/column; circle coverage tests squared distance before taking a square root; the mode blend computes the separable channels once.
+- Shaping keys hold `Arc<str>` and hand back `Rc<ShapedGlyphRun>`; shaped bidi levels are cached with the run; the glyph atlas is now on the `draw_text` path for square and non-square cells (equal-bytes contract covered by tests).
+- `glyph_rects` is a lazy iterator, text outline/colour scratch buffers are reused, and per-line `max_cell` is maintained incrementally.
+
+### GPU, performance, memory
+
+- Adapter selection has one ladder: the pin is honoured through `enumerate_adapters`, an unavailable pin reports the pin value instead of silently substituting, and the landed tier is published (`backend_tier`/`is_degraded_backend`).
+- `GpuManager` keeps one state lock per frame; frame statistics are maintained incrementally; the texture atlas and upload batcher use ordered indexes instead of repeated linear scans.
+- The wgpu backend's readback is bounded by a timeout instead of blocking forever, 2D rectangle runs draw as instances, backdrop blur avoids the double upload/readback, and blur/circle/gradient rasterisation uses sliding windows and row arithmetic.
+- Memory pools reset on release only (with a debug witness), the stack allocator initialises lazily, and `render_dirty_regions_into` gives the frame path a reusable region buffer.
+
+### Runtime, layout, style, theme, view
+
+- `dirty_rects_into`, a hash-indexed damage queue, cached top-level-window resolution, pooled subtree snapshots, pooled overlay buffers and event-gated IME synchronisation remove the per-frame runtime costs; dead child ids are reclaimed on unmount.
+- Grid keeps a cell-position index and a cached track allocation with independent row/column spacing; flex/border/wrap solve from borrowed slices; constraint ranking is Kahn; form rows support a natural-height policy.
+- CSS declarations and rules are indexed and evicted one entry at a time; `border-radius` accepts the 1–4 value shorthand into `CornerRadii`; the known-property table and the apply arms are now one list, and the trace orders rules exactly as `apply_to` does.
+- Theme gains `PaddingToken` and `IconTokens`/`IconSlot`, semantic-border resolution is cached per kind/state with revision validation, and cache eviction is least-recently-used.
+- The view engine returns `Reused` before cloning, carries the new path on `Insert`/`Replace` patches, maintains both identity maps in one walk, and keyed containers hand back retained children while their revision is unchanged.
+
+### Widgets
+
+- Input family: in-place splices replace whole-string clones; hit tests and caret placement share one measurement ruler; type-ahead has one case-folding helper and one timeout; `combo_box` gained a real editor and visible completions; `masked_edit`, `text_edit`, `text_area`, `rich_edit` and `tag_input` gained caret blinking, undo merging, scrollbars and read-only guards; `range_slider`, `number_picker`, `otp_input`, `multi_select_combo_box` publish their missing properties; `tag_input` wraps its chips and shows suggestions.
+- Display family: per-frame fonts, labels and tick tables are cached; `image_view` gained rotation, flip, zoom and pan; `rating` half steps and hover previews; `clock` distinguishes local and UTC; `color_history` uses one grid derivation.
+- Containers: scroll area/tab widget/splitter/mdi area/toolbox/dock widget cache their geometry and chrome; carousel pages are clickable and orientable; group box collapses; dock widgets transfer across areas; safe areas forward child events.
+- Data views and charts: DataGrid caches column prefixes and projections; virtual tables reuse per-row windows; multi-select, type-ahead, scroll-to APIs, per-column widths, sort indicators and disclosure glyphs were added; charts gained hover tooltips, legends, titles and crosshairs.
+- Menus and dialogs: metrics and row geometry are cached; submenus open on hover and clip; file dialogs type, sort with direction, show column headers and scroll; message boxes wrap; input dialogs support password and multiline modes; progress dialogs support busy mode and keep text in step with the fill.
+- Special, editor and finance: markdown/kanban/diff/terminal operate on cached line indexes and precomputed rows; canvas stores logical coordinates with layer caching; map tiles render; signature strokes cache their smoothing; code editor edits in place with a word index and diagnostics navigation; finance ladders, depth charts and indicators update incrementally.
+- Companions: one `SuggestionPopup` (the two implementations were merged), plus `MenuPanel`, `SpeedDial`, `SwipeActions`, `DrawerSectionHeader`, `ValidationBubble`, `RecentValuesPopup`, `Chip`, `StepButtons`, `Scrollbar`, `FormatToolbar`, `StickyHeader`, `TagGroup`, `MenuPanel`, `LayerPanel`, `PlaylistPanel`, `ChartCrosshair`, `GridFindBar`, `ColumnChooser`, `ThumbnailCache`, `ModalHost`, `MediaTransportBar`, `MediaScrubber`, `WebFindBar`, `SubtitleBar`, `ValueSpinBox`, `PopupItemList` and the Cupertino navigation stack.
+
+### Contracts, platform and docs
+
+- The JSON marker route can be released as a group, focus markers reach the widget's own focus signals, `on_double_click` resolves through the published `double_clicked`, and gesture event names are documented as unpublished rather than invented.
+- `is_wired`/`unwired_events` answer the wiring question at runtime; shortcuts have scope stacks, actions have a command stack, and `app::assemble_event_loop` wires the loop, shortcuts and actions in one call.
+- Platform: canvas handle lookup is indexed, environment facts are cached behind one shared TTL helper with notification invalidation, the environment revision covers accent and reduce-transparency, derived revisions come from one helper, `fc-list` is cached, GTK reports clipboard generations, the five widget setters return `bool`, GUI mode is decided from the backend type, and the obsolete `clipboard_stubs` alias is gone.
+- Version 2.9.2; the cookbook's API reference and a new **Widgets in Detail** chapter document the widget families, their properties, events, methods and companion pairings.
+
 ## 2.9.1 (2026-10-25) — four-level submenus, opt-in session state, pager jump, chart value easing
 
 ### Cascading submenus

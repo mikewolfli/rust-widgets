@@ -255,6 +255,7 @@ mod tests {
     fn blit_rejects_degenerate_input_without_touching_coregraphics() {
         let empty: [u8; 0] = [];
         // Null context short-circuits before any CoreGraphics call.
+// SAFETY: the null context is rejected before CoreGraphics is touched; `empty` is a valid zero-length slice.
         assert!(!unsafe { blit_rgba(std::ptr::null_mut(), 4, 4, &empty) });
     }
 

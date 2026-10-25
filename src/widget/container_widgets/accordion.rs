@@ -35,7 +35,9 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Height of one section header, in logical pixels.
 const HEADER_HEIGHT: u32 = 30;
@@ -118,7 +120,19 @@ pub struct Accordion {
     /// receives the id has to call back into the control to learn *what* happened, and the answer
     /// it reads may already be the next toggle's.
     pub section_toggled: Signal1<(String, bool)>,
+    /// Cached row stack (C-P12).
+    ///
+    /// The stack is a closed function of the section list, each section's open fraction, the
+    /// body heights and the control's geometry, so recomputing it for `draw`, the press test
+    /// and `sync_body_widgets` was three allocations of the same answer per frame. The key is a
+    /// revision counter bumped by exactly those mutators.
+    row_cache: RowCache,
+    /// Bumped whenever anything the row stack depends on changes.
+    row_revision: Cell<u64>,
 }
+
+/// The cached row stack and the revision it was built under.
+type RowCache = RefCell<Option<(u64, Rc<Vec<(usize, Rect, bool)>>)>>;
 
 impl Accordion {
     /// Creates an accordion with no sections, in single-expand mode.
@@ -132,6 +146,8 @@ impl Accordion {
             animated: false,
             focused_header: None,
             section_toggled: Signal1::new(),
+            row_cache: RefCell::new(None),
+            row_revision: Cell::new(0),
         }
     }
 
@@ -382,10 +398,29 @@ impl Accordion {
 
     /// The rectangle each header occupies, in display order, with the body boxes interleaved.
     ///
-    /// Returned as one list so the press test and the painter agree on where a header is: a
-    /// header that responds somewhere other than where it is drawn is the classic
-    /// hit-test/geometry drift this crate keeps a rule about.
-    fn row_rects(&self) -> Vec<(usize, Rect, bool)> {
+    /// Returned as one shared list so the press test, the painter and the body placement agree
+    /// on where a header is — and so they share one derivation rather than each rebuilding it
+    /// (C-P12). The value is cached under [`Self::row_revision`]; every mutator that can move a
+    /// row calls [`Self::invalidate_rows`].
+    fn row_rects(&self) -> Rc<Vec<(usize, Rect, bool)>> {
+        let revision = self.row_revision.get();
+        if let Some((cached_revision, rows)) = self.row_cache.borrow().as_ref() {
+            if *cached_revision == revision {
+                return Rc::clone(rows);
+            }
+        }
+        let rows = Rc::new(self.derive_row_rects());
+        *self.row_cache.borrow_mut() = Some((revision, Rc::clone(&rows)));
+        rows
+    }
+
+    /// Marks the cached row stack stale.
+    fn invalidate_rows(&self) {
+        self.row_revision.set(self.row_revision.get().wrapping_add(1));
+    }
+
+    /// Recomputes the row stack from the current state.
+    fn derive_row_rects(&self) -> Vec<(usize, Rect, bool)> {
         let mut rows = Vec::with_capacity(self.sections.len() * 2);
         let mut y = self.geometry().y;
         let width = self.geometry().width;
@@ -522,8 +557,12 @@ impl Accordion {
     /// changes, and every one of those paths calls this. Repeating the platform writes on every
     /// frame would be work proportional to the section count per repaint for no new information.
     fn sync_body_widgets(&self) {
+        // The row stack is about to be consumed for placement; make sure it reflects the state
+        // that caused this call (C-P12). Matches on the revision are otherwise reused, so a
+        // frame that only repaints (`draw`) pays for no recomputation at all.
+        self.invalidate_rows();
         let mut bands: Vec<(usize, Rect)> = Vec::new();
-        for (index, row, is_header) in self.row_rects() {
+        for (index, row, is_header) in self.row_rects().iter().copied() {
             if !is_header {
                 bands.push((index, row));
             }
@@ -590,12 +629,19 @@ impl Widget for Accordion {
             .max(1) as f32;
         let step = delta_ms as f32 / duration_ms;
         let mut moving = false;
+        // C-P12: the old code cloned every section id into a `targets` Vec and then ran
+        // `retain` with a linear `find` over it, i.e. O(n²) work each frame. The target is
+        // already a field of the section, so the update and the "still moving" decision are
+        // one pass, and an entry that reached its target is collected for removal in that
+        // same pass.
+        let mut settled: Vec<String> = Vec::new();
         for section in &self.sections {
             let target = if section.expanded { 1.0 } else { 0.0 };
             let Some(progress) = self.open_progress.get_mut(&section.id) else {
                 continue;
             };
             if (*progress - target).abs() <= f32::EPSILON {
+                settled.push(section.id.clone());
                 continue;
             }
             if *progress < target {
@@ -605,19 +651,13 @@ impl Widget for Accordion {
             }
             if (*progress - target).abs() > f32::EPSILON {
                 moving = true;
+            } else {
+                settled.push(section.id.clone());
             }
         }
-        let targets: Vec<(String, f32)> = self
-            .sections
-            .iter()
-            .map(|section| (section.id.clone(), if section.expanded { 1.0 } else { 0.0 }))
-            .collect();
-        self.open_progress.retain(|id, progress| {
-            targets
-                .iter()
-                .find(|(target_id, _)| target_id == id)
-                .is_some_and(|(_, target)| (*progress - *target).abs() > f32::EPSILON)
-        });
+        for id in settled {
+            self.open_progress.remove(&id);
+        }
         if !moving {
             self.open_progress.clear();
         }
@@ -718,7 +758,7 @@ impl Draw for Accordion {
         let body_fill = ink.blend(&surface, 0.97);
         let divider = ink.blend(&surface, 0.8);
 
-        for (index, row, is_header) in self.row_rects() {
+        for (index, row, is_header) in self.row_rects().iter().copied() {
             if row.y >= rect.y.saturating_add(rect.height as i32) {
                 continue;
             }
@@ -854,9 +894,9 @@ impl EventHandler for Accordion {
         if let Event::MousePress { pos, button: 1, .. } = event {
             let hit = self
                 .row_rects()
-                .into_iter()
+                .iter()
                 .find(|(_, row, is_header)| *is_header && row.contains(*pos))
-                .map(|(index, _, _)| self.sections[index].id.clone());
+                .map(|(index, _, _)| self.sections[*index].id.clone());
             if let Some(id) = hit {
                 if let Some(index) = self.sections.iter().position(|section| section.id == id) {
                     self.focused_header = Some(index);

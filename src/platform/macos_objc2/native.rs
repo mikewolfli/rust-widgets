@@ -3,8 +3,8 @@
 
 //! Native AppKit FFI wrappers for the macOS objc2 backend (BLUE11 R1.5/R2.3 100%).
 //!
-//! This module is gated behind `#[cfg(target_os = "macos")]` and the
-//! `objc2-macos` feature flag.
+//! This module is gated behind `#[cfg(target_os = "macos")]` and the `macos`
+//! feature flag (`objc2-macos` is only an alias that enables `macos`).
 //!
 //! # The presentation path
 //!
@@ -169,20 +169,77 @@ pub(crate) fn system_fonts() -> Vec<crate::platform::types::SystemFont> {
 
 // ─── Environment facts (B28.06) ───
 
+/// How long a cached `NSWorkspace`/`NSLocale` fact may be reused.
+///
+/// `Platform::environment_generation` reads each of these facts on every style-environment poll
+/// (250 ms, `src/style/environment.rs`). One second is the same TTL the Windows backend uses for the
+/// same facts: it is far below the rate at which a user flips an accessibility switch, and it
+/// removes AppKit round trips from the frame cycle.
+const ENVIRONMENT_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The slot shape shared by every cached fact below.
+type EnvironmentFactCache<T> = std::sync::OnceLock<Mutex<Option<(std::time::Instant, T)>>>;
+
+/// Re-reads one AppKit environment fact at most once per [`ENVIRONMENT_TTL`].
+///
+/// # Cached facts and their invalidation trigger
+///
+/// | fact | slot | source |
+/// |---|---|---|
+/// | `high_contrast` | [`HIGH_CONTRAST_CACHE`] | `NSWorkspace.accessibilityDisplayShouldIncreaseContrast` |
+/// | `reduce_motion` | [`REDUCE_MOTION_CACHE`] | `NSWorkspace.accessibilityDisplayShouldReduceMotion` |
+/// | `system_locale` | [`SYSTEM_LOCALE_CACHE`] | `NSLocale.currentLocale`, then `LC_ALL`/`LANG` |
+///
+/// **Invalidation trigger: TTL expiry only.** The system-colour observer in [`super::environment`]
+/// refreshes the accent palette but does not clear these slots (the missing push source is tracked
+/// as issue P-201), so a changed switch becomes visible within one second and no later. The read
+/// runs with no lock held, so concurrent misses sample the host rather than queueing.
+fn cached_environment_fact<T: Copy>(
+    cache: &'static EnvironmentFactCache<T>,
+    read: impl FnOnce() -> T,
+) -> T {
+    // `get_or_init`, not `get`: an uninitialised `OnceLock` answers `None` forever, so `get` here
+    // would read the slot, find it absent, run the read and drop the value — a cache that never
+    // caches anything.
+    let slot = cache.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = slot.lock() {
+        if let Some((sampled_at, value)) = *guard {
+            if sampled_at.elapsed() < ENVIRONMENT_TTL {
+                return value;
+            }
+        }
+    }
+    let value = read();
+    if let Ok(mut guard) = slot.lock() {
+        *guard = Some((std::time::Instant::now(), value));
+    }
+    value
+}
+
+static HIGH_CONTRAST_CACHE: EnvironmentFactCache<bool> = std::sync::OnceLock::new();
+static REDUCE_MOTION_CACHE: EnvironmentFactCache<bool> = std::sync::OnceLock::new();
+static SYSTEM_LOCALE_CACHE: EnvironmentFactCache<Option<&'static str>> = std::sync::OnceLock::new();
+
 /// Whether the user asked for increased contrast.
 ///
 /// `NSWorkspace.accessibilityDisplayShouldIncreaseContrast` is the AppKit answer to the system
 /// "Increase contrast" setting. `NSWorkspace` is thread-safe as a shared singleton, so this does
-/// not require a main-thread marker.
+/// not require a main-thread marker. Cached for [`ENVIRONMENT_TTL`]; see
+/// [`cached_environment_fact`] for the invalidation trigger.
 pub(crate) fn high_contrast() -> bool {
-    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldIncreaseContrast()
+    cached_environment_fact(&HIGH_CONTRAST_CACHE, || {
+        NSWorkspace::sharedWorkspace().accessibilityDisplayShouldIncreaseContrast()
+    })
 }
 
 /// Whether the user asked for reduced motion.
 ///
-/// `NSWorkspace.accessibilityDisplayShouldReduceMotion`, the macOS "Reduce motion" setting.
+/// `NSWorkspace.accessibilityDisplayShouldReduceMotion`, the macOS "Reduce motion" setting. Cached
+/// for [`ENVIRONMENT_TTL`]; see [`cached_environment_fact`] for the invalidation trigger.
 pub(crate) fn reduce_motion() -> bool {
-    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+    cached_environment_fact(&REDUCE_MOTION_CACHE, || {
+        NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+    })
 }
 
 /// Whether the user asked for translucent materials to be reduced.
@@ -263,11 +320,18 @@ fn read_system_ui_face_bytes() -> Option<&'static [u8]> {
 /// The user's locale, from `NSLocale.currentLocale.localeIdentifier`.
 ///
 /// AppKit spells the identifier with an underscore (`en_US`); this normalizes it to the BCP-47
-/// hyphenated form every other backend reports, then interns it for the style layer.
+/// hyphenated form every other backend reports, then interns it for the style layer. The hyphen
+/// replacement is skipped entirely when the identifier has no territory (`en`), and the interned
+/// value is held in the one-second environment cache so the interner's lock is not taken on every
+/// style-environment poll. See [`cached_environment_fact`] for the invalidation trigger.
 pub(crate) fn system_locale() -> Option<&'static str> {
-    let identifier = NSLocale::currentLocale().localeIdentifier().to_string();
-    crate::platform::locale::intern(Some(identifier.replace('_', "-")))
-        .or_else(|| crate::platform::locale::intern(crate::platform::locale::from_environment()))
+    cached_environment_fact(&SYSTEM_LOCALE_CACHE, || {
+        let identifier = NSLocale::currentLocale().localeIdentifier().to_string();
+        let tag = if identifier.contains('_') { identifier.replace('_', "-") } else { identifier };
+        crate::platform::locale::intern(Some(tag)).or_else(|| {
+            crate::platform::locale::intern(crate::platform::locale::from_environment())
+        })
+    })
 }
 
 // ─── Displays and window geometry ───
@@ -588,6 +652,7 @@ fn logical_pixels(value: f64) -> u32 {
 /// unsafe surface to slip through.
 #[derive(Clone, Copy)]
 struct NativePtr(*mut std::ffi::c_void);
+// SAFETY: the pointer names an AppKit object owned by the main thread; `Send` only allows the pointer to move into a process-global map, and every native entry point re-checks the thread before messaging.
 unsafe impl Send for NativePtr {}
 
 /// Thread-local storage for native widget handles.
@@ -621,6 +686,7 @@ pub(crate) fn store_native_view(widget_id: u64, view: *mut std::ffi::c_void) {
         return;
     }
     remove_native_view(widget_id);
+    // SAFETY: `view` is the live NSView created for this widget; AppKit keeps it alive for the call.
     unsafe {
         let object = view as *mut AnyObject;
         let _: *mut AnyObject = msg_send![object, retain];
@@ -635,6 +701,7 @@ pub(crate) fn remove_native_view(widget_id: u64) {
     let removed =
         NATIVE_VIEWS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&widget_id);
     if let Some(ptr) = removed {
+        // SAFETY: `ptr` came from `NATIVE_VIEWS`, so it names a live AppKit object owned by this module.
         unsafe {
             let object = ptr.0 as *mut AnyObject;
             // Detach from the superview first. A parent view retains whatever was
@@ -660,6 +727,9 @@ pub(crate) fn remove_native_view(widget_id: u64) {
 /// detaching a plain view: `removeFromSuperview` on an `NSWindow` does nothing
 /// useful and never takes it off screen, so a logically destroyed window could
 /// stay visible.
+///
+/// # Safety
+/// `object` must be a live AppKit object on the main thread.
 unsafe fn object_is_window(object: *mut AnyObject) -> bool {
     let window_class = <NSWindow as objc2::ClassType>::class();
     let is_window: bool = msg_send![object, isKindOfClass: window_class];
@@ -718,6 +788,7 @@ pub(crate) fn destroy_native_handle(widget_id: u64) -> NativeDestroyOutcome {
         // there is nothing to tear down and the caller's bookkeeping stands.
         return NativeDestroyOutcome::NoNativeObject;
     };
+    // SAFETY: `ptr` is the live native object being torn down on the main thread.
     unsafe {
         let object = ptr.0 as *mut AnyObject;
         if object_is_window(object) {
@@ -752,6 +823,7 @@ fn drain_pending_native_releases() {
         &mut *PENDING_NATIVE_RELEASES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
     );
     for ptr in pending {
+        // SAFETY: `ptr` was queued after its last use; release runs once on the main thread.
         unsafe {
             let object = ptr.0 as *mut AnyObject;
             let _: () = msg_send![object, release];
@@ -1702,6 +1774,7 @@ pub(crate) fn create_ns_window(
     // lifetime, so the pointer stays valid. `msg_send!` is used rather than the typed
     // `setDelegate` because that one needs a `ProtocolObject<dyn NSWindowDelegate>`.
     let delegate_ptr = Retained::as_ptr(&canvas) as *mut AnyObject;
+    // SAFETY: `window` is a live NSWindow and `delegate_ptr` is a retained canvas for its lifetime.
     let _: () = unsafe { msg_send![&*window, setDelegate: delegate_ptr] };
     window.makeKeyAndOrderFront(None);
     window

@@ -579,6 +579,24 @@ pub struct DateEdit {
     pub calendar_opened: GenericSignal,
     /// Emitted after the embedded calendar is dismissed.
     pub calendar_closed: GenericSignal,
+    /// Emitted when an edit is committed: Enter on the focused field, or focus leaving it.
+    ///
+    /// The counterpart of [`crate::widget::advanced_widgets::DateTimeEdit::editing_finished`],
+    /// which already existed: without it a host could see `date_changed` (which also fires while
+    /// the user is browsing the popup) but had no way to tell "the user finished editing" from
+    /// "the value moved".
+    pub editing_finished: GenericSignal,
+    /// Whether the embedded calendar's geometry and accepted range must be pushed again (K-P02).
+    ///
+    /// Every pointer move and every key press inside the open popup used to call
+    /// `sync_calendar_page`, which re-set the calendar's geometry and bounds (each a repaint
+    /// request) for facts that had not changed. Only opening the popup, a range change, a
+    /// first-day change or a field move can change those facts, so they mark this flag and the
+    /// event paths just read it.
+    calendar_sync_dirty: bool,
+    /// The popup rectangle last pushed into the embedded calendar, so a field move is detected
+    /// without a dirty flag at every geometry write.
+    calendar_sync_rect: Rect,
 }
 impl DateEdit {
     /// Creates a date editor occupying `geometry`.
@@ -614,6 +632,9 @@ impl DateEdit {
             calendar_first_day: Weekday::Sun,
             calendar_opened: GenericSignal::new(),
             calendar_closed: GenericSignal::new(),
+            editing_finished: GenericSignal::new(),
+            calendar_sync_dirty: true,
+            calendar_sync_rect: Rect::new(0, 0, 0, 0),
         }
     }
     /// Returns the current date.
@@ -711,6 +732,8 @@ impl DateEdit {
             return;
         }
         self.minimum = date;
+        // The embedded calendar mirrors the range, so it has to be pushed again (K-P02).
+        self.calendar_sync_dirty = true;
         // Re-clamp the current value into the new range. Without this the widget could
         // hold a date below its own minimum, after which every `set_date` call silently
         // failed the range check — the value was stuck and the failure was invisible.
@@ -727,6 +750,7 @@ impl DateEdit {
             return;
         }
         self.maximum = date;
+        self.calendar_sync_dirty = true;
         self.clamp_to_range();
         self.base.request_redraw();
     }
@@ -742,6 +766,7 @@ impl DateEdit {
         }
         self.minimum = min;
         self.maximum = max;
+        self.calendar_sync_dirty = true;
         self.clamp_to_range();
         self.base.request_redraw();
     }
@@ -846,6 +871,7 @@ impl DateEdit {
     pub fn set_calendar(&mut self, mut calendar: Calendar) {
         calendar.set_first_day_of_week(self.calendar_first_day);
         self.calendar = calendar;
+        self.calendar_sync_dirty = true;
         if self.calendar_open {
             self.sync_calendar_open_state();
         }
@@ -864,6 +890,7 @@ impl DateEdit {
         }
         self.calendar_first_day = weekday;
         self.calendar.set_first_day_of_week(weekday);
+        self.calendar_sync_dirty = true;
         self.base.request_redraw();
     }
 
@@ -906,11 +933,19 @@ impl DateEdit {
             self.calendar.set_display_month(date);
             self.calendar.set_selected_date(date);
         }
+        // The push above covered everything the flag tracks.
+        self.calendar_sync_rect = popup;
+        self.calendar_sync_dirty = false;
     }
 
     /// Keeps the embedded calendar's geometry and range in step without moving its page.
     fn sync_calendar_page(&mut self) {
         let popup = calendar_popup_rect(self.geometry());
+        // Nothing that sync writes can have changed since the last push, so the event paths can
+        // call this on every pointer move and key press for free (K-P02).
+        if !self.calendar_sync_dirty && self.calendar_sync_rect == popup {
+            return;
+        }
         self.calendar.set_geometry(popup);
         if let Some(minimum) = date_to_naive(self.minimum) {
             self.calendar.set_minimum_date(minimum);
@@ -918,6 +953,8 @@ impl DateEdit {
         if let Some(maximum) = date_to_naive(self.maximum) {
             self.calendar.set_maximum_date(maximum);
         }
+        self.calendar_sync_rect = popup;
+        self.calendar_sync_dirty = false;
     }
 
     /// Takes the calendar's selected date as this field's value and dismisses the popup.
@@ -1415,6 +1452,9 @@ impl EventHandler for DateEdit {
             Event::KeyPress { key, modifiers } => match *key {
                 // Escape closes an open grid first, before any value navigation runs.
                 27 if self.calendar_open => self.set_calendar_open(false),
+                // Enter commits the edit. The open-popup path above commits a day selection and
+                // returns before reaching here, so this is the field-focused case.
+                13 => self.editing_finished.emit(),
                 // Undo and redo are the platform primary chord: Control+Z/Y on
                 // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
                 // different binding and stays unbound here.
@@ -1447,6 +1487,9 @@ impl EventHandler for DateEdit {
                 }
                 _ => { /* Other keys are not relevant */ }
             },
+            // Focus leaving the field ends the edit, the same rule `DateTimeEdit` uses. The
+            // base has already recorded the focus loss; this only announces the semantic fact.
+            Event::FocusLost => self.editing_finished.emit(),
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -1460,22 +1503,17 @@ impl Draw for DateEdit {
         // a light/dark switch changed nothing on screen: the field, its border and its
         // text were all hardcoded, which the rendering census reported as theme-blind.
         //
-        // The theme read is a separate manager lock, taken and released inside
-        // `resolved_theme_style`, so it is not held across the draw — the global
-        // manager's mutex is not re-entrant. `date_edit` classifies as `Input`, whose
-        // resolved style supplies `text_color` and `border_color` but no
-        // `background_color` (ThemeRole::Input resolves that to `None`), so the interior
-        // is derived below from the theme's own background rather than left unset.
+        // The style lookups are the cached, revision-validated forms: `resolved_theme_style_shared`
+        // is a refcount bump on a hit and `palette_shared` answers both colours this draw needs in
+        // one read, so neither takes the manager lock (K-P03/K-P17). `date_edit` classifies as
+        // `Input`, whose resolved style supplies `text_color` and `border_color` but no
+        // `background_color` (ThemeRole::Input resolves that to `None`), so the interior is derived
+        // below from the theme's own background rather than left unset.
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("date_edit");
-        // Read as its own lock acquisition and copied out as values, so the guard is
-        // dropped before anything else touches the theme.
-        let (window_fill, foreground) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (active.colors.background, active.colors.foreground),
-                None => (Color::rgb(240, 240, 240), Color::BLACK),
-            }
+        let (window_fill, foreground) = match crate::style::palette_shared() {
+            Some(colors) => (colors.background, colors.foreground),
+            None => (Color::rgb(240, 240, 240), Color::BLACK),
         };
 
         let ink = style
@@ -1606,8 +1644,9 @@ impl Draw for DateEdit {
                 context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
             }
             // One month-grid implementation: the embedded calendar paints the popup. Its
-            // geometry and accepted range are reasserted here because the field may have moved
-            // or been re-bounded since it was opened.
+            // geometry and accepted range are reasserted here only when one of them actually
+            // changed (K-P02) — the calendar's own page and selection are left alone so its
+            // navigation survives across frames.
             self.sync_calendar_page();
             self.calendar.draw(context);
             if clipped {
@@ -2549,5 +2588,20 @@ mod tests {
         let day = edit.section_zone(DateSection::Day);
         edit.handle_event(&Event::mouse_press(day.x + 2, day.y + 2, 1));
         assert_eq!(edit.current_section(), Some(DateSection::Day));
+    }
+
+    /// Enter and focus loss both announce the end of an edit (ADV-02).
+    #[test]
+    fn the_edit_finishes_on_enter_and_on_focus_loss() {
+        use std::sync::{Arc, Mutex};
+        let mut edit = DateEdit::new(Rect::new(0, 0, 160, 28));
+        let finished = Arc::new(Mutex::new(0u32));
+        let sink = Arc::clone(&finished);
+        edit.editing_finished.connect(move || *sink.lock().unwrap() += 1);
+
+        edit.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert_eq!(*finished.lock().unwrap(), 1);
+        edit.handle_event(&Event::FocusLost);
+        assert_eq!(*finished.lock().unwrap(), 2);
     }
 }

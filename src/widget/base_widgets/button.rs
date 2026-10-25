@@ -2425,9 +2425,9 @@ impl Draw for Button {
         #[cfg(full_widgets)]
         if self.menu_open {
             let panel = self.menu_rect();
-            let accent = crate::style::theme_manager()
-                .current_theme()
-                .map(|theme| theme.colors.accent)
+            let accent = crate::style::palette_shared()
+                .as_ref()
+                .map(|theme| theme.accent)
                 .unwrap_or_else(|| bg.contrast_color());
             draw_menu_panel(context, panel, &self.menu_items, &[], style, accent);
             // The keyboard highlight is the button's own chrome, so it is painted here rather

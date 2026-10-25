@@ -9,8 +9,12 @@ use crate::widget::capability::coercion::expect_f32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use super::theme_snapshot::ThemeSnapshot;
 
 /// Safe area insets for mobile devices.
 ///
@@ -39,6 +43,8 @@ pub struct SafeArea {
     margin_color: Color,
     /// Optional child placed inside the safe content rectangle.
     content_child: Option<crate::core::ObjectId>,
+    /// Optional shared registry, used to forward events to the content child (C-19).
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
 
 impl SafeArea {
@@ -53,15 +59,41 @@ impl SafeArea {
             insets: SafeAreaInsets::default(),
             margin_color: Color::WHITE,
             content_child: None,
+            registry: None,
         }
     }
+    /// Sets the shared widget registry used to forward events to the content child.
+    ///
+    /// Without it a content control mounted through [`Self::set_content`] is painted but
+    /// receives no events, so a registry-driven host saw a control it could not interact
+    /// with (C-19). The interface matches the rest of the container family
+    /// (`StackedWidget`, `ScrollArea`, `TabWidget`).
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+    /// Returns the shared widget registry, if set.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
+    }
     /// Replaces all four insets at once and requests a redraw.
+    ///
+    /// # Why this re-places the child (C-18)
+    ///
+    /// The insets *are* the content rectangle's offset. Publishing a new rectangle without
+    /// writing it to the mounted child left the child in the old safe rect — exactly the
+    /// overlap a safe area exists to prevent. [`Self::apply`] is idempotent, so a no-op
+    /// write costs nothing; a real change moves the child now rather than at the next
+    /// unrelated resize.
     ///
     /// Insets larger than the widget in a given axis are tolerated: the content
     /// rect saturates to zero extent rather than underflowing, and the margin
     /// bars may then paint outside the widget's own rectangle.
     pub fn set_insets(&mut self, insets: SafeAreaInsets) {
+        if self.insets == insets {
+            return;
+        }
         self.insets = insets;
+        self.apply();
         self.base.request_redraw();
     }
     /// Returns the current insets.
@@ -242,15 +274,15 @@ impl Draw for SafeArea {
         //
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
+        //
+        // The resolved style and the window fill used to be two independent manager
+        // visits; `ThemeSnapshot` folds them into one read for the frame (C-P01).
+        let theme = ThemeSnapshot::capture("safe_area");
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("safe_area");
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        let window_fill = theme.window_fill();
         let ink = style
             .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
         // A caller who set an explicit margin colour keeps it: `set_margin_color` is the
         // control's own override and wins over the theme, the same precedence
@@ -260,7 +292,7 @@ impl Draw for SafeArea {
             if self.margin_color == Color::WHITE {
                 style
                     .background_color
-                    .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+                    .or_else(|| theme.style.as_ref().and_then(|t| t.background_color))
                     .map(|resolved| {
                         if resolved == window_fill {
                             window_fill.blend(&ink, 0.08)
@@ -276,7 +308,7 @@ impl Draw for SafeArea {
         // the appearance entirely.
         let border_color = style
             .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.border_color))
             .unwrap_or_else(|| window_fill.blend(&ink, 0.25));
 
         // Fill margin areas (top/bottom/left/right bars)
@@ -321,6 +353,36 @@ impl Draw for SafeArea {
 impl EventHandler for SafeArea {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // Forward to the mounted content control (C-19). Pointer events only reach it when
+        // they land inside the safe rect; keyboard, focus and tick events go through
+        // unconditionally, because a focused control owns the keyboard wherever the pointer
+        // is — the same split `Carousel` and `CollapsiblePane` make.
+        //
+        // No coordinate translation is applied: [`SafeArea::apply`] writes the content rect
+        // into the child's own geometry, and this library's events are expressed in the same
+        // space as that geometry (the convention `StackedWidget` and `TabWidget` follow).
+        let Some(child) = self.content_child else {
+            return;
+        };
+        let Some(ref registry) = self.registry else {
+            return;
+        };
+        let content_rect = self.content_rect();
+        match event {
+            Event::MousePress { pos, .. }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseMove { pos }
+            | Event::MouseDoubleClick { pos, .. }
+            | Event::MouseEnter { pos }
+            | Event::MouseLeave { pos } => {
+                if content_rect.contains(*pos) {
+                    registry.borrow_mut().forward_event(child, event);
+                }
+            }
+            _ => {
+                registry.borrow_mut().forward_event(child, event);
+            }
+        }
     }
 }
 
@@ -447,5 +509,49 @@ mod tests {
 
     fn safe_area_insets() -> SafeAreaInsets {
         SafeAreaInsets { top: 20, bottom: 20, left: 10, right: 10 }
+    }
+
+    /// C-19: a registry-mounted content child receives the events aimed at it, and only those
+    /// that land inside the safe rectangle.
+    #[test]
+    fn the_content_child_receives_forwarded_events() {
+        use crate::widget::SimpleRegistry;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut area = SafeArea::new(Rect::new(0, 0, 200, 200));
+        area.set_insets(safe_area_insets());
+        let seen = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&seen);
+        let mut registry = SimpleRegistry::new();
+        registry.register(
+            0x5AFE,
+            |_ctx: &mut crate::render::RenderContext| {},
+            move |_event: &Event| {
+                sink.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        area.set_registry(Rc::new(RefCell::new(registry)));
+        area.set_content(Some(0x5AFE));
+
+        area.handle_event(&Event::MousePress { pos: Point::new(60, 60), button: 1, modifiers: 0 });
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "a press inside the safe rect reaches it");
+        area.handle_event(&Event::MousePress { pos: Point::new(1, 1), button: 1, modifiers: 0 });
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "a press in the margin is not the child's");
+    }
+
+    /// C-18: changing the insets re-places the mounted child, not only the published rect.
+    #[test]
+    fn changing_the_insets_keeps_the_content_rect_and_the_child_in_step() {
+        let mut area = SafeArea::new(Rect::new(0, 0, 200, 200));
+        area.set_content(Some(0x5AFE));
+        area.set_insets(SafeAreaInsets { top: 10, bottom: 0, left: 0, right: 0 });
+        assert_eq!(area.content_rect(), Rect::new(0, 10, 200, 190));
+        area.set_top_inset(50);
+        assert_eq!(area.content_rect(), Rect::new(0, 50, 200, 150));
+        // `apply` is the write the single-edge setter now performs; the rect it uses is the one
+        // just asserted, so the child cannot stay in the old band.
+        area.apply();
+        assert_eq!(area.content_rect().y, 50);
     }
 }

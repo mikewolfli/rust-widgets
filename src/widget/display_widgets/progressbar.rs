@@ -10,8 +10,8 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_i64, expect_orientation, expect_text_direction, orientation_to_str,
-    text_direction_to_str,
+    expect_bool, expect_i32_saturating, expect_orientation, expect_text_direction,
+    orientation_to_str, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -80,6 +80,25 @@ pub struct ProgressBar {
     /// `set_value`, the steppers, or keyboard/wheel input. Not emitted when the
     /// value is set to the value it already had.
     pub value_changed: Signal1<i32>,
+    /// The rendered label, reused while its inputs are unchanged.
+    label_cache: Option<LabelCache>,
+}
+
+/// The label text and the exact inputs that produced it.
+///
+/// The draw path used to rebuild the label through `write_text` on every frame — expanding the
+/// caller's template, formatting the percentage and allocating a fresh `String` — while the value
+/// and the range changed only when the host wrote them. Comparing these inputs is cheaper than
+/// re-rendering, and it is the same "key unchanged → reuse" shape `badge` and `arc` use.
+struct LabelCache {
+    minimum: i32,
+    maximum: i32,
+    value: i32,
+    format: String,
+    busy_text: String,
+    text_visible: bool,
+    indeterminate: bool,
+    text: String,
 }
 impl ProgressBar {
     /// Creates a progress bar with default range 0-100.
@@ -100,6 +119,7 @@ impl ProgressBar {
             // the unhurried feel an indeterminate indicator should have.
             sweep_phase: crate::style::PropertyDriver::at(0.0, crate::style::MotionSlot::Slow),
             value_changed: Signal1::new(),
+            label_cache: None,
         }
     }
     /// Returns minimum value.
@@ -484,6 +504,34 @@ impl ProgressBar {
         self.write_text(&mut out);
         out
     }
+
+    /// Rebuilds [`Self::label_cache`] only when one of the label's inputs changed.
+    fn ensure_label_text(&mut self) {
+        let fresh = self.label_cache.as_ref().is_some_and(|cache| {
+            cache.minimum == self.minimum
+                && cache.maximum == self.maximum
+                && cache.value == self.value
+                && cache.format == self.format
+                && cache.busy_text == self.busy_text
+                && cache.text_visible == self.text_visible
+                && cache.indeterminate == self.indeterminate
+        });
+        if fresh {
+            return;
+        }
+        let mut text = String::new();
+        self.write_text(&mut text);
+        self.label_cache = Some(LabelCache {
+            minimum: self.minimum,
+            maximum: self.maximum,
+            value: self.value,
+            format: self.format.clone(),
+            busy_text: self.busy_text.clone(),
+            text_visible: self.text_visible,
+            indeterminate: self.indeterminate,
+            text,
+        });
+    }
 }
 // Implement Widget trait
 impl Widget for ProgressBar {
@@ -567,15 +615,15 @@ impl WidgetProperties for ProgressBar {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "minimum" => {
-                self.set_minimum(expect_i64(value)? as i32);
+                self.set_minimum(expect_i32_saturating(value)?);
                 Ok(())
             }
             "maximum" => {
-                self.set_maximum(expect_i64(value)? as i32);
+                self.set_maximum(expect_i32_saturating(value)?);
                 Ok(())
             }
             "value" => {
-                self.set_value(expect_i64(value)? as i32);
+                self.set_value(expect_i32_saturating(value)?);
                 Ok(())
             }
             "text_visible" => {
@@ -647,6 +695,9 @@ impl EventHandler for ProgressBar {
 }
 impl Draw for ProgressBar {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Refresh the label before borrowing the resolved style: the cache rebuild mutates the
+        // control, and the style reference below must not overlap it.
+        self.ensure_label_text();
         // Draw base widget
         let rect = self.geometry();
         let progress = self.progress();
@@ -827,18 +878,18 @@ impl Draw for ProgressBar {
         } else {
             ink
         };
-        let mut text = String::new();
-        self.write_text(&mut text);
-        if !text.is_empty() {
-            // The value label takes the **effective font** — the resolved theme/caller font — so the
-            // theme body font and the user's text scale reach it (D09-STYLE-01).
-            context.draw_text_line_cow(
-                rect,
-                text.as_str(),
-                effective_font(style),
-                text_color,
-                HorizontalAlignment::Center,
-            );
+        if let Some(text) = self.label_cache.as_ref().map(|cache| cache.text.as_str()) {
+            if !text.is_empty() {
+                // The value label takes the **effective font** — the resolved theme/caller font — so the
+                // theme body font and the user's text scale reach it (D09-STYLE-01).
+                context.draw_text_line_cow(
+                    rect,
+                    text,
+                    effective_font(style),
+                    text_color,
+                    HorizontalAlignment::Center,
+                );
+            }
         }
     }
 }
@@ -1396,5 +1447,29 @@ mod tests {
             "Full mode records no damage, so the control repaints whole"
         );
         runtime::unregister(id);
+    }
+
+    /// The drawn label is rebuilt only when one of its inputs changes.
+    #[test]
+    fn the_label_is_cached_until_an_input_changes() {
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 200, 20));
+        pb.ensure_label_text();
+        let first = pb.label_cache.as_ref().expect("the label is cached").text.clone();
+        assert_eq!(first, "0%");
+
+        // A second frame with the same inputs reuses the same allocation.
+        let ptr = pb.label_cache.as_ref().unwrap().text.as_ptr();
+        pb.ensure_label_text();
+        assert_eq!(pb.label_cache.as_ref().unwrap().text.as_ptr(), ptr);
+
+        // A value change rebuilds it, and the text follows.
+        pb.set_value(40);
+        pb.ensure_label_text();
+        assert_eq!(pb.label_cache.as_ref().unwrap().text, "40%");
+
+        // A format change rebuilds it too.
+        pb.set_format("{} of 100");
+        pb.ensure_label_text();
+        assert_eq!(pb.label_cache.as_ref().unwrap().text, "40 of 100");
     }
 }

@@ -887,7 +887,7 @@ impl Popover {
         // Draw filled triangle using DrawPath
         let points = vec![tip, base_left, base_right];
         context.execute_command(RenderCommand::DrawPath {
-            points: points.clone(),
+            points: points.as_slice().into(),
             closed: true,
             color: fill,
             filled: true,
@@ -895,7 +895,7 @@ impl Popover {
         });
         // Draw triangle outline
         context.execute_command(RenderCommand::DrawPath {
-            points,
+            points: points.into(),
             closed: true,
             color: outline,
             filled: false,

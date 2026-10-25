@@ -34,7 +34,6 @@ use crate::widget::metrics::role_font;
 use crate::widget::numeric::ordered_clamp_u32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
-use core::fmt::Write as _;
 
 /// A colored band across part of the meter's range.
 ///
@@ -97,6 +96,36 @@ pub struct Meter {
     /// needle was still. The sweep fills this buffer instead, hands it to the render command by
     /// reference, and takes it back afterwards, so the capacity survives the frame.
     sweep_points: Vec<Point>,
+    /// The reading's face, keyed by the effective style font that produced it.
+    value_font_cache: Option<(Font, Font)>,
+    /// The fixed tick-label face, built once.
+    tick_font_cache: Option<Font>,
+    /// The tick-label text and measurements, keyed by the range, count and unit.
+    tick_label_cache: Option<TickLabelCache>,
+    /// The centre reading, reused while the value and unit are unchanged.
+    value_text_cache: Option<ValueTextCache>,
+}
+
+/// The tick labels and the `000` half-width the label radius is derived from.
+struct TickLabelCache {
+    minimum: u32,
+    maximum: u32,
+    tick_count: u32,
+    unit: String,
+    dpi_scale_bits: u32,
+    label_half: u32,
+    /// `(text, width, height)` per tick, in order.
+    labels: Vec<(String, u32, u32)>,
+}
+
+/// The reading at the gauge's foot and its measured bounds.
+struct ValueTextCache {
+    value: u32,
+    unit: String,
+    dpi_scale_bits: u32,
+    text: String,
+    width: u32,
+    height: u32,
 }
 
 impl Meter {
@@ -118,6 +147,10 @@ impl Meter {
             dragging: false,
             unit: String::new(),
             sweep_points: Vec::new(),
+            value_font_cache: None,
+            tick_font_cache: None,
+            tick_label_cache: None,
+            value_text_cache: None,
         }
     }
 
@@ -535,19 +568,16 @@ impl Meter {
                 center.y + (radius as f32 * angle.sin()).round() as i32,
             ));
         }
+        // The command shares an immutable snapshot of the vertices (G-02), while `points` stays the
+        // control's reusable buffer for the next arc.
         let command = RenderCommand::DrawPath {
-            points: core::mem::take(points),
+            points: points.as_slice().into(),
             closed: false,
             color,
             filled: false,
             width: 1,
         };
         context.execute_command_ref(&command);
-        // The command still owns the vector after the backend reads it, so it can go straight
-        // back into the control for the next arc (and the next frame).
-        if let RenderCommand::DrawPath { points: returned, .. } = command {
-            *points = returned;
-        }
     }
 
     /// Snaps `angle` onto the vertex grid that starts at `origin`.
@@ -733,6 +763,13 @@ impl Draw for Meter {
             return;
         }
 
+        // Prepare the faces and text caches before the resolved style is borrowed: the
+        // preparation mutates this control, and every borrow below is immutable.
+        let value_font = self.ensure_value_font();
+        let tick_label_font = self.ensure_tick_font();
+        self.ensure_tick_labels(context, &tick_label_font);
+        self.ensure_value_text(context, &value_font);
+
         // The arc's fitted radius and centre come from `gauge_geometry`, which
         // reserves the band the reading needs below the pivot. Keeping the fit in
         // one place also means a drag reads the geometry the gauge was drawn with.
@@ -763,9 +800,8 @@ impl Draw for Meter {
         // `tick_inner.saturating_sub(10)` rarely left a radius and was `.max(1)`, which let
         // the fit test below drop every label — `meter.svg` drew the arc and the needle with
         // no scale on them at all.
-        let tick_label_font = Font::simple("Sans", 9.0);
         let tick_outer = radius.saturating_sub(TICK_MARK_LENGTH).max(1);
-        let label_half = context.measure_text("000", &tick_label_font).width.max(1) / 2;
+        let label_half = self.tick_label_cache.as_ref().map(|cache| cache.label_half).unwrap_or(1);
         let label_radius =
             radius.saturating_sub(TICK_MARK_LENGTH).saturating_sub(label_half).max(1);
 
@@ -792,7 +828,11 @@ impl Draw for Meter {
         let theme = crate::style::resolved_theme_style_shared("meter");
         // Resolved before the sweep buffers are borrowed mutably: `role_font` reads `style`, and
         // the font is needed again after the arcs are drawn.
-        let value_font = role_font(style, 12.0);
+        let value_font = self
+            .value_font_cache
+            .as_ref()
+            .map(|(resolved, _)| resolved.clone())
+            .unwrap_or(value_font);
         // The accent the gauge's value arc is drawn in. It is **not** read from
         // `style.background_color`: this control classifies as `WidgetRole::Accent`, so that field
         // carries the accent the role assigned it — but a role's fill is also what a *container*
@@ -908,9 +948,6 @@ impl Draw for Meter {
         // it names.
         if self.tick_count >= 2 {
             let tick_step = arc_sweep_deg / (self.tick_count - 1) as f32;
-            // One buffer for every tick label. `format!` built a fresh `String` per tick per
-            // frame for a value that is two or three characters long.
-            let mut tick_text = String::new();
 
             for i in 0..self.tick_count {
                 let tick_angle_deg = arc_start_deg + tick_step * i as f32 + offset;
@@ -942,10 +979,15 @@ impl Draw for Meter {
                     // The tick's value is its position along the arc, so the label
                     // is derived from the same fraction the tick was placed at
                     // rather than from an independent step that could disagree.
-                    let fraction = i as f32 / (self.tick_count - 1) as f32;
-                    tick_text.clear();
-                    let _ = write!(tick_text, "{}{}", self.value_at_fraction(fraction), self.unit);
-                    let metrics = context.measure_text(&tick_text, &tick_label_font);
+                    // Both the text and its measurement come from the cache built at
+                    // the top of this draw, so a still gauge does no string work.
+                    let Some((tick_text, tick_width, tick_height)) = self
+                        .tick_label_cache
+                        .as_ref()
+                        .and_then(|cache| cache.labels.get(i as usize))
+                    else {
+                        continue;
+                    };
                     let lx = center.x + (label_radius as f32 * dir_x).round() as i32;
                     let ly = center.y + (label_radius as f32 * dir_y).round() as i32;
                     // Centred on the point the tick sits at: the glyph origin is the box's
@@ -959,16 +1001,16 @@ impl Draw for Meter {
                     // backend that clips nothing. The old code had no such test and its label
                     // radius collapsed to 1, so in practice the whole scale simply never
                     // appeared; this restores it while keeping every drawn label inside.
-                    let label_x = lx - metrics.width as i32 / 2;
-                    let label_y = ly - metrics.height as i32 / 2;
+                    let label_x = lx - *tick_width as i32 / 2;
+                    let label_y = ly - *tick_height as i32 / 2;
                     let fits = label_x >= rect.x
                         && label_y >= rect.y
-                        && label_x + metrics.width as i32 <= rect.x + rect.width as i32
-                        && label_y + metrics.height as i32 <= rect.y + rect.height as i32;
+                        && label_x + *tick_width as i32 <= rect.x + rect.width as i32
+                        && label_y + *tick_height as i32 <= rect.y + rect.height as i32;
                     if fits {
                         context.draw_text(
                             Point::new(label_x, label_y),
-                            &tick_text,
+                            tick_text,
                             &tick_label_font,
                             tick_color,
                             HorizontalAlignment::Left,
@@ -997,24 +1039,102 @@ impl Draw for Meter {
         // uses — lies wholly inside the control. A reading whose glyph box runs past the
         // bottom edge is precisely the defect a raster backend hides and an SVG one
         // shows, so "it fits" is answered against the rectangle rather than the arc.
-        // The same spelling `value_text()` produces, built into a reused buffer: the
-        // property getter keeps its own `format!` for the contract, but the paint path
-        // has no reason to allocate the reading every frame.
-        let mut text = String::new();
-        let _ = write!(text, "{}{}", self.value, self.unit);
-        let metrics = context.measure_text(&text, &value_font);
-        let reading_reserve = Meter::reading_band();
-        let band_top = rect.y + rect.height as i32 - reading_reserve;
-        let value_y = band_top + (reading_reserve - metrics.height as i32) / 2;
-        if value_y >= rect.y && value_y + metrics.height as i32 <= rect.y + rect.height as i32 {
-            context.draw_text(
-                Point::new(center.x - metrics.width as i32 / 2, value_y),
-                &text,
-                &value_font,
-                needle_color,
-                HorizontalAlignment::Left,
-            );
+        // The same spelling `value_text()` produces, reused from the cache prepared at
+        // the top of this draw: the property getter keeps its own `format!` for the
+        // contract, but the paint path must not allocate the reading every frame.
+        if let Some(cache) = self.value_text_cache.as_ref() {
+            let reading_reserve = Meter::reading_band();
+            let band_top = rect.y + rect.height as i32 - reading_reserve;
+            let value_y = band_top + (reading_reserve - cache.height as i32) / 2;
+            if value_y >= rect.y && value_y + cache.height as i32 <= rect.y + rect.height as i32 {
+                context.draw_text(
+                    Point::new(center.x - cache.width as i32 / 2, value_y),
+                    cache.text.as_str(),
+                    &value_font,
+                    needle_color,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
+    }
+}
+
+impl Meter {
+    /// The reading's face, re-derived only when the effective style font changes.
+    fn ensure_value_font(&mut self) -> Font {
+        let source = crate::widget::metrics::effective_font(self.style()).clone();
+        if let Some((resolved, key)) = self.value_font_cache.as_ref() {
+            if *key == source {
+                return resolved.clone();
+            }
+        }
+        let resolved = role_font(self.style(), 12.0);
+        self.value_font_cache = Some((resolved.clone(), source));
+        resolved
+    }
+
+    /// The fixed tick-label face, constructed once.
+    fn ensure_tick_font(&mut self) -> Font {
+        if self.tick_font_cache.is_none() {
+            self.tick_font_cache = Some(Font::simple("Sans", 9.0));
+        }
+        self.tick_font_cache.clone().unwrap_or_default()
+    }
+
+    /// Rebuilds the tick labels when the range, count, unit or device scale changed.
+    fn ensure_tick_labels(&mut self, context: &RenderContext, font: &Font) {
+        let dpi_scale_bits = context.dpi_scale().to_bits();
+        let fresh = self.tick_label_cache.as_ref().is_some_and(|cache| {
+            cache.minimum == self.min
+                && cache.maximum == self.max
+                && cache.tick_count == self.tick_count
+                && cache.unit == self.unit
+                && cache.dpi_scale_bits == dpi_scale_bits
+        });
+        if fresh {
+            return;
+        }
+        let label_half = context.measure_text("000", font).width.max(1) / 2;
+        let mut labels = Vec::with_capacity(self.tick_count as usize);
+        for i in 0..self.tick_count {
+            let fraction =
+                if self.tick_count > 1 { i as f32 / (self.tick_count - 1) as f32 } else { 0.0 };
+            let text = format!("{}{}", self.value_at_fraction(fraction), self.unit);
+            let metrics = context.measure_text(&text, font);
+            labels.push((text, metrics.width, metrics.height));
+        }
+        self.tick_label_cache = Some(TickLabelCache {
+            minimum: self.min,
+            maximum: self.max,
+            tick_count: self.tick_count,
+            unit: self.unit.clone(),
+            dpi_scale_bits,
+            label_half,
+            labels,
+        });
+    }
+
+    /// Rebuilds the foot reading when the value, unit or device scale changed.
+    fn ensure_value_text(&mut self, context: &RenderContext, font: &Font) {
+        let dpi_scale_bits = context.dpi_scale().to_bits();
+        let fresh = self.value_text_cache.as_ref().is_some_and(|cache| {
+            cache.value == self.value
+                && cache.unit == self.unit
+                && cache.dpi_scale_bits == dpi_scale_bits
+        });
+        if fresh {
+            return;
+        }
+        let text = format!("{}{}", self.value, self.unit);
+        let metrics = context.measure_text(&text, font);
+        self.value_text_cache = Some(ValueTextCache {
+            value: self.value,
+            unit: self.unit.clone(),
+            dpi_scale_bits,
+            text,
+            width: metrics.width,
+            height: metrics.height,
+        });
     }
 }
 
@@ -1022,7 +1142,7 @@ impl Draw for Meter {
 mod tests {
     use super::*;
     use crate::core::{Color, Rect, Size};
-    use crate::render::{PaintBackend, SoftwarePaintBackend};
+    use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
 
     #[test]
     fn meter_creation() {
@@ -1522,5 +1642,42 @@ mod tests {
             render(&mut meter, Size::new(200, 200))
         };
         assert_ne!(continuous, discrete, "discrete mode paints a different arc");
+    }
+
+    /// The tick labels, the reading and the faces are cached across frames.
+    #[test]
+    fn the_tick_labels_and_reading_are_cached() {
+        let mut meter = Meter::new(Rect::new(0, 0, 200, 200));
+        meter.set_tick_count(5);
+        meter.set_unit("°C");
+        let mut backend = SoftwarePaintBackend::new(Size::new(200, 200), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let context = RenderContext::new(&mut backend);
+        let tick_font = meter.ensure_tick_font();
+
+        meter.ensure_tick_labels(&context, &tick_font);
+        let cache = meter.tick_label_cache.as_ref().expect("labels are built");
+        assert_eq!(cache.labels.len(), 5);
+        assert_eq!(cache.labels[0].0, "0°C");
+        assert_eq!(cache.labels[4].0, "100°C");
+        let ptr = cache.labels.as_ptr();
+
+        // Same inputs: the buffer is reused.
+        meter.ensure_tick_labels(&context, &tick_font);
+        assert_eq!(meter.tick_label_cache.as_ref().unwrap().labels.as_ptr(), ptr);
+
+        // The unit changes: both text and measurements rebuild.
+        meter.set_unit("K");
+        meter.ensure_tick_labels(&context, &tick_font);
+        assert_eq!(meter.tick_label_cache.as_ref().unwrap().labels[0].0, "0K");
+
+        // The reading follows the value and is reused while it does not move.
+        let value_font = meter.ensure_value_font();
+        meter.set_value(42);
+        meter.ensure_value_text(&context, &value_font);
+        assert_eq!(meter.value_text_cache.as_ref().unwrap().text, "42K");
+        let ptr = meter.value_text_cache.as_ref().unwrap().text.as_ptr();
+        meter.ensure_value_text(&context, &value_font);
+        assert_eq!(meter.value_text_cache.as_ref().unwrap().text.as_ptr(), ptr);
     }
 }

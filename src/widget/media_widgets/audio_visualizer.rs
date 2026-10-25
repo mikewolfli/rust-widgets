@@ -91,8 +91,17 @@ pub struct AudioVisualizer {
     bar_count: usize,
     /// Spacing between bars in pixels.
     bar_spacing: f32,
-    /// Color of the bars.
-    bar_color: Color,
+    /// Color of the bars, when the caller has chosen one.
+    ///
+    /// `None` means "derive the per-bar gradient from the level", which is what the control
+    /// paints by default. An explicit colour paints every bar in that colour.
+    bar_color: Option<Color>,
+    /// Reused per-bar level buffer, so a draw does not allocate a vector every frame.
+    bar_buffer: Vec<f32>,
+    /// Whether the peak markers still owe frames (set by the tick that advanced them).
+    peak_moving: bool,
+    /// Whether the smoother still owes frames.
+    smoothing_moving: bool,
     /// Background color of the visualization area, when the caller has chosen one.
     ///
     /// `None` means "use the active theme's surface", which is what a visualizer drawn on a themed
@@ -182,7 +191,10 @@ impl AudioVisualizer {
             spectrum_cache: Cell::new(None),
             bar_count,
             bar_spacing: 2.0,
-            bar_color: Color::rgba(0, 150, 255, 255),
+            bar_color: None,
+            bar_buffer: Vec::new(),
+            peak_moving: false,
+            smoothing_moving: false,
             background_color: None,
             mirror: false,
             peak_hold: false,
@@ -212,6 +224,9 @@ impl AudioVisualizer {
         let skip = data.len().saturating_sub(SAMPLE_HISTORY_LIMIT);
         self.samples = data.into_iter().skip(skip).map(|v| v.clamp(-1.0, 1.0)).collect();
         self.spectrum_cache.set(None);
+        if !self.smoothed_levels.is_empty() {
+            self.smoothing_moving = true;
+        }
         self.base.request_redraw();
     }
 
@@ -231,6 +246,9 @@ impl AudioVisualizer {
             self.push_sample(sample);
         }
         self.spectrum_cache.set(None);
+        if !self.smoothed_levels.is_empty() {
+            self.smoothing_moving = true;
+        }
         self.base.request_redraw();
     }
 
@@ -249,6 +267,9 @@ impl AudioVisualizer {
     pub fn add_sample(&mut self, value: f32) {
         self.push_sample(value);
         self.spectrum_cache.set(None);
+        if !self.smoothed_levels.is_empty() {
+            self.smoothing_moving = true;
+        }
         self.base.request_redraw();
     }
 
@@ -268,8 +289,10 @@ impl AudioVisualizer {
         self.release_ms = release;
         if attack == 0.0 && release == 0.0 {
             self.smoothed_levels.clear();
+            self.smoothing_moving = false;
         } else {
             self.smoothed_levels.resize(self.bar_count, 0.0);
+            self.smoothing_moving = true;
         }
         self.base.request_redraw();
     }
@@ -404,6 +427,7 @@ impl AudioVisualizer {
         // next tick after any widening.
         self.peak_values.resize(self.bar_count, 0.0);
         self.peak_ages.resize(self.bar_count, 0);
+        self.bar_buffer.resize(self.bar_count, 0.0);
         if !self.smoothed_levels.is_empty() {
             self.smoothed_levels.resize(self.bar_count, 0.0);
         }
@@ -431,16 +455,19 @@ impl AudioVisualizer {
     }
 
     /// Sets the color of the bars.
+    ///
+    /// The paint path reads the stored colour as the bar fill; without that read the setter was
+    /// a dead interface that requested a repaint and changed nothing (MW-02).
     pub fn set_bar_color(&mut self, color: Color) {
-        if self.bar_color == color {
+        if self.bar_color == Some(color) {
             return;
         }
-        self.bar_color = color;
+        self.bar_color = Some(color);
         self.base.request_redraw();
     }
 
-    /// Returns the current bar color.
-    pub fn bar_color(&self) -> Color {
+    /// Returns the caller's bar colour, or `None` when the level gradient is painted.
+    pub fn bar_color(&self) -> Option<Color> {
         self.bar_color
     }
 
@@ -495,6 +522,7 @@ impl AudioVisualizer {
             return;
         }
         self.peak_hold = enabled;
+        self.peak_moving = enabled;
         self.base.request_redraw();
     }
 
@@ -836,6 +864,10 @@ impl Widget for AudioVisualizer {
         let peaked = self.advance_peak_hold(delta_ms as u64);
         let smoothed = self.advance_smoothing(delta_ms);
         let reported = self.advance_level_report(delta_ms);
+        // The "am I animating?" answer is read from these flags, not recomputed from the bar
+        // values: a query must not run the spectrum derivation (L-P05).
+        self.peak_moving = peaked;
+        self.smoothing_moving = smoothed;
         if peaked || smoothed {
             self.base.request_redraw();
         }
@@ -854,12 +886,7 @@ impl Widget for AudioVisualizer {
     /// [`Self::advance_peak_hold`]: a marker is in flight while peak-hold is on and it sits above the
     /// bar it tracks.
     fn is_animating(&self) -> bool {
-        (self.peak_hold
-            && (0..self.peak_values.len())
-                .any(|index| self.peak_values[index] > self.bar_value(index)))
-            || (0..self.smoothed_levels.len()).any(|index| {
-                (self.smoothed_levels[index] - self.bar_value(index)).abs() > f32::EPSILON
-            })
+        self.peak_moving || self.smoothing_moving
     }
 
     /// Reports this widget as the object that paints it.
@@ -989,10 +1016,17 @@ impl Draw for AudioVisualizer {
 
         // Prepare sample data: one shared derivation, so the marker and its bar cannot measure
         // different samples. Empty samples yield the synthetic sweep, which is what makes a
-        // data-less control still a usable preview.
-        let bars: Vec<f32> = (0..self.bar_count).map(|i| self.display_level(i)).collect();
+        // data-less control still a usable preview. The buffer is the control's own and is
+        // reused, so a playing visualizer allocates nothing per frame (L-P05).
+        self.bar_buffer.clear();
+        self.bar_buffer.reserve(self.bar_count);
+        for index in 0..self.bar_count {
+            let level = self.display_level(index);
+            self.bar_buffer.push(level);
+        }
+        let explicit_bar_color = self.bar_color;
 
-        for (i, &value) in bars.iter().enumerate() {
+        for (i, &value) in self.bar_buffer.iter().enumerate() {
             let value = value.min(1.0);
             let bar_height = (value * half_height).max(1.0);
             let x = rect.x as f32 + self.bar_spacing + i as f32 * (bar_width + self.bar_spacing);
@@ -1003,15 +1037,18 @@ impl Draw for AudioVisualizer {
                 (bar_height * 2.0) as u32,
             );
 
-            // Color gradient based on amplitude
+            // Color gradient based on amplitude. A caller's colour replaces the gradient for
+            // every bar, which is what makes `set_bar_color` visible (MW-02).
             let intensity = (value * 255.0) as u8;
-            let bar_color = if value > 0.7 {
-                Color::rgba(255, intensity, intensity, 255)
-            } else if value > 0.4 {
-                Color::rgba(intensity, 200, 255, 255)
-            } else {
-                Color::rgba(intensity / 2, intensity / 2, 200, 255)
-            };
+            let bar_color = explicit_bar_color.unwrap_or_else(|| {
+                if value > 0.7 {
+                    Color::rgba(255, intensity, intensity, 255)
+                } else if value > 0.4 {
+                    Color::rgba(intensity, 200, 255, 255)
+                } else {
+                    Color::rgba(intensity / 2, intensity / 2, 200, 255)
+                }
+            });
 
             if self.mirror {
                 // Draw only top half-bar and mirror it

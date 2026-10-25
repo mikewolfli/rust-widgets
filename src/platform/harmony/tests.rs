@@ -51,6 +51,7 @@ fn the_sdk_structs_keep_their_declared_layout() {
             let value = core::mem::MaybeUninit::<$ty>::zeroed();
             let base = value.as_ptr() as usize;
             #[allow(unused_unsafe)]
+// SAFETY: `value` is initialized and the field projection stays inside it; the result only computes an offset.
             let field = unsafe { &(*value.as_ptr()).$field } as *const _ as usize;
             field - base
         }};

@@ -9,6 +9,48 @@
 use super::*;
 
 impl CodeEditor {
+    /// The find bar's rectangle, or `None` when the bar is hidden.
+    pub(crate) fn find_bar_rect(&self) -> Option<Rect> {
+        if !self.find.visible {
+            return None;
+        }
+        let rect = self.geometry();
+        let top = rect.y + self.tab_strip_height();
+        Some(Rect::new(rect.x, top, rect.width, self.find_bar_height().max(0) as u32))
+    }
+
+    /// Every find-bar button with the rectangle it occupies.
+    ///
+    /// One definition for the painter and the pointer hit-test. The buttons are laid out
+    /// right-to-left from the bar's right edge: toggles and the close box on the query row,
+    /// the replace actions on the replacement row. That keeps them clear of the two text
+    /// fields, which own the left side of each row.
+    pub(crate) fn find_bar_buttons(&self) -> Vec<(FindBarAction, Rect)> {
+        let Some(bar) = self.find_bar_rect() else { return Vec::new() };
+        let size = MIN_TOUCH_TARGET as u32;
+        let gap = 2i32;
+        let right = bar.x + bar.width as i32 - 4;
+        let mut buttons = Vec::with_capacity(9);
+        let mut place = |action: FindBarAction, row: i32, slot: i32| {
+            let x = right - (slot + 1) * (size as i32 + gap) + gap;
+            buttons.push((action, Rect::new(x, bar.y + 3 + row * MIN_TOUCH_TARGET, size, size)));
+        };
+        place(FindBarAction::Close, 0, 0);
+        place(FindBarAction::ToggleReplace, 0, 1);
+        if !self.goto_mode {
+            place(FindBarAction::ToggleRegex, 0, 2);
+            place(FindBarAction::ToggleWholeWord, 0, 3);
+            place(FindBarAction::ToggleCase, 0, 4);
+        }
+        if self.find.replace_visible {
+            place(FindBarAction::ReplaceAll, 1, 0);
+            place(FindBarAction::Replace, 1, 1);
+            place(FindBarAction::Next, 1, 2);
+            place(FindBarAction::Previous, 1, 3);
+        }
+        buttons
+    }
+
     pub(super) fn draw_tab_strip(
         &mut self,
         context: &mut RenderContext,
@@ -220,8 +262,20 @@ impl CodeEditor {
         let summary_font = self.chrome_font();
         let summary_advance = context.backend().measure_text(&query_summary, summary_font).width;
         let query_x = rect.x + 8 + summary_advance as i32 + self.cell_width() as i32;
-        context.draw_text(
-            Point::new(query_x, top + 20),
+
+        // The action buttons. Their rectangles come from `find_bar_buttons`, which the
+        // pointer handler also reads, so a click can never land on a different button than
+        // the one painted under it. A toggle reports its state by staying lit.
+        let buttons = self.find_bar_buttons();
+        let row0_left = buttons
+            .iter()
+            .filter(|(_, button)| button.y < top + MIN_TOUCH_TARGET)
+            .map(|(_, button)| button.x)
+            .min()
+            .unwrap_or(rect.x + rect.width as i32 - 4);
+        let query_width = (row0_left - 4 - query_x).max(1) as u32;
+        context.draw_text_fitted_cow(
+            Rect::new(query_x, top + 4, query_width, MIN_TOUCH_TARGET as u32),
             if self.find.query.is_empty() {
                 if self.goto_mode {
                     "(line number)"
@@ -232,7 +286,7 @@ impl CodeEditor {
                 &self.find.query
             },
             self.chrome_font(),
-            chrome.ink,
+            if self.find.query.is_empty() { chrome.dim_ink } else { chrome.ink },
             HorizontalAlignment::Left,
         );
 
@@ -245,8 +299,15 @@ impl CodeEditor {
                 chrome.dim_ink,
                 HorizontalAlignment::Left,
             );
-            context.draw_text(
-                Point::new(query_x, row_two + 18),
+            let row1_left = buttons
+                .iter()
+                .filter(|(_, button)| button.y >= top + MIN_TOUCH_TARGET)
+                .map(|(_, button)| button.x)
+                .min()
+                .unwrap_or(rect.x + rect.width as i32 - 4);
+            let replace_width = (row1_left - 4 - query_x).max(1) as u32;
+            context.draw_text_fitted_cow(
+                Rect::new(query_x, row_two + 2, replace_width, MIN_TOUCH_TARGET as u32),
                 if self.find.replacement.is_empty() {
                     "(replacement)"
                 } else {
@@ -258,25 +319,38 @@ impl CodeEditor {
             );
         }
 
-        let close = Rect::new(
-            rect.x + rect.width as i32 - MIN_TOUCH_TARGET - 4,
-            top + 3,
-            MIN_TOUCH_TARGET as u32,
-            MIN_TOUCH_TARGET as u32,
-        );
-        // The close affordance is a dismissal, so it carries the theme's error colour
-        // rather than the literal red it used to: the same token means "this removes
-        // something" everywhere else in the library.
-        let close_color = crate::style::semantic_color(crate::style::SemanticColor::Error)
+        let button_font = self.chrome_font();
+        let error_color = crate::style::semantic_color(crate::style::SemanticColor::Error)
             .unwrap_or(chrome.accent);
-        context.draw_rect(close, close_color);
-        context.draw_text(
-            Point::new(close.x + 9, close.y + 19),
-            "x",
-            self.chrome_font(),
-            close_color,
-            HorizontalAlignment::Left,
-        );
+        for (action, button) in buttons {
+            let active = match action {
+                FindBarAction::ToggleCase => self.find.options.case_sensitive,
+                FindBarAction::ToggleWholeWord => self.find.options.whole_word,
+                FindBarAction::ToggleRegex => self.find.options.use_regex,
+                FindBarAction::ToggleReplace => self.find.replace_visible,
+                _ => false,
+            };
+            let color = if action == FindBarAction::Close {
+                error_color
+            } else if active {
+                chrome.accent
+            } else {
+                chrome.dim_ink
+            };
+            if active {
+                context.fill_rect(button, chrome.accent.with_alpha(36));
+            }
+            context.draw_rect(button, color);
+            let label = action.label();
+            let width = context.measure_text(label, button_font).width as i32;
+            context.draw_text(
+                Point::new(button.x + (button.width as i32 - width) / 2, button.y + 19),
+                label,
+                button_font,
+                color,
+                HorizontalAlignment::Left,
+            );
+        }
     }
 
     pub(super) fn draw_gutter(

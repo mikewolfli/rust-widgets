@@ -62,6 +62,9 @@ macro_rules! impl_properties_input {
         ];
 
         pub(crate) const SCROLL_BAR_PROPERTIES: &[PropertySchema] = &[
+            // D-14: the idle fade is configurable now; both values are read back by the control.
+            PropertySchema::new("idle_delay_ms", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("idle_opacity", PropertyValueKind::Float, true, true),
             PropertySchema::new("minimum", PropertyValueKind::Int, true, true),
             PropertySchema::new("maximum", PropertyValueKind::Int, true, true),
             PropertySchema::new("value", PropertyValueKind::Int, true, true),
@@ -327,6 +330,9 @@ macro_rules! impl_properties_input {
 
         pub(crate) const SPINNER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("active", PropertyValueKind::Bool, true, true),
+            // D-17: explicit track/arc colours, cleared by writing Null.
+            PropertySchema::new("track_color", PropertyValueKind::Color, true, true),
+            PropertySchema::new("arc_color", PropertyValueKind::Color, true, true),
             PropertySchema::new("thickness", PropertyValueKind::UInt, true, true),
             PropertySchema::new("speed", PropertyValueKind::Float, true, true),
             PropertySchema::new("size_ratio", PropertyValueKind::Float, true, true),
@@ -353,6 +359,9 @@ macro_rules! impl_properties_input {
 
         pub(crate) const DROPDOWN_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, false),
+            // Shown while nothing is selected (I-09): the control answers it, so the schema must
+            // declare it or the two tables disagree about which properties exist.
+            PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
@@ -422,6 +431,8 @@ macro_rules! impl_properties_input {
 
         pub(crate) const SWITCH_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("checked", PropertyValueKind::Bool, true, true),
+            // D-18: also published for `cupertino_switch`, which shares this schema.
+            PropertySchema::new("thumb_color", PropertyValueKind::Color, true, true),
             // Optional theme overrides: `null` keeps the role-derived colour.
             PropertySchema::new("on_track_color", PropertyValueKind::Color, true, true),
             PropertySchema::enumerated(
@@ -453,6 +464,8 @@ macro_rules! impl_properties_input {
         #[cfg(not(alloc_frugal))]
         pub(crate) const TAG_INPUT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("tags", PropertyValueKind::String, true, false),
+            // I-114: the chip strip can flow over several rows.
+            PropertySchema::new("multiline", PropertyValueKind::Bool, true, true),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -512,6 +525,8 @@ macro_rules! impl_properties_input {
         #[cfg(not(alloc_frugal))]
         pub(crate) const AUTO_COMPLETE_EDIT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
+            // I-04: the empty-state text the field paints.
+            PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             // The count describes the list; these describe the control. A consumer that could only read
             // the count could not tell whether the dropdown was open or which row was highlighted.
             PropertySchema::new("suggestion_count", PropertyValueKind::UInt, true, false),
@@ -549,6 +564,9 @@ macro_rules! impl_properties_input {
         #[cfg(not(alloc_frugal))]
         pub(crate) const MULTI_SELECT_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("selected_count", PropertyValueKind::UInt, true, false),
+            // I-104: the joined selection and the empty-state text are part of the contract now.
+            PropertySchema::new("selected_items", PropertyValueKind::String, true, false),
+            PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
             PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -560,6 +578,13 @@ macro_rules! impl_properties_input {
         #[cfg(not(alloc_frugal))]
         pub(crate) const RANGE_SLIDER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("min_value", PropertyValueKind::Float, true, true),
+            // I-107/I-108: the step, the minimum span and the tick/hint switches were part of the
+            // contract but not of the schema.
+            PropertySchema::new("step", PropertyValueKind::Float, true, true),
+            PropertySchema::new("min_range", PropertyValueKind::Float, true, true),
+            PropertySchema::new("tick_interval", PropertyValueKind::Float, true, true),
+            PropertySchema::new("tick_labels", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("value_hint_enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("max_value", PropertyValueKind::Float, true, true),
             PropertySchema::new("lower", PropertyValueKind::Float, true, true),
             PropertySchema::new("upper", PropertyValueKind::Float, true, true),
@@ -617,7 +642,12 @@ macro_rules! impl_properties_input {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-            PropertySchema::enumerated("mode", true, true, &["date", "time", "datetime", "countdown"]),
+            PropertySchema::enumerated(
+                "mode",
+                true,
+                true,
+                &["date", "time", "datetime", "countdown"],
+            ),
             PropertySchema::new("use_24_hour", PropertyValueKind::Bool, true, true),
             PropertySchema::new("minute_interval", PropertyValueKind::UInt, true, true),
         ];

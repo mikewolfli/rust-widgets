@@ -23,7 +23,11 @@ pub mod audio_visualizer;
 pub mod camera_preview;
 pub mod hero_animation;
 pub mod lottie_widget;
+pub mod media_scrubber;
+pub mod media_transport;
+pub mod pixels;
 pub mod rive_widget;
+pub mod subtitle_bar;
 pub mod video_player;
 
 pub use animated_image::{
@@ -36,7 +40,10 @@ pub use lottie_widget::{
     LottieDirection, LottieFontProvider, LottieImage, LottieImageLayer, LottieImageProvider,
     LottieTextLayer, LottieWidget,
 };
+pub use media_scrubber::{MediaScrubber, ScrubberThumbStyle};
+pub use media_transport::{MediaTargetKind, MediaTransportBar};
 pub use rive_widget::{RiveInput, RiveInputValue, RiveState, RiveWidget};
+pub use subtitle_bar::{SubtitleBar, SubtitlePosition};
 pub use video_player::{
     AudioTrack, SubtitleTrack, VideoFrame, VideoMetadata, VideoPipelineState, VideoPixelFormat,
     VideoPlayer,

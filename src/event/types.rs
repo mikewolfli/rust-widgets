@@ -575,6 +575,24 @@ impl Event {
     pub fn modifiers_typed(&self) -> crate::shortcut::Modifiers {
         crate::shortcut::Modifiers::from_event_bits(self.modifiers())
     }
+
+    /// Whether the `KeyPress` currently being delivered is a keyboard auto-repeat (W-204).
+    ///
+    /// # This is a fact about the stream, not about a detached value
+    ///
+    /// A platform repeats a held key by sending another `KeyPress` with no `KeyRelease` in
+    /// between. The event loop tracks the held keys and scopes the answer around the delivery of
+    /// that press, so every node on the capture/target/bubble route sees the same fact. Adding a
+    /// field to the `KeyPress` variant would have broken the 553 existing literal
+    /// constructions and exhaustive patterns across the crate; the accessor keeps code that does
+    /// not care about repeats byte-for-byte unchanged.
+    ///
+    /// Returns `false` for every other event kind and outside a dispatch (asking a detached
+    /// event is meaningless: two copies of the same press can reach different handlers with
+    /// different repeat state). Consumers that need the old behaviour simply ignore this.
+    pub fn is_key_repeat(&self) -> bool {
+        matches!(self, Self::KeyPress { .. }) && crate::event::key_repeat::is_dispatch_repeat()
+    }
     /// Creates a mouse release event.
     pub fn mouse_release(x: i32, y: i32, button: u32) -> Self {
         Self::MouseRelease { pos: Point::new(x, y), button }

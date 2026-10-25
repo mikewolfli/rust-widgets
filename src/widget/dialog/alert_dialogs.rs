@@ -37,6 +37,11 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 /// The padding inside the card, in logical pixels.
 const CARD_PADDING: u32 = 16;
@@ -212,7 +217,7 @@ fn button_rects(context: &RenderContext, rect: Rect, labels: &[&str], font: &Fon
 /// The shared splitter moves such a word down whole and splits it only when it is alone on a
 /// line, so adopting it would re-flow every dialog body (and change the dialog snapshots). Until
 /// `wrap_to_width` takes a policy for that choice, this loop is the deliberate local answer.
-fn wrap_words(text: &str, columns: usize) -> Vec<String> {
+pub(crate) fn wrap_words(text: &str, columns: usize) -> Vec<String> {
     if columns == 0 {
         return Vec::new();
     }
@@ -255,6 +260,37 @@ fn wrap_words(text: &str, columns: usize) -> Vec<String> {
     lines
 }
 
+/// The line-wrapping results one card has already derived.
+///
+/// A card paints three text blocks on every frame, and each block used to re-run the word
+/// splitter and allocate a fresh line list. The result is a pure function of (text, columns),
+/// so it is cached per card and reused until the text changes (G-P15).
+#[derive(Default)]
+struct WrapCache {
+    entries: RefCell<HashMap<(u64, usize), Rc<Vec<String>>>>,
+}
+
+impl WrapCache {
+    /// The wrapped lines of `text` at `columns`, from the cache when possible.
+    fn lines(&self, text: &str, columns: usize) -> Rc<Vec<String>> {
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        let key = (hasher.finish(), columns);
+        if let Some(lines) = self.entries.borrow().get(&key) {
+            return Rc::clone(lines);
+        }
+        let lines = Rc::new(wrap_words(text, columns));
+        let mut entries = self.entries.borrow_mut();
+        // A card owns a handful of blocks; a replacing message should not grow the map without
+        // bound, so the stale entries are dropped when a new text arrives.
+        if entries.len() >= 16 {
+            entries.clear();
+        }
+        entries.insert(key, Rc::clone(&lines));
+        lines
+    }
+}
+
 /// Everything a card paints, grouped so adding a row cannot silently leave one dialog behind.
 struct CardContent<'a> {
     role: &'a str,
@@ -278,6 +314,10 @@ struct CardContent<'a> {
     modal: bool,
     /// How far the card has revealed, `0.0` hidden and `1.0` settled.
     reveal: f32,
+    /// The wrapped-line cache shared by the card's text blocks.
+    wrap_cache: &'a WrapCache,
+    /// The action Enter activates, marked with an emphasis ring (DLG-04).
+    default_button: Option<usize>,
 }
 
 /// The typography and stopping rule for one block of wrapped text.
@@ -296,12 +336,13 @@ fn paint_block(
     y: &mut i32,
     text: &str,
     style: &BlockStyle<'_>,
+    cache: &WrapCache,
 ) {
     if text.is_empty() {
         return;
     }
     let content_width = rect.width.saturating_sub(2 * CARD_PADDING);
-    for line in wrap_words(text, style.columns) {
+    for line in cache.lines(text, style.columns).iter() {
         if *y + style.line_height > style.stop_y {
             break;
         }
@@ -311,7 +352,7 @@ fn paint_block(
             content_width,
             style.line_height as u32,
         );
-        ctx.draw_text_line(band, &line, style.font, style.ink, HorizontalAlignment::Left);
+        ctx.draw_text_line(band, line, style.font, style.ink, HorizontalAlignment::Left);
         *y += style.line_height;
     }
 }
@@ -422,6 +463,7 @@ fn paint_card(
             line_height,
             stop_y,
         },
+        card.wrap_cache,
     );
     // The informative line is a step stronger than the body: it qualifies the message rather
     // than repeating it, and the distinction is what a two-level alert is for.
@@ -437,6 +479,7 @@ fn paint_card(
             line_height,
             stop_y,
         },
+        card.wrap_cache,
     );
     paint_block(
         ctx,
@@ -450,6 +493,7 @@ fn paint_card(
             line_height,
             stop_y,
         },
+        card.wrap_cache,
     );
 
     let rects = button_rects(ctx, rect, card.buttons, &palette.font);
@@ -524,6 +568,11 @@ fn paint_card(
         );
         if card.focused == Some(index) {
             ctx.draw_rounded_rect_stroke(*rect, 4, palette.accent, 2);
+        } else if card.default_button == Some(index) {
+            // The default action carries the accent even when the keyboard focus ring is
+            // elsewhere, which is what makes "Enter will do this" visible before it is used
+            // (DLG-04). A hovered button already uses the accent fill, so the ring is skipped.
+            ctx.draw_rounded_rect_stroke(*rect, 4, palette.accent, 2);
         }
     }
     (rect, rects, check_box_rect)
@@ -561,6 +610,8 @@ struct CardState {
     reveal: PropertyDriver,
     /// The base visibility sampled on the last tick.
     new_visible: bool,
+    /// Wrapped-line results, reused while the card's text is unchanged (G-P15).
+    wrap_cache: WrapCache,
 }
 
 impl CardState {
@@ -579,6 +630,7 @@ impl CardState {
             // show/hide moves, not what the first frame fades in from.
             reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
             new_visible: true,
+            wrap_cache: WrapCache::default(),
         }
     }
 
@@ -1010,6 +1062,8 @@ impl Draw for AlertDialog {
                 .then_some((self.card.check_box_text.as_str(), self.card.check_box_checked)),
             modal: self.card.modal,
             reveal: self.card.reveal(),
+            wrap_cache: &self.card.wrap_cache,
+            default_button: Some(self.card.default_button),
         };
         let _ = paint_card(ctx, &self.base, &content);
     }
@@ -1491,6 +1545,8 @@ impl Draw for ConfirmDialog {
                 .then_some((self.card.check_box_text.as_str(), self.card.check_box_checked)),
             modal: self.card.modal,
             reveal: self.card.reveal(),
+            wrap_cache: &self.card.wrap_cache,
+            default_button: Some(self.card.default_button),
         };
         let _ = paint_card(ctx, &self.base, &content);
     }
@@ -1953,6 +2009,8 @@ impl Draw for AboutDialog {
                 .then_some((self.card.check_box_text.as_str(), self.card.check_box_checked)),
             modal: self.card.modal,
             reveal: self.card.reveal(),
+            wrap_cache: &self.card.wrap_cache,
+            default_button: Some(self.card.default_button),
         };
         let _ = paint_card(ctx, &self.base, &content);
     }

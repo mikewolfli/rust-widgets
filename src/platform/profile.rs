@@ -43,9 +43,9 @@ use crate::render_engine::RenderEngine;
 /// This is the `mini`/`embedded` distinction reduced to the only two facts that
 /// actually differ, so the 1500 scattered feature tests cannot come back.
 ///
-/// Named `ProfileClass` rather than `DeviceClass` because
-/// [`crate::core::DeviceClass`] already names *form factors* (Desktop/Tablet/
-/// Mobile/Projector) — a different question, and two same-named types would be a
+/// Named `ProfileClass` rather than `PlatformFamily` because
+/// [`crate::core::PlatformFamily`] already names *form factors* (Desktop/Tablet/
+/// Mobile/Embedded/Projector) — a different question, and two same-named types would be a
 /// trap (principle #49).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProfileClass {
@@ -129,8 +129,12 @@ pub const fn profile_class() -> ProfileClass {
         ProfileClass::Minimal
     } else if cfg!(any(feature = "desktop", feature = "tablet", feature = "mobile")) {
         ProfileClass::Device
+    } else if cfg!(feature = "profile-embedded-mini") {
+        // The internal `embedded-mini` selector: a surface build on the mini budget.
+        // It classifies as `Surface`, the same as `embedded`.
+        ProfileClass::Surface
     } else {
-        // `embedded`, `profile-embedded-mini`, or no device feature at all.
+        // `embedded`, or no device feature at all.
         ProfileClass::Surface
     }
 }
@@ -141,6 +145,10 @@ pub const fn engine_class() -> EngineClass {
         EngineClass::SelfHosted(ProfileClass::Minimal)
     } else if cfg!(any(feature = "desktop", feature = "tablet", feature = "mobile")) {
         EngineClass::OsHosted(ProfileClass::Device)
+    } else if cfg!(feature = "profile-embedded-mini") {
+        // The internal `embedded-mini` selector is consumed here too, so the feature
+        // has both a reader and an effect rather than existing as a comment-only promise.
+        EngineClass::SelfHosted(ProfileClass::Surface)
     } else {
         // `embedded` renders through the library-owned loop; it has a surface
         // but no OS-hosted window.
@@ -445,11 +453,13 @@ pub fn system_theme() -> Option<bool> {
     }
 }
 
-/// A revision of the platform's environment facts (appearance, contrast, motion, locale).
+/// A revision of the platform's environment facts (appearance, contrast, motion, locale, accent
+/// colour and reduced transparency).
 ///
 /// `0` means this profile cannot report changes — `mini` has no platform singleton, and a backend
 /// that has not bound a change source answers zero. The style layer uses the revision to avoid
-/// re-reading every fact on every frame; see [`crate::style::environment`] (G-08).
+/// re-reading every fact on every frame; see [`crate::style::environment`] (G-08). The fact set is
+/// the one the style snapshot consumes, so a change in any of those six facts is observable (P-03).
 pub fn environment_generation() -> u64 {
     #[cfg(feature = "mini")]
     {

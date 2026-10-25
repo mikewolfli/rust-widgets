@@ -41,6 +41,7 @@
 //! (`"emojipicker"`), from a CSS selector (`EmojiPicker`), and through the typed
 //! `create_emoji_picker` on `ControlBackend`.
 
+use crate::compat::{Cell, HashMap, RefCell};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
@@ -134,6 +135,17 @@ const FOOTER_HEIGHT: u32 = 20;
 /// shortcut and becomes another search.
 const MAX_RECENT: usize = 20;
 
+/// Measured cell glyph extents for one device scale.
+///
+/// The grid measured every visible cell's text on every frame. A cell is a fixed size and the
+/// glyph table changes only through `set_glyphs`, so the width and height of one glyph's text are
+/// stable facts about `(glyph, scale)`.
+struct GlyphMetricsCache {
+    dpi_scale_bits: u32,
+    /// `(glyph index, width, height)`, in first-seen order.
+    entries: Vec<(usize, u32, u32)>,
+}
+
 /// EmojiPicker — a searchable grid of caller-supplied glyphs.
 pub struct EmojiPicker {
     base: BaseWidget,
@@ -148,6 +160,18 @@ pub struct EmojiPicker {
     search: String,
     /// Recently chosen glyph ids, most recent first.
     recent: Vec<String>,
+    /// How many recent ids the control remembers.
+    recent_capacity: usize,
+    /// `id -> index` into [`Self::glyphs`], rebuilt when the table changes.
+    ///
+    /// The recent projection and `set_glyphs`' own pruning used to scan the whole table per id,
+    /// and the projection runs again on the pointer path.
+    glyph_index: HashMap<String, usize>,
+    /// The visible count and whether it needs recomputing.
+    visible_dirty: Cell<bool>,
+    visible_count_cache: Cell<usize>,
+    /// Measured cell-text extents, keyed by glyph index and device scale.
+    glyph_metrics: RefCell<GlyphMetricsCache>,
     /// The grid index the keyboard cursor is on, if any.
     cursor: Option<usize>,
     /// The grid index the pointer is over, if any.
@@ -197,6 +221,14 @@ impl EmojiPicker {
             active_tab: 0,
             search: String::new(),
             recent: Vec::new(),
+            recent_capacity: MAX_RECENT,
+            glyph_index: HashMap::new(),
+            visible_dirty: Cell::new(true),
+            visible_count_cache: Cell::new(0),
+            glyph_metrics: RefCell::new(GlyphMetricsCache {
+                dpi_scale_bits: 0,
+                entries: Vec::new(),
+            }),
             cursor: None,
             hovered: None,
             visible_indices: Vec::new(),
@@ -217,12 +249,18 @@ impl EmojiPicker {
     /// glyph was added. Use [`Self::set_categories`] for the tabs.
     pub fn set_glyphs(&mut self, glyphs: Vec<EmojiGlyph>) {
         self.glyphs = glyphs;
-        // A glyph that no longer exists cannot stay in the recent list, or choosing
-        // it would emit an id nothing can resolve.
-        let known: Vec<&str> = self.glyphs.iter().map(|glyph| glyph.id.as_str()).collect();
-        self.recent.retain(|id| known.contains(&id.as_str()));
+        // Rebuild the id lookup once instead of scanning the table per recent id, and drop
+        // recents whose id no longer exists.
+        self.glyph_index.clear();
+        for (index, glyph) in self.glyphs.iter().enumerate() {
+            self.glyph_index.entry(glyph.id.clone()).or_insert(index);
+        }
+        let lookup = &self.glyph_index;
+        self.recent.retain(|id| lookup.contains_key(id));
         self.cursor = None;
         self.hovered = None;
+        self.invalidate_visible();
+        self.glyph_metrics.borrow_mut().entries.clear();
         self.base.request_redraw();
     }
 
@@ -236,6 +274,7 @@ impl EmojiPicker {
         self.categories = categories;
         self.active_tab = 0;
         self.hovered = None;
+        self.invalidate_visible();
         self.base.request_redraw();
     }
 
@@ -309,6 +348,7 @@ impl EmojiPicker {
         self.search.clear();
         self.cursor = None;
         self.hovered = None;
+        self.invalidate_visible();
         self.base.request_redraw();
     }
 
@@ -325,6 +365,29 @@ impl EmojiPicker {
         self.search = search.to_string();
         self.cursor = None;
         self.hovered = None;
+        self.invalidate_visible();
+        self.base.request_redraw();
+    }
+
+    /// The number of recently chosen ids the control remembers.
+    pub fn recent_capacity(&self) -> usize {
+        self.recent_capacity
+    }
+
+    /// Sets the recent capacity, trimming the list to the newest entries.
+    pub fn set_recent_capacity(&mut self, capacity: usize) {
+        if self.recent_capacity == capacity {
+            return;
+        }
+        self.recent_capacity = capacity;
+        if self.recent.len() > capacity {
+            self.recent.truncate(capacity);
+            // A trimmed recent list can hide the tab entirely.
+            if self.recent.is_empty() {
+                self.active_tab = 0;
+            }
+            self.invalidate_visible();
+        }
         self.base.request_redraw();
     }
 
@@ -338,6 +401,7 @@ impl EmojiPicker {
         self.recent.clear();
         self.active_tab = 0;
         self.hovered = None;
+        self.invalidate_visible();
         self.base.request_redraw();
     }
 
@@ -360,7 +424,8 @@ impl EmojiPicker {
             return self
                 .recent
                 .iter()
-                .filter_map(|id| self.glyphs.iter().find(|glyph| &glyph.id == id))
+                .filter_map(|id| self.glyph_index.get(id))
+                .filter_map(|index| self.glyphs.get(*index))
                 .collect();
         }
         self.glyphs.iter().filter(|glyph| self.glyph_is_visible(glyph)).collect()
@@ -408,18 +473,34 @@ impl EmojiPicker {
             return self
                 .recent
                 .iter()
-                .filter_map(|id| self.glyphs.iter().find(|glyph| &glyph.id == id))
+                .filter_map(|id| self.glyph_index.get(id))
+                .filter_map(|index| self.glyphs.get(*index))
                 .nth(index);
         }
         self.glyphs.iter().filter(|glyph| self.glyph_is_visible(glyph)).nth(index)
     }
 
+    /// Marks the cached visible count stale; the next `visible_len` recomputes it once.
+    fn invalidate_visible(&self) {
+        self.visible_dirty.set(true);
+    }
+
     /// The number of glyphs the grid currently shows, without materialising the projection.
     ///
-    /// The count is the only thing the hit-test and cursor paths need, and it uses the same
-    /// predicate as [`Self::visible_glyphs`], so the two cannot disagree.
+    /// The count is the only thing the hit-test and cursor paths need on every pointer move,
+    /// and it used to be an O(glyphs) scan each time. It is recomputed once per filter change
+    /// and cached in a `Cell`, because those paths hold `&self`.
     fn visible_len(&self) -> usize {
-        self.glyphs.iter().filter(|glyph| self.glyph_is_visible(glyph)).count()
+        if self.visible_dirty.get() {
+            let count = if self.recent_tab_active() {
+                self.recent.iter().filter(|id| self.glyph_index.contains_key(*id)).count()
+            } else {
+                self.glyphs.iter().filter(|glyph| self.glyph_is_visible(glyph)).count()
+            };
+            self.visible_count_cache.set(count);
+            self.visible_dirty.set(false);
+        }
+        self.visible_count_cache.get()
     }
 
     /// Refills [`Self::visible_indices`] and returns how many entries it holds.
@@ -431,8 +512,8 @@ impl EmojiPicker {
         indices.clear();
         if self.recent_tab_active() {
             for id in &self.recent {
-                if let Some(index) = self.glyphs.iter().position(|glyph| &glyph.id == id) {
-                    indices.push(index);
+                if let Some(index) = self.glyph_index.get(id) {
+                    indices.push(*index);
                 }
             }
         } else {
@@ -461,7 +542,8 @@ impl EmojiPicker {
         // front rather than duplicating it.
         self.recent.retain(|id| id != glyph_id);
         self.recent.insert(0, glyph_id.to_string());
-        self.recent.truncate(MAX_RECENT);
+        self.recent.truncate(self.recent_capacity);
+        self.invalidate_visible();
         self.glyph_chosen.emit(glyph_id.to_string());
         self.base.request_redraw();
         Some(glyph_id.to_string())
@@ -702,6 +784,7 @@ impl WidgetProperties for EmojiPicker {
             "active_tab" => Ok(CapabilityValue::UInt(self.active_tab() as u64)),
             "search" => Ok(CapabilityValue::String(self.search().to_string())),
             "recent_count" => Ok(CapabilityValue::UInt(self.recent().len() as u64)),
+            "recent_capacity" => Ok(CapabilityValue::UInt(self.recent_capacity() as u64)),
             _ => base_property_get(self, name),
         }
     }
@@ -722,6 +805,10 @@ impl WidgetProperties for EmojiPicker {
             "glyph_count" | "visible_glyph_count" | "tab_count" | "recent_count" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
+            "recent_capacity" => {
+                self.set_recent_capacity(expect_usize(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -735,6 +822,7 @@ impl WidgetProperties for EmojiPicker {
             "active_tab",
             "search",
             "recent_count",
+            "recent_capacity",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1030,6 +1118,20 @@ impl EmojiPicker {
             );
             return;
         }
+        // One accent read for the whole grid. It used to be taken inside the selected-cell
+        // branch, so a cursor moving across the grid re-locked the manager per frame.
+        let accent = crate::style::palette_shared()
+            .map(|colors| colors.primary)
+            .unwrap_or_else(|| ink.legible_on(Color::rgb(252, 252, 254), 3.0));
+        // One measurement per `(glyph, device scale)` rather than one per cell per frame.
+        let dpi_scale_bits = context.dpi_scale().to_bits();
+        {
+            let mut metrics = self.glyph_metrics.borrow_mut();
+            if metrics.dpi_scale_bits != dpi_scale_bits {
+                metrics.entries.clear();
+                metrics.dpi_scale_bits = dpi_scale_bits;
+            }
+        }
         for index in 0..visible_count {
             let Some(glyph) = self
                 .visible_indices
@@ -1053,20 +1155,38 @@ impl EmojiPicker {
             if selected {
                 // The cursor cell is a selection, so it reads the theme's primary token
                 // rather than a literal blue.
-                let accent = crate::style::theme_manager()
-                    .current_theme()
-                    .map(|active| active.colors.primary)
-                    .unwrap_or_else(|| ink.legible_on(Color::rgb(252, 252, 254), 3.0));
                 context.fill_rounded_rect(cell, 4, accent.with_alpha(48));
             }
-            let metrics = context.measure_text(&glyph.symbol, glyph_font);
+            let glyph_index = *self.visible_indices.get(index).unwrap_or(&usize::MAX);
+            let (glyph_width, glyph_height) = {
+                let cached = self
+                    .glyph_metrics
+                    .borrow()
+                    .entries
+                    .iter()
+                    .find(|(cached_index, _, _)| *cached_index == glyph_index)
+                    .map(|(_, width, height)| (*width, *height));
+                match cached {
+                    Some(extent) => extent,
+                    None => {
+                        let measured = context.measure_text(&glyph.symbol, glyph_font);
+                        let extent = (measured.width, measured.height);
+                        self.glyph_metrics.borrow_mut().entries.push((
+                            glyph_index,
+                            extent.0,
+                            extent.1,
+                        ));
+                        extent
+                    }
+                }
+            };
             context.draw_text(
                 Point::new(
-                    cell.x + (cell.width as i32 - metrics.width as i32) / 2,
+                    cell.x + (cell.width as i32 - glyph_width as i32) / 2,
                     // The origin is the glyph box's top edge, so centring is half the
                     // difference of the line boxes; the old `(cell + ascent)/2` form began
                     // the box a full ascent below the cell's middle.
-                    cell.y + (cell.height as i32 - metrics.height as i32) / 2,
+                    cell.y + (cell.height as i32 - glyph_height as i32) / 2,
                 ),
                 &glyph.symbol,
                 glyph_font,
@@ -1749,5 +1869,76 @@ mod tests {
     fn emoji_glyph_builders_accumulate_keywords() {
         let glyph = EmojiGlyph::new("a", "A", "c").keyword("one").keywords(&["two", "three"]);
         assert_eq!(glyph.keywords, vec!["one", "two", "three"]);
+    }
+
+    /// The recent capacity is a field with accessors, and trimming keeps the newest entries.
+    #[test]
+    fn the_recent_capacity_is_configurable() {
+        let mut p = picker();
+        p.set_glyphs(glyphs());
+        assert_eq!(p.recent_capacity(), MAX_RECENT);
+
+        p.set_recent_capacity(2);
+        for id in ["smile", "sad", "tick"] {
+            p.choose(id);
+        }
+        assert_eq!(p.recent().len(), 2, "the list is capped at the configured size");
+        assert_eq!(p.recent()[0], "tick", "the newest entry stays first");
+
+        // Shrinking an existing list trims it immediately.
+        p.set_recent_capacity(1);
+        assert_eq!(p.recent(), &["tick".to_string()]);
+        assert_eq!(p.get("recent_capacity").unwrap(), CapabilityValue::UInt(1));
+    }
+
+    /// The visible count is computed once per filter change, not on every pointer move.
+    #[test]
+    fn the_visible_count_is_cached_until_the_filter_changes() {
+        let mut p = picker();
+        p.set_glyphs(glyphs());
+        p.set_categories(vec!["faces".to_string(), "symbols".to_string()]);
+        let first = p.visible_len();
+        assert!(first > 0);
+        assert!(!p.visible_dirty.get(), "the first query fills the cache");
+        assert_eq!(p.visible_len(), first);
+        assert!(!p.visible_dirty.get(), "a second query does not recompute");
+
+        p.set_search("tick");
+        assert!(p.visible_dirty.get(), "a filter change invalidates the count");
+        assert_eq!(p.visible_len(), 1);
+    }
+
+    /// The glyph-id index is built once, so the recent projection is a lookup per id.
+    #[test]
+    fn the_glyph_index_is_rebuilt_with_the_table() {
+        let mut p = picker();
+        p.set_glyphs(glyphs());
+        assert_eq!(p.glyph_index.get("smile"), Some(&0));
+        assert_eq!(p.glyph_index.len(), glyphs().len());
+
+        // A replaced table drops the old ids.
+        p.set_glyphs(vec![EmojiGlyph::new("only", "o", "faces")]);
+        assert!(!p.glyph_index.contains_key("smile"));
+        assert_eq!(p.glyph_index.get("only"), Some(&0));
+    }
+
+    /// A cell's text is measured once per glyph and device scale.
+    #[test]
+    fn cell_metrics_are_cached_per_glyph() {
+        let mut p = picker();
+        p.set_glyphs(glyphs());
+        let mut backend = SoftwarePaintBackend::new(Size::new(240, 200), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut context = RenderContext::new(&mut backend);
+        p.draw(&mut context);
+        let first = p.glyph_metrics.borrow().entries.len();
+        assert!(first > 0, "the first paint measures the visible cells");
+        p.draw(&mut context);
+        assert_eq!(
+            p.glyph_metrics.borrow().entries.len(),
+            first,
+            "a second frame reuses the measurements"
+        );
+        backend.end_frame();
     }
 }

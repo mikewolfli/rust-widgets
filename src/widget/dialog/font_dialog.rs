@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Font dialog widget.
-use crate::compat::{format, String, Vec};
+use crate::compat::{format, Rc, RefCell, String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -66,6 +66,10 @@ pub struct FontDialog {
     strikethrough: bool,
     /// Digits typed into the active size column, before they are applied on Enter.
     size_entry: String,
+    /// The sample text painted in the preview well (DLG-12).
+    preview_text: String,
+    /// Cached OK/Cancel labels (G-P09).
+    label_cache: RefCell<Option<Rc<Vec<String>>>>,
     /// The OK button's rect from the last paint, so a press resolves to the button the user saw.
     ok_button: Rect,
     /// The Cancel button's rect from the last paint.
@@ -189,6 +193,8 @@ impl FontDialog {
             underline: false,
             strikethrough: false,
             size_entry: String::new(),
+            preview_text: String::from("AaBbYyZz 0123"),
+            label_cache: RefCell::new(None),
             ok_button: Rect::new(0, 0, 0, 0),
             cancel_button: Rect::new(0, 0, 0, 0),
             font_selected: Signal1::new(),
@@ -465,6 +471,43 @@ impl FontDialog {
         DialogLayout { rect, list_y, list_h, preview_h, col_w }
     }
 
+    /// The number of rows the column holds.
+    fn column_len(&self, column: usize) -> usize {
+        match column {
+            0 => self.families.len(),
+            1 => self.styles.len(),
+            _ => self.sizes.len(),
+        }
+    }
+
+    /// The preview sample text.
+    pub fn preview_text(&self) -> &str {
+        &self.preview_text
+    }
+
+    /// Replaces the preview sample and repaints (DLG-12).
+    pub fn set_preview_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.preview_text == text {
+            return;
+        }
+        self.preview_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The OK/Cancel labels, served from a cache (G-P09).
+    fn action_labels(&self) -> Rc<Vec<String>> {
+        if let Some(labels) = self.label_cache.borrow().as_ref() {
+            return Rc::clone(labels);
+        }
+        let labels = Rc::new(vec![
+            super::localized_label("dialog.ok", "OK"),
+            super::localized_label("dialog.cancel", "Cancel"),
+        ]);
+        *self.label_cache.borrow_mut() = Some(Rc::clone(&labels));
+        labels
+    }
+
     /// How many rows fit in a column.
     fn visible_rows(&self) -> usize {
         (self.layout().list_h as i32 / ROW_HEIGHT).max(1) as usize
@@ -641,6 +684,9 @@ impl Widget for FontDialog {
         &self.base
     }
     fn set_state_theme_hook(&mut self) {
+        // Labels resolve through the catalogue; a theme switch is the one hook available for
+        // dropping them so the next paint re-resolves with the new appearance's catalogue.
+        *self.label_cache.borrow_mut() = None;
         crate::style::reapply_active_theme_state(self);
     }
 
@@ -917,15 +963,18 @@ impl Draw for FontDialog {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let theme = crate::style::resolved_theme_style_shared("font_dialog");
-        // The window fill and the accent are read as their own lock acquisition and copied
-        // out as values, so the guard is dropped before anything else touches the theme —
-        // the global manager's mutex is not re-entrant.
-        let (window_fill, accent) = {
+        // One theme-manager read supplies the window fill, accent and fallback ink; the old
+        // path resolved a widget style and then took the manager lock again (G-P13).
+        let (window_fill, accent, theme_ink, theme_border) = {
             let manager = crate::style::theme_manager();
             match manager.current_theme() {
-                Some(active) => (active.colors.background, active.colors.primary),
-                None => (Color::WHITE, Color::rgb(0, 120, 215)),
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.primary,
+                    Some(active.colors.foreground),
+                    Some(active.colors.outline),
+                ),
+                None => (Color::WHITE, Color::rgb(0, 120, 215), None, None),
             }
         };
         let accent_ink = accent.contrast_color();
@@ -934,21 +983,12 @@ impl Draw for FontDialog {
         // fill, which would leave the frame invisible against the window. A resolved
         // surface equal to the window fill is therefore re-derived one step toward the
         // ink, the same distinction `Colors::input_background` draws for a field.
-        let ink = style
-            .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
-            .unwrap_or(Color::BLACK);
-        let surface = match style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-        {
+        let ink = style.text_color.or(theme_ink).unwrap_or(Color::BLACK);
+        let surface = match style.background_color {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.06),
         };
-        let border = style
-            .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .unwrap_or(Color::rgb(160, 160, 160));
+        let border = style.border_color.or(theme_border).unwrap_or(Color::rgb(160, 160, 160));
         // The three list columns and the preview are field interiors: one step *away* from
         // the dialog surface, so on a light theme darker and on a dark one lighter rather
         // than the forced white both used to be.
@@ -1092,6 +1132,20 @@ impl Draw for FontDialog {
                         HorizontalAlignment::Left,
                     );
                 }
+                // A scroll indicator on the column's trailing edge: its thumb is sized by
+                // visible/total and positioned by the scroll offset, so the user can see how
+                // much of the list is above or below (DLG-19).
+                let total = self.column_len(column);
+                if total > rows && col_w > 4 && list_h > 0 {
+                    let track = Rect::new(col_x + col_w as i32 - 3, list_y, 3, list_h);
+                    context.fill_rect(track, border.with_alpha_f32(0.35));
+                    let thumb_h = ((list_h as usize * rows) / total).max(8) as u32;
+                    let max_scroll = total.saturating_sub(rows);
+                    let travel = list_h.saturating_sub(thumb_h) as usize;
+                    let thumb_y =
+                        list_y + (travel * start).checked_div(max_scroll).unwrap_or(0) as i32;
+                    context.fill_rect(Rect::new(track.x, thumb_y, 3, thumb_h), accent);
+                }
                 context.pop_clip();
             }
         }
@@ -1109,7 +1163,7 @@ impl Draw for FontDialog {
             context.push_clip(well.x, well.y, well.width, well.height);
             context.draw_text_line_cow(
                 Rect::new(well.x + 6, well.y, well.width.saturating_sub(12), well.height),
-                "AaBbYyZz 0123",
+                &self.preview_text,
                 &self.current_font,
                 ink,
                 HorizontalAlignment::Left,
@@ -1137,10 +1191,7 @@ impl Draw for FontDialog {
         if self.no_buttons {
             return;
         }
-        let labels = vec![
-            super::localized_label("dialog.ok", "OK"),
-            super::localized_label("dialog.cancel", "Cancel"),
-        ];
+        let labels = self.action_labels();
         let row =
             super::message_box::action_row_geometry(context, font, &labels, button_band, true);
         let ok_rect = row.buttons[0];

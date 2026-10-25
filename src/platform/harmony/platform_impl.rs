@@ -205,7 +205,7 @@ impl Platform for HarmonyPlatform {
     /// OpenHarmony has no synchronous `NSLocale`-style API in this bridge; the POSIX variables
     /// are the only source available, and an unset environment answers `None`.
     fn system_locale(&self) -> Option<&'static str> {
-        crate::platform::locale::intern(crate::platform::locale::from_environment())
+        crate::platform::locale::interned_from_environment()
     }
 
     /// The displays the OpenHarmony display manager reports.

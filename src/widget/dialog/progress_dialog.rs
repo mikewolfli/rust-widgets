@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Progress dialog widget.
+use crate::compat::{Rc, RefCell};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -54,6 +55,17 @@ pub struct ProgressDialog {
     displayed: PropertyDriver,
     /// Whether the fill reads the theme's action colour instead of the success token.
     accent_fill: bool,
+    /// Whether the bar is in indeterminate (busy) mode; `set_value` is ignored while set.
+    busy: bool,
+    /// The busy slider's phase, advanced by [`Widget::tick`].
+    busy_phase: f32,
+    /// Cached action labels, keyed by the button caption (G-P09).
+    label_cache: RefCell<Option<(String, Rc<Vec<String>>)>>,
+    /// The Cancel button's rect from the last paint, with the frame it was derived from.
+    ///
+    /// The press path reads this instead of building a paint backend to re-measure the
+    /// caption, which is what `cancel_button_rect` used to do on every event (G-P16).
+    cancel_rect_cache: core::cell::Cell<Option<(Rect, Rect)>>,
     /// Signal emitted when the user cancels, either by pressing Escape while
     /// the dialog is enabled or by calling [`ProgressDialog::cancel`] directly.
     ///
@@ -99,6 +111,10 @@ impl ProgressDialog {
             animated: false,
             displayed: PropertyDriver::at(0.0, MotionSlot::Normal),
             accent_fill: false,
+            busy: false,
+            busy_phase: 0.0,
+            label_cache: RefCell::new(None),
+            cancel_rect_cache: core::cell::Cell::new(None),
             canceled: GenericSignal::new(),
             value_changed: Signal1::new(),
             label_changed: Signal1::new(),
@@ -325,6 +341,9 @@ impl ProgressDialog {
             return;
         }
         self.cancel_button_text = t;
+        // A wider caption changes the button's measured width, so the cached press box must
+        // not survive the caption change.
+        self.cancel_rect_cache.set(None);
         self.base.request_redraw();
     }
     /// Returns whether the dialog is modal (blocks interaction with the widgets
@@ -343,6 +362,25 @@ impl ProgressDialog {
         self.modal = modal;
         self.base.request_redraw();
     }
+    /// Whether the bar is in indeterminate (busy) mode.
+    pub fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    /// Switches the bar between determinate and indeterminate mode (DLG-15).
+    ///
+    /// While busy, the bar paints a back-and-forth slider instead of a fraction, and
+    /// [`Self::set_value`] is ignored; the stored value is kept so leaving busy mode shows
+    /// the previous determinate state rather than a reset.
+    pub fn set_busy(&mut self, busy: bool) {
+        if self.busy == busy {
+            return;
+        }
+        self.busy = busy;
+        self.busy_phase = 0.0;
+        self.base.request_redraw();
+    }
+
     /// Moves the progress value, clamped into `minimum() ..= maximum()`.
     ///
     /// Side effects: when `auto_close` is set and the clamped value reaches the
@@ -350,6 +388,11 @@ impl ProgressDialog {
     /// value is set before hiding, so [`ProgressDialog::value`] still reports
     /// the maximum afterwards. A redraw is requested in all cases.
     pub fn set_value(&mut self, value: i32) {
+        // A busy bar states that no value is known; accepting one would make the label
+        // and the slider disagree about which story the dialog is telling (DLG-15).
+        if self.busy {
+            return;
+        }
         let value = ordered_clamp_i32(value, self.minimum, self.maximum);
         if self.value == value {
             return;
@@ -452,12 +495,17 @@ impl Widget for ProgressDialog {
 
     /// Advances the bar's easing, returning whether another frame is owed.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        self.displayed.tick(delta_ms)
+        if self.busy {
+            // A busy slider moves on its own clock; it is the only thing that owes frames.
+            self.busy_phase = (self.busy_phase + delta_ms as f32 * 0.0012) % 1.0;
+            self.base.request_redraw();
+        }
+        self.displayed.tick(delta_ms) || self.busy
     }
 
     /// Whether the bar's fill is mid-transition.
     fn is_animating(&self) -> bool {
-        self.displayed.is_moving()
+        self.displayed.is_moving() || self.busy
     }
 
     /// Reports this widget as the object that paints it.
@@ -660,8 +708,16 @@ impl ProgressDialog {
     ///
     /// A progress dialog has one action, so the row is the caller's Cancel caption alone.
     /// `draw` and [`ProgressDialog::button_at`] both call this.
-    fn action_labels(&self) -> Vec<String> {
-        vec![self.cancel_button_text.clone()]
+    fn action_labels(&self) -> Rc<Vec<String>> {
+        if let Some((text, labels)) = self.label_cache.borrow().as_ref() {
+            if *text == self.cancel_button_text {
+                return Rc::clone(labels);
+            }
+        }
+        let labels = Rc::new(vec![self.cancel_button_text.clone()]);
+        *self.label_cache.borrow_mut() =
+            Some((self.cancel_button_text.clone(), Rc::clone(&labels)));
+        labels
     }
 
     /// The rect the single Cancel button occupies.
@@ -696,13 +752,21 @@ impl ProgressDialog {
         Rect::new(btn_x, button_band.y, btn_w, button_band.height.max(1))
     }
 
-    /// The button rect, rebuilt through the same context-free measurement the press path uses.
+    /// The button rect from the last paint, or a one-time measurement before the first frame.
     fn cancel_button_rect(&self) -> Rect {
+        let frame = self.frame_rect();
+        if let Some((cached_frame, cached)) = self.cancel_rect_cache.get() {
+            if cached_frame == frame {
+                return cached;
+            }
+        }
         let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
         let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
         let context = RenderContext::new(&mut backend);
         let labels = self.action_labels();
-        self.cancel_button_rect_for(self.frame_rect(), &context, &labels)
+        let rect = self.cancel_button_rect_for(frame, &context, &labels);
+        self.cancel_rect_cache.set(Some((frame, rect)));
+        rect
     }
 
     /// The index of the action button under `pos`, or `None`.
@@ -739,31 +803,27 @@ impl Draw for ProgressDialog {
         // The **effective font** — the resolved theme/caller font — for the title, label, the
         // percentage readout and the buttons (D09-STYLE-01).
         let font = effective_font(style);
-        let theme = crate::style::resolved_theme_style_shared("progress_dialog");
-        // `progress_dialog` is absent from `WidgetRole::for_kind_name`'s table, so it
-        // classifies as `Surface` and resolves to `theme.colors.background` — the window's
-        // own fill. A panel painted in that colour would be byte-identical to the frame
-        // behind it, so a resolved surface equal to the window fill is re-derived a visible
-        // step away from it, the same distinction `Colors::input_background` draws for a
-        // field.
-        let window_fill = {
+        // One theme-manager read supplies the window fill and the fallback ink/border; the
+        // previous path resolved a widget style and then took the manager lock again (G-P13).
+        let (window_fill, theme_ink, theme_border) = {
             let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    Some(active.colors.foreground),
+                    Some(active.colors.outline),
+                ),
+                None => (Color::WHITE, None, None),
+            }
         };
-        let ink = style
-            .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
-            .unwrap_or(Color::rgb(40, 40, 40));
-        let surface = match style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-        {
+        let ink = style.text_color.or(theme_ink).unwrap_or(Color::rgb(40, 40, 40));
+        let surface = match style.background_color {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.06),
         };
         let border = style
             .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .or(theme_border)
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.45));
         // The title bar, the progress track and the button are distinct bands on the panel,
@@ -879,25 +939,41 @@ impl Draw for ProgressDialog {
             // itself, so the static frame is unchanged.
             let fraction =
                 if self.animated { self.displayed.value() } else { self.progress_fraction() };
-            let fill_w = (bar_band.width as f32 * fraction) as i32;
-            if fill_w > 0 {
+            if self.busy {
+                // Indeterminate mode: a short slider travels back and forth across the track.
+                // Its position is a triangle wave of the phase the tick advances, so the
+                // motion is continuous and bounded by the bar itself (DLG-15).
+                let slider_w = (bar_band.width / 3).max(8);
+                let travel = bar_band.width.saturating_sub(slider_w) as f32;
+                let phase = self.busy_phase % 1.0;
+                let eased = if phase < 0.5 { phase * 2.0 } else { (1.0 - phase) * 2.0 };
+                let slider_x = bar_band.x + (travel * eased) as i32;
                 context.fill_rect(
-                    Rect::new(bar_band.x, bar_band.y, fill_w as u32, bar_band.height),
+                    Rect::new(slider_x, bar_band.y, slider_w, bar_band.height),
                     progress_fill,
                 );
+            } else {
+                let fill_w = (bar_band.width as f32 * fraction) as i32;
+                if fill_w > 0 {
+                    context.fill_rect(
+                        Rect::new(bar_band.x, bar_band.y, fill_w as u32, bar_band.height),
+                        progress_fill,
+                    );
+                }
+                // Percentage text. Centred on the bar itself through `draw_text_line`, which
+                // re-derives the line box from the band and bounds the fit to it — the old
+                // `bar_x + bar_w/2` origin made the caption occupy only its right half and, at
+                // 100%, run up to `bar_w/2 + 42` past the bar. The text reads the same fraction
+                // the fill does, so an eased bar and its number cannot disagree (DLG-16).
+                let pct = (fraction * 100.0) as i32;
+                context.draw_text_line_cow(
+                    bar_band,
+                    &format!("{pct}%"),
+                    font,
+                    if track.is_dark() { Color::WHITE } else { ink },
+                    HorizontalAlignment::Center,
+                );
             }
-            // Percentage text. Centred on the bar itself through `draw_text_line`, which
-            // re-derives the line box from the band and bounds the fit to it — the old
-            // `bar_x + bar_w/2` origin made the caption occupy only its right half and, at
-            // 100%, run up to `bar_w/2 + 42` past the bar.
-            let pct = (self.progress_fraction() * 100.0) as i32;
-            context.draw_text_line_cow(
-                bar_band,
-                &format!("{pct}%"),
-                font,
-                if track.is_dark() { Color::WHITE } else { ink },
-                HorizontalAlignment::Center,
-            );
         }
         // Cancel button: the frame's bottom band, and its width from the shared
         // [`action_row_geometry`] derivation — the same 80 px an OK button gets, so a progress
@@ -909,6 +985,8 @@ impl Draw for ProgressDialog {
         let labels = self.action_labels();
         if self.show_cancel_button {
             let btn_rect = self.cancel_button_rect_for(rect, context, &labels);
+            // Cache the painted box so the press path reads it rather than re-measuring (G-P16).
+            self.cancel_rect_cache.set(Some((rect, btn_rect)));
             context.fill_rect(btn_rect, button_fill);
             context.draw_rect(btn_rect, border);
             context.draw_text_line_cow(

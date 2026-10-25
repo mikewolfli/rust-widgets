@@ -538,34 +538,50 @@ where
     pub fn is_kind(&self, widget_id: ObjectId, kind: K) -> bool {
         self.kind_of(widget_id).map(|k| k == kind).unwrap_or(false)
     }
-    /// Set visibility for a widget.
-    pub fn set_visible(&self, widget_id: ObjectId, visible: bool) {
+    /// Set visibility for a widget, returning `false` when the id names none.
+    ///
+    /// The answer is what [`Platform::show_widget`](crate::platform::Platform::show_widget) and its
+    /// siblings return, so an unknown id is observable rather than a silent no-op (P-203).
+    pub fn set_visible(&self, widget_id: ObjectId, visible: bool) -> bool {
         if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.visible = visible;
+            return true;
         }
+        false
     }
     /// Return visibility for a widget.
     pub fn visible(&self, widget_id: ObjectId) -> bool {
         lock(&self.widgets).get(&widget_id).map(|widget| widget.visible).unwrap_or(false)
     }
-    /// Set enabled state for a widget.
-    pub fn set_enabled(&self, widget_id: ObjectId, enabled: bool) {
+    /// Set enabled state for a widget, returning `false` when the id names none.
+    pub fn set_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {
         if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.enabled = enabled;
+            return true;
         }
+        false
     }
     /// Return enabled state for a widget.
     pub fn enabled(&self, widget_id: ObjectId) -> bool {
         lock(&self.widgets).get(&widget_id).map(|widget| widget.enabled).unwrap_or(false)
     }
-    /// Set geometry for a widget.
-    pub fn set_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
+    /// Set geometry for a widget, returning `false` when the id names none.
+    pub fn set_geometry(
+        &self,
+        widget_id: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> bool {
         if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
             widget.x = x;
             widget.y = y;
             widget.width = width;
             widget.height = height;
+            return true;
         }
+        false
     }
     /// Set text for a widget.
     pub fn set_text(&self, widget_id: ObjectId, text: &str) -> bool {

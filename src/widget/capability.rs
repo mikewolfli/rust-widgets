@@ -391,6 +391,38 @@ mod property_lookup_tests {
             "an unknown name is refused, not mapped to an arbitrary schema"
         );
     }
+
+    /// `kind_canonical_name_into` derives snake_case in one pass and appends to the buffer.
+    ///
+    /// The derivation is the shared contract behind `factory_name_for_kind` and the alias-table
+    /// gate (which re-implements the same transform lexically), so the capital-run rule and the
+    /// append-not-truncate behaviour are pinned here (G-107).
+    #[test]
+    fn kind_canonical_name_is_snake_case_and_appends_in_place() {
+        let mut buffer = alloc::string::String::from("prefix:");
+        kind_canonical_name_into(crate::widget::WidgetKind::QRCode, &mut buffer);
+        assert_eq!(buffer, "prefix:qrcode", "a capital run stays one word");
+
+        kind_canonical_name_into(crate::widget::WidgetKind::ContextMenu, &mut buffer);
+        assert_eq!(
+            buffer, "prefix:qrcodecontext_menu",
+            "the next name is appended without clearing the buffer"
+        );
+
+        for (kind, expected) in [
+            (crate::widget::WidgetKind::Menu, "menu"),
+            (crate::widget::WidgetKind::ProgressBar, "progress_bar"),
+            (crate::widget::WidgetKind::ActivityIndicator, "activity_indicator"),
+            (crate::widget::WidgetKind::MaterialNavigationRail, "material_navigation_rail"),
+            (crate::widget::WidgetKind::CupertinoSegmentedControl, "cupertino_segmented_control"),
+            (crate::widget::WidgetKind::FAB, "fab"),
+            (crate::widget::WidgetKind::LCDNumber, "lcdnumber"),
+        ] {
+            let mut name = alloc::string::String::new();
+            kind_canonical_name_into(kind, &mut name);
+            assert_eq!(name, expected, "{kind:?} must derive {expected}");
+        }
+    }
 }
 
 /// Runs `f` with the canonical name of `kind`, reusing one scratch buffer per thread.
@@ -433,29 +465,45 @@ pub(crate) fn kind_canonical_name_into(
     out: &mut alloc::string::String,
 ) {
     use core::fmt::Write as _;
-    // `Debug` for a fieldless enum writes the variant name with no allocation; the
-    // snake_case conversion is then done in place, one character at a time.
-    let start = out.len();
-    let _ = write!(out, "{kind:?}");
+    // G-107: this function is documented as allocation-free, and now is. The previous
+    // implementation formatted `{kind:?}` into `out`, then lowercased that segment through
+    // two intermediate `String`s and indexed them with `chars().nth` — two allocations and
+    // O(n²) indexing. `KindNameWriter` transforms each character as `Debug` writes it, so
+    // the only storage touched is the caller's buffer and the scan is a single pass.
+    let mut writer = KindNameWriter { out, started: false, previous_is_upper: false };
+    let _ = write!(writer, "{kind:?}");
+}
 
-    // Lowercase the segment just written, inserting `_` before an inner capital.
-    // A run of capitals (`QRCode`) stays one word, so only a capital preceded by a
-    // lowercase letter or digit starts a new word.
-    let segment = out[start..].to_ascii_lowercase();
-    let original: alloc::string::String = out[start..].into();
-    out.truncate(start);
-    for (index, ch) in original.chars().enumerate() {
-        if ch.is_ascii_uppercase() {
-            let previous_is_upper = index > 0
-                && original.chars().nth(index - 1).is_some_and(|p| p.is_ascii_uppercase());
-            if index > 0 && !previous_is_upper {
-                out.push('_');
+/// `fmt::Write` adapter that appends a variant name to the caller's buffer as `snake_case`.
+///
+/// `Debug` for a fieldless enum writes the variant identifier through `write_str`; this
+/// adapter performs the snake_case derivation in the same pass (G-107). A run of capitals
+/// (`QRCode`) stays one word, so only a capital preceded by a non-capital starts a new
+/// word. The caller's buffer is the only storage written.
+#[cfg(all(not(alloc_frugal), not(embedded_surface)))]
+struct KindNameWriter<'a> {
+    out: &'a mut alloc::string::String,
+    /// Whether any character has been written: the first one never gets a leading `_`.
+    started: bool,
+    /// Whether the previous character was an ASCII capital.
+    previous_is_upper: bool,
+}
+
+#[cfg(all(not(alloc_frugal), not(embedded_surface)))]
+impl core::fmt::Write for KindNameWriter<'_> {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        for ch in text.chars() {
+            let is_upper = ch.is_ascii_uppercase();
+            if is_upper && self.started && !self.previous_is_upper {
+                self.out.push('_');
             }
+            // `to_ascii_lowercase` leaves non-ASCII unchanged, matching the previous
+            // segment-wide `to_ascii_lowercase`.
+            self.out.push(ch.to_ascii_lowercase());
+            self.started = true;
+            self.previous_is_upper = is_upper;
         }
-        // Take the already-lowercased character from the parallel string.
-        if let Some(lower) = segment.chars().nth(index) {
-            out.push(lower);
-        }
+        Ok(())
     }
 }
 
@@ -524,6 +572,16 @@ pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> Option<&'static
 /// parses both tables from this file and asserts every `(spelling, target)` pair in one is in the
 /// other. Adding a row to one table alone fails that gate.
 ///
+/// # The one anchor for a kind-level alias (G-305)
+///
+/// This table — not the kind declaration and not the aliased type's docs — is the single
+/// fact source for every "kind X is kind Y under another name" relation. `ContextMenu` is
+/// the deliberate example: `WidgetKind::ContextMenu`'s variant comment in `kind.rs` points
+/// here, `Menu`'s type comment in `menu_toolbar/menu.rs` points here, and the
+/// `context_menu` -> `menu` row in [`ALIAS_OF`] records the same pair for the name-keyed
+/// consumers. Those three references describe one mechanism; a second place that decides
+/// a kind alias is what principle #101 rules out.
+///
 /// # Why `DockPanel` is here
 ///
 /// `src/widget/mod.rs` declares `pub type DockPanel = DockWidget;`, so the kind
@@ -564,8 +622,11 @@ fn alias_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
         crate::widget::WidgetKind::UndoView => "list_view",
         crate::widget::WidgetKind::CheckListBox => "list_box",
         crate::widget::WidgetKind::DirectoryDialog => "file_dialog",
-        // `ContextMenu` is `Menu` under a role name (`pub type ContextMenu = Menu;`), so the
-        // kind resolves to the control it aliases.
+        // G-305: this arm is the single fact source for "`ContextMenu` is a `Menu` alias
+        // kind" (`pub type ContextMenu = Menu;`). `WidgetKind::ContextMenu`'s variant
+        // comment in `kind.rs` and `Menu`'s type comment in `menu_toolbar/menu.rs` point
+        // here, and the `ALIAS_OF` row below records the same pair for the name-keyed
+        // consumers. Change a kind-level alias here, not in those docs.
         crate::widget::WidgetKind::ContextMenu => "menu",
         crate::widget::WidgetKind::Wizard => "wizard_dialog",
         crate::widget::WidgetKind::DockPanel => "dock_widget",
@@ -597,7 +658,7 @@ fn alias_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
 /// constructor.
 #[cfg(all(widgets_unstripped, not(full_widgets)))]
 fn factory_name_for_kind_without_registry(kind: crate::widget::WidgetKind) -> &'static str {
-    // Build the name in a stack buffer and look it up immediately. The name is not
+    // Build the name in a scratch buffer and look it up immediately. The name is not
     // retained, so nothing is interned and no lock is taken — see
     // `intern_kind_name` below for why that matters.
     let mut buffer = alloc::string::String::new();

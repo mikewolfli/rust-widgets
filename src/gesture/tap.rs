@@ -113,11 +113,10 @@ impl GestureRecognizer for DoubleTapGesture {
                     if let (Some(first_pos), Some(first_time)) =
                         (self.first_tap_pos, self.first_tap_time)
                     {
-                        let dt = now_ms.saturating_sub(first_time);
-                        if dt <= tuning().double_tap_timeout_ms
-                            && super::distance(first_pos, *pos)
-                                < tuning().max_stationary_distance * 2.0
-                        {
+                        // W-203: the interval and movement bound come from the one predicate the
+                        // event layer's mouse tracker also uses, so touch and mouse double-clicks
+                        // cannot disagree about the same physical gesture.
+                        if super::is_double_tap_pair((first_pos, first_time), (*pos, now_ms)) {
                             let result = Event::DoubleTap { pos: *pos };
                             self.reset();
                             return Some(result);

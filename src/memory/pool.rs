@@ -13,11 +13,47 @@ use alloc::sync::Arc;
 pub trait Poolable: Default + Clone {
     /// Restores `self` to the same logical state as `Self::default()`.
     ///
-    /// Called by the pool both when an object is handed back and again when it is
-    /// handed out, so implementations are expected to be idempotent and cheap.
-    /// Capacity-like resources (allocated buffers, reserved slots) are usually
-    /// *kept* rather than freed; only the logical contents must be discarded.
+    /// Called by the pool once, when an object is handed back through
+    /// [`ObjectPool::release`]; an object taken by [`ObjectPool::acquire`] is
+    /// therefore already clean and is handed out without a second reset. Because
+    /// the pool trusts this call for every later reuse, implementations are
+    /// expected to be cheap and must leave no per-use state behind. Capacity-like
+    /// resources (allocated buffers, reserved slots) are usually *kept* rather than
+    /// freed; only the logical contents must be discarded.
     fn reset(&mut self);
+}
+
+/// A pooled value plus the debug-only witness that it was reset before storage.
+///
+/// [`ObjectPool::acquire`] hands a pooled value out **without** resetting it,
+/// because [`ObjectPool::release`] already reset it on the way in (G-75). This
+/// wrapper is what makes that invariant checkable: [`Self::take`] asserts the
+/// witness in debug builds, while in release builds the witness field does not
+/// exist, so the pool pays no bookkeeping for a guarantee it never re-checks.
+struct PoolSlot<T> {
+    value: T,
+    #[cfg(debug_assertions)]
+    clean: bool,
+}
+
+impl<T> PoolSlot<T> {
+    /// Wraps a value that is already in its reset state: a fresh `T::default()` or a
+    /// value just returned by `Poolable::reset`.
+    fn clean(value: T) -> Self {
+        Self {
+            value,
+            #[cfg(debug_assertions)]
+            clean: true,
+        }
+    }
+
+    /// Consumes the slot, proving in debug builds that the value was reset before it
+    /// was stored in the pool.
+    fn take(self) -> T {
+        #[cfg(debug_assertions)]
+        debug_assert!(self.clean, "ObjectPool handed out an object that was not reset");
+        self.value
+    }
 }
 /// Tuning parameters for [`ObjectPool`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -52,7 +88,7 @@ impl Default for PoolConfig {
 /// Not thread-safe on its own; wrap it in [`SharedPool`] or an external lock to
 /// share it between threads.
 pub struct ObjectPool<T: Poolable> {
-    pool: Vec<T>,
+    pool: Vec<PoolSlot<T>>,
     config: PoolConfig,
     allocated: usize,
 }
@@ -69,38 +105,40 @@ impl<T: Poolable> ObjectPool<T> {
         let initial = config.initial_size.min(config.max_size);
         let mut pool = Vec::with_capacity(initial);
         for _ in 0..initial {
-            pool.push(T::default());
+            pool.push(PoolSlot::clean(T::default()));
         }
         Self { pool, config, allocated: 0 }
     }
-    /// Takes an object out of the pool, resetting it before the caller sees it.
+    /// Takes an object out of the pool.
     ///
     /// If the pool is empty a brand new `T::default()` is returned instead of
-    /// blocking — the call never fails. Reused objects have already had
-    /// [`Poolable::reset`] applied, so callers never observe leftover data from
-    /// the previous user; whether memory is *zeroed* depends entirely on that
-    /// implementation.
+    /// blocking — the call never fails. A reused object was reset by
+    /// [`Self::release`] before it entered the pool, so acquire does **not** reset
+    /// it again (G-75); in debug builds an assertion proves the slot carried the
+    /// reset witness. Whether memory is *zeroed* still depends entirely on each
+    /// [`Poolable::reset`] implementation.
     pub fn acquire(&mut self) -> T {
-        if let Some(mut obj) = self.pool.pop() {
-            obj.reset();
-            self.allocated += 1;
-            obj
-        } else {
-            self.allocated += 1;
-            T::default()
+        self.allocated += 1;
+        match self.pool.pop() {
+            // `release` and the eager fill are the only writers of `pool`, and both
+            // store values that are already in their reset state.
+            Some(slot) => slot.take(),
+            None => T::default(),
         }
     }
-    /// Returns an object to the pool for reuse.
+    /// Returns an object to the pool for reuse, resetting it first.
     ///
-    /// The object is reset first, then kept only while the pool holds fewer than
-    /// `max_size` objects; otherwise it is dropped and the memory is freed. The
-    /// `allocated` counter is decremented (saturating at zero) even when the
-    /// object is discarded, so a release without a matching acquire does not make
-    /// the counter wrap.
+    /// The object is moved into its reset state, then kept only while the pool
+    /// holds fewer than `max_size` objects; otherwise it is dropped and the memory
+    /// is freed. This is the only place a pooled object is reset, which is what
+    /// makes the acquire side allocation- and call-free (G-75). The `allocated`
+    /// counter is decremented (saturating at zero) even when the object is
+    /// discarded, so a release without a matching acquire does not make the counter
+    /// wrap.
     pub fn release(&mut self, mut obj: T) {
         obj.reset();
         if self.pool.len() < self.config.max_size {
-            self.pool.push(obj);
+            self.pool.push(PoolSlot::clean(obj));
         }
         self.allocated = self.allocated.saturating_sub(1);
     }
@@ -165,8 +203,8 @@ impl<T: Poolable + Send> SharedPool<T> {
     /// internal mutex.
     ///
     /// Same semantics as [`ObjectPool::acquire`]: the pool never runs out, a fresh
-    /// `T::default()` is substituted when empty, and the value is reset before it
-    /// is returned.
+    /// `T::default()` is substituted when empty, and a reused value was reset by
+    /// [`ObjectPool::release`] before it entered the pool.
     pub fn acquire(&self) -> T {
         lock(&self.pool).acquire()
     }
@@ -273,19 +311,15 @@ impl BufferPool {
     /// Hands out a buffer of exactly [`Self::buffer_size`] bytes.
     ///
     /// Never blocks and never fails: when the pool is empty a fresh zero-filled
-    /// buffer is allocated. Recycling does *not* wipe the bytes — the returned
-    /// buffer still holds whatever the previous user wrote, though its length is
-    /// the full `buffer_size`. Callers must treat the contents as garbage, or use
-    /// [`Self::acquire_sized`], which zeroes the range it returns.
+    /// buffer is allocated. A recycled buffer is handed out **without** being
+    /// wiped — it still holds whatever its previous user wrote, so callers must
+    /// overwrite the range they use. Callers that need zeroed bytes should use
+    /// [`Self::acquire_sized`], which performs the single clear.
     pub fn acquire(&mut self) -> Vec<u8> {
-        // A pooled buffer was cleared on release, so its length is restored to the pool's exact
-        // size here: the contract is `len() == buffer_size`, and returning the cleared `0`-length
-        // buffer would hand out less than the caller was promised.
+        // `release` restores the pool's invariant that every stored buffer has length
+        // `buffer_size`, so taking one is a pure pop: no resize, no memset (G-74).
         match self.buffers.pop() {
-            Some(mut buffer) => {
-                buffer.resize(self.buffer_size, 0);
-                buffer
-            }
+            Some(buffer) => buffer,
             None => vec![0u8; self.buffer_size],
         }
     }
@@ -299,8 +333,11 @@ impl BufferPool {
     pub fn acquire_sized(&mut self, size: usize) -> Vec<u8> {
         if size <= self.buffer_size {
             let mut buf = self.acquire();
-            buf.clear();
-            buf.resize(size, 0);
+            // Trim to the requested size and clear exactly that range once. The old
+            // version cleared and resized a buffer that `acquire` had already zero-filled
+            // end to end, so the same bytes were written twice (G-74).
+            buf.truncate(size);
+            buf.fill(0);
             buf
         } else {
             vec![0u8; size]
@@ -311,13 +348,19 @@ impl BufferPool {
     // The buffer is kept only when its capacity is exactly `buffer_size` and the
     // pool is below `max_buffers`; otherwise it is dropped and freed.
     //
-    /// Returning a buffer whose length is non-zero is fine: it is cleared first,
-    /// so recycled buffers always leave the pool empty-but-capacity-sized. Because
-    /// the check is on `capacity`, a buffer obtained from [`Self::acquire_sized`]
-    /// with `size < buffer_size` is still accepted, but an oversized one is not.
+    /// Contents are **not** wiped: the pool keeps the bytes and only restores the
+    /// length to [`Self::buffer_size`] when a shorter buffer comes back (one obtained
+    /// from [`Self::acquire_sized`]). Keeping every stored buffer at full length is
+    /// what lets [`Self::acquire`] hand out exactly `buffer_size` bytes without a
+    /// memset (G-74).
     pub fn release(&mut self, mut buffer: Vec<u8>) {
         if buffer.capacity() == self.buffer_size && self.buffers.len() < self.max_buffers {
-            buffer.clear();
+            if buffer.len() != self.buffer_size {
+                // Only a shortened `acquire_sized` buffer reaches this branch; a full
+                // buffer is stored untouched. `resize` cannot exceed `capacity`, which
+                // the check above pins to `buffer_size`.
+                buffer.resize(self.buffer_size, 0);
+            }
             self.buffers.push(buffer);
         }
     }
@@ -501,9 +544,55 @@ mod tests {
         assert_eq!(pool.available(), 2);
     }
 
-    /// A released buffer is cleared, so a second `acquire` must restore its length to the pool's
-    /// `buffer_size` rather than hand back the cleared `0`-length buffer. The contract is that
-    /// `acquire` always returns exactly `buffer_size` bytes.
+    /// A reused object must arrive in its reset state even though `acquire` no longer
+    /// resets it: the single reset happens on `release`, before the object is pooled
+    /// (G-75). The debug-only slot witness asserted in `acquire` proves the invariant
+    /// on the same path.
+    #[test]
+    fn a_pooled_object_is_reset_on_release_before_any_reacquire() {
+        let mut pool: ObjectPool<TestObject> =
+            ObjectPool::new(PoolConfig { initial_size: 0, max_size: 4, growth_factor: 1.5 });
+        let mut obj = pool.acquire();
+        obj.value = 7;
+        obj.data.extend_from_slice(&[1, 2, 3]);
+        pool.release(obj);
+
+        let reused = pool.acquire();
+        assert_eq!(reused.value, 0, "release must clear scalar state before pooling");
+        assert!(reused.data.is_empty(), "release must clear container state before pooling");
+    }
+
+    /// A released buffer is no longer cleared, so `acquire` must return the same length
+    /// (`buffer_size`) without wiping the bytes (G-74). Callers are documented to
+    /// overwrite what they use; `acquire_sized` is the zero-filled path.
+    #[test]
+    fn buffer_pool_acquire_does_not_wipe_recycled_contents() {
+        let mut pool = BufferPool::new(16, 1, 4);
+        let mut buf = pool.acquire();
+        buf[..4].copy_from_slice(&[1, 2, 3, 4]);
+        pool.release(buf);
+
+        let again = pool.acquire();
+        assert_eq!(again.len(), 16, "acquire always yields buffer_size bytes");
+        assert_eq!(&again[..4], &[1, 2, 3, 4], "acquire must not clear a recycled buffer");
+    }
+
+    /// `acquire_sized` is the only path that promises zeroed bytes, and it clears the
+    /// returned range exactly once even when the recycled buffer held stale data (G-74).
+    #[test]
+    fn buffer_pool_acquire_sized_returns_zeroed_bytes() {
+        let mut pool = BufferPool::new(16, 1, 4);
+        let mut dirty = pool.acquire();
+        dirty.fill(0xFF);
+        pool.release(dirty);
+
+        let sized = pool.acquire_sized(8);
+        assert_eq!(sized.len(), 8, "acquire_sized returns exactly the requested size");
+        assert!(sized.iter().all(|&byte| byte == 0), "the requested range is zero-filled");
+    }
+
+    /// A released buffer is restored to the pool's full length, so a second `acquire`
+    /// still returns exactly `buffer_size` bytes even after an `acquire_sized` call.
     #[test]
     fn buffer_pool_re_acquire_restores_the_documented_length() {
         let mut pool = BufferPool::new(16, 1, 4);

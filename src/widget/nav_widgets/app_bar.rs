@@ -20,6 +20,7 @@
 //! The title's *centring* is deliberately not affected: a centred box has the same left edge in
 //! either direction, which is why the defect survived review on the middle of the bar.
 
+use crate::compat::{Rc, RefCell};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, TextDirection};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -31,7 +32,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
-use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The width of the bar's leading zone, which holds the back arrow.
@@ -62,6 +63,8 @@ const APP_BAR_ACTION_INSET: i32 = 16;
 enum TapTarget {
     /// The leading back arrow, or the bar's fallback back region.
     Back,
+    /// A caller-supplied leading icon (N-02).
+    Leading,
     /// The trailing action text.
     Action,
     /// One of the trailing action buttons, by position in the action list.
@@ -75,6 +78,22 @@ const APP_BAR_ACTION_MIN_WIDTH: i32 = 48;
 
 /// Space between adjacent trailing action buttons, in pixels.
 const APP_BAR_ACTION_GAP: i32 = 4;
+
+/// The action boxes derived from one action list and one trailing band.
+struct ActionBoxes {
+    /// Each fitting action, ordered from the trailing edge inward.
+    boxes: Vec<(usize, Rect)>,
+    /// The overflow affordance when the actions did not fit.
+    overflow: Option<Rect>,
+}
+
+/// The inputs [`AppBar::action_boxes`] was last derived from.
+struct ActionBoxesCache {
+    revision: u32,
+    font: crate::core::Font,
+    band: Rect,
+    boxes: Rc<ActionBoxes>,
+}
 
 /// The shortest main bar band, in pixels.
 ///
@@ -118,6 +137,16 @@ pub struct AppBar {
     pub action_overflow_pressed: GenericSignal,
     /// Additional trailing actions, drawn right-to-left before the action text slot.
     actions: Vec<String>,
+    /// Typed icon sources parallel to `actions` (N-01).
+    action_icon_sources: Vec<Option<IconSource>>,
+    /// A caller-supplied leading icon that replaces the fixed back arrow (N-02).
+    leading_icon: Option<IconSource>,
+    /// Bumped whenever the action list changes, so the layout cache can tell.
+    actions_revision: u32,
+    /// The last derived action boxes, shared by drawing and hit testing (G-A03).
+    action_boxes_cache: RefCell<Option<ActionBoxesCache>>,
+    /// Emitted when a caller-supplied leading icon is activated.
+    pub leading_pressed: GenericSignal,
     /// Optional widget drawn in a band below the main bar.
     ///
     /// The band's height is the widget's own size hint (clamped to the bar's rectangle), and
@@ -148,6 +177,11 @@ impl AppBar {
             action_index_pressed: Signal1::new(),
             action_overflow_pressed: GenericSignal::new(),
             actions: Vec::new(),
+            action_icon_sources: Vec::new(),
+            leading_icon: None,
+            actions_revision: 0,
+            action_boxes_cache: RefCell::new(None),
+            leading_pressed: GenericSignal::new(),
             bottom: None,
             pressed: None,
         }
@@ -217,12 +251,46 @@ impl AppBar {
             return;
         }
         self.actions = actions;
+        self.actions_revision = self.actions_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
     /// Returns the trailing action labels.
     pub fn actions(&self) -> &[String] {
         &self.actions
+    }
+
+    /// Sets a typed icon source per trailing action (N-01).
+    ///
+    /// The vector is parallel to [`Self::actions`]; a shorter vector leaves the remaining
+    /// actions on their text path, which keeps an existing text-only bar byte-identical.
+    pub fn set_action_icon_sources(&mut self, sources: Vec<Option<IconSource>>) {
+        if self.action_icon_sources == sources {
+            return;
+        }
+        self.action_icon_sources = sources;
+        // Widths are unchanged (the slot is still the minimum action width), but the cache is
+        // keyed by the action *revision*, and a new icon changes the pixels in the slot.
+        self.base.request_redraw();
+    }
+
+    /// Returns the per-action icon sources.
+    pub fn action_icon_sources(&self) -> &[Option<IconSource>] {
+        &self.action_icon_sources
+    }
+
+    /// Sets a caller-supplied leading icon, replacing the fixed back arrow (N-02).
+    pub fn set_leading_icon(&mut self, icon: Option<IconSource>) {
+        if self.leading_icon == icon {
+            return;
+        }
+        self.leading_icon = icon;
+        self.base.request_redraw();
+    }
+
+    /// Returns the caller-supplied leading icon.
+    pub fn leading_icon(&self) -> Option<IconSource> {
+        self.leading_icon
     }
 
     /// Sets an optional widget shown in a band below the main bar.
@@ -272,12 +340,24 @@ impl AppBar {
     /// The boxes are ordered from the trailing edge inward: element zero is nearest the edge,
     /// which is the position a primary action occupies. Paint and hit test both read this one
     /// derivation, so a button cannot be drawn where it cannot be tapped.
-    fn action_boxes(&self) -> (Vec<(usize, Rect)>, Option<Rect>) {
+    fn action_boxes(&self) -> Rc<ActionBoxes> {
         let band = self.trailing_zone();
-        if self.actions.is_empty() || band.width == 0 {
-            return (Vec::new(), None);
-        }
         let font = self.action_font();
+        if let Some(cache) = self.action_boxes_cache.borrow().as_ref() {
+            if cache.revision == self.actions_revision && cache.font == font && cache.band == band {
+                return Rc::clone(&cache.boxes);
+            }
+        }
+        if self.actions.is_empty() || band.width == 0 {
+            let empty = Rc::new(ActionBoxes { boxes: Vec::new(), overflow: None });
+            *self.action_boxes_cache.borrow_mut() = Some(ActionBoxesCache {
+                revision: self.actions_revision,
+                font,
+                band,
+                boxes: Rc::clone(&empty),
+            });
+            return empty;
+        }
         let mut cursor = band.right();
         let mut boxes: Vec<(usize, Rect)> = Vec::new();
         let mut overflow = None;
@@ -295,7 +375,14 @@ impl AppBar {
             boxes.push((index, Rect::new(cursor, band.y, width as u32, band.height)));
             cursor -= APP_BAR_ACTION_GAP;
         }
-        (boxes, overflow)
+        let boxes = Rc::new(ActionBoxes { boxes, overflow });
+        *self.action_boxes_cache.borrow_mut() = Some(ActionBoxesCache {
+            revision: self.actions_revision,
+            font,
+            band,
+            boxes: Rc::clone(&boxes),
+        });
+        boxes
     }
 
     /// Sets the writing direction, and repaints.
@@ -343,17 +430,22 @@ impl AppBar {
     /// The press and the release both use this, so the bar can tell whether the pointer
     /// left the affordance it armed between the two events.
     fn tap_target_at(&self, pos: Point) -> Option<TapTarget> {
-        let (boxes, overflow) = self.action_boxes();
-        for (index, box_rect) in boxes {
+        let boxes = self.action_boxes();
+        for (index, box_rect) in boxes.boxes.iter() {
             if box_rect.contains_point(pos) {
-                return Some(TapTarget::ActionAt(index));
+                return Some(TapTarget::ActionAt(*index));
             }
         }
-        if overflow.is_some_and(|box_rect| box_rect.contains_point(pos)) {
+        if boxes.overflow.is_some_and(|box_rect| box_rect.contains_point(pos)) {
             return Some(TapTarget::Overflow);
         }
-        if self.show_back && self.leading_zone().contains_point(pos) {
-            return Some(TapTarget::Back);
+        let leading_present = self.show_back || self.leading_icon.is_some();
+        if leading_present && self.leading_zone().contains_point(pos) {
+            return Some(if self.leading_icon.is_some() {
+                TapTarget::Leading
+            } else {
+                TapTarget::Back
+            });
         }
         if !self.action_text.is_empty()
             && self.actions.is_empty()
@@ -408,6 +500,9 @@ impl Widget for AppBar {
             )),
             "action_overflow_pressed" => {
                 Some(EventSignalRef::unit("action_overflow_pressed", &self.action_overflow_pressed))
+            }
+            "leading_pressed" => {
+                Some(EventSignalRef::unit("leading_pressed", &self.leading_pressed))
             }
             _ => None,
         }
@@ -542,7 +637,7 @@ impl Draw for AppBar {
         // `icon_side` is also the arrow's *reserved width*: the boxes below read it to keep their
         // layout clear of the icon rather than of a glyph's advance.
         let icon_side = ((action_font_size + 2.0).round() as i32).clamp(16, 28);
-        if self.show_back {
+        if self.show_back || self.leading_icon.is_some() {
             // The arrow sits `APP_BAR_ARROW_INSET` from the bar's *leading* edge, whichever edge that
             // is: the inset is measured from the edge to the icon box, and the box is squared, so the
             // RTL placement subtracts its side rather than a glyph advance.
@@ -553,7 +648,25 @@ impl Draw for AppBar {
             };
             let back_y = rect.y + (bar_height as i32 - icon_side) / 2;
             let back_rect = Rect::new(back_x, back_y, icon_side as u32, icon_side as u32);
-            crate::widget::draw_icon_at(context, back_rect, text_color, IconName::ArrowLeft);
+            // A caller-supplied leading icon replaces the fixed arrow (N-02); without one the
+            // back affordance keeps its existing outline.
+            match self.leading_icon {
+                Some(source) => {
+                    if let Err(error) =
+                        crate::widget::paint_icon(context, source.into(), back_rect, text_color)
+                    {
+                        log::warn!("app bar leading icon could not be painted: {error:?}");
+                    }
+                }
+                None => {
+                    crate::widget::draw_icon_at(
+                        context,
+                        back_rect,
+                        text_color,
+                        IconName::ArrowLeft,
+                    );
+                }
+            }
         }
 
         // ── Centered title ──
@@ -567,7 +680,11 @@ impl Draw for AppBar {
             // and scale the role-derived title size by the same factor, so a text-scale preference
             // reaches the title (D09-STYLE-01).
             let title_font = role_font(style, title_font_size);
-            let metrics = context.measure_text(&self.title, &title_font);
+            let metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                context,
+                &self.title,
+                &title_font,
+            );
 
             let (leading_reserve, trailing_reserve) = (
                 if self.show_back {
@@ -624,7 +741,11 @@ impl Draw for AppBar {
             // Same rule as the title: the theme face at the action role's own size, scaled by the
             // text preference (D09-STYLE-01).
             let action_font = role_font(style, action_font_size);
-            let metrics = context.measure_text(&self.action_text, &action_font);
+            let metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                context,
+                &self.action_text,
+                &action_font,
+            );
 
             let action_x = if self.direction.is_right_to_left() {
                 rect.x + APP_BAR_ACTION_INSET
@@ -665,8 +786,8 @@ impl Draw for AppBar {
         // The boxes come from `action_boxes`, the same derivation the hit test reads. A label
         // that does not fit its own box is elided by the fitted draw, never painted over its
         // neighbour.
-        let (action_boxes, overflow) = self.action_boxes();
-        if !action_boxes.is_empty() || overflow.is_some() {
+        let boxes = self.action_boxes();
+        if !boxes.boxes.is_empty() || boxes.overflow.is_some() {
             let action_font = role_font(style, action_font_size);
             let action_color = if is_enabled {
                 text_color.blend(&background, 0.25)
@@ -676,10 +797,31 @@ impl Draw for AppBar {
                     crate::widget::BaseWidget::disabled_ink_weight(),
                 )
             };
-            for (index, box_rect) in action_boxes {
-                if let Some(label) = self.actions.get(index) {
+            for (index, box_rect) in boxes.boxes.iter() {
+                // A typed icon replaces the label inside the same box (N-01); a bar that never sets
+                // one keeps its text-only picture.
+                if let Some(Some(source)) = self.action_icon_sources.get(*index) {
+                    let side =
+                        action_font.size_u32().clamp(1, box_rect.width.min(box_rect.height).max(1));
+                    let icon_rect = Rect::new(
+                        box_rect.x + (box_rect.width.saturating_sub(side) / 2) as i32,
+                        box_rect.y + (box_rect.height.saturating_sub(side) / 2) as i32,
+                        side,
+                        side,
+                    );
+                    if let Err(error) = crate::widget::paint_icon(
+                        context,
+                        (*source).into(),
+                        icon_rect,
+                        action_color,
+                    ) {
+                        log::warn!("app bar action icon could not be painted: {error:?}");
+                    }
+                    continue;
+                }
+                if let Some(label) = self.actions.get(*index) {
                     context.draw_text_fitted_cow(
-                        context.text_line(box_rect, &action_font),
+                        context.text_line(*box_rect, &action_font),
                         label,
                         &action_font,
                         action_color,
@@ -687,7 +829,7 @@ impl Draw for AppBar {
                     );
                 }
             }
-            if let Some(box_rect) = overflow {
+            if let Some(box_rect) = boxes.overflow {
                 context.draw_text_fitted_cow(
                     context.text_line(box_rect, &action_font),
                     "\u{2026}",
@@ -765,6 +907,7 @@ impl EventHandler for AppBar {
                 }
                 match armed {
                     TapTarget::Back => self.back_pressed.emit(),
+                    TapTarget::Leading => self.leading_pressed.emit(),
                     TapTarget::Action => self.action_pressed.emit(),
                     TapTarget::ActionAt(index) => {
                         self.action_index_pressed.emit(index);
@@ -1235,5 +1378,43 @@ mod tests {
         assert!(bar.preferred_height() >= 56);
         let svg = render_to_svg(&mut bar);
         assert!(svg.starts_with("<svg"));
+    }
+
+    #[test]
+    fn a_custom_leading_icon_replaces_the_back_arrow_and_reports_its_own_signal() {
+        let mut bar = make_app_bar();
+        assert_eq!(bar.leading_icon(), None);
+        bar.set_leading_icon(Some(IconSource::Builtin(IconName::Menu)));
+        assert_eq!(bar.leading_icon(), Some(IconSource::Builtin(IconName::Menu)));
+        let leading = Arc::new(AtomicUsize::new(0));
+        let sink = leading.clone();
+        bar.leading_pressed.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        let back = Arc::new(AtomicUsize::new(0));
+        let back_sink = back.clone();
+        bar.back_pressed.connect(move || {
+            back_sink.fetch_add(1, Ordering::SeqCst);
+        });
+        bar.handle_event(&Event::MousePress { pos: Point::new(20, 28), button: 1, modifiers: 0 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(20, 28), button: 1 });
+        assert_eq!(leading.load(Ordering::SeqCst), 1);
+        assert_eq!(back.load(Ordering::SeqCst), 0, "the custom icon is not the back affordance");
+    }
+
+    #[test]
+    fn trailing_actions_accept_icons_without_moving_the_hit_test() {
+        let mut bar = make_app_bar();
+        bar.set_actions(vec!["Save".to_string()]);
+        bar.set_action_icon_sources(vec![Some(IconSource::Builtin(IconName::Save))]);
+        assert_eq!(bar.action_icon_sources().len(), 1);
+        let fired = Arc::new(AtomicUsize::new(0));
+        let sink = fired.clone();
+        bar.action_index_pressed.connect(move |index: Arc<usize>| {
+            sink.store(*index, Ordering::SeqCst);
+        });
+        bar.handle_event(&Event::MousePress { pos: Point::new(370, 28), button: 1, modifiers: 0 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(370, 28), button: 1 });
+        assert_eq!(fired.load(Ordering::SeqCst), 0);
     }
 }

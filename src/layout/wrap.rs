@@ -16,30 +16,18 @@ use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect, Size, TextDirection};
 
 /// Direction in which items flow before wrapping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum WrapDirection {
-    /// Items flow left-to-right, wrapping to new rows.
-    #[default]
-    Horizontal,
-    /// Items flow top-to-bottom, wrapping to new columns.
-    Vertical,
-}
+///
+/// One definition shared with [`FlowLayout`](crate::layout::FlowLayout)
+/// ([`FlowDirection`](super::flow::FlowDirection)); principle #54 forbids a second copy of
+/// the same two variants. The `WrapDirection` path is kept as an alias.
+pub use super::flow::FlowDirection as WrapDirection;
 
 /// Alignment of items within each wrap line/column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum WrapAlignment {
-    /// Align to the start of the line/column.
-    #[default]
-    Start,
-    /// Centre items within the line/column.
-    Center,
-    /// Align to the end of the line/column.
-    End,
-    /// Distribute with equal space between items.
-    SpaceBetween,
-    /// Distribute with equal space around each item.
-    SpaceAround,
-}
+///
+/// One definition shared with [`FlowLayout`](crate::layout::FlowLayout)
+/// ([`FlowAlignment`](super::flow::FlowAlignment)); the `WrapAlignment` path is kept as an
+/// alias so this layout's public surface does not change.
+pub use super::flow::FlowAlignment as WrapAlignment;
 
 /// Tracks size and id for a single wrapped child.
 #[derive(Debug, Clone, Copy)]
@@ -416,7 +404,11 @@ impl WrapLayout {
     }
 
     fn content_rect(&self, outer: Rect) -> Rect {
-        let pad = self.padding.max(0);
+        self.content_rect_with_padding(outer, self.padding)
+    }
+
+    fn content_rect_with_padding(&self, outer: Rect, padding: i32) -> Rect {
+        let pad = padding.max(0);
         Rect::new(
             outer.x.saturating_add(pad),
             outer.y.saturating_add(pad),
@@ -431,19 +423,33 @@ impl WrapLayout {
     /// [`FlowLayout`](crate::layout::FlowLayout); this method only converts the layout's child
     /// table into the size slice those functions take and zips the ids back on.
     fn compute_rects(&self, content: Rect) -> Vec<(ObjectId, Rect)> {
+        self.compute_rects_with(content, self.spacing, self.run_spacing())
+    }
+
+    /// [`Self::compute_rects`] with the two gaps as parameters.
+    ///
+    /// The device-aware path needs scaled gaps; it used to build a whole cloned layout just
+    /// to change these two numbers. Keeping the solver on `&self` with the gaps passed in
+    /// removes that clone (G-156).
+    fn compute_rects_with(
+        &self,
+        content: Rect,
+        spacing: i32,
+        run_spacing: i32,
+    ) -> Vec<(ObjectId, Rect)> {
         let sizes: Vec<Size> = self.children.iter().map(|child| child.size).collect();
         let available_main = match self.direction {
             WrapDirection::Horizontal => content.width,
             WrapDirection::Vertical => content.height,
         } as i32;
-        let lines = break_lines(&sizes, self.direction, self.spacing, available_main, true);
+        let lines = break_lines(&sizes, self.direction, spacing, available_main, true);
         let rects = place_lines(
             &sizes,
             &lines,
             self.direction,
             self.alignment,
-            self.spacing,
-            self.run_spacing(),
+            spacing,
+            run_spacing,
             content,
         );
         let mut rects: Vec<Rect> = rects;
@@ -451,6 +457,34 @@ impl WrapLayout {
             mirror_horizontally(&mut rects, content);
         }
         self.children.iter().zip(rects).map(|(child, rect)| (child.widget_id, rect)).collect()
+    }
+
+    /// The shared body of [`Layout::update`] and [`Layout::update_with_context`].
+    ///
+    /// `touch` is the optional minimum-touch floor: `update` passes `None` (its contract is
+    /// the nominal geometry), while the context-aware entry passes the device's value.
+    fn solve(
+        &self,
+        rect: Rect,
+        spacing: i32,
+        run_spacing: i32,
+        padding: i32,
+        touch: Option<Size>,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let content = self.content_rect_with_padding(rect, padding);
+        if content.width == 0 || content.height == 0 {
+            return;
+        }
+        for (widget_id, child_rect) in self.compute_rects_with(content, spacing, run_spacing) {
+            let child_rect = match touch {
+                Some(min_touch) => {
+                    crate::layout::types::grow_to_min_touch_size(child_rect, min_touch)
+                }
+                None => child_rect,
+            };
+            out(widget_id, child_rect);
+        }
     }
 }
 
@@ -557,14 +591,7 @@ impl Layout for WrapLayout {
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
-        let content = self.content_rect(rect);
-        if content.width == 0 || content.height == 0 {
-            return;
-        }
-        let results = self.compute_rects(content);
-        for (wid, child_rect) in results {
-            widgets(wid, child_rect);
-        }
+        self.solve(rect, self.spacing, self.run_spacing(), self.padding, None, widgets);
     }
 
     /// Lays the children out from their own hints (LAY-N01).
@@ -634,37 +661,19 @@ impl Layout for WrapLayout {
         // same device by one pixel per gap.
         let scaled_padding = (self.padding.max(0) as f32 * scale).max(0.0).round() as i32;
 
-        // Use scaled spacing inside the content rect by temporarily wrapping.
-        let scaled = WrapLayout {
-            direction: self.direction,
-            alignment: self.alignment,
-            spacing: (self.spacing as f32 * scale).round() as i32,
-            run_spacing: self.run_spacing.map(|spacing| (spacing as f32 * scale).round() as i32),
-            padding: scaled_padding,
-            text_direction: self.text_direction,
-            children: self.children.clone(),
-        };
-
-        let content = Rect::new(
-            rect.x.saturating_add(scaled_padding),
-            rect.y.saturating_add(scaled_padding),
-            rect.width.saturating_sub(2 * scaled_padding as u32),
-            rect.height.saturating_sub(2 * scaled_padding as u32),
+        // The scaled gaps are passed to the borrowed solver. The previous body cloned the
+        // child table and built a whole temporary `WrapLayout` just to change `spacing`,
+        // `run_spacing` and `padding` (G-156).
+        self.solve(
+            rect,
+            (self.spacing as f32 * scale).round() as i32,
+            self.run_spacing
+                .map(|spacing| (spacing as f32 * scale).round() as i32)
+                .unwrap_or((self.spacing as f32 * scale).round() as i32),
+            scaled_padding,
+            Some(context.min_touch_size),
+            widgets,
         );
-
-        if content.width == 0 || content.height == 0 {
-            return;
-        }
-
-        let results = scaled.compute_rects(content);
-        for (wid, child_rect) in results {
-            // Same minimum-touch growth the flex and box layouts apply, so a wrapped row and a
-            // flowing row address their controls identically.
-            widgets(
-                wid,
-                crate::layout::types::grow_to_min_touch_size(child_rect, context.min_touch_size),
-            );
-        }
     }
 }
 

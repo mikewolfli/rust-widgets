@@ -9,8 +9,8 @@ use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{
-    expect_i64, expect_orientation, expect_text_direction, orientation_to_str,
-    text_direction_to_str,
+    expect_f32, expect_i32_saturating, expect_orientation, expect_text_direction, expect_u32,
+    orientation_to_str, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -157,6 +157,13 @@ pub struct ScrollBar {
     /// opacity the draw path reads. Without them the bar is either always loud or (if simply
     /// hidden) undiscoverable.
     idle_ms: u32,
+    /// How long the bar stays fully opaque after the last interaction, in milliseconds.
+    idle_delay_ms: u32,
+    /// An explicit idle opacity, or `None` for the style's own floor.
+    ///
+    /// An arrows bar keeps [`SCROLLBAR_IDLE_OPACITY`] and an overlay bar fades to zero; a host
+    /// that wants a longer-visible touch scrollbar can now say so per control.
+    idle_opacity_override: Option<f32>,
     /// The bar's drawn opacity, `1.0` while active and [`SCROLLBAR_IDLE_OPACITY`] once idle.
     ///
     /// A driver rather than a bare float so the fade is a **transition** that can be seen rather
@@ -191,6 +198,8 @@ impl ScrollBar {
             inertia_remainder: 0.0,
             repeat: None,
             idle_ms: 0,
+            idle_delay_ms: SCROLLBAR_IDLE_DELAY_MS,
+            idle_opacity_override: None,
             opacity: PropertyDriver::at(1.0, MotionSlot::Normal),
         }
     }
@@ -700,16 +709,46 @@ impl ScrollBar {
         self.opacity.value()
     }
 
-    /// What the idle fade aims at for the current shape.
+    /// How long the bar stays fully opaque after the last interaction, in milliseconds.
+    pub fn idle_delay_ms(&self) -> u32 {
+        self.idle_delay_ms
+    }
+
+    /// Sets the idle delay, clamped to keep the two-phase fade meaningful.
     ///
-    /// An overlay bar is transient chrome above the content, so it fades to fully
-    /// transparent; an arrow-ended bar keeps the faint floor that tells the reader the region
+    /// A zero delay is legal (fade immediately), which is what an overlay bar on a touch device
+    /// wants; the value is a duration, so there is no other invalid input.
+    pub fn set_idle_delay_ms(&mut self, delay_ms: u32) {
+        if self.idle_delay_ms == delay_ms {
+            return;
+        }
+        self.idle_delay_ms = delay_ms;
+    }
+
+    /// What the bar fades toward for the current shape.
+    ///
+    /// An explicit [`Self::set_idle_opacity`] wins; otherwise an overlay bar fades to fully
+    /// transparent and an arrow-ended bar keeps the faint floor that tells the reader the region
     /// scrolls.
-    fn idle_opacity(&self) -> f32 {
-        match self.style {
+    pub fn idle_opacity(&self) -> f32 {
+        self.idle_opacity_override.unwrap_or(match self.style {
             ScrollBarStyle::Arrows => SCROLLBAR_IDLE_OPACITY,
             ScrollBarStyle::Overlay => 0.0,
+        })
+    }
+
+    /// Sets the opacity the bar fades to, clamped to `0.0..=1.0`.
+    pub fn set_idle_opacity(&mut self, opacity: f32) {
+        let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { return };
+        if self.idle_opacity_override == Some(opacity) {
+            return;
         }
+        self.idle_opacity_override = Some(opacity);
+    }
+
+    /// The style's own idle floor, used by the docs and by tests.
+    fn resolved_idle_opacity(&self) -> f32 {
+        self.idle_opacity()
     }
 
     /// Marks the bar as newly interacted with, waking it back to full opacity.
@@ -754,11 +793,11 @@ impl ScrollBar {
             self.drag_velocity_px_per_ms = self.drag_velocity_px_per_ms * 0.6 + sample * 0.4;
             self.drag_pending_px = 0.0;
         }
-        let fade_delta = if self.idle_ms < SCROLLBAR_IDLE_DELAY_MS {
-            let until_idle = SCROLLBAR_IDLE_DELAY_MS - self.idle_ms;
+        let fade_delta = if self.idle_ms < self.idle_delay_ms {
+            let until_idle = self.idle_delay_ms - self.idle_ms;
             self.idle_ms = self.idle_ms.saturating_add(delta_ms);
-            if self.idle_ms >= SCROLLBAR_IDLE_DELAY_MS {
-                self.opacity.set_target(self.idle_opacity());
+            if self.idle_ms >= self.idle_delay_ms {
+                self.opacity.set_target(self.resolved_idle_opacity());
                 delta_ms.saturating_sub(until_idle)
             } else {
                 // Inside the hold. The clock is what the delay consumes, but the fade-in after a
@@ -768,7 +807,7 @@ impl ScrollBar {
                 delta_ms
             }
         } else {
-            self.opacity.set_target(self.idle_opacity());
+            self.opacity.set_target(self.resolved_idle_opacity());
             delta_ms
         };
         if fade_delta == 0 {
@@ -1018,6 +1057,8 @@ impl WidgetProperties for ScrollBar {
             }
             "slider_size" => Ok(CapabilityValue::Float(self.slider_size() as f64)),
             "slider_position" => Ok(CapabilityValue::Float(self.slider_position() as f64)),
+            "idle_delay_ms" => Ok(CapabilityValue::UInt(u64::from(self.idle_delay_ms()))),
+            "idle_opacity" => Ok(CapabilityValue::Float(f64::from(self.idle_opacity()))),
             _ => base_property_get(self, name),
         }
     }
@@ -1025,23 +1066,23 @@ impl WidgetProperties for ScrollBar {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "minimum" => {
-                self.set_minimum(expect_i64(value)? as i32);
+                self.set_minimum(expect_i32_saturating(value)?);
                 Ok(())
             }
             "maximum" => {
-                self.set_maximum(expect_i64(value)? as i32);
+                self.set_maximum(expect_i32_saturating(value)?);
                 Ok(())
             }
             "value" => {
-                self.set_value(expect_i64(value)? as i32);
+                self.set_value(expect_i32_saturating(value)?);
                 Ok(())
             }
             "single_step" => {
-                self.set_single_step(expect_i64(value)? as i32);
+                self.set_single_step(expect_i32_saturating(value)?);
                 Ok(())
             }
             "page_step" => {
-                self.set_page_step(expect_i64(value)? as i32);
+                self.set_page_step(expect_i32_saturating(value)?);
                 Ok(())
             }
             "orientation" => {
@@ -1054,6 +1095,14 @@ impl WidgetProperties for ScrollBar {
             }
             // Derived from the range: no setter exists, so the contract says so.
             "slider_size" | "slider_position" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "idle_delay_ms" => {
+                self.set_idle_delay_ms(expect_u32(value)?);
+                Ok(())
+            }
+            "idle_opacity" => {
+                self.set_idle_opacity(expect_f32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1070,6 +1119,8 @@ impl WidgetProperties for ScrollBar {
             "direction",
             "slider_size",
             "slider_position",
+            "idle_delay_ms",
+            "idle_opacity",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -2315,5 +2366,29 @@ mod tests {
         while bar.tick(16) {}
         assert!(!bar.is_animating(), "the glide settles");
         assert!(bar.value() <= bar.maximum());
+    }
+
+    /// The idle delay and floor are per-control fields whose defaults are the old constants.
+    #[test]
+    fn the_idle_fade_parameters_are_configurable() {
+        let mut bar = ScrollBar::new(Rect::new(0, 0, 200, 12));
+        assert_eq!(bar.idle_delay_ms(), SCROLLBAR_IDLE_DELAY_MS);
+        assert_eq!(bar.idle_opacity(), SCROLLBAR_IDLE_OPACITY, "the arrows floor");
+
+        bar.set_idle_delay_ms(1200);
+        bar.set_idle_opacity(0.7);
+        assert_eq!(bar.idle_delay_ms(), 1200);
+        assert_eq!(bar.idle_opacity(), 0.7);
+
+        // The fade now holds past the old constant and settles at the configured floor.
+        assert!(!bar.tick(600), "inside the longer hold nothing animates");
+        bar.tick(5_000);
+        while bar.tick(16) {}
+        assert!((bar.opacity() - 0.7).abs() < 1e-3, "got {}", bar.opacity());
+
+        // An out-of-range write is clamped, and the property route agrees.
+        bar.set_idle_opacity(2.0);
+        assert!((bar.idle_opacity() - 1.0).abs() < f32::EPSILON);
+        assert_eq!(bar.get("idle_delay_ms").unwrap(), CapabilityValue::UInt(1200));
     }
 }

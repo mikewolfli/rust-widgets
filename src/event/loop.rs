@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 //! Event loop implementation.
+use super::double_click::DoubleClickTracker;
 use super::event_queue::{EventQueue, EventSender};
+use super::key_repeat::{with_dispatch_repeat, KeyRepeatState};
 use super::timer::IdleTask;
 use super::timer::TimerManager;
 #[cfg(all(feature = "touch", not(alloc_frugal)))]
@@ -23,8 +25,6 @@ use core::sync::atomic::Ordering;
 use core::time::Duration;
 #[cfg(not(alloc_frugal))]
 use std::thread;
-#[cfg(all(feature = "touch", not(alloc_frugal)))]
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Type alias for event dispatch function.
 pub type EventDispatchFn = Arc<dyn Fn(ObjectId, &Event) + Send + Sync>;
@@ -42,10 +42,18 @@ pub type EventShortcutFn = Arc<dyn Fn(&Event) -> bool + Send + Sync>;
 /// previous task), which is what a host that switches scenes wants: one pump, never two.
 pub const REACTIVE_PUMP_TASK_ID: u64 = 0x7265_6163_7469_7665;
 
-/// Returns the current timestamp in milliseconds since UNIX epoch.
-#[cfg(all(feature = "touch", not(alloc_frugal)))]
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+/// Milliseconds elapsed on the monotonic clock since `epoch`.
+///
+/// # Why not the wall clock
+///
+/// The gesture path used to stamp touches with `SystemTime::now()`. A wall clock can jump
+/// (NTP correction, a user changing the time zone), which makes an elapsed-time subtraction
+/// report a negative value that saturates to zero or an enormous one; on a touch-dense
+/// stream that read also sat on the event hot path. The loop takes one [`Instant`] origin
+/// when it starts and every gesture timestamp is measured from it, so the deltas it feeds
+/// the recognisers are monotonic by construction.
+fn monotonic_ms(epoch: crate::compat::Instant) -> u64 {
+    epoch.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 /// Whether an event should be handed to the gesture engine.
@@ -303,8 +311,7 @@ pub struct AnimationFrameRequest {
     pub id: u64,
 }
 
-/// Delivers `event` to `target` and, when a parent resolver is installed, through the
-/// capture/target/bubble route.
+/// Delivers `event` to `target` through the capture/target/bubble route.
 ///
 /// # Why a helper rather than inline code
 ///
@@ -312,9 +319,17 @@ pub struct AnimationFrameRequest {
 /// delivers a derived event after the raw one. One helper means the propagation rule cannot
 /// exist in one profile and not the other — the drift that previously made `pump_once` ignore
 /// priorities that the threaded loop honoured.
+///
+/// # One panic barrier per event, not per node
+///
+/// The route can visit the target plus every ancestor up to three times. Wrapping each delivery
+/// in `catch_unwind` therefore paid one unwind barrier per node per event even though a panic
+/// ends the route anyway. The barrier is hoisted around the whole route and the node currently
+/// being delivered is recorded in a `Cell`, so a panic is still intercepted and logged with the
+/// node that caused it, at one barrier per event instead of O(nodes).
 fn deliver_event(
     dispatch: Option<&EventDispatchFn>,
-    parents: Option<&Arc<dyn Fn(ObjectId) -> Option<ObjectId> + Send + Sync>>,
+    parents: &Arc<dyn Fn(ObjectId) -> Option<ObjectId> + Send + Sync>,
     target: ObjectId,
     event: &Event,
 ) {
@@ -324,25 +339,57 @@ fn deliver_event(
         );
         return;
     };
-    let deliver_one = |node: ObjectId, ev: &Event| {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(node, ev)));
-        if let Err(error) = result {
-            log::error!("[event-loop] Dispatch panicked: {error:?}");
-        }
-    };
-    match parents {
-        None => deliver_one(target, event),
-        Some(lookup) => {
-            crate::event::propagation::with_ancestor_chain(target, lookup.as_ref(), |ancestors| {
-                let _ = crate::event::propagation::route_event(
-                    target,
-                    ancestors,
-                    event,
-                    &mut |node, ev, _phase| deliver_one(node, ev),
-                );
-            });
-        }
+    // Records which node's handler is running, so the single barrier can name the culprit.
+    let current = core::cell::Cell::new(target);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::event::propagation::with_ancestor_chain(target, parents.as_ref(), |ancestors| {
+            let _ = crate::event::propagation::route_event(
+                target,
+                ancestors,
+                event,
+                &mut |node, ev, _phase| {
+                    current.set(node);
+                    dispatch(node, ev);
+                },
+            );
+        });
+    }));
+    if let Err(error) = outcome {
+        log::error!(
+            "[event-loop] Dispatch panicked for target {target:?} at node {:?}: {error:?}",
+            current.get()
+        );
     }
+}
+
+/// The built-in parent resolver the loop installs at construction (W-01).
+///
+/// # Why the loop must own a default resolver
+///
+/// `set_parent_lookup` was documented as the switch that turns capture/target/bubble on, and no
+/// production caller ever installed it. The propagation implementation was therefore reachable
+/// only from tests: the loop's real dispatch entry always took the flat branch. The widget
+/// registry already answers "who is this control's parent", so the loop asks it directly. A host
+/// that owns a different tree can still override the resolver through `set_parent_lookup`; it no
+/// longer has to remember to install one for bubbling to work at all.
+///
+/// The resolver is a plain function rather than a closure so it captures nothing and is therefore
+/// trivially `Send + Sync`. It reads the thread-local widget registry, which is the same thread
+/// the controls are mounted on (the loop thread is the UI thread in both profiles).
+#[cfg(not(alloc_frugal))]
+fn runtime_parent(id: ObjectId) -> Option<ObjectId> {
+    crate::widget::runtime::read_widget(id, |widget| widget.parent()).flatten()
+}
+
+/// The `mini` resolver.
+///
+/// The widget registry (`widget::runtime`) is compiled out of the allocation-frugal profile, so
+/// there is no tree for the loop to walk: the honest answer is "this id has no parent". The
+/// three-phase route still runs (one target delivery), which is the same observable behaviour a
+/// flat dispatch had, and a host that builds its own tree installs a resolver explicitly.
+#[cfg(alloc_frugal)]
+fn runtime_parent(_id: ObjectId) -> Option<ObjectId> {
+    None
 }
 
 /// Main event loop for processing events.
@@ -383,16 +430,37 @@ pub struct EventLoop {
     /// This is the event-loop half of W-14/W-15: one entry point asks the shortcut registry (the
     /// only conflict judge) and triggers the command through `ActionManager`.
     shortcut_dispatch: Option<EventShortcutFn>,
-    /// Resolves a control's parent, enabling capture/bubble propagation.
+    /// Resolves a control's parent for the capture/bubble route.
     ///
-    /// # Why propagation is opt-in
+    /// # Why propagation is on by default (W-01)
     ///
-    /// A flat dispatch is the honest behaviour when the loop has no tree: a test that posts an
-    /// event to an id expects one delivery, not a walk over a parent map that may not exist.
-    /// Installing a resolver turns on the three-phase route
-    /// ([`crate::event::propagation::route_event`]) for every event, so a host that owns a widget
-    /// tree gets bubbling by providing one closure.
-    parent_lookup: Option<Arc<dyn Fn(ObjectId) -> Option<ObjectId> + Send + Sync>>,
+    /// The resolver is built in ([`runtime_parent`]) so the three-phase route
+    /// ([`crate::event::propagation::route_event`]) is the loop's **only** delivery path. It was an
+    /// opt-in `Option` before, and no production caller ever installed it, so the whole
+    /// capture/target/bubble implementation was dead in production. A host that owns a tree the
+    /// widget registry cannot describe overrides it through [`EventLoop::set_parent_lookup`];
+    /// there is no longer a "flat vs propagating" fork to fall through by accident.
+    parent_lookup: Arc<dyn Fn(ObjectId) -> Option<ObjectId> + Send + Sync>,
+    /// Which keys are physically held, so a repeated `KeyPress` can be marked as a repeat (W-204).
+    ///
+    /// The platform auto-repeat source is the raw key stream: a platform that repeats a held key
+    /// sends another `KeyPress` for the same code without an intervening `KeyRelease`. Tracking
+    /// the held set in the loop is what turns that stream into the additive repeat flag exposed
+    /// through [`Event::is_key_repeat`].
+    key_state: KeyRepeatState,
+    /// Monotonic origin for the `mini` pump's gesture and double-click timestamps.
+    ///
+    /// The threaded loop takes its own origin when it spawns; the single-threaded pump lives on
+    /// the caller's thread for the loop's whole life, so it stores one here instead of resetting
+    /// it on every call (which would make every timestamp zero).
+    #[cfg_attr(not(alloc_frugal), allow(dead_code))]
+    clock_origin: crate::compat::Instant,
+    /// The event layer's one double-click judgement (W-203).
+    ///
+    /// Touch double-taps are decided by `gesture::DoubleTapGesture`; this tracker applies the
+    /// same rule (the gesture timing tokens) to the mouse stream, so the loop does not accept a
+    /// host `MouseDoubleClick` that contradicts the interval the gesture engine uses.
+    double_click: DoubleClickTracker,
     /// Runtime timer manager emitting `Event::Timer` into this loop queue.
     timer_manager: TimerManager,
     /// Next animation frame request ID.
@@ -490,7 +558,10 @@ impl EventLoop {
             thread_handle: None,
             dispatch_fn: None,
             shortcut_dispatch: None,
-            parent_lookup: None,
+            parent_lookup: Arc::new(runtime_parent),
+            key_state: KeyRepeatState::new(),
+            clock_origin: crate::compat::Instant::now(),
+            double_click: DoubleClickTracker::new(),
             timer_manager,
             next_anim_frame_id: AtomicU64::new(1),
             native_pump: None,
@@ -552,10 +623,16 @@ impl EventLoop {
         let queue = Arc::clone(&self.queue);
         let dispatch_fn = self.dispatch_fn.clone();
         let shortcut_dispatch = self.shortcut_dispatch.clone();
-        let parent_lookup = self.parent_lookup.clone();
+        let parent_lookup = Arc::clone(&self.parent_lookup);
         #[cfg(feature = "touch")]
         let mut gesture_engines = GestureRegistry::new();
+        let mut key_state = core::mem::take(&mut self.key_state);
+        let mut double_click = core::mem::take(&mut self.double_click);
         let native_pump = self.native_pump.clone();
+        // Gesture and double-click timestamps are measured from one monotonic origin (W-P02).
+        // Taking it before the thread starts is what makes every recogniser in this run share the
+        // same base.
+        let gesture_epoch = crate::compat::Instant::now();
         // Idle tasks run on the loop thread, so they move with it. `mem::take` leaves the
         // field empty; a restart after `stop()` therefore begins with none, which is the
         // honest state — the caller re-registers what it still wants.
@@ -611,6 +688,10 @@ impl EventLoop {
                     // Resume older events before appending new ones at the same priority. Count
                     // the retained tail against the cap, so a slow handler cannot grow local storage.
                     let pending = high_events.len() + normal_events.len() + idle_events.len();
+                    // W-P06: consume the wake-dedup flag before the drain. A post that lands from
+                    // here on sets it again and wakes the loop, so no wake-up is lost while the
+                    // posts already queued are handled by this turn.
+                    lock(&queue).clear_wake_pending();
                     // One lock acquisition and one refill for the whole bounded prefix. The
                     // per-event `dequeue` this replaces took the queue mutex n times a turn.
                     let mut had_work = lock(&queue).drain_into(
@@ -630,6 +711,8 @@ impl EventLoop {
                     let cancelled_ref = &cancelled_anim_frames;
                     #[cfg(feature = "touch")]
                     let gesture_ref = &mut gesture_engines;
+                    let key_ref = &mut key_state;
+                    let double_click_ref = &mut double_click;
                     // `mut` is only needed when the `touch` feature captures the gesture
                     // registry by `&mut`; without it the binding is immutable.
                     #[cfg_attr(not(feature = "touch"), allow(unused_mut))]
@@ -676,26 +759,100 @@ impl EventLoop {
                             }
                         }
 
+                        // W-204: the repeat fact comes from the key stream itself. A `KeyPress`
+                        // for a code that is already held is the platform auto-repeat, and the
+                        // flag is scoped to this delivery so a consumer can branch on it without
+                        // an event-layout change. A `KeyRelease` clears the held bit at once.
+                        let repeat = match event {
+                            Event::KeyPress { key, .. } => key_ref.note_press(*key),
+                            Event::KeyRelease { key, .. } => {
+                                key_ref.note_release(*key);
+                                false
+                            }
+                            _ => false,
+                        };
+
+                        // W-203: the loop is the one double-click judge for the mouse stream.
+                        // A host `MouseDoubleClick` that falls outside the gesture engine's
+                        // interval is delivered as the single click it actually is; two plain
+                        // presses inside the interval gain the synthesized double-click the
+                        // gesture engine would have produced for touch.
+                        let mut synthesized_double_click = None;
+                        // Storage for the "a host double-click that the unified interval rejects"
+                        // case. It lives outside the match so the replayed press outlives the
+                        // borrow that `delivery` holds. Declared without an initialiser so the
+                        // allocation only happens on the arm that needs it.
+                        let single_click_replay: Event;
+                        let delivery: &Event = match event {
+                            Event::MousePress { pos, button, modifiers } => {
+                                if double_click_ref.observe_press(
+                                    target,
+                                    *pos,
+                                    *button,
+                                    *modifiers,
+                                    monotonic_ms(gesture_epoch),
+                                ) {
+                                    synthesized_double_click =
+                                        Some(Event::mouse_double_click(pos.x, pos.y, *button));
+                                }
+                                event
+                            }
+                            Event::MouseDoubleClick { pos, button } => {
+                                if double_click_ref.accept_platform_double_click(
+                                    target,
+                                    *pos,
+                                    *button,
+                                    monotonic_ms(gesture_epoch),
+                                ) {
+                                    event
+                                } else {
+                                    // Outside the unified interval: this is a single click whose
+                                    // host-side detector fired too early or too late. Replaying
+                                    // it as a press is what keeps the click from being lost, and
+                                    // it keeps the modifiers the original press carried.
+                                    single_click_replay = Event::MousePress {
+                                        pos: *pos,
+                                        button: *button,
+                                        modifiers: double_click_ref.last_press_modifiers(),
+                                    };
+                                    &single_click_replay
+                                }
+                            }
+                            _ => event,
+                        };
+
                         #[cfg(feature = "touch")]
                         let maybe_gesture_event =
                             if feeds_the_gesture_engine(event) || is_touch_cancel(event) {
-                                gesture_ref.process(target, event, now_ms())
+                                gesture_ref.process(target, event, monotonic_ms(gesture_epoch))
                             } else {
                                 None
                             };
 
                         if let Some(_dispatch) = dispatch_fn_ref {
-                            deliver_event(
-                                dispatch_fn_ref.as_ref(),
-                                parent_lookup.as_ref(),
-                                target,
-                                event,
-                            );
+                            // The repeat flag is scoped around the whole route, so every node the
+                            // event reaches sees the same fact.
+                            with_dispatch_repeat(repeat, || {
+                                deliver_event(
+                                    dispatch_fn_ref.as_ref(),
+                                    &parent_lookup,
+                                    target,
+                                    delivery,
+                                )
+                            });
+                            if let Some(ref synthesized) = synthesized_double_click {
+                                deliver_event(
+                                    dispatch_fn_ref.as_ref(),
+                                    &parent_lookup,
+                                    target,
+                                    synthesized,
+                                );
+                            }
                             #[cfg(feature = "touch")]
                             if let Some(ref gesture) = maybe_gesture_event {
                                 deliver_event(
                                     dispatch_fn_ref.as_ref(),
-                                    parent_lookup.as_ref(),
+                                    &parent_lookup,
                                     target,
                                     gesture,
                                 );
@@ -841,7 +998,7 @@ impl EventLoop {
                 // second tap keeps its engine and double-tap keeps working.
                 #[cfg(feature = "touch")]
                 {
-                    let removed = gesture_engines.sweep(now_ms());
+                    let removed = gesture_engines.sweep(monotonic_ms(gesture_epoch));
                     if removed > 0 {
                         log::trace!("[event-loop] reclaimed {removed} idle gesture engine(s)");
                     }
@@ -881,6 +1038,10 @@ impl EventLoop {
             return false;
         }
         self.timer_manager.pump();
+        // This pump is the consumer of the queue's wake dedup (W-P06): clearing the flag before
+        // selecting work means a post that lands after this point sets it again and wakes the
+        // next pump, while the posts already drained are handled by this one.
+        lock(&self.queue).clear_wake_pending();
         let next = lock(&self.queue).dequeue_priority_first();
         let Some((target, event, _priority)) = next else {
             return false;
@@ -901,7 +1062,47 @@ impl EventLoop {
                 }
             }
         }
-        deliver_event(self.dispatch_fn.as_ref(), self.parent_lookup.as_ref(), target, &event);
+        // W-204: the mini profile derives the repeat fact from the same held-key stream.
+        let repeat = match &event {
+            Event::KeyPress { key, .. } => self.key_state.note_press(*key),
+            Event::KeyRelease { key, .. } => {
+                self.key_state.note_release(*key);
+                false
+            }
+            _ => false,
+        };
+        // W-203: one mouse double-click judgement, shared with the threaded loop.
+        let now_ms = monotonic_ms(self.clock_origin);
+        let mut synthesized_double_click = None;
+        let single_click_replay: Event;
+        let delivery: &Event = match &event {
+            Event::MousePress { pos, button, modifiers } => {
+                if self.double_click.observe_press(target, *pos, *button, *modifiers, now_ms) {
+                    synthesized_double_click =
+                        Some(Event::mouse_double_click(pos.x, pos.y, *button));
+                }
+                &event
+            }
+            Event::MouseDoubleClick { pos, button } => {
+                if self.double_click.accept_platform_double_click(target, *pos, *button, now_ms) {
+                    &event
+                } else {
+                    single_click_replay = Event::MousePress {
+                        pos: *pos,
+                        button: *button,
+                        modifiers: self.double_click.last_press_modifiers(),
+                    };
+                    &single_click_replay
+                }
+            }
+            _ => &event,
+        };
+        with_dispatch_repeat(repeat, || {
+            deliver_event(self.dispatch_fn.as_ref(), &self.parent_lookup, target, delivery)
+        });
+        if let Some(synthesized) = synthesized_double_click {
+            deliver_event(self.dispatch_fn.as_ref(), &self.parent_lookup, target, &synthesized);
+        }
         true
     }
 
@@ -931,6 +1132,10 @@ impl EventLoop {
     pub fn stop(&mut self) {
         *lock(&self.running) = false;
         self.timer_manager.clear();
+        // A key held across the stop boundary must not turn its next press into a phantom
+        // repeat, and a click run must not survive a scene change.
+        self.key_state.reset();
+        self.double_click.reset();
     }
 
     /// Posts an event to the event loop.
@@ -1027,21 +1232,19 @@ impl EventLoop {
         self.shortcut_dispatch = Some(f);
     }
 
-    /// Installs a parent resolver, which turns on capture/target/bubble propagation.
+    /// Installs a parent resolver override, replacing the built-in one.
     ///
-    /// The resolver answers "who is this control's parent?" and is expected to walk the same
-    /// tree the host built. With it installed, every event is offered to the ancestors as a
-    /// capture pass, then to the target, then to the ancestors as a bubble pass; a handler that
-    /// calls [`crate::event::consume_event`] stops the route. Without it, dispatch stays flat —
-    /// one delivery per event — which is what a host with no tree or a test asserting a single
-    /// callback relies on.
+    /// Capture/target/bubble propagation is **already on** when the loop is constructed: the loop
+    /// asks the widget registry for each control's parent ([`runtime_parent`]). This method is the
+    /// override entry for a host whose tree the registry cannot describe, not the switch that
+    /// enables propagation (W-01).
     ///
     /// Must be called before [`Self::start`]: the closure moves onto the loop thread.
     pub fn set_parent_lookup(
         &mut self,
         lookup: Box<dyn Fn(ObjectId) -> Option<ObjectId> + Send + Sync>,
     ) {
-        self.parent_lookup = Some(Arc::from(lookup));
+        self.parent_lookup = Arc::from(lookup);
     }
 
     /// Installs the loop's animation-frame driver.
@@ -2255,6 +2458,139 @@ mod tests {
             *delivered.lock().unwrap(),
             vec![0, 1, 2],
             "idle events beyond the budget are delivered later, in order, not dropped"
+        );
+    }
+
+    /// W-01: the loop's dispatch helper walks the widget tree with no host-installed resolver.
+    ///
+    /// The old `set_parent_lookup` was the only switch that enabled capture/target/bubble and no
+    /// production caller ever set it, so the whole route was dead outside tests. The loop now
+    /// installs a resolver backed by the widget registry at construction; this test registers a
+    /// real parent and child and observes both phases without touching `set_parent_lookup`.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32"), not(feature = "mini")))]
+    #[test]
+    fn the_default_resolver_makes_the_propagation_route_reachable() {
+        use crate::core::Rect;
+        use crate::widget::{runtime, BaseWidget, Widget, WidgetKind};
+
+        // A minimal mounted control: the registry only needs the `Widget` contract.
+        struct Node {
+            base: BaseWidget,
+        }
+        impl crate::event::EventHandler for Node {
+            fn handle_event(&mut self, _event: &Event) {}
+        }
+        impl Widget for Node {
+            fn base(&self) -> &BaseWidget {
+                &self.base
+            }
+            fn base_mut(&mut self) -> &mut BaseWidget {
+                &mut self.base
+            }
+        }
+        let node = |width: u32, class_name: &'static str| Node {
+            base: BaseWidget::new(WidgetKind::Frame, Rect::new(0, 0, width, 100), class_name),
+        };
+
+        let parent = runtime::register(Box::new(node(100, "parent"))).expect("parent registers");
+        let child = runtime::register(Box::new(node(10, "child"))).expect("child registers");
+        runtime::with_widget_mut(child, |widget| widget.base_mut().set_parent(Some(parent)))
+            .expect("child is mounted");
+
+        assert_eq!(
+            runtime_parent(child),
+            Some(parent),
+            "the built-in resolver must read the same tree the controls were mounted in"
+        );
+
+        let mut el = EventLoop::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_in_dispatch = Arc::clone(&seen);
+        el.set_dispatch_fn(Arc::new(move |id, _event| {
+            seen_in_dispatch.lock().unwrap().push(id);
+        }));
+        // The helper both loop profiles use; no `set_parent_lookup` call anywhere in this test.
+        deliver_event(el.dispatch_fn.as_ref(), &el.parent_lookup, child, &Event::Paint);
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![parent, child, parent],
+            "capture, target and bubble must all be reached through the default resolver"
+        );
+
+        let _ = runtime::unregister(child);
+        let _ = runtime::unregister(parent);
+    }
+
+    /// W-204: the repeat flag follows the raw key stream, without changing the event layout.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn repeated_key_presses_are_marked_as_repeats_on_the_loop() {
+        let mut el = EventLoop::new();
+        let observed: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let observed_in_dispatch = Arc::clone(&observed);
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            if matches!(event, Event::KeyPress { .. }) {
+                observed_in_dispatch.lock().unwrap().push(event.is_key_repeat());
+            }
+        }));
+        el.start();
+        let key = 65u32;
+        el.post_event(1, Event::KeyPress { key, modifiers: 0 }, EventPriority::High).unwrap();
+        // A second press with no release in between is the platform auto-repeat.
+        el.post_event(1, Event::KeyPress { key, modifiers: 0 }, EventPriority::High).unwrap();
+        el.post_event(1, Event::KeyRelease { key, modifiers: 0 }, EventPriority::High).unwrap();
+        // After the release the key starts a new run, so this press is not a repeat.
+        el.post_event(1, Event::KeyPress { key, modifiers: 0 }, EventPriority::High).unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(1_500);
+        while observed.lock().unwrap().len() < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        el.stop();
+
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![false, true, false],
+            "the second press of a held key is a repeat; the press after a release is not"
+        );
+    }
+
+    /// W-P01: one panic barrier per event still contains a panicking handler.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn a_panicking_handler_does_not_stop_the_next_event() {
+        let mut el = EventLoop::new();
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let delivered_in_dispatch = Arc::clone(&delivered);
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            if let Event::Custom { name, payload } = event {
+                // Ignore the loop's own `__stop_wake` wake-up.
+                if name.as_ref() != "x" {
+                    return;
+                }
+                if payload.first() == Some(&1) {
+                    panic!("handler failure");
+                }
+                delivered_in_dispatch.lock().unwrap().push(payload.clone());
+            }
+        }));
+        el.start();
+        el.post_event(1, Event::Custom { name: "x".into(), payload: vec![1] }, EventPriority::High)
+            .unwrap();
+        el.post_event(1, Event::Custom { name: "x".into(), payload: vec![2] }, EventPriority::High)
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(1_500);
+        while delivered.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        el.stop();
+
+        assert_eq!(
+            *delivered.lock().unwrap(),
+            vec![vec![2]],
+            "the event after a panicking one must still be delivered"
         );
     }
 }

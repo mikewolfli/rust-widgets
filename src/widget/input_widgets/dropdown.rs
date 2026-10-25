@@ -9,7 +9,7 @@
 //! emits `activated`, and the row the pointer or keyboard marks while the
 //! list is open is reported through `highlighted`.
 
-use crate::compat::{String, ToString, Vec};
+use crate::compat::{Instant, String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler, WheelScroll};
@@ -17,12 +17,13 @@ use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_horizontal_alignment, expect_usize, horizontal_alignment_to_str,
+    expect_bool, expect_horizontal_alignment, expect_string, expect_usize,
+    horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -209,6 +210,15 @@ pub struct Dropdown {
     scroll_offset: usize,
     /// Prefix typed since the last navigation, for first-letter selection.
     type_ahead: String,
+    /// The text painted when nothing is selected (I-09).
+    ///
+    /// Defaults to the `"(Select)"` the control used to hardcode, so an existing caller paints
+    /// exactly what it always did; a host with business wording replaces it.
+    placeholder: String,
+    /// The selection read when the list opened, restored when Escape cancels (I-10).
+    expanded_selection: Option<usize>,
+    /// When the current type-ahead prefix began, for the shared 800 ms rule (I-P06).
+    type_ahead_started: Option<Instant>,
 }
 
 impl Dropdown {
@@ -233,7 +243,28 @@ impl Dropdown {
             max_visible: None,
             scroll_offset: 0,
             type_ahead: String::new(),
+            placeholder: String::from("(Select)"),
+            expanded_selection: None,
+            type_ahead_started: None,
         }
+    }
+
+    /// The text painted while nothing is selected (I-09).
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
+    /// Sets the text painted while nothing is selected.
+    ///
+    /// The default is `"(Select)"`, which is what the control painted before the string was
+    /// configurable (I-09).
+    pub fn set_placeholder(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.placeholder == text {
+            return;
+        }
+        self.placeholder = text;
+        self.base.request_redraw();
     }
 
     /// Rebuilds the label cache from the row model.
@@ -452,6 +483,8 @@ impl Dropdown {
         }
         self.expanded = expanded;
         if expanded {
+            // The selection at open time is what Escape restores (I-10).
+            self.expanded_selection = Some(self.selected_index);
             self.ensure_selected_visible();
             // Opening marks the selected row, so the popup says where Enter would land before
             // the user moves anything.
@@ -559,19 +592,34 @@ impl Dropdown {
         offset.min(max_offset)
     }
 
-    /// Scrolls the popup so the selected row is inside the visible window.
-    pub fn ensure_selected_visible(&mut self) {
+    /// Scrolls the popup so `index` is inside the visible window.
+    fn ensure_row_visible(&mut self, index: usize) {
         if self.items.is_empty() {
             self.scroll_offset = 0;
             return;
         }
         let page = self.page_size();
-        if self.selected_index < self.scroll_offset {
-            self.scroll_offset = self.selected_index;
-        } else if self.selected_index >= self.scroll_offset + page {
-            self.scroll_offset = self.selected_index + 1 - page;
+        if index < self.scroll_offset {
+            self.scroll_offset = index;
+        } else if index >= self.scroll_offset + page {
+            self.scroll_offset = index + 1 - page;
         }
         self.scroll_offset = self.clamp_scroll(self.scroll_offset);
+    }
+
+    /// Scrolls the popup so the selected row is inside the visible window.
+    pub fn ensure_selected_visible(&mut self) {
+        self.ensure_row_visible(self.selected_index);
+    }
+
+    /// Moves the popup's **mark** to `index`, keeping it in view.
+    ///
+    /// The mark is the row Enter would confirm; moving it does not change the selection, which
+    /// is what makes the open list a two-stage gesture — browse, then confirm (I-10).
+    fn move_highlight(&mut self, index: usize) {
+        self.set_highlighted(Some(index));
+        self.ensure_row_visible(index);
+        self.base.request_redraw();
     }
 
     /// Rows currently inside the popup window.
@@ -582,15 +630,21 @@ impl Dropdown {
     }
 
     /// Selects the first enabled row at or after `start` whose label begins with `prefix`.
+    ///
+    /// The prefix is folded once and each label compared byte-wise, instead of allocating a
+    /// lowercased copy of every row (I-P05).
     fn find_prefix(&self, prefix: &str, start: usize) -> Option<usize> {
-        let needle = prefix.to_lowercase();
+        let needle = crate::widget::input_widgets::text_match::fold(prefix);
         let count = self.items.len();
         if count == 0 {
             return None;
         }
         (0..count).map(|offset| (start + offset) % count).find(|&index| {
             self.is_item_enabled(index)
-                && self.items[index].text.to_lowercase().starts_with(&needle)
+                && crate::widget::input_widgets::text_match::starts_with(
+                    &self.items[index].text,
+                    &needle,
+                )
         })
     }
 
@@ -601,6 +655,10 @@ impl Dropdown {
         } else {
             (0..from.min(self.items.len())).rev().find(|&index| self.is_item_enabled(index))
         }
+    }
+    /// The row the popup currently marks, falling back to the committed selection.
+    fn marked_row(&self) -> usize {
+        self.highlighted_index.unwrap_or(self.selected_index)
     }
 }
 
@@ -632,10 +690,17 @@ impl Widget for Dropdown {
 
     fn size_hint(&self) -> crate::core::Size {
         // Derived through the same metric the band is drawn from, so the reported size and the
-        // painted box cannot describe two different controls. The width was the bare expression
-        // `max_text_w * 8 + 30` and the height a flat `24`, while `draw` painted the whole given
-        // rectangle — 120 px tall in the census cell.
-        let widest = self.items.iter().map(|item| item.text.len() as u32).max().unwrap_or(6) * 8;
+        // painted box cannot describe two different controls. The width was a bare
+        // `max(text.len()) * 8` — a **byte** count, so a CJK label asked for roughly three times
+        // the width it draws (I-P15). The measurement is the shared per-cluster estimate
+        // `editable_combo_box` already uses.
+        let font = effective_font(self.style());
+        let widest = self
+            .items
+            .iter()
+            .map(|item| estimate_text_width(&item.text, font, 1.0))
+            .max()
+            .unwrap_or(6);
         let side_air = (dimensions::TEXT_FIELD_MIN_HEIGHT / 2).saturating_sub(8);
         let trailing = (PADDING.max(0) as u32)
             + INDICATOR_WIDTH.max(0) as u32
@@ -704,6 +769,7 @@ impl WidgetProperties for Dropdown {
                 None => Ok(CapabilityValue::Null),
             },
             "scroll_offset" => Ok(CapabilityValue::UInt(self.scroll_offset() as u64)),
+            "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
@@ -736,6 +802,10 @@ impl WidgetProperties for Dropdown {
                 self.set_scroll_offset(expect_usize(value)?);
                 Ok(())
             }
+            "placeholder" => {
+                self.set_placeholder(expect_string(value)?);
+                Ok(())
+            }
             // `text` follows the selection and `item_count` the item list.
             "text" | "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -752,6 +822,7 @@ impl WidgetProperties for Dropdown {
             "alignment",
             "max_visible",
             "scroll_offset",
+            "placeholder",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -833,42 +904,42 @@ impl EventHandler for Dropdown {
                 }
 
                 let page = self.page_size();
+                // The open list is a **two-stage** gesture: these keys move the mark, Enter (or a
+                // click) commits it, Escape restores the selection the list opened with. Driving
+                // the selection directly made every arrow press a value change (I-10).
                 match *key {
                     // The arrows, paging and Home/End skip disabled rows: a row that cannot be
                     // chosen is not a navigation target either.
                     38 => {
-                        if let Some(target) = self.neighbour_enabled(self.selected_index, false) {
-                            self.set_selected_index(target);
-                            self.ensure_selected_visible();
+                        let from = self.marked_row();
+                        if let Some(target) = self.neighbour_enabled(from, false) {
+                            self.move_highlight(target);
                         }
                     }
                     40 => {
-                        if let Some(target) = self.neighbour_enabled(self.selected_index, true) {
-                            self.set_selected_index(target);
-                            self.ensure_selected_visible();
+                        let from = self.marked_row();
+                        if let Some(target) = self.neighbour_enabled(from, true) {
+                            self.move_highlight(target);
                         }
                     }
                     33 => {
                         // Page Up: the nearest enabled row at or before one page up.
-                        let floor = self.selected_index.saturating_sub(page);
-                        if let Some(target) = (floor..self.selected_index)
-                            .rev()
-                            .find(|&index| self.is_item_enabled(index))
+                        let from = self.marked_row();
+                        let floor = from.saturating_sub(page);
+                        if let Some(target) =
+                            (floor..from).rev().find(|&index| self.is_item_enabled(index))
                         {
-                            self.set_selected_index(target);
-                            self.ensure_selected_visible();
+                            self.move_highlight(target);
                         }
                     }
                     34 => {
                         // Page Down: the nearest enabled row at or before one page down.
-                        let ceiling =
-                            (self.selected_index + page).min(self.items.len().saturating_sub(1));
-                        if let Some(target) = (self.selected_index + 1..=ceiling)
-                            .rev()
-                            .find(|&index| self.is_item_enabled(index))
+                        let from = self.marked_row();
+                        let ceiling = (from + page).min(self.items.len().saturating_sub(1));
+                        if let Some(target) =
+                            (from + 1..=ceiling).rev().find(|&index| self.is_item_enabled(index))
                         {
-                            self.set_selected_index(target);
-                            self.ensure_selected_visible();
+                            self.move_highlight(target);
                         }
                     }
                     36 => {
@@ -876,8 +947,7 @@ impl EventHandler for Dropdown {
                         if let Some(target) =
                             (0..self.items.len()).find(|&index| self.is_item_enabled(index))
                         {
-                            self.set_selected_index(target);
-                            self.ensure_selected_visible();
+                            self.move_highlight(target);
                         }
                     }
                     35 => {
@@ -885,33 +955,52 @@ impl EventHandler for Dropdown {
                         if let Some(target) =
                             (0..self.items.len()).rev().find(|&index| self.is_item_enabled(index))
                         {
-                            self.set_selected_index(target);
-                            self.ensure_selected_visible();
+                            self.move_highlight(target);
                         }
                     }
                     13 => {
                         // Enter commits the marked row, then closes. Activation is what the user
-                        // chose; `changed` may already have reported the navigation.
-                        if self.is_item_enabled(self.selected_index) {
-                            self.activated.emit(self.selected_index);
+                        // chose; the selection only changes here.
+                        let target = self.marked_row();
+                        if self.is_item_enabled(target) {
+                            self.set_selected_index(target);
+                            self.activated.emit(target);
                         }
                         self.set_expanded(false);
                     }
                     27 => {
-                        // Escape — cancel, collapse
+                        // Escape — cancel: drop the mark and restore the selection the list opened
+                        // with, then collapse (I-10).
                         self.type_ahead.clear();
+                        self.type_ahead_started = None;
+                        if let Some(previous) = self.expanded_selection.take() {
+                            self.selected_index = previous;
+                        }
                         self.set_expanded(false);
                     }
                     32..=126 => {
                         // First-letter selection, wrapping from the current row.
                         if let Some(ch) = char::from_u32(*key) {
+                            // A prefix older than the shared timeout no longer describes what the
+                            // user is typing, so it is dropped before this key extends it — the
+                            // stale buffer used to intercept the first letter of the next search
+                            // forever (I-P06). Clearing queues no frame by itself.
+                            let now = Instant::now();
+                            let expired = self.type_ahead_started.is_none_or(|started| {
+                                now.duration_since(started).as_millis()
+                                    > u128::from(
+                                        crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS,
+                                    )
+                            });
+                            if expired {
+                                self.type_ahead.clear();
+                            }
+                            self.type_ahead_started = Some(now);
                             self.type_ahead.push(ch);
                             let start = (self.selected_index + 1).min(self.items.len());
                             if let Some(index) = self.find_prefix(&self.type_ahead, start) {
-                                self.set_selected_index(index);
-                                self.ensure_selected_visible();
+                                self.move_highlight(index);
                             }
-                            self.base.request_redraw();
                         }
                     }
                     _ => {}
@@ -1012,7 +1101,7 @@ impl Draw for Dropdown {
 
         let (label, color) = match self.selected_text() {
             Some(text) => (text, text_color),
-            None => ("(Select)", placeholder_color),
+            None => (self.placeholder.as_str(), placeholder_color),
         };
         // Fitted, so a selection longer than the field is elided rather than drawn under the
         // indicator — the box it is given is the one the indicator left.
@@ -1257,31 +1346,50 @@ mod tests {
         dd.handle_event(&Event::key_press(40, 0));
         assert!(dd.is_expanded());
 
-        // Down arrow moves to next item
+        // The open list is two-stage: an arrow moves the **mark**, not the committed selection
+        // (I-10).
         dd.handle_event(&Event::key_press(40, 0));
-        assert_eq!(dd.selected_index().unwrap_or(0), 1);
+        assert_eq!(dd.highlighted_index(), Some(1));
+        assert_eq!(dd.selected_index().unwrap_or(0), 0);
 
         dd.handle_event(&Event::key_press(40, 0));
-        assert_eq!(dd.selected_index().unwrap_or(0), 2);
+        assert_eq!(dd.highlighted_index(), Some(2));
 
         // Already at last — should stay
         dd.handle_event(&Event::key_press(40, 0));
-        assert_eq!(dd.selected_index().unwrap_or(0), 2);
+        assert_eq!(dd.highlighted_index(), Some(2));
 
         // Up arrow
         dd.handle_event(&Event::key_press(38, 0));
-        assert_eq!(dd.selected_index().unwrap_or(0), 1);
+        assert_eq!(dd.highlighted_index(), Some(1));
 
-        dd.handle_event(&Event::key_press(38, 0));
-        assert_eq!(dd.selected_index().unwrap_or(0), 0);
-
-        // Already at first — should stay
-        dd.handle_event(&Event::key_press(38, 0));
-        assert_eq!(dd.selected_index().unwrap_or(0), 0);
-
-        // Enter commits and collapses
+        // Enter commits the marked row and collapses
         dd.handle_event(&Event::key_press(13, 0));
+        assert_eq!(dd.selected_index(), Some(1));
         assert!(!dd.is_expanded());
+    }
+
+    #[test]
+    fn escape_restores_the_selection_the_list_opened_with() {
+        let mut dd = make_dropdown();
+        dd.handle_event(&Event::key_press(40, 0));
+        dd.handle_event(&Event::key_press(40, 0));
+        dd.handle_event(&Event::key_press(40, 0));
+        assert_eq!(dd.highlighted_index(), Some(2));
+        assert!(!dd.is_expanded() || dd.selected_index() == Some(0));
+
+        dd.handle_event(&Event::key_press(27, 0));
+        assert!(!dd.is_expanded());
+        assert_eq!(dd.selected_index(), Some(0));
+        assert_eq!(dd.highlighted_index(), None);
+    }
+
+    #[test]
+    fn the_placeholder_is_configurable() {
+        let mut dd = Dropdown::new(Vec::new(), Rect::new(0, 0, 200, 30));
+        assert_eq!(dd.placeholder(), "(Select)");
+        dd.set_placeholder("Pick a city");
+        assert_eq!(dd.placeholder(), "Pick a city");
     }
 
     #[test]
@@ -1539,17 +1647,23 @@ mod tests {
         dropdown.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
         assert_eq!(dropdown.scroll_offset(), 1, "a notch scrolls the popup");
 
+        // The open list is two-stage (I-10): paging and End move the **mark**, not the value.
         dropdown.handle_event(&Event::KeyPress { key: 34, modifiers: 0 }); // PageDown
-        assert!(dropdown.selected_index().unwrap() >= 3);
+        assert!(dropdown.highlighted_index().unwrap() >= 3);
         assert!(dropdown.scroll_offset() >= 1);
+        assert_eq!(dropdown.selected_index(), Some(0), "nothing is committed by navigating");
 
         dropdown.handle_event(&Event::KeyPress { key: 35, modifiers: 0 }); // End
-        assert_eq!(dropdown.selected_index(), Some(9));
-        assert_eq!(dropdown.scroll_offset(), 7, "the selection is kept visible");
+        assert_eq!(dropdown.highlighted_index(), Some(9));
+        assert_eq!(dropdown.scroll_offset(), 7, "the mark is kept visible");
 
-        // Type-ahead wraps and selects the first matching label.
+        // Type-ahead wraps and marks the first matching label.
         dropdown.handle_event(&Event::KeyPress { key: 73, modifiers: 0 }); // 'I'
         dropdown.handle_event(&Event::KeyPress { key: 116, modifiers: 0 }); // 't'
+        assert_eq!(dropdown.highlighted_index(), Some(1));
+
+        // Enter is what commits the mark.
+        dropdown.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
         assert_eq!(dropdown.selected_text(), Some("Item 1"));
     }
 

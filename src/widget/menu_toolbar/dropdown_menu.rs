@@ -8,7 +8,7 @@
 //! optional icon, enabled state, and optional children for submenu support.
 //! Selecting an item emits an `item_selected` signal with the item's value.
 
-use crate::compat::HashMap;
+use crate::compat::{HashMap, Rc, RefCell};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -21,7 +21,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
-use crate::widget::metrics::effective_font;
+use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -122,6 +122,18 @@ pub struct DropdownItem {
     pub checked: bool,
     /// Optional child items for submenu support.
     pub children: Vec<DropdownItem>,
+    /// Whether this row is a group divider rather than a choice.
+    ///
+    /// A separator owns no label and can never be selected; it exists so a list can group its
+    /// rows without inventing a disabled item that would still draw as a row (M-04).
+    pub separator: bool,
+    /// The accelerator text painted in the right-hand column, or `""` for none.
+    pub shortcut: String,
+    /// The [`crate::menu_toolbar::action::Action`] identity this row stands for, if any.
+    ///
+    /// It mirrors `MenuEntry.action_id`: activating the row emits `action_triggered` with this
+    /// value, so a host can route the command without parsing the label (COMP-G04).
+    pub action_id: Option<String>,
 }
 
 impl DropdownItem {
@@ -135,7 +147,30 @@ impl DropdownItem {
             checkable: false,
             checked: false,
             children: Vec::new(),
+            separator: false,
+            shortcut: String::new(),
+            action_id: None,
         }
+    }
+
+    /// Creates a group divider: a full-width rule with no label and no hit target.
+    pub fn separator() -> Self {
+        let mut item = Self::new("", "");
+        item.separator = true;
+        item.enabled = false;
+        item
+    }
+
+    /// Sets the accelerator text shown in the row's trailing column.
+    pub fn with_shortcut(mut self, shortcut: &str) -> Self {
+        self.shortcut = shortcut.to_string();
+        self
+    }
+
+    /// Links the row to an action id emitted through `action_triggered`.
+    pub fn with_action_id(mut self, action_id: &str) -> Self {
+        self.action_id = Some(action_id.to_string());
+        self
     }
 
     /// Sets the icon for this item.
@@ -207,7 +242,7 @@ struct ListPaint<'a> {
     first: usize,
     end: usize,
     alignment: crate::core::Alignment,
-    icon_sources: &'a [(crate::compat::String, IconSource)],
+    icon_sources: &'a HashMap<String, IconSource>,
     selected_value: Option<&'a str>,
     highlight_selection: bool,
     /// Whether a row with children paints its disclosure arrow.
@@ -229,13 +264,6 @@ fn draw_item_list(
     palette: ListPalette,
 ) {
     let item_font = effective_font(style);
-    // One lookup table for the whole paint. The previous per-row `iter().find(..)` made a
-    // full list of n rows O(n²); the table is built once and every row resolves its icon in
-    // constant time. It borrows the ids, so building it allocates no strings.
-    let mut icon_sources: HashMap<&str, IconSource> = HashMap::new();
-    for (id, source) in paint.icon_sources {
-        icon_sources.insert(id.as_str(), *source);
-    }
     for index in paint.first..paint.end {
         let Some(item) = paint.items.get(index) else {
             continue;
@@ -246,6 +274,17 @@ fn draw_item_list(
             paint.panel.width,
             ITEM_HEIGHT as u32,
         );
+
+        // A separator is a rule across the row, not a choice: it paints no label, no icon and
+        // no highlight, and it is the only row kind that draws a divider (M-04).
+        if item.separator {
+            context.draw_line(
+                Point::new(row.x + 4, row.y + row.height as i32 / 2),
+                Point::new(row.x + row.width as i32 - 4, row.y + row.height as i32 / 2),
+                palette.separator,
+            );
+            continue;
+        }
 
         let is_selected = paint.highlight_selection
             && paint.selected_value.is_some_and(|value| item.value.as_str() == value);
@@ -273,7 +312,7 @@ fn draw_item_list(
         }
 
         // Item icon
-        let icon_source = icon_sources.get(item.value.as_str()).copied();
+        let icon_source = paint.icon_sources.get(item.value.as_str()).copied();
         if let Some(source) = icon_source {
             let icon_line = context.text_line(row, item_font);
             let side = icon_line.height.clamp(1, 16);
@@ -299,12 +338,21 @@ fn draw_item_list(
             item_x += 20;
         }
 
-        // Item label, aligned in the same inner box the field's value uses.
+        // Item label, aligned in the same inner box the field's value uses. The trailing
+        // columns (shortcut text, disclosure arrow) are reserved before the label is fitted so
+        // the two cannot overlap.
+        let shortcut_width = if item.shortcut.is_empty() {
+            0
+        } else {
+            estimate_text_width(&item.shortcut, item_font, 1.0) + 8
+        };
+        let arrow_width = if paint.branches_open && !item.children.is_empty() { 12 } else { 0 };
+        let trailing = shortcut_width.max(arrow_width);
         let item_line = context.text_line(row, item_font);
         let label_band = Rect::new(
             item_x,
             item_line.y,
-            (row.x + row.width as i32 - PADDING - item_x).max(0) as u32,
+            (row.x + row.width as i32 - PADDING - trailing as i32 - item_x).max(0) as u32,
             item_line.height,
         );
         let label_align = paint.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
@@ -316,6 +364,24 @@ fn draw_item_list(
             label_align,
         );
 
+        // The accelerator occupies the row's trailing column, right-aligned like `Menu`'s
+        // shortcut column.
+        if !item.shortcut.is_empty() {
+            let shortcut_band = Rect::new(
+                row.x + row.width as i32 - PADDING - shortcut_width as i32,
+                item_line.y,
+                shortcut_width,
+                item_line.height,
+            );
+            context.draw_text_fitted_cow(
+                shortcut_band,
+                &item.shortcut,
+                item_font,
+                palette.disabled_text,
+                HorizontalAlignment::Right,
+            );
+        }
+
         // Submenu indicator if item has children
         if paint.branches_open && !item.children.is_empty() && item.enabled {
             let sub_x = row.x + row.width as i32 - PADDING - 8;
@@ -325,21 +391,13 @@ fn draw_item_list(
                     Point::new(sub_x, sub_y),
                     Point::new(sub_x, sub_y + 8),
                     Point::new(sub_x + 5, sub_y + 4),
-                ],
+                ]
+                .into(),
                 closed: true,
                 color: palette.disabled_text,
                 filled: true,
                 width: 1,
             });
-        }
-
-        // Separator line
-        if index + 1 < paint.end {
-            context.draw_line(
-                Point::new(row.x + 4, row.y + row.height as i32),
-                Point::new(row.x + row.width as i32 - 4, row.y + row.height as i32),
-                palette.separator,
-            );
         }
     }
 }
@@ -389,7 +447,21 @@ pub struct DropdownMenu {
     pub about_to_show: GenericSignal,
     /// Emitted just after the list collapses.
     pub about_to_hide: GenericSignal,
+    /// Emitted with the linked [`crate::menu_toolbar::action::Action`] id when a leaf row with
+    /// an `action_id` is chosen (COMP-G04).
+    pub action_triggered: Signal1<String>,
+    /// The text shown when nothing is selected.
+    placeholder_text: String,
+    /// The caller's cap on visible rows, or `None` for the policy default.
+    max_visible_rows: Option<usize>,
+    /// Bumped whenever the typed icon assignments change.
+    icons_revision: u64,
+    /// The cached `value -> IconSource` index, keyed by [`Self::icons_revision`].
+    icon_index_cache: IconIndexCache,
 }
+
+/// The cached `value -> IconSource` index and the icon revision it was built under.
+type IconIndexCache = RefCell<Option<(u64, Rc<HashMap<String, IconSource>>)>>;
 
 impl DropdownMenu {
     /// Creates a new DropdownMenu widget with the given geometry.
@@ -410,7 +482,62 @@ impl DropdownMenu {
             submenu_requested: Signal1::new(),
             about_to_show: GenericSignal::new(),
             about_to_hide: GenericSignal::new(),
+            action_triggered: Signal1::new(),
+            placeholder_text: String::from("Select..."),
+            max_visible_rows: None,
+            icons_revision: 0,
+            icon_index_cache: RefCell::new(None),
         }
+    }
+
+    /// The placeholder shown while nothing is selected.
+    pub fn placeholder_text(&self) -> &str {
+        &self.placeholder_text
+    }
+
+    /// Replaces the placeholder text and repaints when it changes (M-05).
+    pub fn set_placeholder_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.placeholder_text == text {
+            return;
+        }
+        self.placeholder_text = text;
+        self.base.request_redraw();
+    }
+
+    /// The caller-configured cap on visible rows, or `None` when the default applies.
+    pub fn max_visible_rows(&self) -> Option<usize> {
+        self.max_visible_rows
+    }
+
+    /// Caps the list at `rows` visible rows. A zero is raised to one (M-05).
+    pub fn set_max_visible_rows(&mut self, rows: usize) {
+        let rows = Some(rows.max(1));
+        if self.max_visible_rows == rows {
+            return;
+        }
+        self.max_visible_rows = rows;
+        self.clamp_scroll();
+        self.base.request_redraw();
+    }
+
+    /// The `value -> IconSource` index for the current icon assignments.
+    ///
+    /// Built once per assignment revision rather than once per painted list, which is what the
+    /// old per-call map did for the field and every open child panel (G-P05).
+    fn icon_index(&self) -> Rc<HashMap<String, IconSource>> {
+        if let Some((revision, index)) = self.icon_index_cache.borrow().as_ref() {
+            if *revision == self.icons_revision {
+                return Rc::clone(index);
+            }
+        }
+        let mut index = HashMap::new();
+        for (value, source) in &self.item_icon_sources {
+            index.insert(value.clone(), *source);
+        }
+        let index = Rc::new(index);
+        *self.icon_index_cache.borrow_mut() = Some((self.icons_revision, Rc::clone(&index)));
+        index
     }
 
     /// Sets the selected item by value. If the value does not match any
@@ -544,7 +671,9 @@ impl DropdownMenu {
 
     /// Whether row `index` of `level` is present and enabled.
     fn row_enabled_at(&self, level: usize, index: usize) -> bool {
-        self.items_at(level).and_then(|items| items.get(index)).is_some_and(|item| item.enabled)
+        self.items_at(level)
+            .and_then(|items| items.get(index))
+            .is_some_and(|item| item.enabled && !item.separator)
     }
 
     /// Moves the keyboard-active row of `level` by `delta`, skipping disabled rows and
@@ -673,13 +802,12 @@ impl DropdownMenu {
         } else {
             current.saturating_sub(page).max(visible_start)
         };
-        let candidates: Vec<usize> = if down {
-            (target..visible_end).collect()
+        let found = if down {
+            (target..visible_end).find(|index| self.row_enabled_at(level, *index))
         } else {
-            (visible_start..=target).rev().collect()
+            (visible_start..=target).rev().find(|index| self.row_enabled_at(level, *index))
         };
-        if let Some(index) = candidates.into_iter().find(|index| self.row_enabled_at(level, *index))
-        {
+        if let Some(index) = found {
             self.set_active_at(level, Some(index));
             self.base.request_redraw();
         }
@@ -745,6 +873,7 @@ impl DropdownMenu {
         // A re-added `value` must not inherit the previous item's icon: the override is keyed by
         // identity, so a stale entry would silently attach the old glyph to a new row.
         self.item_icon_sources.retain(|(value, _)| *value != item.value);
+        self.icons_revision = self.icons_revision.wrapping_add(1);
         self.items.push(item);
         self.base.request_redraw();
     }
@@ -785,6 +914,7 @@ impl DropdownMenu {
         if let Some(source) = source {
             self.item_icon_sources.push((crate::compat::String::from(value), source));
         }
+        self.icons_revision = self.icons_revision.wrapping_add(1);
         self.base.request_redraw();
         Ok(())
     }
@@ -801,6 +931,7 @@ impl DropdownMenu {
         let removed = self.items.len() < len_before;
         if removed {
             self.item_icon_sources.retain(|(id, _)| id != value);
+            self.icons_revision = self.icons_revision.wrapping_add(1);
             // Every open panel holds a snapshot of the removed row's subtree, so none of
             // them can be trusted to describe the list that is still there.
             self.close_all_submenus();
@@ -825,6 +956,7 @@ impl DropdownMenu {
     /// answer rather than keeping an association the caller may have broken.
     pub fn items_mut(&mut self) -> &mut Vec<DropdownItem> {
         self.item_icon_sources.clear();
+        self.icons_revision = self.icons_revision.wrapping_add(1);
         self.close_all_submenus();
         &mut self.items
     }
@@ -837,6 +969,11 @@ impl DropdownMenu {
     /// The configured visible-item cap, falling back to this control's historical
     /// constant when `menu_config` is off.
     fn max_visible_items(&self) -> usize {
+        // A caller-configured cap wins over the policy default, so an individual list can be
+        // shorter (or longer) than the process-wide setting (M-05).
+        if let Some(rows) = self.max_visible_rows {
+            return rows.max(1);
+        }
         super::effects::current().visible_items_or(MAX_VISIBLE_ITEMS as u32).max(1) as usize
     }
 
@@ -1040,8 +1177,12 @@ impl DropdownMenu {
         }
         let value = item.value.clone();
         let label = item.label.clone();
+        let action_id = item.action_id.clone();
         let is_branch = !item.children.is_empty();
         let checkable = item.checkable;
+        if item.separator {
+            return;
+        }
         if is_branch {
             if level >= MAX_SUBMENU_DEPTH {
                 // Depth contract: the row still announces that it leads somewhere, but a
@@ -1058,6 +1199,9 @@ impl DropdownMenu {
         }
         self.selected_value = Some(value.clone());
         self.item_selected.emit(value);
+        if let Some(action_id) = action_id {
+            self.action_triggered.emit(action_id);
+        }
         self.collapse();
     }
 
@@ -1129,7 +1273,7 @@ impl DropdownMenu {
         let visible_end = (self.scroll_offset + self.max_visible_items()).min(self.items.len());
         for i in self.scroll_offset..visible_end {
             let ir = self.item_rect(i);
-            if ir.contains_point(pos) && self.items[i].enabled {
+            if ir.contains_point(pos) && self.items[i].enabled && !self.items[i].separator {
                 return Some(i);
             }
         }
@@ -1212,6 +1356,11 @@ impl Widget for DropdownMenu {
             "item_toggled" => {
                 Some(EventSignalRef::mapped("item_toggled", &self.item_toggled, |v| {
                     crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
+            "action_triggered" => {
+                Some(EventSignalRef::mapped("action_triggered", &self.action_triggered, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,
@@ -1356,7 +1505,7 @@ impl Draw for DropdownMenu {
         context.draw_rounded_rect_stroke(geom, 4, border, 1);
 
         // ── Draw selected label or placeholder ──
-        let display_text = self.selected_label().unwrap_or_else(|| "Select...".to_string());
+        let display_text = self.selected_label().unwrap_or_else(|| self.placeholder_text.clone());
         let text_color = if !is_enabled {
             disabled_text_color
         } else if self.selected_value.is_some() {
@@ -1398,7 +1547,8 @@ impl Draw for DropdownMenu {
                     Point::new(arrow_x, arrow_y + 6),
                     Point::new(arrow_x + 10, arrow_y + 6),
                     Point::new(arrow_x + 5, arrow_y),
-                ],
+                ]
+                .into(),
                 closed: true,
                 color: arrow_color,
                 filled: true,
@@ -1411,7 +1561,8 @@ impl Draw for DropdownMenu {
                     Point::new(arrow_x, arrow_y),
                     Point::new(arrow_x + 10, arrow_y),
                     Point::new(arrow_x + 5, arrow_y + 6),
-                ],
+                ]
+                .into(),
                 closed: true,
                 color: arrow_color,
                 filled: true,
@@ -1437,6 +1588,9 @@ impl Draw for DropdownMenu {
             highlight: item_highlight,
             separator,
         };
+        // One icon index per frame rather than one per list: the field and every open child
+        // panel share the same map (G-P05).
+        let icon_index = self.icon_index();
         if self.expanded && !self.items.is_empty() {
             let drop = self.dropdown_rect();
             let revealed = self.reveal.revealed(
@@ -1466,7 +1620,7 @@ impl Draw for DropdownMenu {
                     first: self.scroll_offset,
                     end,
                     alignment: self.alignment,
-                    icon_sources: &self.item_icon_sources,
+                    icon_sources: &icon_index,
                     selected_value: self.selected_value.as_deref(),
                     highlight_selection: true,
                     branches_open: true,
@@ -1524,7 +1678,7 @@ impl Draw for DropdownMenu {
                     first: 0,
                     end: panel.items.len(),
                     alignment: self.alignment,
-                    icon_sources: &self.item_icon_sources,
+                    icon_sources: &icon_index,
                     selected_value: None,
                     highlight_selection: false,
                     // `offset + 1` is the level these rows sit on; the deepest panel

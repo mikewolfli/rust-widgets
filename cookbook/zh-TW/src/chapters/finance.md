@@ -318,7 +318,7 @@ board.set_columns(vec![
     QuoteColumn::Volume,
 ]);
 
-board.set_sort(QuoteSort::ChangeMagnitude);  // 当日振幅最大者在前
+board.set_sort(QuoteSort::ChangeMagnitudeDescending);  // 当日振幅最大者在前
 board.quote_clicked.connect(|symbol| { /* symbol */ });
 board.selection_changed.connect(|symbol| { /* Option<String> */ });
 ```
@@ -326,9 +326,10 @@ board.selection_changed.connect(|symbol| { /* Option<String> */ });
 | 排序 | 顺序 |
 |---|---|
 | `QuoteSort::None` | **你提供的**顺序，精确還原 |
-| `QuoteSort::Symbol` | 按字母 |
+| `QuoteSort::SymbolAscending` | 按字母 A→Z |
+| `QuoteSort::SymbolDescending` | 按字母 Z→A |
 | `QuoteSort::LastDescending` | 價格由高到低 |
-| `QuoteSort::ChangeMagnitude` | 振幅最大者在前，涨跌皆可 |
+| `QuoteSort::ChangeMagnitudeDescending` | 振幅最大者在前，涨跌皆可 |
 
 `QuoteSort::None` 会還原你提供的顺序，而不是把上一次排序的结果倒过来 ——
 自選股的顺序屬於你。`QuoteBoard::select` 仅在真正移动时發出 `selection_changed`，

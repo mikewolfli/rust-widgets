@@ -312,13 +312,13 @@ impl Platform for WasmPlatform {
     }
 
     /// A revision of the environment facts.
+    ///
+    /// See [`crate::platform::locale::environment_revision`]: the shared accessor hashes the
+    /// complete fact set the style snapshot reads (P-03/P-06). The Web backend cannot observe the
+    /// accent colour or the transparency preference, so those two facts are `None` here — the same
+    /// honest absence the trait default reports, not a fabricated value.
     fn environment_generation(&self) -> u64 {
-        crate::platform::locale::generation_hash(
-            self.system_theme(),
-            self.high_contrast(),
-            self.reduce_motion(),
-            self.system_locale(),
-        )
+        crate::platform::locale::environment_revision(self)
     }
 
     /// Safe-area insets from a hidden element whose padding uses `env(safe-area-inset-*)`.

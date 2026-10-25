@@ -15,6 +15,7 @@ use crate::widget::menu_toolbar::popup_reveal::PopupReveal;
 use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use core::cell::RefCell;
 
 /// Where a toast stack anchors its rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -79,6 +80,13 @@ pub struct ToastStack {
     scroll_offset: usize,
     /// Whether rows paint a translucent (vibrant) fill.
     translucent: bool,
+    /// Whether each row paints a trailing close button (SP-72).
+    row_close_visible: bool,
+    /// Measured action-label widths, keyed by label and font size.
+    ///
+    /// `estimate_text_width` ran for every row's action on every frame for a string and a font
+    /// that had not changed (SP-P76).
+    action_widths: RefCell<crate::compat::HashMap<(String, u32), u32>>,
     /// Emitted when toast is activated.
     pub toast_activated: Signal1<String>,
     /// Emitted when toast is dismissed.
@@ -90,6 +98,12 @@ pub struct ToastStack {
 }
 
 impl ToastStack {
+    /// The tint a severity badge is painted in, derived from the theme's semantic token.
+    fn badge_color(level: ToastLevel, background: Color, text_color: Color) -> Color {
+        crate::style::semantic_color(level.into())
+        .map(|token| token.blend(&background, 0.15))
+        .unwrap_or_else(|| background.blend(&text_color, 0.6))
+    }
     /// Creates empty toast stack.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -108,6 +122,8 @@ impl ToastStack {
             shown_at_ms: Vec::new(),
             scroll_offset: 0,
             translucent: false,
+            row_close_visible: true,
+            action_widths: RefCell::new(crate::compat::HashMap::new()),
             toast_activated: Signal1::new(),
             toast_dismissed: Signal1::new(),
             toast_action: Signal1::new(),
@@ -403,10 +419,58 @@ impl ToastStack {
     }
 
     /// The measured trailing band an action's label occupies inside `row`.
-    fn action_rect_for(&self, row: Rect, label: &str, font: &crate::core::Font) -> Rect {
+    fn action_rect_for(
+        &self,
+        row: Rect,
+        label: &str,
+        font: &crate::core::Font,
+        right: i32,
+    ) -> Rect {
+        let width = self.action_width(label, font).min(row.width);
+        Rect::new(right - width as i32 - 4, row.y, width, row.height)
+    }
+
+    /// The measured width of one action label, cached per label and font size.
+    fn action_width(&self, label: &str, font: &crate::core::Font) -> u32 {
+        let key = (label.to_string(), font.size().to_bits());
+        if let Some(width) = self.action_widths.borrow().get(&key) {
+            return *width;
+        }
         let width = estimate_text_width(label, font, 1.0) + 12;
-        let width = width.min(row.width);
-        Rect::new(row.x + row.width as i32 - width as i32 - 4, row.y, width, row.height)
+        self.action_widths.borrow_mut().insert(key, width);
+        width
+    }
+
+    /// Whether each row paints a trailing close button.
+    pub fn row_close_visible(&self) -> bool {
+        self.row_close_visible
+    }
+
+    /// Shows or hides the per-row close button.
+    ///
+    /// The row was removable only through the keyboard or the host API, which left a mouse user
+    /// unable to dismiss a single toast; the button routes through the same dismissal path
+    /// `Delete` uses, so the exit animation and the signal are identical (SP-72).
+    pub fn set_row_close_visible(&mut self, visible: bool) {
+        if self.row_close_visible == visible {
+            return;
+        }
+        self.row_close_visible = visible;
+        self.base.request_redraw();
+    }
+
+    /// The close button's rectangle inside `row`, when it is shown.
+    fn close_rect_for(&self, row: Rect) -> Option<Rect> {
+        if !self.row_close_visible {
+            return None;
+        }
+        let side = 14u32.min(row.height).min(row.width);
+        Some(Rect::new(
+            row.x + row.width as i32 - side as i32 - 4,
+            row.y + (row.height.saturating_sub(side) / 2) as i32,
+            side,
+            side,
+        ))
     }
 
     /// The region the stack actually occupies: the bottom of the control's rectangle, as many
@@ -690,19 +754,30 @@ impl EventHandler for ToastStack {
         match event {
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.row_at(*pos) {
+                    let row = self.row_rect(index);
+                    // The close button occupies the row's trailing corner and runs the same
+                    // removal path as the Delete key (SP-72).
+                    if self.close_rect_for(row).is_some_and(|close| close.contains_point(*pos)) {
+                        let _ = self.select_index(index);
+                        let _ = self.dismiss_selected();
+                        return;
+                    }
                     // An action button occupies the trailing band of a row, so a press there
                     // runs the action instead of merely activating the toast.
                     let has_action =
                         self.toasts.get(index).is_some_and(|item| item.action_label.is_some());
                     if has_action {
-                        let row = self.row_rect(index);
                         let label = self
                             .toasts
                             .get(index)
                             .and_then(|item| item.action_label.as_deref())
                             .unwrap_or("");
                         let font = effective_font(self.base.style());
-                        let action = self.action_rect_for(row, label, font);
+                        let right = self
+                            .close_rect_for(row)
+                            .map(|close| close.x - 4)
+                            .unwrap_or(row.x + row.width as i32);
+                        let action = self.action_rect_for(row, label, font, right);
                         if action.contains_point(*pos) {
                             let id = self.toasts[index].id.clone();
                             self.toast_action.emit(id);
@@ -799,6 +874,15 @@ impl Draw for ToastStack {
 
         // Bottom-up: the newest toast is the lowest row, which is the end the stack grows from.
         let font = effective_font(style);
+        // The four severity tints are derived once for the frame; each row used to take its own
+        // semantic-token lookup and blend (SP-P76).
+        let badges = [
+            Self::badge_color(ToastLevel::Info, background, text_color),
+            Self::badge_color(ToastLevel::Success, background, text_color),
+            Self::badge_color(ToastLevel::Warning, background, text_color),
+            Self::badge_color(ToastLevel::Error, background, text_color),
+        ];
+        let close_ink = text_color.with_alpha(150);
         for (index, item) in self.toasts.iter().enumerate() {
             if index < self.scroll_offset {
                 continue;
@@ -838,23 +922,26 @@ impl Draw for ToastStack {
 
             // The badge is a *state* indicator, so it reads the theme's semantic
             // tokens rather than a literal colour per level.
-            let badge = crate::style::semantic_color(match item.level {
-                ToastLevel::Info => crate::style::SemanticColor::Info,
-                ToastLevel::Success => crate::style::SemanticColor::Success,
-                ToastLevel::Warning => crate::style::SemanticColor::Warning,
-                ToastLevel::Error => crate::style::SemanticColor::Error,
-            })
-            .map(|token| token.blend(&bg, 0.15))
-            .unwrap_or_else(|| bg.blend(&text_color, 0.6));
+            let badge = match item.level {
+                ToastLevel::Info => badges[0],
+                ToastLevel::Success => badges[1],
+                ToastLevel::Warning => badges[2],
+                ToastLevel::Error => badges[3],
+            };
             context.fill_rect(Rect::new(row.x + 6, row.y + 9, 8, 8), badge);
-            // The action band is measured from its own label, and the message is fitted into
-            // what is left. The action used to be a fixed 72 px tail regardless of its label,
-            // and the message used a plain `draw_text`, so a long message ran under the action
-            // (and into the next row's frame) while a short action wasted the reserved tail.
-            let action =
-                item.action_label.as_deref().map(|label| self.action_rect_for(row, label, font));
+            // The action band is measured from its own label (cached) and sits left of the row's
+            // close button; the message is fitted into what is left. The action used to be a fixed
+            // 72 px tail regardless of its label, and the message used a plain `draw_text`, so a
+            // long message ran under the action (and into the next row's frame) while a short
+            // action wasted the reserved tail.
+            let close = self.close_rect_for(row);
+            let trailing_right = close.map(|close| close.x - 4).unwrap_or(row.x + row.width as i32);
+            let action = item
+                .action_label
+                .as_deref()
+                .map(|label| self.action_rect_for(row, label, font, trailing_right));
             let message_right =
-                action.map(|rect| rect.x - row.x - 4).unwrap_or(row.width as i32 - 8).max(0);
+                action.map(|rect| rect.x - row.x - 4).unwrap_or(trailing_right - row.x - 4).max(0);
             context.draw_text_fitted_cow(
                 Rect::new(row.x + 20, row.y, message_right as u32, row.height),
                 &item.message,
@@ -871,6 +958,21 @@ impl Draw for ToastStack {
                     font,
                     text_color,
                     HorizontalAlignment::Right,
+                );
+            }
+            if let Some(close) = close {
+                // A pair of strokes, the same affordance the single-toast control paints.
+                context.draw_line_stroke(
+                    Point::new(close.x + 3, close.y + 3),
+                    Point::new(close.x + close.width as i32 - 3, close.y + close.height as i32 - 3),
+                    close_ink,
+                    1,
+                );
+                context.draw_line_stroke(
+                    Point::new(close.x + close.width as i32 - 3, close.y + 3),
+                    Point::new(close.x + 3, close.y + close.height as i32 - 3),
+                    close_ink,
+                    1,
                 );
             }
         }

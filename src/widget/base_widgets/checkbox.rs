@@ -170,7 +170,8 @@ impl CheckBox {
     /// Returns `None` when no theme is active, so the caller falls back to the resolved background
     /// — correct for an unthemed build, where no state override can move the two apart.
     fn page_surface(&self) -> Option<Color> {
-        crate::style::theme_manager().current_theme().map(|active| active.colors.background)
+        // The cached palette read avoids a manager lock on the paint path (G-A01).
+        crate::style::palette_shared().map(|colors| colors.background)
     }
 
     fn hit_area(&self) -> Rect {
@@ -872,6 +873,13 @@ impl EventHandler for CheckBox {
             }
             Event::MouseRelease { .. } | Event::MouseLeave { .. } | Event::FocusLost => {
                 self.end_auto_repeat();
+            }
+            // Focus arrival repaints the ring immediately (G-A14). The checkbox already handled
+            // FocusLost but had no arrival arm, so the focus indicator waited for an unrelated
+            // redraw to appear — the same defect the button and radio button do not have.
+            Event::FocusGained { .. } => {
+                self.sync_fade();
+                self.base.request_redraw();
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } if self.base.is_enabled() => {

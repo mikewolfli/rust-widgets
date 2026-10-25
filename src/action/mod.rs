@@ -10,10 +10,12 @@ use crate::compat::{format, String};
 mod app;
 mod manager;
 mod types;
+mod undo;
 pub use app::ActionRouter;
-pub use manager::ActionManager;
+pub use manager::{ActionManager, ShortcutDisagreement};
 pub(crate) use types::{canonicalize_shortcut_type, normalize_shortcut};
 pub use types::{Action, ActionBinding, ActionHostKind};
+pub use undo::{Command, UndoManager, UndoStack, DEFAULT_UNDO_LIMIT, GLOBAL_UNDO_CONTEXT};
 
 /// A serializable command record: the fields a project document persists.
 ///
@@ -212,6 +214,7 @@ fn json_raw_field<'a>(text: &'a str, field: &str) -> Option<&'a str> {
 mod tests {
     use super::*;
     use crate::compat::Vec;
+    use crate::shortcut::Key;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -528,5 +531,46 @@ mod tests {
 
         assert_eq!(*toggled.lock().unwrap(), vec![true, false]);
         assert_eq!(*enabled.lock().unwrap(), vec![false]);
+    }
+
+    /// W-08: `connect` writes the shortcut registry and the action reverse index, and the
+    /// reconciliation reports them in agreement.
+    #[test]
+    fn the_router_keeps_both_registration_tables_in_sync() {
+        let mut shortcuts = crate::shortcut::ShortcutManager::new();
+        let mut actions = ActionManager::new();
+        {
+            let mut router = ActionRouter::new(&mut shortcuts, &mut actions);
+            assert!(router.connect("save", crate::shortcut::Shortcut::primary(Key::S), "Save"));
+            assert!(
+                router.shortcut_reconciliation().is_empty(),
+                "one successful connect must leave both tables agreeing"
+            );
+        }
+        assert!(shortcuts.has_action("save"));
+        assert_eq!(actions.shortcut_for_action("save").map(String::as_str), Some("primary+s"));
+    }
+
+    /// W-08: a write that bypasses `connect` is detected from either side.
+    #[test]
+    fn the_reconciliation_names_a_one_sided_registration() {
+        // Action index holds a chord the shortcut registry never accepted.
+        let mut actions = ActionManager::new();
+        assert!(actions.register_action("stray", "Stray"));
+        assert!(actions.bind_shortcut_type(&crate::shortcut::Shortcut::primary(Key::X), "stray"));
+        let report = actions.shortcut_reconciliation(&crate::shortcut::ShortcutManager::new());
+        assert_eq!(report.len(), 1);
+        assert!(report[0].action_manager_has);
+        assert!(!report[0].shortcut_manager_has);
+        assert_eq!(report[0].action_id, "stray");
+
+        // Shortcut registry holds a chord the action index never received.
+        let mut shortcuts = crate::shortcut::ShortcutManager::new();
+        assert!(shortcuts.register("orphan", crate::shortcut::Shortcut::primary(Key::O), "Orphan"));
+        let report = ActionManager::new().shortcut_reconciliation(&shortcuts);
+        assert_eq!(report.len(), 1);
+        assert!(!report[0].action_manager_has);
+        assert!(report[0].shortcut_manager_has);
+        assert_eq!(report[0].action_id, "orphan");
     }
 }

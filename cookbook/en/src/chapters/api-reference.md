@@ -4,7 +4,7 @@ This chapter provides a comprehensive, module-by-module reference for the
 entire `rust_widgets` public API. Use this as a quick lookup when you need to
 find the right type, function, or trait for your task.
 
-The library version documented here is **2.9.1**. Code examples assume
+The library version documented here is **2.9.2**. Code examples assume
 `use rust_widgets::*;` or explicit paths as shown.
 
 ---
@@ -254,6 +254,30 @@ pub trait ListModel {
     fn set_text(&mut self, row: usize, col: usize, text: &str);
 }
 ```
+
+### Event-loop assembly
+
+An `EventLoop` needs three hooks before it can deliver anything: a widget
+dispatch function, a parent lookup, and a shortcut dispatcher. Installing only
+some of them produces a loop that looks wired and silently drops one role, so
+`app` supplies one call that installs the complete set.
+
+```rust
+pub fn assemble_event_loop(event_loop: &mut EventLoop, runtime: &ActionRuntime);
+
+pub fn assemble_event_loop_with(
+    event_loop: &mut EventLoop,
+    runtime: &ActionRuntime,
+    parent_lookup: Option<Box<dyn Fn(ObjectId) -> Option<ObjectId> + Send + Sync>>,
+    dispatch_fn: Option<EventDispatchFn>,
+);
+```
+
+Call it once after constructing the loop and before starting it: the threaded
+loop captures the closures when it spawns. `assemble_event_loop_with` keeps the
+default parent lookup and dispatch function when their arguments are `None`, and
+always takes the shortcut hook from `runtime`. A host that wants a different
+shortcut policy installs it after this call returns.
 
 ---
 
@@ -653,6 +677,44 @@ Widgets from the former `new_widgets` module have been reclassified into dedicat
 | `menu_toolbar/` (extended) | `DropdownMenu`, `MenuButton` |
 | `special_widgets/` (extended) | `Breadcrumb`, `SignaturePad`, `TimelineWidget` |
 | `view_widgets/` (extended) | `ImageGallery`, `PropertiesPanel`, `PropertyGrid`, `TreeTable` |
+
+### Companion Controls *(non-mini)*
+
+Companions are partner controls: each owns one piece of chrome beside a primary
+control — a menu panel for a button, a queue list beside a media player — and
+reports every user intent as a signal. They are not part of the capability
+property table, so they are reached through the module named below rather than
+through `WidgetFactory`.
+
+| Companion | Module | Purpose |
+|---|---|---|
+| `MenuPanel` | `companions` | Anchored drop-down row list; emits `item_clicked`, `highlighted_changed`, `cancelled` |
+| `SpeedDial` | `companions` | Expandable stack of secondary actions beside a `FAB` |
+| `SwipeActions` | `companions` | Multi-action background for a swiped row, split into `leading` and `trailing` sides |
+| `DrawerSectionHeader` | `companions` | Non-selectable heading row that groups a drawer's items |
+| `LayerPanel` | `companions` | Read-only mirror of a `Canvas`'s layers, addressed by layer id |
+| `PlaylistPanel` | `companions` | Queue list for `MediaPlayer`; signal indices are positions in the full list |
+| `StickyHeader` | `container_widgets::sticky_header` | Content a `ScrollArea` sticky band carries; attached with `ScrollArea::set_sticky_header` |
+| `TagGroup` | `display_widgets::tag_group` | Container that lays out and selects real `Tag` children |
+| `Chip` | `input_widgets::input_companions` | One removable chip with drag state; the row container is `TagGroup`, and the multi-item pill control is the separate `Chip` in `special_widgets` |
+| `StepButtons` | `input_widgets::input_companions` | Increment/decrement buttons partnered with a numeric field |
+| `Scrollbar` | `input_widgets::input_companions` | Scroll indicator for the editors; distinct from the `ScrollBar` control |
+| `FormatToolbar` | `input_widgets::input_companions` | Bold/italic/… action set for a rich editor |
+| `SuggestionPopup` | `input_widgets::suggestion_popup` | Candidate list for combo and completion fields, with two-stage navigation |
+| `ValidationBubble` | `input_widgets::validation_bubble` | Field-anchored validation message carrying a severity |
+| `RecentValuesPopup` | `input_widgets::recent_values_popup` | De-duplicated, capacity-bounded history of committed values |
+| `ChartCrosshair` | `companions` | Reference lines and axis chips under a chart pointer |
+| `GridFindBar` | `view_widgets::grid_find_bar` | Incremental find across a table's columns |
+| `ColumnChooser` | `view_widgets::column_chooser` | Show/hide and reorder a table's columns |
+| `ThumbnailCache` | `view_widgets::thumbnail_cache` | Bounded LRU cache of down-sampled bitmaps; owns no ink |
+| `ModalHost` | `dialog::modal_host` | Modal stack that decides which modal is on top and where a dismissal is routed |
+| `MediaTransportBar` | `media_widgets::media_transport` | Play/pause, progress, volume and fullscreen bar for a media control |
+| `MediaScrubber` | `media_widgets::media_scrubber` | Buffered progress track with chapter marks |
+| `WebFindBar` | `web_widgets::find_bar` | Find bar for a web view |
+| `SubtitleBar` | `media_widgets::subtitle_bar` | Wrapping, multi-line caption band |
+| `ValueSpinBox` | `macos::value_spinbox` | Editable number field with stepper arrows in one control |
+| `PopupItemList` | `macos::popup_item_list` | Small bordered item list opened at a point |
+| `CupertinoNavigationStack` | `cupertino::navigation_stack` | Title stack paired with `CupertinoNavigationBar`; emits `popped` and `stack_changed` |
 
 ### Web Widgets *(non-mini)*
 
@@ -1523,6 +1585,7 @@ pub struct WidgetStyle {
     pub border_color: Option<Color>,
     pub border_width: u32,
     pub border_radius: u32,
+    pub corner_radii: Option<CornerRadii>,
     pub padding: Padding,
     pub margin: Margin,
     pub shadow: Option<Shadow>,
@@ -1532,10 +1595,10 @@ pub struct WidgetStyle {
 ```
 
 Builder methods: `with_background(c)`, `with_text_color(c)`, `with_font(f)`,
-`with_border(c, w, r)`, `with_padding(p)`, `with_margin(m)`, `with_shadow(s)`,
-`with_touch_target(s)`, `with_gradient(g)`, `with_opacity(o)`.
+`with_border(c, w, r)`, `with_corner_radii(r)`, `with_padding(p)`, `with_margin(m)`,
+`with_shadow(s)`, `with_touch_target(s)`, `with_gradient(g)`, `with_opacity(o)`.
 
-Instance methods: `inherit_from(parent)`, `merge(other)`.
+Instance methods: `inherit_from(parent)`, `merge(other)`, `resolved_corner_radii()`.
 
 ### Padding & Margin
 
@@ -1546,6 +1609,29 @@ pub struct Margin  { pub top: u32, pub right: u32, pub bottom: u32, pub left: u3
 
 Both support: `new(top, right, bottom, left)`, `all(value)`, `symmetric(v, h)`,
 `normalized(top, right, bottom, left)` — negative values clamped to 0.
+
+### Corner Radii
+
+```rust
+pub struct CornerRadii {
+    pub top_left: u32,
+    pub top_right: u32,
+    pub bottom_right: u32,
+    pub bottom_left: u32,
+}
+
+impl CornerRadii {
+    pub const fn new(top_left: u32, top_right: u32, bottom_right: u32, bottom_left: u32) -> Self;
+    pub const fn all(radius: u32) -> Self;
+    pub const fn is_uniform(&self) -> bool;
+}
+```
+
+`WidgetStyle::border_radius` is the scalar spelling and keeps meaning "all four
+corners". When `WidgetStyle::corner_radii` is also set the per-corner value wins;
+read the resolved shape through `WidgetStyle::resolved_corner_radii` rather than
+either field directly. `CornerRadii::new` takes its arguments in CSS
+`border-radius` order: top-left, top-right, bottom-right, bottom-left.
 
 ### Shadow
 
@@ -1608,12 +1694,15 @@ pub struct Theme {
     pub fonts: Fonts,
     pub spacing: Spacing,
     pub borders: Borders,
+    pub icons: IconTokens,
+    // ...
 }
 
 impl Theme {
     pub fn new(name: &str) -> Self;
     pub fn dark() -> Self;                   // Built-in dark theme
     pub fn light() -> Self;                  // Built-in light theme
+    pub fn icon_size(&self, slot: IconSlot) -> u32;   // Nominal side of a slot, in px
 }
 ```
 
@@ -1627,6 +1716,7 @@ impl ThemeManager {
     pub fn set_theme(&mut self, theme: Theme);
     pub fn current_theme(&self) -> Option<&Theme>;
     pub fn register_theme(&mut self, name: &str, theme: Theme) -> bool;
+    pub fn icon_size(&self, slot: IconSlot) -> Option<u32>;
 }
 ```
 
@@ -1658,21 +1748,61 @@ pub struct Fonts {
 }
 
 pub struct Spacing {
-    pub xs: u32, pub sm: u32, pub md: u32,
-    pub lg: u32, pub xl: u32, pub xxl: u32,
+    pub small: u32,
+    pub medium: u32,
+    pub large: u32,
+    pub extra_large: u32,
 }
 
 pub struct Borders {
     pub width: u32,
     pub radius: u32,
+    pub shadow: bool,
+}
+
+pub struct IconTokens {
+    pub small: u32,    // 16 px — inline and toolbar icons
+    pub medium: u32,   // 18 px — a push button's icon
+    pub large: u32,    // 32 px — ribbon or empty-state icon
+}
+
+pub enum IconSlot { Small, Medium, Large }
+
+pub struct PaddingToken {
+    pub all: Option<u32>,
+    pub vertical: Option<u32>,
+    pub horizontal: Option<u32>,
+    pub top: Option<u32>,
+    pub right: Option<u32>,
+    pub bottom: Option<u32>,
+    pub left: Option<u32>,
 }
 ```
 
 ### Theme Style Token
 
 ```rust
-pub struct ThemeStyleToken { /* ... */ }
+pub struct ThemeStyleToken {
+    pub background: Option<Color>,
+    pub foreground: Option<Color>,
+    pub border: Option<Color>,
+    pub border_width: Option<u32>,
+    pub radius: Option<u32>,
+    pub padding: Option<PaddingToken>,
+    pub font: Option<Font>,
+    pub opacity: Option<f32>,
+    pub shadow: ShadowOverride,
+    // ...
+}
 ```
+
+Every field is an override: `None` keeps the value base resolution produced, so a
+theme can adjust one property of one role without restating the rest.
+`ThemeStyleToken::padding` resolves through `PaddingToken::resolve` with the same
+`side → axis → all → 0` cascade the style builder uses, so
+`"button": { "padding": { "all": 4 } }` moves only that role. `PaddingToken`
+keeps the theme schema on serialisable primitives rather than borrowing the style
+layer's padding type.
 
 ### Style Inheritance Chain
 
@@ -1908,8 +2038,94 @@ pub struct ActionRouter { /* ... */ }
 impl ActionRouter {
     pub fn new() -> Self;
     pub fn route(&self, action_id: &str, kind: ActionHostKind) -> Option<ObjectId>;
+    pub fn connect_undo_redo_stack(&mut self, stack: Arc<Mutex<UndoManager>>) -> bool;
 }
 ```
+
+### Undo / Redo
+
+`connect_undo_redo` binds two closures to the platform accelerators. The stack
+types below record *what* an action did, so a host does not have to build the
+history itself.
+
+```rust
+pub const DEFAULT_UNDO_LIMIT: usize = 256;
+pub const GLOBAL_UNDO_CONTEXT: &str = "";
+
+pub struct Command { /* ... */ }
+impl Command {
+    pub fn new<U, R>(label: impl Into<String>, undo: U, redo: R) -> Self
+        where U: FnMut() + Send + 'static, R: FnMut() + Send + 'static;
+    pub fn label(&self) -> &str;
+    pub fn is_empty(&self) -> bool;
+}
+
+pub struct UndoStack { /* ... */ }
+impl UndoStack {
+    pub fn new() -> Self;
+    pub fn with_limit(limit: usize) -> Self;
+    pub fn limit(&self) -> usize;
+    pub fn set_limit(&mut self, limit: usize);
+    pub fn push(&mut self, command: Command);
+    pub fn record<U, R>(&mut self, label: impl Into<String>, undo: U, redo: R)
+        where U: FnMut() + Send + 'static, R: FnMut() + Send + 'static;
+    pub fn begin_group(&mut self, label: impl Into<String>);
+    pub fn end_group(&mut self) -> bool;
+    pub fn is_group_open(&self) -> bool;
+    pub fn undo(&mut self) -> Option<String>;
+    pub fn redo(&mut self) -> Option<String>;
+    pub fn can_undo(&self) -> bool;
+    pub fn can_redo(&self) -> bool;
+    pub fn undo_len(&self) -> usize;
+    pub fn redo_len(&self) -> usize;
+    pub fn is_dirty(&self) -> bool;
+    pub fn mark_saved(&mut self);
+    pub fn clear(&mut self);
+}
+
+pub struct UndoManager { /* ... */ }
+impl UndoManager {
+    pub fn new() -> Self;
+    pub fn with_limit(limit: usize) -> Self;
+    pub fn active_context(&self) -> &str;
+    pub fn set_active_context(&mut self, context: impl Into<String>) -> String;
+    pub fn stack_for(&self, context: &str) -> Option<&UndoStack>;
+    pub fn stack(&self) -> &UndoStack;
+    pub fn stack_mut(&mut self) -> &mut UndoStack;
+    pub fn contexts(&self) -> Vec<String>;
+    pub fn push(&mut self, command: Command);
+    pub fn record<U, R>(&mut self, label: impl Into<String>, undo: U, redo: R)
+        where U: FnMut() + Send + 'static, R: FnMut() + Send + 'static;
+    pub fn begin_group(&mut self, label: impl Into<String>);
+    pub fn end_group(&mut self) -> bool;
+    pub fn undo(&mut self) -> Option<String>;
+    pub fn redo(&mut self) -> Option<String>;
+    pub fn can_undo(&self) -> bool;
+    pub fn can_redo(&self) -> bool;
+    pub fn is_dirty(&self) -> bool;
+    pub fn mark_saved(&mut self);
+    pub fn clear(&mut self);
+}
+```
+
+Record one step from its two closures, then replay it:
+
+```rust
+let mut stack = UndoStack::new();
+stack.record("insert_text", move || remove(), move || insert_again());
+if stack.can_undo() {
+    stack.undo();
+}
+```
+
+A new command clears the redo pile (the history has branched).
+`UndoStack::begin_group` and `UndoStack::end_group` collapse every command pushed
+between them into one step that undoes in reverse order; nesting is allowed and
+only the outermost pair creates a boundary. `UndoManager` keeps one stack per
+focus context and routes `undo` / `redo` to the active one;
+`GLOBAL_UNDO_CONTEXT` is the initial context, so a single-stack host never calls
+`set_active_context` at all. `ActionRouter::connect_undo_redo_stack` binds the
+platform undo/redo accelerators to the active stack.
 
 ---
 
@@ -1920,13 +2136,29 @@ pub struct ShortcutManager { /* ... */ }
 
 impl ShortcutManager {
     pub fn new() -> Self;
-    pub fn register(&mut self, entry: ShortcutEntry) -> bool;
+    pub fn register(&mut self, action_id: impl Into<String>, shortcut: Shortcut, description: impl Into<String>) -> bool;
+    pub fn register_in(&mut self, scope: impl Into<String>, action_id: impl Into<String>, shortcut: Shortcut, description: impl Into<String>) -> bool;
     pub fn unregister(&mut self, id: &str) -> bool;
     pub fn trigger(&self, shortcut: &Shortcut) -> bool;
-    pub fn all_shortcuts(&self) -> Vec<&ShortcutEntry>;
+    pub fn all_shortcuts(&self) -> &HashMap<Shortcut, String>;
+    pub fn push_scope(&mut self, scope: impl Into<String>);
+    pub fn push_modal_scope(&mut self, scope: impl Into<String>);
+    pub fn pop_scope(&mut self) -> Option<String>;
+    pub fn active_scope(&self) -> Option<&str>;
+    pub fn is_scope_active(&self, scope: &str) -> bool;
+    pub fn active_scopes(&self) -> Vec<String>;
+    pub fn clear_scopes(&mut self);
     pub fn clear(&mut self);
 }
 ```
+
+`ShortcutEntry::scope` is `None` in the global scope and `Some(name)` when the
+binding belongs to a context. A scoped binding fires only while its scope is on
+the stack pushed by `push_scope`, and it shadows a global binding on the same
+chord. `push_modal_scope` additionally stops the lookup from reaching the scopes
+and global bindings beneath it, which is how a dialog rebinds Enter without
+fighting the main window. Conflicts are judged **within** a scope, so the same
+chord may be bound in two different scopes.
 
 ### Shortcut Types
 
@@ -1937,9 +2169,11 @@ pub struct Shortcut {
 }
 
 pub struct ShortcutEntry {
-    pub id: String,
-    pub shortcut: Shortcut,
+    pub action_id: String,
     pub description: String,
+    pub shortcut: Shortcut,
+    pub enabled: bool,
+    pub scope: Option<String>,
 }
 
 pub enum Key {
@@ -2106,6 +2340,24 @@ impl CustomSignalHub {
     pub fn connect(&self, name: &str, f: impl FnMut() + 'static) -> ConnectionHandle;
 }
 ```
+
+### Wiring queries
+
+`connect_event` returning `Ok` proves the event name is published; it does **not**
+prove that a subscriber reaches the control. Two runtime queries answer the
+difference.
+
+```rust
+pub fn is_wired(widget_id: ObjectId, event_name: &str) -> bool;
+pub fn unwired_events(widget_id: ObjectId) -> Option<Vec<&'static str>>;
+```
+
+`signal::is_wired` is `true` when the control's own `EventSignalRef` reports at
+least one live subscriber for `event_name`. `signal::unwired_events` returns every
+published event of that control with no live subscriber, or `None` when the id is
+not a mounted control — which is a different answer from `Some(vec![])`, meaning
+everything is wired. In a stripped profile the capability table is compiled out,
+so `is_wired` returns `false` and `unwired_events` returns `None`.
 
 ---
 
@@ -2399,7 +2651,20 @@ pub fn render_dirty_regions(
     ctx: &mut RenderContext,
     render_all: impl FnMut(&mut RenderContext),
 );
+
+pub fn render_dirty_regions_into(
+    tracker: &mut DirtyRegionTracker,
+    ctx: &mut RenderContext,
+    regions: &mut Vec<Rect>,
+    render_all: impl FnMut(&mut RenderContext),
+);
 ```
+
+`render_dirty_regions_into` is the buffer-reusing form: it clears `regions` and
+refills it with the merged region rectangles before the bucketed traversal, so a
+frame loop can hold one `Vec` for its whole lifetime and pay no per-frame region
+allocation. When the over-capacity fallback is taken, the single clip is built
+from the bounding rectangle and the buffer is left empty.
 
 ### Update Batching
 

@@ -113,11 +113,11 @@ macro_rules! impl_platform_state_properties {
         // keeps it, because a duplicate method in the same `impl` block is a compile error and
         // that is the signal to drop the macro's line.
 
-        fn set_widget_text(&self, widget_id: $crate::core::ObjectId, text: &str) {
-            // `BackendState::set_text` reports whether the id exists; the trait's signature has
-            // no channel for that, so the answer is dropped rather than invented. A caller that
-            // needs to know whether the write landed reads [`Self::get_widget_text`] back.
-            let _ = self.state.set_text(widget_id, text);
+        fn set_widget_text(&self, widget_id: $crate::core::ObjectId, text: &str) -> bool {
+            // `BackendState::set_text` reports whether the id exists; the trait now has the channel
+            // to return that answer instead of dropping it, so an unknown id is observable rather
+            // than a silent no-op (P-203).
+            self.state.set_text(widget_id, text)
         }
 
         fn get_widget_text(&self, widget_id: $crate::core::ObjectId) -> $crate::compat::String {
@@ -131,8 +131,8 @@ macro_rules! impl_platform_state_properties {
             y: i32,
             width: u32,
             height: u32,
-        ) {
-            self.state.set_geometry(widget_id, x, y, width, height);
+        ) -> bool {
+            self.state.set_geometry(widget_id, x, y, width, height)
         }
 
         fn set_widget_enabled(&self, widget_id: $crate::core::ObjectId, enabled: bool) {
@@ -143,16 +143,16 @@ macro_rules! impl_platform_state_properties {
             self.state.enabled(widget_id)
         }
 
-        fn set_widget_visible(&self, widget_id: $crate::core::ObjectId, visible: bool) {
-            self.state.set_visible(widget_id, visible);
+        fn set_widget_visible(&self, widget_id: $crate::core::ObjectId, visible: bool) -> bool {
+            self.state.set_visible(widget_id, visible)
         }
 
         /// Shows a control.
         ///
         /// # Why this is in the macro and not left to the trait default
         ///
-        /// The default is an empty body, so `show_widget` was a silent no-op on every
-        /// backend that did not write one — measured before this: `android`, `wasm` and
+        /// The default answers `false` and does nothing, so `show_widget` was a silent no-op on
+        /// every backend that did not write one — measured before this: `android`, `wasm` and
         /// `macos_objc2`. On the hosts where the library paints into a frame the host pulls
         /// (which is exactly those three), the *visible* flag is the whole story of whether
         /// the control is drawn, so the no-op meant `show_widget` silently did nothing.
@@ -164,14 +164,14 @@ macro_rules! impl_platform_state_properties {
         /// `gtk::Widget`). A backend that does the same must delete this line and write its
         /// own — a duplicate method in one `impl` block is a compile error, which is the
         /// signal, not a silent preference.
-        fn show_widget(&self, widget_id: $crate::core::ObjectId) {
-            self.state.set_visible(widget_id, true);
+        fn show_widget(&self, widget_id: $crate::core::ObjectId) -> bool {
+            self.state.set_visible(widget_id, true)
         }
 
         /// Hides a control. See [`show_widget`](Self::show_widget) for why this is here and
         /// what a native-surface backend must do instead.
-        fn hide_widget(&self, widget_id: $crate::core::ObjectId) {
-            self.state.set_visible(widget_id, false);
+        fn hide_widget(&self, widget_id: $crate::core::ObjectId) -> bool {
+            self.state.set_visible(widget_id, false)
         }
 
         fn is_widget_visible(&self, widget_id: $crate::core::ObjectId) -> bool {

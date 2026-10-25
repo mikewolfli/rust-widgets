@@ -14,6 +14,7 @@
 mod app_core;
 mod handle;
 pub mod lifecycle;
+mod wiring;
 
 pub use app_core::{App, AppConfig};
 /// Records a binding that was accepted by its caller but can never fire.
@@ -35,6 +36,10 @@ pub use handle::{
     ScrollAreaHandle, ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, SplitterHandle,
     StatusBarHandle, SurfaceHandle, SurfaceMountError, TabWidgetHandle, TextEditHandle,
     ToolBarHandle, WebViewHandle, WidgetHandle, WindowHandle, WindowOptions,
+};
+pub use wiring::{
+    assemble_event_loop, assemble_event_loop_with, default_dispatch_fn, default_parent_lookup,
+    ActionRuntime,
 };
 
 // The tab widget's own enums are part of its typed handle surface: a caller passes

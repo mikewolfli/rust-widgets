@@ -7,10 +7,10 @@
 //! (preedit) composition with UTF-16-range-aware positions, as required by
 //! the `NSTextInputClient` protocol.
 //!
-//! When the `objc2-macos` feature is enabled, native `NSTextInputContext`
-//! calls are made to synchronize platform IME state. Without the feature,
-//! the bridge operates as a pure state-machine — suitable for testing and
-//! headless builds.
+//! When the `macos` feature is enabled (the `objc2-macos` name is only an alias
+//! that enables it), native `NSTextInputContext` calls are made to synchronize
+//! platform IME state. Without that feature the bridge operates as a pure
+//! state-machine — suitable for testing and headless builds.
 //!
 //! # UTF-16 range tracking
 //!
@@ -53,6 +53,7 @@ use crate::platform::ime::{ImeBridge, ImeCandidatePosition, ImeComposition};
 struct ImeCtx(*mut objc2::runtime::AnyObject);
 
 #[cfg(all(target_os = "macos", feature = "macos"))]
+// SAFETY: the pointer is created, moved and dereferenced only on the main thread; `Send` moves an opaque token between `Box<dyn Any + Send>` holders and every dereference re-checks the thread.
 unsafe impl Send for ImeCtx {}
 
 /// Reads the `NSTextInputContext` pointer out of an opaque token.
@@ -81,6 +82,7 @@ fn try_activate_nstextinputcontext(
         return None;
     }
 
+// SAFETY: messaging live Objective-C objects from the main thread; the token was created by this module.
     unsafe {
         use objc2::msg_send;
         use objc2::runtime::AnyObject;
@@ -114,6 +116,7 @@ fn sync_nstextinputcontext(
     _marked_range: (usize, usize),
     _selected_range: (usize, usize),
 ) {
+// SAFETY: messaging live Objective-C objects from the main thread; the token was created by this module.
     unsafe {
         use objc2::msg_send;
         use objc2::runtime::AnyObject;
@@ -164,8 +167,8 @@ pub struct MacOsImeBridge {
     candidate_position: Mutex<ImeCandidatePosition>,
 
     // ── Native platform token ──
-    /// Opaque handle to the `NSTextInputContext` (only used on macOS with
-    /// `objc2-macos` feature). Kept alive for the bridge lifetime.
+    /// Opaque handle to the `NSTextInputContext` (only used on macOS with the
+    /// `macos` feature). Kept alive for the bridge lifetime.
     #[allow(dead_code)]
     native_token: Mutex<Option<Box<dyn crate::compat::Any + Send>>>,
 }
@@ -192,7 +195,7 @@ impl MacOsImeBridge {
     /// Attach this bridge to a native `NSView` so that `NSTextInputContext`
     /// can be activated. `view_ptr` is a raw pointer to an `NSView`.
     ///
-    /// On builds **without** `objc2-macos` this is a no-op.
+    /// On builds **without** the `macos` feature this is a no-op.
     pub fn attach_to_view(&self, view_ptr: *mut core::ffi::c_void) {
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
@@ -211,6 +214,7 @@ impl MacOsImeBridge {
 
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
+// SAFETY: messaging AppKit classes on the main thread; selectors are those the class responds to.
             unsafe {
                 use objc2::msg_send;
                 use objc2::runtime::{AnyClass, AnyObject};
@@ -437,6 +441,7 @@ impl ImeBridge for MacOsImeBridge {
         {
             let guard = lock(&self.native_token);
             if let Some(ref token) = *guard {
+// SAFETY: the token is a live Objective-C object owned by this module and read on the main thread.
                 unsafe {
                     use objc2::msg_send;
                     use objc2::runtime::AnyObject;
@@ -469,6 +474,7 @@ impl ImeBridge for MacOsImeBridge {
         {
             let guard = lock(&self.native_token);
             if let Some(ref token) = *guard {
+// SAFETY: the token is a live Objective-C object owned by this module and read on the main thread.
                 unsafe {
                     use objc2::msg_send;
                     use objc2::runtime::AnyObject;
@@ -551,6 +557,7 @@ impl ImeBridge for MacOsImeBridge {
 
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
+// SAFETY: messaging AppKit classes on the main thread; selectors are those the class responds to.
             unsafe {
                 use objc2::msg_send;
                 use objc2::runtime::{AnyClass, AnyObject};
@@ -884,7 +891,7 @@ mod tests {
     fn test_attach_to_view() {
         let bridge = MacOsImeBridge::new();
         let null_ptr = std::ptr::null_mut();
-        // Should not panic (no-op without objc2-macos feature).
+        // Should not panic (no-op without the `macos` feature).
         bridge.attach_to_view(null_ptr);
     }
 

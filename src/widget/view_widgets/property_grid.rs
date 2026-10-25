@@ -109,12 +109,23 @@ pub struct PropertyItem {
     pub editable: bool,
     /// The editor this row uses.
     pub kind: PropertyItemKind,
+    /// Optional category the row belongs to (V-17).
+    ///
+    /// Consecutive rows with the same category are painted under one non-selectable header; a
+    /// `None` row starts an ungrouped section.
+    pub category: Option<String>,
 }
 
 impl PropertyItem {
     /// Creates a new text property item.
     pub fn new(name: impl Into<String>, value: impl Into<String>, editable: bool) -> Self {
-        Self { name: name.into(), value: value.into(), editable, kind: PropertyItemKind::Text }
+        Self {
+            name: name.into(),
+            value: value.into(),
+            editable,
+            kind: PropertyItemKind::Text,
+            category: None,
+        }
     }
 
     /// Replaces the row's editor kind.
@@ -122,6 +133,21 @@ impl PropertyItem {
         self.kind = kind;
         self
     }
+
+    /// Assigns the row to a category (V-17).
+    pub fn in_category(mut self, category: impl Into<String>) -> Self {
+        self.category = Some(category.into());
+        self
+    }
+}
+
+/// One painted line of the property grid: a group header or a property row (V-17).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PropertyRow {
+    /// A non-selectable category header.
+    Category(String),
+    /// The property at this index.
+    Item(usize),
 }
 
 /// Height of one property row, in pixels.
@@ -161,8 +187,18 @@ pub struct PropertyGrid {
     editing: Option<GridEdit>,
     /// Emitted when an edit commits `(row, text)`.
     pub cell_changed: Signal1<(usize, String)>,
+    /// Emitted when the host should open a colour picker for `(row, current hex)` (V-16).
+    pub color_picker_requested: Signal1<(usize, String)>,
+    /// Emitted when the host should open a file picker for `row` (V-16).
+    pub file_picker_requested: Signal1<usize>,
     /// Emitted when the context menu is requested at a point.
     pub context_menu_requested: Signal1<crate::core::Point>,
+    /// The row whose choice popup is open, if any (V-16).
+    choice_popup: Option<usize>,
+    /// The display rows (group headers + items), cached until the structure changes (V-17).
+    grouped_cache: std::cell::RefCell<Option<(u64, Vec<PropertyRow>)>>,
+    /// Bumped by every structural change; keys `grouped_cache`.
+    group_revision: u64,
 }
 
 impl PropertyGrid {
@@ -187,6 +223,45 @@ impl PropertyGrid {
         height.saturating_sub(FIRST_ROW_TOP) / ROW_HEIGHT
     }
 
+    /// The painted display rows: group headers interleaved with items (V-17).
+    ///
+    /// Rebuilt only when the structure changes; with no categories it is exactly one `Item` per
+    /// property, so every existing geometry and hit test keeps its historical answer.
+    fn display_rows(&self) -> Vec<PropertyRow> {
+        let mut cache = self.grouped_cache.borrow_mut();
+        let stale = cache.as_ref().is_none_or(|(revision, _)| *revision != self.group_revision);
+        if stale {
+            *cache = Some((self.group_revision, self.build_display_rows()));
+        }
+        cache.as_ref().expect("the display rows were just built").1.clone()
+    }
+
+    /// Builds the display rows from the property list.
+    fn build_display_rows(&self) -> Vec<PropertyRow> {
+        let mut rows = Vec::with_capacity(self.properties.len());
+        let mut current: Option<&str> = None;
+        for (index, item) in self.properties.iter().enumerate() {
+            match item.category.as_deref().filter(|category| !category.is_empty()) {
+                Some(category) => {
+                    if current != Some(category) {
+                        rows.push(PropertyRow::Category(category.to_string()));
+                        current = Some(category);
+                    }
+                }
+                None => current = None,
+            }
+            rows.push(PropertyRow::Item(index));
+        }
+        rows
+    }
+
+    /// The painted row position of property `index` (V-17).
+    fn display_position_of(&self, index: usize) -> Option<usize> {
+        self.display_rows()
+            .iter()
+            .position(|row| matches!(row, PropertyRow::Item(item) if *item == index))
+    }
+
     /// The largest `scroll_offset` that still shows a row.
     ///
     /// One definition for the wheel, the arrow keys and the End key. Those three used to recompute
@@ -194,7 +269,7 @@ impl PropertyGrid {
     /// formula that disagreed with [`visible_row_count`](Self::visible_row_count) by one row at
     /// some heights and drifted from it whenever either changed.
     fn max_scroll(&self) -> u32 {
-        (self.properties.len() as u32).saturating_sub(self.visible_row_count())
+        (self.display_rows().len() as u32).saturating_sub(self.visible_row_count())
     }
 
     /// The property row under `pos`, or `None` when the pointer is over the header,
@@ -213,7 +288,10 @@ impl PropertyGrid {
             return None;
         }
         let row_index = row_in_view + self.scroll_offset;
-        ((row_index as usize) < self.properties.len()).then_some(row_index as usize)
+        match self.display_rows().get(row_index as usize) {
+            Some(PropertyRow::Item(index)) => Some(*index),
+            Some(PropertyRow::Category(_)) | None => None,
+        }
     }
     /// Creates a new PropertyGrid with the given geometry.
     pub fn new(geometry: Rect) -> Self {
@@ -226,7 +304,12 @@ impl PropertyGrid {
             selected: Signal1::new(),
             editing: None,
             cell_changed: Signal1::new(),
+            color_picker_requested: Signal1::new(),
+            file_picker_requested: Signal1::new(),
             context_menu_requested: Signal1::new(),
+            choice_popup: None,
+            grouped_cache: std::cell::RefCell::new(None),
+            group_revision: 0,
         }
     }
 
@@ -238,6 +321,7 @@ impl PropertyGrid {
         editable: bool,
     ) {
         self.properties.push(PropertyItem::new(name, value, editable));
+        self.group_revision = self.group_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -262,6 +346,7 @@ impl PropertyGrid {
     /// Removes all properties from the grid.
     pub fn clear(&mut self) {
         self.properties.clear();
+        self.group_revision = self.group_revision.wrapping_add(1);
         self.selected_index = None;
         self.scroll_offset = 0;
         self.base.request_redraw();
@@ -309,6 +394,7 @@ impl PropertyGrid {
     /// Adds a typed property item.
     pub fn add_property_item(&mut self, item: PropertyItem) {
         self.properties.push(item);
+        self.group_revision = self.group_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -345,9 +431,26 @@ impl PropertyGrid {
                 true
             }
             PropertyItemKind::Choice(options) if !options.is_empty() => {
-                let current = options.iter().position(|option| *option == item.value).unwrap_or(0);
-                let next = options[(current + 1) % options.len()].clone();
-                self.commit_edit_value(index, next);
+                // A choice opens its option list rather than silently cycling (V-16).
+                self.choice_popup = Some(index);
+                self.selected_index = Some(index);
+                self.base.request_redraw();
+                true
+            }
+            PropertyItemKind::Color => {
+                // The host owns the colour UI; the text editor stays available as the
+                // fallback for a host that has none.
+                self.color_picker_requested.emit((index, item.value.clone()));
+                self.editing = Some(GridEdit::new(index, item.value.clone()));
+                self.selected_index = Some(index);
+                self.base.request_redraw();
+                true
+            }
+            PropertyItemKind::File => {
+                self.file_picker_requested.emit(index);
+                self.editing = Some(GridEdit::new(index, item.value.clone()));
+                self.selected_index = Some(index);
+                self.base.request_redraw();
                 true
             }
             _ => {
@@ -357,6 +460,41 @@ impl PropertyGrid {
                 true
             }
         }
+    }
+
+    /// The option rectangles of an open choice popup (V-16).
+    ///
+    /// Empty when the row is not a choice, is scrolled out of view, or the options do not fit
+    /// under its row. The press path and the draw read this one derivation.
+    fn choice_option_rects(&self, index: usize) -> Vec<(String, Rect)> {
+        let Some(item) = self.properties.get(index) else {
+            return Vec::new();
+        };
+        let PropertyItemKind::Choice(options) = &item.kind else {
+            return Vec::new();
+        };
+        let Some(position) = self.display_position_of(index) else {
+            return Vec::new();
+        };
+        if position < self.scroll_offset as usize {
+            return Vec::new();
+        }
+        let content = self.content_rect();
+        let name_col_width = content.width / 3;
+        let local = position - self.scroll_offset as usize;
+        let mut y = content.y + FIRST_ROW_TOP as i32 + (local as i32 + 1) * ROW_HEIGHT as i32;
+        let x = content.x + name_col_width as i32;
+        let width = content.width.saturating_sub(name_col_width);
+        let bottom = content.y + content.height as i32;
+        let mut rects = Vec::new();
+        for option in options {
+            if y + ROW_HEIGHT as i32 > bottom {
+                break;
+            }
+            rects.push((option.clone(), Rect::new(x, y, width, ROW_HEIGHT)));
+            y += ROW_HEIGHT as i32;
+        }
+        rects
     }
 
     /// Writes a committed value into row `index` and reports it.
@@ -422,6 +560,7 @@ impl PropertyGrid {
     /// [`add_property`](Self::add_property) / [`remove_property`](Self::remove_property), which
     /// keep the cursor in range.
     pub fn properties_mut(&mut self) -> &mut Vec<PropertyItem> {
+        self.group_revision = self.group_revision.wrapping_add(1);
         &mut self.properties
     }
 }
@@ -667,75 +806,93 @@ impl Draw for PropertyGrid {
             0
         };
 
+        let rows = self.display_rows();
         let start_idx = self.scroll_offset as usize;
-        let end_idx = (start_idx + visible_count as usize).min(self.properties.len());
+        let end_idx = (start_idx + visible_count as usize).min(rows.len());
 
-        for i in start_idx..end_idx {
+        for row in rows.iter().skip(start_idx).take(end_idx.saturating_sub(start_idx)) {
             let row_rect = Rect::new(content.x, y, content.width, row_height);
-            let is_selected = self.selected_index == Some(i);
-
-            // Alternating row background — the hover tint sits between the plain bands
-            // and the selection, so the three states stay visually ordered.
-            if is_selected {
-                context.fill_rect(row_rect, selected_row);
-            } else if Some(i) == self.hovered_row {
-                context.fill_rect(row_rect, hovered_row_bg);
-            } else if i % 2 == 0 {
-                context.fill_rect(row_rect, striped_row);
-            } else {
-                context.fill_rect(row_rect, surface);
-            }
-
-            // Name column background
-            let name_rect = Rect::new(content.x, y, name_col_width, row_height);
-            context.fill_rect(name_rect, name_column);
-
-            // The row's line box, so every label is centred on its own row rather than
-            // positioned from a literal `y + 6` that assumed the row began at the control's
-            // top edge.
             let row_line = context.text_line(row_rect, &value_font);
+            match row {
+                PropertyRow::Category(category) => {
+                    // A group header is not selectable and is painted on the name-column wash.
+                    context.fill_rect(row_rect, name_column);
+                    context.draw_text_fitted_cow(
+                        Rect::new(
+                            row_rect.x + 4,
+                            row_line.y,
+                            row_rect.width.saturating_sub(8),
+                            row_line.height.max(1),
+                        ),
+                        category,
+                        &name_font,
+                        ink.blend(&surface, 0.2),
+                        HorizontalAlignment::Left,
+                    );
+                }
+                PropertyRow::Item(index) => {
+                    let i = *index;
+                    let is_selected = self.selected_index == Some(i);
 
-            // Name text (bold)
-            let name_text_color = if !is_enabled { disabled_ink } else { ink };
-            context.draw_text_fitted_cow(
-                Rect::new(
-                    name_rect.x + 4,
-                    row_line.y,
-                    name_col_width.saturating_sub(8),
-                    row_line.height.max(1),
-                ),
-                &self.properties[i].name,
-                &name_font,
-                name_text_color,
-                HorizontalAlignment::Left,
-            );
+                    // Alternating row background — the hover tint sits between the plain bands
+                    // and the selection, so the three states stay visually ordered.
+                    if is_selected {
+                        context.fill_rect(row_rect, selected_row);
+                    } else if Some(i) == self.hovered_row {
+                        context.fill_rect(row_rect, hovered_row_bg);
+                    } else if i % 2 == 0 {
+                        context.fill_rect(row_rect, striped_row);
+                    } else {
+                        context.fill_rect(row_rect, surface);
+                    }
 
-            // Value text
-            // An editable value is a link-like affordance, so it reads the theme's accent
-            // instead of a literal navy that disappears on a dark surface.
-            let value_color = if !is_enabled {
-                disabled_ink
-            } else if self.properties[i].editable {
-                accent
-            } else {
-                ink
-            };
-            let value_text = match self.editing.as_ref() {
-                Some(edit) if edit.row == i => std::borrow::Cow::Owned(edit.with_caret()),
-                _ => std::borrow::Cow::Borrowed(self.properties[i].value.as_str()),
-            };
-            context.draw_text_fitted_cow(
-                Rect::new(
-                    row_rect.x + name_col_width as i32 + 4,
-                    row_line.y,
-                    row_rect.width.saturating_sub(name_col_width).saturating_sub(8),
-                    row_line.height.max(1),
-                ),
-                &value_text,
-                &value_font,
-                value_color,
-                HorizontalAlignment::Left,
-            );
+                    // Name column background
+                    let name_rect = Rect::new(content.x, y, name_col_width, row_height);
+                    context.fill_rect(name_rect, name_column);
+
+                    // Name text (bold)
+                    let name_text_color = if !is_enabled { disabled_ink } else { ink };
+                    context.draw_text_fitted_cow(
+                        Rect::new(
+                            name_rect.x + 4,
+                            row_line.y,
+                            name_col_width.saturating_sub(8),
+                            row_line.height.max(1),
+                        ),
+                        &self.properties[i].name,
+                        &name_font,
+                        name_text_color,
+                        HorizontalAlignment::Left,
+                    );
+
+                    // Value text
+                    // An editable value is a link-like affordance, so it reads the theme's accent
+                    // instead of a literal navy that disappears on a dark surface.
+                    let value_color = if !is_enabled {
+                        disabled_ink
+                    } else if self.properties[i].editable {
+                        accent
+                    } else {
+                        ink
+                    };
+                    let value_text = match self.editing.as_ref() {
+                        Some(edit) if edit.row == i => std::borrow::Cow::Owned(edit.with_caret()),
+                        _ => std::borrow::Cow::Borrowed(self.properties[i].value.as_str()),
+                    };
+                    context.draw_text_fitted_cow(
+                        Rect::new(
+                            row_rect.x + name_col_width as i32 + 4,
+                            row_line.y,
+                            row_rect.width.saturating_sub(name_col_width).saturating_sub(8),
+                            row_line.height.max(1),
+                        ),
+                        &value_text,
+                        &value_font,
+                        value_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
 
             // Row separator
             context.draw_line(
@@ -745,6 +902,22 @@ impl Draw for PropertyGrid {
             );
 
             y += row_height as i32;
+        }
+
+        // A choice popup is drawn last so it sits above every row (V-16).
+        if let Some(index) = self.choice_popup {
+            for (option, option_rect) in self.choice_option_rects(index) {
+                let selected = self.properties.get(index).is_some_and(|item| item.value == option);
+                context.fill_rect(option_rect, if selected { selected_row } else { surface });
+                context.draw_rect(option_rect, separator);
+                context.draw_text_fitted_cow(
+                    option_rect,
+                    &option,
+                    &value_font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
     }
 }
@@ -761,6 +934,25 @@ impl EventHandler for PropertyGrid {
                     return;
                 }
                 if *button == 1 {
+                    let is_press = matches!(event, Event::MousePress { .. });
+                    // An open choice popup owns the next press: clicking an option commits it and
+                    // clicking anywhere else dismisses the popup (V-16). A release must not
+                    // dismiss the popup the press just opened.
+                    if is_press {
+                        if let Some(popup) = self.choice_popup {
+                            let hit = self
+                                .choice_option_rects(popup)
+                                .into_iter()
+                                .find(|(_, rect)| rect.contains_point(*pos));
+                            self.choice_popup = None;
+                            if let Some((option, _)) = hit {
+                                let value = self.coerce_edit_value(popup, &option);
+                                self.commit_edit_value(popup, value);
+                            }
+                            self.base.request_redraw();
+                            return;
+                        }
+                    }
                     let content = self.content_rect();
 
                     // The click is measured from the content box's own top edge, so a press
@@ -787,24 +979,45 @@ impl EventHandler for PropertyGrid {
                     let over_the_grid = self.base.contains_point_with_touch_expansion(*pos);
 
                     if over_the_grid && click_y >= FIRST_ROW_TOP as i32 {
-                        // `draw` paints row `scroll_offset + i` at
+                        // `draw` paints display row `scroll_offset + i` at
                         // `y = content.y + FIRST_ROW_TOP + i * ROW_HEIGHT`, so this is the
                         // inverse of that mapping. `>=` (not `>`) matters: a click on the
                         // first row's top edge is a click on that row, and `>` skipped it.
                         let row_in_view = (click_y as u32 - FIRST_ROW_TOP) / ROW_HEIGHT;
-                        let row_index = row_in_view + self.scroll_offset;
+                        let display_index = row_in_view as usize + self.scroll_offset as usize;
+                        let display_row = self.display_rows().get(display_index).cloned();
 
                         // Bound above by the rows actually painted. Without this, a click
                         // in the blank area below the last row selected an invisible row
                         // that merely happened to exist in `properties`.
-                        if row_in_view < self.visible_row_count()
-                            && (row_index as usize) < self.properties.len()
-                        {
-                            self.selected_index = Some(row_index as usize);
-                            self.selected.emit(row_index as usize);
-                            self.base.clicked.emit();
-                            self.base.request_redraw();
-                            return;
+                        if row_in_view < self.visible_row_count() {
+                            if let Some(PropertyRow::Item(row_index)) = display_row {
+                                self.selected_index = Some(row_index);
+                                self.selected.emit(row_index);
+                                self.base.clicked.emit();
+                                // A typed row commits its own gesture on a single click (V-16):
+                                // a flag flips and a choice opens its list. Every other kind
+                                // still needs the double-click editor, so a plain press only
+                                // selects.
+                                if is_press
+                                    && self
+                                        .properties
+                                        .get(row_index)
+                                        .is_some_and(|item| item.editable)
+                                {
+                                    match self.properties[row_index].kind {
+                                        PropertyItemKind::Bool => {
+                                            let _ = self.begin_grid_edit(row_index);
+                                        }
+                                        PropertyItemKind::Choice(_) => {
+                                            self.choice_popup = Some(row_index);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                self.base.request_redraw();
+                                return;
+                            }
                         }
                     }
 
@@ -916,6 +1129,10 @@ impl EventHandler for PropertyGrid {
                     return;
                 }
                 let max_scroll = self.max_scroll();
+                if *key == crate::event::key_codes::ESCAPE && self.choice_popup.take().is_some() {
+                    self.base.request_redraw();
+                    return;
+                }
                 // Keyboard navigation is refused when no row is painted. `draw` renders
                 // `[scroll_offset, scroll_offset + visible_row_count)`, and at a short geometry
                 // (`height < FIRST_ROW_TOP + ROW_HEIGHT`, i.e. under 49 px) that range is empty.
@@ -936,8 +1153,9 @@ impl EventHandler for PropertyGrid {
                             self.selected_index = Some(new_idx);
                             self.selected.emit(new_idx);
                             // Scroll if selection moved above viewport
-                            if new_idx < self.scroll_offset as usize {
-                                self.scroll_offset = new_idx as u32;
+                            let new_pos = self.display_position_of(new_idx).unwrap_or(new_idx);
+                            if new_pos < self.scroll_offset as usize {
+                                self.scroll_offset = new_pos as u32;
                             }
                             self.base.request_redraw();
                         }
@@ -958,8 +1176,9 @@ impl EventHandler for PropertyGrid {
                         self.selected.emit(new_idx);
                         let visible = self.visible_row_count();
                         // Scroll if selection moved below viewport
-                        if new_idx >= self.scroll_offset as usize + visible as usize {
-                            self.scroll_offset = (new_idx as u32 + 1).saturating_sub(visible);
+                        let new_pos = self.display_position_of(new_idx).unwrap_or(new_idx);
+                        if new_pos >= self.scroll_offset as usize + visible as usize {
+                            self.scroll_offset = (new_pos as u32 + 1).saturating_sub(visible);
                         }
                         self.base.request_redraw();
                     }
@@ -979,8 +1198,9 @@ impl EventHandler for PropertyGrid {
                             self.selected_index = Some(last);
                             self.selected.emit(last);
                             let visible = self.visible_row_count();
+                            let last_pos = self.display_position_of(last).unwrap_or(last);
                             self.scroll_offset =
-                                (last as u32 + 1).saturating_sub(visible).min(max_scroll);
+                                (last_pos as u32 + 1).saturating_sub(visible).min(max_scroll);
                             self.base.request_redraw();
                         }
                     }
@@ -990,7 +1210,7 @@ impl EventHandler for PropertyGrid {
                         let next = current.saturating_sub(page);
                         self.selected_index = Some(next);
                         self.selected.emit(next);
-                        self.scroll_offset = next as u32;
+                        self.scroll_offset = self.display_position_of(next).unwrap_or(next) as u32;
                         self.base.request_redraw();
                     }
                     crate::event::key_codes::PAGE_DOWN => {
@@ -1001,8 +1221,9 @@ impl EventHandler for PropertyGrid {
                             self.selected_index = Some(next);
                             self.selected.emit(next);
                             let visible = self.visible_row_count();
+                            let next_pos = self.display_position_of(next).unwrap_or(next);
                             self.scroll_offset =
-                                (next as u32 + 1).saturating_sub(visible).min(max_scroll);
+                                (next_pos as u32 + 1).saturating_sub(visible).min(max_scroll);
                             self.base.request_redraw();
                         }
                     }
@@ -1525,5 +1746,124 @@ mod tests {
             modifiers: 0,
         });
         assert!(grid.selected_index.unwrap_or(0) > 0);
+    }
+
+    /// V-16: a flag toggles on a single click, and a choice opens its option list.
+    #[test]
+    fn typed_rows_toggle_and_offer_options() {
+        use crate::event::EventHandler;
+
+        let mut grid = PropertyGrid::new(Rect::new(0, 0, 320, 200));
+        grid.add_property_item(
+            PropertyItem::new("Enabled", "false", true).with_kind(PropertyItemKind::Bool),
+        );
+        grid.add_property_item(
+            PropertyItem::new("Mode", "a", true)
+                .with_kind(PropertyItemKind::Choice(vec!["a".into(), "b".into()])),
+        );
+
+        let rows_top = grid.content_rect().y + FIRST_ROW_TOP as i32;
+        grid.handle_event(&Event::MousePress {
+            pos: Point::new(200, rows_top + 12),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(grid.value(0), Some("true"), "a flag flips on one click");
+
+        grid.handle_event(&Event::MousePress {
+            pos: Point::new(200, rows_top + ROW_HEIGHT as i32 + 12),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(grid.choice_popup, Some(1), "a choice opens its option list");
+        let options = grid.choice_option_rects(1);
+        assert_eq!(options.len(), 2);
+        let (option, rect) = options[1].clone();
+        assert_eq!(option, "b");
+        grid.handle_event(&Event::MousePress {
+            pos: Point::new(rect.x + 2, rect.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(grid.value(1), Some("b"), "clicking an option commits it");
+        assert_eq!(grid.choice_popup, None);
+    }
+
+    /// V-16: colour and file rows ask the host for its picker instead of forcing typed text.
+    #[test]
+    fn colour_and_file_rows_request_their_pickers() {
+        use crate::event::EventHandler;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut grid = PropertyGrid::new(Rect::new(0, 0, 320, 200));
+        grid.add_property_item(
+            PropertyItem::new("Background", "#ff0000", true).with_kind(PropertyItemKind::Color),
+        );
+        grid.add_property_item(
+            PropertyItem::new("Path", "/tmp/a", true).with_kind(PropertyItemKind::File),
+        );
+        let colours = std::sync::Arc::new(AtomicUsize::new(0));
+        let files = std::sync::Arc::new(AtomicUsize::new(0));
+        let colour_sink = std::sync::Arc::clone(&colours);
+        let file_sink = std::sync::Arc::clone(&files);
+        grid.color_picker_requested.connect(move |_| {
+            colour_sink.fetch_add(1, Ordering::Relaxed);
+        });
+        grid.file_picker_requested.connect(move |_| {
+            file_sink.fetch_add(1, Ordering::Relaxed);
+        });
+
+        let rows_top = grid.content_rect().y + FIRST_ROW_TOP as i32;
+        grid.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(200, rows_top + 12),
+            button: 1,
+        });
+        assert_eq!(colours.load(Ordering::Relaxed), 1);
+        assert_eq!(grid.editing_entry(), Some(0), "the text editor stays as the fallback");
+        grid.handle_event(&Event::KeyPress { key: crate::event::key_codes::ESCAPE, modifiers: 0 });
+
+        grid.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(200, rows_top + ROW_HEIGHT as i32 + 12),
+            button: 1,
+        });
+        assert_eq!(files.load(Ordering::Relaxed), 1);
+    }
+
+    /// V-17: a category adds a non-selectable header row without shifting property indices.
+    #[test]
+    fn categories_insert_selectable_headers() {
+        use crate::event::EventHandler;
+
+        let mut grid = PropertyGrid::new(Rect::new(0, 0, 320, 300));
+        grid.add_property_item(PropertyItem::new("A", "1", true).in_category("General"));
+        grid.add_property_item(PropertyItem::new("B", "2", true).in_category("General"));
+        grid.add_property_item(PropertyItem::new("C", "3", true).in_category("Layout"));
+
+        let rows = grid.display_rows();
+        assert_eq!(
+            rows,
+            vec![
+                PropertyRow::Category("General".into()),
+                PropertyRow::Item(0),
+                PropertyRow::Item(1),
+                PropertyRow::Category("Layout".into()),
+                PropertyRow::Item(2),
+            ]
+        );
+
+        // A click on the header row selects nothing; the row under it selects its property.
+        let rows_top = grid.content_rect().y + FIRST_ROW_TOP as i32;
+        grid.handle_event(&Event::MousePress {
+            pos: Point::new(10, rows_top + 12),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(grid.selected_index(), None, "a group header is not selectable");
+        grid.handle_event(&Event::MousePress {
+            pos: Point::new(10, rows_top + ROW_HEIGHT as i32 + 12),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(grid.selected_index(), Some(0));
     }
 }

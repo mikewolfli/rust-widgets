@@ -9,8 +9,8 @@
 //! platforms by using the same underlying AppBar and BottomNavigationBar
 //! primitives with platform-appropriate defaults.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
-use crate::event::{Event, EventHandler};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, TextDirection};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_f32, expect_string};
@@ -174,6 +174,12 @@ pub struct AdaptiveScaffold {
     pub back_pressed: GenericSignal,
     /// Emitted when the AppBar's action affordance is pressed.
     pub action_pressed: GenericSignal,
+    /// Emitted with the index of a trailing AppBar action button (N-08).
+    pub action_index_pressed: Signal1<usize>,
+    /// Emitted when the AppBar's overflow affordance is activated (N-08).
+    pub action_overflow_pressed: GenericSignal,
+    /// Whether a press landed on the modal scrim and its release must be swallowed (N-07).
+    scrim_pressed: bool,
 }
 
 impl AdaptiveScaffold {
@@ -218,6 +224,9 @@ impl AdaptiveScaffold {
             nav_selected: Signal1::new(),
             back_pressed: GenericSignal::new(),
             action_pressed: GenericSignal::new(),
+            action_index_pressed: Signal1::new(),
+            action_overflow_pressed: GenericSignal::new(),
+            scrim_pressed: false,
         };
 
         // Mirror the AppBar's two signals onto the scaffold's own. The handles are
@@ -227,6 +236,12 @@ impl AdaptiveScaffold {
         let _ = scaffold.app_bar.back_pressed.connect(move || back_out.emit());
         let action_out = scaffold.action_pressed.clone();
         let _ = scaffold.app_bar.action_pressed.connect(move || action_out.emit());
+        // The trailing action signals are mirrored too, so a scaffold embedder observes the bar's
+        // full capability rather than only its legacy two affordances (N-08).
+        let index_out = scaffold.action_index_pressed.clone();
+        let _ = scaffold.app_bar.action_index_pressed.connect(move |index| index_out.emit(*index));
+        let overflow_out = scaffold.action_overflow_pressed.clone();
+        let _ = scaffold.app_bar.action_overflow_pressed.connect(move || overflow_out.emit());
         scaffold
     }
 
@@ -234,6 +249,10 @@ impl AdaptiveScaffold {
     pub fn set_title(&mut self, title: &str) {
         self.title = title.to_string();
         self.app_bar.set_title(title);
+        // The AppBar is painted by this scaffold's own `draw`, not mounted through `add_child`, so
+        // its redraw request lands on a base nobody paints. The scaffold must repaint itself
+        // (G-A06).
+        self.base.request_redraw();
     }
 
     /// Returns the current title.
@@ -244,6 +263,7 @@ impl AdaptiveScaffold {
     /// Sets whether the AppBar back button is shown.
     pub fn set_show_back(&mut self, show_back: bool) {
         self.app_bar.set_show_back(show_back);
+        self.base.request_redraw();
     }
 
     /// Returns whether the AppBar back button is shown.
@@ -254,11 +274,45 @@ impl AdaptiveScaffold {
     /// Sets the action text displayed on the right side of the AppBar.
     pub fn set_action_text(&mut self, text: &str) {
         self.app_bar.set_action_text(text);
+        self.base.request_redraw();
     }
 
     /// Returns the current AppBar action text.
     pub fn action_text(&self) -> &str {
         self.app_bar.action_text()
+    }
+
+    /// Sets the AppBar's trailing action list (N-08).
+    pub fn set_actions(&mut self, actions: Vec<String>) {
+        self.app_bar.set_actions(actions);
+        self.base.request_redraw();
+    }
+
+    /// Returns the AppBar's trailing action labels.
+    pub fn actions(&self) -> &[String] {
+        self.app_bar.actions()
+    }
+
+    /// Sets the AppBar's writing direction (N-08).
+    pub fn set_direction(&mut self, direction: TextDirection) {
+        self.app_bar.set_direction(direction);
+        self.base.request_redraw();
+    }
+
+    /// Returns the AppBar's writing direction.
+    pub fn direction(&self) -> TextDirection {
+        self.app_bar.direction()
+    }
+
+    /// Sets the AppBar's bottom slot (N-08).
+    pub fn set_bottom_widget(&mut self, widget: Option<Box<dyn Widget>>) {
+        self.app_bar.set_bottom_widget(widget);
+        self.base.request_redraw();
+    }
+
+    /// Returns the AppBar's bottom slot.
+    pub fn bottom_widget(&self) -> Option<&dyn Widget> {
+        self.app_bar.bottom_widget()
     }
 
     /// Sets the optional body widget displayed in the content area.
@@ -682,10 +736,19 @@ impl AdaptiveScaffold {
         self.selected_nav_index
     }
 
+    /// The height of the AppBar band, including any bottom slot it carries.
+    ///
+    /// The band is derived from the bar's own slot rather than fixed at [`APP_BAR_HEIGHT`], so
+    /// `set_bottom_widget` (N-08) actually reserves room instead of being drawn over by the body.
+    fn app_bar_height(&self) -> u32 {
+        APP_BAR_HEIGHT
+            + self.app_bar.bottom_widget().map(|widget| widget.size_hint().height).unwrap_or(0)
+    }
+
     /// Returns the content area rect (between AppBar and bottom nav).
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
-        let top_offset: i32 = APP_BAR_HEIGHT as i32;
+        let top_offset: i32 = self.app_bar_height() as i32;
         let bottom_offset: i32 = if self.show_bottom_nav { BOTTOM_NAV_HEIGHT as i32 } else { 0 };
         Rect::new(
             rect.x,
@@ -730,11 +793,12 @@ impl AdaptiveScaffold {
     fn drawer_rect(&self) -> Rect {
         let rect = self.geometry();
         let width = DRAWER_WIDTH.min(rect.width);
+        let top = self.app_bar_height();
         Rect::new(
             rect.x,
-            rect.y + APP_BAR_HEIGHT as i32,
+            rect.y + top as i32,
             width,
-            rect.height.saturating_sub(APP_BAR_HEIGHT),
+            rect.height.saturating_sub(top),
         )
     }
 
@@ -742,11 +806,12 @@ impl AdaptiveScaffold {
     fn end_drawer_rect(&self) -> Rect {
         let rect = self.geometry();
         let width = DRAWER_WIDTH.min(rect.width);
+        let top = self.app_bar_height();
         Rect::new(
             rect.x + rect.width as i32 - width as i32,
-            rect.y + APP_BAR_HEIGHT as i32,
+            rect.y + top as i32,
             width,
-            rect.height.saturating_sub(APP_BAR_HEIGHT),
+            rect.height.saturating_sub(top),
         )
     }
 
@@ -931,6 +996,14 @@ impl Draw for AdaptiveScaffold {
         );
 
         // ── AppBar ──
+        // The bar carries any bottom slot it was given, so its band is set from the same
+        // derivation `content_rect` uses (N-08).
+        self.app_bar.set_geometry(Rect::new(
+            rect.x,
+            rect.y,
+            rect.width,
+            self.app_bar_height(),
+        ));
         self.app_bar.draw(context);
 
         // ── Body content area ──
@@ -987,7 +1060,9 @@ impl Draw for AdaptiveScaffold {
         // shown" is decided in **one** place.
         if let Some(nav_rect) = self.bottom_nav_rect() {
             match self.bottom_nav_style {
-                ScaffoldBottomNavStyle::Classic => self.draw_bottom_nav(context, nav_rect),
+                ScaffoldBottomNavStyle::Classic => {
+                    self.draw_bottom_nav(context, nav_rect, style, theme.as_deref())
+                }
                 ScaffoldBottomNavStyle::Material3 => {
                     if let Some(mut bar) = self.m3_bar.take() {
                         bar.set_geometry(nav_rect);
@@ -1074,7 +1149,16 @@ impl Draw for AdaptiveScaffold {
 
 impl AdaptiveScaffold {
     /// Draws the bottom navigation bar manually within the scaffold.
-    fn draw_bottom_nav(&mut self, context: &mut RenderContext, nav_rect: Rect) {
+    ///
+    /// The resolved style is passed in from the scaffold's own draw entry: resolving the same
+    /// role a second time here was a second manager read per frame (G-A01).
+    fn draw_bottom_nav(
+        &self,
+        context: &mut RenderContext,
+        nav_rect: Rect,
+        style: &crate::style::WidgetStyle,
+        theme: Option<&crate::style::WidgetStyle>,
+    ) {
         let item_count = self.nav_items.len();
         if item_count == 0 {
             return;
@@ -1084,20 +1168,15 @@ impl AdaptiveScaffold {
 
         // The bar draws with the scaffold's own resolved chrome, so the whole control
         // moves together on a theme switch rather than the bar keeping a literal white.
-        // These are further manager locks, each taken and released inside the accessor.
-        let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("adaptive_scaffold");
         let bar_background = style
             .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .or_else(|| theme.and_then(|t| t.background_color))
             .unwrap_or(Color::WHITE);
-        let bar_ink = style
-            .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
-            .unwrap_or(Color::BLACK);
+        let bar_ink =
+            style.text_color.or_else(|| theme.and_then(|t| t.text_color)).unwrap_or(Color::BLACK);
         let bar_border = style
             .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .or_else(|| theme.and_then(|t| t.border_color))
             .unwrap_or(Color::DIVIDER);
 
         // Background
@@ -1252,6 +1331,32 @@ impl EventHandler for AdaptiveScaffold {
                     return;
                 }
 
+                // A modal drawer's scrim swallows a press outside the panel and closes the drawer,
+                // the same contract the standalone `NavigationDrawer` follows (N-07). The release
+                // that follows is consumed too, so the gesture cannot leak to the bar underneath.
+                if self.scrim_pressed {
+                    if matches!(event, Event::MouseRelease { .. }) {
+                        self.scrim_pressed = false;
+                    }
+                    return;
+                }
+                if self.drawer_open
+                    && self.drawer_reveal.value() > 0.0
+                    && !self.drawer_rect().contains_point(*pos)
+                {
+                    self.close_drawer();
+                    self.scrim_pressed = true;
+                    return;
+                }
+                if self.end_drawer_open
+                    && self.end_drawer_reveal.value() > 0.0
+                    && !self.end_drawer_rect().contains_point(*pos)
+                {
+                    self.close_end_drawer();
+                    self.scrim_pressed = true;
+                    return;
+                }
+
                 // Overlay slots win over the page beneath them, in reverse z order. Each slot is
                 // told the band it was painted in, so its own hit test sees the pixels it owns.
                 let mut routed = false;
@@ -1308,7 +1413,7 @@ impl EventHandler for AdaptiveScaffold {
                     return;
                 }
                 let rect = self.geometry();
-                let app_bar_height: i32 = APP_BAR_HEIGHT as i32;
+                let app_bar_height: i32 = self.app_bar_height() as i32;
 
                 // AppBar zone (top)
                 if pos.y >= rect.y && pos.y < rect.y + app_bar_height {
@@ -1351,6 +1456,18 @@ impl EventHandler for AdaptiveScaffold {
                         body.set_geometry(content_rect);
                         body.handle_event(event);
                     }
+                }
+            }
+            // Escape closes an open drawer, the same key contract `SplashScreen` and the
+            // pagination popup already follow (N-11).
+            Event::KeyPress { key, .. }
+                if *key == key_codes::ESCAPE && (self.drawer_open || self.end_drawer_open) =>
+            {
+                if self.drawer_open {
+                    self.close_drawer();
+                }
+                if self.end_drawer_open {
+                    self.close_end_drawer();
                 }
             }
             _ => {
@@ -1567,6 +1684,30 @@ mod tests {
         assert_eq!(content, Rect::new(0, 56, 375, 700));
     }
 
+    /// The AppBar's bottom slot used to overlap the body: the bar was laid out at the fixed
+    /// `APP_BAR_HEIGHT` band while a slot asked for its own height, so pins/tabs were painted
+    /// over the page. The derived band must push `content_rect` down by the slot height (N-08).
+    #[test]
+    fn adaptive_scaffold_bottom_slot_reserves_room() {
+        use crate::widget::base_widgets::frame::Frame;
+        use crate::widget::metrics::dimensions;
+
+        let mut scaffold = AdaptiveScaffold::new("Home", Rect::new(0, 0, 375, 812));
+        scaffold.set_bottom_widget(Some(Box::new(Frame::new(Rect::new(0, 0, 375, 0)))));
+
+        let slot = dimensions::FRAME_DEFAULT_HEIGHT;
+        let content = scaffold.content_rect();
+        assert_eq!(content.y, (APP_BAR_HEIGHT + slot) as i32, "the slot band precedes the body");
+        assert_eq!(content.height, 812 - APP_BAR_HEIGHT - slot);
+
+        // The same band reaches the bar itself, so the slot is painted inside the reserved area.
+        let _ = render_to_svg(&mut scaffold);
+        assert_eq!(scaffold.app_bar.geometry().height, APP_BAR_HEIGHT + slot);
+
+        scaffold.set_bottom_widget(None);
+        assert_eq!(scaffold.content_rect(), Rect::new(0, 56, 375, 756));
+    }
+
     /// The scaffold used to hold its AppBar privately and drop its signals, so a page
     /// built on the scaffold had no way to observe a back tap.
     #[test]
@@ -1665,5 +1806,38 @@ mod tests {
         assert!(scaffold.is_end_drawer_open());
         let svg = render_to_svg(&mut scaffold);
         assert!(svg.starts_with("<svg"));
+    }
+
+    fn drawer_widget() -> Box<dyn Widget> {
+        Box::new(crate::widget::base_widgets::label::Label::new(
+            "drawer".to_string(),
+            Rect::new(0, 0, 10, 10),
+        ))
+    }
+
+    #[test]
+    fn escape_closes_an_open_drawer() {
+        let mut scaffold = make_scaffold();
+        scaffold.set_drawer(Some(drawer_widget()));
+        assert!(scaffold.open_drawer());
+        while scaffold.tick(16) {}
+        scaffold.handle_event(&Event::KeyPress { key: key_codes::ESCAPE, modifiers: 0 });
+        assert!(!scaffold.is_drawer_open(), "Escape is the keyboard close");
+    }
+
+    #[test]
+    fn a_press_on_the_scrim_closes_the_drawer() {
+        let mut scaffold = make_scaffold();
+        scaffold.set_drawer(Some(drawer_widget()));
+        assert!(scaffold.open_drawer());
+        while scaffold.tick(16) {}
+        // The leading drawer is 280 px wide; x = 360 is on the scrim.
+        scaffold.handle_event(&Event::MousePress {
+            pos: Point::new(360, 400),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(!scaffold.is_drawer_open(), "the modal scrim dismisses on press");
+        scaffold.handle_event(&Event::MouseRelease { pos: Point::new(360, 400), button: 1 });
     }
 }

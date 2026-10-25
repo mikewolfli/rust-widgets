@@ -23,18 +23,20 @@
 //! 当前平台若无法承载自绘型控件，demo **如实报错并停止**，不会留下空窗口。
 
 use rust_widgets::app::{App, AppConfig, CustomWidgetHandle, WidgetHandle};
-use rust_widgets::core::{ObjectId, Orientation, Rect};
+use rust_widgets::core::{Font, ObjectId, Orientation, Rect};
 use rust_widgets::layout::{BoxLayout, Layout, LayoutConstraints, SizePolicy};
 use rust_widgets::theme::{global_theme_manager, Theme};
+use rust_widgets::widget::metrics::{dimensions, estimate_text_width};
 use rust_widgets::widget::special_widgets::code_editor::{
     CodeEditor, CodeEditorConfig, DiagnosticMarker, LanguageId, MarkerSeverity,
 };
 use rust_widgets::widget::view_widgets::tree_view::{TreeView, VecTreeModel};
 use rust_widgets::widget::Widget;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::commands::{self, Command};
+use crate::commands::{self, Command, StatusFacts};
 
 /// Registers the macOS-style palettes and selects one for this demo.
 ///
@@ -107,19 +109,32 @@ fn idle_ticks_before_report() -> u32 {
 // 日志
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// How many recent entries the demo keeps in memory.
+///
+/// The log is written by the polling thread and never read back by the demo, but a
+/// long-running window would otherwise grow it without bound (one entry per menu item,
+/// toolbar click and editor signal). Beyond this limit the oldest entry is dropped, so the
+/// footprint is bounded and the most recent events — the only ones a reader looks at — are
+/// the ones that survive.
+const EVENT_LOG_CAPACITY: usize = 200;
+
 struct EventLog {
-    entries: Mutex<Vec<String>>,
+    entries: Mutex<VecDeque<String>>,
 }
 
 impl EventLog {
     fn new() -> Self {
-        Self { entries: Mutex::new(Vec::new()) }
+        Self { entries: Mutex::new(VecDeque::new()) }
     }
 
     fn append(&self, msg: impl Into<String>) {
         let msg = msg.into();
         println!("[EVENT] {}", msg);
-        self.entries.lock().unwrap().push(msg);
+        let mut entries = self.entries.lock().unwrap();
+        if entries.len() >= EVENT_LOG_CAPACITY {
+            entries.pop_front();
+        }
+        entries.push_back(msg);
     }
 }
 
@@ -408,6 +423,10 @@ fn build_editor(
         DiagnosticMarker::new(3, "deep recursion", MarkerSeverity::Warning),
         DiagnosticMarker::new(8, "`limit` could be inlined", MarkerSeverity::Info),
     ]);
+    // The sample is the buffer's *opened* content, not an unsaved edit: without a save point
+    // `is_modified()` reports true for the text just loaded, and the status bar would open with
+    // a modification marker on a file nobody has typed into.
+    editor.mark_saved();
 
     // 事件侧：把 7 个公开信号全部接上，日志会打印每一类的载荷。
     let signal_log = Arc::clone(log);
@@ -423,7 +442,11 @@ fn build_editor(
     editor
 }
 
-/// The facts the window's status row is composed from.
+/// Keeps the window's status bar in step with the editor.
+///
+/// `target` is filled in once the status bar exists; until then the signals update the
+/// shared facts and skip the write, so an edit that happens before the bar is created is
+/// still reflected by the first change after it exists.
 ///
 /// # Why the status bar is signal-driven, not polled
 ///
@@ -434,50 +457,11 @@ fn build_editor(
 /// sat at its creation text while the caret moved around. Signals are emitted while the
 /// widget handles an event, i.e. on the UI thread, which is exactly the thread a native
 /// control may be written from.
-#[derive(Clone)]
-struct StatusFacts {
-    language: String,
-    line: usize,
-    column: usize,
-    lines: usize,
-    errors: usize,
-    warnings: usize,
-    infos: usize,
-    modified: bool,
-}
-
-impl StatusFacts {
-    fn render(&self) -> String {
-        format!(
-            "{}  |  Ln {}, Col {}  |  {} lines  |  E{} W{} I{}{}",
-            self.language,
-            self.line + 1,
-            self.column + 1,
-            self.lines,
-            self.errors,
-            self.warnings,
-            self.infos,
-            if self.modified { " *" } else { "" }
-        )
-    }
-}
-
-/// Keeps the window's status bar in step with the editor.
 ///
-/// `target` is filled in once the status bar exists; until then the signals update the
-/// shared facts and skip the write, so an edit that happens before the bar is created is
-/// still reflected by the first change after it exists.
+/// The facts and the template are [`StatusFacts`], the same type `commands::status_line`
+/// renders at start-up: one formatter for both paths.
 fn wire_status_bar(editor: &CodeEditor, target: Arc<Mutex<Option<ObjectId>>>) {
-    let facts = Arc::new(Mutex::new(StatusFacts {
-        language: editor.language_name(),
-        line: 0,
-        column: 0,
-        lines: editor.line_count(),
-        errors: editor.marker_count(MarkerSeverity::Error),
-        warnings: editor.marker_count(MarkerSeverity::Warning),
-        infos: editor.marker_count(MarkerSeverity::Info),
-        modified: false,
-    }));
+    let facts = Arc::new(Mutex::new(StatusFacts::of(editor)));
     let publish_facts = Arc::clone(&facts);
     let publish = move || {
         let Some(id) = *target.lock().unwrap() else { return };
@@ -717,13 +701,42 @@ const TOOLBAR_LAYOUT: &[Option<Command>] = &[
     Some(Command::SortLines),
 ];
 
-/// Width of one toolbar button, in pixels.
+/// The widest one toolbar button may become, in pixels.
 ///
-/// `label length × 9` is the label's own advance in the platform's button font at
-/// this size; the constant adds the button's horizontal padding plus a little
-/// slack so the text is never truncated.
+/// A guard rather than a design width: past this the strip would push its last buttons out of
+/// a narrow window. Every label this demo ships measures well under it.
+const TOOLBAR_BUTTON_MAX_W: i32 = 190;
+
+/// The font toolbar labels are measured with: the active theme's regular face.
+///
+/// The library's own `Button` measures with `effective_font(style)` — its resolved theme or
+/// caller font. A native handle does not expose that font, so the demo asks the theme
+/// manager for the same token the theme would resolve to, falling back to the crate default
+/// when no theme is selected.
+fn toolbar_label_font() -> Font {
+    global_theme_manager()
+        .current_theme()
+        .map(|theme| theme.fonts.regular.clone())
+        .unwrap_or_default()
+}
+
+/// Width of one toolbar button, in pixels, measured from the label's actual ink.
+///
+/// # Why this is a measurement now, and what the old formula got wrong
+///
+/// This used to be `chars().count() * 9 + 34`: a fixed 9 px advance per character. A
+/// proportional face does not work that way (`i` and `W` have different advances), so the
+/// same button was narrow for one label and generous for another, and a different DPI scale
+/// or font family moved the error rather than removing it. `estimate_text_width` is the
+/// crate's own ruler — the function `Button::size_hint` measures its label with — so the
+/// width now follows the glyph advances the renderer will actually paint.
+///
+/// `BUTTON_PADDING_H` is the library's button padding token, so the padding here is the
+/// control's padding rather than a second copy of the number.
 fn toolbar_button_width(command: Command) -> i32 {
-    (command.toolbar_label().chars().count() as i32 * 9 + 34).clamp(56, 190)
+    let text = estimate_text_width(command.toolbar_label(), &toolbar_label_font(), 1.0) as i32;
+    let padding = (dimensions::BUTTON_PADDING_H * 2) as i32;
+    (text + padding).clamp(dimensions::BUTTON_MIN.width as i32, TOOLBAR_BUTTON_MAX_W)
 }
 
 /// 建立工具栏。按钮的 `on_click` 直接打到编辑器。
@@ -731,12 +744,15 @@ fn toolbar_button_width(command: Command) -> i32 {
 /// 工具栏按钮走的是标准回调路径，
 /// 不需要轮询——这与菜单不同。
 ///
-/// 返回工具栏的 id，供窗口布局把它排在编辑器的上方。
+/// Returns the toolbar's id (so the window layout can place it above the split) and the ids
+/// of the buttons it created. The polling thread uses the button ids to tell a toolbar click
+/// from any other widget trigger: the button's own `on_click` already logged it, so the
+/// poller must only count it (see [`run_loop`]).
 fn build_tool_bar(
     win: &rust_widgets::app::WindowHandle,
     editor: &CustomWidgetHandle,
     log: &Arc<EventLog>,
-) -> ObjectId {
+) -> (ObjectId, Vec<ObjectId>) {
     let bar = win.new_tool_bar(0, MENU_H as i32, WINDOW_W, TOOLBAR_H);
     log.append(format!("[ToolBar] created id={}", bar.raw_id()));
 
@@ -750,6 +766,7 @@ fn build_tool_bar(
     // the same two constants the layout uses.
     let top = (MENU_H + STRIP_GAP) as i32;
     let mut button_count = 0usize;
+    let mut button_ids = Vec::new();
     for entry in TOOLBAR_LAYOUT {
         match entry {
             None => {
@@ -764,6 +781,7 @@ fn build_tool_bar(
                     width as u32,
                     TOOLBAR_H - 8,
                 );
+                button_ids.push(button.raw_id());
                 // Record the shortcut next to the button in the event log. Native
                 // buttons expose no tooltip through the handle API yet, so the
                 // chord is surfaced here instead. It is rendered by the host OS,
@@ -790,7 +808,7 @@ fn build_tool_bar(
         }
     }
     log.append(format!("[ToolBar] {button_count} buttons"));
-    bar.raw_id()
+    (bar.raw_id(), button_ids)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -813,7 +831,16 @@ fn register_cjk_face(log: &Arc<EventLog>) {
 /// 启动 demo 应用。
 ///
 /// `main()` 仅调用 `app::run()`；所有窗口创建、菜单/工具栏构建、事件循环都在这里。
-pub fn run() {
+///
+/// # Why this returns `Result` instead of exiting the process
+///
+/// Every start-up failure (no surface support, a failed mount, a widget of the wrong type)
+/// used to call `std::process::exit(1)` on the spot. That bypasses the drop of `App` and the
+/// window, so no platform cleanup runs, and the `main` stub cannot tell success from failure.
+/// The graceful path is the one the finance demo already used — record the reason, then
+/// return — so all four failures now log and return an `Err`, and `main` decides the exit
+/// code. Nothing in this module terminates the process.
+pub fn run() -> Result<(), String> {
     banner();
 
     let log = Arc::new(EventLog::new());
@@ -824,12 +851,13 @@ pub fn run() {
     //
     // 这一步不能省：把"工厂能造出对象"当成"窗口里能看到"会导致窗口空白却毫无提示。
     if !rust_widgets::supports_surfaces() {
-        eprintln!(
-            "错误：后端 '{backend}' 暂不能承载自绘型控件，无法显示 CodeEditor。\n\
-             Linux 桌面请启用 gtk-native（见 demo/code_editor/Cargo.toml），\n\
+        let message = format!(
+            "后端 '{backend}' 暂不能承载自绘型控件，无法显示 CodeEditor。\
+             Linux 桌面请启用 gtk-native（见 demo/code_editor/Cargo.toml），\
              或在支持的桌面平台上运行。"
         );
-        std::process::exit(1);
+        log.append(format!("[check] ERROR: {message}"));
+        return Err(message);
     }
     log.append(format!("[check] backend '{backend}' 支持自绘型控件"));
 
@@ -865,8 +893,9 @@ pub fn run() {
             handle
         }
         Err(error) => {
-            eprintln!("错误：项目树挂载失败：{error}");
-            std::process::exit(1);
+            let message = format!("项目树挂载失败：{error}");
+            log.append(format!("[check] ERROR: {message}"));
+            return Err(message);
         }
     };
 
@@ -889,19 +918,21 @@ pub fn run() {
             handle
         }
         Err(error) => {
-            eprintln!("错误：CodeEditor 挂载失败：{error}");
-            std::process::exit(1);
+            let message = format!("CodeEditor 挂载失败：{error}");
+            log.append(format!("[check] ERROR: {message}"));
+            return Err(message);
         }
     };
 
     if !commands::is_editor(&editor) {
-        eprintln!("错误：挂载的控件不是 CodeEditor，命令将无法生效");
-        std::process::exit(1);
+        let message = String::from("挂载的控件不是 CodeEditor，命令将无法生效");
+        log.append(format!("[check] ERROR: {message}"));
+        return Err(message);
     }
 
     // ── 菜单栏 + 工具栏 + 状态栏 ────────────────────────────────────────
     let (menu_bar_id, bindings) = build_menu_bar(&win, &log);
-    let tool_bar_id = build_tool_bar(&win, &editor, &log);
+    let (tool_bar_id, toolbar_buttons) = build_tool_bar(&win, &editor, &log);
 
     // 状态栏横跨整个窗口，而不是只对齐编辑器：它报告的是整个应用的状态（光标位置、
     // 已处理事件数），不是某一栏的。它是窗口布局的一行，因此天然占满宽度。
@@ -945,10 +976,12 @@ pub fn run() {
         win.raw_id(),
         ChromeIds { menu_bar: menu_bar_id, tool_bar: tool_bar_id, status_bar: status.raw_id() },
         &bindings,
+        &toolbar_buttons,
         &tree,
         &editor,
         &log,
     );
+    Ok(())
 }
 
 /// 一次性应用两层布局：窗口三行 + 分栏两栏。
@@ -1034,11 +1067,11 @@ fn resync_split_to_client_size(
 /// 只有轮询本身会动 Qt/GTK 对象时才会出问题；`poll_*` 只读队列并分派命令，
 /// 不需要平台 API，所以可以安全地在后台线程运行。
 ///
-/// # 后台线程还负责两件事
+/// # 后台线程还负责一件事
 ///
-/// * **内层分栏随窗口重排**：项目树/编辑器是自绘挂载面，不在窗口布局的托管项里，
-///   所以客户区一变就重算一次（见 [`resync_split_to_client_size`]）。
-/// * **状态栏写回**：每次有事件时把光标位置写到可见的状态栏句柄（见 [`refresh_status`]）。
+/// **内层分栏随窗口重排**：项目树/编辑器是自绘挂载面，不在窗口布局的托管项里，
+/// 所以客户区一变就重算一次（见 [`resync_split_to_client_size`]）。状态栏**不在**这里
+/// 写：原生控件只能在 UI 线程写下，而编辑器信号就是在那里发出的（见 [`wire_status_bar`]）。
 ///
 /// 后台线程的唯一退出信号是 `done`，由主线程在 `app.run()` 返回后置位 —— 即窗口真正
 /// 关闭。窗口还开着时永远有人消费事件，因此不会出现“菜单事件进了队列却没人取”的半死
@@ -1048,6 +1081,7 @@ fn run_loop(
     window_id: ObjectId,
     chrome: ChromeIds,
     bindings: &[(u64, MenuBinding)],
+    toolbar_buttons: &[ObjectId],
     tree: &CustomWidgetHandle,
     editor: &CustomWidgetHandle,
     log: &Arc<EventLog>,
@@ -1055,6 +1089,7 @@ fn run_loop(
     // 轮询线程需要在主线程进入平台循环之前启动，否则它一开始就看不到已经入队的
     // 触发；`Arc` 让两个线程各自持有需要的东西。
     let bindings: Arc<Vec<(u64, MenuBinding)>> = Arc::new(bindings.to_vec());
+    let toolbar_buttons: Arc<Vec<ObjectId>> = Arc::new(toolbar_buttons.to_vec());
     let editor = editor.clone();
     let tree = tree.clone();
     let poll_log = Arc::clone(log);
@@ -1097,9 +1132,14 @@ fn run_loop(
                 }
             }
 
-            // 控件触发（工具栏按钮已由 on_click 回调处理，这里只计数）。
+            // 控件触发。工具栏按钮已由 `on_click` 回调处理（见 `build_tool_bar`），
+            // 这里只计数、不写日志：同一次点击若再记一条 `[Widget]`，日志里就会出现两条
+            // （本 demo 之前的缺陷）。其它控件的触发仍逐条记录。
             while let Some(event) = rust_widgets::poll_widget_trigger_event() {
-                poll_log.append(format!("[Widget] id={} kind={:?}", event.widget_id, event.kind));
+                if !toolbar_buttons.contains(&event.widget_id) {
+                    poll_log
+                        .append(format!("[Widget] id={} kind={:?}", event.widget_id, event.kind));
+                }
                 did_work = true;
                 handled += 1;
             }
@@ -1184,6 +1224,42 @@ mod tests {
     /// 假的两栏 id（项目树 / 编辑器）。
     fn pane_ids() -> (ObjectId, ObjectId) {
         (11, 12)
+    }
+
+    // ── 工具栏宽度（DEMO-301）────────────────────────────────────────────
+
+    /// The width comes from the label's measured ink, not from a character count.
+    ///
+    /// `WWWW` and `iiii` have the same number of characters and very different advances on a
+    /// proportional face; the old `chars() * 9` formula could not tell them apart, which is
+    /// exactly the error this replaced.
+    #[test]
+    fn toolbar_widths_are_measured_from_the_glyphs() {
+        let font = toolbar_label_font();
+        let wide = estimate_text_width("WWWW", &font, 1.0);
+        let narrow = estimate_text_width("iiii", &font, 1.0);
+        assert!(wide > narrow, "a proportional face measures W wider than i: {wide} vs {narrow}");
+    }
+
+    /// Every toolbar label must fit the button this demo gives it.
+    ///
+    /// The measured text plus the library's own button padding has to stay inside the width
+    /// and inside the strip guard — that is what keeps a label from clipping at a different
+    /// DPI scale or theme font.
+    #[test]
+    fn every_toolbar_label_fits_its_button() {
+        let font = toolbar_label_font();
+        let padding = (dimensions::BUTTON_PADDING_H * 2) as i32;
+        for command in TOOLBAR_LAYOUT.iter().flatten() {
+            let label = command.toolbar_label();
+            let measured = estimate_text_width(label, &font, 1.0) as i32;
+            let width = toolbar_button_width(*command);
+            assert!(
+                width >= measured + padding,
+                "{label}: {width}px is narrower than {measured}px of text + {padding}px padding"
+            );
+            assert!(width <= TOOLBAR_BUTTON_MAX_W, "{label}: {width}px exceeds the strip guard");
+        }
     }
 
     /// 从一次布局结果里取某个 id 的矩形。
@@ -1456,7 +1532,7 @@ mod tests {
         assert_eq!((initial_tree, initial_editor), pane_rects_for(initial_client()));
     }
 
-    /// `refresh_status` 必须把状态写回**可见的状态栏句柄**，而不只是日志。
+    /// 状态栏必须把状态写回**可见的状态栏句柄**，而不只是日志。
     ///
     /// # 这条测试能测什么、不能测什么
     ///

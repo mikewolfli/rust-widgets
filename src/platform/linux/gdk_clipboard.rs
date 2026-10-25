@@ -36,6 +36,7 @@
 
 use crate::compat::String;
 use crate::platform::clipboard::{ClipboardContent, RichClipboardBackend};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// The MIME type a plain-text payload is published under.
 const PLAIN_TEXT: &str = "text/plain";
@@ -64,6 +65,61 @@ fn with_clipboard<R>(body: impl FnOnce(&gtk::Clipboard) -> R) -> Option<R> {
 /// `GtkClipboard` but no X display behind it (a headless SSH session, for instance).
 pub(crate) fn available() -> bool {
     with_clipboard(|_| ()).is_some()
+}
+
+/// A revision bumped by every `owner-change` signal the display clipboard emits.
+///
+/// # Why a counter rather than a callback (P-202)
+///
+/// [`Platform::clipboard_generation`](crate::platform::Platform::clipboard_generation) is a
+/// polled revision by contract: a clipboard-manager host compares consecutive readings and
+/// re-reads the clipboard when they differ, because the library cannot push an event onto a host
+/// loop it does not own. GDK publishes exactly the underlying fact — `owner-change` fires whenever
+/// the selection's owner changes, including when this process takes it by writing — so the
+/// counter is a real measurement, not a derived guess.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The clipboard object the `owner-change` handler is attached to, as a raw pointer.
+///
+/// A display swap (an X session replacing its display) hands out a new `GtkClipboard`, and a
+/// handler left on the old object would never fire again. Comparing the pointer re-arms the watch
+/// for the new object and leaves at most one stale handler on the dead one, which is harmless.
+static WATCHED_CLIPBOARD: AtomicUsize = AtomicUsize::new(0);
+
+/// Attaches the `owner-change` handler to `clipboard`, once per clipboard object.
+fn watch_owner_change(clipboard: &gtk::Clipboard) {
+    use gtk::glib::prelude::{ObjectExt as _, ObjectType as _};
+    let pointer = clipboard.as_ptr() as usize;
+    if WATCHED_CLIPBOARD.swap(pointer, Ordering::SeqCst) == pointer {
+        return;
+    }
+    // The signal's payload is a `GdkEventOwnerChange`, which gtk-rs 0.18 does not bind as a typed
+    // signal; `connect_local` takes the marshalled `Value` list instead, and this handler never
+    // reads it. `connect_local` rather than `connect`: GTK emits the signal on the main thread,
+    // which is the thread this is attached from, and it must not require the handler to be
+    // `Send + Sync` for a `!Send` toolkit object.
+    clipboard.connect_local("owner-change", false, |_| {
+        GENERATION.fetch_add(1, Ordering::SeqCst);
+        None
+    });
+    // A live handler means this backend can report changes, so the counter starts at 1: the trait
+    // reserves `0` for "not reported", and "watch installed, nothing changed yet" is a different
+    // fact from "this backend cannot tell".
+    GENERATION.fetch_max(1, Ordering::SeqCst);
+}
+
+/// A revision that changes whenever the display clipboard's owner changes.
+///
+/// `0` until a handler could be attached — no GTK main thread, no display, or no clipboard — which
+/// is the trait's honest "this backend cannot report it". After that it is always non-zero, so a
+/// host that saw a reading can compare it against the next one.
+pub(crate) fn generation() -> u64 {
+    if GENERATION.load(Ordering::SeqCst) == 0 {
+        // First read from the GTK main thread installs the watch. A read from any other thread
+        // cannot touch GTK and simply observes whatever the main thread installed (P-202).
+        let _ = with_clipboard(|clipboard| watch_owner_change(clipboard));
+    }
+    GENERATION.load(Ordering::SeqCst)
 }
 
 /// Puts `text` on the display clipboard as plain text.

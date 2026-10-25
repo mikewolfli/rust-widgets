@@ -288,13 +288,13 @@ impl LanguageId {
                 "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
                 "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match",
                 "mod", "move", "mut", "pub", "ref", "return", "self", "static", "struct", "super",
-                "trait", "true", "type", "unsafe", "use", "where", "while", "union",
+                "trait", "true", "type", "union", "unsafe", "use", "where", "while",
             ],
             Self::Python => &[
-                "and", "as", "assert", "async", "await", "break", "class", "continue", "def",
-                "del", "elif", "else", "except", "False", "finally", "for", "from", "global", "if",
-                "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise",
-                "return", "True", "try", "while", "with", "yield",
+                "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
+                "continue", "def", "del", "elif", "else", "except", "finally", "for", "from",
+                "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass",
+                "raise", "return", "try", "while", "with", "yield",
             ],
             Self::JavaScript => &[
                 "async",
@@ -388,6 +388,7 @@ impl LanguageId {
                 "else",
                 "enum",
                 "extends",
+                "false",
                 "final",
                 "finally",
                 "float",
@@ -418,7 +419,6 @@ impl LanguageId {
                 "throws",
                 "transient",
                 "true",
-                "false",
                 "try",
                 "void",
                 "volatile",
@@ -596,122 +596,122 @@ impl LanguageId {
                 "while",
             ],
             Self::Swift => &[
+                "Self",
+                "as",
                 "associatedtype",
+                "break",
+                "case",
+                "catch",
                 "class",
+                "continue",
+                "default",
+                "defer",
                 "deinit",
+                "do",
+                "else",
                 "enum",
                 "extension",
+                "fallthrough",
+                "false",
                 "fileprivate",
+                "for",
                 "func",
+                "guard",
+                "if",
                 "import",
+                "in",
                 "init",
                 "inout",
                 "internal",
+                "is",
                 "let",
+                "nil",
                 "open",
                 "operator",
                 "private",
                 "protocol",
                 "public",
+                "repeat",
                 "rethrows",
+                "return",
+                "self",
                 "static",
                 "struct",
                 "subscript",
-                "typealias",
-                "var",
-                "break",
-                "case",
-                "continue",
-                "default",
-                "defer",
-                "do",
-                "else",
-                "fallthrough",
-                "for",
-                "guard",
-                "if",
-                "in",
-                "repeat",
-                "return",
                 "switch",
-                "where",
-                "while",
-                "as",
-                "catch",
-                "false",
-                "is",
-                "nil",
-                "self",
-                "Self",
                 "throw",
                 "throws",
                 "true",
                 "try",
+                "typealias",
+                "var",
+                "where",
+                "while",
             ],
             Self::Html | Self::Xml | Self::Css => &[],
-            Self::Json => &["true", "false", "null"],
-            Self::Yaml => &["true", "false", "null", "yes", "no", "on", "off"],
-            Self::Toml => &["true", "false"],
+            Self::Json => &["false", "null", "true"],
+            Self::Yaml => &["false", "no", "null", "off", "on", "true", "yes"],
+            Self::Toml => &["false", "true"],
             Self::Shell => &[
-                "if", "then", "else", "elif", "fi", "for", "while", "in", "do", "done", "case",
-                "esac", "function", "select", "until", "time", "return", "break", "continue",
-                "local", "export", "readonly", "declare", "unset", "shift", "source", "alias",
+                "alias", "break", "case", "continue", "declare", "do", "done", "elif", "else",
+                "esac", "export", "fi", "for", "function", "if", "in", "local", "readonly",
+                "return", "select", "shift", "source", "then", "time", "unset", "until", "while",
             ],
             Self::Sql => &[
-                "select",
-                "from",
-                "where",
-                "insert",
-                "into",
-                "values",
-                "update",
-                "set",
-                "delete",
-                "create",
-                "table",
-                "drop",
-                "alter",
                 "add",
-                "column",
-                "index",
-                "view",
-                "join",
-                "inner",
-                "left",
-                "right",
-                "outer",
-                "on",
-                "group",
-                "by",
-                "order",
-                "having",
-                "limit",
-                "offset",
-                "distinct",
-                "as",
-                "and",
-                "or",
-                "not",
-                "null",
-                "is",
-                "in",
-                "like",
-                "between",
-                "exists",
-                "union",
                 "all",
+                "alter",
+                "and",
+                "as",
+                "between",
+                "by",
                 "case",
-                "when",
-                "then",
+                "check",
+                "column",
+                "create",
+                "default",
+                "delete",
+                "distinct",
+                "drop",
                 "else",
                 "end",
-                "primary",
-                "key",
+                "exists",
                 "foreign",
+                "from",
+                "group",
+                "having",
+                "in",
+                "index",
+                "inner",
+                "insert",
+                "into",
+                "is",
+                "join",
+                "key",
+                "left",
+                "like",
+                "limit",
+                "not",
+                "null",
+                "offset",
+                "on",
+                "or",
+                "order",
+                "outer",
+                "primary",
                 "references",
-                "default",
+                "right",
+                "select",
+                "set",
+                "table",
+                "then",
+                "union",
                 "unique",
-                "check",
+                "update",
+                "values",
+                "view",
+                "when",
+                "where",
             ],
             Self::Markdown | Self::PlainText => &[],
         }
@@ -721,9 +721,9 @@ impl LanguageId {
     pub fn type_names(self) -> &'static [&'static str] {
         match self {
             Self::Rust => &[
-                "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "str",
-                "u8", "u16", "u32", "u64", "u128", "usize", "String", "Vec", "Option", "Result",
-                "Box", "Rc", "Arc",
+                "Arc", "Box", "Option", "Rc", "Result", "String", "Vec", "bool", "char", "f32",
+                "f64", "i128", "i16", "i32", "i64", "i8", "isize", "str", "u128", "u16", "u32",
+                "u64", "u8", "usize",
             ],
             Self::Python => {
                 &["bool", "bytes", "dict", "float", "int", "list", "set", "str", "tuple"]
@@ -736,15 +736,15 @@ impl LanguageId {
             }
             Self::CLike => &["char", "double", "float", "int", "long", "short", "void"],
             Self::Java => &[
-                "boolean", "byte", "char", "double", "float", "int", "long", "short", "void",
-                "String", "Object",
+                "Object", "String", "boolean", "byte", "char", "double", "float", "int", "long",
+                "short", "void",
             ],
             Self::CSharp => &[
                 "bool", "byte", "char", "decimal", "double", "float", "int", "long", "object",
                 "sbyte", "short", "string", "uint", "ulong", "ushort", "void",
             ],
             Self::Cpp => {
-                &["bool", "char", "double", "float", "int", "long", "short", "void", "size_t"]
+                &["bool", "char", "double", "float", "int", "long", "short", "size_t", "void"]
             }
             Self::Kotlin => &[
                 "Any", "Boolean", "Byte", "Char", "Double", "Float", "Int", "Long", "Short",
@@ -753,7 +753,7 @@ impl LanguageId {
             Self::Swift => {
                 &["Any", "Bool", "Character", "Double", "Float", "Int", "String", "Void"]
             }
-            Self::Sql => &["int", "integer", "text", "varchar", "boolean", "date", "timestamp"],
+            Self::Sql => &["boolean", "date", "int", "integer", "text", "timestamp", "varchar"],
             Self::Html
             | Self::Xml
             | Self::Json
@@ -839,9 +839,12 @@ impl BuiltinHighlighter {
     }
 
     fn word_token_kind(&self, word: &str, followed_by_call: bool) -> TokenKind {
-        if self.language.keywords().contains(&word) {
+        // Both tables are kept in byte order (a unit test pins that), so classification is a
+        // binary search instead of a linear `contains` over every keyword — which ran once
+        // per identifier on every painted line (J-P07).
+        if self.language.keywords().binary_search(&word).is_ok() {
             TokenKind::Keyword
-        } else if self.language.type_names().contains(&word) {
+        } else if self.language.type_names().binary_search(&word).is_ok() {
             TokenKind::Type
         } else if followed_by_call {
             TokenKind::Function
@@ -1550,5 +1553,48 @@ mod tests {
         let spans = kinds(&highlighter, "const a = 'x';");
         assert!(spans.contains(&TokenKind::String));
         assert!(!spans.contains(&TokenKind::Character));
+    }
+
+    /// The keyword and type tables are binary-searched, so every language's list must be
+    /// in byte order. This pins the invariant that makes the lookup valid — without it a
+    /// new keyword appended out of order would silently stop highlighting (J-P07).
+    #[test]
+    fn keyword_tables_are_sorted() {
+        const LANGUAGES: &[LanguageId] = &[
+            LanguageId::Rust,
+            LanguageId::Python,
+            LanguageId::JavaScript,
+            LanguageId::Go,
+            LanguageId::CLike,
+            LanguageId::Java,
+            LanguageId::CSharp,
+            LanguageId::Cpp,
+            LanguageId::Kotlin,
+            LanguageId::Swift,
+            LanguageId::Html,
+            LanguageId::Xml,
+            LanguageId::Css,
+            LanguageId::Json,
+            LanguageId::Yaml,
+            LanguageId::Toml,
+            LanguageId::Shell,
+            LanguageId::Sql,
+            LanguageId::Markdown,
+            LanguageId::PlainText,
+        ];
+        for language in LANGUAGES {
+            let keywords = language.keywords();
+            assert!(
+                keywords.windows(2).all(|pair| pair[0] <= pair[1]),
+                "{:?} keywords are not sorted",
+                language
+            );
+            let types = language.type_names();
+            assert!(
+                types.windows(2).all(|pair| pair[0] <= pair[1]),
+                "{:?} type names are not sorted",
+                language
+            );
+        }
     }
 }

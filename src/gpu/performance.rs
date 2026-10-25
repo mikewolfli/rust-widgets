@@ -7,8 +7,26 @@
 //! - Discrete GPU: GPU timestamp-based monitoring
 //! - Integrated GPU: Frame time + memory bandwidth monitoring
 //! - CPU Software: CPU frame time + thread utilization monitoring
+//!
+//! # Relationship to `crate::performance` (G-214)
+//!
+//! The two timing systems have separate, complementary jobs and are meant to be
+//! read together:
+//!
+//! * **This module** owns per-frame classification against adaptive thresholds
+//!   (good/neutral/bad streaks, memory/CPU pressure, trap detection) and the
+//!   quality decision those drive. [`PerformanceStats`] is its single statistics
+//!   endpoint; nothing else here produces a second table for the same metric.
+//! * [`crate::performance::profiler`] owns per-section attribution
+//!   ([`FrameProfiler`](crate::performance::profiler::FrameProfiler) and
+//!   [`Profiler`](crate::performance::profiler::Profiler)): which named stage of
+//!   a frame spent the time. It does not decide quality.
+//!
+//! Neither monitors `crate::wgpu_backend` GPU timestamps today: `measure_gpu_time`
+//! reports `None` unless the `RUST_WIDGETS_GPU_TIME_MS` override is set, because
+//! this module has no device handle to issue a timestamp query on.
 use super::adapter::GpuDeviceType;
-use crate::compat::{format, Instant, MiniToString, String};
+use crate::compat::{format, Instant, MiniToString, OnceLock, String};
 use alloc::collections::VecDeque;
 use core::time::Duration;
 
@@ -229,7 +247,19 @@ pub struct PerformanceSample {
     pub frame_duration: Duration,
     /// GPU time (if available)
     pub gpu_time: Option<Duration>,
-    /// CPU time
+    /// CPU-side time.
+    ///
+    /// # Current semantics: this is the frame duration, not a CPU measurement
+    ///
+    /// This monitor has no submit boundary to bracket, and the platform layer
+    /// exposes CPU *utilization* rather than a CPU-time counter, so no honest
+    /// CPU-time interval can be measured here yet (G-55). The field therefore
+    /// carries [`Self::frame_duration`], which includes any blocking or waiting
+    /// the frame did; do **not** treat it as "time spent on the CPU" or use it to
+    /// decide that a frame is CPU-bound. Use [`Self::gpu_time`] (when present) and
+    /// [`Self::cpu_utilization`] for that question. A real value requires a
+    /// submit hook that starts a timer before submission and stops it after the
+    /// CPU side is done; that hook does not exist in this module.
     pub cpu_time: Duration,
     /// Memory utilization (0.0 - 1.0), or `None` when no reliable measurement exists.
     ///
@@ -248,6 +278,92 @@ pub struct PerformanceSample {
     /// Timestamp
     pub timestamp: Instant,
 }
+
+/// Environment inputs that are fixed for the process (G-51).
+///
+/// The overrides are environment variables, so they cannot change under a
+/// running process. They used to be re-read on every frame: three
+/// `std::env::var` calls per `end_frame`. Capturing them once removes that work
+/// from the frame path.
+///
+/// The *measurements* are deliberately not captured: memory and CPU utilization
+/// change over time, and freezing them would turn live pressure detection into a
+/// single stale sample. Only the override values are fixed here;
+/// `process_memory_utilization`/`process_cpu_utilization` are still called per
+/// frame (the platform layer caches its own expensive probes).
+#[derive(Debug, Clone, Copy, Default)]
+struct EnvironmentSample {
+    /// Parsed `RUST_WIDGETS_GPU_TIME_MS`, when the override is present and valid.
+    gpu_time: Option<Duration>,
+    /// Parsed `RUST_WIDGETS_MEM_UTIL`, when the override is present and valid.
+    memory_utilization: Option<f32>,
+    /// Parsed `RUST_WIDGETS_CPU_UTIL`, when the override is present and valid.
+    cpu_utilization: Option<f32>,
+}
+
+impl EnvironmentSample {
+    /// Reads every override once for the whole process (G-51).
+    ///
+    /// A `OnceLock` rather than a per-monitor read: the values are process-level
+    /// facts, and the point of the cache is that the first frame pays for them and
+    /// no later frame does, even if a second monitor is created.
+    fn cached() -> Self {
+        static SAMPLE: OnceLock<EnvironmentSample> = OnceLock::new();
+        *SAMPLE.get_or_init(Self::capture)
+    }
+
+    /// Reads every override once.
+    fn capture() -> Self {
+        Self {
+            gpu_time: std::env::var("RUST_WIDGETS_GPU_TIME_MS")
+                .ok()
+                .and_then(|raw| parse_gpu_time_override(&raw)),
+            memory_utilization: std::env::var("RUST_WIDGETS_MEM_UTIL")
+                .ok()
+                .and_then(|raw| parse_ratio_override("RUST_WIDGETS_MEM_UTIL", &raw)),
+            cpu_utilization: std::env::var("RUST_WIDGETS_CPU_UTIL")
+                .ok()
+                .and_then(|raw| parse_ratio_override("RUST_WIDGETS_CPU_UTIL", &raw)),
+        }
+    }
+}
+
+/// Parses the `RUST_WIDGETS_GPU_TIME_MS` override into a `Duration`.
+///
+/// `Duration::from_secs_f64` panics on negative/NaN/infinite or unrepresentably
+/// large inputs, so a hostile or fat-fingered environment value must not crash the
+/// renderer (N-S-61). An invalid value is reported and treated as "no override".
+fn parse_gpu_time_override(raw: &str) -> Option<Duration> {
+    match raw.trim().parse::<f64>() {
+        Ok(ms) => {
+            let secs = ms / 1000.0;
+            if secs.is_finite() && secs >= 0.0 && secs <= u64::MAX as f64 {
+                Some(Duration::from_secs_f64(secs))
+            } else {
+                log::warn!(
+                    "[performance] RUST_WIDGETS_GPU_TIME_MS value '{raw}' is out of range for a \
+                     Duration; ignoring it"
+                );
+                None
+            }
+        }
+        Err(_) => {
+            log::warn!("[performance] RUST_WIDGETS_GPU_TIME_MS value '{raw}' is not a valid f64");
+            None
+        }
+    }
+}
+
+/// Parses a `[0.0, 1.0]` utilization override, clamping a valid number.
+fn parse_ratio_override(name: &str, raw: &str) -> Option<f32> {
+    match raw.trim().parse::<f32>() {
+        Ok(value) => Some(value.clamp(0.0, 1.0)),
+        Err(_) => {
+            log::warn!("[performance] {name} value '{raw}' is not a valid f32");
+            None
+        }
+    }
+}
 /// Hardware-adaptive performance monitor
 pub struct AdaptivePerformanceMonitor {
     strategy: PerformanceMonitorStrategy,
@@ -262,6 +378,24 @@ pub struct AdaptivePerformanceMonitor {
     /// Frames recorded since the last automatic threshold adjustment, used to
     /// throttle [`Self::auto_adjust_thresholds`] to a sane cadence.
     frames_since_adjust: usize,
+    /// Environment overrides taken from the process-wide snapshot (G-51).
+    environment: EnvironmentSample,
+    /// Platform handle captured once at construction (G-51).
+    ///
+    /// `platform_facts()` is a process-wide singleton lookup, but `end_frame`
+    /// used to perform it twice per frame. Holding the `&'static` handle makes
+    /// the frame path free of the lookup. Consequence: a platform override
+    /// installed *after* this monitor was created is not observed by it; the
+    /// monitor's lifetime is the renderer's lifetime, so this is the intended
+    /// boundary.
+    platform: &'static dyn crate::platform::Platform,
+    /// Running sum of the durations in `samples`, maintained on push/pop so
+    /// [`Self::average_frame_time`] and [`Self::stability`] never rescan the
+    /// window (G-52).
+    total_frame_time: Duration,
+    /// Running sum of squared frame durations, in seconds². Maintained alongside
+    /// `total_frame_time` so the variance in [`Self::stability`] is O(1).
+    sum_sq_frame_seconds: f64,
 }
 impl AdaptivePerformanceMonitor {
     /// Creates a new monitor for a device type
@@ -293,7 +427,22 @@ impl AdaptivePerformanceMonitor {
             // `elapsed()` zero and suppress that first adjustment for 2s/5s.
             last_quality_change: Instant::now() - Duration::from_secs(60),
             frames_since_adjust: 0,
+            environment: EnvironmentSample::cached(),
+            platform: crate::platform::platform_facts(),
+            total_frame_time: Duration::ZERO,
+            sum_sq_frame_seconds: 0.0,
         }
+    }
+    #[cfg(test)]
+    /// Builds a monitor with an explicit environment snapshot.
+    ///
+    /// Tests must not depend on (or mutate) process environment variables: the
+    /// test harness runs cases in parallel, so a `set_var` in one case can leak
+    /// into another. This constructor lets a test state the overrides directly.
+    fn with_environment(environment: EnvironmentSample) -> Self {
+        let mut monitor = Self::for_device_type(GpuDeviceType::DiscreteGpu);
+        monitor.environment = environment;
+        monitor
     }
     /// Starts a new frame
     pub fn begin_frame(&mut self) {
@@ -307,7 +456,9 @@ impl AdaptivePerformanceMonitor {
             frame_index: self.current_frame,
             frame_duration,
             gpu_time: self.measure_gpu_time(),
-            cpu_time: frame_duration, // Simplified - in real impl, measure CPU separately
+            // No CPU-side submit boundary exists to measure, so this carries the
+            // frame duration and says so in the field docs (G-55).
+            cpu_time: frame_duration,
             memory_utilization: self.measure_memory_utilization(),
             cpu_utilization: self.measure_cpu_utilization(),
             timestamp: Instant::now(),
@@ -317,31 +468,13 @@ impl AdaptivePerformanceMonitor {
     }
     /// Measures GPU time.
     ///
-    /// Checks the `RUST_WIDGETS_GPU_TIME_MS` env var first (value in
-    /// milliseconds, parsed as `f64`).  Without a wgpu context no real GPU
-    /// timestamp query is possible, so `None` is returned when the env var
-    /// is absent.
+    /// Returns the cached `RUST_WIDGETS_GPU_TIME_MS` override (milliseconds,
+    /// parsed as `f64`) when one was present at construction. Without a wgpu
+    /// context no real GPU timestamp query is possible, so `None` is returned
+    /// otherwise. The override is read once (G-51) rather than per frame.
     fn measure_gpu_time(&self) -> Option<Duration> {
-        // Env-var override: RUST_WIDGETS_GPU_TIME_MS (milliseconds, f64)
-        if let Ok(val) = std::env::var("RUST_WIDGETS_GPU_TIME_MS") {
-            match val.trim().parse::<f64>() {
-                Ok(ms) => {
-                    // `Duration::from_secs_f64` panics on negative/NaN/infinite
-                    // or unrepresentably large inputs, so a hostile or fat-fingered
-                    // environment value must not crash the renderer (N-S-61).
-                    let secs = ms / 1000.0;
-                    if secs.is_finite() && secs >= 0.0 && secs <= u64::MAX as f64 {
-                        return Some(Duration::from_secs_f64(secs));
-                    }
-                    log::warn!(
-                        "[performance] RUST_WIDGETS_GPU_TIME_MS value '{val}' is out of range for a \
-                         Duration; ignoring it"
-                    );
-                }
-                Err(_) => log::warn!(
-                    "[performance] RUST_WIDGETS_GPU_TIME_MS value '{val}' is not a valid f64"
-                ),
-            }
+        if let Some(gpu_time) = self.environment.gpu_time {
+            return Some(gpu_time);
         }
         log::debug!(
             "[performance] measure_gpu_time: no GPU query backend available (strategy={:?})",
@@ -352,26 +485,25 @@ impl AdaptivePerformanceMonitor {
     /// Measures memory utilization as a fraction `[0.0, 1.0]`.
     ///
     /// Priority:
-    /// 1. `RUST_WIDGETS_MEM_UTIL` env var override
+    /// 1. cached `RUST_WIDGETS_MEM_UTIL` override (read once at construction)
     /// 2. Active platform backend (`Platform::process_memory_utilization`)
     /// 3. `None` (no reliable measurement available)
     ///
     /// The OS-specific probes (`/proc/self/status`, `ps`) live inside the
-    /// platform backends, not here — see principle #36.
+    /// platform backends, not here — see principle #36. The platform *handle* is
+    /// cached, but the measurement itself is still taken per frame so pressure
+    /// detection stays live (G-51).
     ///
     /// Returns `None` rather than `0.0` when no backend can measure: a missing measurement must not
     /// be recorded as "no pressure", or an unmeasured platform would sail past every pressure
     /// threshold (rule #37 — the absence of a capability is reported, never fabricated).
     fn measure_memory_utilization(&self) -> Option<f32> {
-        // 1. Env-var override
-        if let Ok(val) = std::env::var("RUST_WIDGETS_MEM_UTIL") {
-            if let Ok(v) = val.trim().parse::<f32>() {
-                return Some(v.clamp(0.0, 1.0));
-            }
-            log::warn!("[performance] RUST_WIDGETS_MEM_UTIL value '{val}' is not a valid f32");
+        // 1. Cached env-var override
+        if let Some(value) = self.environment.memory_utilization {
+            return Some(value);
         }
         // 2. Platform backend owns the OS probe
-        if let Some(ratio) = crate::platform::platform_facts().process_memory_utilization() {
+        if let Some(ratio) = self.platform.process_memory_utilization() {
             log::debug!("[performance] memory utilization from platform backend: {ratio:.3}");
             return Some(ratio.clamp(0.0, 1.0));
         }
@@ -382,22 +514,20 @@ impl AdaptivePerformanceMonitor {
     /// Measures CPU utilization as a fraction `[0.0, 1.0]`.
     ///
     /// Priority:
-    /// 1. `RUST_WIDGETS_CPU_UTIL` env var override
+    /// 1. cached `RUST_WIDGETS_CPU_UTIL` override (read once at construction)
     /// 2. Active platform backend (`Platform::process_cpu_utilization`)
     /// 3. `None` (no reliable measurement available)
     ///
-    /// As with memory, the OS-specific sampling lives in the backend, and a missing measurement is
-    /// `None` rather than a fabricated `0.0`.
+    /// As with memory, the OS-specific sampling lives in the backend, a missing measurement is
+    /// `None` rather than a fabricated `0.0`, and the measurement is taken per frame while only
+    /// the override and the platform handle are cached (G-51).
     fn measure_cpu_utilization(&self) -> Option<f32> {
-        // 1. Env-var override
-        if let Ok(val) = std::env::var("RUST_WIDGETS_CPU_UTIL") {
-            if let Ok(v) = val.trim().parse::<f32>() {
-                return Some(v.clamp(0.0, 1.0));
-            }
-            log::warn!("[performance] RUST_WIDGETS_CPU_UTIL value '{val}' is not a valid f32");
+        // 1. Cached env-var override
+        if let Some(value) = self.environment.cpu_utilization {
+            return Some(value);
         }
         // 2. Platform backend owns the OS probe
-        if let Some(ratio) = crate::platform::platform_facts().process_cpu_utilization() {
+        if let Some(ratio) = self.platform.process_cpu_utilization() {
             log::debug!("[performance] CPU utilization from platform backend: {ratio:.3}");
             return Some(ratio.clamp(0.0, 1.0));
         }
@@ -406,9 +536,20 @@ impl AdaptivePerformanceMonitor {
     }
     /// Records a performance sample
     fn record_sample(&mut self, sample: PerformanceSample) {
+        // Keep the running sums in step with the sliding window: subtract the
+        // evicted sample before adding the new one, so `average_frame_time` and
+        // `stability` never rescan the whole window (G-52).
         if self.samples.len() >= self.max_samples {
-            self.samples.pop_front();
+            if let Some(evicted) = self.samples.pop_front() {
+                self.total_frame_time =
+                    self.total_frame_time.saturating_sub(evicted.frame_duration);
+                let secs = evicted.frame_duration.as_secs_f64();
+                self.sum_sq_frame_seconds = (self.sum_sq_frame_seconds - secs * secs).max(0.0);
+            }
         }
+        let secs = sample.frame_duration.as_secs_f64();
+        self.total_frame_time = self.total_frame_time.saturating_add(sample.frame_duration);
+        self.sum_sq_frame_seconds += secs * secs;
         self.samples.push_back(sample);
         // Update consecutive frame counters. A frame is classified against
         // *both* thresholds: at or below `upgrade_duration` it is good, above
@@ -471,12 +612,14 @@ impl AdaptivePerformanceMonitor {
         self.consecutive_good_frames = 0;
     }
     /// Returns average frame time
+    ///
+    /// O(1): the total is maintained as samples enter and leave the window
+    /// (G-52), so this does not rescan up to 120 samples per call.
     pub fn average_frame_time(&self) -> Duration {
         if self.samples.is_empty() {
             return Duration::from_secs(0);
         }
-        let total: Duration = self.samples.iter().map(|s| s.frame_duration).sum();
-        total / self.samples.len() as u32
+        self.total_frame_time / self.samples.len() as u32
     }
     /// Returns current FPS
     pub fn current_fps(&self) -> f32 {
@@ -488,22 +631,27 @@ impl AdaptivePerformanceMonitor {
         }
     }
     /// Returns performance stability (0.0 - 1.0)
+    ///
+    /// O(1): the sum of squared frame durations is maintained alongside the
+    /// total (G-52). The variance is `E[x²] − E[x]²`, clamped at zero because
+    /// floating-point rounding can make the algebraic form slightly negative for
+    /// a perfectly uniform window.
     pub fn stability(&self) -> f32 {
         if self.samples.len() < 10 {
             return 1.0;
         }
         let avg = self.average_frame_time();
-        let variance: f32 = self
-            .samples
-            .iter()
-            .map(|s| {
-                let diff = s.frame_duration.as_secs_f32() - avg.as_secs_f32();
-                diff * diff
-            })
-            .sum::<f32>()
-            / self.samples.len() as f32;
-        let std_dev = variance.sqrt();
-        let stability = 1.0 - (std_dev / avg.as_secs_f32()).min(1.0);
+        let avg_secs = avg.as_secs_f32();
+        if avg_secs <= 0.0 {
+            // A zero mean would divide by zero; a window of zero-duration frames
+            // is perfectly stable by definition.
+            return 1.0;
+        }
+        let count = self.samples.len() as f64;
+        let mean_square = self.sum_sq_frame_seconds / count;
+        let variance = (mean_square - (avg_secs as f64) * (avg_secs as f64)).max(0.0);
+        let std_dev = variance.sqrt() as f32;
+        let stability = 1.0 - (std_dev / avg_secs).min(1.0);
         stability.max(0.0)
     }
     /// Returns true if under memory pressure.
@@ -857,22 +1005,61 @@ mod tests {
     }
 
     /// The env-var override for GPU time must ignore out-of-range values rather
-    /// than panicking inside `Duration::from_secs_f64` (N-S-61).
+    /// than panicking inside `Duration::from_secs_f64` (N-S-61), and the override
+    /// must be read once and reused (G-51).
+    ///
+    /// The parser is exercised directly, and the monitor gets an explicit
+    /// snapshot: mutating process environment from a test would race the other
+    /// cases the harness runs in parallel.
     #[test]
     fn gpu_time_env_override_is_range_checked() {
-        let monitor = discrete_monitor();
         // A negative millisecond value would make `from_secs_f64` panic.
-        std::env::set_var("RUST_WIDGETS_GPU_TIME_MS", "-5");
-        assert_eq!(monitor.measure_gpu_time(), None, "a negative duration is rejected");
-        std::env::set_var("RUST_WIDGETS_GPU_TIME_MS", "nan");
-        assert_eq!(monitor.measure_gpu_time(), None, "NaN is rejected");
-        std::env::set_var("RUST_WIDGETS_GPU_TIME_MS", "12.5");
+        assert_eq!(parse_gpu_time_override("-5"), None, "a negative duration is rejected");
+        assert_eq!(parse_gpu_time_override("nan"), None, "NaN is rejected");
+        assert_eq!(parse_gpu_time_override("inf"), None, "infinity is rejected");
         assert_eq!(
-            monitor.measure_gpu_time(),
+            parse_gpu_time_override("12.5"),
             Some(Duration::from_secs_f64(0.0125)),
             "a normal value is converted"
         );
-        std::env::remove_var("RUST_WIDGETS_GPU_TIME_MS");
+
+        // The cached snapshot is what `end_frame` reads, so a monitor keeps the
+        // same override for its whole lifetime.
+        let monitor = AdaptivePerformanceMonitor::with_environment(EnvironmentSample {
+            gpu_time: Some(Duration::from_secs_f64(0.0125)),
+            ..EnvironmentSample::default()
+        });
+        assert_eq!(monitor.measure_gpu_time(), Some(Duration::from_secs_f64(0.0125)));
+        assert_eq!(monitor.measure_gpu_time(), Some(Duration::from_secs_f64(0.0125)));
+
+        // No snapshot means no override, regardless of what the environment holds.
+        let monitor = AdaptivePerformanceMonitor::with_environment(EnvironmentSample::default());
+        assert_eq!(monitor.measure_gpu_time(), None);
+    }
+
+    /// G-52: the incremental sums must stay equal to a direct scan of the window,
+    /// including after samples are evicted from the front.
+    #[test]
+    fn incremental_frame_sums_match_a_full_scan() {
+        let mut monitor = discrete_monitor();
+        for i in 0..(monitor.max_samples + 7) {
+            let ms = 8 + (i as u64 % 11);
+            monitor.record_sample(sample_of(Duration::from_millis(ms)));
+
+            let (sum, sum_sq, count) = monitor.samples.iter().fold(
+                (Duration::ZERO, 0.0_f64, 0_u32),
+                |(sum, sum_sq, count), sample| {
+                    let secs = sample.frame_duration.as_secs_f64();
+                    (sum + sample.frame_duration, sum_sq + secs * secs, count + 1)
+                },
+            );
+            assert_eq!(monitor.total_frame_time, sum, "running total drifted");
+            assert!(
+                (monitor.sum_sq_frame_seconds - sum_sq).abs() < 1e-9,
+                "running square sum drifted"
+            );
+            assert_eq!(monitor.samples.len(), count as usize);
+        }
     }
 
     /// N-S-62: a long run of unstable frames must keep the thresholds bounded and

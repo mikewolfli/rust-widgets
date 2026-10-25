@@ -24,11 +24,13 @@ use core::ops::Deref;
 
 /// A uniform scale and translation applied to every drawing command a [`Canvas`] stores.
 ///
-/// The transform is applied when a command is added, not when it is painted, so the stored
-/// geometry is already in surface coordinates: hit tests, exports and the commands themselves
-/// all read the same space. Changing the transform therefore affects commands added afterwards;
-/// a caller that wants to move existing content clears and re-adds it, which is what a drawing
-/// surface's undo model expects.
+/// Commands are stored in the **logical** coordinates the caller drew them in, and the transform
+/// is applied when the canvas is painted, exported or hit-tested. That is what makes a wheel zoom
+/// affect the ink already on the surface: applying it at push time froze every earlier command in
+/// the old scale, so `zoom_changed` reported a zoom the picture never showed.
+///
+/// The replay transform of each command is cached, so the scale-and-translate is computed once per
+/// command per transform value rather than once per command per frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CanvasTransform {
     /// Uniform scale, clamped to a positive value.
@@ -65,6 +67,18 @@ impl CanvasTransform {
             origin.y,
             (rect.width as f32 * self.scale).round().max(1.0) as u32,
             (rect.height as f32 * self.scale).round().max(1.0) as u32,
+        )
+    }
+
+    /// Maps one **surface** point back into the logical space commands are stored in.
+    ///
+    /// The hit test reads this so it can compare a pointer against the commands exactly as the
+    /// caller drew them, instead of walking the transformed copies the paint path builds.
+    pub fn inverse_point(&self, point: Point) -> Point {
+        let scale = if self.scale.is_finite() && self.scale > 0.0 { self.scale } else { 1.0 };
+        Point::new(
+            ((point.x - self.offset.x) as f32 / scale).round() as i32,
+            ((point.y - self.offset.y) as f32 / scale).round() as i32,
         )
     }
 }
@@ -123,7 +137,41 @@ impl Deref for CanvasPointerEvent {
 /// layer, because layers are reordered independently of insertion order.
 struct StoredCommand {
     seq: u64,
+    /// The command in the caller's logical coordinates, which is the geometry hit tests,
+    /// exports and the undo history all address.
     command: RenderCommand,
+    /// The same command mapped through a transform, together with the transform it was built
+    /// from. `None` until the first paint, and rebuilt whenever the canvas transform changes;
+    /// see [`CanvasTransform`] for why the mapping does not happen at push time.
+    replay: Option<(CanvasTransform, RenderCommand)>,
+}
+
+impl StoredCommand {
+    /// The command as it should be replayed under `transform`, materialising and caching the
+    /// mapping when the cached one was built for a different transform.
+    fn replay_under(&mut self, transform: CanvasTransform) -> &RenderCommand {
+        let fresh = matches!(&self.replay, Some((cached, _)) if *cached == transform);
+        if !fresh {
+            let mapped = transform_command(&self.command, transform);
+            self.replay = Some((transform, mapped));
+        }
+        match self.replay.as_ref() {
+            Some((_, command)) => command,
+            // Unreachable: the block above always stores a pair. Answering with the logical
+            // command keeps a corrupt cache from taking the paint down.
+            None => &self.command,
+        }
+    }
+}
+
+/// Hands out the identities the render layer cache uses to recognise an unchanged layer.
+///
+/// Globally unique rather than per canvas: the cache belongs to the surface, so two canvases
+/// that both started at `1` would hit each other's cached pixels.
+fn next_layer_cache_key() -> u64 {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// One canvas layer: a named, independently orderable and hideable command list.
@@ -136,12 +184,42 @@ struct CanvasLayer {
     name: String,
     visible: bool,
     commands: VecDeque<StoredCommand>,
+    /// Identity for the render layer cache. A new key is handed out whenever the layer's own
+    /// content or the canvas transform changes, which is the assertion the cache relies on.
+    cache_key: u64,
 }
 
 /// A command removed by undo, retained so redo can put it back.
 struct UndoneCommand {
     layer_id: u64,
     command: RenderCommand,
+}
+
+/// A bitmap a canvas can place as one undoable, layer-owned command (SP-51).
+///
+/// Pixels are RGBA8 in row-major order and shared, so the same decoded image can be placed
+/// several times — and replayed every frame — without a copy. `width`/`height` describe the
+/// source buffer; the destination rectangle is the one passed to [`Canvas::draw_image`].
+#[derive(Clone, Debug)]
+pub struct CanvasImage {
+    /// Source pixels, `width * height * 4` bytes.
+    pub data: Arc<[u8]>,
+    /// Source width in pixels.
+    pub width: u32,
+    /// Source height in pixels.
+    pub height: u32,
+}
+
+impl CanvasImage {
+    /// Wraps RGBA8 `pixels` of `width`×`height`, or `None` when the buffer is too short.
+    pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Option<Self> {
+        let expected = width as usize * height as usize * 4;
+        (width > 0 && height > 0 && pixels.len() >= expected).then(|| Self {
+            data: Arc::from(pixels),
+            width,
+            height,
+        })
+    }
 }
 
 /// Canvas widget for custom drawing operations.
@@ -168,6 +246,14 @@ pub struct Canvas {
     pending_group: Option<Vec<(u64, u64)>>,
     /// The most commands the canvas retains; the oldest is dropped past this.
     command_limit: usize,
+    /// Incrementally maintained total of `commands.len()` across every layer.
+    ///
+    /// `command_count` used to sum the whole layer stack on every push, so a stroke of `n`
+    /// commands cost `O(n²)` (SP-P51). Six sites add or subtract; nothing else may touch the
+    /// layer command lists.
+    command_total: usize,
+    /// Layer-cache identity of the painted background grid; a fresh key rebuilds it.
+    grid_cache_key: u64,
     /// Whether the wheel zooms the transform.
     zoom_enabled: bool,
     /// Global anti-aliasing switch applied to every stored command.
@@ -221,6 +307,8 @@ impl Canvas {
             redo_stack: VecDeque::new(),
             pending_group: None,
             command_limit: 100_000,
+            command_total: 0,
+            grid_cache_key: next_layer_cache_key(),
             zoom_enabled: true,
             anti_alias: true,
             show_grid: false,
@@ -263,6 +351,7 @@ impl Canvas {
     /// Remove all stored drawing commands and every layer.
     pub fn clear(&mut self) {
         self.layers.clear();
+        self.command_total = 0;
         self.current_layer = None;
         self.undo_stack.clear();
         self.redo_stack.clear();
@@ -274,7 +363,7 @@ impl Canvas {
 
     /// Returns the number of stored drawing commands across every layer.
     pub fn command_count(&self) -> usize {
-        self.layers.iter().map(|layer| layer.commands.len()).sum()
+        self.command_total
     }
 
     /// Returns how many layers exist.
@@ -295,7 +384,13 @@ impl Canvas {
         }
         let id = self.next_layer_id;
         self.next_layer_id += 1;
-        self.layers.push(CanvasLayer { id, name, visible: true, commands: VecDeque::new() });
+        self.layers.push(CanvasLayer {
+            id,
+            name,
+            visible: true,
+            commands: VecDeque::new(),
+            cache_key: next_layer_cache_key(),
+        });
         self.current_layer = Some(id);
         self.layer_changed.emit(self.layers.len());
         self.base.request_redraw();
@@ -342,7 +437,9 @@ impl Canvas {
         if index >= self.layers.len() {
             return false;
         }
+        let removed_len = self.layers[index].commands.len();
         let layer = self.layers.remove(index);
+        self.command_total = self.command_total.saturating_sub(removed_len);
         for step in &mut self.undo_stack {
             step.retain(|(layer_id, _)| *layer_id != layer.id);
         }
@@ -367,16 +464,31 @@ impl Canvas {
     }
 
     /// Replaces the transform applied to newly added commands.
+    ///
+    /// Every layer's replay cache is dropped: the transform is part of the picture, so a cached
+    /// command list mapped through the previous value would paint the old scale.
     pub fn set_transform(&mut self, transform: CanvasTransform) {
         if self.transform == transform {
             return;
         }
         let scale_changed = self.transform.scale != transform.scale;
         self.transform = transform;
+        self.invalidate_replay_caches();
         if scale_changed {
             self.zoom_changed.emit(self.transform.scale);
         }
         self.base.request_redraw();
+    }
+
+    /// Drops every cached replay mapping and gives each layer a fresh render-cache identity.
+    fn invalidate_replay_caches(&mut self) {
+        for layer in &mut self.layers {
+            for stored in &mut layer.commands {
+                stored.replay = None;
+            }
+            layer.cache_key = next_layer_cache_key();
+        }
+        self.grid_cache_key = next_layer_cache_key();
     }
 
     /// Saves the current transform, restoring it with [`Self::pop_transform`].
@@ -387,7 +499,11 @@ impl Canvas {
     /// Restores the transform saved by the matching [`Self::push_transform`].
     pub fn pop_transform(&mut self) {
         if let Some(transform) = self.transform_stack.pop() {
-            self.transform = transform;
+            if self.transform != transform {
+                self.transform = transform;
+                self.invalidate_replay_caches();
+                self.zoom_changed.emit(transform.scale);
+            }
             self.base.request_redraw();
         }
     }
@@ -429,9 +545,12 @@ impl Canvas {
                     .into_iter()
                     .map(|mut stored| {
                         stored.command = without_anti_aliasing(stored.command);
+                        // The mapped copy was built from the anti-aliased form.
+                        stored.replay = None;
                         stored
                     })
                     .collect();
+                layer.cache_key = next_layer_cache_key();
             }
         }
         self.base.request_redraw();
@@ -448,6 +567,7 @@ impl Canvas {
             return;
         }
         self.show_grid = show;
+        self.grid_cache_key = next_layer_cache_key();
         self.base.request_redraw();
     }
 
@@ -463,6 +583,7 @@ impl Canvas {
             return;
         }
         self.grid_step = step;
+        self.grid_cache_key = next_layer_cache_key();
         self.base.request_redraw();
     }
 
@@ -497,6 +618,7 @@ impl Canvas {
         let scale = self.transform.scale.clamp(min, max);
         if scale != self.transform.scale {
             self.transform.scale = scale;
+            self.invalidate_replay_caches();
             self.zoom_changed.emit(scale);
             self.base.request_redraw();
         }
@@ -596,9 +718,13 @@ impl Canvas {
                 let Some(layer_index) = self.layer_index_by_id(undone.layer_id) else { continue };
                 let seq = self.next_command_seq;
                 self.next_command_seq += 1;
-                self.layers[layer_index]
-                    .commands
-                    .push_back(StoredCommand { seq, command: undone.command });
+                self.layers[layer_index].commands.push_back(StoredCommand {
+                    seq,
+                    command: undone.command,
+                    replay: None,
+                });
+                self.layers[layer_index].cache_key = next_layer_cache_key();
+                self.command_total = self.command_total.saturating_add(1);
                 restored.push((undone.layer_id, seq));
             }
             if restored.is_empty() {
@@ -651,6 +777,7 @@ impl Canvas {
             name: String::from("default"),
             visible: true,
             commands: VecDeque::new(),
+            cache_key: next_layer_cache_key(),
         });
         self.current_layer = Some(id);
         self.layer_changed.emit(self.layers.len());
@@ -662,7 +789,12 @@ impl Canvas {
         let layer_index = self.layer_index_by_id(layer_id)?;
         let commands = &mut self.layers[layer_index].commands;
         let index = commands.iter().position(|stored| stored.seq == seq)?;
-        commands.remove(index).map(|stored| stored.command)
+        let removed = commands.remove(index).map(|stored| stored.command);
+        if removed.is_some() {
+            self.command_total = self.command_total.saturating_sub(1);
+            self.layers[layer_index].cache_key = next_layer_cache_key();
+        }
+        removed
     }
 
     /// Index of the layer holding the globally oldest command.
@@ -685,6 +817,7 @@ impl Canvas {
             let Some(layer_index) = self.oldest_command_layer() else { break };
             let layer_id = self.layers[layer_index].id;
             let Some(removed) = self.layers[layer_index].commands.pop_front() else { break };
+            self.command_total = self.command_total.saturating_sub(1);
             let seq = removed.seq;
             for step in &mut self.undo_stack {
                 step.retain(|(id, entry_seq)| !(*id == layer_id && *entry_seq == seq));
@@ -710,76 +843,15 @@ impl Canvas {
         }
     }
 
-    /// Applies the current transform, snapping and anti-aliasing policy to `command`
-    /// and stores it in the current layer.
+    /// Applies the snapping and anti-aliasing policy to `command` and stores it in the current
+    /// layer.
+    ///
+    /// The canvas transform is deliberately **not** applied here: commands keep the logical
+    /// coordinates they were drawn in, and the transform is applied at replay, export and hit
+    /// test. Baking it in at push time froze every earlier command at the scale it was drawn at,
+    /// so zooming changed the reported scale and nothing on the surface (SP-P52).
     fn push_command(&mut self, command: RenderCommand) {
-        let transform = self.transform;
-        let mut command = match command {
-            RenderCommand::FillRect { rect, color } => {
-                RenderCommand::FillRect { rect: transform.rect(rect), color }
-            }
-            RenderCommand::DrawRect { rect, color } => {
-                RenderCommand::DrawRect { rect: transform.rect(rect), color }
-            }
-            RenderCommand::FillRoundedRect { rect, radius, color } => {
-                RenderCommand::FillRoundedRect {
-                    rect: transform.rect(rect),
-                    radius: (radius as f32 * transform.scale).round().max(1.0) as u32,
-                    color,
-                }
-            }
-            RenderCommand::DrawLine { from, to, color } => RenderCommand::DrawLine {
-                from: transform.point(from),
-                to: transform.point(to),
-                color,
-            },
-            RenderCommand::DrawLineAA { from, to, color } => RenderCommand::DrawLineAA {
-                from: transform.point(from),
-                to: transform.point(to),
-                color,
-            },
-            RenderCommand::DrawLineStroke { from, to, color, width } => {
-                RenderCommand::DrawLineStroke {
-                    from: transform.point(from),
-                    to: transform.point(to),
-                    color,
-                    width: (width as f32 * transform.scale).round().max(1.0) as u32,
-                }
-            }
-            RenderCommand::FillCircle { center, radius, color } => RenderCommand::FillCircle {
-                center: transform.point(center),
-                radius: (radius as f32 * transform.scale).round().max(1.0) as u32,
-                color,
-            },
-            RenderCommand::FillCircleAA { center, radius, color } => RenderCommand::FillCircleAA {
-                center: transform.point(center),
-                radius: (radius as f32 * transform.scale).round().max(1.0) as u32,
-                color,
-            },
-            RenderCommand::DrawCircle { center, radius, color } => RenderCommand::DrawCircle {
-                center: transform.point(center),
-                radius: (radius as f32 * transform.scale).round().max(1.0) as u32,
-                color,
-            },
-            RenderCommand::DrawCircleStroke { center, radius, color, width } => {
-                RenderCommand::DrawCircleStroke {
-                    center: transform.point(center),
-                    radius: (radius as f32 * transform.scale).round().max(1.0) as u32,
-                    color,
-                    width: (width as f32 * transform.scale).round().max(1.0) as u32,
-                }
-            }
-            RenderCommand::DrawPath { points, closed, color, filled, width } => {
-                RenderCommand::DrawPath {
-                    points: points.into_iter().map(|point| transform.point(point)).collect(),
-                    closed,
-                    color,
-                    filled,
-                    width: (width as f32 * transform.scale).round().max(1.0) as u32,
-                }
-            }
-            other => other,
-        };
+        let mut command = command;
         if self.snap_to_grid {
             command = snap_command(command, self.grid_step.max(1) as i32);
         }
@@ -791,7 +863,9 @@ impl Canvas {
         let layer_id = self.layers[layer_index].id;
         let seq = self.next_command_seq;
         self.next_command_seq += 1;
-        self.layers[layer_index].commands.push_back(StoredCommand { seq, command });
+        self.layers[layer_index].commands.push_back(StoredCommand { seq, command, replay: None });
+        self.layers[layer_index].cache_key = next_layer_cache_key();
+        self.command_total = self.command_total.saturating_add(1);
         self.redo_stack.clear();
         let reference = (layer_id, seq);
         if let Some(group) = &mut self.pending_group {
@@ -826,7 +900,10 @@ impl Canvas {
                     continue;
                 }
                 for stored in &layer.commands {
-                    context.execute_command_ref(&stored.command);
+                    // The export goes through the same transform the paint does, so what the
+                    // caller sees on the surface is what the file contains (SP-P52).
+                    let mapped = transform_command(&stored.command, self.transform);
+                    context.execute_command(mapped);
                 }
             }
         }
@@ -846,24 +923,26 @@ impl Canvas {
     /// Hidden layers are skipped, as they are when painting. The index addresses
     /// the canvas's flattened command order (all layers, in painting order), so
     /// it stays stable when a layer is hidden or shown.
+    ///
+    /// The pointer is mapped back through the canvas transform and compared against the
+    /// commands' logical geometry, which is the same geometry the caller drew. The walk is
+    /// allocation-free: the flattened index is accumulated from the end of the layer stack
+    /// rather than from a prebuilt offset table (SP-P53).
     pub fn hit_test(&self, point: Point) -> Option<usize> {
-        let mut offsets = Vec::with_capacity(self.layers.len());
-        let mut offset = 0usize;
-        for layer in &self.layers {
-            offsets.push(offset);
-            offset += layer.commands.len();
-        }
-        for (layer_index, layer) in self.layers.iter().enumerate().rev() {
-            if !layer.visible {
-                continue;
-            }
-            for (command_index, stored) in layer.commands.iter().enumerate().rev() {
-                if let Some(bounds) = command_bounds(&stored.command) {
-                    if bounds.contains_point(point) {
-                        return Some(offsets[layer_index] + command_index);
+        let local = self.transform.inverse_point(point);
+        let mut end = self.command_total;
+        for layer in self.layers.iter().rev() {
+            let start = end.saturating_sub(layer.commands.len());
+            if layer.visible {
+                for (command_index, stored) in layer.commands.iter().enumerate().rev() {
+                    if let Some(bounds) = command_bounds(&stored.command) {
+                        if bounds.contains_point(local) {
+                            return Some(start + command_index);
+                        }
                     }
                 }
             }
+            end = start;
         }
         None
     }
@@ -980,7 +1059,36 @@ impl Canvas {
         filled: bool,
         width: u32,
     ) {
-        self.push_command(RenderCommand::DrawPath { points, closed, color, filled, width });
+        self.push_command(RenderCommand::DrawPath {
+            points: points.into(),
+            closed,
+            color,
+            filled,
+            width,
+        });
+        self.base.request_redraw();
+    }
+
+    /// Places `image` in `rect` as one undoable, layer-owned command (SP-51).
+    ///
+    /// The pixels are referenced, not copied: the same decoded image can be placed several
+    /// times and is replayed every frame without duplicating the buffer. Replay, hit culling,
+    /// snapping, undo/redo, trimming and export all treat it like any other stored command.
+    pub fn draw_image(&mut self, image: CanvasImage, rect: Rect) {
+        // A caller that only knows where the image belongs can pass a zero-sized target and get
+        // the image's own pixel size; either way the destination is one rectangle.
+        let rect = if rect.width == 0 || rect.height == 0 {
+            Rect::new(rect.x, rect.y, image.width, image.height)
+        } else {
+            rect
+        };
+        self.push_command(RenderCommand::DrawImage {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            data: image.data,
+        });
         self.base.request_redraw();
     }
 
@@ -1234,9 +1342,17 @@ impl Draw for Canvas {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        if self.show_grid {
+        if self.show_grid && rect.width > 0 && rect.height > 0 {
             let step = self.grid_step.max(1);
             let grid_color = border.with_alpha(96);
+            // The grid is a fixed background: it only changes with the geometry, the step or the
+            // resolved colours. Wrapping it in a cached layer means a still canvas re-uses the
+            // previous frame's pixels instead of re-issuing every line (SP-P54).
+            let key = self.grid_cache_key
+                ^ color_key(background)
+                ^ color_key(border)
+                ^ ((step as u64) << 48);
+            context.push_layer_group(rect, None, 1.0, Some(key));
             let mut x = rect.x;
             while x <= rect.x + rect.width as i32 {
                 context.draw_line(
@@ -1255,25 +1371,32 @@ impl Draw for Canvas {
                 );
                 y += step as i32;
             }
+            context.pop_layer();
         }
-        // Replay every visible layer in painting order. Borrowed: the layers are the
-        // canvas's own content, so cloning each command per frame only duplicated its
-        // text and point vectors. A command whose bounds lie outside the control is
-        // culled: a drawing surface that has been panned keeps every off-screen mark,
-        // and replaying them costs the rasteriser a full pass each for pixels nobody
-        // can see.
-        for layer in &self.layers {
-            if !layer.visible {
+        // Replay every visible layer in painting order, each inside its own render-cached
+        // layer group. A layer whose command list and transform have not changed since the
+        // previous frame is reused as pixels by the backend, so a still surface costs one
+        // composite per layer rather than one draw per command (SP-P54). Culling still runs on
+        // the commands that are replayed: a drawing surface that has been panned keeps every
+        // off-screen mark, and replaying them costs the rasteriser a full pass for pixels
+        // nobody can see.
+        let transform = self.transform;
+        for layer in &mut self.layers {
+            if !layer.visible || layer.commands.is_empty() {
                 continue;
             }
-            for stored in &layer.commands {
-                if let Some(bounds) = command_bounds(&stored.command) {
+            let key = layer.cache_key;
+            context.push_layer_group(rect, None, 1.0, Some(key));
+            for stored in &mut layer.commands {
+                let command = stored.replay_under(transform);
+                if let Some(bounds) = command_bounds(command) {
                     if !rects_intersect(rect, bounds) {
                         continue;
                     }
                 }
-                context.execute_command_ref(&stored.command);
+                context.execute_command_ref(command);
             }
+            context.pop_layer();
         }
         // Draw border to make canvas area visible
         context.draw_rect(rect, border);
@@ -1331,6 +1454,9 @@ impl EventHandler for Canvas {
                             - ((anchor.y - self.transform.offset.y) as f32 * ratio).round() as i32,
                     );
                     self.transform.scale = scale;
+                    // Every stored command is painted under the new transform, so the cached
+                    // mappings and layer identities are stale from this line on.
+                    self.invalidate_replay_caches();
                     self.zoom_changed.emit(scale);
                     self.base.request_redraw();
                 }
@@ -1361,6 +1487,117 @@ impl EventHandler for Canvas {
 fn snap_scalar(value: i32, step: i32) -> i32 {
     let step = step.max(1);
     (value as f32 / step as f32).round() as i32 * step
+}
+
+/// Packs a colour into the low 32 bits of a layer-cache key, so a theme change that moves the
+/// background or the grid colour also invalidates the cached grid.
+fn color_key(color: Color) -> u64 {
+    (u64::from(color.r) << 24)
+        | (u64::from(color.g) << 16)
+        | (u64::from(color.b) << 8)
+        | u64::from(color.a)
+}
+
+/// Maps a logical command through `transform` into surface coordinates.
+///
+/// This is the one place the canvas applies its transform, so replay, export and the cached
+/// copy in [`StoredCommand::replay`] cannot disagree about what a zoom does.
+fn transform_command(command: &RenderCommand, transform: CanvasTransform) -> RenderCommand {
+    let width = |value: u32| (value as f32 * transform.scale).round().max(1.0) as u32;
+    match command {
+        RenderCommand::FillRect { rect, color } => {
+            RenderCommand::FillRect { rect: transform.rect(*rect), color: *color }
+        }
+        RenderCommand::DrawRect { rect, color } => {
+            RenderCommand::DrawRect { rect: transform.rect(*rect), color: *color }
+        }
+        RenderCommand::FillRoundedRect { rect, radius, color } => RenderCommand::FillRoundedRect {
+            rect: transform.rect(*rect),
+            radius: width(*radius),
+            color: *color,
+        },
+        RenderCommand::DrawLine { from, to, color } => RenderCommand::DrawLine {
+            from: transform.point(*from),
+            to: transform.point(*to),
+            color: *color,
+        },
+        RenderCommand::DrawLineAA { from, to, color } => RenderCommand::DrawLineAA {
+            from: transform.point(*from),
+            to: transform.point(*to),
+            color: *color,
+        },
+        RenderCommand::DrawLineStroke { from, to, color, width: stroke } => {
+            RenderCommand::DrawLineStroke {
+                from: transform.point(*from),
+                to: transform.point(*to),
+                color: *color,
+                width: width(*stroke),
+            }
+        }
+        RenderCommand::FillCircle { center, radius, color } => RenderCommand::FillCircle {
+            center: transform.point(*center),
+            radius: width(*radius),
+            color: *color,
+        },
+        RenderCommand::FillCircleAA { center, radius, color } => RenderCommand::FillCircleAA {
+            center: transform.point(*center),
+            radius: width(*radius),
+            color: *color,
+        },
+        RenderCommand::DrawCircle { center, radius, color } => RenderCommand::DrawCircle {
+            center: transform.point(*center),
+            radius: width(*radius),
+            color: *color,
+        },
+        RenderCommand::DrawCircleStroke { center, radius, color, width: stroke } => {
+            RenderCommand::DrawCircleStroke {
+                center: transform.point(*center),
+                radius: width(*radius),
+                color: *color,
+                width: width(*stroke),
+            }
+        }
+        RenderCommand::DrawArc { center, radius, start_angle, end_angle, color, filled } => {
+            RenderCommand::DrawArc {
+                center: transform.point(*center),
+                radius: width(*radius),
+                start_angle: *start_angle,
+                end_angle: *end_angle,
+                color: *color,
+                filled: *filled,
+            }
+        }
+        RenderCommand::DrawPath { points, closed, color, filled, width: stroke } => {
+            RenderCommand::DrawPath {
+                points: points
+                    .iter()
+                    .map(|point| transform.point(*point))
+                    .collect::<Vec<_>>()
+                    .into(),
+                closed: *closed,
+                color: *color,
+                filled: *filled,
+                width: width(*stroke),
+            }
+        }
+        RenderCommand::DrawText { origin, text, font, color, alignment } => {
+            RenderCommand::DrawText {
+                origin: transform.point(*origin),
+                text: Arc::clone(text),
+                font: font.clone(),
+                color: *color,
+                alignment: *alignment,
+            }
+        }
+        RenderCommand::DrawImage { x, y, width: w, height: h, data } => RenderCommand::DrawImage {
+            x: transform.point(Point::new(*x, *y)).x,
+            y: transform.point(Point::new(*x, *y)).y,
+            width: width(*w),
+            height: width(*h),
+            data: Arc::clone(data),
+        },
+        other => other.clone(),
+    }
 }
 
 /// Snaps a point to the canvas grid.
@@ -1434,9 +1671,23 @@ fn snap_command(command: RenderCommand, step: i32) -> RenderCommand {
                 filled,
             }
         }
+        RenderCommand::DrawImage { x, y, width, height, data } => {
+            let rect = snap_rect(Rect::new(x, y, width, height), step);
+            RenderCommand::DrawImage {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+                data,
+            }
+        }
         RenderCommand::DrawPath { points, closed, color, filled, width } => {
             RenderCommand::DrawPath {
-                points: points.into_iter().map(|point| snap_point(point, step)).collect(),
+                points: points
+                    .iter()
+                    .map(|point| snap_point(*point, step))
+                    .collect::<Vec<_>>()
+                    .into(),
                 closed,
                 color,
                 filled,
@@ -1503,7 +1754,7 @@ fn command_bounds(command: &RenderCommand) -> Option<Rect> {
         RenderCommand::DrawPath { points, .. } => {
             let first = points.first()?;
             let (mut left, mut top, mut right, mut bottom) = (first.x, first.y, first.x, first.y);
-            for point in points {
+            for point in points.iter() {
                 left = left.min(point.x);
                 top = top.min(point.y);
                 right = right.max(point.x);
@@ -1522,6 +1773,9 @@ fn command_bounds(command: &RenderCommand) -> Option<Rect> {
             radius.saturating_mul(2).max(1),
             radius.saturating_mul(2).max(1),
         )),
+        RenderCommand::DrawImage { x, y, width, height, .. } => {
+            Some(Rect::new(*x, *y, *width, *height))
+        }
         _ => None,
     }
 }

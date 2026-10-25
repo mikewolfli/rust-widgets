@@ -21,6 +21,8 @@
 use crate::compat::format;
 use crate::compat::MiniToString;
 use crate::compat::String;
+#[cfg(feature = "gpu-wgpu")]
+use crate::compat::{lock, Mutex, OnceLock};
 use core::fmt;
 
 /// GPU type for simplified hardware detection
@@ -275,11 +277,19 @@ impl AdapterInfo {
     /// type that also exists without the `gpu-wgpu` feature; the string values
     /// come from `format!("{:?}", wgpu::Backend)` in `Self::from_wgpu`.
     ///
+    /// A CPU adapter is forced to [`GpuBackendTier::Software`] regardless of the
+    /// backend name: lavapipe reports Vulkan and llvmpipe reports GL, so mapping
+    /// on the backend string alone would report a software rasterizer as a
+    /// primary or GL tier and hide the degradation (G-211).
+    ///
     /// Gated on `gpu`: the tier vocabulary lives in the `backend_ladder` module,
     /// which is itself only compiled when `wgpu` is available.
     #[cfg(feature = "gpu")]
     pub fn backend_tier(&self) -> crate::gpu::backend_ladder::GpuBackendTier {
         use crate::gpu::backend_ladder::GpuBackendTier;
+        if self.device_type.is_cpu() {
+            return GpuBackendTier::Software;
+        }
         match self.backend.as_str() {
             // Primary tier: the APIs `wgpu` supports first-class.
             "Vulkan" | "Metal" | "Dx12" | "BrowserWebGpu" => GpuBackendTier::Primary,
@@ -323,6 +333,41 @@ pub enum AdapterSelectionStrategy {
     #[default]
     Auto,
 }
+/// Inputs that decide a surface-independent selection.
+///
+/// Part of the memoisation key (G-62): if the strategy, the fallback policy or
+/// the `WGPU_BACKEND` pin changes, the cached answer no longer applies.
+#[cfg(feature = "gpu-wgpu")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SelectionCacheKey {
+    strategy: AdapterSelectionStrategy,
+    allow_fallback: bool,
+    /// `WGPU_BACKEND` value observed when the entry was produced.
+    pinned: Option<wgpu::Backends>,
+}
+
+/// A memoised selection result.
+///
+/// `AdapterInfo` is a plain value, so the result can be cloned out to every
+/// caller instead of probing the adapter list again.
+#[cfg(feature = "gpu-wgpu")]
+#[derive(Debug, Clone)]
+struct CachedSelection {
+    key: SelectionCacheKey,
+    result: Result<AdapterInfo, AdapterSelectionError>,
+}
+
+/// The process-wide selection cache (G-62).
+///
+/// Process-wide rather than per-selector because `GpuManager` builds a fresh
+/// `AdapterSelector` each time; the expensive part (creating an `Instance` and
+/// walking the ladder) does not depend on the selector object, only on the key.
+#[cfg(feature = "gpu-wgpu")]
+fn selection_cache() -> &'static Mutex<Option<CachedSelection>> {
+    static CACHE: OnceLock<Mutex<Option<CachedSelection>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
 /// Adapter selector with hardware auto-detection
 pub struct AdapterSelector {
     strategy: AdapterSelectionStrategy,
@@ -337,7 +382,15 @@ impl AdapterSelector {
     pub fn with_strategy(strategy: AdapterSelectionStrategy) -> Self {
         Self { strategy, allow_fallback: true }
     }
-    /// Sets whether to allow fallback to lower priority adapters
+    /// Sets whether the CPU software adapter may be used when no hardware
+    /// adapter exists.
+    ///
+    /// This gates the *terminal* rung only. A degraded hardware tier (GL instead
+    /// of Vulkan/Metal/DX12) is still a real GPU and is accepted either way; it is
+    /// reported through [`AdapterInfo::is_degraded_backend`] and this module's
+    /// logs so the caller can warn rather than have selection silently fail
+    /// (principle #45). A `WGPU_BACKEND` pin is never overridden by this flag — an
+    /// unavailable pin is an error (principle #46).
     pub fn allow_fallback(mut self, allow: bool) -> Self {
         self.allow_fallback = allow;
         self
@@ -368,106 +421,140 @@ impl AdapterSelector {
             })
             .collect()
     }
-    /// Selects the best adapter based on strategy with fallback chain
+    /// Selects the best adapter based on strategy with fallback chain.
+    ///
+    /// # One selection path (G-211)
+    ///
+    /// Selection delegates to the degradation ladder in
+    /// [`crate::gpu::backend_ladder`] instead of re-implementing it with
+    /// `request_adapter` calls. Both the GPU manager (this function) and the wgpu
+    /// renderer
+    /// ([`select_adapter_with_gl_fallback`](crate::gpu::backend_ladder::select_adapter_with_gl_fallback))
+    /// therefore apply the same tier order, the same `WGPU_BACKEND` pin handling
+    /// and the same adapter ranking, so the two cannot reach different answers.
+    ///
+    /// The selected backend tier is published through
+    /// [`publish_shared_selection`](crate::gpu::backend_ladder::publish_shared_selection)
+    /// and is also derivable from the returned [`AdapterInfo`] via
+    /// [`AdapterInfo::backend_tier`], so a degraded start is observable rather
+    /// than silent.
+    ///
+    /// # Caching (G-62)
+    ///
+    /// A surface-independent result is memoised and returned without creating a
+    /// new `Instance`; the cache key covers the strategy, the fallback policy and
+    /// the `WGPU_BACKEND` pin. A surface-bound call is never cached, because
+    /// adapter suitability depends on the particular surface.
     #[cfg(feature = "gpu-wgpu")]
     pub async fn select_adapter_with_fallback(
         &self,
         compatible_surface: Option<&wgpu::Surface<'static>>,
     ) -> Result<AdapterInfo, AdapterSelectionError> {
+        let key = SelectionCacheKey {
+            strategy: self.strategy,
+            allow_fallback: self.allow_fallback,
+            pinned: crate::gpu::backend_ladder::backends_from_env(),
+        };
+
+        if compatible_surface.is_none() {
+            let cached = lock(selection_cache()).clone();
+            if let Some(cached) = cached {
+                if cached.key == key {
+                    return cached.result;
+                }
+            }
+        }
+
+        let result = self.select_adapter_probing(key.pinned, compatible_surface).await;
+
+        if compatible_surface.is_none() {
+            *lock(selection_cache()) = Some(CachedSelection { key, result: result.clone() });
+        }
+        result
+    }
+
+    /// Performs the actual probe without consulting or updating the cache.
+    #[cfg(feature = "gpu-wgpu")]
+    async fn select_adapter_probing(
+        &self,
+        pinned: Option<wgpu::Backends>,
+        compatible_surface: Option<&wgpu::Surface<'static>>,
+    ) -> Result<AdapterInfo, AdapterSelectionError> {
+        use crate::gpu::backend_ladder::{instance_backends, select_adapter_with_gl_fallback};
+
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: crate::gpu::backend_ladder::instance_backends(),
+            backends: instance_backends(),
             flags: wgpu::InstanceFlags::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),
             display: None,
         });
-        // Try to get adapter based on strategy
-        let adapter = match self.strategy {
-            AdapterSelectionStrategy::PreferPerformance | AdapterSelectionStrategy::Auto => {
-                // Try discrete GPU first
-                if let Ok(adapter) = instance
-                    .request_adapter(&wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::HighPerformance,
+
+        match self.strategy {
+            AdapterSelectionStrategy::Auto | AdapterSelectionStrategy::PreferPerformance => {
+                match select_adapter_with_gl_fallback(
+                    &instance,
+                    wgpu::PowerPreference::HighPerformance,
+                    compatible_surface,
+                )
+                .await
+                {
+                    Some((adapter, tier)) => self.accept_ladder_result(adapter, tier),
+                    None => self.no_adapter(pinned),
+                }
+            }
+            AdapterSelectionStrategy::PreferPowerEfficiency => {
+                match select_adapter_with_gl_fallback(
+                    &instance,
+                    wgpu::PowerPreference::LowPower,
+                    compatible_surface,
+                )
+                .await
+                {
+                    Some((adapter, tier)) => self.accept_ladder_result(adapter, tier),
+                    None => self.no_adapter(pinned),
+                }
+            }
+            AdapterSelectionStrategy::ForceDiscrete => {
+                match self
+                    .find_device_type(
+                        &instance,
+                        wgpu::DeviceType::DiscreteGpu,
+                        pinned,
                         compatible_surface,
-                        force_fallback_adapter: false,
-                        apply_limit_buckets: false,
-                    })
+                    )
                     .await
                 {
-                    let info = adapter.get_info();
-                    if info.device_type == wgpu::DeviceType::DiscreteGpu {
-                        return Ok(AdapterInfo::from_wgpu(&info));
-                    }
-                    // If we got integrated but wanted discrete, continue to fallback
-                    if self.allow_fallback {
-                        return Ok(AdapterInfo::from_wgpu(&info));
-                    }
+                    Some(adapter) => Ok(publish_adapter_with_tier(&adapter)),
+                    None => Err(match pinned {
+                        Some(pinned) => AdapterSelectionError::RequestFailed(format!(
+                            "WGPU_BACKEND pinned {pinned:?} but no discrete GPU exposes that backend"
+                        )),
+                        None => AdapterSelectionError::DiscreteGpuNotFound,
+                    }),
                 }
-                // Fallback to any available adapter
-                if self.allow_fallback {
-                    Some(
-                        match instance
-                            .request_adapter(&wgpu::RequestAdapterOptions {
-                                power_preference: wgpu::PowerPreference::LowPower,
-                                compatible_surface,
-                                force_fallback_adapter: false,
-                                apply_limit_buckets: false,
-                            })
-                            .await
-                        {
-                            Ok(adapter) => adapter,
-                            Err(e) => {
-                                return Err(AdapterSelectionError::RequestFailed(e.to_string()))
-                            }
-                        },
-                    )
-                } else {
-                    None
-                }
-            }
-            AdapterSelectionStrategy::PreferPowerEfficiency => Some(
-                instance
-                    .request_adapter(&wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::LowPower,
-                        compatible_surface,
-                        force_fallback_adapter: false,
-                        apply_limit_buckets: false,
-                    })
-                    .await
-                    .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?,
-            ),
-            AdapterSelectionStrategy::ForceDiscrete => {
-                let a = instance
-                    .request_adapter(&wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::HighPerformance,
-                        compatible_surface,
-                        force_fallback_adapter: false,
-                        apply_limit_buckets: false,
-                    })
-                    .await
-                    .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?;
-                if a.get_info().device_type != wgpu::DeviceType::DiscreteGpu {
-                    return Err(AdapterSelectionError::DiscreteGpuNotFound);
-                }
-                Some(a)
             }
             AdapterSelectionStrategy::ForceIntegrated => {
-                let a = instance
-                    .request_adapter(&wgpu::RequestAdapterOptions {
-                        power_preference: wgpu::PowerPreference::LowPower,
+                match self
+                    .find_device_type(
+                        &instance,
+                        wgpu::DeviceType::IntegratedGpu,
+                        pinned,
                         compatible_surface,
-                        force_fallback_adapter: false,
-                        apply_limit_buckets: false,
-                    })
+                    )
                     .await
-                    .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?;
-                if a.get_info().device_type != wgpu::DeviceType::IntegratedGpu {
-                    return Err(AdapterSelectionError::IntegratedGpuNotFound);
+                {
+                    Some(adapter) => Ok(publish_adapter_with_tier(&adapter)),
+                    None => Err(match pinned {
+                        Some(pinned) => AdapterSelectionError::RequestFailed(format!(
+                            "WGPU_BACKEND pinned {pinned:?} but no integrated GPU exposes that backend"
+                        )),
+                        None => AdapterSelectionError::IntegratedGpuNotFound,
+                    }),
                 }
-                Some(a)
             }
-            AdapterSelectionStrategy::ForceCpu => Some(
-                instance
+            AdapterSelectionStrategy::ForceCpu => {
+                let adapter = instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
                         power_preference: wgpu::PowerPreference::LowPower,
                         compatible_surface,
@@ -475,22 +562,85 @@ impl AdapterSelector {
                         apply_limit_buckets: false,
                     })
                     .await
-                    .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?,
-            ),
-        };
-        match adapter {
-            Some(adapter) => {
-                let info = adapter.get_info();
-                Ok(AdapterInfo::from_wgpu(&info))
+                    .map_err(|e| AdapterSelectionError::RequestFailed(e.to_string()))?;
+                // Forced software is the terminal rung regardless of the API that
+                // exposes the CPU adapter (lavapipe reports Vulkan).
+                Ok(publish_adapter(&adapter, crate::gpu::backend_ladder::GpuBackendTier::Software))
             }
-            None => {
-                if self.allow_fallback {
-                    // Return CPU fallback
-                    Ok(AdapterInfo::cpu_fallback())
-                } else {
-                    Err(AdapterSelectionError::NoAdapterFound)
-                }
-            }
+        }
+    }
+
+    /// Accepts a ladder result unless it is the software rung and the caller
+    /// forbade falling back to it.
+    ///
+    /// The ladder always attempts the CPU rung (principle #45), so this is where
+    /// `allow_fallback(false)` refuses its result: a refused software adapter is
+    /// turned into the same "no adapter" answer as a missing one, and is not
+    /// published as the shared selection.
+    #[cfg(feature = "gpu-wgpu")]
+    fn accept_ladder_result(
+        &self,
+        adapter: wgpu::Adapter,
+        tier: crate::gpu::backend_ladder::GpuBackendTier,
+    ) -> Result<AdapterInfo, AdapterSelectionError> {
+        if !self.allow_fallback && tier == crate::gpu::backend_ladder::GpuBackendTier::Software {
+            log::warn!(
+                "[gpu] only the CPU software adapter is available, but fallback is disabled"
+            );
+            return Err(AdapterSelectionError::NoAdapterFound);
+        }
+        Ok(publish_adapter(&adapter, tier))
+    }
+
+    /// Finds the first adapter of `wanted` type that can present to the surface.
+    ///
+    /// Honours the `WGPU_BACKEND` pin by enumerating only the pinned backends,
+    /// falling back to the whole ladder when nothing is pinned (principle #46).
+    #[cfg(feature = "gpu-wgpu")]
+    async fn find_device_type(
+        &self,
+        instance: &wgpu::Instance,
+        wanted: wgpu::DeviceType,
+        pinned: Option<wgpu::Backends>,
+        compatible_surface: Option<&wgpu::Surface<'static>>,
+    ) -> Option<wgpu::Adapter> {
+        let backends = pinned.unwrap_or_else(crate::gpu::backend_ladder::instance_backends);
+        instance.enumerate_adapters(backends).await.into_iter().find(|adapter| {
+            adapter.get_info().device_type == wanted
+                && compatible_surface.is_none_or(|surface| adapter.is_surface_supported(surface))
+        })
+    }
+
+    /// Builds the "no adapter" answer for a strategy that walks the ladder.
+    ///
+    /// A `WGPU_BACKEND` pin is never silently replaced: if the pinned backend is
+    /// unavailable the caller gets an error naming the pin (principle #46).
+    /// Without a pin, `allow_fallback` decides between the honest CPU software
+    /// adapter and `NoAdapterFound`.
+    #[cfg(feature = "gpu-wgpu")]
+    fn no_adapter(
+        &self,
+        pinned: Option<wgpu::Backends>,
+    ) -> Result<AdapterInfo, AdapterSelectionError> {
+        if let Some(pinned) = pinned {
+            log::error!(
+                "[gpu] WGPU_BACKEND pinned {pinned:?} but this host provides no adapter for it"
+            );
+            return Err(AdapterSelectionError::RequestFailed(format!(
+                "WGPU_BACKEND pinned {pinned:?} but this host provides no adapter for that backend"
+            )));
+        }
+        if self.allow_fallback {
+            log::warn!("[gpu] no adapter on any backend tier; using the CPU software fallback");
+            crate::gpu::backend_ladder::publish_shared_selection(
+                crate::gpu::backend_ladder::GpuBackendSelection {
+                    tier: crate::gpu::backend_ladder::GpuBackendTier::Software,
+                    backend: wgpu::Backend::Noop,
+                },
+            );
+            Ok(AdapterInfo::cpu_fallback())
+        } else {
+            Err(AdapterSelectionError::NoAdapterFound)
         }
     }
     /// Returns the current selection strategy
@@ -498,9 +648,40 @@ impl AdapterSelector {
         self.strategy
     }
     /// Sets the selection strategy
+    ///
+    /// The selection cache is keyed by strategy (G-62), so a change makes the
+    /// next call probe again; there is no stale entry to clear.
     pub fn set_strategy(&mut self, strategy: AdapterSelectionStrategy) {
         self.strategy = strategy;
     }
+}
+
+/// Converts a probed adapter into [`AdapterInfo`] and publishes the selection.
+#[cfg(feature = "gpu-wgpu")]
+fn publish_adapter(
+    adapter: &wgpu::Adapter,
+    tier: crate::gpu::backend_ladder::GpuBackendTier,
+) -> AdapterInfo {
+    let info = adapter.get_info();
+    let adapter_info = AdapterInfo::from_wgpu(&info);
+    crate::gpu::backend_ladder::publish_shared_selection(
+        crate::gpu::backend_ladder::GpuBackendSelection { tier, backend: info.backend },
+    );
+    adapter_info
+}
+
+/// Converts a probed adapter into [`AdapterInfo`], deriving and publishing its tier.
+#[cfg(feature = "gpu-wgpu")]
+fn publish_adapter_with_tier(adapter: &wgpu::Adapter) -> AdapterInfo {
+    let info = adapter.get_info();
+    let adapter_info = AdapterInfo::from_wgpu(&info);
+    crate::gpu::backend_ladder::publish_shared_selection(
+        crate::gpu::backend_ladder::GpuBackendSelection {
+            tier: adapter_info.backend_tier(),
+            backend: info.backend,
+        },
+    );
+    adapter_info
 }
 crate::impl_default_via_new!(AdapterSelector);
 /// Errors that can occur during adapter selection
@@ -673,6 +854,20 @@ mod tests {
         assert_eq!(AdapterInfo::cpu_fallback().backend_tier(), GpuBackendTier::Software);
         assert!(AdapterInfo::cpu_fallback().is_degraded_backend());
         assert_eq!(with_backend("Noop").backend_tier(), GpuBackendTier::Software);
+
+        // A CPU adapter must report the software rung whichever backend name it
+        // carries: lavapipe exposes the software rasterizer through Vulkan, and
+        // llvmpipe through GL. Mapping on the backend string alone would call
+        // those "Primary"/"OpenGlEs" and hide the degradation (G-211).
+        for backend in ["Vulkan", "Metal", "Dx12", "BrowserWebGpu", "Gl", "Noop", "CPU"] {
+            let info = AdapterInfo { device_type: GpuDeviceType::Cpu, ..with_backend(backend) };
+            assert_eq!(
+                info.backend_tier(),
+                GpuBackendTier::Software,
+                "a CPU adapter on {backend} is still the software rung"
+            );
+            assert!(info.is_degraded_backend());
+        }
     }
 }
 /// GPU adapter with detection capabilities

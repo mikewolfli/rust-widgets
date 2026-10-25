@@ -15,7 +15,8 @@
 //! # Integration
 //!
 //! When the `projection` feature is enabled, platform backends that
-//! detect `DeviceClass::Projector` should call [`ProjectionRenderConfig`]
+//! detect [`PlatformFamily::Projector`](crate::core::PlatformFamily) should call
+//! [`ProjectionRenderConfig`]
 //! to adjust the rendering pipeline:
 //!
 //! 1. Install `ProjectionRenderConfig` into the render context.

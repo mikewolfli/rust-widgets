@@ -115,6 +115,23 @@ pub struct ImePreedit {
     /// initial value is an estimate from the font size and is replaced by the true measurement
     /// as soon as the composition is painted.
     caret_offset: i32,
+    /// Bumped whenever the composition, its runs, the font or the caret changes (I-P11).
+    metrics_revision: u64,
+    /// Memoised caret offset and per-run advances, rebuilt once per revision (I-P11).
+    ///
+    /// The composition is repainted every frame while a session is active, and each frame used to
+    /// re-measure the caret prefix and every styled run. Both are pure functions of the string, the
+    /// runs, the font and the scale, so they are measured once and read back.
+    composition_metrics: core::cell::RefCell<Option<CompositionMetrics>>,
+}
+
+/// The measured layout of one composition (I-P11).
+struct CompositionMetrics {
+    revision: u64,
+    font: Font,
+    dpi_bits: u32,
+    caret_offset: i32,
+    segment_advances: Vec<i32>,
 }
 
 impl ImePreedit {
@@ -132,7 +149,69 @@ impl ImePreedit {
             segments: Vec::new(),
             cursor: 0,
             caret_offset: 0,
+            metrics_revision: 0,
+            composition_metrics: core::cell::RefCell::new(None),
         }
+    }
+
+    /// Invalidates the memoised composition layout (I-P11).
+    fn invalidate_metrics(&mut self) {
+        self.metrics_revision = self.metrics_revision.wrapping_add(1);
+    }
+
+    /// The composition caret's byte offset, snapped to a character boundary.
+    fn caret_byte(&self) -> usize {
+        let caret_byte = self.cursor.min(self.text.len());
+        self.text
+            .char_indices()
+            .take_while(|(index, _)| *index < caret_byte)
+            .last()
+            .map(|(index, ch)| index + ch.len_utf8())
+            .unwrap_or(0)
+    }
+
+    /// Ensures the composition's measurements are current, measuring only on a stale revision.
+    fn ensure_composition_metrics(&self, context: &RenderContext) {
+        let dpi_bits = context.dpi_scale().to_bits();
+        if let Ok(cache) = self.composition_metrics.try_borrow() {
+            if let Some(metrics) = cache.as_ref() {
+                if metrics.revision == self.metrics_revision
+                    && metrics.font == self.font
+                    && metrics.dpi_bits == dpi_bits
+                {
+                    return;
+                }
+            }
+        }
+        let caret_offset =
+            context.measure_text(&self.text[..self.caret_byte()], &self.font).width as i32;
+        let segment_advances = self
+            .segments
+            .iter()
+            .map(|segment| context.measure_text(segment.text(), &self.font).width as i32)
+            .collect();
+        if let Ok(mut cache) = self.composition_metrics.try_borrow_mut() {
+            *cache = Some(CompositionMetrics {
+                revision: self.metrics_revision,
+                font: self.font.clone(),
+                dpi_bits,
+                caret_offset,
+                segment_advances,
+            });
+        }
+    }
+
+    /// Runs `f` with the cached caret offset and per-run advances (I-P11).
+    ///
+    /// Falls back to short-lived defaults when the cache is already borrowed, rather than
+    /// panicking inside a paint.
+    fn with_composition_metrics<R>(&self, f: impl FnOnce(i32, &[i32]) -> R) -> R {
+        if let Ok(cache) = self.composition_metrics.try_borrow() {
+            if let Some(metrics) = cache.as_ref() {
+                return f(metrics.caret_offset, &metrics.segment_advances);
+            }
+        }
+        f(self.caret_offset, &[])
     }
 
     /// Sets the preedit composition text to display.
@@ -149,6 +228,7 @@ impl ImePreedit {
         // composition would paint glyphs that are no longer in the value.
         self.segments.clear();
         self.cursor = self.text.len();
+        self.invalidate_metrics();
         self.base.request_redraw();
     }
 
@@ -172,6 +252,7 @@ impl ImePreedit {
         self.text = text;
         self.cursor = cursor_at.unwrap_or(self.text.len());
         self.segments = segments;
+        self.invalidate_metrics();
         self.base.request_redraw();
     }
 
@@ -207,6 +288,7 @@ impl ImePreedit {
             return;
         }
         self.font = font;
+        self.invalidate_metrics();
         self.base.request_redraw();
     }
 
@@ -264,6 +346,7 @@ impl ImePreedit {
             .unwrap_or(self.text.len());
         if byte != self.cursor {
             self.cursor = byte;
+            self.invalidate_metrics();
             self.base.request_redraw();
         }
     }
@@ -411,74 +494,87 @@ impl Draw for ImePreedit {
             crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(ink),
         );
 
-        // Caret placement is needed by both the paint and the candidate-window query, so it is
-        // measured once and stored. The prefix is sliced at a character boundary, which keeps the
-        // measurement total for a composition that contains multi-byte characters.
-        let caret_byte = self.cursor.min(self.text.len());
-        let caret_byte = self
-            .text
-            .char_indices()
-            .take_while(|(index, _)| *index < caret_byte)
-            .last()
-            .map(|(index, ch)| index + ch.len_utf8())
-            .unwrap_or(0);
-        let caret_prefix = &self.text[..caret_byte];
-        self.caret_offset = context.measure_text(caret_prefix, &self.font).width as i32;
-        let caret_offset = self.caret_offset;
-
-        if self.segments.is_empty() {
-            // Plain composition: one run, fitted to the control's own width so a long
-            // candidate string cannot paint past the right edge.
-            let fitted = context.draw_text_fitted_cow(
-                rect,
-                &self.text,
-                &self.font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
-            let text_width = context.measure_text(&fitted, &self.font).width as i32;
-            let underline_x_end = (rect.x + text_width).min(rect.x + rect.width as i32);
-            context.draw_line_stroke(
-                Point::new(rect.x, underline_y),
-                Point::new(underline_x_end, underline_y),
-                underline_color,
-                self.underline_thickness,
-            );
-        } else {
-            // Styled composition: each run keeps its own ink and underline. The runs are fitted
-            // independently against the space that is left, so the last one cannot leave the
-            // control even when the input method reports an over-long clause.
-            let mut x = rect.x;
-            for segment in &self.segments {
-                if x >= rect.x + rect.width as i32 {
-                    break;
-                }
-                let remaining = (rect.x + rect.width as i32 - x).max(1) as u32;
-                let box_rect = Rect::new(x, rect.y, remaining, rect.height);
+        // Caret placement is needed by both the paint and the candidate-window query, so the
+        // composition is measured **once per revision** and the paint reads the cache (I-P11).
+        // Previously every frame re-measured the caret prefix and every styled run — and the plain
+        // path measured its own fitted string a second time to place the underline.
+        self.ensure_composition_metrics(context);
+        let surface_rect = rect;
+        let underline_thickness = self.underline_thickness;
+        let segments = &self.segments;
+        let plain_text = &self.text;
+        let caret_offset = self.with_composition_metrics(|caret, advances| {
+            if segments.is_empty() {
+                // Plain composition: one run, fitted to the control's own width so a long
+                // candidate string cannot paint past the right edge.
                 let fitted = context.draw_text_fitted_cow(
-                    box_rect,
-                    segment.text(),
+                    surface_rect,
+                    plain_text,
                     &self.font,
-                    segment.color().unwrap_or(text_color),
+                    text_color,
                     HorizontalAlignment::Left,
                 );
-                let advance = context.measure_text(&fitted, &self.font).width as i32;
-                if segment.underline() {
-                    let thickness = if segment.is_cursor() {
-                        self.underline_thickness.max(2)
-                    } else {
-                        self.underline_thickness
-                    };
-                    context.draw_line_stroke(
-                        Point::new(x, underline_y),
-                        Point::new((x + advance).min(rect.x + rect.width as i32), underline_y),
-                        underline_color,
-                        thickness,
+                let text_width = context.measure_text(&fitted, &self.font).width as i32;
+                let underline_x_end =
+                    (surface_rect.x + text_width).min(surface_rect.x + surface_rect.width as i32);
+                context.draw_line_stroke(
+                    Point::new(surface_rect.x, underline_y),
+                    Point::new(underline_x_end, underline_y),
+                    underline_color,
+                    underline_thickness,
+                );
+            } else {
+                // Styled composition: each run keeps its own ink and underline. The runs are
+                // fitted independently against the space that is left, so the last one cannot
+                // leave the control even when the input method reports an over-long clause.
+                let mut x = surface_rect.x;
+                for (index, segment) in segments.iter().enumerate() {
+                    if x >= surface_rect.x + surface_rect.width as i32 {
+                        break;
+                    }
+                    let remaining = (surface_rect.x + surface_rect.width as i32 - x).max(1) as u32;
+                    let box_rect = Rect::new(x, surface_rect.y, remaining, surface_rect.height);
+                    // The cached advance is what the run takes when it fits; a run that has to
+                    // be elided is measured on its fitted form, because the ellipsis is part of
+                    // what is painted.
+                    let fitted = context.draw_text_fitted_cow(
+                        box_rect,
+                        segment.text(),
+                        &self.font,
+                        segment.color().unwrap_or(text_color),
+                        HorizontalAlignment::Left,
                     );
+                    let advance = match advances.get(index) {
+                        // A run that was painted verbatim takes its cached advance; an elided one
+                        // is measured on the fitted form, because the ellipsis is part of what is
+                        // painted.
+                        Some(advance) if matches!(fitted, crate::compat::Cow::Borrowed(_)) => {
+                            *advance
+                        }
+                        _ => context.measure_text(&fitted, &self.font).width as i32,
+                    };
+                    if segment.underline() {
+                        let thickness = if segment.is_cursor() {
+                            underline_thickness.max(2)
+                        } else {
+                            underline_thickness
+                        };
+                        context.draw_line_stroke(
+                            Point::new(x, underline_y),
+                            Point::new(
+                                (x + advance).min(surface_rect.x + surface_rect.width as i32),
+                                underline_y,
+                            ),
+                            underline_color,
+                            thickness,
+                        );
+                    }
+                    x += advance;
                 }
-                x += advance;
             }
-        }
+            caret
+        });
+        self.caret_offset = caret_offset;
 
         // The composition caret is drawn at the stored offset, which is also what
         // `caret_rect` reports to a platform that anchors its candidate window there.
@@ -524,6 +620,7 @@ impl EventHandler for ImePreedit {
                 // described the old composition.
                 self.segments.clear();
                 self.cursor = byte;
+                self.invalidate_metrics();
                 self.base.request_redraw();
             }
             // A commit ends the composition. The committed text belongs to the edit host, not to
@@ -533,6 +630,7 @@ impl EventHandler for ImePreedit {
                     self.text.clear();
                     self.segments.clear();
                     self.cursor = 0;
+                    self.invalidate_metrics();
                     self.base.request_redraw();
                 }
             }
@@ -543,6 +641,7 @@ impl EventHandler for ImePreedit {
                     self.text = next;
                     self.segments.clear();
                     self.cursor = self.text.len();
+                    self.invalidate_metrics();
                     self.base.request_redraw();
                 }
             }
@@ -558,6 +657,7 @@ impl EventHandler for ImePreedit {
                         self.text.replace_range(boundary..self.cursor, "");
                         self.cursor = boundary;
                         self.segments.clear();
+                        self.invalidate_metrics();
                         self.base.request_redraw();
                     }
                 } else if *key >= 32 && *key <= 126 {
@@ -568,6 +668,7 @@ impl EventHandler for ImePreedit {
                     self.text.insert_str(self.cursor, encoded);
                     self.cursor += encoded.len();
                     self.segments.clear();
+                    self.invalidate_metrics();
                     self.base.request_redraw();
                 }
             }

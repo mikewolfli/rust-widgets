@@ -79,6 +79,19 @@ impl WebViewEnhanced {
     pub fn load_progress(&self) -> u8 {
         self.core.load_progress()
     }
+
+    /// The core's load-progress signal, in percent.
+    ///
+    /// See [`WebEngineViewEnhanced::loading_progress_signal`](super::web_engine::WebEngineViewEnhanced::loading_progress_signal)
+    /// for why the core's signals need an accessor on the wrapper.
+    pub fn loading_progress_signal(&self) -> &Signal1<u8> {
+        &self.core.loading_progress
+    }
+
+    /// The core's navigation-state signal, carrying `(can_go_back, can_go_forward)`.
+    pub fn navigation_state_changed_signal(&self) -> &Signal1<(bool, bool)> {
+        &self.core.navigation_state_changed
+    }
     /// Whether the session history has an entry behind the current one.
     pub fn can_go_back(&self) -> bool {
         self.core.can_go_back()

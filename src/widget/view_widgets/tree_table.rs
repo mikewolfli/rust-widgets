@@ -225,6 +225,8 @@ pub struct TreeTable {
     visible_rows: Vec<VisibleRow>,
     row_height: u32,
     column_width: u32,
+    /// Per-column width overrides (V-13). `column_width` stays the fallback/default.
+    column_widths: Vec<u32>,
     selected_row: Option<usize>,
     /// The row the pointer is currently over, or `None` when it is between/outside the rows.
     ///
@@ -311,6 +313,7 @@ impl TreeTable {
             visible_rows: Vec::new(),
             row_height: 20,
             column_width: 140,
+            column_widths: Vec::new(),
             selected_row: None,
             hovered_row: None,
             projection_changed: Signal1::new(),
@@ -447,6 +450,39 @@ impl TreeTable {
     /// Returns column width.
     pub fn column_width(&self) -> u32 {
         self.column_width
+    }
+
+    /// The width painted for `column` (V-13).
+    ///
+    /// Falls back to [`Self::column_width`], so a table that never sets a per-column width keeps
+    /// the historical uniform geometry.
+    pub fn column_width_at(&self, column: usize) -> u32 {
+        self.column_widths.get(column).copied().unwrap_or(self.column_width).max(1)
+    }
+
+    /// Sets one column's width, leaving the others on the default (V-13).
+    pub fn set_column_width_at(&mut self, column: usize, width: u32) {
+        if column >= self.column_count() {
+            return;
+        }
+        let width = width.max(1);
+        if self.column_widths.len() <= column {
+            self.column_widths.resize(column + 1, self.column_width);
+        }
+        if self.column_widths[column] == width {
+            return;
+        }
+        self.column_widths[column] = width;
+        self.base.request_redraw();
+    }
+
+    /// The x offset and width of `column` in the table's own coordinates.
+    fn column_span(&self, column: usize) -> (i32, u32) {
+        let mut x = self.base.geometry().x;
+        for index in 0..column {
+            x = x.saturating_add(self.column_width_at(index) as i32);
+        }
+        (x, self.column_width_at(column))
     }
 
     /// Returns the node path for visible row.
@@ -942,6 +978,49 @@ impl TreeTable {
         }
     }
 
+    /// Whether `row` is a branch (has children).
+    fn row_has_children(&self, row: usize) -> bool {
+        let Some(path) = self.row_path(row) else {
+            return false;
+        };
+        self.model.as_ref().is_some_and(|model| model.child_count(path) > 0)
+    }
+
+    /// The disclosure glyph box on `row`'s first cell (V-12).
+    ///
+    /// One derivation for the paint and the press test, so the glyph a click lands on is the
+    /// glyph that was drawn.
+    fn row_disclosure_rect(&self, row: usize) -> Option<Rect> {
+        if !self.row_has_children(row) {
+            return None;
+        }
+        let rect = self.base.geometry();
+        if row < self.scroll_row {
+            return None;
+        }
+        let y = rect
+            .y
+            .saturating_add(self.header_offset())
+            .saturating_add((row - self.scroll_row) as i32 * self.row_height as i32);
+        if y >= rect.y.saturating_add(rect.height as i32) {
+            return None;
+        }
+        let depth = self.row_depth(row).unwrap_or(0) as i32;
+        let x = rect.x.saturating_add(4).saturating_add(depth.saturating_mul(self.indent as i32));
+        let side = self.row_height.min(12);
+        Some(Rect::new(x, y.saturating_add((self.row_height as i32 - side as i32) / 2), side, side))
+    }
+
+    /// The visible row of `row`'s parent, if it has one (V-15).
+    fn parent_row(&self, row: usize) -> Option<usize> {
+        let path = self.row_path(row)?;
+        if path.len() <= 1 {
+            return None;
+        }
+        let parent = &path[..path.len() - 1];
+        self.visible_rows.iter().position(|candidate| candidate.path.as_slice() == parent)
+    }
+
     /// The first visible row.
     pub fn scroll_row(&self) -> usize {
         self.scroll_row
@@ -1169,8 +1248,10 @@ impl TreeTable {
         if !band.contains_point(pos) {
             return None;
         }
-        let column = (pos.x - rect.x).max(0) as usize / self.column_width.max(1) as usize;
-        (column < self.column_count()).then_some(column)
+        (0..self.column_count()).find(|column| {
+            let (x, width) = self.column_span(*column);
+            pos.x >= x && pos.x < x.saturating_add(width as i32)
+        })
     }
 
     /// How many rows the projection may materialize.
@@ -1540,7 +1621,6 @@ impl Draw for TreeTable {
         }
 
         let row_h = self.row_height as i32;
-        let col_w = self.column_width as i32;
         // One font and one text buffer for the whole grid (see the cell loop below).
         let cell_font = effective_font(style);
         let mut cell_text = String::new();
@@ -1548,13 +1628,16 @@ impl Draw for TreeTable {
         if self.show_header {
             let columns = self.column_count();
             let model_names = self.model.as_ref();
+            let mut x = rect.x;
             for col in 0..columns {
-                let x = rect.x + col as i32 * col_w;
+                let width = self.column_width_at(col);
                 if x >= rect.x + rect.width as i32 {
                     break;
                 }
-                let band = Rect::new(x, rect.y, self.column_width, self.row_height);
+                let band = Rect::new(x, rect.y, width, self.row_height);
                 context.fill_rect(band, surface.blend(&ink, 0.08));
+                // A sorted column reserves a trailing slot for its direction arrow (V-14).
+                let sort_slot = if self.sort_column == Some(col) { 12 } else { 0 };
                 let label = self
                     .header_labels
                     .get(col)
@@ -1562,14 +1645,36 @@ impl Draw for TreeTable {
                     .filter(|label| !label.is_empty())
                     .or_else(|| model_names.and_then(|model| model.column_name(col)));
                 if let Some(label) = label {
+                    let label_band = Rect::new(
+                        band.x,
+                        band.y,
+                        band.width.saturating_sub(sort_slot),
+                        band.height,
+                    );
                     context.draw_text_fitted_cow(
-                        context.text_line(band, cell_font),
+                        context.text_line(label_band, cell_font),
                         label,
                         cell_font,
                         ink,
                         HorizontalAlignment::Left,
                     );
                 }
+                if sort_slot > 0 {
+                    let side = band.height.min(10);
+                    let icon_rect = Rect::new(
+                        band.x + band.width as i32 - side as i32 - 2,
+                        band.y + (band.height as i32 - side as i32) / 2,
+                        side,
+                        side,
+                    );
+                    let icon = if self.sort_descending {
+                        crate::widget::IconName::ArrowDown
+                    } else {
+                        crate::widget::IconName::ArrowUp
+                    };
+                    crate::widget::draw_icon_at(context, icon_rect, ink, icon);
+                }
+                x = x.saturating_add(width as i32);
             }
         }
 
@@ -1591,13 +1696,14 @@ impl Draw for TreeTable {
                 );
             }
 
+            let mut x = rect.x;
             for col in 0..columns {
-                let x = rect.x + col as i32 * col_w;
+                let width = self.column_width_at(col);
                 if x >= rect.x + rect.width as i32 {
                     break;
                 }
 
-                context.draw_rect(Rect::new(x, y, self.column_width, self.row_height), cell_border);
+                context.draw_rect(Rect::new(x, y, width, self.row_height), cell_border);
 
                 // One buffer and one font for the whole grid: this used to build a `String` per
                 // visible cell (via `item`) and resolve the font twice per cell.
@@ -1608,14 +1714,39 @@ impl Draw for TreeTable {
                     } else {
                         0
                     };
+                    // The branch glyph sits in the indent gutter, so a branch and a leaf are
+                    // distinguishable at a glance (V-12). The same rect is the press target.
+                    let disclosure = if col == 0 { self.row_disclosure_rect(row) } else { None };
+                    if let Some(box_rect) = disclosure {
+                        let expanded = self.is_row_expanded(row).unwrap_or(false);
+                        let icon = if expanded {
+                            crate::widget::IconName::ChevronDown
+                        } else {
+                            crate::widget::IconName::ChevronRight
+                        };
+                        crate::widget::draw_icon_centered(
+                            context,
+                            box_rect,
+                            box_rect.width.min(10),
+                            ink.blend(&surface, 0.35),
+                            icon,
+                        );
+                    }
                     // The indented cell is the band: `y + row_h / 2` as a `draw_text` origin put
                     // the glyph box's *top* edge on the row's middle line, drawing every label
                     // half a line low. The band starts after the indent, so the tree's hierarchy
                     // still reads while the line box is derived correctly. Fitting keeps a deep
                     // node's value inside its column.
-                    let text_x = x + 4 + indent;
-                    let band =
-                        Rect::new(text_x, y, (x + col_w - text_x).max(0) as u32, self.row_height);
+                    let text_x = match disclosure {
+                        Some(box_rect) => box_rect.x + box_rect.width as i32 + 2,
+                        None => x + 4 + indent,
+                    };
+                    let band = Rect::new(
+                        text_x,
+                        y,
+                        (x + width as i32 - text_x).max(0) as u32,
+                        self.row_height,
+                    );
                     context.draw_text_fitted_cow(
                         context.text_line(band, cell_font),
                         &cell_text,
@@ -1624,6 +1755,7 @@ impl Draw for TreeTable {
                         HorizontalAlignment::Left,
                     );
                 }
+                x = x.saturating_add(width as i32);
             }
         }
 
@@ -1681,6 +1813,13 @@ impl crate::event::EventHandler for TreeTable {
                     return;
                 }
                 if let Some(row) = self.row_at(pos.y) {
+                    // A press on the disclosure glyph toggles the branch; the rest of the first
+                    // cell keeps selecting the row (V-12).
+                    if self.row_disclosure_rect(row).is_some_and(|glyph| glyph.contains_point(*pos))
+                    {
+                        let _ = self.toggle_row_expanded(row);
+                        return;
+                    }
                     let _ = self.select_row(row);
                 }
             }
@@ -1735,6 +1874,26 @@ impl crate::event::EventHandler for TreeTable {
                     crate::event::key_codes::PAGE_UP => current.saturating_sub(page.max(1)),
                     crate::event::key_codes::PAGE_DOWN => {
                         current.saturating_add(page.max(1)).min(last)
+                    }
+                    // LEFT collapses an open branch, or moves to the parent row when it is
+                    // already closed. RIGHT opens the current branch (V-15).
+                    crate::event::key_codes::LEFT => {
+                        if let Some(row) = self.selected_row {
+                            if self.is_row_expanded(row) == Some(true) {
+                                let _ = self.collapse_row(row);
+                                row
+                            } else {
+                                self.parent_row(row).unwrap_or(row)
+                            }
+                        } else {
+                            current
+                        }
+                    }
+                    crate::event::key_codes::RIGHT => {
+                        if self.selected_row.is_some() {
+                            let _ = self.expand_row(current);
+                        }
+                        current
                     }
                     crate::event::key_codes::ENTER | crate::event::key_codes::SPACE => {
                         if self.selected_row.is_some() {
@@ -2371,5 +2530,90 @@ mod tests {
         assert_eq!(tree.fetch_timeout_ms(), 5000);
         tree.set("fetch_timeout_ms", CapabilityValue::UInt(1500)).expect("writable");
         assert_eq!(tree.fetch_timeout_ms(), 1500);
+    }
+
+    /// V-12: a branch paints a disclosure glyph and a press on it toggles the branch.
+    #[test]
+    fn disclosure_glyph_targets_the_branch() {
+        use crate::event::types::EventHandler;
+        let mut tree = TreeTable::new(Rect::new(0, 0, 240, 200));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+
+        let root = tree.row_disclosure_rect(0).expect("the first root is a branch");
+        assert!(tree.expand_row(0));
+        let leaf = (0..tree.row_count())
+            .find(|row| !tree.row_has_children(*row))
+            .expect("the fixture has a leaf");
+        assert_eq!(tree.row_disclosure_rect(leaf), None, "a leaf has no glyph");
+        assert!(tree.collapse_row(0));
+        assert_eq!(tree.is_row_expanded(0), Some(false));
+
+        let centre = Rect::new(root.x, root.y, root.width, root.height);
+        tree.handle_event(&Event::MousePress {
+            pos: Point::new(centre.x + 2, centre.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(tree.is_row_expanded(0), Some(true), "clicking the glyph opens the branch");
+        assert_eq!(tree.selected_row(), None, "the glyph is not a selection target");
+    }
+
+    /// V-13: per-column widths override the shared default and are honoured by hit testing.
+    #[test]
+    fn per_column_widths_override_the_default() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 300, 200));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+        assert_eq!(tree.column_width_at(0), 140);
+        tree.set_column_width_at(0, 60);
+        assert_eq!(tree.column_width_at(0), 60);
+        assert_eq!(tree.column_width_at(1), 140, "the other column keeps the default");
+
+        // Hit testing follows the second column's real start (60), not 140.
+        tree.set_show_header(true);
+        let header = Rect::new(100, 2, 20, 10);
+        assert_eq!(tree.header_column_at(Point::new(header.x, header.y)), Some(1));
+
+        // The default entry point still sets every column that has no override.
+        tree.set_column_width(200);
+        assert_eq!(tree.column_width_at(2), 200);
+        assert_eq!(tree.column_width_at(0), 60);
+    }
+
+    /// V-14: a sorted column is reported and its header reserves the arrow slot.
+    #[test]
+    fn sort_indicator_is_drawn_for_the_sorted_column() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 300, 200));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+        tree.set_show_header(true);
+        tree.set_sort_column(Some(0));
+        assert_eq!(tree.sort_column(), Some(0));
+        assert!(!tree.sort_descending());
+        let _ = crate::widget::svg::render_to_svg(&mut tree);
+        tree.toggle_sort_column(0);
+        assert!(tree.sort_descending());
+        let _ = crate::widget::svg::render_to_svg(&mut tree);
+    }
+
+    /// V-15: LEFT collapses or walks to the parent, RIGHT expands.
+    #[test]
+    fn left_and_right_navigate_the_hierarchy() {
+        use crate::event::key_codes::{LEFT, RIGHT};
+        use crate::event::types::EventHandler;
+
+        let mut tree = TreeTable::new(Rect::new(0, 0, 240, 240));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+        tree.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+
+        // Open the first root and put the selection on its first child.
+        assert!(tree.expand_row(0));
+        assert!(tree.select_row(1));
+        tree.handle_event(&Event::KeyPress { key: LEFT, modifiers: 0 });
+        assert_eq!(tree.selected_row(), Some(0), "LEFT walks to the parent row");
+
+        tree.handle_event(&Event::KeyPress { key: LEFT, modifiers: 0 });
+        assert_eq!(tree.is_row_expanded(0), Some(false), "LEFT collapses an open branch");
+
+        tree.handle_event(&Event::KeyPress { key: RIGHT, modifiers: 0 });
+        assert_eq!(tree.is_row_expanded(0), Some(true), "RIGHT expands the branch");
     }
 }

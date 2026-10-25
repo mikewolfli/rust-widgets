@@ -102,9 +102,14 @@ impl DepthChart {
     }
 
     /// Rebuilds the filtered levels, the accumulated curve and the two scales.
+    ///
+    /// The two level vectors are **reused**: they are cleared and refilled in place, so a
+    /// tick's rebuild allocates nothing. The previous form built a fresh `Vec` per side (and
+    /// a second one to filter it), which made every order-book push three allocations
+    /// (J-P17).
     fn rebuild(&mut self) {
-        self.bid_levels = self.plottable_levels(DepthSide::Bid);
-        self.ask_levels = self.plottable_levels(DepthSide::Ask);
+        Self::fill_plottable_into(&mut self.bid_levels, self.book.bids(), self.depth);
+        Self::fill_plottable_into(&mut self.ask_levels, self.book.asks(), self.depth);
         self.curve_cache.clear();
         let mut running = 0.0;
         for level in &self.bid_levels {
@@ -222,6 +227,34 @@ impl DepthChart {
         self.hovered_level
     }
 
+    /// The hovered point's readings, ready for a `ChartTooltip`.
+    ///
+    /// The price, the cumulative quantity at it and which side of the book it belongs to,
+    /// taken from the same `curve_cache` the step curve is drawn from (COMP-J02).
+    pub fn hovered_summary(&self) -> Vec<crate::widget::companions::TooltipLine> {
+        use crate::widget::companions::TooltipLine;
+        let Some(price) = self.hovered_level else { return Vec::new() };
+        let Some(point) = self.curve_cache.iter().find(|point| point.price == price) else {
+            return Vec::new();
+        };
+        let color = match point.side {
+            DepthSide::Bid => self.bid_color,
+            DepthSide::Ask => self.ask_color,
+        };
+        alloc::vec![
+            TooltipLine::new(alloc::format!("{price:.2}")),
+            TooltipLine::new(alloc::format!("cum {:.0}", point.cumulative_quantity)),
+            TooltipLine::colored(
+                match point.side {
+                    DepthSide::Bid => "bid",
+                    DepthSide::Ask => "ask",
+                }
+                .to_string(),
+                color,
+            ),
+        ]
+    }
+
     /// The level price nearest `price`, across both sides of the book.
     ///
     /// The chart's hover used to report the interpolated pointer position, which is not a
@@ -246,20 +279,7 @@ impl DepthChart {
         (bid.is_finite() && ask.is_finite() && ask > bid).then_some((bid, ask))
     }
 
-    /// The levels to plot on one side, honouring the depth limit.
-    fn levels(&self, side: DepthSide) -> Vec<BookLevel> {
-        let levels = match side {
-            DepthSide::Bid => self.book.bids(),
-            DepthSide::Ask => self.book.asks(),
-        };
-        if self.depth == 0 {
-            levels.to_vec()
-        } else {
-            levels.iter().take(self.depth).copied().collect()
-        }
-    }
-
-    /// The levels that are actually plottable on one side.
+    /// Fills `out` with the plottable levels of one side, reusing its allocation.
     ///
     /// # Why the filter lives here rather than inside the draw loop
     ///
@@ -270,13 +290,12 @@ impl DepthChart {
     /// data that is never drawn and a skipped level silently removes a segment.
     /// Skipping inside the loop while the bounds still counted the skipped level was
     /// exactly that bug: one zero-size level could erase the whole curve.
-    fn plottable_levels(&self, side: DepthSide) -> Vec<BookLevel> {
-        self.levels(side)
-            .into_iter()
-            .filter(|level| {
-                level.price.is_finite() && level.quantity.is_finite() && level.quantity > 0.0
-            })
-            .collect()
+    fn fill_plottable_into(out: &mut Vec<BookLevel>, levels: &[BookLevel], depth: usize) {
+        out.clear();
+        let count = if depth == 0 { levels.len() } else { levels.len().min(depth) };
+        out.extend(levels[..count].iter().copied().filter(|level| {
+            level.price.is_finite() && level.quantity.is_finite() && level.quantity > 0.0
+        }));
     }
 
     /// The quantity the plot scales against: the largest cumulative total on either side.
@@ -586,6 +605,30 @@ impl Draw for DepthChart {
                         HorizontalAlignment::Left,
                     );
                 }
+            }
+        }
+
+        // The price axis under the curve. Without it the picture answered "what shape"
+        // but not "at what price"; the hover readout was the only way to recover a level
+        // (FIN-05).
+        let (low, high) = self.price_bounds();
+        if high > low && area.bottom_margin >= 14 {
+            let font = role_font(self.style(), 10.0);
+            const TICKS: i32 = 5;
+            let band = ((area.rect.width as i32 / TICKS).max(40)) as u32;
+            let y = area.bottom() + 2;
+            for step in 0..=TICKS {
+                let fraction = step as f64 / TICKS as f64;
+                let price = low + fraction * (high - low);
+                let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
+                let text = alloc::format!("{price:.2}");
+                context.draw_text_fitted_cow(
+                    Rect::new(x - band as i32 / 2, y, band, 12),
+                    &text,
+                    &font,
+                    chrome.ink.with_alpha(190),
+                    HorizontalAlignment::Center,
+                );
             }
         }
 

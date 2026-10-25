@@ -13,7 +13,7 @@ use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::{MatteMode, RenderContext};
-use crate::signal::GenericSignal;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -897,7 +897,18 @@ pub struct LottieWidget {
     /// Optional resolver for image-layer assets.
     image_provider: Option<Box<dyn LottieImageProvider>>,
     /// Decoded image assets already resolved, so a provider is asked at most once per asset.
-    image_cache: core::cell::RefCell<Vec<(String, LottieImage)>>,
+    ///
+    /// The value is shared through an `Rc`, so a hit clones a handle rather than the pixels
+    /// (L-P07).
+    image_cache: core::cell::RefCell<Vec<(String, crate::compat::Rc<LottieImage>)>>,
+    /// Text faces already resolved, keyed by `(family, size bits, bold)`.
+    font_cache: core::cell::RefCell<Vec<(String, u32, bool, Font)>>,
+    /// The frame-counter caption, rebuilt only when its inputs change.
+    counter_text: String,
+    /// The `(frame, total, rate bits)` triple `counter_text` was built from.
+    counter_key: (u32, u32, u32),
+    /// Emitted with the new frame index whenever playback crosses into a new frame.
+    pub frame_changed: Signal1<u32>,
 }
 
 impl LottieWidget {
@@ -927,6 +938,10 @@ impl LottieWidget {
             font_provider: None,
             image_provider: None,
             image_cache: core::cell::RefCell::new(Vec::new()),
+            font_cache: core::cell::RefCell::new(Vec::new()),
+            counter_text: String::new(),
+            counter_key: (u32::MAX, u32::MAX, u32::MAX),
+            frame_changed: Signal1::new(),
         }
     }
 
@@ -1187,6 +1202,24 @@ impl LottieWidget {
         self.base.request_redraw();
     }
 
+    /// The frame-counter caption, rebuilt only when its inputs changed.
+    fn refresh_counter(&mut self) {
+        let key = (self.current_frame, self.total_frames, self.frame_rate.to_bits());
+        if self.counter_key == key {
+            return;
+        }
+        self.counter_key = key;
+        self.counter_text.clear();
+        use core::fmt::Write as _;
+        let _ = write!(
+            self.counter_text,
+            "{}/{} FPS:{:.0}",
+            self.current_frame + 1,
+            self.total_frames,
+            self.frame_rate
+        );
+    }
+
     /// Installs a font resolver for text layers.
     pub fn set_font_provider(&mut self, provider: Box<dyn LottieFontProvider>) {
         self.font_provider = Some(provider);
@@ -1196,7 +1229,26 @@ impl LottieWidget {
     /// Installs an image-asset resolver for image layers.
     pub fn set_image_provider(&mut self, provider: Box<dyn LottieImageProvider>) {
         self.image_provider = Some(provider);
+        // A different resolver means the cached assets belong to the previous one; keeping them
+        // would make the new resources silently invisible (MW-05).
+        self.clear_image_cache();
         self.base.request_redraw();
+    }
+
+    /// Drops every cached decoded image asset.
+    ///
+    /// A host calls this after changing what its provider would return for an asset id; a provider
+    /// swap clears the cache automatically.
+    pub fn clear_image_cache(&mut self) {
+        let had_entries = {
+            let mut cache = self.image_cache.borrow_mut();
+            let had_entries = !cache.is_empty();
+            cache.clear();
+            had_entries
+        };
+        if had_entries {
+            self.base.request_redraw();
+        }
     }
 
     /// The text layers parsed from the loaded document.
@@ -1301,6 +1353,7 @@ impl LottieWidget {
         // it would throw that surplus away on every frame and reintroduce the drift the
         // microsecond accumulator exists to remove (measured: 30 fps ran at 29.4 fps).
         // A caller that drives `advance_frame` directly holds no phase to preserve.
+        self.frame_changed.emit(self.current_frame);
         self.base.request_redraw();
         true
     }
@@ -1600,9 +1653,12 @@ impl LottieWidget {
             let x = offset_x + pos.0.unwrap_or(0.0) * scale;
             let y = offset_y + pos.1.unwrap_or(0.0) * scale;
             let size = (layer.size * scale * s.1.unwrap_or(100.0) / 100.0).max(1.0) as f32;
+            // A text face is resolved once per (family, size, weight) and reused. Building a
+            // fresh `Font` (which owns its family string) on every frame was pure allocation
+            // (L-P07).
             let font = match self.font_provider.as_ref() {
                 Some(provider) => provider.font(&layer.family, size, false),
-                None => Font::new(layer.family.clone(), size, false, false),
+                None => self.cached_font(&layer.family, size, false),
             };
             let color = layer.color.at_frame(frame).with_alpha_f32(opacity as f32);
             context.draw_text(
@@ -1613,6 +1669,26 @@ impl LottieWidget {
                 HorizontalAlignment::Left,
             );
         }
+    }
+
+    /// The font for `(family, size, bold)`, allocated at most once per distinct face.
+    fn cached_font(&self, family: &str, size: f32, bold: bool) -> Font {
+        let size_bits = size.to_bits();
+        {
+            let cache = self.font_cache.borrow();
+            if let Some((_, _, _, font)) = cache.iter().find(|(name, bits, weight, _)| {
+                name == family && *bits == size_bits && *weight == bold
+            }) {
+                return font.clone();
+            }
+        }
+        let font = Font::new(family.to_string(), size, bold, false);
+        let mut cache = self.font_cache.borrow_mut();
+        if cache.len() >= 32 {
+            cache.remove(0);
+        }
+        cache.push((family.to_string(), size_bits, bold, font.clone()));
+        font
     }
 
     /// Paints a set of image layers when the host's provider resolves their asset.
@@ -1629,13 +1705,16 @@ impl LottieWidget {
             return;
         };
         for layer in layers {
+            // A cache hit clones the shared handle, not the pixel buffer. The cache is keyed by
+            // the asset id and holds `Rc<LottieImage>` (L-P07).
             let image = {
                 let mut cache = self.image_cache.borrow_mut();
                 if let Some(position) = cache.iter().position(|(id, _)| id == &layer.asset_id) {
-                    Some(cache[position].1.clone())
+                    Some(crate::compat::Rc::clone(&cache[position].1))
                 } else if let Some(decoded) = provider.image(&layer.asset_id) {
-                    cache.push((layer.asset_id.clone(), decoded.clone()));
-                    Some(decoded)
+                    let shared = crate::compat::Rc::new(decoded);
+                    cache.push((layer.asset_id.clone(), crate::compat::Rc::clone(&shared)));
+                    Some(shared)
                 } else {
                     None
                 }
@@ -2218,6 +2297,7 @@ impl Draw for LottieWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
+        self.refresh_counter();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then fall back to the original literal. The literal step is
@@ -2301,15 +2381,15 @@ impl Draw for LottieWidget {
         let frame = self.current_frame as f64 + self.frame_offset;
         self.render_layers(context, frame, rect);
 
-        // Frame counter overlay at top-right.
+        // Frame counter overlay at top-right. The caption is rebuilt by `refresh_counter`
+        // only when the frame, the total or the rate changes (L-P03).
         let font = effective_font(style);
-        let counter_text =
-            format!("{}/{} FPS:{:.0}", self.current_frame + 1, self.total_frames, self.frame_rate);
-        let c_metrics = context.measure_text(&counter_text, font);
+        let counter_text = self.counter_text.as_str();
+        let c_metrics = context.measure_text(counter_text, font);
         let cx = rect.x + rect.width as i32 - c_metrics.width as i32 - 4;
         let cy = rect.y + 2;
-        let pill_w = c_metrics.width as u32 + 8;
-        let pill_h = c_metrics.height as u32 + 2;
+        let pill_w = c_metrics.width + 8;
+        let pill_h = c_metrics.height + 2;
         let pill_rect = Rect::new(cx - 4, cy - 1, pill_w, pill_h);
         // Same rule as the play chip: the counter's backdrop belongs to the widget's
         // chrome, but the white counter ink and the chip's own alpha are kept as they were,
@@ -2319,7 +2399,7 @@ impl Draw for LottieWidget {
         // pushed the counter half a line down, out through the pill's bottom edge.
         context.draw_text(
             Point::new(cx, cy),
-            &counter_text,
+            counter_text,
             font,
             Color::WHITE,
             HorizontalAlignment::Left,
@@ -2379,7 +2459,9 @@ impl EventHandler for LottieWidget {
             return;
         }
         match event {
-            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
+            // Playback toggles on **release** only: the paired press arm flipped it a second
+            // time, so one click cancelled itself (L-P01).
+            Event::MouseRelease { pos, button } => {
                 if *button == 1 && self.geometry().contains_point(*pos) {
                     if self.playing {
                         self.pause();

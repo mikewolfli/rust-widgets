@@ -17,7 +17,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Events emitted by NavigationStack when the page stack changes.
@@ -503,20 +503,16 @@ impl Draw for NavigationStack {
         // own fill. A bar painted in that colour would be byte-identical to the frame behind
         // it, so a resolved surface equal to the window fill is re-derived a visible step
         // away from it, the same distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        let palette = crate::style::palette_shared();
+        let window_fill = palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
         // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
-        // the back affordance follows the appearance rather than staying a literal blue.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        // the back affordance follows the appearance rather than staying a literal blue. One
+        // palette read serves both this and the window fill above (G-A01).
+        let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         let surface = match style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -543,32 +539,33 @@ impl Draw for NavigationStack {
         // Back button (if can_pop and the host still wants it)
         if self.can_pop() && self.back_visible {
             let back = self.back_rect();
-            let back_text = if self.direction.is_right_to_left() { "Back >" } else { "< Back" };
-            // The **effective font** — the resolved theme/caller font — for the back label and the
-            // title, rather than the fixed 13/15 px sans-serif faces this used to build
-            // (D09-STYLE-01).
+            // The **effective font** — the resolved theme/caller font — for the title below, and
+            // for the icon's line box. The fixed 13/15 px sans-serif faces this used to build are
+            // gone (D09-STYLE-01).
             let back_font = effective_font(style);
             let back_color = self.base.disabled_ink_on(accent, surface);
-            // The line box is derived from the *font in use*, not from a literal. `+ 14` was shared
-            // by this 13 pt label and the 15 pt title below, so it was the correct descent for
-            // neither: a glyph origin is the top edge of its box, so an offset that does not come
-            // from the font puts one of the two rows off its own middle line. `text_line` is the
-            // crate's one derivation for "where does this font's line sit in this band".
             let back_line = context.text_line(back, back_font);
-            context.draw_text(
-                Point::new(back.x + 8, back_line.y),
-                back_text,
-                back_font,
-                back_color,
-                HorizontalAlignment::Left,
-            );
+            // The back affordance is the same `ArrowLeft` outline the app bar paints, so one
+            // return glyph exists in the family rather than a text label here and an icon there
+            // (N-09). The box follows the line height and is inset from the leading edge; in RTL
+            // the `back_rect` already starts at the trailing edge, so the box is mirrored inside
+            // it.
+            let side = back_line.height.max(1);
+            let icon_x = if self.direction.is_right_to_left() {
+                back.right() - 8 - side as i32
+            } else {
+                back.x + 8
+            };
+            let icon_rect = Rect::new(icon_x, back_line.y, side, side);
+            crate::widget::draw_icon_at(context, icon_rect, back_color, IconName::ArrowLeft);
         }
 
         // Title
         let title_font = effective_font(style);
         let title = self.display_title();
         let text_color = self.base.disabled_ink_on(ink, surface);
-        let metrics = context.measure_text(&title, title_font);
+        let metrics =
+            crate::widget::base_widgets::measure_cache::measure_text(context, &title, title_font);
         // The title is centred in the space the trailing actions leave, so a label cannot paint
         // over an action on a narrow bar.
         let actions_reserve = self.actions.len() as i32 * (NAV_ACTION_WIDTH as i32 + 2);
@@ -1147,5 +1144,19 @@ mod tests {
         stack.handle_event(&Event::MouseMove { pos: Point::new(200, 300) });
         stack.handle_event(&Event::MouseRelease { pos: Point::new(200, 300), button: 1 });
         assert_eq!(stack.page_count(), 1, "a long edge drag commits the pop");
+    }
+
+    #[test]
+    fn the_back_affordance_is_an_icon_not_a_text_label() {
+        let _guard = crate::style::theme_test_guard();
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        while stack.tick(16) {}
+        let svg = crate::widget::svg::render_to_svg(&mut stack);
+        assert!(
+            !svg.contains("Back"),
+            "the back affordance is the shared ArrowLeft outline, not a text label"
+        );
     }
 }

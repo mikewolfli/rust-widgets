@@ -79,6 +79,13 @@ pub struct TabView {
     /// hash of `(title, icon-drawability)` in strip order, so adding/removing a tab or changing
     /// a caption/font re-measures without an invalidation list to keep in sync.
     tab_width_cache: RefCell<TabWidthCache>,
+    /// Per-tab badge text, parallel to `tabs` (N-10).
+    badges: Vec<Option<String>>,
+    /// The last derived tab boxes, with the inputs they were derived from (G-A05).
+    ///
+    /// A press and a release both ask for the strip twice; the widths were cached but the
+    /// boxes were rebuilt (and the width vector cloned) each time.
+    run_cache: RefCell<Vec<(RunKey, Rc<crate::compat::Vec<Rect>>)>>,
 }
 
 /// The measurement cache behind [`TabView::tab_widths`].
@@ -87,6 +94,20 @@ struct TabWidthCache {
     font: Option<Font>,
     fingerprint: u64,
     widths: crate::compat::Vec<i32>,
+}
+
+/// The inputs a cached tab run was derived from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RunKey {
+    strip: Rect,
+    offset: i32,
+    closable: bool,
+    /// The measured-width fingerprint (captions, icons and badges).
+    fingerprint: u64,
+    /// The effective font's identity. The width cache already compares the font, but the run
+    /// cache must too: a text-scale change invalidates the widths and would otherwise leave the
+    /// cached boxes at the old sizes (G-A05).
+    font: u64,
 }
 
 impl TabView {
@@ -112,6 +133,8 @@ impl TabView {
             pending_close: None,
             registry: None,
             tab_width_cache: RefCell::new(TabWidthCache::default()),
+            badges: Vec::new(),
+            run_cache: RefCell::new(Vec::new()),
         }
     }
 
@@ -138,6 +161,7 @@ impl TabView {
     ) {
         let was_empty = self.tabs.is_empty();
         self.tabs.push(TabPage { title: title.into(), content, icon: icon.map(|i| i.into()) });
+        self.badges.push(None);
         if was_empty {
             self.set_current_index(0);
         }
@@ -158,6 +182,9 @@ impl TabView {
         }
         let before = self.selected_index;
         self.tabs.remove(index);
+        if index < self.badges.len() {
+            self.badges.remove(index);
+        }
         if self.tabs.is_empty() {
             self.selected_index = 0;
         } else if index < before {
@@ -215,6 +242,7 @@ impl TabView {
     /// Removes all tabs and resets the selection.
     pub fn clear_tabs(&mut self) {
         self.tabs.clear();
+        self.badges.clear();
         self.selected_index = 0;
         self.base.request_redraw();
     }
@@ -378,6 +406,8 @@ impl TabView {
         }
         let page = self.tabs.remove(from);
         self.tabs.insert(to, page);
+        let badge = self.badges.remove(from);
+        self.badges.insert(to, badge);
         if self.selected_index == from {
             self.selected_index = to;
         } else if from < self.selected_index && to >= self.selected_index {
@@ -412,7 +442,30 @@ impl TabView {
         self.base.request_redraw();
     }
 
-    /// The strip's current horizontal scroll offset, in pixels.
+    /// Sets a badge on the tab at `index`, or clears it with `None` (N-10).
+    ///
+    /// Returns `false` for an index that is not on the strip. The badge is drawn in the same
+    /// error-toned capsule the bottom navigation bar uses, which is the family's existing
+    /// vocabulary for "attention without a selection".
+    pub fn set_tab_badge(&mut self, index: usize, badge: Option<&str>) -> bool {
+        let Some(slot) = self.badges.get_mut(index) else {
+            return false;
+        };
+        let badge = badge.filter(|text| !text.is_empty()).map(|text| text.to_string());
+        if *slot == badge {
+            return true;
+        }
+        *slot = badge;
+        self.base.request_redraw();
+        true
+    }
+
+    /// Returns the badge on `index`, when there is one.
+    pub fn tab_badge(&self, index: usize) -> Option<&str> {
+        self.badges.get(index).and_then(|badge| badge.as_deref())
+    }
+
+    /// The strip's horizontal scroll offset, in pixels.
     pub fn strip_offset(&self) -> i32 {
         self.strip_offset
     }
@@ -464,6 +517,41 @@ impl TabView {
         Rect::new(rect.x, top, rect.width, (rect.y + rect.height as i32 - top).max(0) as u32)
     }
 
+    /// A stable identity for the font a tab run was measured with.
+    ///
+    /// The width cache compares the font directly; the run cache needs a scalar key, so this
+    /// folds the same fields into one hash. Without it a text-scale change invalidated the widths
+    /// but left the cached boxes at the old sizes (G-A05).
+    fn font_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let font = effective_font(self.style());
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        font.family().hash(&mut hasher);
+        font.size().to_bits().hash(&mut hasher);
+        font.weight().hash(&mut hasher);
+        font.is_italic().hash(&mut hasher);
+        font.letter_spacing().to_bits().hash(&mut hasher);
+        font.word_spacing().to_bits().hash(&mut hasher);
+        font.line_height().to_bits().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// A hash of the inputs the tab widths depend on: each caption, its icon drawability and
+    /// its badge. Kept separate so the run cache can key on it without re-measuring (G-A05).
+    fn tab_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for (index, tab) in self.tabs.iter().enumerate() {
+            tab.title.hash(&mut hasher);
+            tab.icon
+                .as_deref()
+                .is_some_and(crate::widget::icon_token_is_drawable)
+                .hash(&mut hasher);
+            self.badges.get(index).and_then(|badge| badge.as_deref()).hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
     /// Each tab's own width, derived from its own label.
     ///
     /// # The defect this replaces
@@ -480,20 +568,10 @@ impl TabView {
     /// does not crowd out its siblings. This is the same derivation `TabWidget::tab_widths`
     /// uses, with the same constants, so the two tab strips in this crate cannot disagree.
     fn tab_widths(&self) -> crate::compat::Vec<i32> {
-        use std::hash::{Hash, Hasher};
-
         // Measured with the **effective font** — the same font the caption is painted with — so the
         // tab's reserved width and its ink cannot disagree (D09-STYLE-02).
         let font = effective_font(self.style());
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for tab in &self.tabs {
-            tab.title.hash(&mut hasher);
-            tab.icon
-                .as_deref()
-                .is_some_and(crate::widget::icon_token_is_drawable)
-                .hash(&mut hasher);
-        }
-        let fingerprint = hasher.finish();
+        let fingerprint = self.tab_fingerprint();
         {
             let cache = self.tab_width_cache.borrow();
             if cache.font.as_ref() == Some(font) && cache.fingerprint == fingerprint {
@@ -504,20 +582,37 @@ impl TabView {
         let widths: crate::compat::Vec<i32> = self
             .tabs
             .iter()
-            .map(|tab| {
+            .enumerate()
+            .map(|(index, tab)| {
                 // The label's width comes from the shared estimate -- the same model the renderer
                 // draws with -- rather than from `chars().count() * TAB_CHAR_WIDTH`. The hand-rolled
                 // form was a second copy of the advance arithmetic and one that counts *clusters*
                 // at a fixed 8 px: a CJK caption measured half its drawn width, so a Chinese tab
                 // label overflowed the strip its own width had reserved.
+                // A badge reserves its capsule's width too, so the caption cannot paint under it
+                // (N-10).
+                let badge_allowance = self
+                    .badges
+                    .get(index)
+                    .and_then(|badge| badge.as_deref())
+                    .filter(|badge| !badge.is_empty())
+                    .map(|badge| {
+                        let badge_font = font.with_size((font.size() * TAB_BADGE_SCALE).max(9.0));
+                        let badge_height = badge_font.size().max(10.0) as u32 + 4;
+                        let badge_width =
+                            (estimate_text_width(badge, &badge_font, 1.0) + 8).max(badge_height);
+                        badge_width as i32 + TAB_BADGE_GAP
+                    })
+                    .unwrap_or(0);
                 (estimate_text_width(&tab.title, font, 1.0) as i32
                     + TAB_TEXT_PADDING
                     + if tab.icon.as_deref().is_some_and(crate::widget::icon_token_is_drawable) {
                         (TAB_VIEW_ICON_SIDE + TAB_VIEW_ICON_GAP * 2) as i32
                     } else {
                         0
-                    })
-                .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+                    }
+                    + badge_allowance)
+                    .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
             })
             .collect();
 
@@ -550,28 +645,56 @@ impl TabView {
     /// shares the shortfall between them rather than overhanging the band (an overhanging tab is an
     /// absent tab on a backend that emits absolute coordinates), and when even the floors do not fit
     /// the run is scaled proportionally so no tab is the one that disappears.
-    fn tab_run(&self, strip: Rect) -> crate::compat::Vec<Rect> {
-        let sizes = self.tab_sizes(strip.width);
-        let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::with_capacity(sizes.len());
-        let mut cursor = strip.x;
-        for size in sizes {
-            placed.push(Rect::new(cursor, strip.y, size, strip.height));
-            cursor += size as i32 + TAB_SPACING;
-        }
-        placed
+    fn tab_run(&self, strip: Rect) -> Rc<crate::compat::Vec<Rect>> {
+        self.run_for(strip, 0)
     }
 
     /// The tab boxes as painted, including the strip's horizontal scroll offset.
     ///
     /// With scrolling disabled the offset is exactly zero, so this is byte-identical to
     /// [`Self::tab_run`]. The paint path and the hit test both read this one answer.
-    fn visible_tab_run(&self, strip: Rect) -> crate::compat::Vec<Rect> {
-        let mut run = self.tab_run(strip);
-        if self.scrollable_strip && self.strip_offset != 0 {
-            for tab in run.iter_mut() {
-                tab.x -= self.strip_offset;
-            }
+    fn visible_tab_run(&self, strip: Rect) -> Rc<crate::compat::Vec<Rect>> {
+        let offset = if self.scrollable_strip { self.strip_offset } else { 0 };
+        self.run_for(strip, offset)
+    }
+
+    /// The tab boxes for one strip and scroll offset, cached while the inputs hold.
+    ///
+    /// A press and a release each ask for the boxes twice; the widths were cached but the box
+    /// arithmetic and the width clone ran every time (G-A05). Two entries are kept because a
+    /// scrollable strip asks for the unscrolled run when revealing a selection and the scrolled
+    /// run when drawing, and a single slot would alternate between them.
+    fn run_for(&self, strip: Rect, offset: i32) -> Rc<crate::compat::Vec<Rect>> {
+        let key = RunKey {
+            strip,
+            offset,
+            closable: self.closable,
+            fingerprint: self.tab_fingerprint(),
+            font: self.font_fingerprint(),
+        };
+        if let Some(run) = self
+            .run_cache
+            .borrow()
+            .iter()
+            .rev()
+            .find(|(cached, _)| *cached == key)
+            .map(|(_, run)| Rc::clone(run))
+        {
+            return run;
         }
+        let sizes = self.tab_sizes(strip.width);
+        let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::with_capacity(sizes.len());
+        let mut cursor = strip.x - offset;
+        for size in sizes {
+            placed.push(Rect::new(cursor, strip.y, size, strip.height));
+            cursor += size as i32 + TAB_SPACING;
+        }
+        let run = Rc::new(placed);
+        let mut cache = self.run_cache.borrow_mut();
+        if cache.len() >= 2 {
+            cache.remove(0);
+        }
+        cache.push((key, Rc::clone(&run)));
         run
     }
 
@@ -646,6 +769,10 @@ pub(crate) const TAB_SPACING: i32 = 2;
 const TAB_VIEW_ICON_SIDE: u32 = 14;
 /// Gap between that icon slot and the caption.
 const TAB_VIEW_ICON_GAP: u32 = 3;
+/// Scale applied to the caption font for a tab's badge (N-10).
+const TAB_BADGE_SCALE: f32 = 0.75;
+/// Space between a badge capsule and the caption's reserved band.
+const TAB_BADGE_GAP: i32 = 6;
 
 impl Widget for TabView {
     fn base(&self) -> &BaseWidget {
@@ -789,9 +916,11 @@ impl Draw for TabView {
         let strip_background = content_background.blend(&text_color, 0.08);
         let inactive_tab = content_background.blend(&text_color, 0.05);
         // The selected indicator is a *selection* state, so it reads the theme's
-        // primary token rather than a literal blue.
-        let indicator = crate::style::resolved_theme_style_shared("button")
-            .and_then(|button| button.background_color)
+        // primary token rather than a literal blue. The palette read is the cached one, so
+        // this does not resolve a second role (G-A01).
+        let indicator = crate::style::palette_shared()
+            .as_ref()
+            .map(|colors| colors.primary)
             .unwrap_or_else(|| content_background.blend(&text_color, 0.6));
         // The selected label used to be the indicator colour itself, i.e. the accent **fill**
         // reused as ink: the default theme's `rgb(33,150,243)` on the content background is about
@@ -933,6 +1062,39 @@ impl Draw for TabView {
                     inactive_text,
                 );
             }
+
+            // Badge: the same error-toned capsule the bottom navigation bar uses, placed at the
+            // tab's trailing edge inside the width the tab already reserved for it (N-10).
+            if let Some(badge) = self.badges.get(i).and_then(|badge| badge.as_deref()) {
+                if !badge.is_empty() {
+                    let badge_font = font.with_size((font.size() * TAB_BADGE_SCALE).max(9.0));
+                    let metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                        context,
+                        badge,
+                        &badge_font,
+                    );
+                    let height = badge_font.size().max(10.0) as u32 + 4;
+                    let width = (metrics.width + 8).max(height);
+                    let reserved = if self.closable { 16 } else { 6 };
+                    let badge_rect = Rect::new(
+                        tab_rect.x + tab_rect.width as i32 - width as i32 - reserved,
+                        tab_rect.y + (tab_rect.height as i32 - height as i32) / 2,
+                        width,
+                        height,
+                    );
+                    let badge_fill =
+                        crate::style::semantic_color(crate::style::SemanticColor::Error)
+                            .unwrap_or(indicator);
+                    context.fill_rounded_rect(badge_rect, height / 2, badge_fill);
+                    context.draw_text(
+                        Point::new(badge_rect.x + 4, context.text_line(badge_rect, &badge_font).y),
+                        badge,
+                        &badge_font,
+                        badge_fill.contrast_color(),
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
         }
         // A drag shows where the tab would land before the user commits the drop. Without it the
         // only feedback was the reorder happening on release, which reads as a mis-drop when the
@@ -1018,7 +1180,7 @@ impl EventHandler for TabView {
                 let strip = self.tab_bar_rect();
                 if pos.y >= strip.y && pos.y < strip.y + strip.height as i32 {
                     // The boxes are the painted boxes, including the strip's scroll offset.
-                    let clicked = self.visible_tab_run(strip).into_iter().position(|box_rect| {
+                    let clicked = self.visible_tab_run(strip).iter().position(|box_rect| {
                         let left = box_rect.x;
                         let right = left + box_rect.width as i32;
                         pos.x >= left && pos.x < right
@@ -1079,7 +1241,7 @@ impl EventHandler for TabView {
                     if let Some((origin, index)) = self.drag.take() {
                         self.drag_preview = None;
                         let strip = self.tab_bar_rect();
-                        let target = self.visible_tab_run(strip).into_iter().position(|box_rect| {
+                        let target = self.visible_tab_run(strip).iter().position(|box_rect| {
                             pos.x >= box_rect.x
                                 && pos.x < box_rect.x + box_rect.width as i32
                                 && pos.y >= box_rect.y
@@ -1709,5 +1871,18 @@ mod tests {
         assert!(tv.move_tab(1, 0));
         assert_eq!(tv.selected_index(), Some(0));
         assert_eq!(tv.tabs()[0].title, "B");
+    }
+
+    #[test]
+    fn a_tab_can_carry_a_badge() {
+        let mut tv = make_tab_view();
+        tv.add_tab("A", None, None::<&str>);
+        let before = tv.tab_run(tv.tab_bar_rect())[0].width;
+        assert!(tv.set_tab_badge(0, Some("3")));
+        assert_eq!(tv.tab_badge(0), Some("3"));
+        let after = tv.tab_run(tv.tab_bar_rect())[0].width;
+        assert!(after > before, "the badge reserves its own width: {before} then {after}");
+        assert!(tv.set_tab_badge(0, None));
+        assert_eq!(tv.tab_badge(0), None);
     }
 }

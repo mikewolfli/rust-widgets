@@ -32,8 +32,14 @@ pub mod splitter;
 pub mod stackedwidget;
 #[cfg(widgets_unstripped)]
 pub mod stepper;
+/// `StickyHeader` — the content a pinned scroll-area band carries (COMP-E01).
+#[cfg(widgets_unstripped)]
+pub mod sticky_header;
 #[cfg(widgets_unstripped)]
 pub mod tabwidget;
+/// One theme read per container draw (issue C-P01).
+#[cfg(widgets_unstripped)]
+pub(crate) mod theme_snapshot;
 #[cfg(widgets_unstripped)]
 pub mod toolbox;
 // Re-export container widgets
@@ -66,6 +72,8 @@ pub use splitter::Splitter;
 pub use stackedwidget::StackedWidget;
 #[cfg(widgets_unstripped)]
 pub use stepper::Stepper;
+#[cfg(widgets_unstripped)]
+pub use sticky_header::StickyHeader;
 #[cfg(widgets_unstripped)]
 pub use tabwidget::TabWidget;
 #[cfg(widgets_unstripped)]

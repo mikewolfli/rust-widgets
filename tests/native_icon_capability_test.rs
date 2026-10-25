@@ -11,7 +11,7 @@
 //! exactly the conflation §19.11 forbids — a broken resource and an absent feature would look the
 //! same to the user *and* to the host's diagnostics.
 //!
-//! So the capability is askable (`native_menu_item_icons_supported`) and the crate's own menu path
+//! So the capability is askable (`menu_item_icons_supported`) and the crate's own menu path
 //! consults it (`WindowHandle::new_menu_item_with_icon` keeps the text and logs the unsupported
 //! presentation). This file pins the answer, because "we do not support this yet" is a product
 //! statement that must not drift into an accidental claim of support: if a future backend starts
@@ -32,7 +32,7 @@
 #[test]
 fn native_menu_icons_are_reported_unsupported_not_assumed() {
     assert!(
-        !rust_widgets::native_menu_item_icons_supported(),
+        !rust_widgets::menu_item_icons_supported(),
         "if a backend gained native menu-item icons, this assertion must be revisited deliberately: \
          the capability, its DPI/update/destroy behaviour and a real presentation test all have to \
          arrive together (blue27 §19.11)"

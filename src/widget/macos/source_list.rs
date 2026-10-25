@@ -12,7 +12,7 @@ use crate::compat::Cow;
 use crate::core::{HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -36,6 +36,12 @@ const ROW_LABEL_INSET: i32 = 20;
 /// The inset of the selection highlight from the sidebar's own edges.
 const SELECTION_INSET: i32 = 4;
 
+/// The width of the vertical scrollbar drawn when the content overflows.
+const SCROLLBAR_WIDTH: i32 = 8;
+
+/// The shortest a scrollbar thumb may be, so a very long list still has a grabbable target.
+const SCROLLBAR_MIN_THUMB: u32 = 24;
+
 /// One row of a source list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceListRow {
@@ -47,6 +53,8 @@ pub struct SourceListRow {
     pub icon: Option<IconName>,
     /// A count shown in a trailing capsule (unread items, children, ...).
     pub badge: Option<u32>,
+    /// The badge's caption, generated once when the badge changes (L-P12).
+    pub badge_text: Option<String>,
     /// A small leading colour dot, for a tag or status.
     pub accent_dot: Option<crate::core::Color>,
 }
@@ -54,7 +62,14 @@ pub struct SourceListRow {
 impl SourceListRow {
     /// A row with an identifier and a caption.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into(), icon: None, badge: None, accent_dot: None }
+        Self {
+            id: id.into(),
+            label: label.into(),
+            icon: None,
+            badge: None,
+            badge_text: None,
+            accent_dot: None,
+        }
     }
 
     /// The same row with a leading icon.
@@ -66,6 +81,7 @@ impl SourceListRow {
     /// The same row with a trailing badge count.
     pub fn with_badge(mut self, badge: u32) -> Self {
         self.badge = Some(badge);
+        self.badge_text = Some(badge.to_string());
         self
     }
 
@@ -114,6 +130,14 @@ pub struct MacSourceList {
     pub selection_changed: Signal1<String>,
     /// Emitted when a row's badge changes, with `(row id, new badge)`.
     pub badge_changed: Signal1<(String, Option<u32>)>,
+    /// Emitted when the selection goes from a row to nothing (MW-20).
+    pub selection_cleared: GenericSignal,
+    /// Emitted with `(row id, pointer position)` on a right click on a row (MW-21).
+    pub row_context_menu: Signal1<(String, Point)>,
+    /// Vertical scroll offset in pixels, clamped to the content height (MW-21).
+    scroll_offset: i32,
+    /// An in-flight scrollbar drag: `(press y, offset at press)`.
+    scroll_drag: Option<(i32, i32)>,
 }
 
 impl MacSourceList {
@@ -127,6 +151,10 @@ impl MacSourceList {
             row_height: MAC_SOURCE_LIST_ROW_HEIGHT,
             selection_changed: Signal1::new(),
             badge_changed: Signal1::new(),
+            selection_cleared: GenericSignal::new(),
+            row_context_menu: Signal1::new(),
+            scroll_offset: 0,
+            scroll_drag: None,
         }
     }
 
@@ -141,6 +169,7 @@ impl MacSourceList {
         let rows = self.row_count();
         self.selected_row = self.selected_row.filter(|row| *row < rows);
         self.hovered_row = self.hovered_row.filter(|row| *row < rows);
+        self.scroll_offset = self.scroll_offset.clamp(0, self.max_scroll());
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -196,6 +225,8 @@ impl MacSourceList {
             return false;
         };
         row.badge = badge;
+        // The caption is generated with the badge so the paint path never formats it (L-P12).
+        row.badge_text = badge.map(|count| count.to_string());
         self.base.request_redraw();
         self.badge_changed.emit((id, badge));
         true
@@ -212,8 +243,11 @@ impl MacSourceList {
         }
         self.selected_row = next;
         self.base.request_redraw();
-        if let Some(id) = self.selected_id().map(str::to_string) {
-            self.selection_changed.emit(id);
+        match self.selected_id().map(str::to_string) {
+            Some(id) => self.selection_changed.emit(id),
+            // A cleared selection is its own fact: `selection_changed` carries an id, so it
+            // cannot express "nothing is selected" (MW-20).
+            None => self.selection_cleared.emit(),
         }
         true
     }
@@ -239,13 +273,56 @@ impl MacSourceList {
             + self.row_count() as u32 * self.row_height
     }
 
+    /// The largest valid scroll offset: the content height beyond the visible box.
+    fn max_scroll(&self) -> i32 {
+        (self.content_height().saturating_sub(self.geometry().height)) as i32
+    }
+
+    /// The current vertical scroll offset.
+    pub fn scroll_offset(&self) -> i32 {
+        self.scroll_offset
+    }
+
+    /// Scrolls the list by `offset` pixels, clamped into the content (MW-21).
+    pub fn set_scroll_offset(&mut self, offset: i32) {
+        let clamped = offset.clamp(0, self.max_scroll());
+        if clamped == self.scroll_offset {
+            return;
+        }
+        self.scroll_offset = clamped;
+        self.base.request_redraw();
+    }
+
+    /// The scrollbar's track, or `None` when the content fits.
+    fn scrollbar_track(&self) -> Option<Rect> {
+        let max = self.max_scroll();
+        if max <= 0 {
+            return None;
+        }
+        let rect = self.geometry();
+        Some(Rect::new(rect.right() - SCROLLBAR_WIDTH, rect.y, SCROLLBAR_WIDTH as u32, rect.height))
+    }
+
+    /// The scrollbar thumb, derived from the offset and the visible fraction.
+    fn scrollbar_thumb(&self) -> Option<Rect> {
+        let track = self.scrollbar_track()?;
+        let content = self.content_height().max(1);
+        let visible = self.geometry().height.min(content);
+        let height = ((track.height as u64 * visible as u64) / content as u64)
+            .max(SCROLLBAR_MIN_THUMB as u64) as u32;
+        let travel = track.height.saturating_sub(height) as i32;
+        let max = self.max_scroll().max(1);
+        let y = track.y + (travel as i64 * self.scroll_offset as i64 / max as i64) as i32;
+        Some(Rect::new(track.x, y, track.width, height.min(track.height)))
+    }
+
     /// The rectangle of the row at flat index `flat`, or `None` when it is out of range.
     fn row_rect(&self, flat: usize) -> Option<Rect> {
         let rect = self.geometry();
         if flat >= self.row_count() {
             return None;
         }
-        let mut y = rect.y;
+        let mut y = rect.y - self.scroll_offset;
         let mut remaining = flat;
         for section in &self.sections {
             y += MAC_SOURCE_LIST_SECTION_HEIGHT as i32;
@@ -269,7 +346,7 @@ impl MacSourceList {
             return None;
         }
         let rect = self.geometry();
-        let mut y = rect.y;
+        let mut y = rect.y - self.scroll_offset;
         for section in self.sections.iter().take(index) {
             y += MAC_SOURCE_LIST_SECTION_HEIGHT as i32
                 + section.rows.len() as i32 * self.row_height as i32;
@@ -437,7 +514,14 @@ impl Draw for MacSourceList {
             }
             if !section.title.is_empty() {
                 let available = header.width.saturating_sub((SECTION_HEADER_INSET as u32) + 4);
-                let mut measure = |text: &str| context.measure_text(text, &header_font).width;
+                let mut measure = |text: &str| {
+                    crate::widget::base_widgets::measure_cache::measure_text(
+                        context,
+                        text,
+                        &header_font,
+                    )
+                    .width
+                };
                 let shown: Cow<'_, str> = elide_to_width(&section.title, available, &mut measure);
                 let line = context.text_line(header, &header_font);
                 context.draw_text(
@@ -506,14 +590,14 @@ impl Draw for MacSourceList {
                 ink_x += icon_side as i32 + 4;
             }
 
-            // A badge is a trailing capsule; its width is measured before the label so the label
-            // is elided against the space it actually has.
+            // A badge is a trailing capsule; its caption was generated when the badge was set
+            // (L-P12), and its measurement is reused for the capsule and the ink.
+            let badge_text = entry.badge_text.as_deref();
+            let badge_metrics = badge_text.map(|text| {
+                crate::widget::base_widgets::measure_cache::measure_text(context, text, &row_font)
+            });
             let mut badge_width = 0u32;
-            let mut badge_text = String::new();
-            if let Some(badge) = entry.badge {
-                use core::fmt::Write as _;
-                let _ = write!(badge_text, "{badge}");
-                let metrics = context.measure_text(&badge_text, &row_font);
+            if let Some(metrics) = badge_metrics.as_ref() {
                 badge_width = metrics.width.min(row.width.saturating_sub(8)) + 10;
             }
             let reserved = (ink_x - row.x) as u32 + badge_width + 8;
@@ -521,7 +605,10 @@ impl Draw for MacSourceList {
             if available == 0 {
                 continue;
             }
-            let mut measure = |text: &str| context.measure_text(text, &row_font).width;
+            let mut measure = |text: &str| {
+                crate::widget::base_widgets::measure_cache::measure_text(context, text, &row_font)
+                    .width
+            };
             let shown: Cow<'_, str> = elide_to_width(&entry.label, available, &mut measure);
             let label_ink = if self.selected_row() == Some(flat) {
                 colors.accent.contrast_color()
@@ -538,6 +625,12 @@ impl Draw for MacSourceList {
             );
 
             if badge_width > 0 {
+                let Some(metrics) = badge_metrics.as_ref() else {
+                    continue;
+                };
+                let Some(badge_text) = badge_text else {
+                    continue;
+                };
                 let badge_height = line.height.min(row.height.saturating_sub(6)).max(12);
                 let badge_rect = Rect::new(
                     row.right() - badge_width as i32 - 6,
@@ -551,13 +644,12 @@ impl Draw for MacSourceList {
                     colors.accent
                 };
                 context.fill_rounded_rect(badge_rect, badge_height / 2, badge_fill);
-                let metrics = context.measure_text(&badge_text, &row_font);
                 context.draw_text(
                     Point::new(
                         badge_rect.x + (badge_rect.width as i32 - metrics.width as i32) / 2,
                         badge_rect.y + (badge_rect.height as i32 - metrics.height as i32) / 2,
                     ),
-                    &badge_text,
+                    badge_text,
                     &row_font,
                     badge_fill.contrast_color(),
                     HorizontalAlignment::Left,
@@ -566,6 +658,18 @@ impl Draw for MacSourceList {
         }
 
         context.pop_clip();
+
+        // ── Scrollbar ──
+        // A track on the trailing edge and a thumb sized to the visible fraction. The thumb is
+        // also the drag handle (MW-21).
+        if let (Some(track), Some(thumb)) = (self.scrollbar_track(), self.scrollbar_thumb()) {
+            context.fill_rect(track, colors.raised.with_alpha(80));
+            context.fill_rounded_rect(
+                thumb,
+                (thumb.width / 2).max(1),
+                colors.muted.with_alpha(150),
+            );
+        }
 
         // The focus ring is drawn on the selected row, which is the sidebar's focus indicator.
         if self.base.draws_focus_ring() {
@@ -609,9 +713,58 @@ impl EventHandler for MacSourceList {
                 }
             }
             Event::MousePress { pos, button: 1, .. } => {
+                // A scrollbar drag takes precedence over row selection.
+                if let (Some(track), Some(thumb)) = (self.scrollbar_track(), self.scrollbar_thumb())
+                {
+                    if thumb.contains_point(*pos) || track.contains_point(*pos) {
+                        if !thumb.contains_point(*pos) {
+                            // A click on the track jumps a page toward the click.
+                            let page = self.geometry().height as i32;
+                            let direction = if pos.y < thumb.y { -page } else { page };
+                            self.set_scroll_offset(self.scroll_offset + direction);
+                        }
+                        self.scroll_drag = Some((pos.y, self.scroll_offset));
+                        return;
+                    }
+                }
                 if let Some(row) = self.row_at(*pos) {
                     self.set_selected_row(Some(row));
                 }
+            }
+            // A secondary click reports the row it names without changing the selection: a
+            // context menu acts on the row it was opened from (MW-21). The runtime delivers
+            // `ContextMenu` in addition to the button press, so only this variant is handled
+            // to avoid emitting the same request twice.
+            Event::ContextMenu { pos } => {
+                if let Some(row) = self.row_at(*pos) {
+                    if let Some((entry, _)) = self.row_and_section(row) {
+                        let id = entry.id.clone();
+                        self.row_context_menu.emit((id, *pos));
+                        return;
+                    }
+                }
+                self.base.handle_event(event);
+            }
+            Event::Drag { pos, .. } => {
+                if let Some((start_y, start_offset)) = self.scroll_drag {
+                    let drag_distance = pos.y - start_y;
+                    if let (Some(track), Some(thumb)) =
+                        (self.scrollbar_track(), self.scrollbar_thumb())
+                    {
+                        let travel = track.height.saturating_sub(thumb.height).max(1) as i32;
+                        let max = self.max_scroll().max(1);
+                        let next = start_offset + drag_distance * max / travel;
+                        self.set_scroll_offset(next);
+                    }
+                }
+            }
+            Event::MouseRelease { button: 1, .. } => {
+                self.scroll_drag = None;
+            }
+            Event::Wheel { delta, .. } => {
+                // One notch scrolls three rows, the conventional line step.
+                let step = self.row_height as i32 * 3;
+                self.set_scroll_offset(self.scroll_offset - delta.y * step);
             }
             Event::KeyPress { key, .. } => match crate::shortcut::Key::from_key_code(*key) {
                 Some(crate::shortcut::Key::Up) => self.move_selection(-1),

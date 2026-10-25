@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::Layout;
-use crate::compat::{Any, Box, Vec};
+use crate::compat::{Any, Box, HashMap, Vec};
 use crate::core::{ObjectId, Rect, Size};
 use crate::widget::Widget;
 /// A positioned child in an absolute layout, with optional size and anchor.
@@ -542,22 +542,36 @@ crate::impl_default_via_new!(Constraint);
 /// Children are placed at explicit (x, y) coordinates with optional
 /// constraints (min/max size, aspect ratio).  No automatic arrangement
 /// or reflow is performed.
+///
+/// # Why the layout does not own widgets
+///
+/// The entry list used to hold `Option<Box<dyn Widget>>`, which made this layout
+/// `!Send` (so it could not join [`SharedLayoutRegistry`](super::declarative::SharedLayoutRegistry))
+/// and bypassed the crate's id-based layout protocol. The widget's own size hint is captured
+/// when it is added — the one fact this layout needed from it — and the box is dropped.
+/// Geometry therefore flows through `ObjectId` + an `update` callback like every other
+/// layout (G-402).
 pub struct AbsoluteLayout {
     children: Vec<AbsoluteEntry>,
+    /// Membership index, so `has_child`/`widget_count` are O(1) instead of scanning the
+    /// entry list once per entry (G-155).
+    members: HashMap<ObjectId, ()>,
 }
 
-/// A single child of an absolute layout: its id, optional owned widget, position, and
+/// A single child of an absolute layout: its id, captured size hint, position, and
 /// size constraint.
 ///
 /// # Why one entry instead of parallel `widget_ids`/`children` lists
 ///
 /// The two lists had no identity link, so a remove that only touched the ids left a stale
 /// `None` slot, and a later `update` sent a surviving widget the geometry of a deleted
-/// sibling (S-56). Holding id, widget, position, and constraint in one place means
+/// sibling (S-56). Holding id, size hint, position, and constraint in one place means
 /// `add`/`remove`/`clear` can never drift apart.
 struct AbsoluteEntry {
     widget_id: ObjectId,
-    widget: Option<Box<dyn Widget>>,
+    /// The `size_hint` the widget reported when it was added, or `None` for a child
+    /// registered by id only.
+    size_hint: Option<Size>,
     position: AbsolutePosition,
     constraint: Option<Constraint>,
 }
@@ -565,16 +579,19 @@ struct AbsoluteEntry {
 impl AbsoluteLayout {
     /// Creates a layout with no children.
     pub fn new() -> Self {
-        Self { children: Vec::new() }
+        Self { children: Vec::new(), members: HashMap::new() }
     }
     /// Adds a child at an absolute position, with no size constraint.
     ///
-    /// Children are laid out in insertion order; the new child is appended last.
+    /// Children are laid out in insertion order; the new child is appended last. The
+    /// widget's size hint is captured here; the layout does not retain the widget itself.
     pub fn add_child(&mut self, child: Box<dyn Widget>, position: AbsolutePosition) {
         let widget_id = child.id();
+        let size_hint = child.size_hint();
+        self.members.insert(widget_id, ());
         self.children.push(AbsoluteEntry {
             widget_id,
-            widget: Some(child),
+            size_hint: Some(size_hint),
             position,
             constraint: None,
         });
@@ -588,24 +605,28 @@ impl AbsoluteLayout {
         constraint: Constraint,
     ) {
         let widget_id = child.id();
+        let size_hint = child.size_hint();
+        self.members.insert(widget_id, ());
         self.children.push(AbsoluteEntry {
             widget_id,
-            widget: Some(child),
+            size_hint: Some(size_hint),
             position,
             constraint: Some(constraint),
         });
     }
-    /// Removes the child at insertion index `index` and returns it so the caller
-    /// can drop it or reuse it.
+    /// Removes the child at insertion index `index`.
     ///
-    /// Returns `None` if `index` is out of range; nothing is removed in that case.
-    /// Indices of children after `index` shift down by one.
+    /// Returns `None` as it always has for id-only children: the layout no longer owns the
+    /// widget (see the type docs), so there is no box to hand back. Indices of children after
+    /// `index` shift down by one.
     pub fn remove_child(&mut self, index: usize) -> Option<Box<dyn Widget>> {
         if index < self.children.len() {
-            self.children.remove(index).widget
-        } else {
-            None
+            let removed = self.children.remove(index);
+            if !self.children.iter().any(|entry| entry.widget_id == removed.widget_id) {
+                self.members.remove(&removed.widget_id);
+            }
         }
+        None
     }
     /// Removes every child, dropping them, and forgets all recorded widget ids.
     ///
@@ -613,9 +634,10 @@ impl AbsoluteLayout {
     /// if freshly constructed.
     pub fn clear_children(&mut self) {
         self.children.clear();
+        self.members.clear();
     }
     /// Number of children currently registered, including children added by widget
-    /// id via [`Layout::add_widget`] that have no `Box<dyn Widget>` handle.
+    /// id via [`Layout::add_widget`] that have no owned widget handle.
     pub fn child_count(&self) -> usize {
         self.children.len()
     }
@@ -630,8 +652,7 @@ impl AbsoluteLayout {
         let parent_size = parent_rect.size();
         let mut positions = Vec::new();
         for entry in &self.children {
-            let child_size =
-                entry.widget.as_ref().map(|w| w.size_hint()).unwrap_or(Size::new(0, 0));
+            let child_size = entry.size_hint.unwrap_or(Size::new(0, 0));
             let constrained_size = entry
                 .constraint
                 .as_ref()
@@ -740,10 +761,12 @@ impl Layout for AbsoluteLayout {
 
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
         // Dedupe against the unified entry list, not a parallel id list (S-56).
-        if !self.children.iter().any(|entry| entry.widget_id == widget_id) {
+        // `insert` returning `None` means the id was absent; the `compat::HashMap` may be a
+        // `BTreeMap` under `alloc_frugal`, so a std-only `hash_map::Entry` cannot be named here.
+        if self.members.insert(widget_id, ()).is_none() {
             self.children.push(AbsoluteEntry {
                 widget_id,
-                widget: None,
+                size_hint: None,
                 position: AbsolutePosition::new(0, 0),
                 constraint: None,
             });
@@ -752,6 +775,7 @@ impl Layout for AbsoluteLayout {
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
         self.children.retain(|entry| entry.widget_id != widget_id);
+        self.members.remove(&widget_id);
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
@@ -764,9 +788,10 @@ impl Layout for AbsoluteLayout {
     }
 
     fn child_ids(&self) -> Vec<ObjectId> {
-        let mut ids: Vec<ObjectId> = Vec::new();
+        let mut seen: HashMap<ObjectId, ()> = HashMap::new();
+        let mut ids: Vec<ObjectId> = Vec::with_capacity(self.children.len());
         for entry in &self.children {
-            if !ids.contains(&entry.widget_id) {
+            if seen.insert(entry.widget_id, ()).is_none() {
                 ids.push(entry.widget_id);
             }
         }
@@ -774,27 +799,18 @@ impl Layout for AbsoluteLayout {
     }
 
     fn has_child(&self, id: ObjectId) -> bool {
-        self.children.iter().any(|entry| entry.widget_id == id)
+        self.members.contains_key(&id)
     }
 
     fn widget_count(&self) -> usize {
-        let mut count = 0usize;
-        for (index, entry) in self.children.iter().enumerate() {
-            if !self.children[..index].iter().any(|other| other.widget_id == entry.widget_id) {
-                count += 1;
-            }
-        }
-        count
+        self.members.len()
     }
 
     fn index_of(&self, id: ObjectId) -> Option<usize> {
-        let mut seen: Vec<ObjectId> = Vec::new();
+        let mut seen: HashMap<ObjectId, ()> = HashMap::new();
         for entry in &self.children {
-            if !seen.contains(&entry.widget_id) {
-                if entry.widget_id == id {
-                    return Some(seen.len());
-                }
-                seen.push(entry.widget_id);
+            if seen.insert(entry.widget_id, ()).is_none() && entry.widget_id == id {
+                return Some(seen.len() - 1);
             }
         }
         None
@@ -803,8 +819,11 @@ impl Layout for AbsoluteLayout {
     fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
         // The entry list is addressable by id, so this is a direct lookup rather than a full
         // `update` pass: the child's hint and its constraint decide its rectangle.
+        if !self.has_child(id) {
+            return None;
+        }
         let entry = self.children.iter().find(|entry| entry.widget_id == id)?;
-        let child_size = entry.widget.as_ref().map(|w| w.size_hint()).unwrap_or(Size::new(0, 0));
+        let child_size = entry.size_hint.unwrap_or(Size::new(0, 0));
         let constrained_size = entry
             .constraint
             .as_ref()
@@ -1081,5 +1100,12 @@ mod tests {
             assert_eq!(anchor.horizontal(), horizontal, "{anchor:?}");
             assert_eq!(anchor.vertical(), vertical, "{anchor:?}");
         }
+    }
+
+    /// G-402: the entry list no longer owns widgets, so the layout can join a `Send` registry.
+    #[test]
+    fn absolute_layout_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<AbsoluteLayout>();
     }
 }

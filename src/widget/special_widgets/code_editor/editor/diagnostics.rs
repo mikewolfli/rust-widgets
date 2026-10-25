@@ -63,6 +63,80 @@ impl CodeEditor {
         self.base.request_redraw();
     }
 
+    /// Marker indices in navigation order, without reordering the stored list.
+    ///
+    /// `markers()` is the host's list in the order the host pushed it, and sorting it here
+    /// would mutate state a read-only command has no business changing. Navigation instead
+    /// works on this sorted index list.
+    fn marker_navigation_order(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.markers.len()).collect();
+        order.sort_by_key(|index| {
+            let marker = &self.markers[*index];
+            (marker.line, marker.severity.rank(), marker.start_column())
+        });
+        order
+    }
+
+    /// Jumps to the next diagnostic after the caret, wrapping to the first.
+    ///
+    /// Returns the marker index it moved to, or `None` when there are no markers. This is
+    /// the "fix the next error" motion every editor has: without it a host had to walk
+    /// `markers()` itself and re-implement the ordering and the wrap (ED-02).
+    pub fn next_marker(&mut self) -> Option<usize> {
+        let order = self.marker_navigation_order();
+        let caret = self.cursor.head;
+        let position = |index: usize| {
+            let marker = &self.markers[index];
+            TextPosition::new(marker.line, marker.start_column().saturating_sub(1))
+        };
+        let next = order
+            .iter()
+            .copied()
+            .find(|index| position(*index) > caret)
+            .or_else(|| order.first().copied())?;
+        self.goto_marker(next);
+        Some(next)
+    }
+
+    /// Jumps to the previous diagnostic before the caret, wrapping to the last.
+    pub fn previous_marker(&mut self) -> Option<usize> {
+        let order = self.marker_navigation_order();
+        let caret = self.cursor.head;
+        let position = |index: usize| {
+            let marker = &self.markers[index];
+            TextPosition::new(marker.line, marker.start_column().saturating_sub(1))
+        };
+        let previous = order
+            .iter()
+            .rev()
+            .copied()
+            .find(|index| position(*index) < caret)
+            .or_else(|| order.last().copied())?;
+        self.goto_marker(previous);
+        Some(previous)
+    }
+
+    /// Moves the caret to marker `index` and centres its line in the viewport.
+    fn goto_marker(&mut self, index: usize) {
+        let Some(marker) = self.markers.get(index) else { return };
+        let line = marker.line.min(self.line_count().saturating_sub(1));
+        let column = marker.start_column().saturating_sub(1);
+        self.cursor = Cursor {
+            head: self.clamp_position(TextPosition::new(line, column)),
+            anchor: self.clamp_position(TextPosition::new(line, column)),
+        };
+        self.goal.active = false;
+        // Centre rather than merely reveal: the point of "next diagnostic" is to read the
+        // message in context, and a line pinned to the viewport edge shows none of it.
+        let row = self.line_to_visual_row(self.cursor.head.line);
+        let rows = self.visible_rows().max(1);
+        let target = row.saturating_sub(rows / 2);
+        self.scroll_visual_row = target;
+        self.scroll_line = self.visual_row_to_line(target);
+        self.emit_cursor_and_selection();
+        self.base.request_redraw();
+    }
+
     /// Returns every marker paired with the visual row it belongs to, in paint order.
     ///
     /// Markers are **borrowed**, not cloned: `DiagnosticMarker` owns its message

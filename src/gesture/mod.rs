@@ -30,4 +30,4 @@ pub use swipe::{FlingGesture, SwipeGesture, TwoFingerSwipeGesture};
 pub use tap::{DoubleTapGesture, TapGesture, TwoFingerTapGesture};
 
 // Re-export helpers used by sub-modules.
-pub(crate) use engine::{distance, point_delta, point_delta_abs};
+pub(crate) use engine::{distance, is_double_tap_pair, point_delta, point_delta_abs};

@@ -72,8 +72,24 @@ pub struct CommandPalette {
     /// Command ids in most-recently-used order, boosting their match score.
     mru: Vec<String>,
     row_height: u32,
-    /// Whether the filtered list is grouped under category headings.
+    /// Whether the result list is grouped under category headings.
     group_by_category: bool,
+    /// The display slot table, rebuilt when the filtered set, the grouping or the scroll moves.
+    ///
+    /// Both the paint and the hit test read this; the hit test used to build the whole table just
+    /// to take one element out of it (SP-P71).
+    slots: Vec<PaletteSlot>,
+    /// One cached presentation per filtered row: the text as painted and the matched run.
+    ///
+    /// The paint used to `format!` the title and lower-case it twice per row per frame to find
+    /// the highlight (SP-P72); both are computed when the result set is refreshed.
+    rows: Vec<RowPresentation>,
+    /// The caption drawn when the query matches nothing (SP-64).
+    empty_text: String,
+    /// Whether the footer's key hints are drawn (SP-64).
+    show_hints: bool,
+    /// The footer text; empty falls back to the built-in hint line.
+    hint_text: String,
     /// Emitted when command is activated. Payload is command id.
     pub command_activated: Signal1<String>,
     /// Emitted when query changes. Payload is current query.
@@ -93,6 +109,11 @@ impl CommandPalette {
             mru: Vec::new(),
             row_height: 24,
             group_by_category: false,
+            slots: Vec::new(),
+            rows: Vec::new(),
+            empty_text: String::from("No matching commands"),
+            show_hints: true,
+            hint_text: String::new(),
             command_activated: Signal1::new(),
             query_changed: Signal1::new(),
         }
@@ -201,18 +222,76 @@ impl CommandPalette {
         if next >= self.scroll_offset + visible {
             self.scroll_offset = next + 1 - visible;
         }
+        self.rebuild_slots();
         self.base.request_redraw();
     }
 
     /// How many result rows fit under the query header.
     fn visible_rows(&self) -> usize {
         let rect = self.geometry();
-        (rect.height.saturating_sub(self.header_height()) / self.row_height.max(1)) as usize
+        (rect.height.saturating_sub(self.header_height()).saturating_sub(self.footer_height())
+            / self.row_height.max(1)) as usize
     }
 
     /// The header band's height.
     fn header_height(&self) -> u32 {
         self.row_height
+    }
+
+    /// The footer's hint band, or zero when hints are off.
+    fn footer_height(&self) -> u32 {
+        if self.show_hints {
+            self.row_height.clamp(1, 18)
+        } else {
+            0
+        }
+    }
+
+    /// The caption painted when the query matches nothing.
+    pub fn empty_text(&self) -> &str {
+        &self.empty_text
+    }
+
+    /// Sets the empty-result caption; an empty string restores the default.
+    pub fn set_empty_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        let text = if text.is_empty() { String::from("No matching commands") } else { text };
+        if self.empty_text == text {
+            return;
+        }
+        self.empty_text = text;
+        self.base.request_redraw();
+    }
+
+    /// Whether the footer's key hints are drawn.
+    pub fn show_hints(&self) -> bool {
+        self.show_hints
+    }
+
+    /// Shows or hides the footer's key hints, recounting the visible rows.
+    pub fn set_show_hints(&mut self, show: bool) {
+        if self.show_hints == show {
+            return;
+        }
+        self.show_hints = show;
+        self.move_highlight(0);
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The footer's hint text; an empty string means the built-in line.
+    pub fn hint_text(&self) -> &str {
+        &self.hint_text
+    }
+
+    /// Overrides the footer's hint text.
+    pub fn set_hint_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.hint_text == text {
+            return;
+        }
+        self.hint_text = text;
+        self.base.request_redraw();
     }
 
     /// The number of filtered rows scrolled out of view.
@@ -276,28 +355,32 @@ impl CommandPalette {
 
     fn refresh_filter(&mut self) {
         let query = self.query.to_lowercase();
-        let mut scored = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| {
-                Self::score_entry(entry, &query).map(|score| (index, score))
-            })
-            .collect::<Vec<_>>();
-
-        scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        self.filtered_indices = scored.into_iter().map(|(index, _)| index).collect();
-        // A most-recently-used command outranks an equal-scoring one. The sort is stable, so
-        // this only separates ties and never puts a worse textual match above a better one.
-        if self.filtered_indices.len() > 1 {
-            let rank = |index: usize| {
-                self.entries
-                    .get(index)
-                    .and_then(|entry| self.mru.iter().position(|id| id == &entry.id))
-                    .unwrap_or(usize::MAX)
-            };
-            self.filtered_indices.sort_by_key(|index| rank(*index));
+        // The fuzzy tier is a **fallback**, not an extra band of ordinary matches: adding a
+        // scattered match beside every contiguous one would flood the list on a two-letter query
+        // (`sa` would match `Sidebar` as a subsequence). When the contiguous tiers find nothing,
+        // the scattered tier takes over — which is the case it exists for, `gfh` for `git fetch`
+        // (SP-65).
+        let mut scored = self.score_all(&query, false);
+        if scored.is_empty() && !query.is_empty() {
+            scored = self.score_all(&query, true);
         }
+
+        // One sort, three keys: score descending, then most-recently-used, then input order.
+        //
+        // The previous form sorted by score and then **re-sorted by MRU position**, so any
+        // recently-used command jumped ahead of every command that was not in the MRU list — a
+        // worse textual match beat a better one, the exact opposite of what its own comment
+        // claimed (SP-63).
+        let rank = |index: usize| {
+            self.entries
+                .get(index)
+                .and_then(|entry| self.mru.iter().position(|id| id == &entry.id))
+                .unwrap_or(usize::MAX)
+        };
+        scored.sort_by(|a, b| {
+            b.1.cmp(&a.1).then_with(|| rank(a.0).cmp(&rank(b.0))).then_with(|| a.0.cmp(&b.0))
+        });
+        self.filtered_indices = scored.into_iter().map(|(index, _)| index).collect();
         if self.group_by_category {
             // Stable: within one category the score/MRU order is preserved, so grouping
             // changes presentation only and never promotes a worse textual match.
@@ -315,9 +398,69 @@ impl CommandPalette {
         } else {
             self.highlighted_index = Some(0);
         }
+        self.rebuild_rows();
+        self.rebuild_slots();
     }
 
-    fn score_entry(entry: &CommandEntry, query: &str) -> Option<i32> {
+    /// Recomputes the painted text and match highlight for every filtered row.
+    fn rebuild_rows(&mut self) {
+        let folded_query = self.query.to_lowercase();
+        self.rows.clear();
+        self.rows.reserve(self.filtered_indices.len());
+        for filtered_index in 0..self.filtered_indices.len() {
+            let Some(entry) = self.filtered_entry(filtered_index) else {
+                self.rows.push(RowPresentation::default());
+                continue;
+            };
+            let text = if entry.category.is_empty() {
+                entry.title.clone()
+            } else {
+                format!("{} · {}", entry.category, entry.title)
+            };
+            let highlight = if folded_query.is_empty() {
+                None
+            } else {
+                // Folded once, here, instead of twice per row per frame.
+                let folded = text.to_lowercase();
+                folded
+                    .find(&folded_query)
+                    .map(|offset| (text[..offset].chars().count(), self.query.chars().count()))
+            };
+            self.rows.push(RowPresentation { text, highlight });
+        }
+    }
+
+    /// Rebuilds the display slot table for the current scroll offset.
+    fn rebuild_slots(&mut self) {
+        self.slots.clear();
+        let mut last_category: Option<&str> = None;
+        let mut pending: Vec<PaletteSlot> = Vec::with_capacity(self.filtered_indices.len());
+        for filtered_index in self.scroll_offset..self.filtered_indices.len() {
+            let category = self
+                .filtered_entry(filtered_index)
+                .map(|entry| entry.category.as_str())
+                .unwrap_or("");
+            if self.group_by_category && !category.is_empty() && last_category != Some(category) {
+                pending.push(PaletteSlot { header: true, filtered_index });
+                last_category = Some(category);
+            }
+            pending.push(PaletteSlot { header: false, filtered_index });
+        }
+        self.slots = pending;
+    }
+
+    /// Scores every entry, optionally allowing the scattered-subsequence tier.
+    fn score_all(&self, query: &str, allow_fuzzy: bool) -> Vec<(usize, i32)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                Self::score_entry_with(entry, query, allow_fuzzy).map(|score| (index, score))
+            })
+            .collect()
+    }
+
+    fn score_entry_with(entry: &CommandEntry, query: &str, allow_fuzzy: bool) -> Option<i32> {
         if query.is_empty() {
             return Some(1);
         }
@@ -345,7 +488,19 @@ impl CommandPalette {
             return Some(50);
         }
 
-        None
+        if !allow_fuzzy {
+            return None;
+        }
+        // Last tier: a subsequence match, so `gfh` reaches `git fetch`. A contiguous hit always
+        // outranks it (the tiers above), and the tier only runs when nothing matched contiguously,
+        // so every existing ranking is unchanged (SP-65).
+        let title = subsequence_score(&entry.title, query);
+        let keywords =
+            entry.keywords.iter().filter_map(|keyword| subsequence_score(keyword, query)).max();
+        match (title, keywords) {
+            (None, None) => None,
+            (title, keywords) => Some(title.unwrap_or(0).max(keywords.unwrap_or(0)).min(40)),
+        }
     }
 
     fn append_query_char(&mut self, key: u32) {
@@ -384,7 +539,9 @@ impl CommandPalette {
             return None;
         }
         let row = ((pos.y - body_top) / self.row_height.max(1) as i32) as usize;
-        let slot = self.display_slots().into_iter().nth(row)?;
+        // Indexing the cached slot table rather than materialising it; the paint and the hit test
+        // read the same rows (SP-P71).
+        let slot = *self.display_slots().get(row)?;
         if slot.header {
             return None;
         }
@@ -402,23 +559,9 @@ impl CommandPalette {
     ///
     /// `filtered_index` is always a valid position in `filtered_indices`; for a heading it
     /// names the first entry of that category, which is what the paint reads the label from.
-    fn display_slots(&self) -> Vec<PaletteSlot> {
-        let mut slots = Vec::with_capacity(self.filtered_indices.len());
-        let mut last_category: Option<&str> = None;
-        for filtered_index in self.scroll_offset..self.filtered_indices.len() {
-            let Some(entry) = self.filtered_entry(filtered_index) else {
-                continue;
-            };
-            if self.group_by_category
-                && !entry.category.is_empty()
-                && last_category != Some(entry.category.as_str())
-            {
-                slots.push(PaletteSlot { header: true, filtered_index });
-                last_category = Some(entry.category.as_str());
-            }
-            slots.push(PaletteSlot { header: false, filtered_index });
-        }
-        slots
+    /// The table is kept in [`Self::slots`] and rebuilt by [`Self::rebuild_slots`].
+    fn display_slots(&self) -> &[PaletteSlot] {
+        &self.slots
     }
 }
 
@@ -428,6 +571,52 @@ struct PaletteSlot {
     header: bool,
     /// The filtered-list position this slot paints.
     filtered_index: usize,
+}
+
+/// One filtered row's painted text and matched run, built with the result set.
+#[derive(Clone, Default)]
+struct RowPresentation {
+    /// The text as painted, `category · title` when the entry has a category.
+    text: String,
+    /// The matched run as `(character offset, character count)`, for the highlight box.
+    highlight: Option<(usize, usize)>,
+}
+
+/// Scores a scattered subsequence match, or `None` when `query` is not a subsequence.
+///
+/// The score rewards a hit on the first character and penalises gaps, so a tight match ranks
+/// above a scattered one. It is capped below the contiguous tiers by the caller.
+fn subsequence_score(text: &str, query: &str) -> Option<i32> {
+    if query.is_empty() {
+        return None;
+    }
+    let mut matched = 0usize;
+    let mut gaps = 0usize;
+    let mut last_hit: Option<usize> = None;
+    let mut first_hit: Option<usize> = None;
+    let mut query_chars = query.chars().map(|ch| ch.to_ascii_lowercase());
+    let mut wanted = query_chars.next()?;
+    for (index, ch) in text.chars().enumerate() {
+        if ch.to_ascii_lowercase() != wanted {
+            continue;
+        }
+        if let Some(previous) = last_hit {
+            gaps += index.saturating_sub(previous + 1);
+        } else {
+            first_hit = Some(index);
+        }
+        last_hit = Some(index);
+        matched += 1;
+        match query_chars.next() {
+            Some(next) => wanted = next,
+            None => break,
+        }
+    }
+    if matched != query.chars().count() {
+        return None;
+    }
+    let lead = first_hit.unwrap_or(0).min(20) as i32;
+    Some((40 - lead - gaps.min(20) as i32).max(1))
 }
 
 impl Widget for CommandPalette {
@@ -443,7 +632,7 @@ impl Widget for CommandPalette {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 300)
+        crate::core::Size::new(400, 300 + self.footer_height())
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -620,6 +809,7 @@ impl EventHandler for CommandPalette {
                 };
                 if self.scroll_offset != next {
                     self.scroll_offset = next;
+                    self.rebuild_slots();
                     self.base.request_redraw();
                 }
             }
@@ -691,9 +881,24 @@ impl Draw for CommandPalette {
         );
 
         let mut y = rect.y + self.row_height as i32;
-        let limit = rect.y + rect.height as i32;
+        // The footer's hint line reserves its own band, so the rows cannot paint over it.
+        let footer_height = self.footer_height();
+        let limit = rect.y + rect.height as i32 - footer_height as i32;
+
+        if self.filtered_indices.is_empty() {
+            // An empty result used to leave the list blank; the caption distinguishes "nothing
+            // matched" from "nothing loaded" (SP-64).
+            context.draw_text_fitted_cow(
+                Rect::new(rect.x + 8, y, rect.width.saturating_sub(16), self.row_height),
+                &self.empty_text,
+                effective_font(style),
+                text_color.blend(&background, 0.35),
+                HorizontalAlignment::Left,
+            );
+        }
+
         let slots = self.display_slots();
-        for slot in slots {
+        for slot in slots.iter().copied() {
             if y + self.row_height as i32 > limit {
                 break;
             }
@@ -733,35 +938,35 @@ impl Draw for CommandPalette {
                 let line_box = context.text_line(band, font);
                 // Fitted to the row and centred by its line box. The old origin was the row's
                 // midpoint used as a glyph top edge, so every result sat half a line low.
-                let text = if entry.category.is_empty() {
-                    entry.title.clone()
-                } else {
-                    format!("{} · {}", entry.category, entry.title)
-                };
+                //
+                // The text and its matched run come from the cached presentation, so neither
+                // `format!` nor `to_lowercase` runs on the paint path (SP-P72).
+                let presentation = self.rows.get(filtered_index).cloned().unwrap_or_default();
                 context.draw_text_fitted_cow(
                     line_box,
-                    &text,
+                    &presentation.text,
                     font,
                     text_color,
                     HorizontalAlignment::Left,
                 );
-                // Match highlight: a tinted box behind the matched run. The prefix is
-                // measured with the same font the row is drawn in, so the highlight lands on
-                // the glyphs rather than near them.
-                if !self.query.is_empty() {
-                    let folded_text = text.to_lowercase();
-                    let folded_query = self.query.to_lowercase();
-                    if let Some(offset) = folded_text.find(&folded_query) {
-                        let prefix: String = text.chars().take(offset).collect();
-                        let matched: String =
-                            text.chars().skip(offset).take(self.query.chars().count()).collect();
-                        let start_x = band.x + context.measure_text(&prefix, font).width as i32;
-                        let width = context.measure_text(&matched, font).width as u32;
-                        context.fill_rect(
-                            Rect::new(start_x, y, width.max(1), self.row_height),
-                            highlight,
-                        );
-                    }
+                // Match highlight: a tinted box behind the matched run, measured with the same
+                // font the row is drawn in so it lands on the glyphs rather than near them.
+                if let Some((offset, count)) = presentation.highlight {
+                    let start_x = band.x
+                        + context
+                            .measure_text(
+                                &presentation.text.chars().take(offset).collect::<String>(),
+                                font,
+                            )
+                            .width as i32;
+                    let width = context
+                        .measure_text(
+                            &presentation.text.chars().skip(offset).take(count).collect::<String>(),
+                            font,
+                        )
+                        .width;
+                    context
+                        .fill_rect(Rect::new(start_x, y, width.max(1), self.row_height), highlight);
                 }
                 if let Some(shortcut) = entry.shortcut.as_deref() {
                     let key_box = Rect::new(
@@ -781,6 +986,44 @@ impl Draw for CommandPalette {
             }
 
             y += self.row_height as i32;
+        }
+
+        // The footer's key hints: the keys a palette is driven by are not discoverable from the
+        // list alone, and a footnote is the conventional place to state them (SP-64).
+        if footer_height > 0 {
+            let footer = Rect::new(
+                rect.x,
+                rect.y + rect.height as i32 - footer_height as i32,
+                rect.width,
+                footer_height,
+            );
+            context.fill_rect(footer, header_background);
+            context.draw_line(
+                Point::new(footer.x, footer.y),
+                Point::new(footer.x + footer.width as i32, footer.y),
+                border,
+            );
+            let hints = if self.hint_text.is_empty() {
+                "↑↓ select · ↵ run · esc clear"
+            } else {
+                self.hint_text.as_str()
+            };
+            let font = effective_font(style);
+            context.draw_text_fitted_cow(
+                context.text_line(
+                    Rect::new(
+                        footer.x + 8,
+                        footer.y,
+                        footer.width.saturating_sub(16),
+                        footer.height,
+                    ),
+                    font,
+                ),
+                hints,
+                font,
+                text_color.blend(&background, 0.3),
+                HorizontalAlignment::Left,
+            );
         }
     }
 }

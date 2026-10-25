@@ -103,15 +103,16 @@ impl SemanticState {
     /// The `"<kind>:<state>"` suffix this semantic state is addressed by, or `None` for
     /// [`SemanticState::None`].
     ///
-    /// The same vocabulary [`WidgetState`] uses (see `ThemeManager::state_suffix`), so a theme
-    /// author writes one kind of key and a control asks in one place, rather than a second
-    /// spelling table that could drift (principle #54).
+    /// The spelling is **not** repeated here: each meaning maps to the [`WidgetState`] that
+    /// carries it and takes that state's canonical suffix, so the three words have exactly one
+    /// definition ([`WidgetState::state_suffix`]) that the theme's key builder and the CSS
+    /// parser both read (G-405, principle #54).
     pub fn state_suffix(self) -> Option<&'static str> {
         match self {
             Self::None => None,
-            Self::Error => Some("error"),
-            Self::Warning => Some("warning"),
-            Self::Success => Some("success"),
+            Self::Error => Some(WidgetState::Error.state_suffix()),
+            Self::Warning => Some(WidgetState::Warning.state_suffix()),
+            Self::Success => Some(WidgetState::Success.state_suffix()),
         }
     }
 }
@@ -167,6 +168,76 @@ pub enum WidgetState {
     /// Carried by [`SemanticState::Success`]; `widget_state()` never returns it.
     Success,
 }
+
+impl WidgetState {
+    /// Every state, in the order the vocabulary is documented.
+    ///
+    /// This is the **single spelling source** for the widget-state vocabulary (G-405). The
+    /// theme's `"<kind>:<state>"` key builder, the CSS pseudo-class parser and
+    /// [`SemanticState::state_suffix`] all resolve through [`Self::state_suffix`] /
+    /// [`Self::from_state_suffix`] rather than each carrying a `match` of their own, so adding a
+    /// state cannot leave one of the four call sites behind.
+    pub const ALL: &'static [WidgetState] = &[
+        Self::Normal,
+        Self::Hover,
+        Self::Pressed,
+        Self::Focused,
+        Self::Disabled,
+        Self::Checked,
+        Self::Selected,
+        Self::Active,
+        Self::Inactive,
+        Self::Error,
+        Self::Warning,
+        Self::Success,
+    ];
+
+    /// The canonical `"<kind>:<state>"` suffix, for example `"hover"`.
+    ///
+    /// Every state has exactly one suffix and every suffix names exactly one state; the round
+    /// trip is pinned by `every_state_has_one_round_tripping_suffix`.
+    pub const fn state_suffix(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Hover => "hover",
+            Self::Pressed => "pressed",
+            Self::Focused => "focused",
+            Self::Disabled => "disabled",
+            Self::Checked => "checked",
+            Self::Selected => "selected",
+            Self::Active => "active",
+            Self::Inactive => "inactive",
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Success => "success",
+        }
+    }
+
+    /// Resolves a state suffix to the state it names.
+    ///
+    /// Canonical suffixes are tried first, so a state can never be shadowed by an alias of
+    /// another state. The aliases after that are spellings stylesheet authors already use in
+    /// this crate and that mean the same state; they are input spellings only, and
+    /// [`Self::state_suffix`] never produces them.
+    ///
+    /// # Why `:active` is not an alias for `Pressed`
+    ///
+    /// It used to be, which made [`Self::Active`] unspellable from CSS even though the theme's
+    /// `"<kind>:active"` key names it. With one table driving both directions the canonical
+    /// spelling has to win, so a press is spelled `:pressed` and `:active` now selects the
+    /// active/foreground state — the same state the theme key means (G-405).
+    pub fn from_state_suffix(name: &str) -> Option<Self> {
+        if let Some(state) = Self::ALL.iter().copied().find(|state| state.state_suffix() == name) {
+            return Some(state);
+        }
+        match name {
+            "focus" => Some(Self::Focused),
+            "invalid" => Some(Self::Error),
+            "valid" => Some(Self::Success),
+            _ => None,
+        }
+    }
+}
 /// How a theme-mode consumer chooses between a light and a dark appearance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThemeMode {
@@ -183,6 +254,7 @@ pub enum ThemeMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::Vec;
 
     /// The default meaning is the no-meaning variant, so a control that never overrides
     /// `semantic_state` carries nothing and draws as it did before the channel existed.
@@ -200,6 +272,39 @@ mod tests {
         assert_eq!(SemanticState::Error.state_suffix(), Some("error"));
         assert_eq!(SemanticState::Warning.state_suffix(), Some("warning"));
         assert_eq!(SemanticState::Success.state_suffix(), Some("success"));
+    }
+
+    /// G-405: one table drives both directions. Every state appears exactly once, its
+    /// canonical suffix round-trips, and the semantic meanings read the same table rather than
+    /// repeating their own words.
+    #[test]
+    fn every_state_has_one_round_tripping_suffix() {
+        let mut seen: Vec<&str> = Vec::new();
+        for state in WidgetState::ALL {
+            let suffix = state.state_suffix();
+            assert!(!seen.contains(&suffix), "`{suffix}` is claimed by more than one state");
+            seen.push(suffix);
+            assert_eq!(
+                WidgetState::from_state_suffix(suffix),
+                Some(*state),
+                "`{suffix}` must resolve back to the state that spells it"
+            );
+        }
+        assert_eq!(seen.len(), 12, "the documented vocabulary has twelve states");
+        assert_eq!(SemanticState::Error.state_suffix(), Some(WidgetState::Error.state_suffix()));
+    }
+
+    /// The documented aliases resolve, and an unknown spelling is refused rather than guessed
+    /// (the former maps every unknown pseudo-class onto a resting control).
+    #[test]
+    fn aliases_resolve_and_unknown_names_are_refused() {
+        assert_eq!(WidgetState::from_state_suffix("focus"), Some(WidgetState::Focused));
+        assert_eq!(WidgetState::from_state_suffix("invalid"), Some(WidgetState::Error));
+        assert_eq!(WidgetState::from_state_suffix("valid"), Some(WidgetState::Success));
+        assert_eq!(WidgetState::from_state_suffix("erorr"), None);
+        // A press is `pressed`; `active` names the canonical Active state, not a press.
+        assert_eq!(WidgetState::from_state_suffix("pressed"), Some(WidgetState::Pressed));
+        assert_eq!(WidgetState::from_state_suffix("active"), Some(WidgetState::Active));
     }
 
     /// The semantic variants stay in the public shape (BLUE24 §3.4's ruling: keep and freeze),

@@ -31,12 +31,27 @@
 //! across threads would let one thread apply a layout to another's widgets. The
 //! consequence is that declarative layouts are single-threaded by construction, and
 //! applying one from the wrong thread is a silent no-op rather than a corruption.
+//!
+//! # G-406 convergence boundary (what lives here, what lives in `view`)
+//!
+//! `view/engine` owns **identity** for a declarative retained tree: keyed paths,
+//! diff/patch, and the id map. This module owns only the **layout registry** — which
+//! layout sits on which parent — and the geometry application. It is deliberately not a
+//! second retained-tree implementation.
+//!
+//! The bridge is [`SharedLayoutRegistry`] plus [`SharedLayoutRegistry::apply_with_hints`]
+//! (and the free [`apply_layout_with_hints`]): a caller that has the child hints (the view
+//! engine does) can drive the stored layouts through `Layout::arrange`, instead of the
+//! id-only `update` path `apply_layout` uses. The thread-local `LAYOUT_MAP` remains the
+//! transitional default. What the view side still has to do is hold one registry instance
+//! and call the hint-aware entry when it applies a subtree; that edit belongs to
+//! `src/view/**`, which this module does not own.
 
 use crate::compat::{Box, HashMap, Vec};
 use core::cell::RefCell;
 
 use crate::core::{ObjectId, Rect};
-use crate::layout::Layout;
+use crate::layout::{ChildInfo, Layout};
 
 /// Sentinel child id a layout uses to reserve stretchable space.
 ///
@@ -175,25 +190,61 @@ impl SharedLayoutRegistry {
 
     /// Applies a stored layout, clearing its dirty flag.
     pub fn apply(&self, parent_id: ObjectId, rect: Rect) -> Vec<(ObjectId, Rect)> {
-        let geometries = match self.layouts.lock() {
-            Ok(layouts) => match layouts.get(&parent_id) {
-                Some(layout) => {
-                    let mut geometries = Vec::new();
-                    layout.update(rect, &mut |child_id, child_rect| {
-                        if child_id != SPACER_ID {
-                            geometries.push((child_id, child_rect));
-                        }
-                    });
-                    geometries
+        let geometries = self.run(parent_id, |layout| {
+            let mut geometries = Vec::new();
+            layout.update(rect, &mut |child_id, child_rect| {
+                if child_id != SPACER_ID {
+                    geometries.push((child_id, child_rect));
                 }
-                None => Vec::new(),
-            },
-            Err(_) => Vec::new(),
-        };
+            });
+            geometries
+        });
         if let Ok(mut dirty) = self.dirty.lock() {
             dirty.retain(|id| *id != parent_id);
         }
         geometries
+    }
+
+    /// Applies a stored layout through the hint channel, clearing its dirty flag.
+    ///
+    /// [`Self::apply`] can only call `Layout::update`, which has no way to ask a child how
+    /// big it wants to be. A caller that owns the hints — the declarative view engine does —
+    /// uses this entry so the stored layout's `arrange` implementation runs instead. That is
+    /// the layout-side half of G-406: the identity/diff side stays in `view/engine`, and this
+    /// registry no longer forces the production path onto the hint-less solver.
+    pub fn apply_with_hints(
+        &self,
+        parent_id: ObjectId,
+        rect: Rect,
+        children: &[ChildInfo],
+    ) -> Vec<(ObjectId, Rect)> {
+        let geometries = self.run(parent_id, |layout| {
+            let mut geometries = Vec::new();
+            layout.arrange(rect, children, &mut |child_id, child_rect| {
+                if child_id != SPACER_ID {
+                    geometries.push((child_id, child_rect));
+                }
+            });
+            geometries
+        });
+        if let Ok(mut dirty) = self.dirty.lock() {
+            dirty.retain(|id| *id != parent_id);
+        }
+        geometries
+    }
+
+    /// Runs `read` against the stored layout, or returns an empty list when there is none.
+    fn run<R>(&self, parent_id: ObjectId, read: impl FnOnce(&dyn Layout) -> R) -> R
+    where
+        R: Default,
+    {
+        match self.layouts.lock() {
+            Ok(layouts) => match layouts.get(&parent_id) {
+                Some(layout) => read(layout.as_ref()),
+                None => R::default(),
+            },
+            Err(_) => R::default(),
+        }
     }
 
     /// Applies the layout only when it is dirty.
@@ -479,6 +530,32 @@ pub fn preview_layout(parent_id: ObjectId, rect: Rect) -> Vec<(ObjectId, Rect)> 
     })
 }
 
+/// Recomputes `parent_id`'s geometry through the hint channel.
+///
+/// The thread-local counterpart of [`SharedLayoutRegistry::apply_with_hints`]. It exists so
+/// a caller that has the child hints — the view engine, or a test — can run
+/// `Layout::arrange` on the stored layout without first moving it into a shared registry.
+/// The spacer is still filtered, for the same reason [`apply_layout`] filters it.
+pub fn apply_layout_with_hints(
+    parent_id: ObjectId,
+    rect: Rect,
+    children: &[ChildInfo],
+) -> Vec<(ObjectId, Rect)> {
+    LAYOUT_MAP.with(|map| {
+        let map = map.borrow();
+        let Some(layout) = map.get(&parent_id) else {
+            return Vec::new();
+        };
+        let mut geometries = Vec::new();
+        layout.arrange(rect, children, &mut |child_id, child_rect| {
+            if child_id != SPACER_ID {
+                geometries.push((child_id, child_rect));
+            }
+        });
+        geometries
+    })
+}
+
 /// How many children `parent_id`'s declarative layout holds, **not** counting spacers.
 ///
 /// The C ABI used to answer this with `preview_layout(parent, Rect::new(0, 0, 0, 0)).len()`, which
@@ -634,6 +711,51 @@ mod tests {
     fn applying_an_unknown_parent_yields_nothing() {
         assert!(apply_layout(0xDEAD_BEEF, Rect::new(0, 0, 10, 10)).is_empty());
         assert!(preview_layout(0xDEAD_BEEF, Rect::new(0, 0, 10, 10)).is_empty());
+    }
+
+    /// G-406: the hint-aware entry runs `Layout::arrange`, not the id-only `update`, so a
+    /// caller that owns the child hints gets the hinted geometry. This is the layout-side
+    /// bridge the view engine uses; identity/diff remain in `view/engine`.
+    #[test]
+    fn applying_with_hints_runs_the_arrange_path() {
+        use crate::layout::{GridLayout, Hints};
+
+        const PARENT: ObjectId = 0x5EF3;
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.set_widget(0, 0, 201);
+        grid.set_widget(0, 1, 202);
+        store_layout(PARENT, Box::new(grid));
+        let children =
+            [ChildInfo::new(201, Hints::fixed(150, 10)), ChildInfo::new(202, Hints::fixed(50, 10))];
+
+        let without = preview_layout(PARENT, Rect::new(0, 0, 200, 20));
+        let without_first = without.iter().find(|(id, _)| *id == 201).expect("child").1;
+        assert_eq!(without_first.width, 100, "the id-only path splits evenly");
+
+        let with = apply_layout_with_hints(PARENT, Rect::new(0, 0, 200, 20), &children);
+        let with_first = with.iter().find(|(id, _)| *id == 201).expect("child").1;
+        assert_eq!(with_first.width, 150, "the hint-aware path honours the preferred width");
+
+        assert!(forget_layout(PARENT));
+    }
+
+    /// The same bridge on the `Send` registry the view engine is meant to own.
+    #[test]
+    fn the_shared_registry_applies_with_hints() {
+        use crate::layout::{GridLayout, Hints};
+
+        const PARENT: ObjectId = 0x5EF4;
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.set_widget(0, 0, 301);
+        grid.set_widget(0, 1, 302);
+        let registry = SharedLayoutRegistry::new();
+        registry.store(PARENT, Box::new(grid));
+        let children =
+            [ChildInfo::new(301, Hints::fixed(70, 10)), ChildInfo::new(302, Hints::fixed(130, 10))];
+
+        let out = registry.apply_with_hints(PARENT, Rect::new(0, 0, 200, 20), &children);
+        assert_eq!(out.iter().find(|(id, _)| *id == 301).expect("child").1.width, 70);
+        assert_eq!(out.iter().find(|(id, _)| *id == 302).expect("child").1.width, 130);
     }
 
     /// Unregistering must be possible, or a reused id would inherit a stale layout.

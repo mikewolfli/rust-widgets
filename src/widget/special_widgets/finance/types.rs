@@ -181,6 +181,23 @@ impl PriceSeries {
         self.labels.clear();
     }
 
+    /// Replaces the bar at `index` in place.
+    ///
+    /// This is the streaming-feed primitive: a live candle is rewritten as ticks arrive, and
+    /// rebuilding the whole series for that would make every tick `O(history)` (J-P16).
+    /// Returns whether the index was in range; the label list is untouched because it is
+    /// positional and a bar update does not move any bar.
+    pub fn set_bar(&mut self, index: usize, bar: Bar) -> bool {
+        let Some(slot) = self.bars.get_mut(index) else { return false };
+        *slot = bar;
+        true
+    }
+
+    /// Returns the last bar, if the series is not empty.
+    pub fn last(&self) -> Option<Bar> {
+        self.bars.last().copied()
+    }
+
     /// Replaces the labels.
     ///
     /// Ignored when the length disagrees with the bars, because a mismatched label list
@@ -349,7 +366,13 @@ impl OrderBook {
     /// exactly as every other part of this family treats a non-finite value as unusable.
     pub fn set_bids(&mut self, mut bids: Vec<BookLevel>) {
         bids.retain(|level| level.price.is_finite());
-        bids.sort_by(|left, right| right.price.total_cmp(&left.price));
+        // A feed normally publishes the ladder already sorted. Checking costs one pass, so
+        // an already-ordered snapshot avoids the `O(n log n)` sort entirely while an
+        // unordered one still ends up correct (J-P13).
+        let ordered = bids.windows(2).all(|pair| pair[0].price >= pair[1].price);
+        if !ordered {
+            bids.sort_by(|left, right| right.price.total_cmp(&left.price));
+        }
         self.bids = bids;
     }
 
@@ -358,8 +381,62 @@ impl OrderBook {
     /// Non-finite prices are dropped for the reason given on [`Self::set_bids`].
     pub fn set_asks(&mut self, mut asks: Vec<BookLevel>) {
         asks.retain(|level| level.price.is_finite());
-        asks.sort_by(|left, right| left.price.total_cmp(&right.price));
+        let ordered = asks.windows(2).all(|pair| pair[0].price <= pair[1].price);
+        if !ordered {
+            asks.sort_by(|left, right| left.price.total_cmp(&right.price));
+        }
         self.asks = asks;
+    }
+
+    /// Inserts, updates or removes one bid level in place.
+    ///
+    /// The high-frequency counterpart of [`Self::set_bids`]: a book tick usually changes one
+    /// price, and re-sorting the whole ladder for it makes every tick `O(n log n)` (J-P13).
+    /// A quantity of zero (or a non-finite one) removes the level; a positive quantity
+    /// updates or inserts it. Returns `true` when the ladder changed.
+    pub fn apply_bid_level(&mut self, price: f64, quantity: f64) -> bool {
+        Self::apply_level(&mut self.bids, price, quantity, true)
+    }
+
+    /// Inserts, updates or removes one ask level in place.
+    pub fn apply_ask_level(&mut self, price: f64, quantity: f64) -> bool {
+        Self::apply_level(&mut self.asks, price, quantity, false)
+    }
+
+    /// The shared level edit: binary-search the price, then update/insert/remove.
+    fn apply_level(
+        levels: &mut Vec<BookLevel>,
+        price: f64,
+        quantity: f64,
+        descending: bool,
+    ) -> bool {
+        if !price.is_finite() {
+            return false;
+        }
+        let index = if descending {
+            levels.binary_search_by(|probe| probe.price.total_cmp(&price).reverse())
+        } else {
+            levels.binary_search_by(|probe| probe.price.total_cmp(&price))
+        };
+        let keep = quantity.is_finite() && quantity > 0.0;
+        match index {
+            Ok(slot) => {
+                if keep {
+                    levels[slot].quantity = quantity;
+                } else {
+                    levels.remove(slot);
+                }
+                true
+            }
+            Err(slot) => {
+                if !keep {
+                    // Removing a level that is not there is already the intended state.
+                    return false;
+                }
+                levels.insert(slot, BookLevel::new(price, quantity));
+                true
+            }
+        }
     }
 
     /// The bids, best first.

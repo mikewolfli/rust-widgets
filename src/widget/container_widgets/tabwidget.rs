@@ -33,6 +33,8 @@ use crate::{impl_widget_property_hooks, property_names_of};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
+
+use super::theme_snapshot::ThemeSnapshot;
 /// Tab widget.
 pub struct TabWidget {
     base: BaseWidget,
@@ -139,8 +141,16 @@ pub struct TabWidget {
     elide_mode: TabElideMode,
     /// The tab under the pointer, for the tooltip path.
     hovered_tab: Option<usize>,
+    /// The last pointer position seen, for events that carry no position (C-25).
+    ///
+    /// `Event::Wheel` is position-free, so "the pointer is over the strip" can only be answered
+    /// from the last pointer sample. Cleared on [`Event::MouseLeave`] so a wheel delivered after
+    /// the pointer left cannot scroll a strip it is not over.
+    pointer_pos: Option<Point>,
     /// An optional widget placed in the unused strip corner.
     corner_widget: Option<ObjectId>,
+    /// Cached strip run and per-tab rectangles (C-P04).
+    strip_cache: RefCell<Option<TabGeometryCache>>,
 }
 
 /// How a tab title that does not fit its box is shortened.
@@ -162,7 +172,20 @@ pub enum TabElideMode {
 struct TabWidthCache {
     font: Option<Font>,
     fingerprint: u64,
-    widths: Vec<i32>,
+    widths: Rc<Vec<i32>>,
+}
+
+/// The strip run and the translated tab rectangles, with the key that produced them (C-P04).
+///
+/// The key is everything the derivation reads — the control's geometry, the tab edge, the overflow
+/// scroll, the effective font, and each tab's title/icon/visibility — so a cache hit is exact and
+/// a missed invalidation cannot leave a stale rectangle behind. `run` is in strip coordinates
+/// starting at `(0, 0)`; `rects` is the same run translated into the control's own box and scrolled.
+struct TabGeometryCache {
+    font: Font,
+    fingerprint: u64,
+    run: Rc<Vec<Rect>>,
+    rects: Rc<Vec<Rect>>,
 }
 /// Tab information.
 pub struct Tab {
@@ -413,7 +436,9 @@ impl TabWidget {
             show_overflow_buttons: false,
             elide_mode: TabElideMode::None,
             hovered_tab: None,
+            pointer_pos: None,
             corner_widget: None,
+            strip_cache: RefCell::new(None),
         }
     }
     /// Sets the shared widget registry for child forwarding.
@@ -812,6 +837,71 @@ impl TabWidget {
         }
         self.base.request_redraw();
     }
+
+    /// Enables or disables the tab at `index` (C-27).
+    ///
+    /// Returns `false` for an out-of-range index. This is the by-index setter the family was
+    /// missing: `enabled` was reachable only through [`Self::tab_mut`], whose write does not
+    /// request a redraw, so a host that disabled a tab saw it stay enabled until something else
+    /// repainted. A change requests a redraw; disabling the current tab moves the selection under
+    /// the existing [`Self::nearest_visible_index`] rule, so the widget never shows a page it says
+    /// is unusable.
+    pub fn set_tab_enabled(&mut self, index: usize, enabled: bool) -> bool {
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return false;
+        };
+        if tab.enabled == enabled {
+            return true;
+        }
+        tab.enabled = enabled;
+        if !enabled && index == self.current_index {
+            if let Some(next) = self.nearest_selectable_index(index) {
+                self.set_current_index(next);
+            }
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// The nearest tab that the user can actually select, preferring forward order.
+    ///
+    /// A disabled page is no more reachable than a hidden one, so the selection migration for a
+    /// disabled current tab considers both flags. `from` itself is never returned: migrating the
+    /// selection to the tab it just left would announce a change that did not happen.
+    fn nearest_selectable_index(&self, from: usize) -> Option<usize> {
+        let forward = self
+            .tabs
+            .iter()
+            .enumerate()
+            .skip(from.saturating_add(1))
+            .find(|(_, tab)| tab.visible && tab.enabled)
+            .map(|(index, _)| index);
+        forward.or_else(|| {
+            self.tabs[..from.min(self.tabs.len())]
+                .iter()
+                .rposition(|tab| tab.visible && tab.enabled)
+        })
+    }
+
+    /// Sets the tooltip of the tab at `index` (C-27). Returns `false` for an out-of-range index.
+    ///
+    /// The tooltip is what [`Self::hovered_tooltip`] reports; it was previously writable only
+    /// through `tab_mut`, so a host had no by-index entry with a redraw request.
+    pub fn set_tab_tooltip(&mut self, index: usize, text: impl Into<String>) -> bool {
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return false;
+        };
+        let text = text.into();
+        if tab.tooltip == text {
+            return true;
+        }
+        tab.tooltip = text;
+        // A hover tooltip is painted from this text, so a change while hovered has to repaint.
+        if self.hovered_tab == Some(index) {
+            self.base.request_redraw();
+        }
+        true
+    }
     /// Returns tab position.
     pub fn tab_position(&self) -> TabPosition {
         self.tab_position
@@ -1079,11 +1169,14 @@ impl TabWidget {
     /// icon slot, and the effective font. That makes the cache self-invalidating — a caller cannot
     /// reach a state where the width is a function of something the key omitted — and it costs one
     /// hash of the titles plus a `Font` comparison per call instead of a shaping pass per tab.
-    fn measured_tab_widths(&self) -> crate::compat::Vec<i32> {
+    fn measured_tab_widths(&self) -> Rc<Vec<i32>> {
         use std::hash::{Hash, Hasher};
 
         let font = effective_font(self.style()).clone();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // A vertical strip measures a caption along the strip, i.e. by its stacked height, so the
+        // edge is part of the measurement's key and not only of the arithmetic (C-26).
+        (self.tab_position as u8).hash(&mut hasher);
         for tab in &self.tabs {
             tab.title.hash(&mut hasher);
             tab.has_icon().hash(&mut hasher);
@@ -1093,7 +1186,8 @@ impl TabWidget {
         {
             let cache = self.tab_width_cache.borrow();
             if cache.font.as_ref() == Some(&font) && cache.fingerprint == fingerprint {
-                return cache.widths.clone();
+                // A hit is a refcount bump, not a copy of the whole width table (C-P04).
+                return Rc::clone(&cache.widths);
             }
         }
 
@@ -1101,19 +1195,29 @@ impl TabWidget {
         // label's advance for the whole crate, matching what `TabView::tab_widths` uses and
         // what the renderer draws with. The hand-rolled form also mis-measured any
         // non-Latin caption, since it charged a fixed 8 px per cluster.
-        let widths: crate::compat::Vec<i32> = self
+        let vertical = matches!(self.tab_position, TabPosition::West | TabPosition::East);
+        let line_height = crate::widget::metrics::estimate_line_height(&font, 1.0) as i32;
+        let widths: Vec<i32> = self
             .tabs
             .iter()
             .map(|tab| {
-                (estimate_text_width(&tab.title, &font, 1.0) as i32
+                // A vertical tab's extent is the stacked glyph run, so its measurement is the
+                // line count times the line height rather than the text's width (C-26).
+                let label_extent = if vertical {
+                    (tab.title.chars().count() as i32 * line_height).max(line_height)
+                } else {
+                    estimate_text_width(&tab.title, &font, 1.0) as i32
+                };
+                (label_extent
                     + TAB_TEXT_PADDING
                     + if tab.has_icon() { (TAB_ICON_SIDE + TAB_ICON_GAP) as i32 } else { 0 })
                 .clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
             })
             .collect();
 
+        let widths = Rc::new(widths);
         *self.tab_width_cache.borrow_mut() =
-            TabWidthCache { font: Some(font), fingerprint, widths: widths.clone() };
+            TabWidthCache { font: Some(font), fingerprint, widths: Rc::clone(&widths) };
         widths
     }
 
@@ -1128,14 +1232,21 @@ impl TabWidget {
     ///
     /// Keeping the assembly's origin at zero is what lets one function serve all four
     /// `TabPosition`s, whose tab boxes differ only by the translation `tab_rects` applies.
-    fn tab_run(&self) -> crate::compat::Vec<Rect> {
+    ///
+    /// The result is shared with `tab_rects` and cached under the same key (C-P04).
+    fn tab_run(&self) -> Rc<Vec<Rect>> {
+        self.strip_geometry().0
+    }
+
+    /// Recomputes the strip run from the measured widths.
+    fn compute_tab_run(&self) -> Vec<Rect> {
         let hints = self.tab_width_hints();
         if hints.is_empty() {
-            return crate::compat::Vec::new();
+            return Vec::new();
         }
         let horizontal = matches!(self.tab_position, TabPosition::North | TabPosition::South);
         let spacing = scaled_tab_spacing();
-        let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::with_capacity(hints.len());
+        let mut placed: Vec<Rect> = Vec::with_capacity(hints.len());
         let mut cursor = 0i32;
         for (index, (_, preferred, _)) in hints.iter().enumerate() {
             // A hidden tab keeps a slot in the run, so every later index still lines up with its
@@ -1157,6 +1268,47 @@ impl TabWidget {
             cursor += *preferred + spacing;
         }
         placed
+    }
+
+    /// The cached run and translated rectangles, derived once per input state (C-P04).
+    ///
+    /// The key is every input the derivation reads: the control's geometry, the tab edge, the
+    /// overflow scroll, the effective font and each tab's title/icon/visibility. Nothing has to
+    /// invalidate it by hand, so an add/remove/rename/retheme cannot leave a stale rectangle.
+    fn strip_geometry(&self) -> (Rc<Vec<Rect>>, Rc<Vec<Rect>>) {
+        use std::hash::{Hash, Hasher};
+
+        let font = effective_font(self.style()).clone();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let rect = self.geometry();
+        (rect.x, rect.y, rect.width, rect.height).hash(&mut hasher);
+        (self.tab_position as u8).hash(&mut hasher);
+        self.overflow_scroll.hash(&mut hasher);
+        for tab in &self.tabs {
+            tab.title.hash(&mut hasher);
+            tab.has_icon().hash(&mut hasher);
+            tab.visible.hash(&mut hasher);
+        }
+        let fingerprint = hasher.finish();
+
+        {
+            let cache = self.strip_cache.borrow();
+            if let Some(cache) = cache.as_ref() {
+                if cache.font == font && cache.fingerprint == fingerprint {
+                    return (Rc::clone(&cache.run), Rc::clone(&cache.rects));
+                }
+            }
+        }
+
+        let run = Rc::new(self.compute_tab_run());
+        let rects = Rc::new(self.translate_run(&run));
+        *self.strip_cache.borrow_mut() = Some(TabGeometryCache {
+            font,
+            fingerprint,
+            run: Rc::clone(&run),
+            rects: Rc::clone(&rects),
+        });
+        (run, rects)
     }
 
     /// The close affordance's rectangle inside `tab_rect`.
@@ -1207,35 +1359,45 @@ impl TabWidget {
     /// [`Self::tab_rect`] used to call [`Self::tab_run`] on every invocation, and the draw pass
     /// asks for every tab (and the hit test asks for every tab on a press). A strip of `n` tabs
     /// therefore paid `n` runs **per frame**. This method is the single derivation the callers that
-    /// need more than one box use. `tab_run` is now one pass over the measured widths (see its
-    /// docs), so the remaining cost is proportional to the tab count rather than to widget
-    /// construction and a layout pass per tab.
-    fn tab_rects(&self) -> Vec<Rect> {
+    /// need more than one box use, and the result is cached under the strip key (C-P04), so the
+    /// paint path, the hit test, `max_overflow_scroll` and the overflow buttons share one answer.
+    fn tab_rects(&self) -> Rc<Vec<Rect>> {
+        self.strip_geometry().1
+    }
+
+    /// Translates the strip run into the control's own box, applying `TabPosition` and the
+    /// overflow scroll.
+    fn translate_run(&self, run: &[Rect]) -> Vec<Rect> {
         let rect = self.geometry();
         let tab_height = TAB_HEIGHT as u32;
         let scroll = self.overflow_scroll;
-        self.tab_run()
-            .into_iter()
+        run.iter()
             .map(|tab| {
-                let tab_width = tab.width;
-                let along = tab.x - scroll;
+                let along = if matches!(self.tab_position, TabPosition::North | TabPosition::South)
+                {
+                    tab.x - scroll
+                } else {
+                    tab.y - scroll
+                };
                 match self.tab_position {
-                    TabPosition::North => Rect::new(rect.x + along, rect.y, tab_width, tab_height),
+                    TabPosition::North => Rect::new(rect.x + along, rect.y, tab.width, tab_height),
                     TabPosition::South => Rect::new(
                         rect.x + along,
                         rect.y + rect.height as i32 - TAB_HEIGHT,
-                        tab_width,
+                        tab.width,
                         tab_height,
                     ),
-                    // A vertical strip runs **down** the control: the layout's horizontal answer
-                    // is the position along the strip, and the caption's width becomes the box
-                    // width (the label stays horizontal, as every shipped tab strip draws it).
-                    TabPosition::West => Rect::new(rect.x, rect.y + along, tab_width, tab_height),
+                    // A vertical strip runs **down** the control: the run's along-axis coordinate
+                    // is `y` and its extent is the measured height, so the tab box is one strip
+                    // thickness wide and that extent tall. The caption is drawn stacked (C-26).
+                    TabPosition::West => {
+                        Rect::new(rect.x, rect.y + along, TAB_HEIGHT as u32, tab.height)
+                    }
                     TabPosition::East => Rect::new(
-                        rect.x + rect.width as i32 - tab_width as i32,
-                        rect.y + tab.y - scroll,
-                        tab_width,
-                        tab_height,
+                        rect.x + rect.width as i32 - TAB_HEIGHT,
+                        rect.y + along,
+                        TAB_HEIGHT as u32,
+                        tab.height,
                     ),
                 }
             })
@@ -1507,7 +1669,7 @@ impl TabWidget {
 
     /// Returns index of tab at position.
     fn tab_at_position(&self, pos: Point) -> Option<usize> {
-        self.tab_rects().into_iter().position(|tab_rect| tab_rect.contains(pos))
+        self.tab_rects().iter().position(|tab_rect| tab_rect.contains(pos))
     }
 }
 /// Height of the tab strip, in logical pixels.
@@ -1518,6 +1680,12 @@ const TAB_HEIGHT: i32 = crate::widget::metrics::dimensions::TAB_HEIGHT as i32;
 
 /// Horizontal gap between adjacent tabs.
 const TAB_SPACING: i32 = 2;
+
+/// Pixels the overflow strip moves per wheel notch (C-25).
+///
+/// One notch is a deliberate step rather than an acceleration curve: the strip is a fixed-size
+/// row, so a smooth ramp would mostly land between two useful offsets.
+const WHEEL_SCROLL_STEP: i32 = 24;
 
 /// `TAB_SPACING` as the strip actually charges it.
 ///
@@ -1554,6 +1722,69 @@ fn elide_tab_title<'a>(
         Cow::Borrowed("\u{2026}")
     } else {
         fitted
+    }
+}
+
+/// Paints a tab's icon (typed source first, then the legacy image) into `icon_rect`.
+///
+/// One routine for the horizontal and the vertical strip: the two branches differ in where the
+/// square sits, not in what fills it (C-26).
+fn paint_tab_icon(context: &mut RenderContext, tab: &Tab, icon_rect: Rect, color: Color) {
+    if let Some(source) = tab.icon_source {
+        if let Err(error) = crate::widget::paint_icon(context, source.into(), icon_rect, color) {
+            log::warn!("tab icon could not be painted: {error:?}");
+        }
+    }
+    #[cfg(feature = "image")]
+    if tab.icon_source.is_none() {
+        if let Some(image) = tab.icon.as_ref() {
+            // `set_icon` normalises to RGBA8, so this borrow is the whole image and no per-frame
+            // transcode can be needed.
+            if let crate::image::ImageData::Rgba8(pixels) = &image.inner.data {
+                // The shared fit rule, so a non-square image is fitted rather than stretched into
+                // the square slot.
+                let fitted = crate::widget::icon_source::fit_image_into(
+                    image.width(),
+                    image.height(),
+                    icon_rect,
+                );
+                context.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, pixels);
+            }
+        }
+    }
+}
+
+/// Draws `title` as a stacked glyph run, one character per line (C-26).
+///
+/// A vertical strip is one tab wide, so a horizontal caption would be truncated to a few letters.
+/// Stacking the glyphs is the vertical-typesetting form the reference tab strips use; it needs no
+/// rotation transform, so it works with the render context as it exists. Characters are encoded
+/// into a stack buffer rather than a `String`, so the run costs no allocation per frame.
+fn draw_stacked_tab_title(
+    context: &mut RenderContext,
+    band: Rect,
+    title: &str,
+    font: &Font,
+    color: Color,
+) {
+    if title.is_empty() || band.height == 0 || band.width == 0 {
+        return;
+    }
+    let line_height = crate::widget::metrics::estimate_line_height(font, 1.0).max(1) as i32;
+    let count = title.chars().count() as i32;
+    let total = (count * line_height).min(band.height as i32);
+    let mut y = band.y + (band.height as i32 - total) / 2;
+    let bottom = band.y + band.height as i32;
+    let mut buffer = [0u8; 4];
+    for character in title.chars() {
+        if y + line_height > bottom {
+            break;
+        }
+        let glyph = character.encode_utf8(&mut buffer);
+        let width = context.measure_text(glyph, font).width as i32;
+        let x = band.x + ((band.width as i32 - width) / 2).max(0);
+        context.draw_text(Point::new(x, y), glyph, font, color, HorizontalAlignment::Left);
+        y += line_height;
     }
 }
 
@@ -2044,6 +2275,7 @@ impl EventHandler for TabWidget {
                 }
             }
             Event::MouseMove { pos } => {
+                self.pointer_pos = Some(*pos);
                 let hovered = self.tab_at_position(*pos);
                 if hovered != self.hovered_tab {
                     self.hovered_tab = hovered;
@@ -2052,8 +2284,30 @@ impl EventHandler for TabWidget {
                 self.update_tab_drag(*pos);
             }
             Event::MouseLeave { .. } => {
+                self.pointer_pos = None;
                 if self.hovered_tab.take().is_some() {
                     self.base.request_redraw();
+                }
+            }
+            // C-25: a wheel over the strip scrolls the overflow. The event carries no position,
+            // so the last pointer sample decides whether the wheel is over the strip; a wheel
+            // over the page falls through to the content forwarding below.
+            Event::Wheel { delta, .. }
+                if self.overflow_scroll > 0 || self.max_overflow_scroll() > 0 =>
+            {
+                let over_strip =
+                    self.pointer_pos.is_some_and(|pos| self.tab_strip_rect().contains(pos));
+                if !over_strip {
+                    // Not over the strip: let the page handle it.
+                } else {
+                    let notches = match self.tab_position {
+                        TabPosition::North | TabPosition::South => delta.x,
+                        TabPosition::West | TabPosition::East => delta.y,
+                    };
+                    if notches != 0 {
+                        self.scroll_tabs(notches * WHEEL_SCROLL_STEP);
+                        return;
+                    }
                 }
             }
             Event::KeyPress { key, modifiers } if *key == crate::event::key_codes::TAB => {
@@ -2101,7 +2355,15 @@ impl EventHandler for TabWidget {
         if allow_child_event {
             if let Some(widget_id) = self.current_widget() {
                 if let Some(ref reg) = self.registry {
-                    reg.borrow_mut().set_widget_geometry(widget_id, self.content_rect());
+                    // C-P05: the page rectangle only changes when the selection or the control's
+                    // geometry does. Comparing first keeps a keyboard or hover event from
+                    // performing a global geometry write it did not need.
+                    let content = self.content_rect();
+                    if crate::widget_geometry(widget_id)
+                        != Some((content.x, content.y, content.width, content.height))
+                    {
+                        reg.borrow_mut().set_widget_geometry(widget_id, content);
+                    }
                     reg.borrow_mut().forward_event(widget_id, event);
                 }
             }
@@ -2121,24 +2383,25 @@ impl Draw for TabWidget {
         //
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
-        // re-entrant).
+        // re-entrant). `ThemeSnapshot` folds the resolved style, the window fill and the
+        // accent into one manager visit for the frame (C-P01).
+        let theme = ThemeSnapshot::capture("tab_widget");
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("tab_widget");
         // `tab_widget` is not a control kind in the role table, so it classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The content area's fill is therefore a step toward
         // the foreground, so the page reads as a surface of its own.
         let resolved = style
             .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::rgb(255, 255, 255));
         let border = style
             .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.border_color))
             .unwrap_or(Color::rgb(200, 200, 200));
         let text_color = style
             .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::rgb(0, 0, 0));
         let content_background = resolved.blend(&text_color, 0.08);
         // Tab chrome is derived from the resolved pair: an inactive tab is pressed
@@ -2158,10 +2421,7 @@ impl Draw for TabWidget {
         let close_color = text_color.blend(&content_background, 0.4);
         // The accent that marks the current tab in document mode comes from the theme's own accent
         // token rather than a literal, so it follows an appearance switch.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.accent)
-            .unwrap_or(Color::PRIMARY);
+        let accent = theme.accent().unwrap_or(Color::PRIMARY);
 
         // Document mode fills the strip with the control's surface, so the row reads as one band
         // instead of a set of raised tabs. The other modes leave the strip as it was — the window's
@@ -2245,7 +2505,7 @@ impl Draw for TabWidget {
         //
         // One `tab_rects()` call for the whole strip: asking `tab_rect(i)` in a loop rebuilt the
         // flex layout once per tab (see `tab_rects`).
-        for (i, tab_rect) in self.tab_rects().into_iter().enumerate() {
+        for (i, tab_rect) in self.tab_rects().iter().copied().enumerate() {
             if i < self.tabs.len() {
                 let tab = &self.tabs[i];
                 // A hidden tab still holds a slot in the run (so indices line up) but occupies no
@@ -2327,74 +2587,74 @@ impl Draw for TabWidget {
                 let text_color = if !is_enabled { disabled_text } else { text_color };
                 let font = effective_font(style);
                 let tab_line = context.text_line(tab_rect, font);
-                // ── Icon ──
+                // ── Caption ──
                 //
-                // A tab carrying an icon reserves a leading square, and the caption band starts
-                // after it instead of underneath it. The room charged here is exactly
-                // `TAB_ICON_SIDE + TAB_ICON_GAP`, the same allowance `tab_width_hints` added, so
-                // what the strip measured and what is painted cannot disagree.
-                let mut title_x = tab_rect.x;
-                let mut title_width = tab_rect.width.saturating_sub(if self.closable {
-                    (CLOSE_SIZE + CLOSE_LABEL_GAP + CLOSE_TITLE_CLEARANCE) as u32
+                // A horizontal strip reserves a leading icon square and lays the label in the
+                // remaining band. A vertical strip (C-26) reserves a square at the top and draws
+                // the caption as a **stacked glyph run** down the box: the strip is one tab wide,
+                // so a horizontal run would be truncated to a few letters. Both branches charge
+                // exactly `TAB_ICON_SIDE + TAB_ICON_GAP`, the same allowance `measured_tab_widths`
+                // added, so what the strip measured and what is painted cannot disagree.
+                if matches!(self.tab_position, TabPosition::West | TabPosition::East) {
+                    let mut band = tab_rect;
+                    if tab.has_icon() {
+                        let side = TAB_ICON_SIDE.min(tab_rect.width.max(1));
+                        let icon_rect = Rect::new(
+                            tab_rect.x + tab_rect.width.saturating_sub(side) as i32 / 2,
+                            tab_rect.y + TAB_ICON_GAP as i32,
+                            side,
+                            side,
+                        );
+                        paint_tab_icon(context, tab, icon_rect, text_color);
+                        let consumed = (TAB_ICON_SIDE + TAB_ICON_GAP * 2) as i32;
+                        band = Rect::new(
+                            tab_rect.x,
+                            tab_rect.y + consumed,
+                            tab_rect.width,
+                            tab_rect.height.saturating_sub(consumed as u32),
+                        );
+                    }
+                    draw_stacked_tab_title(context, band, &tab.title, font, text_color);
                 } else {
-                    0
-                });
-                if tab.has_icon() {
-                    let side = TAB_ICON_SIDE.min(tab_line.height.max(1));
-                    let icon_rect = Rect {
-                        x: tab_rect.x + TAB_ICON_GAP as i32,
-                        y: tab_line.y + (tab_line.height.saturating_sub(side) / 2) as i32,
-                        width: side,
-                        height: side,
+                    let mut title_x = tab_rect.x;
+                    let mut title_width = tab_rect.width.saturating_sub(if self.closable {
+                        (CLOSE_SIZE + CLOSE_LABEL_GAP + CLOSE_TITLE_CLEARANCE) as u32
+                    } else {
+                        0
+                    });
+                    if tab.has_icon() {
+                        let side = TAB_ICON_SIDE.min(tab_line.height.max(1));
+                        let icon_rect = Rect {
+                            x: tab_rect.x + TAB_ICON_GAP as i32,
+                            y: tab_line.y + (tab_line.height.saturating_sub(side) / 2) as i32,
+                            width: side,
+                            height: side,
+                        };
+                        paint_tab_icon(context, tab, icon_rect, text_color);
+                        title_x += (TAB_ICON_SIDE + TAB_ICON_GAP) as i32;
+                        title_width = title_width.saturating_sub(TAB_ICON_SIDE + TAB_ICON_GAP);
+                    }
+                    let title_band = Rect {
+                        x: title_x,
+                        y: tab_line.y,
+                        width: title_width,
+                        height: tab_line.height,
                     };
-                    if let Some(source) = tab.icon_source {
-                        if let Err(error) =
-                            crate::widget::paint_icon(context, source.into(), icon_rect, text_color)
-                        {
-                            log::warn!("tab icon could not be painted: {error:?}");
-                        }
-                    }
-                    #[cfg(feature = "image")]
-                    if tab.icon_source.is_none() {
-                        if let Some(image) = tab.icon.as_ref() {
-                            // `set_icon` normalises to RGBA8, so this borrow is the whole image and
-                            // no per-frame transcode can be needed.
-                            if let crate::image::ImageData::Rgba8(pixels) = &image.inner.data {
-                                // The shared fit rule, so a non-square image is fitted rather than
-                                // stretched into the square slot.
-                                let fitted = crate::widget::icon_source::fit_image_into(
-                                    image.width(),
-                                    image.height(),
-                                    icon_rect,
-                                );
-                                context.draw_image(
-                                    fitted.x,
-                                    fitted.y,
-                                    fitted.width,
-                                    fitted.height,
-                                    pixels,
-                                );
-                            }
-                        }
-                    }
-                    title_x += (TAB_ICON_SIDE + TAB_ICON_GAP) as i32;
-                    title_width = title_width.saturating_sub(TAB_ICON_SIDE + TAB_ICON_GAP);
+                    let title_text = if self.elide_mode == TabElideMode::ElideRight {
+                        let mut measure =
+                            |candidate: &str| context.measure_text(candidate, font).width;
+                        elide_tab_title(&tab.title, title_width, &mut measure)
+                    } else {
+                        Cow::Borrowed(tab.title.as_str())
+                    };
+                    context.draw_text_fitted_cow(
+                        title_band,
+                        &title_text,
+                        font,
+                        text_color,
+                        HorizontalAlignment::Center,
+                    );
                 }
-                let title_band =
-                    Rect { x: title_x, y: tab_line.y, width: title_width, height: tab_line.height };
-                let title_text = if self.elide_mode == TabElideMode::ElideRight {
-                    let mut measure = |candidate: &str| context.measure_text(candidate, font).width;
-                    elide_tab_title(&tab.title, title_width, &mut measure)
-                } else {
-                    Cow::Borrowed(tab.title.as_str())
-                };
-                context.draw_text_fitted_cow(
-                    title_band,
-                    &title_text,
-                    font,
-                    text_color,
-                    HorizontalAlignment::Center,
-                );
                 // Draw the close affordance if one is offered.
                 //
                 // The rectangle is the **same** one `handle_event` tests against
@@ -2420,7 +2680,18 @@ impl Draw for TabWidget {
         // Draw current widget via registry
         if let Some(widget_id) = self.current_widget() {
             if let Some(ref reg) = self.registry {
-                reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
+                // C-P05: a repaint that does not move the page must not write its rectangle
+                // through the global registry again.
+                if crate::widget_geometry(widget_id)
+                    != Some((
+                        content_rect.x,
+                        content_rect.y,
+                        content_rect.width,
+                        content_rect.height,
+                    ))
+                {
+                    reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
+                }
                 context.push_clip(
                     content_rect.x,
                     content_rect.y,
@@ -3904,5 +4175,35 @@ mod tests {
             modifiers: 0b0011,
         });
         assert_eq!(keys.selected_index(), Some(0), "Ctrl+Shift+Tab goes back");
+    }
+
+    /// C-27: the by-index setters request a repaint and migrate a disabled selection.
+    #[test]
+    fn disabling_the_current_tab_moves_the_selection() {
+        let mut tabs = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tabs.add_tab("A".to_string(), None);
+        tabs.add_tab("B".to_string(), None);
+        tabs.set_current_index(0);
+        assert!(tabs.set_tab_enabled(0, false));
+        assert_eq!(tabs.selected_index(), Some(1), "a disabled page is not left selected");
+        assert!(tabs.set_tab_tooltip(1, "Second page"));
+        assert_eq!(tabs.tab(1).map(|tab| tab.tooltip.as_str()), Some("Second page"));
+        assert!(!tabs.set_tab_enabled(9, false), "an out-of-range index is refused");
+    }
+
+    /// C-25: a wheel over the strip scrolls the overflow instead of the page.
+    #[test]
+    fn a_wheel_over_the_strip_scrolls_the_overflow() {
+        let mut tabs = TabWidget::new(Rect::new(0, 0, 120, 200));
+        for index in 0..6 {
+            tabs.add_tab(std::format!("Tab {index}"), None);
+        }
+        tabs.set_show_overflow_buttons(true);
+        tabs.handle_event(&crate::event::Event::MouseMove { pos: crate::core::Point::new(40, 8) });
+        tabs.handle_event(&crate::event::Event::Wheel {
+            delta: crate::core::Point::new(1, 0),
+            modifiers: 0,
+        });
+        assert!(tabs.overflow_scroll() > 0, "the strip scrolled, the page did not");
     }
 }

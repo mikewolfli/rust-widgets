@@ -90,6 +90,8 @@ pub struct SearchBox {
     /// The caret's blink state. Shared with every other caret in the crate so the tempo is one
     /// implementation rather than a per-control constant.
     cursor_blink: crate::style::CursorBlink,
+    /// Whether a pointer drag is extending a selection (I-110).
+    dragging_selection: bool,
 }
 
 impl SearchBox {
@@ -110,6 +112,7 @@ impl SearchBox {
             cursor: 0,
             selection_anchor: None,
             cursor_blink: crate::style::CursorBlink::new(),
+            dragging_selection: false,
         }
     }
 
@@ -401,13 +404,59 @@ impl SearchBox {
         // Insert at the caret, replacing any selected range. Insertion used to be
         // end-anchored, so there was no way to correct a typo in the middle of a query.
         let (start, end) = self.selection_range().unwrap_or((self.cursor, self.cursor));
+        let before = self.text.clone();
         self.text.replace_range(start..end, &filtered);
         self.cursor = start + filtered.len();
         self.selection_anchor = None;
-        *self.history_target.borrow_mut() = self.text.clone();
-        self.text_changed.emit(self.text.clone());
+        // I-110: this entry point now pushes the same undo step `set_text` does, so a query typed
+        // through `TextInput` can be undone like one typed through the programmatic route.
+        self.record_edit(before);
         self.base.request_redraw();
     }
+
+    /// Files `before` as one undo step and emits `text_changed`.
+    fn record_edit(&mut self, before: String) {
+        if self.restoring_history {
+            return;
+        }
+        *self.history_target.borrow_mut() = self.text.clone();
+        self.undo_stack.push(Box::new(ValueCommand::new(
+            self.history_target.clone(),
+            before,
+            self.text.clone(),
+            "Edit text",
+            "search_box_text",
+        )));
+        self.text_changed.emit(self.text.clone());
+    }
+
+    /// Copies the selected text to the platform clipboard (I-110).
+    #[cfg(not(alloc_frugal))]
+    fn copy_selection_to_clipboard(&self) -> Option<String> {
+        let selected = self.selected_text();
+        if selected.is_empty() {
+            return None;
+        }
+        crate::set_clipboard_text(&selected);
+        Some(selected)
+    }
+
+    #[cfg(alloc_frugal)]
+    fn copy_selection_to_clipboard(&self) -> Option<String> {
+        None
+    }
+
+    /// Inserts the platform clipboard's text at the caret (I-110).
+    #[cfg(not(alloc_frugal))]
+    fn paste_from_clipboard(&mut self) {
+        let text = crate::get_clipboard_text();
+        if !text.is_empty() {
+            self.append_committed_text(&text);
+        }
+    }
+
+    #[cfg(alloc_frugal)]
+    fn paste_from_clipboard(&mut self) {}
 
     /// The byte offset a horizontal pixel points at, using the same fitted origin the paint uses.
     fn byte_index_at_x(&self, x: i32) -> usize {
@@ -433,11 +482,20 @@ impl SearchBox {
             advance,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
-        let dx = (x - origin.x).clamp(0, advance.max(1));
-        let chars = self.text.chars().count().max(1) as f32;
-        let boundary =
-            ((dx as f32 * chars / advance.max(1) as f32).round() as usize).min(chars as usize);
-        self.text.char_indices().nth(boundary).map(|(index, _)| index).unwrap_or(self.text.len())
+        let dx = (x - origin.x).max(0);
+        // Accumulated real advances instead of a proportional mapping (I-P63).
+        let mut best = 0usize;
+        let mut prefix = 0i32;
+        let mut glyph = [0u8; 4];
+        for (index, ch) in self.text.char_indices() {
+            let advance = context.measure_text(ch.encode_utf8(&mut glyph), font).width as i32;
+            if dx < prefix + advance / 2 {
+                break;
+            }
+            prefix += advance;
+            best = index + ch.len_utf8();
+        }
+        best
     }
 }
 
@@ -857,11 +915,20 @@ impl EventHandler for SearchBox {
                 self.set_focused(true);
                 let position = self.byte_index_at_x(pos.x);
                 self.cursor = position;
-                self.selection_anchor = None;
+                // I-110: a press anchors a selection a drag can extend.
+                self.selection_anchor = Some(position);
+                self.dragging_selection = true;
                 self.base.request_redraw();
             }
+            Event::MouseMove { pos } => {
+                // I-110: a pointer drag extends the selection the press began.
+                if self.dragging_selection {
+                    self.cursor = self.byte_index_at_x(pos.x);
+                    self.base.request_redraw();
+                }
+            }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
-                // No special release handling needed
+                self.dragging_selection = false;
             }
             Event::FocusGained { .. } => {
                 self.set_focused(true);
@@ -889,6 +956,27 @@ impl EventHandler for SearchBox {
                 // Primary+A selects the whole query, matching the text fields around it.
                 if mods.contains(crate::shortcut::Modifiers::CTRL) && (*key == 65 || *key == 97) {
                     self.select_all();
+                    return;
+                }
+                // I-110: the clipboard chords the other text fields publish.
+                if primary_shortcut_pressed(*key, *modifiers, Key::C) {
+                    let _ = self.copy_selection_to_clipboard();
+                    return;
+                }
+                if primary_shortcut_pressed(*key, *modifiers, Key::X) {
+                    let _ = self.copy_selection_to_clipboard();
+                    if let Some((start, end)) = self.selection_range() {
+                        let before = self.text.clone();
+                        self.text.replace_range(start..end, "");
+                        self.cursor = start;
+                        self.selection_anchor = None;
+                        self.record_edit(before);
+                        self.base.request_redraw();
+                    }
+                    return;
+                }
+                if primary_shortcut_pressed(*key, *modifiers, Key::V) {
+                    self.paste_from_clipboard();
                     return;
                 }
                 match *key {

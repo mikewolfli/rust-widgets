@@ -44,33 +44,57 @@ use crate::compat::Vec;
 /// letter it belongs to. Reordering the clusters keeps a grapheme a single unit — the same
 /// unit the shaper built and the same unit the renderer draws.
 pub fn visual_order(text: &str, clusters: &[(usize, usize)]) -> Vec<usize> {
-    reorder(text, clusters)
+    let levels = levels_for(text, clusters);
+    visual_order_from_levels(&levels).unwrap_or_else(|| (0..clusters.len()).collect())
 }
 
-#[cfg(feature = "text-bidi")]
-fn reorder(text: &str, clusters: &[(usize, usize)]) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..clusters.len()).collect();
-    if clusters.len() <= 1 {
-        return order;
+/// The bidi level of each cluster, in logical order.
+///
+/// The UAX #9 paragraph analysis is kept separate from the permutation so a caller can memoise it:
+/// [`crate::render::text::shaping`] stores it with the shaped run and hands the same buffer back on
+/// a repeat (G-17). Without the `text-bidi` feature every level is `0`, which is the documented
+/// left-to-right fallback.
+pub fn levels_for(text: &str, clusters: &[(usize, usize)]) -> Vec<u8> {
+    #[cfg(feature = "text-bidi")]
+    {
+        // One cluster cannot produce a run to reverse, and skipping the analysis keeps the
+        // single-character label on the cheap path.
+        if clusters.len() <= 1 {
+            let levels = vec![0; clusters.len()];
+            return levels;
+        }
+        // `None` leaves the paragraph's base direction to be resolved from its first strong
+        // character, which is what a label needs: the same control draws `Sign in` left-to-right
+        // and `تسجيل الدخول` right-to-left without the caller having to say which.
+        let info = unicode_bidi::BidiInfo::new(text, None);
+        // One level per cluster. Every character of a grapheme takes its base's level, so the
+        // level at the cluster's first byte is the cluster's level.
+        clusters
+            .iter()
+            .map(|&(start, _)| info.levels.get(start).map_or(0, |level| level.number()))
+            .collect()
     }
-    // `None` leaves the paragraph's base direction to be resolved from its first strong
-    // character, which is what a label needs: the same control draws `Sign in` left-to-right
-    // and `تسجيل الدخول` right-to-left without the caller having to say which.
-    let info = unicode_bidi::BidiInfo::new(text, None);
-    // One level per cluster. Every character of a grapheme takes its base's level, so the
-    // level at the cluster's first byte is the cluster's level.
-    let levels: Vec<u8> = clusters
-        .iter()
-        .map(|&(start, _)| info.levels.get(start).map_or(0, |l| l.number()))
-        .collect();
+    #[cfg(not(feature = "text-bidi"))]
+    {
+        let _ = text;
+        let mut levels = Vec::new();
+        levels.resize(clusters.len(), 0u8);
+        levels
+    }
+}
 
+/// The visual permutation implied by already-computed bidi levels, or `None` for the identity.
+///
+/// `None` is the **zero-allocation** fast path: an all-even level list means no right-to-left run,
+/// so the line is already in paint order and no permutation vector is built. This is the branch
+/// every left-to-right line takes, and the reason reordering is free for them — not "close
+/// enough", but the identity (G-17).
+///
+/// `Some(order)` is always a permutation of `0..levels.len()`.
+pub fn visual_order_from_levels(levels: &[u8]) -> Option<Vec<usize>> {
     let highest = levels.iter().copied().max().unwrap_or(0);
-    // No odd level anywhere means no right-to-left run: the line is already in visual order.
-    // This is the branch every existing snapshot takes, and the reason reordering is free for
-    // them — not "close enough", but the identity permutation.
-    let Some(lowest_odd) = levels.iter().copied().filter(|level| level % 2 == 1).min() else {
-        return order;
-    };
+    let lowest_odd = levels.iter().copied().filter(|level| level % 2 == 1).min()?;
+    let mut order: Vec<usize> = (0..levels.len()).collect();
 
     // UAX #9 L2, applied to the permutation instead of to the string: from the highest level
     // present down to the lowest *odd* level, reverse every contiguous span at or above that
@@ -90,18 +114,7 @@ fn reorder(text: &str, clusters: &[(usize, usize)]) -> Vec<usize> {
             order[start..i].reverse();
         }
     }
-    order
-}
-
-/// Without a compiled-in bidi engine a line is painted in logical order.
-///
-/// That is exactly right for a left-to-right line, and the crate's documented limitation for a
-/// right-to-left one — stated rather than silently different, which is the property this
-/// fallback exists to keep (compare [`crate::render::text`]'s note on font data being opt-in).
-#[cfg(not(feature = "text-bidi"))]
-fn reorder(text: &str, clusters: &[(usize, usize)]) -> Vec<usize> {
-    let _ = text;
-    (0..clusters.len()).collect()
+    Some(order)
 }
 
 #[cfg(test)]
@@ -120,6 +133,15 @@ mod tests {
         let ranges = per_char(text);
         let order = visual_order(text, &ranges);
         order.iter().map(|&i| &text[ranges[i].0..ranges[i].1]).collect()
+    }
+
+    #[test]
+    fn an_all_even_level_list_needs_no_permutation() {
+        // The cached-LTR fast path (G-17): `None` rather than an allocated identity vector.
+        assert_eq!(visual_order_from_levels(&[0, 0, 0]), None);
+        assert_eq!(visual_order_from_levels(&[]), None);
+        // An odd level still reorders, so the fast path does not swallow a real RTL run.
+        assert_eq!(visual_order_from_levels(&[1, 1]), Some(vec![1, 0]));
     }
 
     #[test]

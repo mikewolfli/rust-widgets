@@ -285,8 +285,16 @@ pub struct PieMenu {
     inner_radius: f32,
     hovered_index: Option<usize>,
     current_index: usize,
-    /// The top-level slot whose child ring is showing, if any.
-    open_submenu: Option<usize>,
+    /// The branch path whose child ring is showing, outermost first.
+    ///
+    /// Each entry is the slot index **within the ring above it**, so the shown ring is
+    /// `items[path[0]].children[path[1]].children[path[2]]…` and an empty path is the top level.
+    /// This replaces the single `Option<usize>` that could address exactly one level: a branch
+    /// inside a branch was drawn (its children were distributed on open) but unreachable, because
+    /// `activate` refused to open a ring while one was already open. Escape already unwound one
+    /// ring at a time in the plan, so the fix is a stack and the existing pop becomes the whole
+    /// behaviour.
+    submenu_path: Vec<usize>,
     center: Point,
     /// How far the menu has opened, `0.0` at rest and `1.0` fully shown.
     ///
@@ -328,11 +336,34 @@ pub struct PieMenu {
     /// Emitted with the selected item's label, alongside `triggered`. Empty
     /// labels produce an empty payload; duplicate labels are indistinguishable.
     pub triggered_text: Signal1<String>,
+    /// Emitted with the selected item's **id**, alongside `triggered`.
+    ///
+    /// Items are identified by id everywhere else in the public surface ([`PieMenu::add_item`]
+    /// returns one, [`PieMenu::set_item_icon_source`] addresses by one), while `triggered` carries
+    /// an index that moves when an item is inserted or removed. A host that stores ids therefore
+    /// had no signal it could match against them without re-deriving the mapping.
+    pub triggered_id: Signal1<u64>,
     /// Emitted by [`PieMenu::show_at`], just before the menu becomes visible.
     pub about_to_show: GenericSignal,
     /// Emitted by [`PieMenu::hide`], after the menu is hidden and the hover
     /// highlight cleared.
     pub about_to_hide: GenericSignal,
+    /// Reused point/contour buffers for the ring and slice paths (K-P07).
+    ///
+    /// `draw` rebuilds every contour from scratch each frame, and each builder used to allocate
+    /// its own `Vec`s — a ring plus one per wedge, so an eight-item menu allocated ten buffers a
+    /// frame for point lists whose length depends only on the item count. These buffers keep their
+    /// capacity across frames; `clear()` at the start of each contour is the only reuse protocol.
+    paint_scratch: crate::compat::RefCell<PieMenuScratch>,
+}
+
+/// The scratch buffers a [`PieMenu`] reuses while building its paths.
+#[derive(Default)]
+struct PieMenuScratch {
+    /// The points of the contour being filled.
+    points: Vec<Point>,
+    /// The `(start, end)` ranges of the contours inside [`Self::points`].
+    contours: Vec<(usize, usize)>,
 }
 
 impl PieMenu {
@@ -364,7 +395,7 @@ impl PieMenu {
             inner_radius,
             hovered_index: None,
             current_index: 0,
-            open_submenu: None,
+            submenu_path: Vec::new(),
             center,
             // At rest, so a freshly built menu opens rather than appearing already open. The
             // ring unfurling is a larger movement than a pointer reaction, so it is priced by
@@ -374,8 +405,10 @@ impl PieMenu {
             text_color: None,
             triggered: Signal1::new(),
             triggered_text: Signal1::new(),
+            triggered_id: Signal1::new(),
             about_to_show: GenericSignal::new(),
             about_to_hide: GenericSignal::new(),
+            paint_scratch: crate::compat::RefCell::new(PieMenuScratch::default()),
         }
     }
 
@@ -406,6 +439,9 @@ impl PieMenu {
             self.triggered.emit(idx);
             if let Some(text) = self.items.get(idx).map(|item| item.text().to_string()) {
                 self.triggered_text.emit(text);
+            }
+            if let Some(id) = self.items.get(idx).map(PieMenuItem::id) {
+                self.triggered_id.emit(id);
             }
             self.base.request_redraw();
         }
@@ -728,12 +764,11 @@ impl PieMenu {
     /// token, or the control's pre-theme blue when no theme is active.
     ///
     /// One derivation shared by [`Self::hover_color`], `draw` and the tests, so the
-    /// getter cannot drift from the picture. It takes the manager lock itself and
-    /// returns an owned `Color`, so it must not be called while a lock is held.
+    /// getter cannot drift from the picture. It reads the cached palette, so it takes no manager
+    /// lock (K-P17).
     fn theme_hover_color() -> Color {
-        let manager = crate::style::theme_manager();
-        match manager.current_theme() {
-            Some(active) => active.colors.primary,
+        match crate::style::palette_shared() {
+            Some(colors) => colors.primary,
             None => Color::rgb(0, 120, 215),
         }
     }
@@ -741,9 +776,8 @@ impl PieMenu {
     /// The label ink an unset colour resolves to: the active theme's foreground token,
     /// or the control's pre-theme near-black when no theme is active.
     fn theme_text_color() -> Color {
-        let manager = crate::style::theme_manager();
-        match manager.current_theme() {
-            Some(active) => active.colors.foreground,
+        match crate::style::palette_shared() {
+            Some(colors) => colors.foreground,
             None => Color::rgb(30, 30, 30),
         }
     }
@@ -759,7 +793,7 @@ impl PieMenu {
     /// visible. The radius and item list are unchanged.
     pub fn show_at(&mut self, center: Point) {
         self.center = center;
-        self.open_submenu = None;
+        self.submenu_path.clear();
         self.update_geometry();
         self.hovered_index = None;
         self.about_to_show.emit();
@@ -773,7 +807,7 @@ impl PieMenu {
     pub fn hide(&mut self) {
         self.base.hide();
         self.hovered_index = None;
-        self.open_submenu = None;
+        self.submenu_path.clear();
         self.about_to_hide.emit();
     }
 
@@ -797,43 +831,72 @@ impl PieMenu {
         }
     }
 
-    /// The slots the menu is currently showing: a branch's children while its ring is
-    /// open, the top-level items otherwise.
+    /// The slots the menu is currently showing: the deepest ring on the open branch path, or the
+    /// top-level items when no branch is open.
     fn active_items(&self) -> &[PieMenuItem] {
-        match self.open_submenu {
-            Some(index) => {
-                self.items.get(index).map(|item| item.children.as_slice()).unwrap_or(&self.items)
+        let mut ring: &[PieMenuItem] = &self.items;
+        for index in &self.submenu_path {
+            let Some(item) = ring.get(*index) else {
+                // A path entry that no longer addresses anything (the item list was rewritten)
+                // stops the descent at the ring it could still resolve, rather than panicking or
+                // silently showing the top level.
+                break;
+            };
+            if item.children.is_empty() {
+                break;
             }
-            None => &self.items,
+            ring = &item.children;
         }
+        ring
+    }
+
+    /// Mutable counterpart of [`Self::active_items`] for one slot in the shown ring.
+    fn active_item_mut(&mut self, index: usize) -> Option<&mut PieMenuItem> {
+        let mut ring: &mut [PieMenuItem] = &mut self.items;
+        for path_index in self.submenu_path.iter() {
+            let slot = ring.get_mut(*path_index)?;
+            if slot.children.is_empty() {
+                return None;
+            }
+            ring = &mut slot.children;
+        }
+        ring.get_mut(index)
+    }
+
+    /// How many rings are open below the top level; `0` while the top level is showing.
+    pub fn submenu_depth(&self) -> usize {
+        self.submenu_path.len()
     }
 
     /// The top-level slot whose child ring is showing, if any.
     pub fn open_submenu_index(&self) -> Option<usize> {
-        self.open_submenu
+        self.submenu_path.first().copied()
     }
 
-    /// Opens the child ring of the slot at `index`.
+    /// Opens the child ring of the slot at `index` in the shown ring.
     ///
-    /// Returns `false` when the slot has no children. The children's arcs are divided
-    /// evenly among themselves, the same relation the top level uses.
+    /// Returns `false` when the slot has no children. The children's arcs are divided evenly
+    /// among themselves, the same relation the top level uses. Any depth is allowed: opening a
+    /// branch inside an open branch pushes another level rather than being refused.
     pub fn open_submenu(&mut self, index: usize) -> bool {
-        let Some(item) = self.items.get_mut(index) else {
+        let Some(item) = self.active_item(index) else {
             return false;
         };
         if item.children.is_empty() {
             return false;
         }
-        Self::distribute_angles(&mut item.children);
-        self.open_submenu = Some(index);
+        if let Some(item) = self.active_item_mut(index) {
+            Self::distribute_angles(&mut item.children);
+        }
+        self.submenu_path.push(index);
         self.hovered_index = None;
         self.base.request_redraw();
         true
     }
 
-    /// Returns from a child ring to the top level. Returns whether a ring was open.
+    /// Returns from a child ring to the ring above it. Returns whether a ring was open.
     pub fn close_submenu(&mut self) -> bool {
-        if self.open_submenu.take().is_none() {
+        if self.submenu_path.pop().is_none() {
             return false;
         }
         self.hovered_index = None;
@@ -884,18 +947,20 @@ impl PieMenu {
         }
         let is_branch = !item.children.is_empty();
         let text = item.text().to_string();
+        let id = item.id();
         if is_branch {
-            // Only a top-level branch has a ring this control knows how to open; a nested
-            // branch reports its label and leaves the deeper level to the host.
-            if self.open_submenu.is_none() {
-                self.open_submenu(index);
-            }
+            // A branch at any depth opens its own ring. The previous form only opened a ring
+            // while none was open, so a grandchild branch was reported as a choice instead of
+            // being entered.
+            self.open_submenu(index);
             self.triggered_text.emit(text);
             self.triggered.emit(index);
+            self.triggered_id.emit(id);
             return true;
         }
         self.triggered.emit(index);
         self.triggered_text.emit(text);
+        self.triggered_id.emit(id);
         self.hide();
         true
     }
@@ -937,7 +1002,8 @@ impl PieMenu {
         None
     }
 
-    /// Samples a circle into a contour of `segments` points, wound by `clockwise`.
+    /// Samples a circle into a contour of `segments` points, wound by `clockwise`, appended to
+    /// `points`; returns the `(start, end)` range of the appended points.
     ///
     /// One sample per two pixels of arc, bounded at both ends: the floor keeps a small radius
     /// round instead of polygonal, and the ceiling keeps a large one affordable (a full circle at
@@ -945,18 +1011,25 @@ impl PieMenu {
     /// previous strip approximation emitted for the same shape).
     ///
     /// The first point is not repeated at the end — a contour is implicitly closed by the fill.
-    fn circle_contour(center: Point, radius: f32, clockwise: bool) -> Vec<Point> {
+    /// The buffer is the caller's so a frame reuses one allocation instead of one per contour
+    /// (K-P07); the arithmetic is what the collecting version did, so the points are the same.
+    fn push_circle_contour(
+        points: &mut Vec<Point>,
+        center: Point,
+        radius: f32,
+        clockwise: bool,
+    ) -> (usize, usize) {
+        let start = points.len();
         let segments = (radius.abs() * TAU / 2.0).ceil().clamp(32.0, 256.0) as u32;
         let step = TAU / segments as f32 * if clockwise { -1.0 } else { 1.0 };
-        (0..segments)
-            .map(|index| {
-                let angle = index as f32 * step;
-                Point::from_f32(
-                    center.x as f32 + radius * angle.cos(),
-                    center.y as f32 + radius * angle.sin(),
-                )
-            })
-            .collect()
+        for index in 0..segments {
+            let angle = index as f32 * step;
+            points.push(Point::from_f32(
+                center.x as f32 + radius * angle.cos(),
+                center.y as f32 + radius * angle.sin(),
+            ));
+        }
+        (start, points.len())
     }
 
     /// Fills the whole donut track — the ring the slices are cut from.
@@ -985,16 +1058,19 @@ impl PieMenu {
         if outer <= 0.0 {
             return;
         }
-        let mut points = Self::circle_contour(center, outer, false);
-        let mut contours = vec![(0usize, points.len())];
+        let mut scratch = self.paint_scratch.borrow_mut();
+        let scratch = &mut *scratch;
+        scratch.points.clear();
+        scratch.contours.clear();
+        let outer_contour = Self::push_circle_contour(&mut scratch.points, center, outer, false);
+        scratch.contours.push(outer_contour);
         if inner > 0.0 {
             // Opposite winding turns the inner circle into a hole: with the same winding the
             // non-zero rule would count both crossings and paint the hub as part of the ring.
-            let hole_start = points.len();
-            points.extend(Self::circle_contour(center, inner, true));
-            contours.push((hole_start, points.len()));
+            let hole = Self::push_circle_contour(&mut scratch.points, center, inner, true);
+            scratch.contours.push(hole);
         }
-        if let Err(error) = context.fill_path_non_zero(&points, &contours, color) {
+        if let Err(error) = context.fill_path_non_zero(&scratch.points, &scratch.contours, color) {
             log::warn!("pie menu track could not be filled: {error:?}");
         }
     }
@@ -1026,10 +1102,13 @@ impl PieMenu {
         // One sample per two pixels of the outer arc, bounded so a thin sliver still encloses an
         // area (a contour needs three points) and a large sweep stays affordable.
         let steps = (outer * delta_angle.abs() / 2.0).ceil().clamp(8.0, 256.0) as u32;
-        let mut points = Vec::with_capacity(steps as usize * 2 + 2);
+        let mut scratch = self.paint_scratch.borrow_mut();
+        let scratch = &mut *scratch;
+        scratch.points.clear();
+        scratch.contours.clear();
         for index in 0..=steps {
             let angle = angle_start + delta_angle * (index as f32 / steps as f32);
-            points.push(Point::from_f32(
+            scratch.points.push(Point::from_f32(
                 center.x as f32 + outer * angle.cos(),
                 center.y as f32 + outer * angle.sin(),
             ));
@@ -1037,17 +1116,17 @@ impl PieMenu {
         if inner > 0.0 {
             for index in (0..=steps).rev() {
                 let angle = angle_start + delta_angle * (index as f32 / steps as f32);
-                points.push(Point::from_f32(
+                scratch.points.push(Point::from_f32(
                     center.x as f32 + inner * angle.cos(),
                     center.y as f32 + inner * angle.sin(),
                 ));
             }
         } else {
             // A full pie closes at the centre instead of along an inner arc.
-            points.push(center);
+            scratch.points.push(center);
         }
-        let contour = (0usize, points.len());
-        if let Err(error) = context.fill_path_non_zero(&points, &[contour], color) {
+        scratch.contours.push((0usize, scratch.points.len()));
+        if let Err(error) = context.fill_path_non_zero(&scratch.points, &scratch.contours, color) {
             log::warn!("pie menu slice could not be filled: {error:?}");
         }
     }
@@ -1299,21 +1378,14 @@ impl Draw for PieMenu {
         // used to be literals, so a light/dark switch left the control's chrome unchanged — the
         // rendering census reported it as theme-blind.
         //
-        // The theme read is a separate manager lock, taken and released inside
-        // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
-        // is not re-entrant.
+        // The style lookups are the cached, revision-validated forms: `resolved_theme_style_shared`
+        // is a refcount bump on a hit and `palette_shared` answers the three colours this draw needs
+        // in one read, so neither takes the manager lock (K-P07/K-P17).
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("pie_menu");
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme.
-        let (window_fill, foreground, secondary) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => {
-                    (active.colors.background, active.colors.foreground, active.colors.secondary)
-                }
-                None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
-            }
+        let (window_fill, foreground, secondary) = match crate::style::palette_shared() {
+            Some(colors) => (colors.background, colors.foreground, colors.secondary),
+            None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
         };
         let ink = style
             .text_color
@@ -2663,5 +2735,53 @@ mod tests {
         menu.set_animation_progress(1.0);
         assert!(!menu.is_animating());
         assert!((menu.animation_progress() - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// A branch inside an open branch opens another ring instead of reporting a choice (ADV-08),
+    /// and every activation carries the item's id (ADV-09).
+    #[test]
+    fn submenus_nest_and_activation_carries_the_id() {
+        let mut menu = PieMenu::new(Point::new(80, 80), 70.0);
+        menu.show_at(Point::new(80, 80));
+        menu.set_animation_progress(1.0);
+        let branch = menu.add_existing_item(
+            PieMenuItem::new("File").with_children(vec![PieMenuItem::new("Recent")]),
+        );
+        assert_ne!(branch, 0);
+
+        let ids = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&ids);
+        menu.triggered_id.connect(move |id| sink.lock().unwrap().push(*id));
+
+        assert!(menu.open_submenu(0));
+        assert_eq!(menu.submenu_depth(), 1);
+        menu.handle_event(&Event::key_press(crate::event::key_codes::ESCAPE, 0));
+        assert_eq!(menu.submenu_depth(), 0, "Escape unwinds one ring");
+
+        // A leaf activation reports its id.
+        menu.set_current_index(0);
+        assert_eq!(ids.lock().unwrap().len(), 1);
+        assert_eq!(ids.lock().unwrap()[0], branch, "the payload is the item's id, not its index");
+    }
+
+    /// A branch inside an open branch opens another ring instead of reporting a choice (ADV-08).
+    #[test]
+    fn a_nested_branch_opens_a_second_ring() {
+        let mut menu = PieMenu::new(Point::new(80, 80), 70.0);
+        menu.show_at(Point::new(80, 80));
+        menu.set_animation_progress(1.0);
+        menu.add_existing_item(PieMenuItem::new("File").with_children(vec![
+            PieMenuItem::new("Recent").with_children(vec![PieMenuItem::new("notes.txt")]),
+        ]));
+        assert!(menu.open_submenu(0));
+        assert_eq!(menu.submenu_depth(), 1);
+        // "Recent" is itself a branch: the old single-slot form refused this, so a grandchild
+        // branch could never be entered.
+        assert!(menu.open_submenu(0), "a branch inside an open branch opens another ring");
+        assert_eq!(menu.submenu_depth(), 2);
+        menu.handle_event(&Event::key_press(crate::event::key_codes::ESCAPE, 0));
+        assert_eq!(menu.submenu_depth(), 1, "Escape unwinds one ring at a time");
+        menu.close_submenu();
+        assert_eq!(menu.submenu_depth(), 0);
     }
 }

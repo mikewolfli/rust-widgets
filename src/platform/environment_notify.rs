@@ -40,6 +40,21 @@ pub fn generation() -> u64 {
     NOTIFIED.load(Ordering::SeqCst)
 }
 
+/// Serialises tests that advance the process-wide counter.
+///
+/// # Why the tests need this
+///
+/// The counter is one value for the whole process, and `cargo test` runs the test threads in
+/// parallel. A test that reads `generation()`, acts, and asserts a delta is only meaningful while
+/// no other test bumps in between — and the environment-fact cache tests deliberately bump to
+/// prove a notification invalidates a reading. One lock owned by this module (the owner of the
+/// counter) is the smallest thing that makes both assertions deterministic.
+#[cfg(test)]
+pub(crate) fn test_lock() -> crate::compat::MutexGuard<'static, ()> {
+    static LOCK: crate::compat::OnceLock<crate::compat::Mutex<()>> = crate::compat::OnceLock::new();
+    crate::compat::lock(LOCK.get_or_init(|| crate::compat::Mutex::new(())))
+}
+
 /// Folds the notification revision into a backend's own revision.
 ///
 /// A backend revision of `0` means "not derived here"; the notification count is then the whole
@@ -67,6 +82,7 @@ mod tests {
     /// A bump is observable even when the backend derives `0`.
     #[test]
     fn a_bump_is_a_new_revision_and_zero_is_none() {
+        let _guard = test_lock();
         let before = generation();
         let first = bump();
         let second = bump();

@@ -71,7 +71,7 @@ fn trigger_kind_from_code(code: c_uint) -> crate::platform::WidgetTriggerKind {
 }
 fn capability_contract_mask(contract: crate::platform::CapabilityContract) -> c_uint {
     match contract {
-        crate::platform::CapabilityContract::Native(native) => {
+        crate::platform::CapabilityContract::Hosted(native) => {
             let mut mask: c_uint = 0;
             mask |= 1 << 0;
             if native.dpi_scaling {
@@ -125,6 +125,7 @@ fn c_str_or_default(ptr: *const c_char) -> String {
         log::warn!("[bindings] c_str_or_default: received null C string pointer");
         return String::new();
     }
+// SAFETY: `ptr` was checked non-null above and the C ABI requires it to be NUL-terminated.
     unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
 }
 
@@ -774,6 +775,7 @@ fn write_space_separated(items: &[&str], out: *mut c_char, cap: c_uint) -> c_uin
     // Leave room for the terminator; copy at most `cap - 1` bytes.
     let writable = (cap as usize).saturating_sub(1).min(required);
     let mut written = 0usize;
+// SAFETY: `out`/`cap` were validated above; the loop writes at most `writable < cap` bytes and then a terminator.
     unsafe {
         for (index, item) in items.iter().enumerate() {
             if written >= writable {
@@ -838,6 +840,7 @@ pub unsafe extern "C" fn rw_get_widget_property(
                 // must not pay for a string it will never receive, so the encoder is
                 // told whether anyone can accept the text.
                 let (kind, num, text) = encode_capability_value(value, !out_str.is_null());
+// SAFETY: each out-pointer is null-checked before the store, as the C ABI permits callers to pass null.
                 unsafe {
                     if !out_kind.is_null() {
                         *out_kind = kind;
@@ -1251,6 +1254,7 @@ fn write_c_string(text: &str, out: *mut c_char, cap: c_uint) -> c_uint {
         return required;
     }
     let writable = (cap as usize).saturating_sub(1).min(bytes.len());
+// SAFETY: `out`/`cap` were validated above; the copy stays within `writable < cap` bytes and writes one terminator.
     unsafe {
         // `cast` rather than `as`, for the reason documented on
         // `write_space_separated`: `c_char` is not the same signedness everywhere.
@@ -1785,6 +1789,7 @@ fn decode_capability_value(
         RW_VALUE_INT => Some(CapabilityValue::Int(num)),
         RW_VALUE_UINT => Some(CapabilityValue::UInt(u64::try_from(num).ok()?)),
         RW_VALUE_FLOAT => Some(CapabilityValue::Float(f64::from_bits(num as u64))),
+// SAFETY: `str_value` is null or a NUL-terminated string supplied by the ABI caller.
         RW_VALUE_STRING => Some(CapabilityValue::String(unsafe {
             if str_value.is_null() {
                 String::new()
@@ -1797,15 +1802,19 @@ fn decode_capability_value(
         // which is the honest answer: the caller passed something this property's
         // declared kind cannot represent.
         RW_VALUE_COLOR => Some(CapabilityValue::Color(
+// SAFETY: `str_value` follows the ABI contract: null or a NUL-terminated string valid for the call.
             crate::style::CssParser::parse_color(&unsafe { read_c_string(str_value) }).ok()?,
         )),
         RW_VALUE_RECT => {
+// SAFETY: `str_value` follows the ABI contract: null or a NUL-terminated string valid for the call.
             Some(CapabilityValue::Rect(parse_rect_string(&unsafe { read_c_string(str_value) })?))
         }
         RW_VALUE_ICON_SPEC => {
+// SAFETY: `str_value` follows the ABI contract: null or a NUL-terminated string valid for the call.
             Some(CapabilityValue::IconSpec(decode_icon_spec(&unsafe { read_c_string(str_value) })?))
         }
         RW_VALUE_TUPLE => {
+// SAFETY: `str_value` follows the ABI contract: null or a NUL-terminated string valid for the call.
             let text = unsafe { read_c_string(str_value) };
             let components = decode_tuple_components(&text)?;
             // `num` is the advertised component count; trusting it over the parsed length would let a
@@ -1816,6 +1825,7 @@ fn decode_capability_value(
             Some(CapabilityValue::Tuple(components))
         }
         RW_VALUE_RECORDS => {
+// SAFETY: `str_value` follows the ABI contract: null or a NUL-terminated string valid for the call.
             let text = unsafe { read_c_string(str_value) };
             let records = decode_record_list(&text)?;
             // Same reasoning as the tuple arm: the advertised record count must agree with what the
@@ -2225,6 +2235,7 @@ pub unsafe extern "C" fn rw_poll_drop_event(
             // `out` from a previous success (and frees it unconditionally) would
             // otherwise see the stale pointer/length and double-free. The getter's
             // contract is null/zero when there is nothing to report.
+// SAFETY: each out-pointer is null-checked before the store, as the C ABI permits null outputs.
             unsafe {
                 if !source_out.is_null() {
                     *source_out = 0;
@@ -2244,6 +2255,7 @@ pub unsafe extern "C" fn rw_poll_drop_event(
             }
             return false;
         };
+// SAFETY: each out-pointer is null-checked before the store, as the C ABI permits null outputs.
         unsafe {
             if !source_out.is_null() {
                 *source_out = event.source_widget_id;
@@ -3666,6 +3678,7 @@ mod tests {
         let mut source_out: u64 = 0;
         let mut target_out: u64 = 0;
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         let had_event = unsafe {
             rw_poll_drop_event(
                 &mut source_out,
@@ -3683,19 +3696,24 @@ mod tests {
             assert!(mime_out.is_null());
             assert!(payload_out.is_null());
             assert_eq!(payload_len_out, 0);
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
             unsafe { rw_free_bytes(std::ptr::null_mut(), 0) };
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
             unsafe { rw_free_string(std::ptr::null_mut()) };
             return;
         }
 
         if !mime_out.is_null() {
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
             let mime = unsafe { CStr::from_ptr(mime_out) }.to_string_lossy().into_owned();
             assert!(!mime.is_empty(), "a delivered event carries its mime type");
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
             unsafe { rw_free_string(mime_out) };
         }
 
         if !payload_out.is_null() {
             let read_back =
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
                 unsafe { core::slice::from_raw_parts(payload_out, payload_len_out as usize) }
                     .to_vec();
             assert_eq!(read_back.len(), payload_len_out as usize);
@@ -3703,6 +3721,7 @@ mod tests {
             // The pairing under test. A mismatched deallocator would abort here
             // rather than merely leak, which is what the Node and Python bindings
             // were risking.
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
             unsafe { rw_free_bytes(payload_out, payload_len_out) };
         } else {
             assert_eq!(payload_len_out, 0, "a null payload must report zero length");
@@ -3710,7 +3729,9 @@ mod tests {
 
         // A null/zero free is a documented no-op, so a caller may free
         // unconditionally without branching on the getter's output.
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe { rw_free_bytes(std::ptr::null_mut(), 0) };
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe { rw_free_string(std::ptr::null_mut()) };
     }
 
@@ -3721,6 +3742,7 @@ mod tests {
     /// there is nothing to report.
     #[test]
     fn the_free_functions_accept_a_null_pointer() {
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             rw_free_bytes(std::ptr::null_mut(), 0);
             rw_free_bytes(std::ptr::null_mut(), 4096);
@@ -3745,9 +3767,11 @@ mod tests {
         let ptr = Box::into_raw(boxed) as *mut u8;
 
         // The caller reads through the pair before releasing it.
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         let read_back = unsafe { core::slice::from_raw_parts(ptr, len) }.to_vec();
         assert_eq!(read_back, bytes);
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe { rw_free_bytes(ptr, len as c_uint) };
     }
 
@@ -3824,6 +3848,7 @@ mod tests {
 
             // Reclaim the string the encoder allocated, as `rw_free_string` would.
             if !raw.is_null() {
+// SAFETY: `raw` came from `CString::into_raw` in this test and is reclaimed exactly once.
                 unsafe { drop(CString::from_raw(raw as *mut c_char)) };
             }
         }
@@ -3876,6 +3901,7 @@ mod tests {
 
             // Reclaim the allocation the paying path made, so this test itself does not leak.
             if let Some(raw) = text {
+// SAFETY: `raw` came from `CString::into_raw` in this test and is reclaimed exactly once.
                 unsafe { drop(CString::from_raw(raw)) };
             }
         }
@@ -3900,6 +3926,7 @@ mod tests {
 
         let c = |s: &str| CString::new(s).expect("no interior NUL");
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             let title = c("null-str-window");
             let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
@@ -3977,6 +4004,7 @@ mod tests {
         let mut height: c_uint = 0;
         let mut stride: c_uint = 0;
         let mut len: c_uint = 0;
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         let ok = unsafe {
             rw_render_surface_frame(
                 id,
@@ -3997,6 +4025,7 @@ mod tests {
         // A real pixel output receives an owned buffer of exactly the reported length,
         // freed once through `rw_free_bytes`. This is the same pairing a host uses.
         let mut pixels: *mut u8 = core::ptr::null_mut();
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         let ok = unsafe {
             rw_render_surface_frame(
                 id,
@@ -4012,6 +4041,7 @@ mod tests {
         assert!(ok);
         assert!(!pixels.is_null(), "a non-null output must receive the buffer");
         assert_eq!(len, 64 * 48 * 4);
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe { rw_free_bytes(pixels, len) };
 
         crate::widget::runtime::unregister(id);
@@ -4052,6 +4082,7 @@ mod tests {
 
         let c = |s: &str| CString::new(s).expect("no interior NUL");
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             let title = c("abi-window");
             let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
@@ -4097,6 +4128,7 @@ mod tests {
     fn c_abi_unknown_widget_text_is_empty_not_null() {
         use std::ffi::CStr;
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             let ptr = rw_get_widget_text(0xDEAD_BEEF);
             assert!(!ptr.is_null(), "unknown widget must still return a valid pointer");
@@ -4122,6 +4154,7 @@ mod tests {
     fn c_abi_widget_kind_names_enumerates_the_registry() {
         use std::ffi::CStr;
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             let required = rw_widget_kind_names(core::ptr::null_mut(), 0);
             assert!(required > 0, "the registry must publish names");
@@ -4162,6 +4195,7 @@ mod tests {
 
         let c = |s: &str| CString::new(s).expect("no interior NUL");
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             let title = c("by-kind-window");
             let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
@@ -4221,6 +4255,7 @@ mod tests {
 
         let c = |s: &str| CString::new(s).expect("no interior NUL");
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             let title = c("prop-window");
             let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
@@ -4410,6 +4445,7 @@ mod tests {
                 buffer.len() as c_uint,
             );
             assert_eq!(written, required, "the writing call must report the same length");
+// SAFETY: `buffer` is an ASCII fixture with a NUL terminator, valid for the call.
             let got = unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_str().expect("ASCII fixtures");
             assert_eq!(got, *want, "item {index} must read back as it was added");
         }
@@ -4535,6 +4571,7 @@ mod tests {
 
         // A colour write must land in the style record.
         let red = c("background-color: #FF0000");
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             assert!(
                 rw_widget_set_style(button, red.as_ptr()),
@@ -4549,6 +4586,7 @@ mod tests {
 
         // A numeric write must land too.
         let radius = c("border-radius: 6");
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             assert!(rw_widget_set_style(button, radius.as_ptr()));
         }
@@ -4557,12 +4595,14 @@ mod tests {
         // A malformed declaration must be refused, and the parser's own text must
         // survive into the error channel.
         let malformed = c("not-a-declaration");
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         let ok = unsafe { rw_widget_set_style(button, malformed.as_ptr()) };
         assert!(!ok, "a declaration with no ':' must be refused");
         assert_ne!(rw_error_code(0), 0, "the refusal must set the error code");
 
         // An unknown property must be refused too, rather than silently ignored.
         let unknown = c("backgrond-color: #00FF00");
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             assert!(
                 !rw_widget_set_style(button, unknown.as_ptr()),
@@ -4575,6 +4615,7 @@ mod tests {
 
         // An unknown widget must be refused as well.
         let valid = c("background-color: #0000FF");
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             assert!(!rw_widget_set_style(0xDEAD_BEEF, valid.as_ptr()));
         }
@@ -4608,6 +4649,7 @@ mod tests {
         assert_ne!(two, 0);
 
         let vbox = c("vbox");
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             assert!(
                 rw_widget_set_layout(parent, vbox.as_ptr(), 4, 0),
@@ -4649,6 +4691,7 @@ mod tests {
 
         // An unknown kind must be refused rather than defaulting to some layout.
         let bogus = c("definitely_not_a_layout");
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             assert!(
                 !rw_widget_set_layout(parent, bogus.as_ptr(), 0, 0),
@@ -4679,6 +4722,7 @@ mod tests {
         use std::ffi::CString;
         let c = |s: &str| CString::new(s).expect("no interior NUL");
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             crate::error::ffi::clear_last_ffi_error();
             let title = c("err-window");
@@ -4721,6 +4765,7 @@ mod tests {
 
         let c = |s: &str| CString::new(s).expect("no interior NUL");
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             let title = c("kind-window");
             let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
@@ -4743,6 +4788,7 @@ mod tests {
 
         let c = |s: &str| CString::new(s).expect("no interior NUL");
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             let title = c("names-window");
             let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
@@ -4779,6 +4825,7 @@ mod tests {
         let _guard = crate::style::theme_test_guard();
         let c = |s: &str| CString::new(s).expect("no interior NUL");
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             let required = rw_theme_names(core::ptr::null_mut(), 0);
             assert!(required > 0, "at least one theme must be registered");
@@ -4817,6 +4864,7 @@ mod tests {
 
         let c = |s: &str| CString::new(s).expect("no interior NUL");
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         unsafe {
             let title = c("hc-window");
             let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
@@ -5055,14 +5103,17 @@ mod tests {
             let mut m: *mut c_char = std::ptr::null_mut();
             let mut p: *mut u8 = std::ptr::null_mut();
             let mut l: c_uint = 0;
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
             let had = unsafe { rw_poll_drop_event(&mut s, &mut t, &mut m, &mut p, &mut l) };
             if !had {
                 break;
             }
             if !m.is_null() {
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
                 unsafe { rw_free_string(m) };
             }
             if !p.is_null() {
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
                 unsafe { rw_free_bytes(p, l) };
             }
         }
@@ -5073,6 +5124,7 @@ mod tests {
         let mut payload_out: *mut u8 = std::ptr::dangling_mut::<u8>();
         let mut payload_len_out: c_uint = 0xDEAD_BEEF;
 
+// SAFETY: test-only ABI call; every pointer is an out-param local or a live `CString`/buffer.
         let had = unsafe {
             rw_poll_drop_event(
                 &mut source_out,

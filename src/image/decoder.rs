@@ -504,7 +504,16 @@ fn decode_png(data: &[u8]) -> Result<DecodedImage, String> {
     // exhausting memory: a stream that expands past `expected` is by definition not
     // the scanline data of the image this header described.
     let bits_per_pixel = channels * bit_depth as usize;
-    let row_bytes = (width as usize * bits_per_pixel).div_ceil(8);
+    // Widen to `u64` before multiplying: a single dimension can be 2^27 and
+    // `bits_per_pixel` can be 64, so the product is 2^33 — which fits a 64-bit
+    // `usize` but wraps on a 32-bit target. The checked form also keeps the
+    // `usize` conversion explicit, so a hostile header fails here rather than
+    // producing a short row length that the output loop then indexes past.
+    let row_bits = (width as u64)
+        .checked_mul(bits_per_pixel as u64)
+        .ok_or_else(|| format!("PNG row size overflow for {width}x{height}"))?;
+    let row_bytes = usize::try_from(row_bits.div_ceil(8))
+        .map_err(|_| format!("PNG row for {width}x{height} does not fit in memory"))?;
     let stride = row_bytes + 1; // filter byte + row data
     let expected = stride.checked_mul(height as usize).ok_or("PNG scanline size overflow")?;
     // One extra scanline of slack absorbs a benign over-long stream without
@@ -3309,6 +3318,24 @@ mod tests {
         bad.extend_from_slice(&[0u8; 4]); // body bytes far short of the claim
         let err = decode_png(&bad).unwrap_err();
         assert!(err.contains("declares"), "unexpected error: {err}");
+    }
+
+    /// A width × bits-per-pixel product that overflows a 32-bit `usize` must be an
+    /// error, not a wrapped row length.
+    ///
+    /// The IHDR may declare 2^27 x 1 (the pixel cap permits it) with 16-bit RGBA,
+    /// whose row is 2^33 bits. On a 32-bit target `width * bits_per_pixel` wrapped,
+    /// `row_bytes` became 0, and the output loop then indexed an empty row. The
+    /// guard is exercised on every target; on 64-bit it proves the error path, on
+    /// 32-bit it prevents the wrap.
+    #[test]
+    fn png_row_size_that_overflows_usize_is_err() {
+        let png = make_png(1 << 27, 1, 16, 6, 0, &[0, 0, 0, 0, 0]);
+        let err = decode_png(&png).unwrap_err();
+        assert!(
+            err.contains("truncated") || err.contains("decompress") || err.contains("overflow"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

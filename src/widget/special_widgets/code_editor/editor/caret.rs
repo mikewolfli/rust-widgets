@@ -287,23 +287,37 @@ impl CodeEditor {
     }
 
     /// Crosses line boundaries, which is what every real editor does.
+    ///
+    /// # Why the forward step does not ask for the line's length
+    ///
+    /// `line_len` counts every character of the line. On a minified bundle or a long
+    /// string literal that is thousands of characters, and holding an arrow key paid that
+    /// count once per cell. The line's **byte** length answers the question the step
+    /// actually asks — is there another character after this one — and `byte_offset` stops
+    /// at the caret's column, so the cost is O(column) with no full-line count (J-P10).
     pub(crate) fn step_horizontal(&self, position: TextPosition, direction: isize) -> TextPosition {
         let provider = self.model.borrow();
         if direction < 0 {
             if position.column > 0 {
                 TextPosition::new(position.line, position.column - 1)
             } else if position.line > 0 {
+                // Crossing to the previous line needs that line's last column, which is
+                // the one place a length is unavoidable.
                 let line = position.line - 1;
                 TextPosition::new(line, provider.line_len(line))
             } else {
                 position
             }
-        } else if position.column < provider.line_len(position.line) {
-            TextPosition::new(position.line, position.column + 1)
-        } else if position.line + 1 < provider.lines.len() {
-            TextPosition::new(position.line + 1, 0)
         } else {
-            position
+            let text = provider.line(position.line);
+            let byte = provider.byte_offset(position.line, position.column);
+            if byte < text.len() {
+                TextPosition::new(position.line, position.column + 1)
+            } else if position.line + 1 < provider.lines.len() {
+                TextPosition::new(position.line + 1, 0)
+            } else {
+                position
+            }
         }
     }
 

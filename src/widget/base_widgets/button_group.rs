@@ -26,7 +26,7 @@
 //! reason groups cannot leak between tests: a group created by one test is not reachable from the
 //! next one. Entries are also removed as soon as their last member leaves, so a long-lived thread
 //! does not accumulate dead groups.
-use crate::compat::{Cell, HashMap, RefCell, String, Vec};
+use crate::compat::{Cell, HashMap, Rc, RefCell, String, Vec};
 use crate::core::{ObjectId, Rect};
 use crate::signal::Signal1;
 
@@ -40,7 +40,11 @@ use crate::signal::Signal1;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum GroupKey {
     /// A caller-chosen group identifier.
-    Name(String),
+    ///
+    /// A counted reference rather than an owned `String`: the navigation path resolves this key
+    /// on every arrow key and every `is_checked` read, and a `String` clone per read was an
+    /// allocation where only an identity comparison was needed (G-A09).
+    Name(Rc<str>),
     /// Every exclusive control under one parent.
     Parent(ObjectId),
     /// The identity of a [`ButtonGroup`] handle that has no caller-chosen id.
@@ -70,9 +74,17 @@ pub(crate) struct GroupMember {
 struct Group {
     members: Vec<GroupMember>,
     selected: Option<ObjectId>,
+    /// Enabled members in visual order, derived from `members` and kept until it changes.
+    ///
+    /// Arrow navigation used to collect and sort the peer list on every key press. The member
+    /// set only changes when a member joins, leaves or reports a new rectangle/enabled flag, so
+    /// the sorted list is rebuilt there instead (G-A09).
+    sorted: Option<Vec<GroupMember>>,
 }
 
 thread_local! {
+    // `HashMap::new` is const only under alloc_frugal (BTreeMap); the std profile cannot be const.
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
     static GROUPS: RefCell<HashMap<GroupKey, Group>> = RefCell::new(HashMap::new());
     /// Which group each member id is currently registered with.
     ///
@@ -80,17 +92,20 @@ thread_local! {
     /// answer that does not walk every group. `register` maintains it and `unregister` drops the
     /// entry, so one widget's id maps to at most one group — the invariant the registry relies on
     /// when it notifies a group's listeners.
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
     static MEMBER_KEYS: RefCell<HashMap<ObjectId, GroupKey>> = RefCell::new(HashMap::new());
     /// A group handle's explicit membership: the adopted group plus the caller-assigned numeric id.
     ///
     /// This is what lets a [`ButtonGroup`] adopt a control whose own `auto_exclusive`/`group_id`
     /// properties say nothing about the handle. The member's effective key is resolved through
     /// this map first, so an adopted control behaves exactly like one that joined by name.
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
     static MEMBERSHIP: RefCell<HashMap<ObjectId, GroupMembership>> = RefCell::new(HashMap::new());
     /// The group-level signals, created by a [`ButtonGroup`] handle.
     ///
     /// A group with no handle has no entry, so the common auto-exclusive case pays nothing: the
     /// notification path looks the hub up and returns when there is none.
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
     static HUBS: RefCell<HashMap<GroupKey, GroupSignals>> = RefCell::new(HashMap::new());
     /// Source of the identities given to id-less [`ButtonGroup`] handles.
     static NEXT_HANDLE: Cell<ObjectId> = const { Cell::new(1) };
@@ -167,8 +182,16 @@ pub(crate) fn register(key: GroupKey, id: ObjectId, rect: Rect, enabled: bool) {
         let mut groups = groups.borrow_mut();
         let group = groups.entry(key).or_default();
         match group.members.iter_mut().find(|existing| existing.id == id) {
-            Some(existing) => *existing = member,
-            None => group.members.push(member),
+            Some(existing) => {
+                if *existing != member {
+                    *existing = member;
+                    group.sorted = None;
+                }
+            }
+            None => {
+                group.members.push(member);
+                group.sorted = None;
+            }
         }
     });
 }
@@ -184,6 +207,7 @@ pub(crate) fn unregister(key: &GroupKey, id: ObjectId) {
             return;
         };
         group.members.retain(|member| member.id != id);
+        group.sorted = None;
         if group.members.iter().all(|member| member.id != id) && group.selected == Some(id) {
             group.selected = None;
         }
@@ -252,6 +276,55 @@ pub(crate) fn members(key: &GroupKey) -> Vec<GroupMember> {
             groups.borrow().get(key).map(|group| group.members.clone()).unwrap_or_default()
         })
         .unwrap_or_default()
+}
+
+/// The member that follows `id` in visual order, skipping disabled peers.
+///
+/// Returns `None` when the group has fewer than two enabled members. `Some(id)` means the walk
+/// wrapped back to the caller, which the navigation code needs to tell apart from a move.
+///
+/// The sorted list is cached in the group and rebuilt only when the member set changes, so a
+/// held arrow key no longer allocates and sorts on every repeat (G-A09).
+pub(crate) fn next_enabled_member(key: &GroupKey, id: ObjectId, forward: bool) -> Option<ObjectId> {
+    GROUPS
+        .try_with(|groups| {
+            let mut groups = groups.borrow_mut();
+            let group = groups.get_mut(key)?;
+            if group.sorted.is_none() {
+                let mut sorted: Vec<GroupMember> =
+                    group.members.iter().copied().filter(|member| member.enabled).collect();
+                sorted.sort_by_key(|member| (member.rect.y, member.rect.x));
+                group.sorted = Some(sorted);
+            }
+            let sorted = group.sorted.as_ref()?;
+            if sorted.len() < 2 {
+                return None;
+            }
+            let index = sorted.iter().position(|member| member.id == id).unwrap_or(0);
+            let next = if forward {
+                (index + 1) % sorted.len()
+            } else {
+                (index + sorted.len() - 1) % sorted.len()
+            };
+            Some(sorted[next].id)
+        })
+        .ok()
+        .flatten()
+}
+
+/// Whether `id` is one of the group's members.
+///
+/// A borrowed walk rather than [`members`]' clone: `contains` is asked on every selection and
+/// does not need a snapshot (G-A10).
+pub(crate) fn contains_member(key: &GroupKey, id: ObjectId) -> bool {
+    GROUPS
+        .try_with(|groups| {
+            groups
+                .borrow()
+                .get(key)
+                .is_some_and(|group| group.members.iter().any(|member| member.id == id))
+        })
+        .unwrap_or(false)
 }
 
 /// Tells the mounted controls in `ids` that their checked property is now `checked`.
@@ -373,6 +446,7 @@ fn move_group(old_key: &GroupKey, new_key: &GroupKey) {
                     None => destination.members.push(member),
                 }
             }
+            destination.sorted = None;
             if destination.selected.is_none() {
                 destination.selected = moved.selected;
             }
@@ -481,14 +555,15 @@ impl ButtonGroup {
     /// Adopting rather than replacing is what makes two handles for one name observe the same
     /// group: the second one shares the first one's signals and members.
     pub fn with_id(id: impl Into<String>) -> Self {
-        let key = GroupKey::Name(id.into());
+        let name: String = id.into();
+        let key = GroupKey::Name(Rc::from(name.as_str()));
         Self { signals: hub_for(&key), key }
     }
 
     /// The group's caller-chosen name, or `None` for a generated identity.
     pub fn id(&self) -> Option<&str> {
         match &self.key {
-            GroupKey::Name(name) => Some(name.as_str()),
+            GroupKey::Name(name) => Some(&**name),
             GroupKey::Parent(_) | GroupKey::Handle(_) => None,
         }
     }
@@ -499,7 +574,8 @@ impl ButtonGroup {
     /// group the name the radio buttons already use" mean what it says rather than silently
     /// producing two groups under one name.
     pub fn set_id(&mut self, id: impl Into<String>) {
-        let new_key = GroupKey::Name(id.into());
+        let name: String = id.into();
+        let new_key = GroupKey::Name(Rc::from(name.as_str()));
         if new_key == self.key {
             return;
         }
@@ -602,8 +678,7 @@ impl ButtonGroup {
 
     /// Whether `button` is currently a member of this group.
     pub fn contains(&self, button: ObjectId) -> bool {
-        members(&self.key).iter().any(|member| member.id == button)
-            || membership(button) == Some(self.key.clone())
+        contains_member(&self.key, button) || membership(button) == Some(self.key.clone())
     }
 
     /// The widget id of the group's selected member, if one has been chosen.
@@ -684,7 +759,7 @@ mod tests {
     use super::*;
 
     fn key(name: &str) -> GroupKey {
-        GroupKey::Name(name.into())
+        GroupKey::Name(Rc::from(name))
     }
 
     #[test]
@@ -730,5 +805,18 @@ mod tests {
         register(key("1"), 2, Rect::new(0, 0, 1, 1), true);
         select(&key("1"), 2);
         assert!(!is_selected(&GroupKey::Parent(1), 2));
+    }
+
+    #[test]
+    fn navigation_reads_the_cached_visual_order() {
+        clear();
+        register(key("g"), 1, Rect::new(0, 0, 10, 10), true);
+        register(key("g"), 2, Rect::new(0, 20, 10, 10), false);
+        register(key("g"), 3, Rect::new(0, 40, 10, 10), true);
+        assert_eq!(next_enabled_member(&key("g"), 1, true), Some(3), "disabled peers are skipped");
+        assert_eq!(next_enabled_member(&key("g"), 3, true), Some(1), "the walk wraps");
+        assert_eq!(next_enabled_member(&key("g"), 1, false), Some(3));
+        assert!(contains_member(&key("g"), 2));
+        assert!(!contains_member(&key("g"), 9));
     }
 }

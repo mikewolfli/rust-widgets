@@ -3,13 +3,16 @@
 
 use super::types::{Material, SystemAccent};
 use super::{
-    AppearanceMode, Borders, Colors, Fonts, Motion, Spacing, Theme, ThemeOverrides, WidgetRole,
+    AppearanceMode, Borders, Colors, Fonts, IconSlot, IconTokens, Motion, Spacing, Theme,
+    ThemeOverrides, WidgetRole,
 };
 use crate::compat::atomic::{AtomicU64, Ordering};
 use crate::compat::{HashMap, Rc, Vec};
 use crate::core::{Color, Font};
 use crate::signal::Signal;
-use crate::style::{HighContrastMode, Margin, Padding, ThemeMode, WidgetState, WidgetStyle};
+use crate::style::{
+    HighContrastMode, Margin, Padding, SemanticState, ThemeMode, WidgetState, WidgetStyle,
+};
 
 /// Counts changes that can alter what the process-wide theme resolves to.
 ///
@@ -54,6 +57,15 @@ fn bump_theme_revision() {
 }
 
 /// Marks the process-wide theme as changed, so cached resolutions are no longer used.
+///
+/// # Locking
+///
+/// Callers hold the theme mutex ([`global_theme_manager`]), so this function must not take a
+/// lock whose owner can call back into the theme manager. Its only cross-subsystem step is
+/// [`crate::widget::runtime::arm_global_repaint`], which takes the `frame_wait` lock; the
+/// lock order is therefore **theme -> frame_wait** and never the reverse. The frame-step
+/// crossfade tick deliberately does not call this function: it advances the revision and the
+/// caller arms the repaint after the theme guard is dropped.
 fn note_theme_mutation() {
     bump_theme_revision();
     // The revision only makes the *next* paint resolve the new colours; this arms the
@@ -554,6 +566,12 @@ impl ThemeManager {
     /// Each step advances the theme revision, because the *effective* palette changed even though
     /// the theme registry did not; without that, a cached resolved style would keep the frame's
     /// first blend for the whole transition.
+    /// # Locking
+    ///
+    /// Runs under the theme mutex. It advances the theme revision but **does not** arm the
+    /// global repaint: arming takes the `frame_wait` lock, which would extend the theme lock's
+    /// scope into the wake subsystem. The caller arms the repaint after dropping the guard,
+    /// which keeps the lock order one-way (theme -> frame_wait).
     pub fn tick_theme_crossfade(&mut self, delta_ms: u32) -> bool {
         let Some(crossfade) = self.crossfade.as_mut() else {
             return false;
@@ -563,8 +581,16 @@ impl ThemeManager {
         if finished {
             self.crossfade = None;
         }
-        note_theme_mutation();
+        bump_theme_revision();
         !finished
+    }
+
+    /// Whether a colour crossfade is currently running.
+    ///
+    /// The frame step checks this **before** [`Self::tick_theme_crossfade`] so it can arm the
+    /// repaint for the finishing step too, after the theme guard is released.
+    pub fn is_crossfading(&self) -> bool {
+        self.crossfade.is_some()
     }
 
     /// Returns currently active theme.
@@ -575,6 +601,16 @@ impl ThemeManager {
     /// Returns a registered theme by name.
     pub fn get_theme(&self, name: &str) -> Option<&Theme> {
         self.themes.get(name)
+    }
+
+    /// The active theme's nominal icon size for `slot`, in logical pixels (THM-02).
+    ///
+    /// Exposed on the manager so a control asks the *active* theme rather than holding a theme
+    /// reference — the same way controls read colours through [`active_palette_shared`]. Returns
+    /// `None` only when no theme is active, which the global manager never produces but a
+    /// caller-owned manager whose active theme was removed can.
+    pub fn icon_size(&self, slot: IconSlot) -> Option<u32> {
+        self.current_theme().map(|theme| theme.icon_size(slot))
     }
 
     /// Returns a reference to the `theme_changed` signal.
@@ -627,15 +663,18 @@ impl ThemeManager {
     ) -> WidgetStyle {
         let mut style = self.resolve_base_style_for(kind_name, class_name);
         if let Some(state) = state {
+            // The state word comes from `WidgetState::state_suffix`, the crate's single spelling
+            // source (G-405), so a theme key and a CSS pseudo-class cannot name one state two
+            // ways.
             // The state key is tried for the class first, then the kind, so a theme can
             // describe either `Button.primary:hover` or a kind-wide `button:hover`.
             let suffixes = match class_name {
                 Some(class) => [
-                    Some(format!("{class}:{}", state_suffix(state))),
-                    Some(format!("{kind_name}:{}", state_suffix(state))),
+                    Some(format!("{class}:{}", state.state_suffix())),
+                    Some(format!("{kind_name}:{}", state.state_suffix())),
                     None,
                 ],
-                None => [None, Some(format!("{kind_name}:{}", state_suffix(state))), None],
+                None => [None, Some(format!("{kind_name}:{}", state.state_suffix())), None],
             };
             for key in suffixes.into_iter().flatten() {
                 if let Some(token) = self.current_theme().and_then(|t| t.overrides.styles.get(&key))
@@ -717,7 +756,7 @@ impl ThemeManager {
     ) -> WidgetStyle {
         let mut style = self.resolve_base_style(class_name);
         if let Some(state) = state {
-            let key = format!("{class_name}:{}", state_suffix(state));
+            let key = format!("{class_name}:{}", state.state_suffix());
             if let Some(token) = self.current_theme().and_then(|t| t.overrides.styles.get(&key)) {
                 let theme = self.current_theme();
                 apply_token(&mut style, token, theme);
@@ -922,24 +961,6 @@ fn role_key(role: WidgetRole) -> &'static str {
     }
 }
 
-/// The suffix a state contributes to an override key.
-fn state_suffix(state: WidgetState) -> &'static str {
-    match state {
-        WidgetState::Normal => "normal",
-        WidgetState::Hover => "hover",
-        WidgetState::Pressed => "pressed",
-        WidgetState::Focused => "focused",
-        WidgetState::Disabled => "disabled",
-        WidgetState::Checked => "checked",
-        WidgetState::Selected => "selected",
-        WidgetState::Active => "active",
-        WidgetState::Inactive => "inactive",
-        WidgetState::Error => "error",
-        WidgetState::Warning => "warning",
-        WidgetState::Success => "success",
-    }
-}
-
 /// Apply a partial override token to a resolved style.
 ///
 /// Only the token's `Some` fields are written, so an override may adjust one
@@ -959,6 +980,11 @@ fn apply_token(style: &mut WidgetStyle, token: &super::ThemeStyleToken, theme: O
     }
     if let Some(radius) = token.radius {
         style.border_radius = Some(radius);
+    }
+    if let Some(padding) = &token.padding {
+        // THM-01: the token's cascade resolves through the style layer's own `PaddingSpec`, so a
+        // theme-written padding and a programmatic `with_padding_spec` value mean the same thing.
+        style.padding = padding.resolve();
     }
     if let Some(opacity) = token.opacity {
         // D09-STYLE-04: a programmatically-set `NaN` token must not reach the resolved style;
@@ -1095,6 +1121,19 @@ use crate::compat::{lock, Mutex, MutexGuard, OnceLock};
 /// the dark preset alongside it so [`ThemeManager::set_appearance`] works without
 /// the caller having to register anything first. That seeding is what turns the
 /// previously unreachable [`Theme::dark`] preset into a usable switch.
+///
+/// # Lock order (recorded at the mutex)
+///
+/// The theme mutex may be held while taking the **`frame_wait`** lock (through
+/// [`note_theme_mutation`] -> [`crate::widget::runtime::arm_global_repaint`] -> `wake`).
+/// No code may take the theme mutex while holding the `frame_wait` lock: that would close the
+/// cycle. The frame step ([`crate::widget::runtime`]) releases this guard before arming a
+/// repaint, and the macOS accent observer is delivered from AppKit's run loop, never from
+/// inside this guard.
+///
+/// [`crate::style::environment::environment`] is **lock-free** (a thread-local snapshot plus
+/// atomics), so reading it under this guard cannot deadlock; it must stay lock-free, because a
+/// provider that re-entered this manager would close a second cycle.
 pub fn global_theme_manager() -> MutexGuard<'static, ThemeManager> {
     // A test build isolates the registry per thread.
     //
@@ -1165,21 +1204,73 @@ pub fn theme_test_guard() -> crate::compat::MutexGuard<'static, ()> {
     lock(GUARD.get_or_init(|| Mutex::new(())))
 }
 
+// ── The per-thread resolution caches ──
+//
+// Three caches validate against the same `THEME_REVISION`: the resolved style of a kind, the
+// resolved style of a `(kind, state)` pair, and the semantic border of a `(kind, meaning)` pair.
+// They are thread-local because the draw path is per-thread and the values are small; a shared
+// cache would put a lock on the path these caches exist to remove.
+
+/// One cache entry: the revision it was resolved at, when it was last read, and its value.
+///
+/// `last_used` exists for eviction (G-169): a `HashMap` iterates in an order unrelated to
+/// insertion or usage, so `keys().next()` removed an **arbitrary** entry — often the hottest
+/// name, which then re-resolved every frame. Every hit refreshes the stamp, and eviction takes
+/// the minimum, which makes the policy the least-recently-used one the comment always claimed.
+struct CacheEntry<T> {
+    /// The theme revision this value was resolved at.
+    revision: u64,
+    /// A monotonic recency stamp, refreshed on every hit.
+    last_used: u64,
+    /// The cached value.
+    value: T,
+}
+
+impl<T> CacheEntry<T> {
+    /// A fresh entry for a value resolved at `revision`.
+    fn new(revision: u64, value: T) -> Self {
+        Self { revision, last_used: next_use_tick(), value }
+    }
+
+    /// Records a hit, making this entry the most recently used one.
+    fn mark_used(&mut self) {
+        self.last_used = next_use_tick();
+    }
+}
+
+// The source of `CacheEntry::last_used`.
+//
+// Per-thread because the caches are: a shared counter would need an atomic for no benefit, and
+// the only invariant that matters is "later is larger" within one thread's cache.
+thread_local! {
+    static CACHE_USE_TICK: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// The next recency stamp. Wrapping is harmless: only the relative order of the entries in one
+/// cache matters, and a wrap far beyond a frame's worth of reads cannot reorder them.
+fn next_use_tick() -> u64 {
+    CACHE_USE_TICK.with(|tick| {
+        let next = tick.get().wrapping_add(1);
+        tick.set(next);
+        next
+    })
+}
+
+/// `widget name -> entry`.
+type ResolvedStyleCache = HashMap<String, CacheEntry<Rc<WidgetStyle>>>;
+
 // Remembers the last resolved style for each widget name, with the revision it was resolved at.
 //
-// Thread-local because the draw path is per-thread and the value is small; a shared cache would
-// put a lock on the path this cache exists to remove. `WidgetStyle` is a small `Option`-heavy
-// value (12ns to clone, measured), so the hit path is a hash lookup and one clone.
-//
-// The bound is a working set, not a policy: there are roughly 180 control kinds in the crate, so
-// 256 entries cannot thrash for a normal application, and an application that somehow produces
-// more names simply clears and refills rather than growing without limit.
+// `WidgetStyle` is a small `Option`-heavy value (12ns to clone, measured), so a hit is a lookup
+// plus one refcount bump. The bound is a working set, not a policy: the crate has roughly 180
+// control kinds, so 256 entries cannot thrash for a normal application; a program that produces
+// more names evicts its least-recently-used entry (G-169), not the whole table.
 thread_local! {
-    static RESOLVED_STYLE_CACHE: crate::compat::RefCell<HashMap<String, (u64, Rc<WidgetStyle>)>> =
+    static RESOLVED_STYLE_CACHE: crate::compat::RefCell<ResolvedStyleCache> =
         crate::compat::RefCell::new(HashMap::new());
 }
 
-/// The largest number of resolved names the per-thread cache keeps.
+/// The largest number of resolved names the per-thread style cache keeps.
 const RESOLVED_STYLE_CACHE_LIMIT: usize = 256;
 
 /// Advances the revision the resolved-style caches validate against.
@@ -1193,11 +1284,11 @@ pub(crate) fn invalidate_resolved_style_cache() {
     bump_theme_revision();
 }
 
-/// `kind name -> (state -> (revision, style))`.
+/// `kind name -> (state -> entry)`.
 ///
 /// The two-level shape is what lets a cache hit borrow the kind name instead of allocating a
 /// composite `"kind:state"` key on every lookup.
-type StateStyleCache = HashMap<String, HashMap<Option<WidgetState>, (u64, Rc<WidgetStyle>)>>;
+type StateStyleCache = HashMap<String, HashMap<Option<WidgetState>, CacheEntry<Rc<WidgetStyle>>>>;
 
 // The same cache for the `(kind, state)` resolver.
 //
@@ -1210,8 +1301,97 @@ thread_local! {
         crate::compat::RefCell::new(HashMap::new());
 }
 
-/// The largest number of resolved kind names the state cache keeps.
+/// The largest number of cached `(kind, state)` resolutions the state cache keeps.
+///
+/// Counted in entries rather than kind names so the eviction scan (G-169) is bounded by a
+/// constant: one kind can hold twelve states, and counting kinds would let the table reach
+/// twelve times the bound.
 const RESOLVED_STATE_STYLE_CACHE_LIMIT: usize = 256;
+
+/// `kind name -> (semantic meaning -> entry)` for [`resolved_semantic_border`] (G-168).
+///
+/// Same two-level shape as [`StateStyleCache`], for the same reason: a lookup borrows the
+/// caller's kind name and the `Copy` meaning enum, so a hit allocates neither a `format!` key nor
+/// a `String`.
+type SemanticBorderCache = HashMap<String, HashMap<SemanticState, CacheEntry<Option<Color>>>>;
+
+thread_local! {
+    static RESOLVED_SEMANTIC_BORDER_CACHE: crate::compat::RefCell<SemanticBorderCache> =
+        crate::compat::RefCell::new(HashMap::new());
+}
+
+/// The largest number of cached `(kind, meaning)` border answers the cache keeps.
+const RESOLVED_SEMANTIC_BORDER_CACHE_LIMIT: usize = 256;
+
+/// Evicts the least-recently-used name from the resolved-style cache.
+fn evict_style_least_recently_used(cache: &mut ResolvedStyleCache) {
+    // O(capacity) with a constant capacity, which is what the "evict one entry" policy needs.
+    let coldest =
+        cache.iter().min_by_key(|(_, entry)| entry.last_used).map(|(name, _)| name.clone());
+    if let Some(name) = coldest {
+        cache.remove(&name);
+    }
+}
+
+/// Evicts the least-recently-used **single** `(kind, state)` entry.
+///
+/// G-169: the old code removed an arbitrary *kind*, dropping all of its states at once. A kind
+/// with a hot `hover` entry and a cold `pressed` one therefore lost both, and the next hover
+/// rebuilt the role style. Evicting one entry keeps the rest of the kind's working set.
+fn evict_state_least_recently_used(cache: &mut StateStyleCache) {
+    let mut coldest: Option<(String, Option<WidgetState>, u64)> = None;
+    for (kind, states) in cache.iter() {
+        for (state, entry) in states.iter() {
+            let colder = match &coldest {
+                Some((_, _, stamp)) => entry.last_used < *stamp,
+                None => true,
+            };
+            if colder {
+                coldest = Some((kind.clone(), *state, entry.last_used));
+            }
+        }
+    }
+    if let Some((kind, state, _)) = coldest {
+        let emptied = match cache.get_mut(&kind) {
+            Some(states) => {
+                states.remove(&state);
+                states.is_empty()
+            }
+            None => false,
+        };
+        if emptied {
+            cache.remove(&kind);
+        }
+    }
+}
+
+/// Evicts the least-recently-used **single** `(kind, meaning)` border entry.
+fn evict_semantic_border_least_recently_used(cache: &mut SemanticBorderCache) {
+    let mut coldest: Option<(String, SemanticState, u64)> = None;
+    for (kind, meanings) in cache.iter() {
+        for (meaning, entry) in meanings.iter() {
+            let colder = match &coldest {
+                Some((_, _, stamp)) => entry.last_used < *stamp,
+                None => true,
+            };
+            if colder {
+                coldest = Some((kind.clone(), *meaning, entry.last_used));
+            }
+        }
+    }
+    if let Some((kind, meaning, _)) = coldest {
+        let emptied = match cache.get_mut(&kind) {
+            Some(meanings) => {
+                meanings.remove(&meaning);
+                meanings.is_empty()
+            }
+            None => false,
+        };
+        if emptied {
+            cache.remove(&kind);
+        }
+    }
+}
 
 /// Resolves the active theme's style for `widget_name`.
 ///
@@ -1239,13 +1419,18 @@ const RESOLVED_STATE_STYLE_CACHE_LIMIT: usize = 256;
 /// cache. This variant returns the cache entry itself; a hit is a refcount bump.
 pub fn resolved_theme_style_shared(widget_name: &str) -> Option<Rc<WidgetStyle>> {
     let revision = theme_revision();
-    if let Some(style) = RESOLVED_STYLE_CACHE.with(|cache| {
-        cache
-            .borrow()
-            .get(widget_name)
-            .filter(|(cached_revision, _)| *cached_revision == revision)
-            .map(|(_, style)| Rc::clone(style))
-    }) {
+    let hit = RESOLVED_STYLE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let entry = cache.get_mut(widget_name)?;
+        if entry.revision != revision {
+            return None;
+        }
+        // Refreshing the stamp on a hit is what makes eviction LRU rather than arbitrary
+        // (G-169); it costs one thread-local read.
+        entry.mark_used();
+        Some(Rc::clone(&entry.value))
+    });
+    if let Some(style) = hit {
         return Some(style);
     }
 
@@ -1262,13 +1447,12 @@ pub fn resolved_theme_style_shared(widget_name: &str) -> Option<Rc<WidgetStyle>>
     RESOLVED_STYLE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.len() >= RESOLVED_STYLE_CACHE_LIMIT {
-            // Evict one entry rather than clearing the table. A clear turned a single new kind
-            // name past the bound into a full re-resolution of every control in the frame.
-            if let Some(oldest) = cache.keys().next().cloned() {
-                cache.remove(&oldest);
-            }
+            // Evict the least-recently-used entry rather than clearing the table. A clear turned
+            // a single new kind name past the bound into a full re-resolution of every control
+            // in the frame (G-169).
+            evict_style_least_recently_used(&mut cache);
         }
-        cache.insert(widget_name.to_string(), (revision, Rc::clone(&style)));
+        cache.insert(widget_name.to_string(), CacheEntry::new(revision, Rc::clone(&style)));
     });
     Some(style)
 }
@@ -1356,12 +1540,13 @@ pub fn resolved_theme_style_for_state_shared(
 ) -> Option<Rc<WidgetStyle>> {
     let revision = theme_revision();
     let cached = RESOLVED_STATE_STYLE_CACHE.with(|cache| {
-        cache
-            .borrow()
-            .get(kind_name)
-            .and_then(|states| states.get(&Some(state)))
-            .filter(|(cached_revision, _)| *cached_revision == revision)
-            .map(|(_, style)| Rc::clone(style))
+        let mut cache = cache.borrow_mut();
+        let entry = cache.get_mut(kind_name)?.get_mut(&Some(state))?;
+        if entry.revision != revision {
+            return None;
+        }
+        entry.mark_used();
+        Some(Rc::clone(&entry.value))
     });
     if let Some(style) = cached {
         return Some(style);
@@ -1374,16 +1559,16 @@ pub fn resolved_theme_style_for_state_shared(
     let revision = theme_revision();
     RESOLVED_STATE_STYLE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if cache.len() >= RESOLVED_STATE_STYLE_CACHE_LIMIT {
-            // Evict one kind instead of dropping the whole table (see the resolved-style cache).
-            if let Some(oldest) = cache.keys().next().cloned() {
-                cache.remove(&oldest);
-            }
+        let entries: usize = cache.values().map(|states| states.len()).sum();
+        if entries >= RESOLVED_STATE_STYLE_CACHE_LIMIT {
+            // Evict one `(kind, state)` entry, not the whole kind and not the whole table
+            // (G-169). See `evict_state_least_recently_used`.
+            evict_state_least_recently_used(&mut cache);
         }
         cache
             .entry(kind_name.to_string())
             .or_default()
-            .insert(Some(state), (revision, Rc::clone(&style)));
+            .insert(Some(state), CacheEntry::new(revision, Rc::clone(&style)));
     });
     Some(style)
 }
@@ -1414,16 +1599,60 @@ pub fn resolved_theme_style_for_state(
 /// `None` when no theme is active, when the semantic state is `None`, or when the theme's
 /// override does not name a border colour — in every case the caller keeps the border its
 /// interaction style already gave it.
-pub fn resolved_semantic_border(
-    kind_name: &str,
-    semantic: crate::style::SemanticState,
-) -> Option<Color> {
+///
+/// # Why the answer is cached (G-168)
+///
+/// This is a draw-path entry point: a control that carries a meaning asks it once per frame, and
+/// the uncached form took the global manager's mutex, allocated a `format!("<kind>:<suffix>")`
+/// key and searched a `BTreeMap` on every call. It is now resolved through the semantic-border
+/// cache, whose key is the caller's own `&str` plus the `Copy` meaning enum — a hit neither locks
+/// nor allocates. The entry is validated by the same [`THEME_REVISION`] every other resolution
+/// cache uses, so a theme switch (or an environment change) invalidates it on the same path. A
+/// `None` answer is cached too: "this theme names no border for this meaning" is a resolution,
+/// not an absence of one.
+pub fn resolved_semantic_border(kind_name: &str, semantic: SemanticState) -> Option<Color> {
+    // `SemanticState::None` carries no key at all, so there is nothing to look up or cache.
     let suffix = semantic.state_suffix()?;
-    let manager = global_theme_manager();
-    let theme = manager.current_theme()?;
-    let key = format!("{kind_name}:{suffix}");
-    let token = theme.overrides.styles.get(&key)?;
-    token.border
+    let revision = theme_revision();
+    let cached = RESOLVED_SEMANTIC_BORDER_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let entry = cache.get_mut(kind_name)?.get_mut(&semantic)?;
+        if entry.revision != revision {
+            return None;
+        }
+        entry.mark_used();
+        Some(entry.value)
+    });
+    if let Some(border) = cached {
+        return border;
+    }
+
+    // A miss is the only path that allocates the composite key.
+    let border = {
+        let manager = global_theme_manager();
+        match manager.current_theme() {
+            Some(theme) => {
+                let key = format!("{kind_name}:{suffix}");
+                theme.overrides.styles.get(&key).and_then(|token| token.border)
+            }
+            None => None,
+        }
+    };
+    // Re-read after resolution for the same reason as the style caches: this call may have seeded
+    // the registry, and seeding bumps the revision.
+    let revision = theme_revision();
+    RESOLVED_SEMANTIC_BORDER_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let entries: usize = cache.values().map(|meanings| meanings.len()).sum();
+        if entries >= RESOLVED_SEMANTIC_BORDER_CACHE_LIMIT {
+            evict_semantic_border_least_recently_used(&mut cache);
+        }
+        cache
+            .entry(kind_name.to_string())
+            .or_default()
+            .insert(semantic, CacheEntry::new(revision, border));
+    });
+    border
 }
 
 /// A semantic state a control can be in, mapped 1:1 onto `theme.colors`.
@@ -1546,6 +1775,7 @@ impl Default for Theme {
                 display: Font::bold("Arial", 28.0),
             },
             spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
+            icons: IconTokens::default(),
             borders: Borders { width: 1, radius: 4, shadow: true },
             // This preset is the flat one, and it says so with the rule rather than with a list of
             // kinds: every role's bevel and elevation is flattened, in `role_base_style`, for every
@@ -1647,6 +1877,7 @@ impl Theme {
                 display: Font::bold("Arial", 28.0),
             },
             spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
+            icons: IconTokens::default(),
             borders: Borders { width: 1, radius: 4, shadow: true },
             // The dark preset is flat too, for the same reason the default one is: the two shipped
             // presets are the crate's existing appearance, and their 377 snapshots are the safety
@@ -2566,5 +2797,257 @@ mod system_accent_refresh_tests {
         drop(previous);
         drop(neutral);
         uninstall_environment();
+    }
+}
+
+#[cfg(test)]
+mod resolution_cache_tests {
+    use super::*;
+    use crate::theme::{PaddingToken, ThemeStyleToken};
+
+    /// A theme whose override table holds exactly the given `<key>: border` entries.
+    fn theme_naming_borders(name: &str, entries: &[(&str, Color)]) -> Theme {
+        let mut styles = crate::compat::BTreeMap::new();
+        for (key, border) in entries {
+            styles.insert(
+                (*key).to_string(),
+                ThemeStyleToken { border: Some(*border), ..ThemeStyleToken::default() },
+            );
+        }
+        Theme { name: name.to_string(), overrides: ThemeOverrides { styles }, ..Theme::default() }
+    }
+
+    /// A theme switch must invalidate the semantic-border cache on both answers it can hold
+    /// (G-168).
+    ///
+    /// # How the test proves a hit happened
+    ///
+    /// The cache is poisoned through its own storage without touching the revision. If the second
+    /// read re-resolved, it would return the theme's border; it returns the poisoned value, so the
+    /// read came from the cache. The switch then has to reach through it, or the poisoned value
+    /// (and the cached `None`) would outlive the theme they were resolved under.
+    #[test]
+    fn a_theme_switch_invalidates_the_semantic_border_cache() {
+        let _guard = theme_test_guard();
+        RESOLVED_SEMANTIC_BORDER_CACHE.with(|cache| cache.borrow_mut().clear());
+
+        let first = Color::rgb(11, 22, 33);
+        let second = Color::rgb(44, 55, 66);
+        {
+            let mut manager = global_theme_manager();
+            manager.register_theme(theme_naming_borders("border-a", &[("probe:error", first)]));
+            manager.register_theme(theme_naming_borders(
+                "border-b",
+                &[("probe:error", second), ("probe:warning", second)],
+            ));
+            assert!(manager.set_theme("border-a"));
+        }
+
+        // Warm both a `Some` and a `None` answer.
+        assert_eq!(resolved_semantic_border("probe", SemanticState::Error), Some(first));
+        assert_eq!(resolved_semantic_border("probe", SemanticState::Warning), None);
+
+        let poisoned = Color::rgb(200, 201, 202);
+        RESOLVED_SEMANTIC_BORDER_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let entry = cache
+                .get_mut("probe")
+                .and_then(|meanings| meanings.get_mut(&SemanticState::Error))
+                .expect("the first read must have cached the error border");
+            entry.value = Some(poisoned);
+        });
+        assert_eq!(
+            resolved_semantic_border("probe", SemanticState::Error),
+            Some(poisoned),
+            "a same-revision read must be answered from the cache, not re-resolved"
+        );
+
+        {
+            let mut manager = global_theme_manager();
+            assert!(manager.set_theme("border-b"));
+        }
+        assert_eq!(
+            resolved_semantic_border("probe", SemanticState::Error),
+            Some(second),
+            "a theme switch must invalidate the poisoned entry"
+        );
+        assert_eq!(
+            resolved_semantic_border("probe", SemanticState::Warning),
+            Some(second),
+            "a cached `None` must not outlive the theme it was resolved under"
+        );
+    }
+
+    /// A hit refreshes the recency stamp, so the policy is the least-recently-used one the
+    /// comments claim (G-169).
+    #[test]
+    fn a_cache_hit_refreshes_the_recency_stamp() {
+        let _guard = theme_test_guard();
+        let revision = theme_revision();
+        // The lowest possible stamp: any hit must move it forward, whatever the thread's tick
+        // counter happens to be.
+        let stale = 0;
+        RESOLVED_STYLE_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            cache.clear();
+            cache.insert(
+                "probe-kind".to_string(),
+                CacheEntry { revision, last_used: stale, value: Rc::new(WidgetStyle::default()) },
+            );
+        });
+
+        let _ = resolved_theme_style_shared("probe-kind");
+
+        RESOLVED_STYLE_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            let entry = cache.get("probe-kind").expect("the entry is still cached");
+            assert_eq!(entry.revision, revision, "a hit keeps the entry it resolved");
+            assert!(
+                entry.last_used > stale,
+                "a hit must become the most recently used entry, not keep its old stamp"
+            );
+        });
+    }
+
+    /// Past the bound, the **coldest** name is evicted — not whatever `keys().next()` happened to
+    /// yield (G-169).
+    #[test]
+    fn the_style_cache_evicts_the_least_recently_used_name() {
+        let _guard = theme_test_guard();
+        let revision = theme_revision();
+        RESOLVED_STYLE_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            cache.clear();
+            for index in 0..RESOLVED_STYLE_CACHE_LIMIT {
+                cache.insert(
+                    format!("probe-{index}"),
+                    CacheEntry {
+                        revision,
+                        // `probe-0` is the coldest entry and `probe-255` the hottest; a
+                        // `HashMap`'s iteration order is unrelated to these stamps.
+                        last_used: index as u64,
+                        value: Rc::new(WidgetStyle::default()),
+                    },
+                );
+            }
+        });
+
+        let _ = resolved_theme_style_shared("brand-new-kind");
+
+        RESOLVED_STYLE_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            assert!(!cache.contains_key("probe-0"), "the coldest entry is evicted");
+            assert!(cache.contains_key("probe-1"), "one eviction, not a table clear");
+            assert!(cache.contains_key("brand-new-kind"), "the new resolution stays");
+            assert_eq!(cache.len(), RESOLVED_STYLE_CACHE_LIMIT, "the bound still holds");
+        });
+    }
+
+    /// The state cache evicts a single `(kind, state)`, so a hot state does not lose its cold
+    /// sibling (G-169).
+    #[test]
+    fn the_state_cache_evicts_one_state_not_the_whole_kind() {
+        let _guard = theme_test_guard();
+        let revision = theme_revision();
+        RESOLVED_STATE_STYLE_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            cache.clear();
+            let mut hot_kind = HashMap::new();
+            hot_kind.insert(
+                Some(WidgetState::Hover),
+                CacheEntry { revision, last_used: 1_000, value: Rc::new(WidgetStyle::default()) },
+            );
+            hot_kind.insert(
+                Some(WidgetState::Pressed),
+                CacheEntry { revision, last_used: 1, value: Rc::new(WidgetStyle::default()) },
+            );
+            cache.insert("probe-kind".to_string(), hot_kind);
+
+            let mut tick = 2u64;
+            while cache.values().map(|states| states.len()).sum::<usize>()
+                < RESOLVED_STATE_STYLE_CACHE_LIMIT
+            {
+                cache.insert(
+                    format!("filler-{tick}"),
+                    HashMap::from([(
+                        Some(WidgetState::Normal),
+                        CacheEntry {
+                            revision,
+                            last_used: tick,
+                            value: Rc::new(WidgetStyle::default()),
+                        },
+                    )]),
+                );
+                tick += 1;
+            }
+        });
+
+        let _ = resolved_theme_style_for_state_shared("brand-new-kind", WidgetState::Normal);
+
+        RESOLVED_STATE_STYLE_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            let kind = cache.get("probe-kind").expect("only one state of the kind was cold");
+            assert!(
+                !kind.contains_key(&Some(WidgetState::Pressed)),
+                "the coldest single entry is evicted"
+            );
+            assert!(
+                kind.contains_key(&Some(WidgetState::Hover)),
+                "the hot sibling state must survive; evicting the whole kind is the G-169 defect"
+            );
+            assert!(cache.contains_key("brand-new-kind"));
+        });
+    }
+
+    /// THM-01: a token's padding cascade reaches the resolved style, one role at a time.
+    #[test]
+    fn a_padding_token_resolves_into_the_resolved_style() {
+        let mut manager = ThemeManager::new();
+        let mut styles = crate::compat::BTreeMap::new();
+        styles.insert(
+            "probe".to_string(),
+            ThemeStyleToken {
+                padding: Some(PaddingToken {
+                    all: Some(3),
+                    horizontal: Some(12),
+                    ..PaddingToken::default()
+                }),
+                ..ThemeStyleToken::default()
+            },
+        );
+        manager.register_theme(Theme {
+            name: "padding-probe".to_string(),
+            overrides: ThemeOverrides { styles },
+            ..Theme::default()
+        });
+        assert!(manager.set_theme("padding-probe"));
+
+        let style = manager.resolve_style("probe");
+        assert_eq!(style.padding.top, 3, "the general layer wins where the axis is silent");
+        assert_eq!(style.padding.bottom, 3);
+        assert_eq!(style.padding.left, 12, "the axis layer overrides the general one");
+        assert_eq!(style.padding.right, 12);
+    }
+
+    /// THM-02: the icon slots are readable from the theme and through the manager, and the
+    /// defaults are the literals the shipped controls already used.
+    #[test]
+    fn icon_size_tokens_are_readable() {
+        let defaults = IconTokens::default();
+        assert_eq!((defaults.small, defaults.medium, defaults.large), (16, 18, 32));
+        assert_eq!(Theme::default().icon_size(IconSlot::Small), 16);
+        assert_eq!(Theme::default().icon_size(IconSlot::Medium), 18);
+        assert_eq!(Theme::default().icon_size(IconSlot::Large), 32);
+
+        let mut manager = ThemeManager::new();
+        manager.register_theme(Theme {
+            name: "icon-probe".to_string(),
+            icons: IconTokens { small: 20, medium: 24, large: 40 },
+            ..Theme::default()
+        });
+        assert!(manager.set_theme("icon-probe"));
+        assert_eq!(manager.icon_size(IconSlot::Small), Some(20));
+        assert_eq!(manager.icon_size(IconSlot::Medium), Some(24));
+        assert_eq!(manager.icon_size(IconSlot::Large), Some(40));
     }
 }

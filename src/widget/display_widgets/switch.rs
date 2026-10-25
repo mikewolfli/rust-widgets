@@ -181,6 +181,12 @@ pub struct Switch {
     /// exactly the bug `cupertino_switch` had — its iOS green landed on the resting track.
     /// The two ends are two facts and now have two fields.
     on_track: Option<Color>,
+    /// The thumb's explicitly named colour, when the caller wants one.
+    ///
+    /// The resting thumb is derived from the theme's foreground (mixed most of the way to white),
+    /// which is right for the default look but leaves a theme-tuned switch with no way to name
+    /// the knob. `None` keeps that derivation.
+    thumb: Option<Color>,
     /// Emitted when the checked state changes.
     pub toggled: Signal1<bool>,
 }
@@ -201,6 +207,7 @@ impl Switch {
             geometry: SwitchShape::MATERIAL,
             drag: None,
             on_track: None,
+            thumb: None,
             toggled: Signal1::new(),
         }
     }
@@ -413,6 +420,20 @@ impl Switch {
             return;
         }
         self.on_track = color;
+        self.base.request_redraw();
+    }
+
+    /// The thumb's explicitly named colour, if the caller named one.
+    pub fn thumb_color(&self) -> Option<Color> {
+        self.thumb
+    }
+
+    /// Names the thumb's colour, or restores the theme-derived one with `None`.
+    pub fn set_thumb_color(&mut self, color: Option<Color>) {
+        if self.thumb == color {
+            return;
+        }
+        self.thumb = color;
         self.base.request_redraw();
     }
 
@@ -705,6 +726,10 @@ impl WidgetProperties for Switch {
                 None => CapabilityValue::Null,
             }),
             "switch_geometry" => Ok(CapabilityValue::String(self.switch_geometry().token().into())),
+            "thumb_color" => Ok(match self.thumb_color() {
+                Some(color) => CapabilityValue::Color(color),
+                None => CapabilityValue::Null,
+            }),
             _ => base_property_get(self, name),
         }
     }
@@ -737,6 +762,21 @@ impl WidgetProperties for Switch {
                 self.set_switch_geometry(preset);
                 Ok(())
             }
+            "thumb_color" => {
+                // `Null` restores the theme-derived thumb; a hex string is accepted because the
+                // JSON and C surfaces carry colours as text.
+                let color = match value {
+                    CapabilityValue::Null => None,
+                    CapabilityValue::Color(color) => Some(color),
+                    CapabilityValue::String(raw) => match crate::core::Color::parse_hex(&raw) {
+                        Some(color) => Some(color),
+                        None => return Err(CapabilityAccessError::TypeMismatch),
+                    },
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_thumb_color(color);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -744,7 +784,13 @@ impl WidgetProperties for Switch {
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `SWITCH_PROPERTIES`; the two presentation knobs are published because both
         // have public setters and neither is reachable through `checked`.
-        property_names_of!["checked", "on_track_color", "switch_geometry", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "checked",
+            "on_track_color",
+            "switch_geometry",
+            "thumb_color",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `switch` publishes.
@@ -912,6 +958,9 @@ impl Draw for Switch {
 
         let thumb_color = if !is_enabled {
             Color::rgba(240, 240, 240, 200)
+        } else if let Some(explicit) = self.thumb {
+            // A named thumb colour short-circuits the theme derivation.
+            explicit
         } else {
             // The thumb reads the theme's foreground (a light thumb on a dark
             // surface, a dark-ish thumb never — the thumb is always the lighter of
@@ -1733,5 +1782,19 @@ mod tests {
         sw.handle_event(&Event::MousePress { pos: at, button: 1, modifiers: 0 });
         sw.handle_event(&Event::MouseRelease { pos: at, button: 1 });
         assert!(sw.is_checked(), "a click on the thumb keeps the press-toggles gesture");
+    }
+
+    /// The thumb colour has its own accessor and property route; `None` keeps the theme mix.
+    #[test]
+    fn the_thumb_colour_can_be_named_and_cleared() {
+        let mut sw = Switch::new(Rect::new(0, 0, 52, 32));
+        assert_eq!(sw.thumb_color(), None);
+        sw.set_thumb_color(Some(Color::rgb(10, 20, 30)));
+        assert_eq!(sw.thumb_color(), Some(Color::rgb(10, 20, 30)));
+        assert_eq!(sw.get("thumb_color").unwrap(), CapabilityValue::Color(Color::rgb(10, 20, 30)));
+
+        sw.set("thumb_color", CapabilityValue::Null).unwrap();
+        assert_eq!(sw.thumb_color(), None, "Null restores the theme-derived thumb");
+        assert!(sw.set("thumb_color", CapabilityValue::Bool(true)).is_err());
     }
 }

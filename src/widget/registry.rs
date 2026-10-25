@@ -13,11 +13,18 @@
 //! The crate has three different things whose names sound alike, and conflating
 //! them is the defect this note exists to prevent:
 //!
-//! | Name | Answers | Owner |
-//! |---|---|---|
-//! | [`SimpleRegistry`] (here) | "how do I draw/forward to this id?" | the container that holds it |
-//! | `WidgetFactory` (`widget::capability`) | "how do I construct control *name*?" | the crate; one shared table |
-//! | `widget::runtime` registry | "where is the live widget with this id?" | the runtime, which owns mounting |
+//! | Name | Answers | Entry point | Owner |
+//! |---|---|---|---|
+//! | [`SimpleRegistry`] (here) | "how do I draw/forward to this id?" | [`SimpleRegistry::register`] | the container that holds it |
+//! | `WidgetFactory` (`widget::capability`) | "how do I construct control *name*?" | `WidgetFactory::create` | the crate; one shared table |
+//! | `widget::runtime` registry | "where is the live widget with this id?" | `widget::runtime::register` | the runtime, which owns mounting |
+//!
+//! The entry-point column is the enforceable part of the boundary (G-307): each
+//! concept has exactly one function to start from, so a name written without its
+//! entry point — "the registry" — is resolved by asking which entry point the
+//! surrounding code calls. Reading a live widget is `widget::runtime::read_widget`,
+//! the read counterpart of `runtime::register`; mounting owns the entry, so no
+//! other table can answer that question.
 //!
 //! Ownership of a live control therefore lives in `widget::runtime`, never in
 //! this table: dropping a [`SimpleRegistry`] removes its forwarding closures and

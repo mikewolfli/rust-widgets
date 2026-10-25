@@ -26,6 +26,9 @@ use super::{
     draw_focus_ring, palette, MAC_TITLE_BAR_HEIGHT, MAC_TRAFFIC_LIGHT_GAP, MAC_TRAFFIC_LIGHT_INSET,
 };
 
+/// The height of the drag strip a fullscreen window leaves at the top edge.
+const FULLSCREEN_DRAG_BAND: u32 = 8;
+
 /// Which traffic-light control a position addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowChromeButton {
@@ -228,7 +231,8 @@ impl MacWindowChrome {
 
     /// The square one traffic-light control occupies, or `None` when it is hidden.
     pub fn button_rect(&self, button: WindowChromeButton) -> Option<Rect> {
-        if !self.buttons_visible {
+        // Fullscreen hides the status controls entirely; the bar keeps its drag band (MW-24).
+        if !self.buttons_visible || self.fullscreen {
             return None;
         }
         let bar = self.bar_rect();
@@ -252,6 +256,11 @@ impl MacWindowChrome {
             return Rect::new(0, 0, 0, 0);
         }
         let bar = self.bar_rect();
+        // In fullscreen the chrome collapses to a narrow strip, which is also the drag handle
+        // (MW-24).
+        if self.fullscreen {
+            return Rect::new(bar.x, bar.y, bar.width, FULLSCREEN_DRAG_BAND.min(bar.height));
+        }
         let trailing_edge = WindowChromeButton::ALL
             .iter()
             .filter_map(|button| self.button_rect(*button))
@@ -327,16 +336,23 @@ impl MacWindowChrome {
                 );
             }
             WindowChromeButton::Zoom => {
-                context.draw_line(
-                    Point::new(center.x - reach, center.y - reach),
-                    Point::new(center.x + reach, center.y + reach),
-                    ink,
-                );
-                context.draw_line(
-                    Point::new(center.x + reach, center.y - reach),
-                    Point::new(center.x - reach, center.y + reach),
-                    ink,
-                );
+                // Two opposed triangles, the desktop convention for "maximise". The old two
+                // diagonals were the close symbol, so hovering zoom showed a cross (MW-25).
+                let h = reach;
+                let w = (reach * 2 / 3).max(2);
+                let left = Point::new(center.x - w, center.y - h / 2);
+                let left_top = Point::new(center.x - w, center.y + h / 2);
+                let left_apex = Point::new(center.x - 1, center.y);
+                context.draw_line(left, left_top, ink);
+                context.draw_line(left_top, left_apex, ink);
+                context.draw_line(left_apex, left, ink);
+
+                let right = Point::new(center.x + w, center.y + h / 2);
+                let right_bottom = Point::new(center.x + w, center.y - h / 2);
+                let right_apex = Point::new(center.x + 1, center.y);
+                context.draw_line(right, right_bottom, ink);
+                context.draw_line(right_bottom, right_apex, ink);
+                context.draw_line(right_apex, right, ink);
             }
         }
     }
@@ -470,6 +486,21 @@ impl Draw for MacWindowChrome {
             colors.inactive_ink
         };
 
+        // Fullscreen hides the title bar, leaving a narrow translucent drag strip. The state
+        // used to be recorded and never read, so a fullscreen window still painted a title bar
+        // over its content (MW-24).
+        if self.fullscreen {
+            let strip = Rect::new(bar.x, bar.y, bar.width, FULLSCREEN_DRAG_BAND.min(bar.height));
+            context.fill_rect(strip, bar_surface.with_alpha(180));
+            context.draw_line(
+                Point::new(strip.x, strip.bottom() - 1),
+                Point::new(strip.right() - 1, strip.bottom() - 1),
+                colors.separator,
+            );
+            draw_focus_ring(context, strip, 0, &self.base, colors.accent);
+            return;
+        }
+
         context.fill_rect(bar, bar_surface);
         // The hairline separating the bar from the window's content.
         context.draw_line(
@@ -545,10 +576,11 @@ impl EventHandler for MacWindowChrome {
                 }
             }
             Event::MousePress { pos, button: 1, .. } => {
+                // The press only latches the control; the request is emitted on release over the
+                // same control, so dragging away cancels it (MW-23).
                 if let Some(control) = self.button_at(*pos) {
                     self.pressed = Some(control);
                     self.base.request_redraw();
-                    self.request(control);
                 }
             }
             // A double-click on the free band is the macOS zoom gesture.
@@ -558,10 +590,15 @@ impl EventHandler for MacWindowChrome {
                     self.base.request_redraw();
                 }
             }
-            // The control the pointer went down on, if any; the release redraws only when a
-            // press was actually latched.
-            Event::MouseRelease { .. } if self.pressed.take().is_some() => {
-                self.base.request_redraw();
+            // The control the pointer went down on, if any. The request fires only when the
+            // release lands on that same control; releasing elsewhere cancels the press.
+            Event::MouseRelease { pos, button: 1 } => {
+                if let Some(pressed) = self.pressed.take() {
+                    if self.button_at(*pos) == Some(pressed) {
+                        self.request(pressed);
+                    }
+                    self.base.request_redraw();
+                }
             }
             _ => {}
         }
@@ -655,7 +692,9 @@ mod tests {
 
         for control in WindowChromeButton::ALL {
             let rect = bar.button_rect(control).expect("the control is shown");
+            // The request is emitted on release over the same control (MW-23).
             bar.handle_event(&Event::MousePress { pos: rect.center(), button: 1, modifiers: 0 });
+            bar.handle_event(&Event::MouseRelease { pos: rect.center(), button: 1 });
         }
         assert_eq!(closes.load(Ordering::SeqCst), 1);
         assert_eq!(minimizes.load(Ordering::SeqCst), 1);
@@ -768,6 +807,23 @@ mod tests {
 
         bar.set_document_edited(true);
         assert!(bar.is_document_edited());
+
+        // Fullscreen paints only the narrow drag strip: the traffic lights are hidden (MW-24).
+        let mut fullscreen_recorder = Recorder::new(320, 28);
+        fullscreen_recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut fullscreen_recorder);
+            bar.draw(&mut context);
+        }
+        fullscreen_recorder.end_frame();
+        let fullscreen_circles = fullscreen_recorder
+            .commands
+            .iter()
+            .filter(|command| matches!(command, RenderCommand::FillCircle { .. }))
+            .count();
+        assert_eq!(fullscreen_circles, 0, "fullscreen hides every status control");
+
+        bar.set_fullscreen(false);
         let mut recorder = Recorder::new(320, 28);
         recorder.begin_frame(Color::WHITE);
         {

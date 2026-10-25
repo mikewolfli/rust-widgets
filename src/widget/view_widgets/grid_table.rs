@@ -7,6 +7,8 @@
 //! Uses the `IncrementalTableDataSource` protocol from `data_source` for data access.
 
 #[cfg(not(alloc_frugal))]
+use std::cell::RefCell;
+#[cfg(not(alloc_frugal))]
 use std::sync::Arc;
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
@@ -22,6 +24,24 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 use super::data_source::{DataRole, IncrementalTableDataSource};
+use super::table_widget::TableEditTriggers;
+
+/// Cached column spans, keyed by the inputs that decide the geometry.
+///
+/// `visible_column_spans` used to rebuild the run from scratch on every call, and both the painter
+/// and each pointer hit test call it — so one mouse move rebuilt the same geometry several times.
+/// The cache stores the run once per `(scroll, widths, data width)` and hands out slices (F-P05).
+#[derive(Clone, Debug)]
+struct ColumnSpanCache {
+    scroll_column: usize,
+    column_count: usize,
+    width_revision: u64,
+    data_width: u32,
+    default_width: u32,
+    min_width: u32,
+    mode: GridSectionResizeMode,
+    spans: Vec<(usize, i32, i32)>,
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -152,6 +172,10 @@ pub struct GridTableWidget {
 
     // Per-column state
     column_widths: Vec<u32>,
+    /// Bumped by every column-width mutation; keys [`ColumnSpanCache`].
+    column_width_revision: u64,
+    /// The cached column run shared by the painter and the hit tests (F-P05).
+    span_cache: RefCell<Option<ColumnSpanCache>>,
 
     // Sort
     sort_specs: Vec<GridTableSortSpec>,
@@ -176,6 +200,9 @@ pub struct GridTableWidget {
     resizing_column: Option<usize>,
     resize_start_x: i32,
     resize_start_width: u32,
+
+    /// Gestures that request an edit (V-01). `ALL` preserves the historical behaviour.
+    edit_triggers: TableEditTriggers,
 
     // Cached visibility
     visible_rows: usize,
@@ -245,6 +272,8 @@ impl GridTableWidget {
             selection_mode: GridTableSelectionMode::Cell,
             hovered_row: None,
             column_widths: Vec::new(),
+            column_width_revision: 0,
+            span_cache: RefCell::new(None),
             sort_specs: Vec::new(),
             sorting_enabled: true,
             sort_role: DataRole::Display,
@@ -256,6 +285,7 @@ impl GridTableWidget {
             resizing_column: None,
             resize_start_x: 0,
             resize_start_width: 0,
+            edit_triggers: TableEditTriggers::ALL,
             visible_rows: 0,
             cell_selected: Signal1::new(),
             cell_double_clicked: Signal1::new(),
@@ -284,6 +314,7 @@ impl GridTableWidget {
         self.selected_columns.clear();
         self.sort_specs.clear();
         self.column_widths.clear();
+        self.column_width_revision = self.column_width_revision.wrapping_add(1);
         self.sort_order = None;
         self.sort_order_key = None;
         self.data_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -346,6 +377,7 @@ impl GridTableWidget {
         self.selected_columns.clear();
         self.sort_specs.clear();
         self.column_widths.clear();
+        self.column_width_revision = self.column_width_revision.wrapping_add(1);
         self.sort_order = None;
         self.sort_order_key = None;
         self.visible_rows = 0;
@@ -688,6 +720,57 @@ impl GridTableWidget {
         true
     }
 
+    /// Gestures that request an in-place edit (V-01).
+    ///
+    /// The default is [`TableEditTriggers::ALL`], which is the historical behaviour (a
+    /// double-click and Enter both requested an edit). A host that wants "double-click selects,
+    /// F2 edits" clears the triggers it does not want.
+    pub fn edit_triggers(&self) -> TableEditTriggers {
+        self.edit_triggers
+    }
+
+    /// Sets which gestures may request an edit; see [`Self::edit_triggers`].
+    pub fn set_edit_triggers(&mut self, triggers: TableEditTriggers) {
+        self.edit_triggers = triggers;
+    }
+
+    /// Moves the current cell by `(row_delta, column_delta)` and keeps it on screen (V-02).
+    ///
+    /// The arrow keys used to scroll the viewport without moving the current cell, so a keyboard
+    /// user could never select anything but the row the pointer had last touched. The cell is
+    /// clamped to the model, the selection is applied through the same `apply_selection` the
+    /// pointer path uses, and the viewport follows the moved cell.
+    fn move_current_cell(&mut self, row_delta: isize, column_delta: isize, modifiers: u32) {
+        let rows = self.row_count();
+        let columns = self.column_count();
+        if rows == 0 || columns == 0 {
+            return;
+        }
+        let (row, column) = self.selected_cell.unwrap_or((0, 0));
+        let next_row = (row as isize + row_delta).clamp(0, rows as isize - 1) as usize;
+        let next_column = (column as isize + column_delta).clamp(0, columns as isize - 1) as usize;
+        self.apply_selection(next_row, next_column, modifiers);
+        self.ensure_cell_visible(next_row, next_column);
+    }
+
+    /// Scrolls the smallest amount that puts `(row, column)` inside the viewport.
+    fn ensure_cell_visible(&mut self, row: usize, column: usize) {
+        let visible_rows = self.visible_rows.max(1);
+        if row < self.scroll_row {
+            self.set_scroll_row(row);
+        } else if row >= self.scroll_row.saturating_add(visible_rows) {
+            self.set_scroll_row(row.saturating_add(1).saturating_sub(visible_rows));
+        }
+        let rect = self.base.geometry();
+        let extent = (rect.width as i32 - self.row_number_width as i32).max(1);
+        let visible = self.visible_column_spans(extent);
+        if !visible.iter().any(|(candidate, _, _)| *candidate == column) {
+            // Touch the boundary: the column becomes the leading scrolling column. Scrolling
+            // forward by one would need a per-column pass just to reach the same place.
+            self.set_scroll_column(column);
+        }
+    }
+
     /// Whether a vertical scroll-bar thumb is painted.
     pub fn show_scrollbar(&self) -> bool {
         self.show_scrollbar
@@ -712,6 +795,7 @@ impl GridTableWidget {
         if self.column_widths.len() < count {
             let default_w = self.default_column_width();
             self.column_widths.resize(count, default_w);
+            self.column_width_revision = self.column_width_revision.wrapping_add(1);
         }
     }
 
@@ -723,6 +807,7 @@ impl GridTableWidget {
         }
         self.ensure_column_widths(cols);
         self.column_widths[col] = width.max(self.min_column_width);
+        self.column_width_revision = self.column_width_revision.wrapping_add(1);
         self.update_visibility();
         self.base.request_layout();
         self.base.request_redraw();
@@ -1034,6 +1119,7 @@ impl GridTableWidget {
         }
         self.section_resize_mode = mode;
         self.column_widths.clear();
+        self.column_width_revision = self.column_width_revision.wrapping_add(1);
         self.update_visibility();
         self.base.request_layout();
         self.base.request_redraw();
@@ -1098,17 +1184,53 @@ impl GridTableWidget {
     /// first column would stop answering at all. The painter wants the same rule: a column that starts
     /// on screen is drawn and clipped, not skipped.
     fn visible_column_spans(&self, extent: i32) -> Vec<(usize, i32, i32)> {
-        let cols = self.column_count();
-        let mut spans = Vec::new();
-        let mut x = 0i32;
-        for ci in self.scroll_column..cols {
-            if x >= extent {
-                break;
+        let count = self.column_count();
+        let rect = self.base.geometry();
+        let data_width = (rect.width as i32 - self.row_number_width as i32).max(1);
+        let build_extent = extent.max(data_width).max(0);
+        let mut cache = self.span_cache.borrow_mut();
+        let stale = match cache.as_ref() {
+            Some(entry) => {
+                entry.scroll_column != self.scroll_column
+                    || entry.column_count != count
+                    || entry.width_revision != self.column_width_revision
+                    || entry.data_width < build_extent as u32
+                    || entry.default_width != self.default_column_width()
+                    || entry.min_width != self.min_column_width
+                    || entry.mode != self.section_resize_mode
             }
-            spans.push((ci, x, self.column_width(ci) as i32));
-            x += self.column_width(ci) as i32;
+            None => true,
+        };
+        if stale {
+            let mut spans = Vec::new();
+            let mut x = 0i32;
+            for ci in self.scroll_column..count {
+                if x >= build_extent {
+                    break;
+                }
+                let width = self.column_width(ci) as i32;
+                spans.push((ci, x, width));
+                x = x.saturating_add(width);
+            }
+            *cache = Some(ColumnSpanCache {
+                scroll_column: self.scroll_column,
+                column_count: count,
+                width_revision: self.column_width_revision,
+                data_width: build_extent as u32,
+                default_width: self.default_column_width(),
+                min_width: self.min_column_width,
+                mode: self.section_resize_mode,
+                spans,
+            });
         }
-        spans
+        cache
+            .as_ref()
+            .expect("the span run was just built")
+            .spans
+            .iter()
+            .copied()
+            .filter(|(_, x, _)| *x < extent)
+            .collect()
     }
 
     /// The data column occupying `x_offset` pixels into the data area, as `(column, x, width)`.
@@ -1864,7 +1986,9 @@ impl EventHandler for GridTableWidget {
             Event::MouseDoubleClick { pos, button: _ } => {
                 if let Some((row, col)) = self.cell_at_point(*pos) {
                     self.cell_double_clicked.emit((row, col));
-                    self.edit_requested.emit((row, col));
+                    if self.edit_triggers.contains(TableEditTriggers::DOUBLE_CLICKED) {
+                        self.edit_requested.emit((row, col));
+                    }
                 }
             }
 
@@ -1881,6 +2005,7 @@ impl EventHandler for GridTableWidget {
                     if col < cols {
                         self.ensure_column_widths(cols);
                         self.column_widths[col] = new_width;
+                        self.column_width_revision = self.column_width_revision.wrapping_add(1);
                         self.update_visibility();
                         self.base.request_redraw();
                     }
@@ -1918,38 +2043,43 @@ impl EventHandler for GridTableWidget {
                 }
             }
 
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                // Arrow keys for scrolling
-                37 => self.set_scroll_column(self.scroll_column.saturating_sub(1)),
-                39 => self.set_scroll_column(self.scroll_column.saturating_add(1)),
-                38 => self.set_scroll_row(self.scroll_row.saturating_sub(1)),
-                40 => self.set_scroll_row(self.scroll_row.saturating_add(1)),
-                crate::event::key_codes::HOME => self.set_scroll_row(0),
-                crate::event::key_codes::END => {
-                    let last = self.row_count().saturating_sub(1);
-                    self.set_scroll_row(last);
-                }
-                crate::event::key_codes::PAGE_UP => {
-                    let page = self.visible_rows.max(1);
-                    self.set_scroll_row(self.scroll_row.saturating_sub(page));
-                }
-                crate::event::key_codes::PAGE_DOWN => {
-                    let page = self.visible_rows.max(1);
-                    let last = self.row_count().saturating_sub(1);
-                    self.set_scroll_row(self.scroll_row.saturating_add(page).min(last));
-                }
-                13 => {
-                    if let Some(cell) = self.selected_cell {
-                        self.edit_requested.emit(cell);
+            Event::KeyPress { key, modifiers } => {
+                let page = self.visible_rows.max(1) as isize;
+                let last = self.row_count().saturating_sub(1) as isize;
+                match *key {
+                    37 => self.move_current_cell(0, -1, *modifiers),
+                    39 => self.move_current_cell(0, 1, *modifiers),
+                    38 => self.move_current_cell(-1, 0, *modifiers),
+                    40 => self.move_current_cell(1, 0, *modifiers),
+                    crate::event::key_codes::HOME => {
+                        let current = self.selected_cell.map_or(0, |(row, _)| row) as isize;
+                        self.move_current_cell(-current, 0, *modifiers);
                     }
-                }
-                32..=126 => {
-                    if let Some(character) = char::from_u32(*key) {
-                        self.type_ahead(character);
+                    crate::event::key_codes::END => {
+                        let current = self.selected_cell.map_or(0, |(row, _)| row) as isize;
+                        self.move_current_cell(last - current, 0, *modifiers);
                     }
+                    crate::event::key_codes::PAGE_UP => {
+                        self.move_current_cell(-page, 0, *modifiers)
+                    }
+                    crate::event::key_codes::PAGE_DOWN => {
+                        self.move_current_cell(page, 0, *modifiers)
+                    }
+                    13 => {
+                        if let Some(cell) = self.selected_cell {
+                            if self.edit_triggers.contains(TableEditTriggers::EDIT_KEY) {
+                                self.edit_requested.emit(cell);
+                            }
+                        }
+                    }
+                    32..=126 => {
+                        if let Some(character) = char::from_u32(*key) {
+                            self.type_ahead(character);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
 
             _ => {}
         }
@@ -2633,5 +2763,102 @@ mod tests {
         tbl.set_show_scrollbar(true);
         assert!(tbl.show_scrollbar());
         let _ = crate::widget::svg::render_to_svg(&mut tbl);
+    }
+
+    /// F-P05: the shared span run reflects width changes and scroll position.
+    #[test]
+    fn column_spans_are_rebuilt_only_when_the_geometry_changes() {
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 200));
+        tbl.set_data_source(Arc::new(TestSource { rows: 10, cols: 8 }));
+        let first = tbl.visible_column_spans(300);
+        assert_eq!(first.first().map(|span| span.0), Some(0));
+        assert_eq!(first.len(), 3, "two 120 px columns and the one that crosses 300 px");
+
+        tbl.set_scroll_column(2);
+        let moved = tbl.visible_column_spans(300);
+        assert_eq!(moved.first().map(|span| span.0), Some(2));
+
+        // A width change is visible immediately: the cache key includes the revision.
+        tbl.set_column_width(2, 50);
+        let resized = tbl.visible_column_spans(300);
+        assert_eq!(
+            resized.iter().find(|(column, _, _)| *column == 2).map(|(_, _, width)| *width),
+            Some(50)
+        );
+    }
+
+    /// V-01: the edit triggers gate the two gestures, while the plain double-click event stays.
+    #[test]
+    fn edit_triggers_gate_double_click_and_enter() {
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 200));
+        tbl.set_data_source(Arc::new(TestSource { rows: 10, cols: 4 }));
+        let edits = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = std::sync::Arc::clone(&edits);
+        tbl.edit_requested.connect(move |cell| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*cell);
+            }
+        });
+        let clicks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let click_sink = std::sync::Arc::clone(&clicks);
+        tbl.cell_double_clicked.connect(move |_| {
+            click_sink.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        assert_eq!(tbl.edit_triggers(), TableEditTriggers::ALL);
+        tbl.set_edit_triggers(TableEditTriggers::NONE);
+        tbl.handle_event(&Event::MouseDoubleClick { pos: Point::new(60, 40), button: 1 });
+        assert!(
+            edits.lock().map(|guard| guard.is_empty()).unwrap_or(false),
+            "NONE suppresses the edit request"
+        );
+        assert_eq!(
+            clicks.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the click itself is still reported"
+        );
+
+        tbl.handle_event(&Event::MousePress { pos: Point::new(60, 40), button: 1, modifiers: 0 });
+        assert!(tbl.selected_cell().is_some());
+        tbl.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert!(edits.lock().map(|guard| guard.is_empty()).unwrap_or(false), "EDIT_KEY is off");
+
+        tbl.set_edit_triggers(TableEditTriggers::EDIT_KEY);
+        tbl.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(
+            edits.lock().map(|guard| guard.len()).unwrap_or(0),
+            1,
+            "Enter edits when enabled"
+        );
+        tbl.handle_event(&Event::MouseDoubleClick { pos: Point::new(60, 40), button: 1 });
+        assert_eq!(
+            edits.lock().map(|guard| guard.len()).unwrap_or(0),
+            1,
+            "double-click is still off"
+        );
+    }
+
+    /// V-02: the arrow keys move the current cell and the viewport follows it.
+    #[test]
+    fn arrow_keys_move_the_current_cell() {
+        use crate::event::key_codes::{DOWN, END, HOME, RIGHT};
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 200));
+        tbl.set_data_source(Arc::new(TestSource { rows: 30, cols: 4 }));
+        tbl.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+
+        tbl.handle_event(&Event::KeyPress { key: DOWN, modifiers: 0 });
+        assert_eq!(tbl.selected_cell(), Some((1, 0)), "Down moves one row");
+        tbl.handle_event(&Event::KeyPress { key: RIGHT, modifiers: 0 });
+        assert_eq!(tbl.selected_cell(), Some((1, 1)), "Right moves one column");
+        tbl.handle_event(&Event::KeyPress { key: END, modifiers: 0 });
+        assert_eq!(tbl.selected_cell().map(|(row, _)| row), Some(29), "End reaches the last row");
+        assert!(tbl.scroll_row() > 0, "the viewport followed the cell");
+        tbl.handle_event(&Event::KeyPress { key: HOME, modifiers: 0 });
+        assert_eq!(
+            tbl.selected_cell().map(|(row, _)| row),
+            Some(0),
+            "Home returns to the first row"
+        );
+        assert_eq!(tbl.scroll_row(), 0, "the viewport followed the cell back");
     }
 }

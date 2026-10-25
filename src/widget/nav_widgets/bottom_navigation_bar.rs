@@ -33,6 +33,39 @@ pub struct NavItem {
     pub label: String,
 }
 
+/// Which items draw their label (N-03).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NavLabelBehavior {
+    /// Every item draws its label, selected or not.
+    #[default]
+    Always,
+    /// Only the selected item draws its label.
+    SelectedOnly,
+    /// No item draws its label: an icon-only bar.
+    Never,
+}
+
+impl NavLabelBehavior {
+    /// The token the property contract publishes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NavLabelBehavior::Always => "always",
+            NavLabelBehavior::SelectedOnly => "selected_only",
+            NavLabelBehavior::Never => "never",
+        }
+    }
+
+    /// Parses a published token.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "always" => NavLabelBehavior::Always,
+            "selected_only" => NavLabelBehavior::SelectedOnly,
+            "never" => NavLabelBehavior::Never,
+            _ => return None,
+        })
+    }
+}
+
 /// BottomNavigationBar widget — a mobile-style bottom tab bar.
 ///
 /// Renders a horizontal bar across the bottom of the screen with equal-width
@@ -63,8 +96,10 @@ pub struct BottomNavigationBar {
     slide_from: usize,
     /// Per-item badge text, parallel to `items`.
     badges: Vec<Option<String>>,
-    /// Whether an unselected item still draws its label.
-    show_unselected_labels: bool,
+    /// Per-item availability, parallel to `items` (N-04).
+    item_enabled: Vec<bool>,
+    /// Which items draw their label (N-03).
+    label_behavior: NavLabelBehavior,
     /// Material's upper bound on destinations, when the host opts into it.
     max_items: Option<usize>,
     /// Whether scrolling down hides the whole bar.
@@ -88,7 +123,8 @@ impl BottomNavigationBar {
             slide: PropertyDriver::at(1.0, MotionSlot::Normal),
             slide_from: 0,
             badges: Vec::new(),
-            show_unselected_labels: true,
+            item_enabled: Vec::new(),
+            label_behavior: NavLabelBehavior::Always,
             max_items: None,
             hide_on_scroll: false,
             visibility: PropertyDriver::at(1.0, MotionSlot::Normal),
@@ -123,6 +159,7 @@ impl BottomNavigationBar {
         self.items.push(NavItem { icon: icon.to_string(), label: label.to_string() });
         self.item_icon_sources.push(None);
         self.badges.push(None);
+        self.item_enabled.push(true);
         self.base.request_redraw();
         true
     }
@@ -150,19 +187,58 @@ impl BottomNavigationBar {
 
     /// Whether unselected items still draw their labels.
     pub fn show_unselected_labels(&self) -> bool {
-        self.show_unselected_labels
+        matches!(self.label_behavior, NavLabelBehavior::Always)
     }
 
     /// Sets whether unselected items draw their labels.
     ///
     /// Hiding them is the compact Material shape: the selected destination is named, the rest
-    /// are read from their icons.
+    /// are read from their icons. `false` maps to [`NavLabelBehavior::SelectedOnly`], so every
+    /// existing caller keeps the two states it already knew.
     pub fn set_show_unselected_labels(&mut self, show: bool) {
-        if self.show_unselected_labels == show {
+        let behavior = if show { NavLabelBehavior::Always } else { NavLabelBehavior::SelectedOnly };
+        self.set_label_behavior(behavior);
+    }
+
+    /// Returns the three-state label policy (N-03).
+    pub fn label_behavior(&self) -> NavLabelBehavior {
+        self.label_behavior
+    }
+
+    /// Sets the three-state label policy.
+    ///
+    /// [`NavLabelBehavior::Never`] is the icon-only bar that the two-state boolean could not
+    /// express.
+    pub fn set_label_behavior(&mut self, behavior: NavLabelBehavior) {
+        if self.label_behavior == behavior {
             return;
         }
-        self.show_unselected_labels = show;
+        self.label_behavior = behavior;
         self.base.request_redraw();
+    }
+
+    /// Whether `index` may be selected (N-04).
+    ///
+    /// An index that is not on the bar reports `false`, so a caller cannot mistake an
+    /// out-of-range index for an enabled one.
+    pub fn is_item_enabled(&self, index: usize) -> bool {
+        self.item_enabled.get(index).copied().unwrap_or(false)
+    }
+
+    /// Enables or disables one destination (N-04).
+    ///
+    /// Returns `false` for an index that is not on the bar. The overall control's `enabled`
+    /// state still applies on top: a disabled bar disables every item.
+    pub fn set_item_enabled(&mut self, index: usize, enabled: bool) -> bool {
+        let Some(slot) = self.item_enabled.get_mut(index) else {
+            return false;
+        };
+        if *slot == enabled {
+            return true;
+        }
+        *slot = enabled;
+        self.base.request_redraw();
+        true
     }
 
     /// The optional destination limit, if one is installed.
@@ -275,6 +351,7 @@ impl BottomNavigationBar {
         self.items.clear();
         self.item_icon_sources.clear();
         self.badges.clear();
+        self.item_enabled.clear();
         self.selected_index = 0;
         self.base.request_redraw();
     }
@@ -397,20 +474,16 @@ impl Draw for BottomNavigationBar {
         // own fill. A bar painted in that colour would be byte-identical to the frame behind
         // it, so a resolved surface equal to the window fill is re-derived a visible step
         // away from it, the same distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        let palette = crate::style::palette_shared();
+        let window_fill = palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
         // The selected tab and its indicator are the accent: the hue a theme is expected to
-        // vary most, so selection follows the appearance rather than a literal blue.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::PRIMARY);
+        // vary most, so selection follows the appearance rather than a literal blue. One
+        // palette read serves both this and the window fill above (G-A01).
+        let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         let bar_color = match style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -464,9 +537,12 @@ impl Draw for BottomNavigationBar {
             let tab_rect = Rect::new(tab_x, rect.y, tab_width, bar_height);
 
             let is_selected = i == self.selected_index;
+            // A per-item disabled destination is muted and not selectable, while the whole bar's
+            // enabled flag still disables everything (N-04).
+            let item_on = is_enabled && self.is_item_enabled(i);
 
             // Determine colors based on selection and enabled state
-            let (icon_color, label_color) = if !is_enabled {
+            let (icon_color, label_color) = if !item_on {
                 (ink.blend(&bar_color, 0.6), ink.blend(&bar_color, 0.6))
             } else if is_selected {
                 (accent, accent)
@@ -474,15 +550,33 @@ impl Draw for BottomNavigationBar {
                 (ink.blend(&bar_color, 0.4), ink.blend(&bar_color, 0.4))
             };
 
-            // Measure icon and label to center them in the tab
+            // Measure icon and label to center them in the tab. The shared measure cache keeps a
+            // fixed caption from being re-measured on every repaint (G-A02).
             let typed_source = self.item_icon_sources.get(i).copied().flatten();
-            let mut icon_metrics = context
-                .measure_text(if typed_source.is_some() { "M" } else { &item.icon }, &icon_font);
+            let mut icon_metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                context,
+                if typed_source.is_some() { "M" } else { &item.icon },
+                &icon_font,
+            );
             if typed_source.is_some() {
                 icon_metrics.width = icon_metrics.height.max(1);
             }
-            let show_label = is_selected || self.show_unselected_labels;
-            let label_metrics = context.measure_text(&item.label, &label_font);
+            let show_label = match self.label_behavior {
+                NavLabelBehavior::Always => true,
+                NavLabelBehavior::SelectedOnly => is_selected,
+                NavLabelBehavior::Never => false,
+            };
+            // A hidden label is not measured at all: the two-state form measured it anyway and
+            // then reserved no room for it.
+            let label_metrics = if show_label {
+                crate::widget::base_widgets::measure_cache::measure_text(
+                    context,
+                    &item.label,
+                    &label_font,
+                )
+            } else {
+                crate::render::TextMetrics::default()
+            };
 
             // Vertical layout: icon centered vertically with label below. A hidden label does
             // not reserve room, so the icon centres on the bar's middle line.
@@ -499,7 +593,7 @@ impl Draw for BottomNavigationBar {
             // icon — and it is drawn *before* the icon so the glyph sits on it. Its size follows
             // the icon's own box, so a bar with a larger font gets a larger pill instead of a
             // fixed capsule the icon outgrows.
-            if is_selected && is_enabled {
+            if is_selected && item_on {
                 const PILL_WIDTH: u32 = 64;
                 const PILL_HEIGHT: u32 = 32;
                 let pill_width = PILL_WIDTH.min(tab_rect.width);
@@ -562,7 +656,11 @@ impl Draw for BottomNavigationBar {
             // legible ink chosen against the fill it actually paints.
             if let Some(badge) = self.badges.get(i).and_then(|badge| badge.as_deref()) {
                 if !badge.is_empty() {
-                    let metrics = context.measure_text(badge, &label_font);
+                    let metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                        context,
+                        badge,
+                        &label_font,
+                    );
                     let badge_height = label_font.size().max(10.0) as u32 + 4;
                     let badge_width = (metrics.width + 8).max(badge_height);
                     let badge_rect = Rect::new(
@@ -628,7 +726,8 @@ impl EventHandler for BottomNavigationBar {
                     return;
                 }
                 let index = (relative_x as u32 / tab_width) as usize;
-                if index < item_count {
+                // A disabled destination ignores the press entirely (N-04).
+                if index < item_count && self.is_item_enabled(index) {
                     self.set_selected_index(index);
                 }
             }
@@ -1008,5 +1107,33 @@ mod tests {
         bar.report_scroll(-2);
         while bar.tick(16) {}
         assert_eq!(bar.visibility_progress(), 1.0);
+    }
+
+    #[test]
+    fn label_visibility_has_three_states() {
+        let mut bar = make_bar();
+        assert_eq!(bar.label_behavior(), NavLabelBehavior::Always);
+        bar.set_label_behavior(NavLabelBehavior::Never);
+        assert_eq!(bar.label_behavior(), NavLabelBehavior::Never);
+        assert!(!bar.show_unselected_labels(), "the icon-only bar names nothing");
+        bar.set_show_unselected_labels(true);
+        assert_eq!(bar.label_behavior(), NavLabelBehavior::Always);
+        bar.set_show_unselected_labels(false);
+        assert_eq!(bar.label_behavior(), NavLabelBehavior::SelectedOnly);
+    }
+
+    #[test]
+    fn a_disabled_destination_ignores_a_press() {
+        let mut bar = make_bar();
+        assert!(bar.set_item_enabled(1, false));
+        assert!(!bar.is_item_enabled(1));
+        // The second tab occupies x = 93..186 of a 375 px bar with four items.
+        bar.handle_event(&Event::MousePress { pos: Point::new(140, 28), button: 1, modifiers: 0 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(140, 28), button: 1 });
+        assert_eq!(bar.selected_index(), Some(0), "a disabled destination must not be chosen");
+        assert!(bar.set_item_enabled(1, true));
+        bar.handle_event(&Event::MousePress { pos: Point::new(140, 28), button: 1, modifiers: 0 });
+        bar.handle_event(&Event::MouseRelease { pos: Point::new(140, 28), button: 1 });
+        assert_eq!(bar.selected_index(), Some(1));
     }
 }

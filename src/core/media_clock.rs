@@ -9,8 +9,10 @@
 //! on the `video` feature (a real codec dependency), so a **core** control could not use the clock
 //! without pulling a decoder in. But nothing here touches a codec — it is arithmetic over a delta and
 //! four thresholds, and `PlaybackState` is a handful of variants. Moving both here is what lets
-//! `MediaPlayer` (always built) and `VideoEngine` (behind `video`) share one timeline instead of each
-//! carrying its own.
+//! `MediaPlayer` (always built) and `VideoEngine` (behind `video`) share one **timeline type and
+//! one set of semantics** instead of each carrying its own arithmetic. They do not share an
+//! instance: each owner constructs its own `MediaClock`, and a host that wants the two in step
+//! wires the engine's `on_frame` callback into the player (see `src/video/engine.rs`).
 //!
 //! # The gap this closes (BLUE24 §12 U-2)
 //!

@@ -192,6 +192,16 @@ pub struct MaskedEdit {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// While true, a mutation does not push its own undo step.
+    ///
+    /// A committed phrase and a replace-over-selection are **one** edit to the user, so the inner
+    /// per-character writes are recorded by the caller instead of the callee (I-24).
+    suppress_history: bool,
+    /// The caret cell's blink state, advanced by [`MaskedEdit::tick`] (I-26).
+    ///
+    /// Borrowed from [`crate::style::CursorBlink`] rather than reimplemented, so this field's
+    /// caret keeps the tempo and phase logic of every other caret in the crate.
+    cursor_blink: crate::style::CursorBlink,
 }
 
 impl MaskedEdit {
@@ -220,6 +230,8 @@ impl MaskedEdit {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            suppress_history: false,
+            cursor_blink: crate::style::CursorBlink::new(),
         }
     }
 
@@ -550,15 +562,19 @@ impl MaskedEdit {
 
     /// Inserts a character at the current cursor position.
     fn insert_char(&mut self, ch: char) {
-        // Typing over a selection replaces it: the highlighted characters go, and the new one takes
-        // their place. This has to happen before the caret is read below, because the replacement
-        // moves the caret to the selection's start.
+        let before = self.raw_text.clone();
+        // A replace-over-selection is **one** edit: the selection's removal is folded into the
+        // insertion's undo step rather than recorded on its own (I-24).
+        let suppressed = self.suppress_history;
+        self.suppress_history = true;
         self.delete_selection();
+        self.suppress_history = suppressed;
         let raw_idx = self.display_to_raw_index(self.cursor_pos);
         if raw_idx >= self.input_count() {
             // No free cell remains (or the mask is empty): the character is refused rather than
             // stored, and the host is told which cell it tried to fill.
             self.input_rejected.emit(self.cursor_pos.min(self.segments.len()));
+            self.push_typed_history(before);
             return;
         }
 
@@ -584,6 +600,7 @@ impl MaskedEdit {
         } else {
             self.input_rejected.emit(self.cursor_pos.min(self.segments.len()));
         }
+        self.push_typed_history(before);
     }
 
     /// Feeds platform-committed text through the mask one character at a time (D09-INPUT-01).
@@ -594,6 +611,11 @@ impl MaskedEdit {
     /// the mask and advances the caret exactly as a keystroke would — which is what keeps a
     /// multi-character commit filling successive slots instead of only the first.
     fn insert_committed_text(&mut self, text: &str) {
+        // A committed phrase is **one** edit (I-24): the per-character writes are suppressed and
+        // the whole string is recorded once.
+        let before = self.raw_text.clone();
+        let suppressed = self.suppress_history;
+        self.suppress_history = true;
         for ch in text.chars() {
             if ch.is_control() {
                 // A committed control code is not content. It is refused before the mask ever
@@ -603,6 +625,8 @@ impl MaskedEdit {
             }
             self.insert_char(ch);
         }
+        self.suppress_history = suppressed;
+        self.push_typed_history(before);
     }
 
     /// Pastes `text` through the mask, returning how many characters were accepted.
@@ -648,6 +672,7 @@ impl MaskedEdit {
         if self.raw_text.is_empty() || self.cursor_pos == 0 {
             return;
         }
+        let before = self.raw_text.clone();
         let raw_idx = self.display_to_raw_index(self.cursor_pos);
         let char_count = self.raw_text.chars().count();
         if raw_idx > 0 && raw_idx <= char_count {
@@ -659,6 +684,7 @@ impl MaskedEdit {
             self.update_display_text();
             self.cursor_pos = self.segment_before_raw_index(raw_idx - 1);
             self.text_changed.emit(self.raw_text.clone());
+            self.push_typed_history(before);
             self.base.request_redraw();
         }
     }
@@ -670,11 +696,13 @@ impl MaskedEdit {
         }
         let raw_idx = self.display_to_raw_index(self.cursor_pos);
         if raw_idx < self.raw_text.chars().count() {
+            let before = self.raw_text.clone();
             let start = byte_index_of_char(&self.raw_text, raw_idx);
             let end = byte_index_of_char(&self.raw_text, raw_idx + 1);
             self.raw_text.replace_range(start..end, "");
             self.update_display_text();
             self.text_changed.emit(self.raw_text.clone());
+            self.push_typed_history(before);
             self.base.request_redraw();
         }
     }
@@ -699,6 +727,7 @@ impl MaskedEdit {
     /// no longer reaches — so deleting the middle of a formatted number leaves the formatting
     /// intact rather than a hole in the mask.
     fn delete_selection(&mut self) -> bool {
+        let before = self.raw_text.clone();
         let Some((raw_start, raw_end)) = self.selection_raw_range() else {
             self.selection_anchor = None;
             return false;
@@ -717,8 +746,51 @@ impl MaskedEdit {
         self.cursor_pos = self.segment_before_raw_index(raw_start);
         self.selection_anchor = None;
         self.text_changed.emit(self.raw_text.clone());
+        self.push_typed_history(before);
         self.base.request_redraw();
         true
+    }
+
+    /// Records one typed edit, whose previous value is `before`, on the undo stack (I-24).
+    ///
+    /// Typing, deleting and pasting used to mutate `raw_text` directly, so `undo`/`redo` were
+    /// published and only a programmatic `set_text` could ever be undone. Every edit path now
+    /// records its previous value here.
+    fn push_typed_history(&mut self, before: String) {
+        if self.restoring_history || self.suppress_history || before == self.raw_text {
+            return;
+        }
+        *self.history_target.borrow_mut() = self.raw_text.clone();
+        self.undo_stack.push(Box::new(ValueCommand::new(
+            self.history_target.clone(),
+            before,
+            self.raw_text.clone(),
+            "Edit text",
+            "masked_edit_text",
+        )));
+    }
+
+    /// Advances the caret's blink by `delta_ms`, reporting whether another frame is due (I-26).
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.focused {
+            return false;
+        }
+        let running = self.cursor_blink.tick(delta_ms);
+        if running {
+            self.base.request_redraw();
+        }
+        running
+    }
+
+    /// The raw characters inside the current selection, for a copy or cut gesture (I-25).
+    pub fn selected_raw_text(&self) -> Option<String> {
+        let (start, end) = self.selection_raw_range()?;
+        if start >= end {
+            return None;
+        }
+        let start_byte = byte_index_of_char(&self.raw_text, start);
+        let end_byte = byte_index_of_char(&self.raw_text, end);
+        Some(self.raw_text[start_byte..end_byte].to_string())
     }
 
     /// Returns the number of input segments in the mask.
@@ -837,6 +909,15 @@ impl Widget for MaskedEdit {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    // The caret blink is the whole animation, so the trait must reach it: a host holding
+    // `&mut dyn Widget` could not otherwise advance the field's only animation (I-26).
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        MaskedEdit::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.focused
+    }
     /// Resolves a published event name to the control's own signal.
     ///
     /// # Why this is explicit per control
@@ -959,11 +1040,17 @@ impl Draw for MaskedEdit {
         // an inactive theme still leaves the control with a defined appearance.
         let base_bg =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(248, 248, 250, 200));
-        // The page this field sits in, read once: a disabled fill recedes toward it.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        // The page this field sits in and the caret's emphasis colour, read in **one** palette
+        // acquisition (I-P07): the window fill and the semantic caret token used to cost two
+        // separate theme reads per frame. Values are copied out so the guard is released before
+        // anything is painted.
+        let (window_fill, info_ink) = {
+            let manager = crate::style::theme_manager();
+            match manager.current_theme() {
+                Some(active) => (active.colors.background, Some(active.colors.info)),
+                None => (Color::WHITE, None),
+            }
+        };
         let accent = style.border_color.or(themed_border);
         let bg_color = if !is_enabled {
             // A disabled **field** recedes toward the page it sits in. It cannot recede toward its
@@ -1019,7 +1106,7 @@ impl Draw for MaskedEdit {
         // here" — so it takes the accent the theme assigns emphasis (`primary`) rather than the
         // text ink, and pushes it clear of the field. The glyph inside it is read off the caret
         // itself, so a light caret cannot carry a light glyph.
-        let caret_color = crate::style::semantic_color(crate::style::SemanticColor::Info)
+        let caret_color = info_ink
             .or_else(|| {
                 crate::style::resolved_theme_style_shared("button").and_then(|b| b.background_color)
             })
@@ -1110,6 +1197,12 @@ impl Draw for MaskedEdit {
         // Draw each segment
         let mut raw_idx = 0;
         let mut display_x = text_x + start_shift;
+        // The raw value as characters, collected **once** for the whole walk (I-P10). The segment
+        // loop used to call `chars().nth(raw_idx)` and `chars().count()` per input segment, so an
+        // n-cell mask scanned the value O(n) times per frame — O(n^2) for a string no longer than
+        // the mask.
+        let raw_chars: Vec<char> = self.raw_text.chars().collect();
+        let raw_count = raw_chars.len();
 
         // ── The selection, behind the glyphs ──
         //
@@ -1175,8 +1268,8 @@ impl Draw for MaskedEdit {
                         // character: `as_bytes()[raw_idx]` read the nth *byte* of the raw value
                         // and `as char` then produced the byte's Latin-1 glyph, so any multi-byte
                         // raw character painted as mojibake.
-                        let ch = self.raw_text.chars().nth(raw_idx).unwrap_or(self.placeholder);
-                        let has_input = raw_idx < self.raw_text.chars().count();
+                        let ch = raw_chars.get(raw_idx).copied().unwrap_or(self.placeholder);
+                        let has_input = raw_idx < raw_count;
 
                         let char_color = if !is_enabled {
                             disabled_ink
@@ -1192,7 +1285,11 @@ impl Draw for MaskedEdit {
                         // caret draw too).
                         let mut glyph = [0u8; 4];
                         let glyph = ch.encode_utf8(&mut glyph);
-                        if self.focused && is_enabled && seg_idx == self.cursor_pos {
+                        if self.focused
+                            && is_enabled
+                            && seg_idx == self.cursor_pos
+                            && self.cursor_blink.is_visible()
+                        {
                             context.fill_rect(
                                 Rect::new(
                                     draw_x,
@@ -1245,10 +1342,14 @@ impl EventHandler for MaskedEdit {
         match event {
             Event::FocusGained { .. } => {
                 self.focused = true;
+                // A focused field is the state its caret blinks in (I-26).
+                self.cursor_blink.start();
                 self.base.request_redraw();
             }
             Event::FocusLost => {
                 self.focused = false;
+                // A blurred field has a steady caret and owes no further frames.
+                self.cursor_blink.stop();
                 // Losing focus ends the edit, the same way Enter does; a host validating per
                 // finished edit needs to hear about the gesture that did not press Enter.
                 self.editing_finished.emit();
@@ -1330,6 +1431,28 @@ impl EventHandler for MaskedEdit {
                     }
                     return;
                 }
+                if primary && *key == 67 {
+                    // Primary+C: copy the selection's **raw** characters, so a masked field hands
+                    // out the phone number rather than the mask's own literals (I-25).
+                    #[cfg(not(alloc_frugal))]
+                    {
+                        if let Some(raw) = self.selected_raw_text() {
+                            crate::set_clipboard_text(&raw);
+                        }
+                    }
+                    return;
+                }
+                if primary && *key == 88 {
+                    // Primary+X: copy, then delete the same range through the mask (I-25).
+                    #[cfg(not(alloc_frugal))]
+                    {
+                        if let Some(raw) = self.selected_raw_text() {
+                            crate::set_clipboard_text(&raw);
+                            self.delete_selection();
+                        }
+                    }
+                    return;
+                }
                 match *key {
                     8 => {
                         // Backspace — the character behind the caret, or the whole selection.
@@ -1348,6 +1471,7 @@ impl EventHandler for MaskedEdit {
                     27 => {
                         // Escape — abandon the edit and lose focus.
                         self.focused = false;
+                        self.cursor_blink.stop();
                         self.editing_finished.emit();
                         self.base.request_redraw();
                     }
@@ -1652,6 +1776,39 @@ mod tests {
         me.set_cursor_pos(4);
         me.backspace();
         assert_eq!(me.raw_text(), "123");
+    }
+
+    #[test]
+    fn typing_and_pasting_are_undoable() {
+        // I-24: undo/redo were published, but only a programmatic `set_text` ever pushed a step.
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 240, 30));
+        me.set_mask("0000");
+        me.focused = true;
+        me.set_cursor_pos(0);
+        me.insert_char('1');
+        me.insert_char('2');
+        assert_eq!(me.raw_text(), "12");
+        assert!(me.undo());
+        assert_eq!(me.raw_text(), "1");
+        assert!(me.redo());
+        assert_eq!(me.raw_text(), "12");
+
+        // A paste is one step, however many characters it filled.
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 240, 30));
+        me.set_mask("0000");
+        me.focused = true;
+        me.set_cursor_pos(0);
+        assert_eq!(me.paste("1234"), 4);
+        assert!(me.undo());
+        assert_eq!(me.raw_text(), "");
+    }
+
+    #[test]
+    fn the_selection_copies_as_raw_digits() {
+        // I-25: a masked field hands out the phone number, not the mask's literals.
+        let mut me = phone("5550100");
+        me.select_all();
+        assert_eq!(me.selected_raw_text().as_deref(), Some("5550100"));
     }
 
     #[test]

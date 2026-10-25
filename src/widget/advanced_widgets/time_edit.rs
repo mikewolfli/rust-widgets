@@ -28,7 +28,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 
@@ -294,6 +294,27 @@ pub struct TimeEdit {
     digit_buffer: String,
     /// The clock face's reveal.
     clock_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal,
+    /// Emitted when an edit is committed: Enter/Space confirming the open clock face, or focus
+    /// leaving the field.
+    ///
+    /// `time_changed` fires on every step — a held arrow key walks a minute at a time — so a host
+    /// had no way to distinguish "still browsing" from "done".
+    pub editing_finished: GenericSignal,
+    /// The clock face numerals' centred offsets, rebuilt only when the radius or the font changes
+    /// (K-P04).
+    clock_numeral_cache: crate::compat::RefCell<ClockNumeralsCache>,
+}
+
+/// The clock face's numeral offsets and the inputs they were built from.
+///
+/// The offsets are **relative to the face's centre**, so moving the control does not invalidate
+/// them; only a resize (which changes the ring radii) or a font change does.
+#[derive(Default)]
+struct ClockNumeralsCache {
+    /// `(radius bits, font size bits, font weight, family hash)`; `None` before the first build.
+    key: Option<(u32, u32, u16, u64)>,
+    /// The 24 numerals' top-left offsets, outer ring first.
+    offsets: Vec<(i32, i32)>,
 }
 
 /// Which ring of the clock face a point or a click belongs to.
@@ -335,6 +356,8 @@ impl TimeEdit {
             current_section: None,
             digit_buffer: String::new(),
             clock_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal::new(false),
+            editing_finished: GenericSignal::new(),
+            clock_numeral_cache: crate::compat::RefCell::new(ClockNumeralsCache::default()),
         }
     }
     /// Returns the current time.
@@ -1179,7 +1202,13 @@ impl EventHandler for TimeEdit {
                     let _ = self.redo();
                 }
                 // Enter and Space open the face from the keyboard, so the picker is reachable without a
-                // pointer -- the same pair `combobox` uses.
+                // pointer -- the same pair `combobox` uses. While the face is open the same pair
+                // *confirms* it: the value picked is committed and the edit ends, which is the
+                // "弹层确认" half of `editing_finished` (ADV-03).
+                13 | 32 if self.clock_popup => {
+                    self.set_clock_popup(false);
+                    self.editing_finished.emit();
+                }
                 13 | 32 if !self.clock_popup => self.set_clock_popup(true),
                 // Escape closes it without changing anything, which is the one way out that leaves the
                 // value alone.
@@ -1205,6 +1234,8 @@ impl EventHandler for TimeEdit {
                 }
                 _ => { /* Other keys are not relevant */ }
             },
+            // Focus leaving the field ends the edit, the same rule `DateTimeEdit` uses.
+            Event::FocusLost => self.editing_finished.emit(),
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -1218,22 +1249,16 @@ impl Draw for TimeEdit {
         // a light/dark switch changed nothing on screen: the field, its border and its
         // text were all hardcoded, which the rendering census reported as theme-blind.
         //
-        // The theme read is a separate manager lock, taken and released inside
-        // `resolved_theme_style`, so it is not held across the draw — the global
-        // manager's mutex is not re-entrant. `time_edit` classifies as `Input`, whose
-        // resolved style supplies `text_color` and `border_color` but no
-        // `background_color` (ThemeRole::Input resolves that to `None`), so the interior
-        // is derived below from the theme's own background rather than left unset.
+        // The style lookups are the cached, revision-validated forms, so neither takes the manager
+        // lock (K-P17's rule; the field paints inside the same frame as the clock face).
+        // `time_edit` classifies as `Input`, whose resolved style supplies `text_color` and
+        // `border_color` but no `background_color` (ThemeRole::Input resolves that to `None`), so the
+        // interior is derived below from the theme's own background rather than left unset.
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("time_edit");
-        // Read as its own lock acquisition and copied out as values, so the guard is
-        // dropped before anything else touches the theme.
-        let (window_fill, foreground) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (active.colors.background, active.colors.foreground),
-                None => (Color::rgb(240, 240, 240), Color::BLACK),
-            }
+        let (window_fill, foreground) = match crate::style::palette_shared() {
+            Some(colors) => (colors.background, colors.foreground),
+            None => (Color::rgb(240, 240, 240), Color::BLACK),
         };
 
         let ink = style
@@ -1386,39 +1411,38 @@ impl TimeEdit {
 
         // One reused buffer for both rings' labels: `to_string()` / `format!` allocated a `String`
         // for each of the 24 numerals on every frame, and the text is at most two digits.
+        // The 24 numerals' centred offsets are cached, because they are a pure function of the
+        // face's radius and the font: the loop asked `measure_text` for each of them on every
+        // frame, including frames where nothing about the face had changed (K-P04).
+        let offsets = self.clock_numeral_offsets(radius, font, context);
+
+        // One reused buffer for both rings' labels: `to_string()` / `format!` allocated a `String`
+        // for each of the 24 numerals on every frame, and the text is at most two digits.
         let mut numeral = String::new();
         for step in 0..12 {
-            // Clock convention: twelve at the top, growing clockwise. `step` counts from the top, so
-            // the sine term is the horizontal offset and the cosine term is the vertical one.
-            let angle = step as f32 / 12.0 * 2.0 * std::f32::consts::PI;
-            let (sin, cos) = angle.sin_cos();
             // Hours: 1..=12 rather than 0..=11, because a clock face has no zero.
             let hour = if step == 0 { 12 } else { step };
             numeral.clear();
             let _ = core::fmt::Write::write_fmt(&mut numeral, format_args!("{hour}"));
-            self.draw_clock_numerals(
-                context,
-                centre,
-                radius * 0.82,
-                sin,
-                cos,
+            let (dx, dy) = offsets[step];
+            context.draw_text(
+                Point::new(centre.x + dx, centre.y + dy),
                 &numeral,
-                if self.hovered_hand == Some(ClockHand::Hour) { ink } else { muted },
                 font,
+                if self.hovered_hand == Some(ClockHand::Hour) { ink } else { muted },
+                HorizontalAlignment::Left,
             );
             // Minutes: in five-minute steps, which is what the minute ring selects.
             let minute = step * 5;
             numeral.clear();
             let _ = core::fmt::Write::write_fmt(&mut numeral, format_args!("{minute:02}"));
-            self.draw_clock_numerals(
-                context,
-                centre,
-                radius * 0.42,
-                sin,
-                cos,
+            let (dx, dy) = offsets[12 + step];
+            context.draw_text(
+                Point::new(centre.x + dx, centre.y + dy),
                 &numeral,
-                if self.hovered_hand == Some(ClockHand::Minute) { ink } else { muted },
                 font,
+                if self.hovered_hand == Some(ClockHand::Minute) { ink } else { muted },
+                HorizontalAlignment::Left,
             );
         }
 
@@ -1446,25 +1470,64 @@ impl TimeEdit {
         );
     }
 
-    /// Draws one ring position's numeral, centred on the point at `distance` along `(sin, cos)`.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_clock_numerals(
+    /// The 24 numerals' centred top-left offsets, relative to the face's centre.
+    ///
+    /// Index `0..12` is the outer (hour) ring and `12..24` the inner (minute) ring. The table is
+    /// rebuilt only when the radius or the font changes; the offsets are relative so a move does
+    /// not invalidate them. The arithmetic is exactly what the per-frame version did, so a cached
+    /// frame draws the same pixels as the one that built it.
+    fn clock_numeral_offsets(
         &self,
-        context: &mut RenderContext,
-        centre: Point,
-        distance: f32,
-        sin: f32,
-        cos: f32,
-        label: &str,
-        color: Color,
+        radius: f32,
         font: &Font,
-    ) {
-        let metrics = context.measure_text(label, font);
-        // Centred on the ring position rather than started there: a numeral is read as a mark at a
-        // position, so starting every label at its position would push the wider ones off the ring.
-        let x = centre.x + (sin * distance) as i32 - metrics.width as i32 / 2;
-        let y = centre.y - (cos * distance) as i32 - metrics.height as i32 / 2;
-        context.draw_text(Point::new(x, y), label, font, color, HorizontalAlignment::Left);
+        context: &RenderContext,
+    ) -> core::cell::RefMut<'_, Vec<(i32, i32)>> {
+        let mut family_hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in font.family().as_bytes() {
+            family_hash ^= u64::from(*byte);
+            family_hash = family_hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let key = (radius.to_bits(), font.size().to_bits(), font.weight(), family_hash);
+        let mut cache = self.clock_numeral_cache.borrow_mut();
+        if cache.key != Some(key) {
+            cache.offsets.clear();
+            // One reused buffer; each numeral is measured exactly as the draw loop spells it, so
+            // a one-digit hour and a two-digit minute centre the way they always did.
+            let mut label = String::new();
+            for step in 0..12 {
+                // Clock convention: twelve at the top, growing clockwise. `step` counts from the
+                // top, so the sine term is the horizontal offset and the cosine term the vertical
+                // one.
+                let angle = step as f32 / 12.0 * 2.0 * std::f32::consts::PI;
+                let (sin, cos) = angle.sin_cos();
+                let hour = if step == 0 { 12 } else { step };
+                label.clear();
+                let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{hour}"));
+                let metrics = context.measure_text(&label, font);
+                // Centred on the ring position rather than started there: a numeral is read as a
+                // mark at a position, so starting every label at its position would push the
+                // wider ones off the ring.
+                let distance = radius * 0.82;
+                cache.offsets.push((
+                    (sin * distance) as i32 - metrics.width as i32 / 2,
+                    -(cos * distance) as i32 - metrics.height as i32 / 2,
+                ));
+            }
+            for step in 0..12 {
+                let angle = step as f32 / 12.0 * 2.0 * std::f32::consts::PI;
+                let (sin, cos) = angle.sin_cos();
+                label.clear();
+                let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{:02}", step * 5));
+                let metrics = context.measure_text(&label, font);
+                let distance = radius * 0.42;
+                cache.offsets.push((
+                    (sin * distance) as i32 - metrics.width as i32 / 2,
+                    -(cos * distance) as i32 - metrics.height as i32 / 2,
+                ));
+            }
+            cache.key = Some(key);
+        }
+        core::cell::RefMut::map(cache, |cache| &mut cache.offsets)
     }
 }
 
@@ -2201,5 +2264,22 @@ mod tests {
             &mut text,
         );
         assert_eq!(text, "03:04:00 PM");
+    }
+
+    /// Confirming the clock face and leaving the field both announce the end of an edit (ADV-03).
+    #[test]
+    fn the_edit_finishes_on_confirm_and_on_focus_loss() {
+        use std::sync::{Arc, Mutex};
+        let mut edit = TimeEdit::new(Rect::new(0, 0, 160, 28));
+        let finished = Arc::new(Mutex::new(0u32));
+        let sink = Arc::clone(&finished);
+        edit.editing_finished.connect(move || *sink.lock().unwrap() += 1);
+
+        edit.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert_eq!(*finished.lock().unwrap(), 0, "the first Enter opens the face");
+        edit.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert_eq!(*finished.lock().unwrap(), 1, "the second confirms it");
+        edit.handle_event(&Event::FocusLost);
+        assert_eq!(*finished.lock().unwrap(), 2);
     }
 }

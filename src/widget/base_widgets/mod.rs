@@ -7,6 +7,8 @@ pub mod button_group;
 pub mod checkbox;
 pub mod frame;
 pub mod label;
+/// Shared text-measurement cache used by the base, overlay and navigation families (G-A02).
+pub(crate) mod measure_cache;
 pub mod radiobutton;
 #[cfg(widgets_unstripped)]
 pub mod toggle_button;

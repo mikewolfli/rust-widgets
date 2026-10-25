@@ -70,12 +70,12 @@ fn platform_contract_negotiation_works() {
 
     let full_contract = negotiate_capability_contract(RuntimeProfile::Full);
     match full_contract {
-        CapabilityContract::Native(contract) => {
+        CapabilityContract::Hosted(contract) => {
             assert!(
                 contract.typed_widget_trigger,
                 "Native contract must support typed_widget_trigger"
             );
-            // A real backend publishes its own contract (`native_capability_contract()` returns
+            // A real backend publishes its own contract (`hosted_capability_contract()` returns
             // `None` only for a non-desktop family), so the negotiated answer is the backend's own
             // declaration rather than a family-derived default. The property this test guards is
             // that the answer is **not fabricated**: it equals either the backend's own
@@ -112,7 +112,7 @@ fn platform_contract_negotiation_works() {
 
     let embedded_contract = negotiate_capability_contract(RuntimeProfile::Embedded);
     match embedded_contract {
-        CapabilityContract::Native(_) => {
+        CapabilityContract::Hosted(_) => {
             // On test environments without embedded, we get native fallback
         }
         CapabilityContract::Embedded(contract) => {
@@ -417,7 +417,7 @@ fn capability_matrix_matches_widget_kind() {
 // ---------------------------------------------------------------------------
 //
 // `negotiate_capability_contract(Full)` falls back when a backend publishes no
-// `native_capability_contract()`. `Platform::native_capability_contract()` returns
+// `hosted_capability_contract()`. `Platform::hosted_capability_contract()` returns
 // `None` for every non-`Desktop` family, so the fallback is only ever reached from a
 // **non-desktop** backend — and it used to answer with all four flags `true`, telling
 // an embedded or mobile backend it had DPI scaling, IME, accessibility and a native
@@ -435,7 +435,7 @@ fn capability_fallback_follows_the_family_and_never_invents() {
         StubPlatform,
     };
 
-    // A backend that publishes no `native_capability_contract()` of its own, because
+    // A backend that publishes no `hosted_capability_contract()` of its own, because
     // its family is not `Desktop`. This is the only input that reaches the fallback.
     // `with_platform` needs a `&'static`, so the two are leaked once per test run.
     static MOBILE_BACKEND: std::sync::LazyLock<StubPlatform> =
@@ -458,13 +458,13 @@ fn capability_fallback_follows_the_family_and_never_invents() {
         // The precondition this test depends on: no published contract, so the
         // fallback really is what answers.
         assert!(
-            backend.native_capability_contract().is_none(),
+            backend.hosted_capability_contract().is_none(),
             "{name}: this test only means something for a backend without a published contract"
         );
 
         let contract =
             with_platform(backend, || negotiate_capability_contract(RuntimeProfile::Full));
-        let CapabilityContract::Native(caps) = contract else {
+        let CapabilityContract::Hosted(caps) = contract else {
             panic!("{name}: a Full profile must negotiate a Native contract");
         };
         let expected = default_capabilities_for(family);

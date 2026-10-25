@@ -18,6 +18,8 @@ use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+
+use super::theme_snapshot::ThemeSnapshot;
 /// MDI area widget.
 pub struct MdiArea {
     base: BaseWidget,
@@ -47,6 +49,10 @@ pub struct MdiArea {
     activation_history: Vec<ObjectId>,
     /// The live edge-resize gesture, if one is in progress.
     resize_drag: Option<SubwindowResize>,
+    /// The live title-bar move gesture, if one is in progress (C-14).
+    move_drag: Option<SubwindowMove>,
+    /// The live tab-reorder gesture, if one is in progress (C-17).
+    tab_drag: Option<(usize, Point)>,
     /// The geometry a maximized sub-window will return to, with its index.
     maximized_restore: Option<(usize, Rect)>,
     /// Viewport offset applied to every sub-window frame in `SubWindowView`.
@@ -60,6 +66,15 @@ pub struct MdiArea {
     /// Set by a sub-window title write; the next paint consumes it and schedules the frame that
     /// makes the new title visible.
     title_dirty: Rc<Cell<bool>>,
+    /// Emitted with `(child_id, minimized)` when a sub-window is minimized or restored (C-15).
+    pub subwindow_minimized_changed: Signal1<(ObjectId, bool)>,
+    /// Emitted with `(old_index, new_index)` when a tab is dragged to a new slot (C-17).
+    pub subwindow_tab_moved: Signal1<(usize, usize)>,
+    /// Cached z-order index and the key it was produced under (C-P08).
+    ///
+    /// The order changes only when a sub-window is added, removed or raised, but the hit chain
+    /// and the painter used to collect and sort it four times per frame/event.
+    z_cache: RefCell<Option<(u64, Rc<Vec<usize>>)>>,
 }
 /// MDI sub-window.
 pub struct MdiSubWindow {
@@ -305,10 +320,15 @@ impl MdiArea {
             subwindow_title_changed: Signal1::new(),
             activation_history: Vec::new(),
             resize_drag: None,
+            move_drag: None,
+            tab_drag: None,
             maximized_restore: None,
             scroll_offset: Point::new(0, 0),
             registry: None,
             title_dirty: Rc::new(Cell::new(false)),
+            subwindow_minimized_changed: Signal1::new(),
+            subwindow_tab_moved: Signal1::new(),
+            z_cache: RefCell::new(None),
         }
     }
     /// Sets the shared widget registry for child forwarding.
@@ -827,6 +847,41 @@ impl MdiArea {
         true
     }
 
+    /// Minimizes or restores sub-window `widget` (C-15).
+    ///
+    /// Returns `false` for a widget this area does not hold. Minimizing clears the maximized flag
+    /// (a window cannot be both) and re-arranges the minimized icons, so the window takes its icon
+    /// slot immediately. Restoring raises the window again. The change is announced through
+    /// [`Self::subwindow_minimized_changed`].
+    pub fn set_sub_window_minimized(&mut self, widget: ObjectId, minimized: bool) -> bool {
+        let Some(index) = self.subwindows.iter().position(|sw| sw.widget == widget) else {
+            return false;
+        };
+        if self.subwindows[index].minimized == minimized {
+            return true;
+        }
+        self.subwindows[index].minimized = minimized;
+        if minimized {
+            self.subwindows[index].maximized = false;
+            // A minimized window that owned the maximized restore slot must not hand its stored
+            // rectangle back when another window is restored.
+            if matches!(self.maximized_restore, Some((maximized, _)) if maximized == index) {
+                self.maximized_restore = None;
+            }
+            self.arrange_icons();
+        } else {
+            self.set_active_sub_window(widget);
+        }
+        self.subwindow_minimized_changed.emit((widget, minimized));
+        self.base.request_redraw();
+        true
+    }
+
+    /// Whether sub-window `widget` is minimized.
+    pub fn is_sub_window_minimized(&self, widget: ObjectId) -> bool {
+        self.subwindows.iter().find(|sw| sw.widget == widget).is_some_and(|sw| sw.minimized)
+    }
+
     /// The sub-window whose title bar contains `pos`, topmost first.
     ///
     /// Only the sub-window presentation draws title bars; in `TabbedView` the strip names the
@@ -835,9 +890,7 @@ impl MdiArea {
         if self.view_mode != ViewMode::SubWindowView {
             return None;
         }
-        let mut order: Vec<usize> = (0..self.subwindows.len()).collect();
-        order.sort_by_key(|index| -self.subwindows[*index].z_order);
-        order.into_iter().find(|index| {
+        self.z_order_indices().iter().rev().copied().find(|index| {
             let frame = self.view_frame(self.subwindows[*index].geometry);
             let bar = Rect::new(
                 frame.x,
@@ -849,14 +902,38 @@ impl MdiArea {
         })
     }
 
+    /// The sub-window indices in paint order — lowest z-order first — cached (C-P08).
+    ///
+    /// The z-order changes only when a window is added, removed or raised, yet the hit chain
+    /// (`close_button_at`, `resize_edges_at`, `sub_window_at_position`) and the painter each built
+    /// and sorted the index list on every pointer event and every frame. One cached list feeds all
+    /// four, so the cost is paid on a real order change only.
+    fn z_order_indices(&self) -> Rc<Vec<usize>> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for subwindow in &self.subwindows {
+            subwindow.z_order.hash(&mut hasher);
+            subwindow.widget.hash(&mut hasher);
+        }
+        let fingerprint = hasher.finish();
+        if let Some((cached, indices)) = self.z_cache.borrow().as_ref() {
+            if *cached == fingerprint {
+                return Rc::clone(indices);
+            }
+        }
+        let mut indices: Vec<usize> = (0..self.subwindows.len()).collect();
+        indices.sort_by_key(|&index| self.subwindows[index].z_order);
+        let indices = Rc::new(indices);
+        *self.z_cache.borrow_mut() = Some((fingerprint, Rc::clone(&indices)));
+        indices
+    }
+
     /// The topmost resizable sub-window edge band under `pos`, if any.
     fn resize_edges_at(&self, pos: Point) -> Option<(usize, ResizeEdges)> {
         if self.view_mode != ViewMode::SubWindowView {
             return None;
         }
-        let mut order: Vec<usize> = (0..self.subwindows.len()).collect();
-        order.sort_by_key(|index| -self.subwindows[*index].z_order);
-        for index in order {
+        for index in self.z_order_indices().iter().rev().copied() {
             let subwindow = &self.subwindows[index];
             if !subwindow.resizable || subwindow.maximized || subwindow.minimized {
                 continue;
@@ -918,15 +995,99 @@ impl MdiArea {
         subwindow.geometry = Rect::new(x, y, width as u32, height as u32);
         self.base.request_redraw();
     }
+
+    /// Moves the sub-window whose title bar is being dragged (C-14).
+    ///
+    /// The delta is measured from the press position against the geometry snapshot, so the move is
+    /// absolute and a re-delivered pointer sample lands in the same place. The window is clamped so
+    /// at least a title bar's worth stays inside the area: a window dragged fully off the desktop
+    /// would be unreachable with the pointer.
+    fn drag_move(&mut self, pos: Point) {
+        let Some(drag) = self.move_drag else {
+            return;
+        };
+        let area = self.geometry();
+        let Some(subwindow) = self.subwindows.get_mut(drag.index) else {
+            self.move_drag = None;
+            return;
+        };
+        if subwindow.maximized {
+            return;
+        }
+        let dx = pos.x - drag.origin.x;
+        let dy = pos.y - drag.origin.y;
+        let keep = TITLE_BAR_HEIGHT;
+        let min_x = area.x - drag.geometry.width as i32 + keep;
+        let max_x = area.x + area.width as i32 - keep;
+        let min_y = area.y;
+        let max_y = area.y + area.height as i32 - keep;
+        let raw_x = drag.geometry.x.saturating_add(dx);
+        let raw_y = drag.geometry.y.saturating_add(dy);
+        let x = if min_x <= max_x { raw_x.clamp(min_x, max_x) } else { min_x };
+        let y = if min_y <= max_y { raw_y.clamp(min_y, max_y) } else { min_y };
+        subwindow.geometry = Rect::new(x, y, drag.geometry.width, drag.geometry.height);
+        self.base.request_redraw();
+    }
+
+    /// The sub-window whose minimize/restore button is under `pos` (C-15), topmost first.
+    fn minimize_button_at(&self, pos: Point) -> Option<usize> {
+        for index in self.z_order_indices().iter().rev().copied() {
+            let Some(placement) = self.subwindow_placement(index) else {
+                continue;
+            };
+            if !placement.title_bar {
+                continue;
+            }
+            if minimize_button_rect(placement.frame).contains_point(pos) {
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    /// Reorders the tab strip when the carried tab is dragged onto another slot (C-17).
+    ///
+    /// The sub-window records move within [`Self::subwindows`]; their `z_order` values travel with
+    /// them, so stacking and activation relations are preserved. The selection is re-resolved by
+    /// widget id, and the index-keyed maximized-restore slot is re-resolved the same way.
+    fn drag_tab_to(&mut self, pos: Point) {
+        let Some((from, origin)) = self.tab_drag else {
+            return;
+        };
+        let Some(to) = self.tab_at_point(pos) else {
+            return;
+        };
+        if from == to || from >= self.subwindows.len() || to >= self.subwindows.len() {
+            return;
+        }
+        let active_widget = self
+            .active_subwindow
+            .and_then(|index| self.subwindows.get(index))
+            .map(|subwindow| subwindow.widget);
+        let maximized_widget = self
+            .maximized_restore
+            .and_then(|(index, _)| self.subwindows.get(index))
+            .map(|subwindow| subwindow.widget);
+        let maximized_rect = self.maximized_restore.map(|(_, rect)| rect);
+        let moved = self.subwindows.remove(from);
+        self.subwindows.insert(to, moved);
+        self.active_subwindow = active_widget
+            .and_then(|widget| self.subwindows.iter().position(|sw| sw.widget == widget));
+        self.maximized_restore = maximized_widget.and_then(|widget| {
+            let index = self.subwindows.iter().position(|sw| sw.widget == widget)?;
+            Some((index, maximized_rect?))
+        });
+        self.tab_drag = Some((to, origin));
+        self.subwindow_tab_moved.emit((from, to));
+        self.base.request_redraw();
+    }
     /// The index of the sub-window whose close button is under `pos`, topmost first.
     ///
     /// The button is chrome of a *frame*, so the test walks the frames in paint order (highest
     /// z-order first) exactly as [`Self::sub_window_at_position`] does, and skips a sub-window
     /// whose frame draws no title bar (a `TabbedView` frame names itself through the tab strip).
     fn close_button_at(&self, pos: Point) -> Option<usize> {
-        let mut sorted_indices: Vec<usize> = (0..self.subwindows.len()).collect();
-        sorted_indices.sort_by_key(|&i| -self.subwindows[i].z_order);
-        for index in sorted_indices {
+        for index in self.z_order_indices().iter().rev().copied() {
             if !self.subwindows[index].closable {
                 continue;
             }
@@ -945,9 +1106,7 @@ impl MdiArea {
     /// Returns sub-window at position.
     fn sub_window_at_position(&self, pos: Point) -> Option<usize> {
         // Check from top (highest z-order) to bottom
-        let mut sorted_indices: Vec<usize> = (0..self.subwindows.len()).collect();
-        sorted_indices.sort_by_key(|&i| -self.subwindows[i].z_order);
-        for index in sorted_indices {
+        for index in self.z_order_indices().iter().rev().copied() {
             let subwindow = &self.subwindows[index];
             if self.view_frame(subwindow.geometry).contains(pos) {
                 return Some(index);
@@ -1105,6 +1264,9 @@ impl EventHandler for MdiArea {
                     if let Some(index) = self.tab_at_point(*pos) {
                         hit_subwindow = true;
                         self.set_active_sub_window(self.subwindows[index].widget);
+                        // C-17: a press on a tab also arms a reorder. The reorder only begins once
+                        // the pointer crosses the drag threshold, so selecting a tab stays a click.
+                        self.tab_drag = (self.subwindows.len() > 1).then_some((index, *pos));
                     }
                 } else if let Some(index) = self.close_button_at(*pos) {
                     // The ✕ closes the window it belongs to — which is what the glyph says and
@@ -1114,6 +1276,11 @@ impl EventHandler for MdiArea {
                     // removal activated.
                     let widget = self.subwindows[index].widget;
                     self.remove_sub_window(widget);
+                } else if let Some(index) = self.minimize_button_at(*pos) {
+                    // C-15: the title-bar button next to ✕ toggles minimize/restore.
+                    let widget = self.subwindows[index].widget;
+                    let minimized = !self.subwindows[index].minimized;
+                    self.set_sub_window_minimized(widget, minimized);
                 } else if let Some((index, edges)) = self.resize_edges_at(*pos) {
                     // Grabbing a frame edge is the area's gesture, not the child's: it is the
                     // frame's geometry being changed, so the press must not reach the content.
@@ -1130,6 +1297,27 @@ impl EventHandler for MdiArea {
                 } else if let Some(index) = self.sub_window_at_position(*pos) {
                     hit_subwindow = true;
                     self.set_active_sub_window(self.subwindows[index].widget);
+                    // C-14: a press on the title bar (and not on either button, which are tested
+                    // above) starts a move. A maximized window has no meaningful frame to move —
+                    // it fills the area — so it is left out.
+                    let frame = self.view_frame(self.subwindows[index].geometry);
+                    let bar = Rect::new(
+                        frame.x,
+                        frame.y,
+                        frame.width,
+                        TITLE_BAR_HEIGHT.min(frame.height as i32).max(0) as u32,
+                    );
+                    if self.subwindows[index].movable
+                        && !self.subwindows[index].maximized
+                        && bar.contains_point(*pos)
+                    {
+                        self.move_drag = Some(SubwindowMove {
+                            index,
+                            origin: *pos,
+                            geometry: self.subwindows[index].geometry,
+                        });
+                        self.base.set_mouse_pressed(true);
+                    }
                 }
             }
         } else if let Event::MouseDoubleClick { pos, button } = event {
@@ -1144,10 +1332,38 @@ impl EventHandler for MdiArea {
             if self.resize_drag.is_some() {
                 self.drag_resize(*pos);
                 gesture_consumed = true;
+            } else if self.move_drag.is_some() {
+                self.drag_move(*pos);
+                gesture_consumed = true;
+            } else if let Some((_, origin)) = self.tab_drag {
+                // C-17: cross the drag threshold before reordering, so a click stays a click.
+                if (pos.x - origin.x).abs() > 4 || (pos.y - origin.y).abs() > 4 {
+                    self.drag_tab_to(*pos);
+                    gesture_consumed = true;
+                }
             }
         } else if let Event::MouseRelease { button, .. } = event {
-            if *button == 1 && self.resize_drag.take().is_some() {
-                self.base.set_mouse_pressed(false);
+            if *button == 1 {
+                if self.resize_drag.take().is_some() {
+                    self.base.set_mouse_pressed(false);
+                    gesture_consumed = true;
+                }
+                if self.move_drag.take().is_some() {
+                    self.base.set_mouse_pressed(false);
+                    gesture_consumed = true;
+                }
+                if self.tab_drag.take().is_some() {
+                    gesture_consumed = true;
+                }
+            }
+        } else if let Event::Wheel { delta, .. } = event {
+            // C-16: the wheel pans the work area, the same viewport offset the public `scroll_by`
+            // drives. `TabbedView` shows one page with no desktop to pan, so it is ignored there.
+            if self.view_mode == ViewMode::SubWindowView {
+                self.scroll_by(
+                    -delta.x.saturating_mul(WHEEL_PAN_STEP),
+                    -delta.y.saturating_mul(WHEEL_PAN_STEP),
+                );
                 gesture_consumed = true;
             }
         }
@@ -1198,6 +1414,27 @@ fn close_button_rect(frame: Rect) -> Rect {
     )
 }
 
+/// Side of the minimize/restore button, in logical pixels (C-15).
+const MINIMIZE_SIZE: i32 = 12;
+/// Pixels the work area pans per wheel notch (C-16).
+const WHEEL_PAN_STEP: i32 = 24;
+/// Gap between the minimize/restore button and the close button.
+const MINIMIZE_GAP: i32 = 4;
+
+/// The minimize/restore button's box inside a sub-window's title bar (C-15).
+///
+/// Shared by the painter and the hit test, exactly as [`close_button_rect`] is, so the glyph and
+/// the click area cannot drift.
+fn minimize_button_rect(frame: Rect) -> Rect {
+    let close = close_button_rect(frame);
+    Rect::new(
+        close.x - MINIMIZE_SIZE - MINIMIZE_GAP,
+        frame.y + (TITLE_BAR_HEIGHT - MINIMIZE_SIZE) / 2,
+        MINIMIZE_SIZE as u32,
+        MINIMIZE_SIZE as u32,
+    )
+}
+
 /// Height of a sub-window's title bar, in logical pixels.
 const TITLE_BAR_HEIGHT: i32 = 24;
 
@@ -1232,6 +1469,19 @@ struct SubwindowResize {
     index: usize,
     edges: ResizeEdges,
     origin: Point,
+    geometry: Rect,
+}
+
+/// The live title-bar move gesture (C-14).
+///
+/// The snapshot is the window's geometry when the press happened, so the move is absolute — a
+/// replayed or coalesced pointer sample lands in the same place rather than doubling the delta.
+#[derive(Clone, Copy)]
+struct SubwindowMove {
+    index: usize,
+    /// The pointer position the gesture started at, in area coordinates.
+    origin: Point,
+    /// The window's stored geometry at that moment (not the panned frame).
     geometry: Rect,
 }
 
@@ -1323,31 +1573,26 @@ impl Draw for MdiArea {
         //
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
-        // is not re-entrant.
+        // is not re-entrant. `ThemeSnapshot` folds the resolved style and the palette roles into
+        // one visit for the frame (C-P01).
+        let theme = ThemeSnapshot::capture("mdi_area");
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("mdi_area");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
-        let (window_fill, foreground, secondary, primary) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.secondary,
-                    active.colors.primary,
-                ),
-                None => (
-                    Color::rgb(240, 240, 240),
-                    Color::BLACK,
-                    Color::rgb(158, 158, 158),
-                    Color::rgb(33, 150, 243),
-                ),
+        let (window_fill, foreground, secondary, primary) = match theme.palette {
+            Some(active) => {
+                (active.background, active.foreground, active.secondary, active.primary)
             }
+            None => (
+                Color::rgb(240, 240, 240),
+                Color::BLACK,
+                Color::rgb(158, 158, 158),
+                Color::rgb(33, 150, 243),
+            ),
         };
         let ink = style
             .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.text_color))
             .unwrap_or(foreground);
         // `mdi_area` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
         // `Surface` and the active theme writes the window fill into `style.background_color`. A
@@ -1360,7 +1605,7 @@ impl Draw for MdiArea {
         };
         let border = style
             .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != area)
             .unwrap_or_else(|| area.blend(&secondary, 0.45));
 
@@ -1382,52 +1627,51 @@ impl Draw for MdiArea {
                 );
             }
             Background::Gradient => {
-                // Draw gradient background: the work area eased into its own border, so the ramp
-                // is a shade of the themed surface rather than a fixed light grey.
+                // C-P09: one gradient face instead of one `draw_line` per pixel row. The ramp is
+                // the same themed pair the row loop used, described once to the renderer.
                 let top = area;
                 let bottom = area.blend(&border, 0.55);
-                for y in 0..rect.height as i32 {
-                    let ratio = y as f32 / rect.height.max(1) as f32;
-                    let color = top.blend(&bottom, ratio);
-                    context.draw_line(
-                        Point::new(rect.x, rect.y + y),
-                        Point::new(rect.x + rect.width as i32, rect.y + y),
-                        color,
-                    );
-                }
+                let ramp = crate::style::Gradient::linear(
+                    Point::new(rect.x, rect.y),
+                    Point::new(rect.x, rect.y + rect.height as i32),
+                )
+                .with_stops(crate::compat::vec![
+                    crate::style::GradientStop::new(0.0, top),
+                    crate::style::GradientStop::new(1.0, bottom),
+                ]);
+                context.face_with_gradient(
+                    rect,
+                    top,
+                    Some(&ramp),
+                    self.style().surface.unwrap_or_default(),
+                    self.style().border_radius.unwrap_or(0),
+                    Color::BLACK,
+                );
             }
             Background::Pattern => {
-                // Draw pattern background: the checker alternates between the surface and one step
-                // off it, so the weave reads on either appearance.
+                // C-P09: a base fill plus one line per pattern step. The old form emitted a
+                // `fill_rect` per 20 px cell, i.e. hundreds to thousands of commands per frame
+                // for an unchanging result; a weave needs `rows + columns` lines instead.
                 //
-                // The base fill comes first. The loops below truncate to whole tiles, so without it
-                // the right and bottom remainders (up to 19 px each) kept whatever the parent had
-                // painted, and an area narrower or shorter than one tile painted *nothing*.
+                // The base fill comes first. The lines below truncate to whole steps, so without
+                // it the right and bottom remainders kept whatever the parent had painted, and an
+                // area narrower or shorter than one step painted *nothing*.
                 let pattern_size = 20;
                 let alt = area.blend(&ink, 0.06);
                 context.fill_rect(rect, area);
-                let columns = rect.width.div_ceil(pattern_size);
-                let rows = rect.height.div_ceil(pattern_size);
-                for y in 0..rows as i32 {
-                    let cell_y = rect.y + y * pattern_size as i32;
-                    let cell_height = (rect.height as i32 - y * pattern_size as i32)
-                        .min(pattern_size as i32)
-                        .max(0) as u32;
-                    for x in 0..columns as i32 {
-                        let color = if (x + y) % 2 == 0 { area } else { alt };
-                        let cell_width = (rect.width as i32 - x * pattern_size as i32)
-                            .min(pattern_size as i32)
-                            .max(0) as u32;
-                        context.fill_rect(
-                            Rect::new(
-                                rect.x + x * pattern_size as i32,
-                                cell_y,
-                                cell_width,
-                                cell_height,
-                            ),
-                            color,
-                        );
-                    }
+                let bottom = rect.y + rect.height as i32;
+                let right = rect.x + rect.width as i32;
+                // Every other row and every other column of the weave, offset by half a step so
+                // the grid reads as a pattern rather than as a border.
+                let mut y = rect.y + pattern_size / 2;
+                while y < bottom {
+                    context.draw_line(Point::new(rect.x, y), Point::new(right, y), alt);
+                    y += pattern_size;
+                }
+                let mut x = rect.x + pattern_size / 2;
+                while x < right {
+                    context.draw_line(Point::new(x, rect.y), Point::new(x, bottom), alt);
+                    x += pattern_size;
                 }
             }
         }
@@ -1437,11 +1681,9 @@ impl Draw for MdiArea {
         if self.view_mode == ViewMode::TabbedView {
             self.draw_tab_strip(context, &area, &border, &ink, &primary);
         }
-        // Draw sub-windows
-        // Sort by z-order (lowest first, so highest draws last)
-        let mut sorted_indices: Vec<usize> = (0..self.subwindows.len()).collect();
-        sorted_indices.sort_by_key(|&i| self.subwindows[i].z_order);
-        for index in sorted_indices {
+        // Draw sub-windows in paint order (lowest z-order first, so the highest draws last).
+        // The order is cached, so a frame that did not raise a window does not re-sort (C-P08).
+        for index in self.z_order_indices().iter().copied() {
             let Some(placement) = self.subwindow_placement(index) else {
                 continue;
             };
@@ -1543,6 +1785,36 @@ impl Draw for MdiArea {
                         Point::new(close_x, close_y + close_size),
                         close_color,
                     );
+                }
+                // C-15: minimize/restore button, left of the close button. A minimized window
+                // shows a restore square; an expanded or maximized one shows the minimize rule.
+                {
+                    let button = minimize_button_rect(frame_rect);
+                    let button_color = if is_active {
+                        primary.contrast_color()
+                    } else {
+                        ink.blend(&title_bar_color, 0.35)
+                    };
+                    if subwindow.minimized {
+                        context.draw_rect(
+                            Rect::new(
+                                button.x + 2,
+                                button.y + 2,
+                                button.width.saturating_sub(4),
+                                button.height.saturating_sub(4),
+                            ),
+                            button_color,
+                        );
+                    } else {
+                        context.draw_line(
+                            Point::new(button.x + 2, button.y + button.height as i32 - 3),
+                            Point::new(
+                                button.x + button.width as i32 - 2,
+                                button.y + button.height as i32 - 3,
+                            ),
+                            button_color,
+                        );
+                    }
                 }
             }
             // Draw widget content via registry
@@ -2661,5 +2933,52 @@ mod tests {
             area.geometry(),
             "a maximized window owns the area regardless of the pan"
         );
+    }
+
+    /// C-15: the title-bar button minimizes and restores, and the state is observable.
+    #[test]
+    fn the_minimize_button_toggles_the_icon_state() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        area.add_sub_window(widget_id_1(), Rect::new(10, 10, 120, 100));
+        let button = minimize_button_rect(area.subwindow_placement(0).expect("placed").frame);
+        area.handle_event(&crate::event::Event::MousePress {
+            pos: crate::core::Point::new(button.x + 1, button.y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(area.is_sub_window_minimized(widget_id_1()));
+        assert!(area.set_sub_window_minimized(widget_id_1(), false));
+        assert!(!area.is_sub_window_minimized(widget_id_1()));
+    }
+
+    /// C-14: dragging the title bar moves the window by the pointer delta.
+    #[test]
+    fn dragging_a_title_bar_moves_the_window() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        area.add_sub_window(widget_id_1(), Rect::new(10, 10, 120, 100));
+        area.handle_event(&crate::event::Event::MousePress {
+            pos: crate::core::Point::new(20, 15),
+            button: 1,
+            modifiers: 0,
+        });
+        area.handle_event(&crate::event::Event::MouseMove { pos: crate::core::Point::new(60, 45) });
+        area.handle_event(&crate::event::Event::MouseRelease {
+            pos: crate::core::Point::new(60, 45),
+            button: 1,
+        });
+        let geometry = area.sub_window_mut(0).expect("window").geometry;
+        assert_eq!(geometry.x, 50, "moved by the pointer delta");
+        assert_eq!(geometry.y, 40);
+    }
+
+    /// C-16: the wheel pans the work area in sub-window mode.
+    #[test]
+    fn the_wheel_pans_the_work_area() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        area.handle_event(&crate::event::Event::Wheel {
+            delta: crate::core::Point::new(0, 2),
+            modifiers: 0,
+        });
+        assert!(area.scroll_offset().y < 0, "a downward notch scrolls the desktop up");
     }
 }

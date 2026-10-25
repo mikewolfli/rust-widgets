@@ -203,11 +203,53 @@ impl Flex {
     }
 
     /// Appends an item and requests a redraw.
+    ///
+    /// An item that carries a real child id (C-11) is linked into this control's child list and
+    /// shown, so the tree painter draws the control in the item's rectangle. Without the link the
+    /// id was only a click label: the item could not host a real control at all.
     pub fn add_item(&mut self, item: FlexItemSpec) {
+        if let Some(widget_id) = item.widget_id() {
+            self.base.add_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, true);
+        }
         self.items.push(item);
         self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Removes the item at `index` (C-10).
+    ///
+    /// Returns `false` when `index` is out of range. A removed item takes its mounted child with
+    /// it: the link is cleared in both directions and the control is hidden, so the layout cannot
+    /// keep painting a control whose cell no longer exists.
+    pub fn remove_item(&mut self, index: usize) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        let item = self.items.remove(index);
+        if let Some(widget_id) = item.widget_id() {
+            self.base.remove_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, false);
+        }
+        self.rect_version = self.rect_version.wrapping_add(1);
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Writes each mounted item control's rectangle into the control (C-11).
+    ///
+    /// The tree painter draws a linked child at the child's own geometry, so the item rectangle is
+    /// this control's answer to "where does that child live". Called from `draw` and
+    /// `set_geometry`: the arrangement is cached, but the write has to reach the child on the
+    /// frames where the cache is served unchanged.
+    fn place_item_widgets(&self) {
+        for (item, rect) in self.items.iter().zip(self.cached_item_rects().iter()) {
+            if let Some(widget_id) = item.widget_id() {
+                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+            }
+        }
     }
 
     /// Removes every item.
@@ -319,8 +361,49 @@ impl Flex {
     }
 
     /// The item index under `point`, or `None` when the point is between items.
+    ///
+    /// C-P16: for the common simple run (one line, start-justified, equally sized items, no grow)
+    /// the slot is solved arithmetically and only that candidate is confirmed against the cached
+    /// rectangles — an O(1) hit test with no second source of truth, because the confirmation uses
+    /// the same rectangles the painter does. Anything else falls back to the linear scan.
     pub fn item_at(&self, point: Point) -> Option<usize> {
-        self.cached_item_rects().iter().position(|rect| rect.contains_point(point))
+        let rects = self.cached_item_rects();
+        if let Some(index) = self.uniform_run_candidate(point) {
+            if rects.get(index).is_some_and(|rect| rect.contains_point(point)) {
+                return Some(index);
+            }
+        }
+        rects.iter().position(|rect| rect.contains_point(point))
+    }
+
+    /// The slot a uniformly sized, single-line, start-justified run implies for `point`.
+    ///
+    /// `None` means "the formula does not describe this layout", and the caller scans instead.
+    /// The arithmetic is only a *candidate*: the caller confirms it against the cached rectangle,
+    /// so a mismatch degrades to the scan rather than producing a wrong hit.
+    fn uniform_run_candidate(&self, point: Point) -> Option<usize> {
+        if self.items.is_empty()
+            || self.wrap != FlexWrap::NoWrap
+            || !matches!(self.justify, JustifyContent::FlexStart)
+            || matches!(self.direction, FlexDirection::RowReverse | FlexDirection::ColumnReverse)
+        {
+            return None;
+        }
+        let first = self.items.first()?;
+        if self.items.iter().any(|item| item.size() != first.size() || item.grow() != 0) {
+            return None;
+        }
+        let outer = self.geometry();
+        let gap = self.gap as i32;
+        let (start, step, extent, coordinate) = match self.direction {
+            FlexDirection::Row => (outer.x, first.size().width as i32 + gap, outer.width, point.x),
+            _ => (outer.y, first.size().height as i32 + gap, outer.height, point.y),
+        };
+        if step <= 0 || coordinate < start || coordinate >= start + extent as i32 {
+            return None;
+        }
+        let slot = ((coordinate - start) / step) as usize;
+        (slot < self.items.len()).then_some(slot)
     }
 
     fn compute_item_rects(&self) -> Vec<Rect> {
@@ -376,6 +459,8 @@ impl Widget for Flex {
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
         self.rect_version = self.rect_version.wrapping_add(1);
+        // The arrangement moved with the control, so the controls mounted in it have to move too.
+        self.place_item_widgets();
     }
 
     /// The summed item extent plus the gaps: what this row or column wants to be.
@@ -491,6 +576,8 @@ impl Draw for Flex {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
         let rects = self.cached_item_rects();
+        // C-11: mounted item controls are placed before they are painted.
+        self.place_item_widgets();
         paint_items(ctx, &self.base, "flex", outer, &rects, &self.items);
     }
 }
@@ -590,6 +677,21 @@ impl FlowLayout {
         self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Removes the item at `index` (C-10). Returns `false` when the index is out of range.
+    ///
+    /// The remaining items re-flow on the next arrangement: removing one changes the run the
+    /// following items fall on, which is why the version is bumped rather than only the list.
+    pub fn remove_item(&mut self, index: usize) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        self.items.remove(index);
+        self.rect_version = self.rect_version.wrapping_add(1);
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
     }
 
     /// The flow direction.
@@ -927,6 +1029,21 @@ impl WrapLayout {
         self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Removes the item at `index` (C-10). Returns `false` when the index is out of range.
+    ///
+    /// The remaining items re-wrap on the next arrangement: removing one changes which line the
+    /// following items fall on, which is why the version is bumped rather than only the list.
+    pub fn remove_item(&mut self, index: usize) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        self.items.remove(index);
+        self.rect_version = self.rect_version.wrapping_add(1);
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
     }
 
     /// The direction items flow before wrapping.

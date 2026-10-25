@@ -104,6 +104,14 @@ pub mod accessibility;
 /// relying on source inspection.
 #[cfg(not(alloc_frugal))]
 pub mod diagnostics;
+/// The shared TTL wrapper for the environment facts behind that revision (P-02 / P-201).
+///
+/// One mechanism rather than a per-backend copy: the TTL and the way a host notification
+/// invalidates a reading are properties of the cache, not of the OS being asked. Gated with the
+/// profile that has a platform singleton: `mini` answers every environment fact with its honest
+/// absence and has no cached reading to invalidate, so the wrapper would be dead code there.
+#[cfg(not(alloc_frugal))]
+pub(crate) mod environment_cache;
 /// The OS change-notification revision shared by every backend (G-23).
 pub(crate) mod environment_notify;
 
@@ -125,7 +133,7 @@ pub mod lifecycle;
 
 /// Locale interning and the POSIX environment fallback shared by the desktop backends.
 ///
-/// `intern`/`generation_hash` are available in every profile (the iOS/state backends call them
+/// `intern`/`environment_revision` are available in every profile (the iOS/state backends call them
 /// even under `mini`); only the `std::env` half is gated on `not(alloc_frugal)`. A profile whose
 /// selected backend has no locale source compiles the module but cannot call it, which is why the
 /// dead-code lint is allowed in exactly those builds.
@@ -213,20 +221,6 @@ pub mod clipboard_native;
 /// Shared cleanup for the menu tables the platform backends keep (PLAT-08).
 pub(crate) mod menu_bookkeeping;
 
-/// The pre-`PLAT-13` path of [`clipboard_native`].
-///
-/// Kept only so an existing `platform::clipboard_stubs::…` path keeps compiling; new code should
-/// use [`clipboard_native`]. The re-export forwards the public submodules (`macos`, `windows`,
-/// `objc2_macos`, `linux`, `wasm`); the crate-private `cf_html` codec is not part of the public
-/// surface and is not re-exported.
-#[deprecated(note = "renamed to `clipboard_native`; this alias forwards to it")]
-pub mod clipboard_stubs {
-    // On a target where no clipboard submodule compiles (Android, iOS, …) the glob re-exports
-    // nothing, which the compiler reports as an unused import. The alias itself must still exist
-    // so the old path resolves on every target.
-    #[allow(unused_imports)]
-    pub use super::clipboard_native::*;
-}
 mod contract;
 pub(crate) mod frame_wait;
 /// Device class detection and adaptive layout support (BLUE8 P4-6).
@@ -316,7 +310,7 @@ pub use crate::platform::runtime::{
 pub use crate::platform::stub::StubPlatform;
 pub use crate::platform::types::*;
 pub use crate::platform::types::{
-    CapabilityContract, EmbeddedCapabilityContract, NativeCapabilityContract,
+    CapabilityContract, EmbeddedCapabilityContract, HostedCapabilityContract,
 };
 
 pub mod a11y_wiring;

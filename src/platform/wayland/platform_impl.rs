@@ -274,22 +274,22 @@ impl Platform for WaylandPlatform {
         }
     }
 
-    /// The locale named by the process environment.
+    /// The locale named by the process environment, cached for one second.
     ///
     /// Wayland has no locale protocol; the POSIX variables are the same source every other
-    /// process on the session reads. The value is interned for the style layer.
+    /// process on the session reads. The value is interned once and reused, so the four
+    /// `std::env::var` reads and the normalization are not paid on every 250 ms environment poll
+    /// (P-02/P-04).
     fn system_locale(&self) -> Option<&'static str> {
-        crate::platform::locale::intern(crate::platform::locale::from_environment())
+        crate::platform::locale::interned_from_environment()
     }
 
     /// A revision of the environment facts, derived from their current values.
+    ///
+    /// See [`crate::platform::locale::environment_revision`]: the shared accessor hashes the
+    /// complete fact set the style snapshot reads (P-03/P-06).
     fn environment_generation(&self) -> u64 {
-        crate::platform::locale::generation_hash(
-            self.system_theme(),
-            self.high_contrast(),
-            self.reduce_motion(),
-            self.system_locale(),
-        )
+        crate::platform::locale::environment_revision(self)
     }
 
     /// The installed families from fontconfig (`fc-list`); empty when it is absent.
@@ -935,6 +935,7 @@ impl WaylandPlatform {
                 Some(read_guard) => {
                     let fd = read_guard.connection_fd().as_raw_fd();
                     let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+// SAFETY: `pollfd` is a valid stack local and the call touches only this thread's fd set.
                     let rc = unsafe { libc::poll(&mut pollfd, 1, IDLE_TIMEOUT_MS) };
                     if rc > 0 {
                         // Data available: read it, then dispatch to handlers.

@@ -104,6 +104,9 @@ macro_rules! impl_properties_view {
             PropertySchema::new("value", PropertyValueKind::String, true, true),
             PropertySchema::new("length", PropertyValueKind::UInt, true, true),
             PropertySchema::new("masked", PropertyValueKind::Bool, true, true),
+            // I-106: read-only and the character class are part of the published contract.
+            PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("digits_only", PropertyValueKind::Bool, true, true),
             PropertySchema::new("separator", PropertyValueKind::String, true, true),
             PropertySchema::new("focused_index", PropertyValueKind::UInt, true, false),
             PropertySchema::new("is_complete", PropertyValueKind::Bool, true, false),
@@ -160,6 +163,10 @@ macro_rules! impl_properties_view {
             PropertySchema::new("step", PropertyValueKind::Int, true, true),
             PropertySchema::new("wrap", PropertyValueKind::Bool, true, true),
             PropertySchema::new("suffix", PropertyValueKind::String, true, true),
+            // I-105: the prefix, the displayed decimal count and the special-value text.
+            PropertySchema::new("prefix", PropertyValueKind::String, true, true),
+            PropertySchema::new("decimals", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("special_value_text", PropertyValueKind::String, true, true),
             PropertySchema::new("row_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_row", PropertyValueKind::UInt, true, false),
             PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
@@ -304,6 +311,12 @@ macro_rules! impl_properties_view {
 
         pub(crate) const IMAGE_VIEW_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("scaled", PropertyValueKind::Bool, true, true),
+            // D-07/D-08: orientation, zoom and pan are part of the published view state.
+            PropertySchema::enumerated("rotation", true, true, &["0", "90", "180", "270"]),
+            PropertySchema::new("flip_horizontal", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("flip_vertical", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("zoom_level", PropertyValueKind::Float, true, true),
+            PropertySchema::new("pan_offset", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

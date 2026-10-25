@@ -4,7 +4,7 @@
 //! Dock widget.
 use crate::compat::Cow;
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Orientation, Point, Rect};
-use crate::event::{Event, EventHandler};
+use crate::event::{DragPayload, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
@@ -1022,17 +1022,28 @@ impl EventHandler for DockWidget {
             }
             _ => { /* Other events are not relevant */ }
         }
+        // C-P14: the content rectangle was derived once for the guard and again for the write.
+        let content_rect = self.content_rect();
         let allow_child_event = match event {
             Event::MousePress { pos, .. }
             | Event::MouseRelease { pos, .. }
-            | Event::MouseMove { pos } => self.content_rect().contains(*pos),
+            | Event::MouseMove { pos } => content_rect.contains(*pos),
             _ => true,
         };
         // Forward content events only to the docked widget.
         if allow_child_event {
             if let Some(widget_id) = self.widget {
                 if let Some(ref reg) = self.registry {
-                    reg.borrow_mut().set_widget_geometry(widget_id, self.content_rect());
+                    if crate::widget_geometry(widget_id)
+                        != Some((
+                            content_rect.x,
+                            content_rect.y,
+                            content_rect.width,
+                            content_rect.height,
+                        ))
+                    {
+                        reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
+                    }
                     reg.borrow_mut().forward_event(widget_id, event);
                 }
             }
@@ -1378,8 +1389,20 @@ struct DockTables {
 /// The gap at the inner boundary of an edge band that a resize gesture can grab.
 const EDGE_HANDLE_EXTENT: u32 = 4;
 
+/// The drag payload type a dock panel carries (C-07).
+///
+/// The same spelling `tab_widget` uses for its own transfers: the payload names the *kind* of
+/// thing being carried, and the target filters on it before it looks at the item id.
+const DOCK_DRAG_TYPE: &str = "dock_panel";
+
 /// Version tag of the blob produced by [`DockArea::save_state`].
-const DOCK_AREA_STATE_VERSION: u8 = 1;
+///
+/// Version 2 adds the split tree (C-06): each dock records the index of the dock it subdivides and
+/// the axis it subdivides it along, so a multi-level split survives a save/restore. Version 1 blobs
+/// are still accepted — they simply describe a flat arrangement, which is what they always meant.
+const DOCK_AREA_STATE_VERSION: u8 = 2;
+/// The version-1 blob tag, accepted on restore only.
+const DOCK_AREA_STATE_VERSION_FLAT: u8 = 1;
 
 /// A host surface that arranges [`DockWidget`]s around a central widget.
 ///
@@ -1394,6 +1417,15 @@ const DOCK_AREA_STATE_VERSION: u8 = 1;
 /// It is a layout owner rather than a `Widget`: it holds child ids, not their state, so it
 /// can arrange docks that live in any registry and cannot paint over them. Call
 /// [`Self::arrange`] after a change to push the computed rectangles into the widgets.
+///
+/// # Events and the capability registry
+///
+/// `DockArea` is not a [`WidgetKind`](crate::widget::WidgetKind), so it has no capability
+/// record and no published event schema. [`Self::active_dock_changed`,
+/// `Self::dock_removed`] and [`Self::layout_changed`] are host-facing Rust signals on this
+/// owner, not a second list for [`DockWidget`]'s three published events
+/// (`dock_location_changed`, `features_changed`, `top_level_changed`). A host that owns the
+/// area connects them directly; a designer sees only the `DockWidget` control.
 pub struct DockArea {
     /// The whole surface, including the bands and the centre.
     area: Rect,
@@ -1433,7 +1465,17 @@ pub struct DockArea {
     /// The live edge-resize gesture, if one is in progress: the grabbed edge and how far the
     /// pointer sat from that band's inner boundary when the gesture began.
     edge_drag: Option<(DockWidgetArea, i32)>,
+    /// Cached arrangement and the key it was produced under (C-P14).
+    ///
+    /// The arrangement depends only on the registered docks, the surface and the edge
+    /// thicknesses, so rebuilding the five lookup tables and re-deriving every rectangle for each
+    /// `arrange`/`layout` call was work proportional to the dock count for an unchanged answer.
+    /// The key is a hash of exactly those inputs, so nothing has to invalidate it by hand.
+    layout_cache: LayoutCache,
 }
+
+/// The cached arrangement and the key it was produced under.
+type LayoutCache = RefCell<Option<(u64, Rc<Vec<(ObjectId, Rect, bool)>>)>>;
 
 impl DockArea {
     /// Creates an empty host for `area` with a third of the shorter side as each band.
@@ -1451,6 +1493,7 @@ impl DockArea {
             dock_removed: Signal1::new(),
             layout_changed: Signal1::new(),
             edge_drag: None,
+            layout_cache: RefCell::new(None),
         }
     }
 
@@ -1564,6 +1607,100 @@ impl DockArea {
             split_orientation: Orientation::Vertical,
         });
         self.arrange();
+        true
+    }
+
+    /// A drag payload naming `widget` as a dock panel (C-07).
+    ///
+    /// `None` for a dock this host does not hold, so a press that started on a stale id cannot
+    /// begin a transfer of something that is not here. The widget travels as the payload's
+    /// `attached` control as well as its item id, because a target that reparents it needs the
+    /// id in a form it can use directly.
+    pub fn dock_drag_payload(&self, widget: ObjectId) -> Option<DragPayload> {
+        self.docks.iter().find(|dock| dock.widget == widget)?;
+        Some(DragPayload::new(DOCK_DRAG_TYPE, widget.to_string()).with_attached(widget))
+    }
+
+    /// Re-docks a registered panel onto `area` within this host (C-07).
+    ///
+    /// Returns `false` for an unknown widget or [`DockWidgetArea::NoDockWidgetArea`]. The panel
+    /// becomes the visible member of a new group and loses any split it had — a panel cannot both
+    /// own a band and subdivide another one. The active-dock signal reports the move, so a host
+    /// mirroring the layout learns about it.
+    pub fn move_dock_to_area(&mut self, widget: ObjectId, area: DockWidgetArea) -> bool {
+        if area == DockWidgetArea::NoDockWidgetArea {
+            return false;
+        }
+        let Some(index) = self.docks.iter().position(|dock| dock.widget == widget) else {
+            return false;
+        };
+        let group = self.next_group;
+        self.next_group = self.next_group.saturating_add(1);
+        self.docks[index].area = area;
+        self.docks[index].group = group;
+        self.docks[index].active = true;
+        self.docks[index].split_of = None;
+        self.active_dock_changed.emit(widget);
+        self.arrange();
+        true
+    }
+
+    /// Accepts a dock-panel drag payload into `area` on this host (C-07).
+    ///
+    /// A payload of another type, an unparsable item id or a widget this host does not hold is
+    /// refused, so a foreign drop cannot invent a dock. A same-host drop re-docks the panel; a
+    /// cross-host transfer is [`Self::transfer_dock_to`].
+    pub fn drop_dock_payload(&mut self, payload: &DragPayload, area: DockWidgetArea) -> bool {
+        if payload.type_id != DOCK_DRAG_TYPE {
+            return false;
+        }
+        let Ok(raw) = payload.item_id.parse::<u64>() else {
+            return false;
+        };
+        self.move_dock_to_area(ObjectId::from(raw), area)
+    }
+
+    /// Moves `widget` from this host into `target`, docked to `area` (C-07).
+    ///
+    /// This is the cross-zone half of the dock system: a panel can be dragged from one
+    /// [`DockArea`] to another. The source removes the entry (and detaches any panel that was
+    /// split inside it, so no dock keeps a parent that is no longer here), the target inserts it in
+    /// a fresh tab group, and both hosts re-arrange and announce the change. The panel's minimum
+    /// extent travels with it; its tab group and nesting do not, because both are properties of the
+    /// host it is leaving.
+    pub fn transfer_dock_to(
+        &mut self,
+        widget: ObjectId,
+        target: &mut DockArea,
+        area: DockWidgetArea,
+    ) -> bool {
+        if area == DockWidgetArea::NoDockWidgetArea
+            || target.docks.iter().any(|dock| dock.widget == widget)
+        {
+            return false;
+        }
+        let Some(index) = self.docks.iter().position(|dock| dock.widget == widget) else {
+            return false;
+        };
+        let removed = self.docks.remove(index);
+        for dock in self.docks.iter_mut().filter(|dock| dock.split_of == Some(widget)) {
+            dock.split_of = None;
+        }
+        let group = target.next_group;
+        target.next_group = target.next_group.saturating_add(1);
+        target.docks.push(DockEntry {
+            widget,
+            area,
+            group,
+            active: true,
+            min_size: removed.min_size,
+            split_of: None,
+            split_orientation: Orientation::Vertical,
+        });
+        self.dock_removed.emit(widget);
+        self.arrange();
+        target.active_dock_changed.emit(widget);
+        target.arrange();
         true
     }
 
@@ -1710,7 +1847,32 @@ impl DockArea {
     /// (left, right, top, bottom) and then group order, with the centre last, so a caller
     /// can zip it with ids without assuming insertion order.
     pub fn layout(&self) -> Vec<(ObjectId, Rect)> {
-        self.layout_entries().into_iter().map(|(widget, rect, _)| (widget, rect)).collect()
+        self.layout_entries().iter().map(|(widget, rect, _)| (*widget, *rect)).collect()
+    }
+
+    /// A hash of every input [`Self::compute_layout_entries`] reads (C-P14).
+    ///
+    /// A cache key rather than an invalidation list: every mutator above ends in `arrange`, and
+    /// so would every future one, which is what makes "forgot to invalidate" unrepresentable.
+    fn layout_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (self.area.x, self.area.y, self.area.width, self.area.height).hash(&mut hasher);
+        self.edge_extent.hash(&mut hasher);
+        for extent in self.edge_extents {
+            extent.hash(&mut hasher);
+        }
+        self.central.hash(&mut hasher);
+        for dock in &self.docks {
+            dock.widget.hash(&mut hasher);
+            area_tag(dock.area).hash(&mut hasher);
+            dock.group.hash(&mut hasher);
+            dock.active.hash(&mut hasher);
+            dock.min_size.hash(&mut hasher);
+            dock.split_of.hash(&mut hasher);
+            (dock.split_orientation as u8).hash(&mut hasher);
+        }
+        hasher.finish()
     }
 
     /// The arrangement, with each dock's visibility in the same pass (C-28).
@@ -1722,9 +1884,26 @@ impl DockArea {
     /// filtering the whole dock list per edge and per group — quadratic in the dock count on every
     /// arrangement. Both tables are built once here from one walk, and the visibility answer is
     /// read off the entry that produced the rectangle.
-    fn layout_entries(&self) -> Vec<(ObjectId, Rect, bool)> {
+    fn layout_entries(&self) -> Rc<Vec<(ObjectId, Rect, bool)>> {
+        let fingerprint = self.layout_fingerprint();
+        if let Some((cached, entries)) = self.layout_cache.borrow().as_ref() {
+            if *cached == fingerprint {
+                return Rc::clone(entries);
+            }
+        }
+        let entries = Rc::new(self.compute_layout_entries());
+        *self.layout_cache.borrow_mut() = Some((fingerprint, Rc::clone(&entries)));
+        entries
+    }
+
+    /// Computes the arrangement from scratch; see [`Self::layout_entries`] for the cache.
+    fn compute_layout_entries(&self) -> Vec<(ObjectId, Rect, bool)> {
         let tables = self.build_tables();
         let mut out = Vec::new();
+        // One scratch buffer for every `distribute` call in this pass. The distributions are
+        // consumed immediately, so reusing it removes an allocation per band and per split parent
+        // (C-P14).
+        let mut scratch: Vec<(u32, u32)> = Vec::new();
 
         let (bands, centre) = self.carve_occupied(&tables.occupied_edges);
         for (area, band) in bands {
@@ -1743,13 +1922,16 @@ impl DockArea {
                 .map(|group| tables.floor_by_group.get(group).copied().unwrap_or(0))
                 .collect();
             let total = if horizontal { band.width } else { band.height };
-            for (group, (offset, extent)) in groups.iter().zip(distribute(total, &floors)) {
+            distribute_into(total, &floors, &mut scratch);
+            for group_index in 0..groups.len() {
+                let (offset, extent) = scratch[group_index];
+                let group = groups[group_index];
                 let rect = if horizontal {
                     Rect::new(band.x + offset as i32, band.y, extent, band.height)
                 } else {
                     Rect::new(band.x, band.y + offset as i32, band.width, extent)
                 };
-                let Some(widgets) = tables.members_by_group.get(group) else {
+                let Some(widgets) = tables.members_by_group.get(&group) else {
                     continue;
                 };
                 for widget in widgets {
@@ -1842,7 +2024,13 @@ impl DockArea {
             Orientation::Vertical => rect.height,
             Orientation::Horizontal => rect.width,
         };
-        for (child, (offset, extent)) in children.iter().zip(distribute(total, &floors)) {
+        // A frame-local buffer rather than the caller's: nesting means this frame's distribution
+        // has to survive the recursive calls below, which would overwrite a shared buffer.
+        let mut widths: Vec<(u32, u32)> = Vec::with_capacity(children.len());
+        distribute_into(total, &floors, &mut widths);
+        for child_index in 0..children.len() {
+            let (offset, extent) = widths[child_index];
+            let child = children[child_index];
             let child_rect = match orientation {
                 Orientation::Vertical => {
                     Rect::new(rect.x, rect.y + offset as i32, rect.width, extent)
@@ -1851,7 +2039,7 @@ impl DockArea {
                     Rect::new(rect.x + offset as i32, rect.y, extent, rect.height)
                 }
             };
-            self.place_dock(*child, child_rect, out, depth + 1, tables);
+            self.place_dock(child, child_rect, out, depth + 1, tables);
         }
     }
 
@@ -2133,30 +2321,41 @@ impl DockArea {
     /// Emits [`Self::layout_changed`], which is the one place an arrangement change is announced:
     /// every entry point above ends here, so no path can rearrange the surface silently.
     pub fn arrange(&self) {
-        for (widget, rect, visible) in self.layout_entries() {
-            crate::set_widget_geometry(widget, rect.x, rect.y, rect.width, rect.height);
-            crate::set_widget_visible(widget, visible);
+        for (widget, rect, visible) in self.layout_entries().iter() {
+            crate::set_widget_geometry(*widget, rect.x, rect.y, rect.width, rect.height);
+            crate::set_widget_visible(*widget, *visible);
             if let Some(ref registry) = self.registry {
                 let mut registry = registry.borrow_mut();
-                registry.set_widget_geometry(widget, rect);
+                registry.set_widget_geometry(*widget, *rect);
             }
         }
         self.layout_changed.emit(());
     }
 
-    /// Serialises the dock arrangement: each dock's edge, tab group and active flag.
+    /// Serialises the dock arrangement: each dock's edge, tab group, active flag and split parent.
     ///
     /// Docks are stored in registration order and their ids are not written, so a restored
     /// blob describes the layout a host should rebuild rather than binding it to ids that
-    /// may differ between sessions.
+    /// may differ between sessions. The split parent is stored as an **index** in that same order,
+    /// with `u32::MAX` meaning "not nested", which is what makes the nesting restorable (C-06).
     pub fn save_state(&self) -> Vec<u8> {
-        let mut state = Vec::with_capacity(6 + self.docks.len() * 6);
+        const ENTRY: usize = 11;
+        let mut state = Vec::with_capacity(5 + self.docks.len() * ENTRY);
         state.push(DOCK_AREA_STATE_VERSION);
         state.extend_from_slice(&(self.docks.len() as u32).to_le_bytes());
         for dock in &self.docks {
             state.push(area_tag(dock.area));
             state.extend_from_slice(&(dock.group as u32).to_le_bytes());
             state.push(u8::from(dock.active));
+            let parent = dock
+                .split_of
+                .and_then(|parent| self.docks.iter().position(|dock| dock.widget == parent))
+                .map_or(u32::MAX, |index| index as u32);
+            state.extend_from_slice(&parent.to_le_bytes());
+            state.push(match dock.split_orientation {
+                Orientation::Horizontal => 0,
+                Orientation::Vertical => 1,
+            });
         }
         state
     }
@@ -2166,17 +2365,35 @@ impl DockArea {
     /// Returns `false` for a malformed blob or a dock count that does not match this host's,
     /// leaving the current arrangement untouched. The next group number is advanced past
     /// every restored group so a later [`Self::add_dock`] cannot join one by accident.
+    ///
+    /// # Split tree (C-06)
+    ///
+    /// A version-2 blob records each dock's split parent by index, and the tree is rebuilt from
+    /// those indices. A version-1 blob carries no tree, so every dock is a band member — exactly
+    /// what that format described. A parent index that is out of range or names the dock itself is
+    /// dropped rather than trusted, so a hand-edited blob cannot build a self-parented layout.
     pub fn restore_state(&mut self, state: &[u8]) -> bool {
         const HEADER: usize = 5;
-        if state.len() < HEADER || state[0] != DOCK_AREA_STATE_VERSION {
+        const ENTRY_V1: usize = 6;
+        const ENTRY_V2: usize = 11;
+        if state.len() < HEADER {
             return false;
         }
+        let version = state[0];
+        let entry = match version {
+            DOCK_AREA_STATE_VERSION => ENTRY_V2,
+            DOCK_AREA_STATE_VERSION_FLAT => ENTRY_V1,
+            _ => return false,
+        };
         let count = u32::from_le_bytes([state[1], state[2], state[3], state[4]]) as usize;
-        if count != self.docks.len() || state.len() != HEADER + count * 6 {
+        if count != self.docks.len() || state.len() != HEADER + count * entry {
             return false;
         }
+        // The ids in registration order, so a stored index can be resolved back to a widget.
+        let ids: Vec<ObjectId> = self.docks.iter().map(|dock| dock.widget).collect();
+        let mut parents: Vec<Option<usize>> = Vec::with_capacity(count);
         let mut cursor = HEADER;
-        for dock in self.docks.iter_mut() {
+        for (index, dock) in self.docks.iter_mut().enumerate() {
             let Some(area) = area_from_tag(state[cursor]) else {
                 return false;
             };
@@ -2189,12 +2406,28 @@ impl DockArea {
             dock.area = area;
             dock.group = group;
             dock.active = state[cursor + 5] != 0;
-            // The blob describes bands, groups and the visible member — not nesting. Clearing the
-            // split parent keeps the restored arrangement self-consistent: a dock that was nested
-            // when the blob was written is a band member again, which is exactly what the blob says
-            // about it.
-            dock.split_of = None;
-            cursor += 6;
+            if entry == ENTRY_V2 {
+                let parent = u32::from_le_bytes([
+                    state[cursor + 6],
+                    state[cursor + 7],
+                    state[cursor + 8],
+                    state[cursor + 9],
+                ]);
+                let parent = usize::try_from(parent).ok().filter(|parent| *parent < count);
+                // A self-parent is a one-node cycle and no layout can place it.
+                parents.push(parent.filter(|parent| *parent != index));
+                dock.split_orientation = if state[cursor + 10] == 0 {
+                    Orientation::Horizontal
+                } else {
+                    Orientation::Vertical
+                };
+            } else {
+                parents.push(None);
+            }
+            cursor += entry;
+        }
+        for (index, parent) in parents.into_iter().enumerate() {
+            self.docks[index].split_of = parent.map(|parent| ids[parent]);
         }
         self.next_group = self
             .docks
@@ -2229,12 +2462,18 @@ fn edge_index(area: DockWidgetArea) -> Option<usize> {
 ///
 /// The last slot always takes the remainder, so the sizes add up to `extent` even when the division
 /// does not come out even.
-fn distribute(extent: u32, floors: &[u32]) -> Vec<(u32, u32)> {
+///
+/// The result is written into a caller-provided buffer (C-P14).
+///
+/// The arrangement runs one distribution per edge band, so reusing the buffer removes an
+/// allocation from each of them. The buffer is cleared first, so a larger earlier vector cannot
+/// leak stale slots into a smaller later answer.
+fn distribute_into(extent: u32, floors: &[u32], out: &mut Vec<(u32, u32)>) {
+    out.clear();
     let count = floors.len();
     if count == 0 {
-        return Vec::new();
+        return;
     }
-    let mut out = Vec::with_capacity(count);
     let total_floor = floors.iter().fold(0u32, |total, floor| total.saturating_add(*floor));
     if total_floor >= extent {
         let share = extent / count as u32;
@@ -2244,7 +2483,7 @@ fn distribute(extent: u32, floors: &[u32]) -> Vec<(u32, u32)> {
             out.push((cursor, size));
             cursor = cursor.saturating_add(size);
         }
-        return out;
+        return;
     }
     let extra = (extent - total_floor) / count as u32;
     let mut cursor = 0u32;
@@ -2257,7 +2496,6 @@ fn distribute(extent: u32, floors: &[u32]) -> Vec<(u32, u32)> {
         out.push((cursor, size));
         cursor = cursor.saturating_add(size);
     }
-    out
 }
 
 #[cfg(test)]
@@ -3164,5 +3402,43 @@ mod tests {
             "the split children divide their parent's box between them"
         );
         assert!(by_widget[&5].1 && by_widget[&6].1, "a split child is active on creation");
+    }
+
+    /// C-06: the saved blob carries the split tree, so a restore keeps the nesting.
+    #[test]
+    fn a_restore_rebuilds_the_split_tree() {
+        let mut host = DockArea::new(Rect::new(0, 0, 400, 300));
+        assert!(host.add_dock(1, DockWidgetArea::LeftDockWidgetArea));
+        assert!(host.add_dock(2, DockWidgetArea::LeftDockWidgetArea));
+        assert!(host.split_dock(2, 1, Orientation::Vertical));
+        let blob = host.save_state();
+
+        let mut restored = DockArea::new(Rect::new(0, 0, 400, 300));
+        assert!(restored.add_dock(1, DockWidgetArea::LeftDockWidgetArea));
+        assert!(restored.add_dock(2, DockWidgetArea::LeftDockWidgetArea));
+        assert!(restored.restore_state(&blob));
+        assert_eq!(
+            restored.split_parent_of(2),
+            Some(1),
+            "the nested dock keeps the parent the blob recorded"
+        );
+    }
+
+    /// C-07: a panel can move from one dock area to another, and both hosts announce it.
+    #[test]
+    fn a_panel_transfers_between_areas() {
+        let mut source = DockArea::new(Rect::new(0, 0, 400, 300));
+        let mut target = DockArea::new(Rect::new(0, 0, 400, 300));
+        assert!(source.add_dock(7, DockWidgetArea::LeftDockWidgetArea));
+        let payload = source.dock_drag_payload(7).expect("a registered panel has a payload");
+        assert_eq!(payload.item_id, "7");
+        assert!(source.transfer_dock_to(7, &mut target, DockWidgetArea::RightDockWidgetArea));
+        assert!(source.dock_ids().is_empty());
+        assert_eq!(target.dock_ids(), vec![7]);
+        assert_eq!(target.dock_area_of(7), Some(DockWidgetArea::RightDockWidgetArea));
+        assert!(
+            !source.drop_dock_payload(&payload, DockWidgetArea::LeftDockWidgetArea),
+            "a transferred panel is no longer this host's to re-dock"
+        );
     }
 }

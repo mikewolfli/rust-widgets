@@ -14,10 +14,16 @@
 //!
 //! This module answers that question by walking the *same* rules through the *same* selector match
 //! and reporting, per property, the last declaration that won. It reuses
-//! [`CssParser::parse_rules`](crate::style::css::CssParser::parse_rules),
-//! [`CssParser::parse_selector`](crate::style::css::CssParser::parse_selector) and
+//! [`CssParser::parse_prepared_rules`](crate::style::css::CssParser::parse_prepared_rules) and
 //! [`CssSelector::matches`](crate::style::css::CssSelector::matches), so the trace cannot disagree
 //! with what was applied — there is one cascade, and this reads it.
+//!
+//! # Parse once, match many (G-164)
+//!
+//! A registered sheet has already parsed its rules, so a trace over it must not re-expand and
+//! re-parse the CSS text. [`trace_cascade_prepared`] takes the parsed rule sets and is the entry
+//! point for that case; [`trace_cascade`] is the on-demand form for an editor buffer that has no
+//! registered copy yet, and it parses each sheet exactly once before delegating to the same walk.
 //!
 //! # Why the trace is separate from the apply
 //!
@@ -40,13 +46,16 @@
 //! shows when a rule has no effect (`BLUE26` B26.10's "支持无效规则错误").
 
 use crate::compat::{format, String, Vec};
-use crate::style::css::{CssDeclaration, CssParser};
+use crate::style::css::{CssDeclaration, CssParser, ParsedCssRule};
 
 /// One sheet's contribution to a trace, as the caller described it.
 ///
 /// The name and priority are supplied by the caller rather than read from the global manager, so a
 /// designer tracing an *unsaved* editor buffer gets the same facility as one tracing a registered
 /// sheet — and so this function has no global state and is trivially testable.
+///
+/// A caller that already holds parsed rules (a registered sheet) should use
+/// [`TracedRuleSheet`] instead, which skips the parse entirely (G-164).
 #[derive(Debug, Clone, Copy)]
 pub struct TracedSheet<'a> {
     /// The sheet's name, for the report.
@@ -55,6 +64,21 @@ pub struct TracedSheet<'a> {
     pub css: &'a str,
     /// The sheet's priority; higher wins, and equal priorities resolve by later registration.
     pub priority: u8,
+}
+
+/// One sheet's **already parsed** rules, for a trace that must not re-parse (G-164).
+///
+/// [`StyleSheetManager::traced_sheets`](crate::style::stylesheet::StyleSheetManager::traced_sheets)
+/// produces these from the registry, so tracing an application's real stylesheets costs a selector
+/// match per rule and no tokenising at all.
+#[derive(Debug, Clone, Copy)]
+pub struct TracedRuleSheet<'a> {
+    /// The sheet's name, for the report.
+    pub name: &'a str,
+    /// The sheet's priority; higher wins, and equal priorities resolve by caller order.
+    pub priority: u8,
+    /// The sheet's rules, with their selectors already parsed.
+    pub rules: &'a [ParsedCssRule],
 }
 
 /// Where one computed property value came from.
@@ -151,15 +175,14 @@ impl StyleTrace {
 ///
 /// # Ordering, and why it is the cascade's own
 ///
-/// Sheets are applied in ascending priority, and within a sheet rules apply in source order, so the
-/// **last** declaration for a property is the winner — exactly the order
-/// [`StyleSheetManager::apply_to`](crate::style::stylesheet::StyleSheetManager::apply_to) uses.
-/// Tracing in a different order would report a winner the apply did not choose, which is the one
-/// way a provenance tool can be worse than none.
+/// The winner of a property is the last declaration written, so this walks the rules in exactly
+/// the order [`StyleSheetManager::apply_to`](crate::style::stylesheet::StyleSheetManager::apply_to)
+/// applies them: ascending **specificity**, then sheet priority, then source position. Tracing in a
+/// different order would report a winner the apply did not choose, which is the one way a
+/// provenance tool can be worse than none.
 ///
-/// A later sheet with a **lower** priority is still applied after an earlier higher-priority one
-/// only when its priority is higher; the sort below is stable, so two sheets at equal priority
-/// resolve by the order the caller supplied them — matching registration order.
+/// Sheets are ordered stably by priority first, so two sheets at equal priority resolve by the
+/// order the caller supplied them — matching registration order.
 pub fn trace_cascade(
     kind: &str,
     class: Option<&str>,
@@ -167,65 +190,143 @@ pub fn trace_cascade(
     state: Option<crate::style::selector::PseudoState>,
     sheets: &[TracedSheet<'_>],
 ) -> StyleTrace {
+    // Each sheet is parsed exactly once, then the walk is the shared prepared path. A sheet whose
+    // text does not parse contributes nothing, which is what the previous per-sheet `continue`
+    // did; the parse error itself has no note variant because it is a property of the whole
+    // sheet rather than of one declaration.
+    let mut parsed: Vec<(&str, u8, Vec<ParsedCssRule>)> = Vec::new();
+    for sheet in sheets {
+        let Ok(rules) = CssParser::parse_prepared_rules(sheet.css) else {
+            continue;
+        };
+        parsed.push((sheet.name, sheet.priority, rules));
+    }
+    let prepared: Vec<TracedRuleSheet<'_>> = parsed
+        .iter()
+        .map(|(name, priority, rules)| TracedRuleSheet {
+            name,
+            priority: *priority,
+            rules: rules.as_slice(),
+        })
+        .collect();
+    trace_cascade_prepared(kind, class, id, state, &prepared)
+}
+
+/// [`trace_cascade`] over rules that have already been parsed (G-164).
+///
+/// This is the single cascade walk both entry points use: rules are ordered exactly as
+/// [`StyleSheetManager::apply_to`](crate::style::stylesheet::StyleSheetManager::apply_to) orders
+/// them — ascending specificity, then sheet priority, then source position — so the **last**
+/// declaration written for a property is the one the apply left in place.
+pub fn trace_cascade_prepared(
+    kind: &str,
+    class: Option<&str>,
+    id: Option<&str>,
+    state: Option<crate::style::selector::PseudoState>,
+    sheets: &[TracedRuleSheet<'_>],
+) -> StyleTrace {
     // Sort by priority ascending, stably, so equal priorities keep caller order.
-    let mut ordered: Vec<&TracedSheet<'_>> = sheets.iter().collect();
+    let mut ordered: Vec<&TracedRuleSheet<'_>> = sheets.iter().collect();
     ordered.sort_by_key(|sheet| sheet.priority);
 
     let mut origins: Vec<ComputedOrigin> = Vec::new();
     let mut notes: Vec<TraceNote> = Vec::new();
 
-    for sheet in ordered {
-        let Ok(rules) = CssParser::parse_rules(sheet.css) else {
-            continue;
-        };
-        for rule in rules {
-            let Some(selector) = CssParser::parse_selector(&rule.selector_text) else {
+    // Selectors that did not parse are reported whatever the element looks like: the author's
+    // mistake is independent of whether the rule would have matched.
+    for sheet in &ordered {
+        for rule in sheet.rules {
+            if rule.selector.is_none() {
                 notes.push(TraceNote::UnparsedSelector {
                     selector: rule.selector_text.clone(),
                     sheet: String::from(sheet.name),
                 });
-                continue;
-            };
-            if !selector.matches(kind, class, id, state) {
-                continue;
-            }
-            for declaration in &rule.declarations {
-                // A declaration only wins if the apply could act on it. The two ways it cannot are
-                // reported rather than recorded: an unknown property is ignored by the apply
-                // (CSS's own rule) and a refused value leaves the previous value in place, so
-                // either one reported as the winner would make this trace describe a style the
-                // control does not have — the one failure a provenance tool cannot afford.
-                if !CssParser::is_known_property(&declaration.property) {
-                    notes.push(TraceNote::UnknownProperty {
-                        property: declaration.property.clone(),
-                        value: declaration.value.clone(),
-                        sheet: String::from(sheet.name),
-                    });
-                    continue;
-                }
-                // The value is judged by the parser's own applier on a scratch style, so the
-                // verdict is the apply's and not a second rule set's. The scratch style is
-                // discarded: this asks "would this apply?", not "to what?".
-                let mut scratch = crate::style::WidgetStyle::default();
-                if let Err(reason) =
-                    CssParser::apply_declarations(core::slice::from_ref(declaration), &mut scratch)
-                {
-                    notes.push(TraceNote::InvalidValue {
-                        property: declaration.property.clone(),
-                        value: declaration.value.clone(),
-                        reason,
-                        sheet: String::from(sheet.name),
-                    });
-                    continue;
-                }
-                record(&mut origins, declaration, &rule.selector_text, sheet);
             }
         }
     }
 
+    // The apply sorts its matched set by `(specificity, sheet order, rule position)` and writes
+    // declarations in that order, so the winner is the last write. Tracing in source order
+    // instead would name a rule the apply did not choose whenever a more specific rule appears
+    // **before** a less specific one — the one way a provenance tool can be worse than none.
+    let mut matched: Vec<(u32, usize, usize, &ParsedCssRule, &str, u8)> = Vec::new();
+    for (sheet_order, sheet) in ordered.iter().enumerate() {
+        for (position, rule) in sheet.rules.iter().enumerate() {
+            let Some(selector) = &rule.selector else {
+                continue;
+            };
+            if selector.matches(kind, class, id, state) {
+                matched.push((
+                    rule.specificity,
+                    sheet_order,
+                    position,
+                    rule,
+                    sheet.name,
+                    sheet.priority,
+                ));
+            }
+        }
+    }
+    matched.sort_by_key(|(specificity, sheet_order, position, ..)| {
+        (*specificity, *sheet_order, *position)
+    });
+
+    for (_, _, _, rule, sheet_name, priority) in matched {
+        for declaration in &rule.declarations {
+            // A declaration only wins if the apply could act on it. The two ways it cannot are
+            // reported rather than recorded: an unknown property is ignored by the apply
+            // (CSS's own rule) and a refused value leaves the previous value in place, so
+            // either one reported as the winner would make this trace describe a style the
+            // control does not have — the one failure a provenance tool cannot afford.
+            if !CssParser::is_known_property(&declaration.property) {
+                notes.push(TraceNote::UnknownProperty {
+                    property: declaration.property.clone(),
+                    value: declaration.value.clone(),
+                    sheet: String::from(sheet_name),
+                });
+                continue;
+            }
+            // The value is judged by the parser's own arms through a pure parse: the verdict is
+            // the apply's, no scratch `WidgetStyle` is built, and nothing is written (G-164). The
+            // scratch-style approach this replaces constructed a style per declaration just to
+            // throw it away.
+            if let Err(reason) = CssParser::validate_declaration(declaration) {
+                notes.push(TraceNote::InvalidValue {
+                    property: declaration.property.clone(),
+                    value: declaration.value.clone(),
+                    reason,
+                    sheet: String::from(sheet_name),
+                });
+                continue;
+            }
+            record(&mut origins, declaration, &rule.selector_text, sheet_name, priority);
+        }
+    }
+
     origins.sort_by(|left, right| left.property.cmp(&right.property));
-    notes.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+    // A stable key computed from borrowed fields, so ordering a report performs no formatting and
+    // no allocation per comparison (G-164). The previous `format!("{note:?}")` allocated twice
+    // per comparison and made the ordering depend on `Debug` output.
+    notes.sort_by(|left, right| note_sort_key(left).cmp(&note_sort_key(right)));
     StyleTrace { origins, notes }
+}
+
+/// The stable, allocation-free sort key for a note (G-164).
+///
+/// Ordered by variant first so the three kinds form contiguous groups, then by the fields that
+/// identify the declaration.
+fn note_sort_key(note: &TraceNote) -> (u8, &str, &str, &str, &str) {
+    match note {
+        TraceNote::UnparsedSelector { selector, sheet } => {
+            (0, selector.as_str(), "", sheet.as_str(), "")
+        }
+        TraceNote::UnknownProperty { property, value, sheet } => {
+            (1, property.as_str(), value.as_str(), sheet.as_str(), "")
+        }
+        TraceNote::InvalidValue { property, value, reason, sheet } => {
+            (2, property.as_str(), value.as_str(), sheet.as_str(), reason.as_str())
+        }
+    }
 }
 
 /// Records `declaration` as the current winner of its property.
@@ -237,14 +338,15 @@ fn record(
     origins: &mut Vec<ComputedOrigin>,
     declaration: &CssDeclaration,
     selector_text: &str,
-    sheet: &TracedSheet<'_>,
+    sheet_name: &str,
+    priority: u8,
 ) {
     let origin = ComputedOrigin {
         property: declaration.property.clone(),
         value: declaration.value.clone(),
         selector: String::from(selector_text),
-        sheet: String::from(sheet.name),
-        priority: sheet.priority,
+        sheet: String::from(sheet_name),
+        priority,
     };
     if let Some(existing) = origins.iter_mut().find(|o| o.property == origin.property) {
         *existing = origin;
@@ -477,5 +579,84 @@ mod tests {
         let rendered = trace.origin_of("color").expect("traced").describe();
         assert!(rendered.contains("#123456"), "{rendered}");
         assert!(rendered.contains("theme"), "{rendered}");
+    }
+
+    /// G-164: tracing rules that were already parsed produces exactly the report the text entry
+    /// point produces, without a second parse.
+    #[test]
+    fn the_prepared_entry_point_traces_the_same_winner() {
+        let css = "Button { color: #111111; } Button:hover { color: #222222; }";
+        let parsed = CssParser::parse_prepared_rules(css).expect("the sheet parses");
+        let prepared = [TracedRuleSheet { name: "s", priority: 0, rules: &parsed }];
+
+        let from_prepared = trace_cascade_prepared(
+            "Button",
+            None,
+            None,
+            Some(crate::style::selector::PseudoState::Hover),
+            &prepared,
+        );
+        let from_text = trace_cascade(
+            "Button",
+            None,
+            None,
+            Some(crate::style::selector::PseudoState::Hover),
+            &[TracedSheet { name: "s", css, priority: 0 }],
+        );
+        assert_eq!(from_prepared, from_text);
+        assert_eq!(
+            from_prepared.origin_of("color").expect("traced").value,
+            "#222222",
+            "the state rule is later in source order and more specific"
+        );
+    }
+
+    /// The trace must honour specificity, not merely source order: a more specific rule written
+    /// **first** is the one the apply leaves in place, so it is the one the trace must name.
+    #[test]
+    fn a_more_specific_rule_wins_even_when_it_is_written_first() {
+        let trace = trace_cascade(
+            "Button",
+            Some("primary"),
+            None,
+            None,
+            &[TracedSheet {
+                name: "s",
+                css: ".primary { color: #222222; } Button { color: #111111; }",
+                priority: 0,
+            }],
+        );
+        assert_eq!(
+            trace.origin_of("color").expect("traced").value,
+            "#222222",
+            "specificity, not source order, decides the winner"
+        );
+    }
+
+    /// G-404: the two properties the known list claimed but the apply dropped are now winners,
+    /// and the trace reports them rather than silently omitting them.
+    #[test]
+    fn the_previously_unimplemented_properties_are_traced_as_winners() {
+        let trace = trace_cascade(
+            "Button",
+            None,
+            None,
+            None,
+            &[TracedSheet {
+                name: "s",
+                css: "Button { border-style: dashed; font-weight: 700; }",
+                priority: 0,
+            }],
+        );
+        assert!(
+            trace.notes.is_empty(),
+            "neither property is inert any more, so neither is a note: {:?}",
+            trace.notes
+        );
+        assert_eq!(
+            trace.origin_of("border-style").map(|origin| origin.value.as_str()),
+            Some("dashed")
+        );
+        assert_eq!(trace.origin_of("font-weight").map(|origin| origin.value.as_str()), Some("700"));
     }
 }

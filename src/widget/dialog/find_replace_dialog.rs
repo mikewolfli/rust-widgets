@@ -8,6 +8,7 @@
 //! action buttons for find next, find previous, replace, replace all,
 //! and close. Emits typed signals when actions are triggered.
 
+use crate::compat::format;
 use crate::core::{Color, HorizontalAlignment, ObjectId, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -133,6 +134,8 @@ pub struct FindReplaceDialog {
     /// Whether the host has delivered committed text. Once it has, raw key codes are no longer
     /// treated as characters, so a non-Latin layout is not double-inserted.
     text_input_seen: bool,
+    /// The host's match report: `(current, total)`, or `None` for "no matches" (DLG-11).
+    match_report: Option<(usize, usize)>,
 }
 
 impl FindReplaceDialog {
@@ -158,6 +161,7 @@ impl FindReplaceDialog {
             caret: [0, 0],
             anchor: [0, 0],
             text_input_seen: false,
+            match_report: None,
         }
     }
 
@@ -195,6 +199,24 @@ impl FindReplaceDialog {
         self.caret[1] = self.caret[1].min(length);
         self.anchor[1] = self.anchor[1].min(length);
         self.base.request_redraw();
+    }
+
+    /// Records the host's match report and repaints.
+    ///
+    /// `(current, total)` is the ordinary "3 of 12" answer; `None` states that the search ran
+    /// and found nothing, which is the one result a panel cannot derive from its own state
+    /// (DLG-11).
+    pub fn set_match_report(&mut self, report: Option<(usize, usize)>) {
+        if self.match_report == report {
+            return;
+        }
+        self.match_report = report;
+        self.base.request_redraw();
+    }
+
+    /// The current match report, as recorded by [`Self::set_match_report`].
+    pub fn match_report(&self) -> Option<(usize, usize)> {
+        self.match_report
     }
 
     // ── Match case ──
@@ -787,7 +809,13 @@ impl Draw for FindReplaceDialog {
         // the bar, rather than the fixed 12 px sans-serif this used to build (D09-STYLE-01).
         let font = effective_font(style);
         let label_line = self.text_line(label_rect, font, context);
-        context.draw_text_fitted_cow(label_line, "Find:", font, ink, HorizontalAlignment::Left);
+        context.draw_text_fitted_cow(
+            label_line,
+            &super::localized_label("dialog.find_replace.find", "Find:"),
+            font,
+            ink,
+            HorizontalAlignment::Left,
+        );
         x += label_col as i32 + GAP;
 
         // Find text input background. The field is only drawn when the row genuinely
@@ -810,6 +838,29 @@ impl Draw for FindReplaceDialog {
                     font,
                     ink,
                     HorizontalAlignment::Left,
+                );
+            }
+            // The host's match report is painted inside the field's trailing edge, so the
+            // user sees "3 / 12" (or "no matches") beside the query that produced it
+            // (DLG-11). Only a non-empty query can have a report worth showing.
+            if !self.find_text.is_empty() {
+                let status = match self.match_report {
+                    Some((current, total)) => format!("{current} / {total}"),
+                    None => super::localized_label("dialog.find_replace.no_matches", "No matches"),
+                };
+                let status_band = Rect::new(
+                    input_rect.x + input_rect.width as i32 / 3,
+                    input_rect.y,
+                    (input_rect.width - input_rect.width / 3).saturating_sub(6),
+                    input_rect.height,
+                );
+                let status_line = self.text_line(status_band, font, context);
+                context.draw_text_fitted_cow(
+                    status_line,
+                    &status,
+                    font,
+                    ink.blend(&field, 0.35),
+                    HorizontalAlignment::Right,
                 );
             }
         }
@@ -911,7 +962,13 @@ impl Draw for FindReplaceDialog {
         // "Replace:" label
         let rl_rect = Rect::new(x2, replace_row.y, label_col, replace_row.height);
         let rl_line = self.text_line(rl_rect, font, context);
-        context.draw_text_fitted_cow(rl_line, "Rpl:", font, ink, HorizontalAlignment::Left);
+        context.draw_text_fitted_cow(
+            rl_line,
+            &super::localized_label("dialog.find_replace.replace", "Rpl:"),
+            font,
+            ink,
+            HorizontalAlignment::Left,
+        );
         x2 += label_col as i32 + GAP;
 
         // Replace text input background. Drawn only when there is room, for the same
@@ -940,7 +997,13 @@ impl Draw for FindReplaceDialog {
         let rep_rect = Rect::new(x2, replace_row.y, REPLACE_BTN, replace_row.height);
         context.fill_rect(rep_rect, muted);
         let rep_line = self.text_line(rep_rect, font, context);
-        context.draw_text_fitted_cow(rep_line, "Rpl", font, muted_ink, HorizontalAlignment::Center);
+        context.draw_text_fitted_cow(
+            rep_line,
+            &super::localized_label("dialog.find_replace.replace_short", "Rpl"),
+            font,
+            muted_ink,
+            HorizontalAlignment::Center,
+        );
         x2 += REPLACE_BTN as i32 + GAP;
 
         // Replace All button
@@ -949,7 +1012,7 @@ impl Draw for FindReplaceDialog {
         let ra_line = self.text_line(ra_rect, font, context);
         context.draw_text_fitted_cow(
             ra_line,
-            "Rpl All",
+            &super::localized_label("dialog.find_replace.replace_all", "Rpl All"),
             font,
             muted_ink,
             HorizontalAlignment::Center,

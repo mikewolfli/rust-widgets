@@ -6,8 +6,8 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{
-    expect_bool, expect_f64, expect_i64, expect_lcd_mode, expect_segment_style, lcd_mode_to_str,
-    segment_style_to_str,
+    expect_bool, expect_f64, expect_i32_saturating, expect_lcd_mode, expect_segment_style,
+    lcd_mode_to_str, segment_style_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -455,7 +455,7 @@ impl WidgetProperties for LCDNumber {
                 Ok(())
             }
             "num_digits" => {
-                self.set_num_digits(expect_i64(value)? as i32);
+                self.set_num_digits(expect_i32_saturating(value)?);
                 Ok(())
             }
             "small_decimal_point" => {

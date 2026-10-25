@@ -30,6 +30,7 @@ use crate::widget::metrics::role_font;
 use crate::widget::special_widgets::finance::layout::PlotArea;
 use crate::widget::special_widgets::finance::types::Quote;
 use crate::widget::special_widgets::finance::volume_chart::draw_empty_pane;
+use crate::widget::view_widgets::filter_expr::{FilterCondition, FilterOperator};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -113,18 +114,63 @@ impl QuoteColumn {
     }
 }
 
-/// Which column the rows are sorted by.
+/// Which column the rows are sorted by, and in which direction.
+///
+/// Every sortable column has a direction pair rather than one fixed order. Clicking a
+/// column header cycles *that column's* preferred direction, then the opposite, then back
+/// to the caller's own order — the three-state cycle every table uses, and the reason
+/// `Symbol` used to be the only order a symbol sort could produce (FIN-07).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QuoteSort {
     /// The order the caller supplied, which is often a watchlist's own order.
     #[default]
     None,
-    /// By symbol, ascending.
-    Symbol,
-    /// By last price, descending — the most active at the top.
+    /// By symbol, A to Z.
+    SymbolAscending,
+    /// By symbol, Z to A.
+    SymbolDescending,
+    /// By last price, low to high.
+    LastAscending,
+    /// By last price, high to low — the most active at the top.
     LastDescending,
-    /// By absolute change, descending — the day's biggest movers first.
-    ChangeMagnitude,
+    /// By absolute change, smallest move first.
+    ChangeMagnitudeAscending,
+    /// By absolute change, largest move first — the day's biggest movers.
+    ChangeMagnitudeDescending,
+}
+
+impl QuoteSort {
+    /// The spelling used by the `sort` property and its parser.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QuoteSort::None => "none",
+            QuoteSort::SymbolAscending => "symbol_ascending",
+            QuoteSort::SymbolDescending => "symbol_descending",
+            QuoteSort::LastAscending => "last_ascending",
+            QuoteSort::LastDescending => "last_descending",
+            QuoteSort::ChangeMagnitudeAscending => "change_magnitude_ascending",
+            QuoteSort::ChangeMagnitudeDescending => "change_magnitude_descending",
+        }
+    }
+
+    /// Parses a property spelling.
+    ///
+    /// The pre-direction tokens (`symbol`, `change_magnitude`) still parse, each to the
+    /// direction it used to mean, so a saved project keeps its ordering.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "none" => QuoteSort::None,
+            "symbol" | "symbol_ascending" => QuoteSort::SymbolAscending,
+            "symbol_descending" => QuoteSort::SymbolDescending,
+            "last_ascending" => QuoteSort::LastAscending,
+            "last" | "last_descending" => QuoteSort::LastDescending,
+            "change_magnitude" | "change_magnitude_descending" => {
+                QuoteSort::ChangeMagnitudeDescending
+            }
+            "change_magnitude_ascending" => QuoteSort::ChangeMagnitudeAscending,
+            _ => return None,
+        })
+    }
 }
 
 /// The quote board control.
@@ -162,6 +208,18 @@ pub struct QuoteBoard {
     flashes: alloc::vec::Vec<(String, bool, u8)>,
     /// Whether the header row responds to clicks by cycling the sort.
     sortable_headers: bool,
+    /// Row predicates applied before the sort.
+    ///
+    /// Filtering, sorting and scrolling are kept orthogonal: the filter decides which rows
+    /// exist, the sort decides their order, and the scroll offset is clamped to the filtered
+    /// count (FIN-08).
+    filters: alloc::vec::Vec<FilterCondition>,
+    /// `(generation, decimals)` for [`Self::inferred_decimals`].
+    ///
+    /// The inference walks the quotes trying powers of ten, and it ran twice per frame (the
+    /// column measurement and the draw). Caching it per data generation makes a still board
+    /// pay nothing (J-P15).
+    decimals_cache: core::cell::Cell<Option<(u64, usize)>>,
     /// Emitted with the symbol when a row is clicked.
     pub quote_clicked: Signal1<String>,
     /// Emitted with the symbol as the pointer moves onto a row.
@@ -225,6 +283,8 @@ impl QuoteBoard {
             ranges_cache: None,
             flashes: alloc::vec::Vec::new(),
             sortable_headers: false,
+            filters: alloc::vec::Vec::new(),
+            decimals_cache: core::cell::Cell::new(None),
             quote_clicked: Signal1::new(),
             quote_hovered: Signal1::new(),
             selection_changed: Signal1::new(),
@@ -245,19 +305,27 @@ impl QuoteBoard {
     /// over", which is not the caller's order.
     pub fn set_quotes(&mut self, quotes: Vec<Quote>) {
         // A changed last price flashes in its direction, for the next few frames. The
-        // comparison is by symbol, so a re-sorted or re-ordered snapshot still matches the
-        // row it describes.
+        // previous snapshot is indexed by symbol once, so the comparison is linear rather
+        // than the `O(n^2)` search the old form ran on every push (J-P14).
         self.flashes.clear();
+        let mut previous: alloc::collections::BTreeMap<&str, f64> =
+            alloc::collections::BTreeMap::new();
+        for quote in &self.quotes {
+            previous.insert(quote.symbol.as_str(), quote.last);
+        }
         for quote in &quotes {
-            if let Some(previous) = self.quotes.iter().find(|old| old.symbol == quote.symbol) {
-                if (quote.last - previous.last).abs() > f64::EPSILON {
-                    self.flashes.push((quote.symbol.clone(), quote.last >= previous.last, 200));
+            if let Some(old) = previous.get(quote.symbol.as_str()) {
+                if (quote.last - old).abs() > f64::EPSILON {
+                    self.flashes.push((quote.symbol.clone(), quote.last >= *old, 200));
                 }
             }
         }
         self.quotes = quotes;
         self.original_order = self.quotes.clone();
         self.data_generation = self.data_generation.wrapping_add(1);
+        // The incoming snapshot replaces the caller's order, so the active filter and sort are
+        // re-applied to it rather than left describing the previous rows.
+        self.apply_sort();
         self.revalidate_selection();
         self.clamp_scroll();
         self.base.request_redraw();
@@ -283,11 +351,26 @@ impl QuoteBoard {
     }
 
     /// The sort a click on `column` would apply next.
+    ///
+    /// Three states per column: its preferred direction, the opposite, then back to the
+    /// caller's order. A second click on the same header therefore reverses it instead of
+    /// clearing it, which is what a table user expects (FIN-07).
     fn next_sort_for(&self, column: QuoteColumn) -> QuoteSort {
-        match column {
-            QuoteColumn::Symbol | QuoteColumn::Name => QuoteSort::Symbol,
-            QuoteColumn::Change | QuoteColumn::ChangePercent => QuoteSort::ChangeMagnitude,
-            _ => QuoteSort::LastDescending,
+        let (preferred, opposite) = match column {
+            QuoteColumn::Symbol | QuoteColumn::Name => {
+                (QuoteSort::SymbolAscending, QuoteSort::SymbolDescending)
+            }
+            QuoteColumn::Change | QuoteColumn::ChangePercent => {
+                (QuoteSort::ChangeMagnitudeDescending, QuoteSort::ChangeMagnitudeAscending)
+            }
+            _ => (QuoteSort::LastDescending, QuoteSort::LastAscending),
+        };
+        if self.sort == preferred {
+            opposite
+        } else if self.sort == opposite {
+            QuoteSort::None
+        } else {
+            preferred
         }
     }
 
@@ -302,9 +385,9 @@ impl QuoteBoard {
             if pos.x >= *start && pos.x < *end {
                 if let Some(column) = self.columns.get(index).copied() {
                     let next = self.next_sort_for(column);
-                    // A second click on the same column clears the sort, restoring the
-                    // caller's own order.
-                    self.set_sort(if self.sort == next { QuoteSort::None } else { next });
+                    // Each click advances the three-state cycle; a fourth click on the same
+                    // column starts it over at the preferred direction.
+                    self.set_sort(next);
                     return true;
                 }
             }
@@ -389,7 +472,7 @@ impl QuoteBoard {
     ///
     /// `QuoteSort::None` promises to restore *the order the caller supplied*, so the
     /// natural implementation is to remember the indices and re-read them. That is what
-    /// the first version did, and it was wrong: after `QuoteSort::Symbol` the quotes are
+    /// the first version did, and it was wrong: after `QuoteSort::SymbolAscending` the quotes are
     /// permuted, so a remembered index no longer points at the quote it named. The
     /// restore then produced a third order that was neither the caller's nor the sorted
     /// one — silent, because each step looked correct on its own.
@@ -400,35 +483,140 @@ impl QuoteBoard {
     /// `app::tests::the_watchlist_starts_in_the_supplied_order` is the test that found
     /// this; it round-trips through two different sorts before checking.
     fn apply_sort(&mut self) {
-        // A sort permutes the measured sample, so the cached column ranges must not
-        // survive it. (The `set_quotes` bump above already covers the replace case;
-        // this covers the public `set_sort` path.)
-        self.data_generation = self.data_generation.wrapping_add(1);
-        match self.sort {
-            QuoteSort::None => {
-                if self.original_order.len() == self.quotes.len() {
-                    self.quotes.clone_from(&self.original_order);
-                }
-            }
-            QuoteSort::Symbol => {
-                self.quotes.sort_by(|left, right| left.symbol.cmp(&right.symbol));
-            }
-            QuoteSort::LastDescending => {
-                self.quotes.sort_by(|left, right| {
-                    right.last.partial_cmp(&left.last).unwrap_or(core::cmp::Ordering::Equal)
-                });
-            }
-            QuoteSort::ChangeMagnitude => {
-                self.quotes.sort_by(|left, right| {
-                    let left_magnitude = left.change().abs();
-                    let right_magnitude = right.change().abs();
-                    right_magnitude
-                        .partial_cmp(&left_magnitude)
-                        .unwrap_or(core::cmp::Ordering::Equal)
-                });
-            }
+        // Every pass rebuilds from the caller's own order, so filter → sort is a pure
+        // function of the snapshot: toggling a direction twice cannot leave a third order
+        // behind, and a filter change does not have to un-sort what it is looking at.
+        let mut rows = self.original_order.clone();
+        if !self.filters.is_empty() {
+            rows.retain(|quote| {
+                self.filters.iter().all(|condition| self.condition_accepts(quote, condition))
+            });
         }
+        match self.sort {
+            QuoteSort::None => {}
+            QuoteSort::SymbolAscending => {
+                rows.sort_by(|left, right| left.symbol.cmp(&right.symbol))
+            }
+            QuoteSort::SymbolDescending => {
+                rows.sort_by(|left, right| right.symbol.cmp(&left.symbol))
+            }
+            QuoteSort::LastAscending => rows.sort_by(|left, right| {
+                left.last.partial_cmp(&right.last).unwrap_or(core::cmp::Ordering::Equal)
+            }),
+            QuoteSort::LastDescending => rows.sort_by(|left, right| {
+                right.last.partial_cmp(&left.last).unwrap_or(core::cmp::Ordering::Equal)
+            }),
+            QuoteSort::ChangeMagnitudeAscending => rows.sort_by(|left, right| {
+                let left_magnitude = left.change().abs();
+                let right_magnitude = right.change().abs();
+                left_magnitude.partial_cmp(&right_magnitude).unwrap_or(core::cmp::Ordering::Equal)
+            }),
+            QuoteSort::ChangeMagnitudeDescending => rows.sort_by(|left, right| {
+                let left_magnitude = left.change().abs();
+                let right_magnitude = right.change().abs();
+                right_magnitude.partial_cmp(&left_magnitude).unwrap_or(core::cmp::Ordering::Equal)
+            }),
+        }
+        self.quotes = rows;
+        // The filter and the sort both change the measured sample and the row count, so the
+        // cached ranges and the inferred decimals must not survive either.
+        self.data_generation = self.data_generation.wrapping_add(1);
         self.clamp_scroll();
+    }
+
+    /// Replaces the row filter, re-sorting the visible subset (FIN-08).
+    ///
+    /// `column` in a condition indexes [`Self::filter_columns`], which is a stable list
+    /// independent of which columns are currently visible: hiding a column must not
+    /// silently drop the filter that refers to it.
+    pub fn set_filter(&mut self, conditions: &[FilterCondition]) {
+        self.filters = conditions.to_vec();
+        self.apply_sort();
+        self.revalidate_selection();
+        self.base.request_redraw();
+    }
+
+    /// Removes every row filter.
+    pub fn clear_filter(&mut self) {
+        if self.filters.is_empty() {
+            return;
+        }
+        self.filters.clear();
+        self.apply_sort();
+        self.revalidate_selection();
+        self.base.request_redraw();
+    }
+
+    /// The active row filters.
+    pub fn filters(&self) -> &[FilterCondition] {
+        &self.filters
+    }
+
+    /// The columns a [`FilterCondition`] may address, as `(name, is_numeric)`.
+    ///
+    /// This is the binding surface for `COMP-J04`: the host feeds these names to
+    /// `FilterRow::set_columns` (as `<name> (<text|number>)` labels or its own field
+    /// descriptors) and forwards `filter_changed` to [`Self::set_filter`]. The order is the
+    /// index space of a condition's `column`.
+    pub fn filter_columns(&self) -> Vec<(String, bool)> {
+        Self::FILTER_COLUMNS
+            .iter()
+            .map(|column| (column.title().to_string(), column.is_numeric()))
+            .collect()
+    }
+
+    /// The fixed column space a filter addresses.
+    const FILTER_COLUMNS: [QuoteColumn; 8] = [
+        QuoteColumn::Symbol,
+        QuoteColumn::Name,
+        QuoteColumn::Last,
+        QuoteColumn::Change,
+        QuoteColumn::ChangePercent,
+        QuoteColumn::High,
+        QuoteColumn::Low,
+        QuoteColumn::Volume,
+    ];
+
+    /// Evaluates one filter condition against one quote.
+    fn condition_accepts(&self, quote: &Quote, condition: &FilterCondition) -> bool {
+        let Some(column) = Self::FILTER_COLUMNS.get(condition.column).copied() else {
+            // A condition addressing no column cannot exclude anything; dropping every row
+            // for a stale index would look like the board lost its data.
+            return true;
+        };
+        if condition.operator.is_numeric() {
+            let Some(value) = self.numeric_value(quote, column).filter(|value| value.is_finite())
+            else {
+                return false;
+            };
+            let Ok(target) = condition.operand.trim().parse::<f64>() else { return false };
+            return match condition.operator {
+                FilterOperator::EqualsNumber => (value - target).abs() <= 1e-9,
+                FilterOperator::GreaterThan => value > target,
+                FilterOperator::GreaterOrEqual => value >= target,
+                FilterOperator::LessThan => value < target,
+                FilterOperator::LessOrEqual => value <= target,
+                _ => false,
+            };
+        }
+        let mut text = String::new();
+        self.write_cell_text(quote, column, self.inferred_decimals(), &mut text);
+        condition.operator.accepts(Some(&text), &condition.operand)
+    }
+
+    /// The raw numeric value of a column, for numeric filter operators.
+    fn numeric_value(&self, quote: &Quote, column: QuoteColumn) -> Option<f64> {
+        Some(match column {
+            QuoteColumn::Last => quote.last,
+            QuoteColumn::Change => quote.change(),
+            QuoteColumn::ChangePercent => quote.change_percent(),
+            QuoteColumn::High => quote.high,
+            QuoteColumn::Low => quote.low,
+            QuoteColumn::Volume => quote.volume,
+            // Text columns have no numeric reading; a numeric operator on one matches
+            // nothing, which `accepts` documents as the one sensible answer.
+            QuoteColumn::Symbol | QuoteColumn::Name => return None,
+        })
     }
 
     /// Drops a selection or hover that no longer points at a row.
@@ -672,7 +860,22 @@ impl QuoteBoard {
     }
 
     /// The decimals to draw prices at, inferred from the quotes.
+    ///
+    /// Cached per data generation: the inference tries powers of ten on the first finite
+    /// price, and the paint path asked for it twice per frame (`column_ranges` and `draw`)
+    /// (J-P15).
     fn inferred_decimals(&self) -> usize {
+        if let Some((generation, decimals)) = self.decimals_cache.get() {
+            if generation == self.data_generation {
+                return decimals;
+            }
+        }
+        let decimals = self.compute_decimals();
+        self.decimals_cache.set(Some((self.data_generation, decimals)));
+        decimals
+    }
+
+    fn compute_decimals(&self) -> usize {
         for quote in &self.quotes {
             if !quote.last.is_finite() {
                 continue;
@@ -1204,15 +1407,7 @@ fn heading_fits(width: i32, title: &str, font: &Font) -> bool {
 impl WidgetProperties for QuoteBoard {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "sort" => {
-                let token = match self.sort {
-                    QuoteSort::None => "none",
-                    QuoteSort::Symbol => "symbol",
-                    QuoteSort::LastDescending => "last_descending",
-                    QuoteSort::ChangeMagnitude => "change_magnitude",
-                };
-                Ok(CapabilityValue::String(alloc::string::String::from(token)))
-            }
+            "sort" => Ok(CapabilityValue::String(alloc::string::String::from(self.sort.as_str()))),
             "selected_index" => match self.selected {
                 Some(index) => Ok(CapabilityValue::UInt(index as u64)),
                 None => Ok(CapabilityValue::Null),
@@ -1229,12 +1424,9 @@ impl WidgetProperties for QuoteBoard {
                 let CapabilityValue::String(text) = value else {
                     return Err(CapabilityAccessError::TypeMismatch);
                 };
-                let sort = match text.as_str() {
-                    "none" => QuoteSort::None,
-                    "symbol" => QuoteSort::Symbol,
-                    "last_descending" => QuoteSort::LastDescending,
-                    "change_magnitude" => QuoteSort::ChangeMagnitude,
-                    _ => return Err(CapabilityAccessError::OutOfRange),
+                let sort = match QuoteSort::from_name(text.as_str()) {
+                    Some(sort) => sort,
+                    None => return Err(CapabilityAccessError::OutOfRange),
                 };
                 self.set_sort(sort);
                 Ok(())
@@ -1406,7 +1598,7 @@ mod tests {
     fn sorting_by_symbol_orders_the_rows() {
         let mut board = QuoteBoard::new(Rect::new(0, 0, 640, 240));
         board.set_quotes(fixtures::sample_quotes(6));
-        board.set_sort(QuoteSort::Symbol);
+        board.set_sort(QuoteSort::SymbolAscending);
         let symbols: alloc::vec::Vec<&str> =
             board.quotes().iter().map(|quote| quote.symbol.as_str()).collect();
         let mut expected = symbols.clone();
@@ -1431,7 +1623,7 @@ mod tests {
     fn sorting_by_magnitude_ignores_direction() {
         let mut board = QuoteBoard::new(Rect::new(0, 0, 640, 240));
         board.set_quotes(fixtures::sample_quotes(6));
-        board.set_sort(QuoteSort::ChangeMagnitude);
+        board.set_sort(QuoteSort::ChangeMagnitudeDescending);
         let magnitudes: alloc::vec::Vec<f64> =
             board.quotes().iter().map(|quote| quote.change().abs()).collect();
         for window in magnitudes.windows(2) {
@@ -1474,8 +1666,8 @@ mod tests {
         assert_ne!(by_symbol, original, "the fixture must not already be symbol-sorted");
 
         board.set_sort(QuoteSort::LastDescending);
-        board.set_sort(QuoteSort::Symbol);
-        board.set_sort(QuoteSort::ChangeMagnitude);
+        board.set_sort(QuoteSort::SymbolAscending);
+        board.set_sort(QuoteSort::ChangeMagnitudeDescending);
         board.set_sort(QuoteSort::None);
         let restored: alloc::vec::Vec<alloc::string::String> =
             board.quotes().iter().map(|quote| quote.symbol.clone()).collect();

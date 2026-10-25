@@ -8,7 +8,7 @@
 //! the inner `action::Action`, while this struct adds widget-only fields
 //! (`icon_text`, `shortcut`, `separator`) and `BaseWidget` integration.
 use crate::action::Action as CmdAction;
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::{Key, Modifiers, PlatformShortcutStyle, Shortcut, ShortcutManager};
@@ -17,6 +17,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -952,12 +953,14 @@ impl Draw for Action {
             );
         }
 
-        let font = Font::simple("sans-serif", 13.0);
+        // The **effective font** — the resolved theme/caller font — so an action honours the theme
+        // body font and the user's text scale instead of a hardcoded 13 px face (M-09).
+        let font = effective_font(style);
         // One line box for the icon, the label, the check mark and the shortcut, all of which
         // share this row. `rect.height / 2` was the row's middle used as a glyph origin, so
         // every one of them sat half a line low (`action.svg` drew its 13 px label at y = 22 in
         // a 45 px row, where 16 is the centred value).
-        let line = context.text_line(rect, &font);
+        let line = context.text_line(rect, font);
         let baseline = line.y;
         // The disabled tint is computed **before** any content is painted. It used to be
         // recomputed after the icon and label, so a disabled action kept full-strength text while
@@ -971,7 +974,7 @@ impl Draw for Action {
                 x += 20;
             }
         } else if let Some(source) = self.icon_source {
-            let line_height = context.measure_text("M", &font).height;
+            let line_height = context.measure_text("M", font).height;
             let side = line_height.min(rect.height).max(1);
             let icon_rect = Rect::new(x, line.y, side, side);
             if let Err(error) =
@@ -984,7 +987,7 @@ impl Draw for Action {
             context.draw_text(
                 Point::new(x, baseline),
                 &self.icon_text,
-                &font,
+                font,
                 content_ink,
                 HorizontalAlignment::Left,
             );
@@ -994,7 +997,7 @@ impl Draw for Action {
             context.draw_text(
                 Point::new(x, baseline),
                 &self.text,
-                &font,
+                font,
                 content_ink,
                 HorizontalAlignment::Left,
             );
@@ -1003,7 +1006,7 @@ impl Draw for Action {
             // The tick is an `IconName` outline, not the `✓` (U+2713) character: no bundled face
             // covers the dingbats block, so the character fell back to an 8x8 bitmap and the check
             // read as a blob. An icon is geometry both backends agree on.
-            let line_height = context.measure_text("M", &font).height;
+            let line_height = context.measure_text("M", font).height;
             let side = line_height.max(1);
             let check_rect = Rect::new(
                 rect.x + rect.width as i32 - 16,
@@ -1014,11 +1017,11 @@ impl Draw for Action {
             crate::widget::draw_icon_at(context, check_rect, content_ink, IconName::Check);
         }
         if !self.shortcut.is_empty() {
-            let metrics = context.measure_text(&self.shortcut, &font);
+            let metrics = context.measure_text(&self.shortcut, font);
             context.draw_text(
                 Point::new(rect.x + rect.width as i32 - metrics.width as i32 - 12, baseline),
                 &self.shortcut,
-                &font,
+                font,
                 content_ink.blend(&highlight, 0.4),
                 HorizontalAlignment::Left,
             );

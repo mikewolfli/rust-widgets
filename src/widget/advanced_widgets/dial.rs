@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 //! Dial (knob) widget.
+use crate::compat::Vec;
 use crate::core::{Color, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_i64};
+use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_i32_saturating};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -32,6 +33,15 @@ pub struct Dial {
     wrapping: bool,
     /// Whether a pointer drag is in flight.
     dragging: bool,
+    /// The notch ring's tick segments, reused across frames.
+    ///
+    /// The ring is a pure function of the centre, the two tick radii, the tick count and the
+    /// wrapping mode, so recomputing it every frame paid for `count` sine/cosine pairs even when
+    /// the picture could not have changed. The key records exactly those inputs; a draw whose key
+    /// matches draws the cached segments, which is the same list of points the trig would rebuild.
+    notch_ticks: Vec<(Point, Point)>,
+    /// The inputs [`Dial::notch_ticks`] was built for; `None` before the first ring draw.
+    notch_key: Option<NotchKey>,
     /// Emitted with the new value whenever [`Dial::set_value`] actually changes
     /// it. Redundant sets do not fire it.
     pub value_changed: Signal1<i32>,
@@ -42,6 +52,22 @@ pub struct Dial {
     /// Emitted when the primary mouse button is released while the dial is
     /// enabled, ending a drag if one was in flight.
     pub slider_released: GenericSignal,
+}
+
+/// The inputs that decide the notch ring's pixel geometry.
+///
+/// Compared as a whole against the cached value: equal means the cached segments are what this
+/// frame would compute, so the trig is skipped. `notch_target` is deliberately absent — it only
+/// reaches the picture through `count`, which is in the key, so a target change that does not move
+/// the count cannot move a pixel and must not invalidate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct NotchKey {
+    center_x: i32,
+    center_y: i32,
+    tick_outer: i32,
+    tick_inner: i32,
+    count: usize,
+    wrapping: bool,
 }
 impl Dial {
     /// Creates a dial ranging over `0 ..= 99` with value `0`, a single step of
@@ -61,6 +87,8 @@ impl Dial {
             notch_target: 3.7,
             wrapping: false,
             dragging: false,
+            notch_ticks: Vec::new(),
+            notch_key: None,
             value_changed: Signal1::new(),
             slider_pressed: GenericSignal::new(),
             slider_released: GenericSignal::new(),
@@ -378,23 +406,23 @@ impl WidgetProperties for Dial {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "minimum" => {
-                self.set_minimum(expect_i64(value)? as i32);
+                self.set_minimum(expect_i32_saturating(value)?);
                 Ok(())
             }
             "maximum" => {
-                self.set_maximum(expect_i64(value)? as i32);
+                self.set_maximum(expect_i32_saturating(value)?);
                 Ok(())
             }
             "value" => {
-                self.set_value(expect_i64(value)? as i32);
+                self.set_value(expect_i32_saturating(value)?);
                 Ok(())
             }
             "single_step" => {
-                self.set_single_step(expect_i64(value)? as i32);
+                self.set_single_step(expect_i32_saturating(value)?);
                 Ok(())
             }
             "page_step" => {
-                self.set_page_step(expect_i64(value)? as i32);
+                self.set_page_step(expect_i32_saturating(value)?);
                 Ok(())
             }
             "notches_visible" => {
@@ -452,8 +480,12 @@ impl EventHandler for Dial {
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
-                self.slider_pressed.emit();
+                // The press signal is emitted only for a press the dial actually owns. Emitting it
+                // before the hit test meant a click anywhere outside the control still announced a
+                // press and entered the pressed state, so a host listening to `slider_pressed` saw
+                // presses that the dial never received.
                 if self.geometry().contains_point(*pos) {
+                    self.slider_pressed.emit();
                     self.dragging = true;
                     let value = self.value_at_point(*pos);
                     self.set_value(value);
@@ -479,6 +511,18 @@ impl EventHandler for Dial {
                 // Unknown key; ignore
                 _ => {}
             },
+            // A notch nudges the value by one step. The event's positive y means "scroll
+            // down", which the dial maps to a lower value — the same direction as the Down
+            // arrow — and `WheelScroll` normalises both 120-unit and notch-sized deltas so a
+            // high-resolution wheel does not jump. `set_value` clamps to the range and emits
+            // `value_changed`, so the wheel needs no second write path.
+            Event::Wheel { delta, modifiers } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y != 0 {
+                    let step = self.single_step.saturating_mul(scroll.lines_y).saturating_neg();
+                    self.set_value(self.value.saturating_add(step));
+                }
+            }
             // Other events are not relevant for this widget
             _ => {}
         }
@@ -504,31 +548,22 @@ impl Draw for Dial {
         // light/dark switch changed nothing on screen: the face, its rim, the needle and
         // the hub were all fixed greys, which the rendering census reported as theme-blind.
         //
-        // The theme read is a separate manager lock, taken and released inside
-        // `resolved_theme_style`, so it is not held across the draw — the global manager's
-        // mutex is not re-entrant.
+        // The style lookups are the cached, revision-validated forms, so neither is a manager
+        // lock: `resolved_theme_style_shared` is a refcount bump on a hit and `palette_shared`
+        // answers every colour this draw needs in one read.
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("dial");
-        // Read as its own lock acquisition and copied out as values, so the guard is
-        // dropped before anything else touches the theme. The accent is the dial's value
-        // colour: the needle is a value indicator, the same role a progress bar's fill
-        // plays, and reading the token is what makes the indicator move with the theme.
-        let (window_fill, foreground, accent, muted) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.accent,
-                    active.colors.secondary,
-                ),
-                None => (
-                    Color::rgb(240, 240, 240),
-                    Color::BLACK,
-                    Color::rgb(33, 150, 243),
-                    Color::rgb(158, 158, 158),
-                ),
-            }
+        // One palette read for the whole frame. `palette_shared` is the revision-validated cache,
+        // so this is a refcount bump rather than the manager lock the old two-step read took; the
+        // four colours below are the same four it copied out of `current_theme().colors`.
+        let (window_fill, foreground, accent, muted) = match crate::style::palette_shared() {
+            Some(colors) => (colors.background, colors.foreground, colors.accent, colors.secondary),
+            None => (
+                Color::rgb(240, 240, 240),
+                Color::BLACK,
+                Color::rgb(33, 150, 243),
+                Color::rgb(158, 158, 158),
+            ),
         };
 
         let ink = style
@@ -609,19 +644,40 @@ impl Draw for Dial {
             // needle it annotates — the defect `meter.rs` already had to fix once. Both ends
             // come from that one direction, which keeps a tick the same radial length in every
             // direction instead of two independently-rounded points whose separation varies.
-            for i in 0..count {
-                let tick_angle =
-                    Self::angle_at_fraction(i as f64 / (count - 1) as f64, self.wrapping);
-                let (dir_x, dir_y) = (tick_angle.cos(), tick_angle.sin());
-                let outer = Point {
-                    x: center.x + (tick_outer as f64 * dir_x).round() as i32,
-                    y: center.y + (tick_outer as f64 * dir_y).round() as i32,
-                };
-                let inner = Point {
-                    x: center.x + (tick_inner as f64 * dir_x).round() as i32,
-                    y: center.y + (tick_inner as f64 * dir_y).round() as i32,
-                };
-                context.draw_line(outer, inner, rim);
+            //
+            // The point list is cached: the ring is a pure function of the centre, the tick
+            // radii, the count and the wrapping mode, so a static frame reuses the previous
+            // frame's list instead of paying for `count` sine/cosine pairs it would reproduce
+            // byte for byte. `notch_key` holds exactly those inputs, so a resize, a count change
+            // or a mode switch rebuilds and nothing else does.
+            let key = NotchKey {
+                center_x: center.x,
+                center_y: center.y,
+                tick_outer,
+                tick_inner,
+                count,
+                wrapping: self.wrapping,
+            };
+            if self.notch_key != Some(key) {
+                self.notch_ticks.clear();
+                for i in 0..count {
+                    let tick_angle =
+                        Self::angle_at_fraction(i as f64 / (count - 1) as f64, self.wrapping);
+                    let (dir_x, dir_y) = (tick_angle.cos(), tick_angle.sin());
+                    let outer = Point {
+                        x: center.x + (tick_outer as f64 * dir_x).round() as i32,
+                        y: center.y + (tick_outer as f64 * dir_y).round() as i32,
+                    };
+                    let inner = Point {
+                        x: center.x + (tick_inner as f64 * dir_x).round() as i32,
+                        y: center.y + (tick_inner as f64 * dir_y).round() as i32,
+                    };
+                    self.notch_ticks.push((outer, inner));
+                }
+                self.notch_key = Some(key);
+            }
+            for (outer, inner) in &self.notch_ticks {
+                context.draw_line(*outer, *inner, rim);
             }
         }
 
@@ -859,6 +915,44 @@ mod tests {
         assert_eq!(d.value(), 0);
         d.handle_event(&Event::MouseRelease { pos: Point::new(32, 32), button: 1 });
         assert_eq!(d.value(), 0);
+    }
+
+    #[test]
+    fn a_wheel_notch_steps_the_value() {
+        let mut dial = Dial::new(Rect::new(0, 0, 64, 64));
+        dial.set_value(10);
+        // The event's positive y means "towards the user", which steps down, the same direction
+        // as the Down arrow.
+        dial.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(dial.value(), 9);
+        dial.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(dial.value(), 10);
+        // The wheel clamps at the ends like every other write path.
+        dial.set_value(dial.minimum());
+        dial.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(dial.value(), dial.minimum());
+    }
+
+    /// A press outside the dial announces nothing; a press inside announces exactly once.
+    #[test]
+    fn only_a_press_the_dial_owns_announces_itself() {
+        use std::sync::{Arc, Mutex};
+        let mut dial = Dial::new(Rect::new(0, 0, 64, 64));
+        let presses = Arc::new(Mutex::new(0u32));
+        let sink = Arc::clone(&presses);
+        dial.slider_pressed.connect(move || *sink.lock().unwrap() += 1);
+
+        dial.handle_event(&Event::MousePress {
+            pos: Point::new(400, 400),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(*presses.lock().unwrap(), 0, "a click outside must not announce a press");
+        assert!(!dial.is_dragging());
+
+        dial.handle_event(&Event::MousePress { pos: Point::new(32, 32), button: 1, modifiers: 0 });
+        assert_eq!(*presses.lock().unwrap(), 1);
+        assert!(dial.is_dragging());
     }
 
     #[test]

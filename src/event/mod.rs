@@ -23,11 +23,15 @@ pub mod capture;
 /// Not a widget: it produces no `WidgetKind`. It is the shared state machine a
 /// control uses when it is a drag source or a drop destination.
 pub mod dnd;
+/// The event layer's single mouse double-click judgement (W-203).
+pub mod double_click;
 pub mod event_queue;
 /// Focus ownership and traversal order.
 pub mod focus;
 /// Named key codes, so a handler does not compare `Event::KeyPress.key` against a literal.
 pub mod key_codes;
+/// Keyboard auto-repeat tracking, exposed to handlers as [`Event::is_key_repeat`] (W-204).
+pub mod key_repeat;
 pub mod r#loop;
 /// Capture / target / bubble event routing with an explicit consumed flag.
 pub mod propagation;
@@ -43,6 +47,7 @@ pub mod wheel;
 // Re-export public types
 pub use capture::PointerCaptureManager;
 pub use dnd::{DragPayload, DragSession, DropEffect, DropTarget};
+pub use double_click::DoubleClickTracker;
 pub use event_queue::{EventQueue, EventSender};
 pub use focus::FocusManager;
 pub use focus::FocusTraversalStrategy;
@@ -50,6 +55,7 @@ pub use key_codes::{
     BACKSPACE, DELETE, DOWN, END, ENTER, ESCAPE, HOME, LEFT, LINE_FEED, PAGE_DOWN, PAGE_UP, RIGHT,
     SPACE, TAB, UP,
 };
+pub use key_repeat::{is_dispatch_repeat, with_dispatch_repeat, KeyRepeatState};
 pub use propagation::{
     ancestor_chain, consume_event, is_consumed, route_event, take_consumed, DispatchPhase,
     Propagation,

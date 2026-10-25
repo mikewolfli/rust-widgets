@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Label widget implementation.
-use crate::compat::{format, Cow, String, ToString, Vec};
+use crate::compat::{format, Cow, RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TEXT_FIT_MARGIN};
@@ -249,7 +249,7 @@ pub(crate) fn elide_in_mode<'a>(
     }
 }
 
-/// Splits `text` into lines that fit `width`, measuring with `measure`.
+/// Splits `text` into lines that fit `width`, keeping each line's source byte range.
 ///
 /// The greedy split is [`wrap_to_width`]'s, so the two rules that are easy to get subtly
 /// wrong live in one place: a word that does not fit moves to the next line *whole*, and a
@@ -257,28 +257,14 @@ pub(crate) fn elide_in_mode<'a>(
 /// Existing `\n` separators are honoured as paragraph breaks, and an empty paragraph is
 /// reported as an empty line so the blank row it represents is still drawn.
 ///
-/// The one rule this wrapper owns is the historical whitespace policy: a run of whitespace
-/// inside a paragraph has always been painted as a single space, and leading/trailing
-/// whitespace has never been painted at all. Normalising before the shared split keeps that
-/// byte-for-byte while dropping the duplicated greedy loop.
+/// The historical whitespace policy lives here rather than in `wrap_to_width`: a run of
+/// whitespace inside a paragraph has always been painted as a single space, and
+/// leading/trailing whitespace has never been painted at all. Normalising before the shared
+/// split keeps that byte-for-byte while dropping the duplicated greedy loop.
 ///
-/// This is the string-only view of [`wrap_text_ranges`]; the painter uses the ranged form, so
-/// the two cannot state different wrapping rules.
-#[allow(dead_code)]
-pub(crate) fn wrap_text(
-    text: &str,
-    width: u32,
-    measure: &mut dyn FnMut(&str) -> u32,
-) -> Vec<String> {
-    wrap_text_ranges(text, width, measure).into_iter().map(|line| line.text).collect()
-}
-
-/// Splits `text` into lines that fit `width`, keeping each line's source byte range.
-///
-/// The wrap itself is [`wrap_text`]'s — this is the same split with the provenance recorded, so a
-/// caller that has to map a point back to a byte offset (link hit testing) does not need a second,
-/// subtly different wrapping rule. See [`collapse_whitespace_with_map`] for how the mapping
-/// survives the whitespace policy.
+/// This is the label's only wrapping entry point: the painter consumes the ranged form
+/// directly, so there is no second string-only wrapper that could state a different rule. See
+/// [`collapse_whitespace_with_map`] for how the mapping survives the whitespace policy.
 fn wrap_text_ranges(
     text: &str,
     width: u32,
@@ -667,6 +653,17 @@ pub struct Label {
     text_revision: u32,
     /// The cached wrapped-line table, valid for one (revision, width, font) triple.
     wrap_cache: Option<LineLayout>,
+    /// The tag-stripped text a rich label paints, rebuilt with the run list.
+    ///
+    /// `displayed_text` used to concatenate every run on **each** call, so link validation and
+    /// hit testing each allocated a copy of the whole label (G-A13). Rebuilding it once, where
+    /// the runs are already rebuilt, makes the accessor a borrow.
+    rich_displayed: String,
+    /// The total advance of the rich runs, keyed by the text revision and the font.
+    ///
+    /// The paint path and `implicit_size` both need it, and each used to walk every run and
+    /// measure it; a static rich label paid that on every frame (G-A13).
+    rich_width_cache: RefCell<Option<(u32, Font, u32)>>,
     /// Emitted with a link's target when the user activates that link.
     pub link_activated: Signal1<String>,
     /// Emitted with a link's target when the pointer enters it, and with an empty string when the
@@ -696,6 +693,8 @@ impl Label {
             hovered_link: None,
             text_revision: 0,
             wrap_cache: None,
+            rich_displayed: String::new(),
+            rich_width_cache: RefCell::new(None),
             link_activated: Signal1::new(),
             link_hovered: Signal1::new(),
         }
@@ -850,15 +849,11 @@ impl Label {
     ///
     /// Plain text is the stored string itself; rich text is the tag-stripped, entity-decoded
     /// concatenation of its runs. Link ranges are declared against this string.
-    fn displayed_text(&self) -> Cow<'_, str> {
+    fn displayed_text(&self) -> &str {
         if self.text_format == TextFormat::RichText {
-            let mut out = String::with_capacity(self.text.len());
-            for run in &self.rich_runs {
-                out.push_str(&run.text);
-            }
-            Cow::Owned(out)
+            &self.rich_displayed
         } else {
-            Cow::Borrowed(self.text.as_str())
+            self.text.as_str()
         }
     }
 
@@ -871,11 +866,17 @@ impl Label {
         };
         self.text_revision = self.text_revision.wrapping_add(1);
         self.wrap_cache = None;
+        self.rich_width_cache = RefCell::new(None);
+        // Rebuild the displayed string beside the runs, so `displayed_text` is a borrow rather
+        // than a fresh concatenation per call (G-A13).
+        self.rich_displayed.clear();
+        if self.text_format == TextFormat::RichText {
+            for run in &self.rich_runs {
+                self.rich_displayed.push_str(&run.text);
+            }
+        }
         // Explicit ranges index the displayed text, so a text change can leave one past the end.
-        let displayed_len = {
-            let displayed = self.displayed_text();
-            displayed.len()
-        };
+        let displayed_len = self.displayed_text().len();
         self.explicit_links.retain(|link| link.end <= displayed_len);
         self.rebuild_links();
     }
@@ -1044,7 +1045,7 @@ impl Label {
             // against text nobody sees.
             self.rich_width(font)
         } else {
-            estimate_text_width(&self.text, font, 1.0)
+            crate::widget::base_widgets::measure_cache::estimate_text_width(&self.text, font)
         };
         let floor = Size::new(LABEL_MIN_WIDTH, estimate_line_height(font, 1.0));
         ControlMetrics::implicit_size(
@@ -1055,12 +1056,25 @@ impl Label {
     }
 
     /// The advance of the rich runs, measured with each run's own weight and slant.
+    ///
+    /// Cached by text revision and font: the paint path and `implicit_size` ask the same
+    /// question, and the answer only changes when the markup or the font does (G-A13).
     fn rich_width(&self, font: &Font) -> u32 {
+        if let Some((revision, cached_font, width)) = self.rich_width_cache.borrow().as_ref() {
+            if *revision == self.text_revision && *cached_font == *font {
+                return *width;
+            }
+        }
         let mut width = 0u32;
         for run in &self.rich_runs {
             let run_font = font.with_bold(run.bold).with_italic(run.italic);
-            width = width.saturating_add(estimate_text_width(&run.text, &run_font, 1.0));
+            width = width.saturating_add(
+                crate::widget::base_widgets::measure_cache::estimate_text_width(
+                    &run.text, &run_font,
+                ),
+            );
         }
+        *self.rich_width_cache.borrow_mut() = Some((self.text_revision, font.clone(), width));
         width
     }
 
@@ -1209,7 +1223,10 @@ impl Label {
                 text_color
             };
             let available = (right - x) as u32;
-            let advance = context.measure_text(&run.text, &run_font).width;
+            let advance = crate::widget::base_widgets::measure_cache::measure_text(
+                context, &run.text, &run_font,
+            )
+            .width;
             if advance <= available {
                 context.draw_text(
                     Point::new(x, line.y),
@@ -1268,7 +1285,8 @@ impl Label {
 
     /// The displayed-text offset under `pos` for a single, unwrapped line.
     fn single_line_offset(&self, pos: Point, content: Rect, font: &Font) -> Option<usize> {
-        let text_width = estimate_text_width(&self.text, font, 1.0);
+        let text_width =
+            crate::widget::base_widgets::measure_cache::estimate_text_width(&self.text, font);
         let origin = match self.alignment {
             crate::core::Alignment::Center => {
                 content.x + (content.width.saturating_sub(text_width) / 2) as i32
@@ -1662,7 +1680,9 @@ impl Draw for Label {
                 // three times too large and drifted left. The label's own doc comment already claims
                 // the inline copy "would drift from the shared one on the first change to either" —
                 // it had, and this was the copy.
-                let text_width = estimate_text_width(&self.text, &font, 1.0);
+                let text_width = crate::widget::base_widgets::measure_cache::estimate_text_width(
+                    &self.text, &font,
+                );
                 let text_x = match self.alignment {
                     crate::core::Alignment::Center => {
                         content.x + (content.width.saturating_sub(text_width) / 2) as i32
@@ -1755,6 +1775,15 @@ mod tests {
     use crate::style::WidgetStyle;
     #[cfg(device_profile)]
     use crate::theme::AppearanceMode;
+
+    /// Test-only string view of the one wrapping implementation.
+    ///
+    /// The production `wrap_text` string wrapper had no consumer (the painter reads
+    /// `wrap_text_ranges` directly), so it was removed. These tests only need the line
+    /// text, and projecting it here keeps them asserting the same split.
+    fn wrap_text(text: &str, width: u32, measure: &mut dyn FnMut(&str) -> u32) -> Vec<String> {
+        wrap_text_ranges(text, width, measure).into_iter().map(|line| line.text).collect()
+    }
 
     // ------------------------------------------------------------------
     // 1. Label creation (text, geometry)

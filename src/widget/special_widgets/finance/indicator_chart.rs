@@ -394,7 +394,21 @@ impl IndicatorChart {
     /// record and back, so a cached frame neither recomputes the indicator nor clones its
     /// float vectors.
     fn pane_series_from(&self, values: Vec<Vec<f64>>) -> Vec<PaneSeries> {
-        let palette = match self.mode {
+        let palette = self.series_colors();
+        values
+            .into_iter()
+            .enumerate()
+            .map(|(index, series)| PaneSeries {
+                values: series,
+                color: palette[index % palette.len()],
+                width: 1,
+            })
+            .collect()
+    }
+
+    /// The colour of each drawn series for the active mode.
+    fn series_colors(&self) -> Vec<Color> {
+        match self.mode {
             IndicatorMode::Macd => alloc::vec![
                 Color::rgb(33, 150, 243),
                 Color::rgb(255, 193, 7),
@@ -407,16 +421,56 @@ impl IndicatorChart {
                 alloc::vec![Color::rgb(33, 150, 243), Color::rgb(255, 193, 7)]
             }
             IndicatorMode::OnBalanceVolume => alloc::vec![Color::rgb(156, 39, 176)],
+        }
+    }
+
+    /// The names of the drawn series for the active mode.
+    fn series_names(&self) -> &'static [&'static str] {
+        match self.mode {
+            IndicatorMode::Macd => &["macd", "signal", "histogram"],
+            IndicatorMode::Rsi => &["rsi"],
+            IndicatorMode::Stochastic => &["%K", "%D"],
+            IndicatorMode::MoneyFlowIndex => &["mfi"],
+            IndicatorMode::Atr => &["atr"],
+            IndicatorMode::OnBalanceVolume => &["obv"],
+        }
+    }
+
+    /// The hovered bar's readings, ready for a `ChartTooltip`.
+    ///
+    /// One line per drawn series, in the series' own colour, plus the bar's label (or its
+    /// index) as a heading. The values are the same ones the painter uses, so a tooltip
+    /// cannot disagree with the line under the pointer (COMP-J02).
+    pub fn hovered_summary(&self) -> Vec<crate::widget::companions::TooltipLine> {
+        use crate::widget::companions::TooltipLine;
+        let Some(index) = self.hovered_index else { return Vec::new() };
+        let mut lines = Vec::new();
+        lines.push(TooltipLine::new(match self.series.label_at(index) {
+            Some(label) => alloc::string::String::from(label),
+            None => alloc::format!("#{index}"),
+        }));
+        if self.series.is_empty() || index >= self.series.len() {
+            return lines;
+        }
+        // Recompute when the cache is cold (nothing has been painted yet), so a host that
+        // asks before the first frame gets real numbers rather than an empty list.
+        let computed;
+        let values: &[Vec<f64>] = if self.values_valid {
+            &self.last_values
+        } else {
+            computed = self.compute();
+            &computed
         };
-        values
-            .into_iter()
-            .enumerate()
-            .map(|(index, series)| PaneSeries {
-                values: series,
-                color: palette[index % palette.len()],
-                width: 1,
-            })
-            .collect()
+        let colors = self.series_colors();
+        for (position, series) in values.iter().enumerate() {
+            let Some(value) = series.get(index).copied().filter(|value| value.is_finite()) else {
+                continue;
+            };
+            let name = self.series_names().get(position).copied().unwrap_or("value");
+            let color = colors[position % colors.len()];
+            lines.push(TooltipLine::colored(alloc::format!("{name} {value:.2}"), color));
+        }
+        lines
     }
 
     /// The axis range for the active mode.
@@ -693,6 +747,22 @@ impl crate::event::EventHandler for IndicatorChart {
             Event::MouseLeave { .. } if self.hovered_index.take().is_some() => {
                 self.base.request_redraw();
             }
+            // Wheel zoom, the same gesture and factors the K-line and volume panes use, so
+            // the three stacked panes zoom identically when a host links their views
+            // (FIN-03).
+            Event::Wheel { delta, .. } if delta.y != 0 => {
+                let total = self.series.len();
+                if total > 4 {
+                    let (start, end) = self.view_bounds();
+                    let anchor = self.hovered_index.unwrap_or((start + end) / 2);
+                    let span = (end - start).max(4);
+                    let factor = if delta.y > 0 { 1.25 } else { 0.8 };
+                    let new_span = ((span as f64 * factor).round() as usize).clamp(4, total);
+                    let half = new_span / 2;
+                    let new_start = anchor.saturating_sub(half).min(total - new_span);
+                    self.set_view_range(Some((new_start, new_start + new_span)));
+                }
+            }
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
                 let area = self.plot_area();
                 let (start, end) = self.view_bounds();
@@ -770,6 +840,20 @@ impl Draw for IndicatorChart {
 
         self.draw_labels(context, &area, &price_axis);
 
+        // The bar index under the pane, from the series' own labels (FIN-01).
+        super::volume_chart::draw_index_ticks(
+            context,
+            &area,
+            start,
+            end,
+            |index| match self.series.label_at(index) {
+                Some(label) => alloc::string::String::from(label),
+                None => alloc::format!("{index}"),
+            },
+            &role_font(self.style(), 10.0),
+            chrome.ink.with_alpha(190),
+        );
+
         if let Some(index) = self.hovered_index.filter(|index| *index >= start && *index < end) {
             let x = index_axis.center_for(index - start);
             context.draw_line_stroke(
@@ -789,12 +873,16 @@ impl Draw for IndicatorChart {
                 }
             }
             if !text.is_empty() {
-                let width = text.chars().count() as i32 * 7;
+                // Measured, not estimated: `len * 7` assumed a monospace advance the
+                // pane does not draw in, which clipped the readout on a proportional face
+                // and left a gap on a narrow one (J-P19).
+                let font = role_font(self.style(), 11.0);
+                let width = context.measure_text(&text, &font).width as i32;
                 let label_x = if x + 8 + width > area.right() { x - 8 - width } else { x + 8 };
                 context.draw_text(
                     Point { x: label_x.max(area.rect.x), y: area.rect.y + 2 },
                     &text,
-                    &role_font(self.style(), 11.0),
+                    &font,
                     chrome.ink,
                     HorizontalAlignment::Left,
                 );

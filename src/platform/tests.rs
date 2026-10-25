@@ -112,9 +112,9 @@ fn consistency_combo_box_data_and_event_path_roundtrip() {
 fn consistency_capability_contract_by_profile() {
     let desktop = StubPlatform::new("test-desktop", PlatformFamily::Desktop);
     let embedded = StubPlatform::new("test-embedded", PlatformFamily::Embedded);
-    assert!(desktop.native_capability_contract().is_some());
+    assert!(desktop.hosted_capability_contract().is_some());
     assert!(desktop.embedded_capability_contract().is_none());
-    assert!(embedded.native_capability_contract().is_none());
+    assert!(embedded.hosted_capability_contract().is_none());
     assert!(embedded.embedded_capability_contract().is_some());
 }
 /// A host owns exactly one primitive: the window. Every control is painted by
@@ -349,15 +349,15 @@ fn format_shortcut_uses_the_backend_style() {
 
 /// Every interactive backend is reported interactive, and every state-only backend is not.
 ///
-/// # What this pins, and how the first version of it failed
+/// # What this pins, and how the earlier versions failed
 ///
-/// [`crate::platform::runtime_gui_mode_for`] decides interactivity from a backend's name. That
-/// name is a string the backend chooses for itself, so the mapping has two failure modes and the
-/// first fix for it hit **both**:
+/// [`crate::platform::runtime_gui_mode_for`] used to decide interactivity from the backend's
+/// **name**. That is a label the backend chooses for itself, and the mapping hit both of its
+/// failure modes:
 ///
 /// 1. **A dead arm.** `"harmony-desktop"` stayed listed after the backend renamed itself, and it
 ///    was masked because the same arm *also* carried the new name.
-/// 2. **A new false answer.** The fix required `capabilities().dpi_scaling` as evidence — and the
+/// 2. **A new false answer.** One fix required `capabilities().dpi_scaling` as evidence — and the
 ///    same round had correctly set macOS's `dpi_scaling` to `false` (it never overrides
 ///    `dpi_scale_factor`). So the real `cocoa` backend, which *does* open AppKit windows and *is*
 ///    what the shipped `desktop` profile selects on macOS, answered `PreviewOrStub`. A `desktop`
@@ -368,18 +368,22 @@ fn format_shortcut_uses_the_backend_style() {
 /// covered a synthetic `cocoa`-named struct, so the real backend — `#[cfg]`-gated to a host the
 /// suite does not run on — was never exercised.
 ///
-/// # Why the rule is a compile-time fact now
+/// # Why the evidence is a type (P-204)
 ///
 /// `dpi_scaling` answers "can this backend ask the display its scale factor", which is not the
-/// question. "Is a native window path compiled in" is a fact about the build, so it is asked with
-/// `cfg!` where it is conditional (`gtk`, `wayland`, whose name is the same in a toolkit-less
-/// build) and is implied by the type existing where it is not.
+/// question. "Is a native window path compiled in" is a fact about the build. For the two backends
+/// the runtime constructs (macOS through `SelectedMacOSPlatform`, Windows directly) the **type**
+/// existing is that fact, so a name can no longer assert it. `gtk` and `wayland` stay on `cfg!`
+/// because their `backend_name()` is the same in a toolkit-less build.
+///
+/// The bottom of this test therefore asserts the two directions of that rule: a double that only
+/// *claims* a native backend's name is a preview, and the real constructed backend is interactive.
 #[test]
 fn every_backend_is_reported_at_the_mode_it_actually_has() {
     use crate::platform::{runtime_gui_mode_for, RuntimeGuiMode};
 
-    /// A backend with `name` and no behaviour at all. Only `backend_name` matters here, because
-    /// that is the whole input the predicate reads.
+    /// A backend with `name` and no behaviour at all. Only `backend_name` is configurable, which is
+    /// exactly the point: a name alone must never buy an interactivity claim.
     struct Named(&'static str);
 
     impl Platform for Named {
@@ -402,20 +406,20 @@ fn every_backend_is_reported_at_the_mode_it_actually_has() {
         }
     }
 
-    // The name-side rule, independent of which host this test runs on. `cocoa` and
-    // `WindowsPlatform` need no `cfg!` because their modules only exist on their own target with
-    // their own feature, so an instance existing *is* the compile-time proof — which is exactly
-    // what the previous fix got wrong by consulting a runtime capability instead.
+    // A name is not evidence. These two used to be the positive arms; a state-only backend that
+    // copied a native backend's label would have been promised a window it cannot open, which is
+    // the silent failure this function exists to prevent.
     for name in ["cocoa", "WindowsPlatform"] {
         assert_eq!(
             runtime_gui_mode_for(&Named(name)),
-            RuntimeGuiMode::NativeInteractive,
-            "{name} opens native windows, so it must be reported interactive regardless of what \
-             its capabilities() say about DPI — those are separate questions"
+            RuntimeGuiMode::PreviewOrStub,
+            "{name} is a label a double can report; only the backend's own type proves its native \
+             window path is compiled into this build"
         );
     }
 
-    // `gtk` and `wayland` are conditional on the build, so their expectation is too.
+    // `gtk` and `wayland` are conditional on the build, so their expectation is too. These are the
+    // only two arms left that read a name, and their build fact is what decides the answer.
     let expected_gtk = if cfg!(all(unix_desktop, feature = "gtk-native")) {
         RuntimeGuiMode::NativeInteractive
     } else {
@@ -455,10 +459,33 @@ fn every_backend_is_reported_at_the_mode_it_actually_has() {
         );
     }
 
-    // And the real constructible backend on this host must agree with its own row: the strongest
-    // available check that the predicate has not drifted from what the crate actually ships.
+    // And the real constructible backends agree with their own row: the strongest available check
+    // that the predicate has not drifted from what the crate actually ships. Each arm is gated
+    // exactly like the predicate's own downcast, and naming the same type the runtime constructs
+    // means these fail to compile if the two ever diverge.
     let stub = StubPlatform::new("portable", PlatformFamily::Embedded);
     assert_eq!(runtime_gui_mode_for(&stub), RuntimeGuiMode::PreviewOrStub);
+
+    #[cfg(all(
+        target_os = "macos",
+        any(feature = "macos", feature = "cocoa-legacy"),
+        not(feature = "harmony")
+    ))]
+    {
+        let selected = crate::platform::macos::macos_bridge::SelectedMacOSPlatform::new();
+        assert_eq!(
+            runtime_gui_mode_for(&selected),
+            RuntimeGuiMode::NativeInteractive,
+            "the backend create_native_platform constructs on macOS bootstraps NSApplication and \
+             pumps its run loop, so it must be reported interactive"
+        );
+    }
+
+    #[cfg(all(target_os = "windows", not(feature = "harmony")))]
+    {
+        let platform = crate::platform::windows::WindowsPlatform::new();
+        assert_eq!(runtime_gui_mode_for(&platform), RuntimeGuiMode::NativeInteractive);
+    }
 }
 
 /// Every backend that **declares** `typed_widget_trigger` must actually deliver a trigger.

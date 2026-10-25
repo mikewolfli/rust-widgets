@@ -66,8 +66,8 @@ pub trait Platform: Send + Sync {
         // drift shape principle #54 forbids, and the one the capability-matrix gate reads.
         default_capabilities_for(self.family())
     }
-    /// Native capability contract published by desktop-capable runtimes.
-    fn native_capability_contract(&self) -> Option<NativeCapabilityContract> {
+    /// Hosted capability contract published by desktop-capable runtimes.
+    fn hosted_capability_contract(&self) -> Option<HostedCapabilityContract> {
         if matches!(self.family(), PlatformFamily::Desktop) {
             // The two types are one alias, so the backend's own report *is* the
             // contract — there is nothing to convert and nothing to keep in sync.
@@ -75,6 +75,14 @@ pub trait Platform: Send + Sync {
         } else {
             None
         }
+    }
+
+    /// Legacy mechanism-vocabulary spelling of [`Self::hosted_capability_contract`].
+    #[deprecated(
+        note = "use `hosted_capability_contract`; the contract describes a hosted backend, not a mechanism"
+    )]
+    fn native_capability_contract(&self) -> Option<HostedCapabilityContract> {
+        self.hosted_capability_contract()
     }
     /// Embedded capability contract published by constrained runtimes.
     ///
@@ -316,13 +324,25 @@ pub trait Platform: Send + Sync {
         None
     }
 
-    /// A value that changes when the environment facts change (appearance, contrast, motion,
-    /// locale).
+    /// A revision of the environment facts (appearance, contrast, motion, locale, accent colour
+    /// and reduced transparency).
     ///
     /// Same polling contract as [`Self::display_generation`]: `0` means this backend does not
     /// report changes. A host that reads a non-zero value compares consecutive readings; a
     /// different value means "re-read the facts". Backends without a native change signal derive
     /// it from the current values, which is a revision rather than a pushed notification.
+    ///
+    /// # The fact set must match the consumer's
+    ///
+    /// [`crate::style::environment`] reads six facts to build its snapshot and reuses the snapshot
+    /// whenever this revision is unchanged. A backend that hashes only some of them leaves the
+    /// rest undetectable: a change in the accent colour or in the reduced-transparency preference
+    /// kept the old snapshot indefinitely (P-03).
+    ///
+    /// [`crate::platform::locale::environment_revision`] is the shared accessor that hashes the
+    /// complete set; a backend whose revision is derived should answer
+    /// `crate::platform::locale::environment_revision(self)` rather than spell the facts out
+    /// (P-06).
     fn environment_generation(&self) -> u64 {
         0
     }
@@ -1780,21 +1800,45 @@ pub trait Platform: Send + Sync {
         0
     }
 
-    /// Shows a control. Default: the host holds no controls to show.
-    fn show_widget(&self, widget_id: ObjectId) {
+    /// Shows a control, reporting whether the id named one this backend holds.
+    ///
+    /// Default: the host holds no controls to show, so the answer is `false`.
+    ///
+    /// # Why this returns `bool`
+    ///
+    /// It used to return `()`, so asking to show a control that does not exist was a silent
+    /// no-op with no way to notice — the same "the caller cannot tell whether the write landed"
+    /// shape the sibling setters (`set_widget_value`, `set_widget_checked`, …) already avoid. The
+    /// answer keeps its existing meaning for a real id (`true`) and reports `false` for an unknown
+    /// one; a caller that ignores it behaves exactly as before (P-203).
+    fn show_widget(&self, widget_id: ObjectId) -> bool {
         let _ = widget_id;
+        false
     }
-    /// Hides a control. Default: the host holds no controls to hide.
-    fn hide_widget(&self, widget_id: ObjectId) {
+    /// Hides a control, reporting whether the id named one this backend holds.
+    /// See [`Self::show_widget`] for why the answer is a `bool`.
+    fn hide_widget(&self, widget_id: ObjectId) -> bool {
         let _ = widget_id;
+        false
     }
-    /// Moves and resizes a control. Default: the host holds no controls.
-    fn set_widget_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
+    /// Moves and resizes a control, reporting whether the id named one this backend holds.
+    /// See [`Self::show_widget`] for why the answer is a `bool`.
+    fn set_widget_geometry(
+        &self,
+        widget_id: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> bool {
         let _ = (widget_id, x, y, width, height);
+        false
     }
-    /// Updates a control's label. Default: the host holds no controls.
-    fn set_widget_text(&self, widget_id: ObjectId, text: &str) {
+    /// Updates a control's label, reporting whether the id named one this backend holds.
+    /// See [`Self::show_widget`] for why the answer is a `bool`.
+    fn set_widget_text(&self, widget_id: ObjectId, text: &str) -> bool {
         let _ = (widget_id, text);
+        false
     }
     /// Reads a control's label. Default: the host holds no controls.
     fn get_widget_text(&self, widget_id: ObjectId) -> String {
@@ -1810,9 +1854,11 @@ pub trait Platform: Send + Sync {
         let _ = widget_id;
         false
     }
-    /// Shows or hides a control. Default: the host holds no controls.
-    fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) {
+    /// Shows or hides a control, reporting whether the id named one this backend holds.
+    /// See [`Self::show_widget`] for why the answer is a `bool`.
+    fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) -> bool {
         let _ = (widget_id, visible);
+        false
     }
     /// Reports whether a control is visible. Default: the host holds no controls.
     fn is_widget_visible(&self, widget_id: ObjectId) -> bool {

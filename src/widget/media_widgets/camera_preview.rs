@@ -42,6 +42,21 @@ const EMPTY_VIEWFINDER: Color = Color::rgba(50, 50, 60, 255);
 /// value, not two that can drift.
 const ACTIVE_VIEWFINDER: Color = Color::rgba(30, 30, 40, 255);
 
+/// A frame that needed repacking, cropping or mirroring, kept between draws.
+///
+/// The key is the input buffer's identity plus the transform inputs. A new capture has a new
+/// pointer, so only an unchanged frame reuses this buffer (L-P06).
+struct ProcessedFrame {
+    ptr: usize,
+    len: usize,
+    width: u32,
+    height: u32,
+    stride: u32,
+    mirror: bool,
+    zoom_bits: u32,
+    data: Vec<u8>,
+}
+
 /// A camera device the host has made available.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CameraDevice {
@@ -174,6 +189,14 @@ pub struct CameraPreview {
     /// The resolution is the format pin both the readout and the painted frame share; a caller that
     /// also needs the pixel layout reads [`Self::pixel_format`].
     pub format_negotiated: Signal1<(u32, u32)>,
+    /// The `WxH` readout, rebuilt when the resolution changes rather than every draw.
+    resolution_text: String,
+    /// The device caption, rebuilt when the camera id changes.
+    camera_id_text: String,
+    /// The zoom caption, rebuilt when the zoom level changes.
+    zoom_text: String,
+    /// The repacked/mirrored/cropped frame from the previous draw.
+    processed: Option<ProcessedFrame>,
 }
 
 impl CameraPreview {
@@ -197,6 +220,10 @@ impl CameraPreview {
             pixel_format: PixelFormat::Rgba8888,
             target_fps: 30,
             format_negotiated: Signal1::new(),
+            resolution_text: "640x480".to_string(),
+            camera_id_text: "Camera #0".to_string(),
+            zoom_text: "1.0x".to_string(),
+            processed: None,
         }
     }
 
@@ -249,6 +276,7 @@ impl CameraPreview {
             return Ok(());
         }
         self.camera_id = id;
+        self.camera_id_text = format!("Camera #{id}");
         // `draw` labels the preview with the device it shows, so the caption goes stale without
         // this.
         self.base.request_redraw();
@@ -319,6 +347,8 @@ impl CameraPreview {
             return;
         }
         self.resolution = resolution;
+        self.resolution_text = format!("{}x{}", resolution.0, resolution.1);
+        self.processed = None;
         self.announce_format();
         self.base.request_redraw();
     }
@@ -334,6 +364,7 @@ impl CameraPreview {
             return;
         }
         self.mirror_mode = mirrored;
+        self.processed = None;
         self.base.request_redraw();
     }
 
@@ -349,6 +380,8 @@ impl CameraPreview {
             return;
         }
         self.zoom_level = level;
+        self.zoom_text = format!("{level:.1}x");
+        self.processed = None;
         self.base.request_redraw();
     }
 
@@ -438,6 +471,8 @@ impl CameraPreview {
         let resolution = (frame.width, frame.height);
         let negotiated = self.resolution != resolution;
         self.resolution = resolution;
+        self.resolution_text = format!("{}x{}", resolution.0, resolution.1);
+        self.processed = None;
         self.frame_available.emit(frame.pts_ms);
         self.back = Some(frame);
         if negotiated {
@@ -487,6 +522,7 @@ impl CameraPreview {
     pub fn clear_frame(&mut self) {
         self.front = None;
         self.back = None;
+        self.processed = None;
         self.base.request_redraw();
     }
 
@@ -541,6 +577,86 @@ impl CameraPreview {
     /// Returns whether controls are currently visible.
     pub fn controls_visible(&self) -> bool {
         self.show_controls
+    }
+
+    /// The zoom-in button's rectangle, shared by the paint path and the hit test.
+    fn zoom_in_rect(&self, rect: Rect) -> Rect {
+        Rect::new(rect.x + rect.width as i32 - 42, rect.y + 6, 36, 36)
+    }
+
+    /// The zoom-out button's rectangle, shared by the paint path and the hit test.
+    fn zoom_out_rect(&self, rect: Rect) -> Rect {
+        Rect::new(rect.x + rect.width as i32 - 42, rect.y + 46, 36, 36)
+    }
+
+    /// Repacks, crops and mirrors the frame when the current transform needs it.
+    ///
+    /// Returns whether [`Self::processed`] holds the pixels to paint. A tightly packed frame at
+    /// 1.0x with mirroring off is the fast path and needs no buffer at all. The result is cached
+    /// by buffer identity and transform inputs, so the steady state -- a still frame at a fixed
+    /// zoom -- does no pixel work (L-P06).
+    fn ensure_processed(&mut self, frame: &CameraFrame) -> bool {
+        let tight = frame.width as usize * 4;
+        let identity = !self.mirror_mode
+            && (self.zoom_level - 1.0).abs() < f32::EPSILON
+            && frame.stride as usize == tight;
+        if identity {
+            return false;
+        }
+        let ptr = frame.data.as_ptr() as usize;
+        let len = frame.data.len();
+        let zoom_bits = self.zoom_level.to_bits();
+        let reusable = matches!(
+            self.processed.as_ref(),
+            Some(cached)
+                if cached.ptr == ptr
+                    && cached.len == len
+                    && cached.width == frame.width
+                    && cached.height == frame.height
+                    && cached.stride == frame.stride
+                    && cached.mirror == self.mirror_mode
+                    && cached.zoom_bits == zoom_bits
+        );
+        if reusable {
+            return true;
+        }
+
+        let width = frame.width;
+        let height = frame.height;
+        let zoom = self.zoom_level.max(1.0) as f64;
+        let crop_width = ((width as f64 / zoom).round() as u32).clamp(1, width.max(1));
+        let crop_height = ((height as f64 / zoom).round() as u32).clamp(1, height.max(1));
+        let crop_x = (width.saturating_sub(crop_width)) / 2;
+        let crop_y = (height.saturating_sub(crop_height)) / 2;
+        let mut data = crate::compat::vec![0u8; tight * height as usize];
+        for row in 0..height {
+            let source_y = crop_y + (row as u64 * crop_height as u64 / height.max(1) as u64) as u32;
+            let source_row = source_y as usize * frame.stride as usize;
+            for column in 0..width {
+                let inner = (column as u64 * crop_width as u64 / width.max(1) as u64) as u32;
+                let source_x = if self.mirror_mode {
+                    crop_x + crop_width.saturating_sub(1).saturating_sub(inner)
+                } else {
+                    crop_x + inner
+                };
+                let from = source_row + source_x as usize * 4;
+                let to = row as usize * tight + column as usize * 4;
+                if let Some(pixel) = frame.data.get(from..from + 4) {
+                    data[to..to + 4].copy_from_slice(pixel);
+                }
+            }
+        }
+        self.processed = Some(ProcessedFrame {
+            ptr,
+            len,
+            width,
+            height,
+            stride: frame.stride,
+            mirror: self.mirror_mode,
+            zoom_bits,
+            data,
+        });
+        true
     }
 }
 
@@ -727,60 +843,44 @@ impl Draw for CameraPreview {
 
             // The host's frame is painted at its own pixel size, centred and clipped to the
             // preview. Content, not chrome: it is the caller's picture and is never recoloured.
-            if let Some(frame) = self.front.as_deref() {
+            // Mirroring and zoom are pixel operations (not labels), and the repacked result is
+            // cached between draws (MW-03 / L-P06).
+            if let Some(frame) = self.front.clone() {
                 let dx = rect.x + (w - frame.width as i32) / 2;
                 let dy = rect.y + (h - frame.height as i32) / 2;
                 context.push_clip(rect.x, rect.y, rect.width, rect.height);
-                let tight_len = frame.width as usize * 4;
-                if frame.stride as usize == tight_len {
-                    context.draw_image(
-                        dx.max(0),
-                        dy.max(0),
-                        frame.width,
-                        frame.height,
-                        frame.data.as_ref(),
-                    );
-                } else {
-                    // The image primitive is tightly packed, so a padded capture is repacked
-                    // here — the only place a padded frame costs a copy, and only for that layout.
-                    let mut packed =
-                        crate::compat::Vec::with_capacity(tight_len * frame.height as usize);
-                    for row in 0..frame.height as usize {
-                        let start = row * frame.stride as usize;
-                        if let Some(pixels) = frame.data.get(start..start + tight_len) {
-                            packed.extend_from_slice(pixels);
-                        }
-                    }
-                    context.draw_image(dx.max(0), dy.max(0), frame.width, frame.height, &packed);
-                }
+                let needs_processing = self.ensure_processed(&frame);
+                let pixels: &[u8] = match self.processed.as_ref() {
+                    Some(processed) if needs_processing => &processed.data,
+                    _ => frame.data.as_ref(),
+                };
+                context.draw_image(dx.max(0), dy.max(0), frame.width, frame.height, pixels);
                 context.pop_clip();
             }
 
-            // Draw resolution info text
-            let res_text = format!("{}x{}", self.resolution.0, self.resolution.1);
+            // Draw resolution info text. The captions are cached on their setters; this path
+            // only borrows them (L-P03).
             context.draw_text(
                 Point::new(rect.x + 6, rect.y + 14),
-                &res_text,
+                &self.resolution_text,
                 &small_font,
                 label_ink,
                 HorizontalAlignment::Left,
             );
 
             // Draw camera ID
-            let id_text = format!("Camera #{}", self.camera_id);
             context.draw_text(
                 Point::new(rect.x + 6, rect.y + h - 10),
-                &id_text,
+                &self.camera_id_text,
                 &small_font,
                 label_ink,
                 HorizontalAlignment::Left,
             );
 
             // Draw zoom level indicator
-            let zoom_text = format!("{:.1}x", self.zoom_level);
             context.draw_text(
                 Point::new(rect.x + w - 40, rect.y + 14),
-                &zoom_text,
+                &self.zoom_text,
                 &normal_font,
                 strong_ink,
                 HorizontalAlignment::Left,
@@ -814,12 +914,30 @@ impl Draw for CameraPreview {
                 let control_bg = Rect::new(rect.x + w - 44, rect.y + 4, 40, 80);
                 context.fill_rect(control_bg, Color::rgba(0, 0, 0, 120));
 
-                // Draw zoom +/- buttons as simple colored rects
-                let zoom_in_btn = Rect::new(rect.x + w - 42, rect.y + 6, 36, 36);
+                // Draw zoom +/- buttons. The rectangles come from the same helpers the hit test
+                // uses, so the visible button and its click target cannot drift apart (MW-03).
+                let zoom_in_btn = self.zoom_in_rect(rect);
                 context.fill_rect(zoom_in_btn, Color::rgba(255, 255, 255, 80));
-
-                let zoom_out_btn = Rect::new(rect.x + w - 42, rect.y + 46, 36, 36);
+                let zoom_out_btn = self.zoom_out_rect(rect);
                 context.fill_rect(zoom_out_btn, Color::rgba(255, 255, 255, 80));
+                let glyph_ink = strong_ink;
+                let plus_center = zoom_in_btn.center();
+                context.draw_line(
+                    Point::new(plus_center.x - 7, plus_center.y),
+                    Point::new(plus_center.x + 7, plus_center.y),
+                    glyph_ink,
+                );
+                context.draw_line(
+                    Point::new(plus_center.x, plus_center.y - 7),
+                    Point::new(plus_center.x, plus_center.y + 7),
+                    glyph_ink,
+                );
+                let minus_center = zoom_out_btn.center();
+                context.draw_line(
+                    Point::new(minus_center.x - 7, minus_center.y),
+                    Point::new(minus_center.x + 7, minus_center.y),
+                    glyph_ink,
+                );
             }
 
             // Draw a green "recording" dot indicator
@@ -876,12 +994,24 @@ impl EventHandler for CameraPreview {
         }
         match event {
             Event::MousePress { pos, button, .. } => {
-                // The press must land on the preview. Discarding the position meant a
-                // click anywhere in the window started or stopped the camera — a
-                // side-effecting device action taken on an unrelated click.
-                if *button == 1 && self.geometry().contains_point(*pos) {
-                    self.toggle_preview();
+                if *button != 1 || !self.geometry().contains_point(*pos) {
+                    return;
                 }
+                let rect = self.geometry();
+                if self.show_controls {
+                    if self.zoom_in_rect(rect).contains_point(*pos) {
+                        self.zoom_in();
+                        return;
+                    }
+                    if self.zoom_out_rect(rect).contains_point(*pos) {
+                        self.zoom_out();
+                        return;
+                    }
+                }
+                // The press must land on the preview. Discarding the position meant a
+                // click anywhere in the window started or stopped the camera -- a
+                // side-effecting device action taken on an unrelated click.
+                self.toggle_preview();
             }
             _ => {
                 self.base.handle_event(event);

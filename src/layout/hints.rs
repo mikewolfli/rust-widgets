@@ -18,7 +18,8 @@
 //! out every child's size and hand it to the layout *before* asking the layout to
 //! lay them out. `Wrap` and `Absolute` carried their own variants of the same
 //! workaround, and `Flow` bypassed the protocol entirely by storing
-//! `Box<dyn Widget>` itself.
+//! `Box<dyn Widget>` itself (it now captures the hint and drops the widget; see
+//! G-402 in `flow.rs`).
 //!
 //! The shared design-system table answers this the other way round: the
 //! **parent asks the child**. The intrinsic-size formula

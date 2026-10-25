@@ -351,6 +351,25 @@ pub fn reset_cross_thread_skips() {
     CROSS_THREAD_SKIPS.store(0, core::sync::atomic::Ordering::SeqCst);
 }
 
+/// Whether a global handler is currently registered under `name` on **this** thread.
+///
+/// # Why a separate query (W-P07)
+///
+/// A dynamic binding receives its payload already converted into a fresh
+/// [`CapabilityValue`](crate::widget::capability::CapabilityValue) — by reference, so the signal
+/// layer allocates nothing — and then builds an [`EventHandlerContext`] from it, which means
+/// cloning the payload into the context. When no handler is registered under the name, that clone
+/// is made and dropped unread: for a composite payload (`String`, `List`, a record) it is a heap
+/// allocation per emission on a hot path (a slider dragged at 60 Hz emits `value_changed` each
+/// frame). Asking the registry first lets the caller skip the clone in exactly the case where
+/// [`invoke_global_handler`] would have found nothing to run.
+///
+/// It reads the same thread-local map `invoke_global_handler` reads, so the answer cannot disagree
+/// with what that call would do on this thread.
+pub(crate) fn has_global_handler(name: &str) -> bool {
+    GLOBAL_EVENT_HANDLERS.with(|handlers| handlers.borrow().has_handler(name))
+}
+
 /// A human-readable identifier for the current thread, used in the cross-thread diagnostic.
 ///
 /// Prefers the thread's own name (a host that names its UI thread gets a useful message) and falls
@@ -376,8 +395,30 @@ pub fn current_thread_name() -> alloc::string::String {
 /// mistaken for a same-thread delivery and the other thread's same-named handler ran. `ThreadId` is
 /// assigned by the runtime and unique for the lifetime of the process, so it is the correct key for
 /// "is this the thread the binding was made on?". The name is still reported in the diagnostic.
+///
+/// # Why it is cached per thread (W-P07)
+///
+/// A dynamic binding compares this against the id it captured at bind time on **every** emission.
+/// The direct form — `std::thread::current().id()` — clones the runtime's `Thread` handle (an atomic
+/// increment) just to read an id that cannot change for the life of the thread. The id is therefore
+/// cached in thread-local storage on first use; a `ThreadId` is `Copy`, so the cached read is a
+/// plain load with no allocation and no refcount traffic. Values are unaffected: the cache is
+/// per-thread and a thread's id is immutable.
 pub fn current_thread_id() -> std::thread::ThreadId {
-    std::thread::current().id()
+    CURRENT_THREAD_ID.with(|cached| {
+        if let Some(id) = cached.get() {
+            return id;
+        }
+        let id = std::thread::current().id();
+        cached.set(Some(id));
+        id
+    })
+}
+
+thread_local! {
+    /// The current thread's id, resolved once. See [`current_thread_id`].
+    static CURRENT_THREAD_ID: core::cell::Cell<Option<std::thread::ThreadId>> =
+        const { core::cell::Cell::new(None) };
 }
 
 #[cfg(test)]

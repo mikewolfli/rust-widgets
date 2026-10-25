@@ -75,8 +75,15 @@ pub struct FontPreview {
     ///
     /// `build_font` allocates the family name on every call, so a panel that repaints on
     /// scroll rebuilt the same one or two faces per frame. The cache is cleared whenever
-    /// the family, the bold flag or the italic flag changes.
+    /// the family, the bold flag or the italic flag changes. Entries are kept in least-recently
+    /// used order so a full cache evicts **one** sample rather than clearing every face.
     font_cache: Vec<(u32, Font)>,
+    /// The info line and the inputs that produced it.
+    info_text: String,
+    info_key: Option<(String, u32, bool, bool)>,
+    /// The weight-axis rows and the inputs that produced them.
+    weight_lines: Vec<String>,
+    weight_key: Option<(Vec<u16>, String)>,
 }
 
 impl FontPreview {
@@ -99,6 +106,10 @@ impl FontPreview {
             scroll_offset: 0,
             drag: None,
             font_cache: Vec::new(),
+            info_text: String::new(),
+            info_key: None,
+            weight_lines: Vec::new(),
+            weight_key: None,
         }
     }
 
@@ -346,15 +357,64 @@ impl FontPreview {
         const MAX_CACHED_SIZES: usize = 8;
 
         let size_bits = size.to_bits();
-        if let Some((_, font)) = self.font_cache.iter().find(|(bits, _)| *bits == size_bits) {
-            return font.clone();
+        if let Some(index) = self.font_cache.iter().position(|(bits, _)| *bits == size_bits) {
+            // Promote the hit to the most-recently-used end, so eviction below removes the
+            // face that has gone longest without being asked for.
+            let entry = self.font_cache.remove(index);
+            let font = entry.1.clone();
+            self.font_cache.push(entry);
+            return font;
         }
         if self.font_cache.len() >= MAX_CACHED_SIZES {
-            self.font_cache.clear();
+            // Evict one sample, not the whole cache: clearing it made every visible row
+            // re-measure after a single new size was requested.
+            self.font_cache.remove(0);
         }
         let font = self.build_font(size);
         self.font_cache.push((size_bits, font.clone()));
         font
+    }
+
+    /// The info line and the inputs that produced it.
+    fn ensure_info_text(&mut self) {
+        let key = (self.font_family.clone(), self.font_size.to_bits(), self.bold, self.italic);
+        if self.info_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.info_text.clear();
+        let _ = write!(
+            self.info_text,
+            "{} ({}pt{}{})",
+            self.font_family,
+            self.font_size as u32,
+            if self.bold { ", Bold" } else { "" },
+            if self.italic { ", Italic" } else { "" },
+        );
+        self.info_key = Some(key);
+    }
+
+    /// The weight-axis rows and the inputs that produced them.
+    fn ensure_weight_lines(&mut self) {
+        if !self.show_weights || self.font_weights().len() <= 1 {
+            return;
+        }
+        let weights = self.font_weights().to_vec();
+        let specimen = if self.preview_text.is_empty() {
+            DEFAULT_PANGRAM.to_string()
+        } else {
+            self.preview_text.clone()
+        };
+        let key = (weights.clone(), specimen.clone());
+        if self.weight_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.weight_lines.clear();
+        for weight in weights {
+            let mut line = String::new();
+            let _ = write!(line, "{weight}  {specimen}");
+            self.weight_lines.push(line);
+        }
+        self.weight_key = Some(key);
     }
 
     /// The fixed info-line face. Built once through `OnceLock`: `Font` owns its family
@@ -513,24 +573,14 @@ impl Draw for FontPreview {
 
         // --- Font family name and style info ---
         let info_font = Self::info_font();
-        // Rendered in place: `format!` per frame allocated a fresh `String` for a line
-        // the properties change rarely.
-        let mut info_text = String::new();
-        let _ = write!(
-            info_text,
-            "{} ({}pt{}{})",
-            self.font_family,
-            self.font_size as u32,
-            if self.bold { ", Bold" } else { "" },
-            if self.italic { ", Italic" } else { "" },
-        );
+        self.ensure_info_text();
         // Fitted to the panel's inner width: the info line carries the family, the size and
         // any style suffix, so it grows with the caller's own inputs and can outrun the panel
         // just as the samples can. It painted in the same grey as a sample row, so the two
         // overflows were indistinguishable in the snapshot.
         context.draw_text_fitted_cow(
             Rect::new(rect.x + margin as i32, y, text_w, info_font.size() as u32),
-            info_text.as_str(),
+            self.info_text.as_str(),
             info_font,
             muted,
             HorizontalAlignment::Left,
@@ -570,47 +620,53 @@ impl Draw for FontPreview {
         // --- Sample texts ---
         let sample_font = self.cached_font(14.0);
         let bottom = rect.y + rect.height as i32;
-        for text in &self.sample_texts {
+        // Vertical culling: rows above the panel are skipped instead of being measured and
+        // submitted only to be clipped. `first` is derived from the same `SAMPLE_STEP` the
+        // layout advances by.
+        let first_visible = ((rect.y - y).max(0) / SAMPLE_STEP) as usize;
+        let first_visible = first_visible.min(self.sample_texts.len());
+        y += first_visible as i32 * SAMPLE_STEP;
+        for text in &self.sample_texts[first_visible..] {
             if !clipped && y + 20 > bottom {
                 break; // Don't draw past the widget boundary
             }
-            // The alphabet and the pangram are longer than any panel this widget is sized
-            // for, so each row is fitted to the same inner width as the preview above it.
-            context.draw_text_fitted_cow(
-                Rect::new(rect.x + margin as i32, y, text_w, sample_font.size() as u32),
-                text,
-                &sample_font,
-                muted,
-                HorizontalAlignment::Left,
-            );
+            if y + SAMPLE_STEP >= rect.y {
+                // The alphabet and the pangram are longer than any panel this widget is sized
+                // for, so each row is fitted to the same inner width as the preview above it.
+                context.draw_text_fitted_cow(
+                    Rect::new(rect.x + margin as i32, y, text_w, sample_font.size() as u32),
+                    text,
+                    &sample_font,
+                    muted,
+                    HorizontalAlignment::Left,
+                );
+            }
             y += SAMPLE_STEP;
         }
 
         // --- Weight axis ---
         let weight_base_font = self.cached_font(14.0);
-        let weights = self.font_weights();
-        if self.show_weights && weights.len() > 1 {
-            let specimen = if self.preview_text.is_empty() {
-                DEFAULT_PANGRAM
-            } else {
-                self.preview_text.as_str()
-            };
-            for weight in weights {
+        self.ensure_weight_lines();
+        let weight_rows = self.font_weights().len();
+        if self.show_weights && weight_rows > 1 {
+            let first_visible = ((rect.y - y).max(0) / SAMPLE_STEP) as usize;
+            let first_visible = first_visible.min(self.weight_lines.len());
+            y += first_visible as i32 * SAMPLE_STEP;
+            for (offset, line) in self.weight_lines[first_visible..].iter().enumerate() {
                 if !clipped && y + 20 > bottom {
                     break;
                 }
-                let font = weight_base_font.clone().with_weight_value(*weight);
-                // Rendered in place: this loop runs once per weight per frame, and the
-                // label is a number plus the specimen the panel already holds.
-                let mut line = String::new();
-                let _ = write!(line, "{weight}  {specimen}");
-                context.draw_text_fitted_cow(
-                    Rect::new(rect.x + margin as i32, y, text_w, font.size() as u32),
-                    &line,
-                    &font,
-                    muted,
-                    HorizontalAlignment::Left,
-                );
+                let weight = self.font_weights()[first_visible + offset];
+                let font = weight_base_font.clone().with_weight_value(weight);
+                if y + SAMPLE_STEP >= rect.y {
+                    context.draw_text_fitted_cow(
+                        Rect::new(rect.x + margin as i32, y, text_w, font.size() as u32),
+                        line,
+                        &font,
+                        muted,
+                        HorizontalAlignment::Left,
+                    );
+                }
                 y += SAMPLE_STEP;
             }
         }
@@ -902,5 +958,46 @@ mod tests {
             long_svg.contains("width=\"4\" height="),
             "an overflowing specimen shows the hint: {long_svg}"
         );
+    }
+
+    /// The info line and the weight rows are rebuilt only when their inputs change.
+    #[test]
+    fn the_info_line_and_weight_rows_are_cached() {
+        let mut preview = FontPreview::new("Arial", Rect::new(0, 0, 300, 200));
+        preview.ensure_info_text();
+        assert_eq!(preview.info_text, "Arial (24pt)");
+        let ptr = preview.info_text.as_ptr();
+        preview.ensure_info_text();
+        assert_eq!(preview.info_text.as_ptr(), ptr, "an unchanged line is reused");
+
+        preview.set_font_size(18.0);
+        preview.ensure_info_text();
+        assert_eq!(preview.info_text, "Arial (18pt)");
+
+        preview.set_show_weights(true);
+        preview.ensure_weight_lines();
+        assert_eq!(preview.weight_lines.len(), DEFAULT_WEIGHT_AXIS.len());
+        let ptr = preview.weight_lines[0].as_ptr();
+        preview.ensure_weight_lines();
+        assert_eq!(preview.weight_lines[0].as_ptr(), ptr, "unchanged rows are reused");
+
+        // A different specimen rebuilds every row.
+        preview.set_preview_text("Hello");
+        preview.ensure_weight_lines();
+        assert!(preview.weight_lines[0].ends_with("Hello"));
+    }
+
+    /// A full face cache evicts one sample rather than clearing every cached face.
+    #[test]
+    fn a_full_face_cache_evicts_one_entry() {
+        let mut preview = FontPreview::new("Arial", Rect::new(0, 0, 300, 200));
+        for size in 1..=8u32 {
+            let _ = preview.cached_font(size as f32);
+        }
+        assert_eq!(preview.font_cache.len(), 8);
+        // A ninth size evicts exactly one entry, not the whole cache.
+        let _ = preview.cached_font(9.0);
+        assert_eq!(preview.font_cache.len(), 8, "one sample is evicted");
+        assert!(preview.font_cache.iter().any(|(bits, _)| *bits == 9.0f32.to_bits()));
     }
 }

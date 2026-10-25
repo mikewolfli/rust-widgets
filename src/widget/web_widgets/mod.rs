@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! Web-related widgets: web engines, web views, etc.
+pub mod find_bar;
 pub mod web_engine;
 pub mod web_view;
+pub use find_bar::WebFindBar;
 pub use web_engine::WebEngineView as WebEngine;
 pub use web_engine::{Cookie, CookieSameSite, HistoryEntry, DEFAULT_USER_AGENT};
 pub use web_engine::{

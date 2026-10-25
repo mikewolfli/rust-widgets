@@ -10,6 +10,14 @@ use crate::render::gpu::{GpuCapability, GpuRenderer};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::mpsc;
+use std::time::Duration;
+
+/// Upper bound on a single blocking GPU readback.
+///
+/// The readback is synchronous by design: every entry point returns owned pixels. Before this
+/// bound existed, `device.poll` waited forever, so a lost device or a stuck submission hung the
+/// caller instead of reporting an error (G-63).
+const GPU_READBACK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One persistent colour-uniform arena shared by every draw of one call.
 ///
@@ -25,9 +33,8 @@ struct UniformArena {
     /// Dynamic-offset stride: the device's `min_uniform_buffer_offset_alignment`,
     /// raised to hold the 16-byte colour, so every offset stays legal on any backend.
     ///
-    /// Only the per-rectangle 2D path reads this; the instanced `3d` path carries colour in
-    /// its instance records instead.
-    #[cfg_attr(feature = "3d", allow(dead_code))]
+    /// Only the per-rectangle path reads this; an instanced run carries colour in its instance
+    /// records instead.
     stride: u64,
 }
 
@@ -41,9 +48,9 @@ struct TargetCache {
 
 /// A grow-only vertex buffer reused across calls.
 ///
-/// With the `3d` feature this same cache also holds the instanced quad records: both uses are
-/// `VERTEX`-usage buffers written once per call, and sharing one grow-only allocation is what
-/// keeps an instanced run from allocating once per quad.
+/// The same cache holds both the per-rectangle vertex positions and the instanced quad records:
+/// both uses are `VERTEX`-usage buffers written once per call, and sharing one grow-only
+/// allocation is what keeps an instanced run from allocating once per quad.
 struct VertexCache {
     buffer: wgpu::Buffer,
     capacity: u64,
@@ -73,11 +80,10 @@ struct BlurTargets {
     vertical_params: wgpu::Buffer,
 }
 
-/// The model-view-projection uniform used by the `3d` transform pipeline.
+/// The model-view-projection uniform used by the instanced quad pipeline.
 ///
 /// One matrix serves a whole call, so this is not a dynamic-offset arena. The 64-byte size is
 /// `mat4x4f`'s uniform footprint.
-#[cfg(feature = "3d")]
 struct TransformedUniform {
     buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -96,9 +102,9 @@ struct DepthTarget {
 
 /// Creates a 64-byte matrix uniform and the bind group that exposes it at group 0, binding 0.
 ///
-/// Both `3d` pipelines use one matrix per call rather than a dynamic-offset arena, so this is the
-/// one shape their resources share. The 64-byte size is `mat4x4f`'s uniform footprint.
-#[cfg(feature = "3d")]
+/// Both the instanced quad pipeline and the mesh pipeline use one matrix per call rather than a
+/// dynamic-offset arena, so this is the one shape their resources share. The 64-byte size is
+/// `mat4x4f`'s uniform footprint.
 fn create_matrix_uniform(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -152,8 +158,7 @@ struct RenderCache {
     readback: Option<ReadbackCache>,
     /// Ping-pong targets and bind groups for the separable blur pass.
     blur: Option<BlurTargets>,
-    /// Mvp uniform and bind group for the `3d` transform pipeline.
-    #[cfg(feature = "3d")]
+    /// Mvp uniform and bind group for the instanced quad pipeline.
     transformed_uniform: Option<TransformedUniform>,
     /// The `Depth32Float` attachment for mesh draws.
     #[cfg(feature = "3d")]
@@ -397,11 +402,10 @@ impl RenderCache {
         });
     }
 
-    /// Ensures the `3d` mvp uniform and its bind group exist.
+    /// Ensures the instanced-quad mvp uniform and its bind group exist.
     ///
     /// The buffer never grows: every call writes one 64-byte matrix. It is created once per
     /// renderer, matching the rest of this cache (REND-02).
-    #[cfg(feature = "3d")]
     fn ensure_transformed_uniform(
         &mut self,
         device: &wgpu::Device,
@@ -569,15 +573,31 @@ fn mvp_column_major_bytes(m: &crate::render::math3d::Mat4) -> [u8; 64] {
 ///
 /// Kept as a named constant because the vertex-buffer stride, the writer and the chunk offsets
 /// must agree exactly; a mismatch is a pipeline validation error rather than a silent misread.
-#[cfg(feature = "3d")]
 const INSTANCE_BYTES: usize = 48;
 
 /// Upper bound on the instances submitted by one instanced draw.
 ///
 /// A longer run is streamed in cap-sized chunks from the same grow-only buffer. The chunks are
 /// drawn in order, so splitting never reorders the run and never allocates per quad.
-#[cfg(feature = "3d")]
 const MAX_INSTANCES_PER_DRAW: usize = 4096;
+
+/// Column-major bytes of the pixel-to-clip matrix for a `width × height` target.
+///
+/// `x` maps `0..width` to `-1..1` and `y` maps `0..height` to `1..-1`, matching the renderer's
+/// top-left origin. These are the bytes `Mat4::from_affine(ortho)` produces, written directly so
+/// the 2D rectangle path can use the instanced pipeline without the `3d` feature's maths module.
+fn ortho_mvp_bytes(width: u32, height: u32) -> [u8; 64] {
+    let w = width as f32;
+    let h = height as f32;
+    // Column-major: scale x, flip and scale y, keep z, then translate to the clip-space corner.
+    let values =
+        [2.0 / w, 0.0, 0.0, 0.0, 0.0, -2.0 / h, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0];
+    let mut bytes = [0u8; 64];
+    for (index, value) in values.iter().enumerate() {
+        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
 
 /// Packs a run of quads into the 48-byte-per-instance layout described on
 /// [`super::shaders::FILL_RECT_VS_TRANSFORMED`].
@@ -585,7 +605,6 @@ const MAX_INSTANCES_PER_DRAW: usize = 4096;
 /// Each record is the four corners in perimeter order, then straight RGBA with every channel
 /// clamped to `0.0..=1.0`. Returns an explicit error rather than wrapping if the run is too
 /// large to address, so a hostile count cannot produce a short buffer.
-#[cfg(feature = "3d")]
 fn instanced_quad_bytes(quads: &[([crate::core::Point; 4], [f64; 4])]) -> Result<Vec<u8>, String> {
     let capacity = quads
         .len()
@@ -638,9 +657,8 @@ pub struct WgpuRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     clear_pipeline: wgpu::RenderPipeline,
-    /// The 2D per-rectangle pipeline. A `3d` build routes rectangles through the instanced
-    /// matrix pipeline instead, so the field is only read by the default 2D path.
-    #[cfg_attr(feature = "3d", allow(dead_code))]
+    /// The 2D per-rectangle pipeline. Used only for the single-rectangle case; a longer run goes
+    /// through the instanced quad pipeline instead (G-64).
     rect_pipeline: wgpu::RenderPipeline,
     /// The separable-blur pipeline: one full-screen triangle, no vertex buffer, two directional
     /// passes. A 2D effect, so it is compiled in every build rather than behind `3d`.
@@ -649,12 +667,10 @@ pub struct WgpuRenderer {
     /// Bind group layout of the blur pass: a non-filterable input texture and a 16-byte uniform
     /// (`direction`, `radius`).
     blur_bind_group_layout: wgpu::BindGroupLayout,
-    /// Instanced matrix pipeline for the `3d` feature. It is compiled only when that feature is
-    /// on, so the default 2D renderer creates and carries nothing extra.
-    #[cfg(feature = "3d")]
+    /// Instanced quad pipeline. It renders a whole run of rectangles (and, with `3d`, arbitrary
+    /// transformed quads) in `MAX_INSTANCES_PER_DRAW`-sized draws (G-64).
     transformed_pipeline: wgpu::RenderPipeline,
     /// The vertex-stage layout that carries the mvp matrix (group 0 of the instanced pipeline).
-    #[cfg(feature = "3d")]
     transformed_bind_group_layout: wgpu::BindGroupLayout,
     /// Depth-tested triangle pipeline for mesh draws (`3d` only).
     #[cfg(feature = "3d")]
@@ -751,12 +767,10 @@ impl WgpuRenderer {
             label: Some("rect_fs"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::FILL_RECT_FS.into()),
         });
-        #[cfg(feature = "3d")]
         let transformed_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rect_vs_transformed"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::FILL_RECT_VS_TRANSFORMED.into()),
         });
-        #[cfg(feature = "3d")]
         let instanced_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rect_fs_instanced"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::FILL_RECT_INSTANCED_FS.into()),
@@ -798,7 +812,6 @@ impl WgpuRenderer {
         // The matrix lives in its own group because the instanced fragment stage takes its
         // colour per instance rather than from a group-0 uniform. With group 0 free, the
         // instanced pipeline binds the matrix at group 0 directly.
-        #[cfg(feature = "3d")]
         let transformed_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("transformed_mvp_bind_group_layout"),
@@ -990,14 +1003,14 @@ impl WgpuRenderer {
             cache: None,
         });
 
-        // ── Create the instanced `3d` matrix pipeline ──
+        // ── Create the instanced quad pipeline ──
         //
         // One instance carries the four corners and the colour, so a whole run of quads is a
         // single draw (`0..6` vertices, `0..N` instances). Culling is disabled because a
         // negative scale reverses the winding order, which is a valid mirror rather than a
         // reason to drop the quad. No depth attachment is added: this is a 2D affine composed
-        // with an orthographic matrix, not a depth-tested 3D scene.
-        #[cfg(feature = "3d")]
+        // with an orthographic matrix, not a depth-tested 3D scene. The 2D rectangle path uses it
+        // for every run longer than one rectangle (G-64).
         let transformed_pipeline = {
             let transformed_pipeline_layout =
                 device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1150,9 +1163,7 @@ impl WgpuRenderer {
         shader_cache.insert("rect_fs".to_string(), rect_fs_module);
         shader_cache.insert("blur_vs".to_string(), blur_vs_module);
         shader_cache.insert("blur_fs".to_string(), blur_fs_module);
-        #[cfg(feature = "3d")]
         shader_cache.insert("rect_vs_transformed".to_string(), transformed_vs_module);
-        #[cfg(feature = "3d")]
         shader_cache.insert("rect_fs_instanced".to_string(), instanced_fs_module);
         #[cfg(feature = "3d")]
         shader_cache.insert("mesh3d_vs".to_string(), mesh_vs_module);
@@ -1167,9 +1178,7 @@ impl WgpuRenderer {
             blur_pipeline,
             bind_group_layout,
             blur_bind_group_layout,
-            #[cfg(feature = "3d")]
             transformed_pipeline,
-            #[cfg(feature = "3d")]
             transformed_bind_group_layout,
             #[cfg(feature = "3d")]
             mesh_pipeline,
@@ -1178,13 +1187,17 @@ impl WgpuRenderer {
         })
     }
     /// Render one offscreen RGBA frame by clearing a texture with the given color and read pixels back.
+    ///
+    /// A solid clear needs no GPU work, so this fills the buffer on the CPU and returns it
+    /// directly. The previous implementation routed the same fill through a texture upload and a
+    /// blocking readback, which could only reproduce the bytes it was given (G-66).
     pub fn render_clear_rgba8(
         &self,
         width: u32,
         height: u32,
         color: [f64; 4],
     ) -> Result<Vec<u8>, String> {
-        self.render_draw_commands_rgba8(
+        rasterize_draw_commands_rgba8(
             width,
             height,
             &[WgpuDrawCommand::Clear {
@@ -1280,10 +1293,10 @@ impl WgpuRenderer {
     /// - `(width, height)` is the rectangle size in pixels
     /// - `color` is an RGBA float array with values in `[0.0, 1.0]`
     ///
-    /// Uses the WGSL vertex shader (`FILL_RECT_VS`) with a vertex buffer and the
-    /// fragment shader (`FILL_RECT_FS`) with a per-rect uniform colour. With the `3d`
-    /// feature the run is instead expanded to quads and drawn through the instanced matrix
-    /// pipeline, which produces the same picture with one draw per run.
+    /// A single rectangle goes through the `FILL_RECT_VS`/`FILL_RECT_FS` pipeline, which selects
+    /// its colour from a per-rect uniform. A longer run is expanded to quads and drawn in
+    /// `MAX_INSTANCES_PER_DRAW`-sized instanced draws, which produces the same picture with a
+    /// draw count that no longer grows with the run (G-64).
     /// Encodes the fill-rect pass into the cached target and submits it.
     ///
     /// Split out from [`Self::render_fill_rect_gpu`] so a compositor can use the rendered
@@ -1295,22 +1308,22 @@ impl WgpuRenderer {
         height: u32,
         rects: &[(i32, i32, u32, u32, [f64; 4])],
     ) -> Result<(), String> {
-        #[cfg(feature = "3d")]
-        {
-            self.encode_fill_rects_instanced(width, height, rects)
-        }
-        #[cfg(not(feature = "3d"))]
-        {
+        // A single rectangle is already one draw, and the per-rect pipeline avoids the matrix
+        // uniform upload for that common case. Two or more are packed into instance records and
+        // drawn in `MAX_INSTANCES_PER_DRAW`-sized chunks, so the draw count no longer grows with
+        // the run (G-64). Chunk order preserves painter order.
+        if rects.len() <= 1 {
             self.encode_fill_rects_per_rect(width, height, rects)
+        } else {
+            self.encode_fill_rects_instanced(width, height, rects)
         }
     }
 
-    /// The default 2D path: two triangles per rectangle and one draw per rectangle, with the
-    /// colour selected by a dynamic uniform offset.
+    /// The single-rectangle path: two triangles and one draw, with the colour selected by a
+    /// dynamic uniform offset.
     ///
-    /// Kept verbatim for the build without the `3d` feature; the instanced path below is the
-    /// only thing that changes when the feature is on.
-    #[cfg(not(feature = "3d"))]
+    /// A run of more than one rectangle takes the instanced path below instead, which is what
+    /// keeps the draw count bounded (G-64).
     fn encode_fill_rects_per_rect(
         &self,
         width: u32,
@@ -1407,13 +1420,12 @@ impl WgpuRenderer {
         Ok(())
     }
 
-    /// The `3d` path: turns every rectangle into a quad and renders the whole run as an
-    /// instanced draw through the matrix pipeline.
+    /// The batched path: turns every rectangle into a quad and renders the whole run as an
+    /// instanced draw through the quad pipeline.
     ///
-    /// An identity affine composed with the orthographic pixel-to-clip matrix reproduces the
-    /// 2D geometry exactly, so enabling the feature does not change the picture; it only
-    /// changes how many draws the run costs.
-    #[cfg(feature = "3d")]
+    /// The identity affine composed with the orthographic pixel-to-clip matrix is exactly the
+    /// matrix [`ortho_mvp_bytes`] writes, so the geometry is identical to the per-rect path; only
+    /// the draw count changes (G-64).
     fn encode_fill_rects_instanced(
         &self,
         width: u32,
@@ -1435,34 +1447,27 @@ impl WgpuRenderer {
                 colour,
             ));
         }
-        self.encode_quads_instanced(width, height, &crate::render::math3d::Mat3::IDENTITY, &quads)
+        let mvp_bytes = ortho_mvp_bytes(width, height);
+        self.encode_instances(width, height, &mvp_bytes, &quads)
     }
 
     /// Renders a run of quads into the cached target with instanced draws.
     ///
-    /// All instance records are written once into the grow-only buffer and the run is drawn in
+    /// `mvp_bytes` is the column-major model-view-projection matrix every instance is multiplied
+    /// by. All instance records are written once into the grow-only buffer and the run is drawn in
     /// `MAX_INSTANCES_PER_DRAW`-sized chunks. Each chunk reads its own slice of that one upload,
     /// so no chunk overwrites another and no quad allocates a buffer. Chunks are submitted in
     /// order, which is what keeps overlapping quads in painter order.
     ///
     /// The target is cleared to transparent first, so an empty run is a transparent frame rather
     /// than stale pixels from a previous call.
-    #[cfg(feature = "3d")]
-    fn encode_quads_instanced(
+    fn encode_instances(
         &self,
         width: u32,
         height: u32,
-        affine: &crate::render::math3d::Mat3,
+        mvp_bytes: &[u8; 64],
         quads: &[([crate::core::Point; 4], [f64; 4])],
     ) -> Result<(), String> {
-        let w = width as f32;
-        let h = height as f32;
-        // Pixel -> NDC: x from [0, w] to [-1, 1], y from [0, h] to [1, -1]. The y flip is the
-        // renderer's top-left origin expressed in clip space.
-        let ortho = crate::render::math3d::Mat3::scaling(2.0 / w, -2.0 / h)
-            .then(&crate::render::math3d::Mat3::translation(-1.0, 1.0));
-        let mvp = affine.then(&ortho);
-        let mvp_bytes = mvp_column_major_bytes(&crate::render::math3d::Mat4::from_affine(mvp));
         let instance_bytes = instanced_quad_bytes(quads)?;
 
         // Cached resources for the whole call: one grow-only instance buffer, one target and
@@ -1475,7 +1480,7 @@ impl WgpuRenderer {
         let instances = cache.vertices.as_ref().expect("the instance buffer was just ensured");
         let transformed = cache.transformed_uniform.as_ref().expect("the mvp was just ensured");
 
-        self.queue.write_buffer(&transformed.buffer, 0, &mvp_bytes);
+        self.queue.write_buffer(&transformed.buffer, 0, mvp_bytes);
         if !instance_bytes.is_empty() {
             self.queue.write_buffer(&instances.buffer, 0, &instance_bytes);
         }
@@ -1514,6 +1519,27 @@ impl WgpuRenderer {
         Ok(())
     }
 
+    /// Renders a run of quads through an arbitrary affine transform (`3d` feature).
+    ///
+    /// The affine is applied to the local corners before the orthographic pixel-to-clip matrix,
+    /// matching the software `FillQuad` path.
+    #[cfg(feature = "3d")]
+    fn encode_quads_instanced(
+        &self,
+        width: u32,
+        height: u32,
+        affine: &crate::render::math3d::Mat3,
+        quads: &[([crate::core::Point; 4], [f64; 4])],
+    ) -> Result<(), String> {
+        let w = width as f32;
+        let h = height as f32;
+        let ortho = crate::render::math3d::Mat3::scaling(2.0 / w, -2.0 / h)
+            .then(&crate::render::math3d::Mat3::translation(-1.0, 1.0));
+        let mvp = affine.then(&ortho);
+        let mvp_bytes = mvp_column_major_bytes(&crate::render::math3d::Mat4::from_affine(mvp));
+        self.encode_instances(width, height, &mvp_bytes, quads)
+    }
+
     /// Renders filled rectangles into the cached target and hands the **view** to `f`.
     ///
     /// This is the texture/view frame path REND-02 asked for: a caller that composites the
@@ -1545,9 +1571,8 @@ impl WgpuRenderer {
     /// - `color` is an RGBA float array with values in `[0.0, 1.0]`
     ///
     /// Uses the WGSL vertex shader (`FILL_RECT_VS`) with a vertex buffer and the
-    /// fragment shader (`FILL_RECT_FS`) with a per-rect uniform colour. With the `3d`
-    /// feature the rectangles are drawn as an instanced quad run through the matrix
-    /// pipeline.
+    /// fragment shader (`FILL_RECT_FS`) with a per-rect uniform colour for a single rectangle.
+    /// A longer run is drawn as instanced quad batches through the matrix pipeline (G-64).
     pub fn render_fill_rect_gpu(
         &self,
         width: u32,
@@ -1808,6 +1833,10 @@ impl WgpuRenderer {
     /// The buffer belongs to [`RenderCache`], so it must be unmapped before it can be reused:
     /// leaving it mapped made the next `map_async` fail silently, which is why this is one
     /// helper rather than a copy in every entry point.
+    ///
+    /// The wait is bounded by [`GPU_READBACK_TIMEOUT`]; on expiry the pending mapping is
+    /// cancelled with `unmap` and an error is returned, so a lost device reports a failure
+    /// instead of hanging the process (G-63).
     fn read_back(
         &self,
         buffer: &wgpu::Buffer,
@@ -1828,15 +1857,36 @@ impl WgpuRenderer {
                 let _ = sender.send(result);
             },
         );
-        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
-        let map_result =
-            receiver.recv().map_err(|_| "wgpu map_async callback channel closed".to_string())?;
-        map_result.map_err(|error| {
-            format!("GPU buffer could not be mapped for CPU readback: {error:?}")
-        })?;
-        let mapped = buffer_slice.get_mapped_range().map_err(|error| {
-            format!("mapped GPU buffer range could not be read back: {error:?}")
-        })?;
+        if let Err(error) = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(GPU_READBACK_TIMEOUT),
+        }) {
+            // Cancel the still-pending mapping so the cached buffer is usable next call.
+            buffer.unmap();
+            return Err(format!(
+                "GPU readback did not complete within {GPU_READBACK_TIMEOUT:?}: {error}"
+            ));
+        }
+        let map_result = match receiver.recv_timeout(GPU_READBACK_TIMEOUT) {
+            Ok(result) => result,
+            Err(error) => {
+                buffer.unmap();
+                return Err(format!(
+                    "GPU map callback did not arrive within {GPU_READBACK_TIMEOUT:?}: {error}"
+                ));
+            }
+        };
+        if let Err(error) = map_result {
+            buffer.unmap();
+            return Err(format!("GPU buffer could not be mapped for CPU readback: {error:?}"));
+        }
+        let mapped = match buffer_slice.get_mapped_range() {
+            Ok(mapped) => mapped,
+            Err(error) => {
+                buffer.unmap();
+                return Err(format!("mapped GPU buffer range could not be read back: {error:?}"));
+            }
+        };
 
         // Copy row by row, stripping padding.
         let mut pixels = vec![0u8; expected_len];
@@ -1972,6 +2022,13 @@ impl WgpuRenderer {
     }
 
     /// Render command list with deterministic ordering and clipping.
+    ///
+    /// # Cost (G-63)
+    ///
+    /// The command list is rasterised on the CPU and the finished frame is then uploaded to a
+    /// texture and read back, so the GPU only performs a copy. The round trip makes this slower
+    /// than returning [`rasterize_draw_commands_rgba8`] directly; it is kept because it is the
+    /// placeholder for the planned on-GPU rasterisation (see the module documentation).
     pub fn render_draw_commands_rgba8(
         &self,
         width: u32,
@@ -2109,9 +2166,14 @@ impl WgpuRenderer {
     /// no picture difference, so the offscreen round trip is the GPU half and the kernel is
     /// shared.
     ///
-    /// `radius` is the Gaussian's 2-sigma point, matching [`crate::render::RenderCommand::Blur`]. A zero
-    /// radius returns the round-tripped frame unchanged; `tint` is applied afterwards so the
-    /// tint sits on the blurred backdrop, as it does in the software layer composition.
+    /// `radius` is the Gaussian's 2-sigma point, matching [`crate::render::RenderCommand::Blur`]. The
+    /// tint, when present, is applied afterwards so it sits on the blurred backdrop, as it does in
+    /// the software layer composition.
+    ///
+    /// The frame is uploaded straight into the blur source texture and only the final result is
+    /// read back. An earlier form uploaded and read the backdrop first and then uploaded it again
+    /// for the blur, paying two round trips for one result (G-65). A zero radius is an identity
+    /// and returns the validated input bytes with no GPU work at all.
     pub fn render_backdrop_blur_rgba8(
         &self,
         width: u32,
@@ -2120,9 +2182,7 @@ impl WgpuRenderer {
         radius: u32,
         tint: Option<(Rgba8, f32)>,
     ) -> Result<Vec<u8>, String> {
-        let frame = self.upload_rgba8_and_readback(width, height, backdrop)?;
-        let mut frame =
-            if radius > 0 { self.render_blur_rgba8(width, height, &frame, radius)? } else { frame };
+        let mut frame = self.render_blur_rgba8(width, height, backdrop, radius)?;
         if let Some((tint, weight)) = tint {
             tint_blurred_frame(&mut frame, tint, weight);
         }
@@ -2291,6 +2351,47 @@ mod tests {
         [pixels[start], pixels[start + 1], pixels[start + 2], pixels[start + 3]]
     }
 
+    /// G-213: the enum's pipeline table and the shader cache the renderer registers must agree.
+    ///
+    /// Every member that names a pipeline key must have that key in the cache, and the cache's
+    /// key set is asserted exactly, so adding a shader without wiring it into a pipeline — or
+    /// deleting one — fails here instead of drifting silently.
+    #[test]
+    fn shader_module_registry_matches_pipelines() {
+        let Some(renderer) = renderer() else { return };
+
+        let mut expected = vec![
+            "clear_vs",
+            "clear_fs",
+            "rect_vs",
+            "rect_fs",
+            "blur_vs",
+            "blur_fs",
+            "rect_vs_transformed",
+            "rect_fs_instanced",
+        ];
+        #[cfg(feature = "3d")]
+        expected.extend(["mesh3d_vs", "mesh3d_fs"]);
+        let mut registered: Vec<&str> = renderer.shader_cache.keys().map(String::as_str).collect();
+        expected.sort_unstable();
+        registered.sort_unstable();
+        assert_eq!(
+            registered, expected,
+            "the registered shader cache drifted from the pipeline table; wire or remove the \
+             entry and update the table in this test"
+        );
+
+        for module in renderer.shader_modules() {
+            if let Some(key) = module.pipeline_cache_key() {
+                assert!(
+                    renderer.get_shader_module(key).is_some(),
+                    "{module:?} advertises pipeline key {key:?}, but no such module is \
+                     registered"
+                );
+            }
+        }
+    }
+
     /// Growth is geometric and block-rounded, so a frame that needs a few more bytes reuses the
     /// existing buffer instead of recreating it at the exact size (G-09).
     #[test]
@@ -2351,10 +2452,12 @@ mod tests {
         assert_eq!(pixel(&first, 8, 7, 0), [0, 0, 0, 0]);
     }
 
-    /// A growing batch must not keep the old, smaller allocation in use: three rects need a
-    /// larger colour arena than one, and all three still have to reach their own pixels.
+    /// A larger run must still place every rectangle's colour on its own pixels.
+    ///
+    /// Three rectangles now take the instanced batched path (G-64), so this is the guard that the
+    /// batching change did not collapse or reorder their colours.
     #[test]
-    fn a_growing_batch_uses_the_enlarged_colour_arena() {
+    fn a_larger_run_renders_every_colour() {
         let Some(renderer) = renderer() else { return };
         let one = [(0, 0, 4, 2, [1.0, 0.0, 0.0, 1.0])];
         renderer.render_fill_rect_gpu(4, 2, &one).expect("one rect");

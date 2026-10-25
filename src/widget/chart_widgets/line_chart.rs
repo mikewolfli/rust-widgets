@@ -34,7 +34,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::chart_widgets::adapter::ChartContextAdapter;
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::charts::{
-    compute_cartesian_layout_measured, draw_cartesian_axes, draw_legend_entries, draw_x_ticks,
+    compute_cartesian_layout_measured, draw_cartesian_axes, draw_legend_entries_iter, draw_x_ticks,
     draw_y_ticks, CartesianLayout,
 };
 use crate::widget::chart_widgets::{finite_samples, is_finite_sample};
@@ -98,6 +98,16 @@ impl LineSeries {
     }
 }
 
+/// Cached data bounds across every series (F-P12).
+#[derive(Clone, Copy, Default)]
+struct SeriesExtents {
+    x_min: f64,
+    x_max: f64,
+    y_min: f64,
+    y_max: f64,
+    valid: bool,
+}
+
 /// A 2D line chart widget for visualizing (x, y) data series.
 ///
 /// The chart stores one or more [`LineSeries`]. The single-series API
@@ -134,6 +144,24 @@ pub struct LineChart {
     show_tooltip: bool,
     /// Whether wheel zoom and drag panning are accepted.
     zoom_enabled: bool,
+    /// Minimum/maximum bounds of every series, rebuilt only when the data changes (F-P12).
+    flat_extents: std::cell::Cell<SeriesExtents>,
+    /// Per-series point indices sorted by x, rebuilt with the extents (F-P12).
+    sorted_x: std::cell::RefCell<Option<Vec<Vec<usize>>>>,
+    /// The pointer position where a press began, for the click-vs-pan threshold (CH-06).
+    press_start: Option<Point>,
+    /// The point under the press, reported on release when the gesture was a click (CH-06).
+    pressed_point: Option<(usize, usize)>,
+    /// Whether the current drag actually panned (CH-06).
+    pan_actual: bool,
+    /// The chart title, painted centred at the top (CH-07).
+    title: Option<String>,
+    /// The x-axis title, painted under the plot (CH-07).
+    x_axis_label: Option<String>,
+    /// The y-axis title, painted above the plot's left edge (CH-07).
+    y_axis_label: Option<String>,
+    /// An attached reference-line companion (COMP-F01).
+    crosshair: Option<crate::widget::chart_widgets::chart_crosshair::ChartCrosshair>,
     /// The X window set by zooming or panning, or `None` for the resolved data range.
     view_x: Option<(f64, f64)>,
     /// The pointer position where a pan drag began, while one is in progress.
@@ -205,6 +233,15 @@ impl LineChart {
             hovered: None,
             show_tooltip: false,
             zoom_enabled: false,
+            flat_extents: std::cell::Cell::new(SeriesExtents::default()),
+            sorted_x: std::cell::RefCell::new(None),
+            press_start: None,
+            pressed_point: None,
+            pan_actual: false,
+            title: None,
+            x_axis_label: None,
+            y_axis_label: None,
+            crosshair: None,
             view_x: None,
             pan_origin: None,
             last_plot_area: None,
@@ -225,6 +262,7 @@ impl LineChart {
     pub fn set_data(&mut self, points: Vec<(f64, f64)>) {
         self.ensure_primary();
         self.series[0].points = finite_samples(points);
+        self.invalidate_data_cache();
         self.revalidate_hover();
         self.base.request_redraw();
     }
@@ -240,6 +278,7 @@ impl LineChart {
                 item
             })
             .collect();
+        self.invalidate_data_cache();
         self.revalidate_hover();
         self.base.request_redraw();
     }
@@ -249,6 +288,7 @@ impl LineChart {
         series.points = finite_samples(series.points);
         self.ensure_primary();
         self.series.push(series);
+        self.invalidate_data_cache();
         self.base.request_redraw();
     }
 
@@ -338,6 +378,68 @@ impl LineChart {
     /// Returns whether zoom and pan are enabled.
     pub fn is_zoom_enabled(&self) -> bool {
         self.zoom_enabled
+    }
+
+    /// Attaches a crosshair companion; the chart drives its position (COMP-F01).
+    pub fn set_crosshair(
+        &mut self,
+        crosshair: Option<crate::widget::chart_widgets::chart_crosshair::ChartCrosshair>,
+    ) {
+        self.crosshair = crosshair;
+        self.base.request_redraw();
+    }
+
+    /// The attached crosshair, when one is set.
+    pub fn crosshair(
+        &self,
+    ) -> Option<&crate::widget::chart_widgets::chart_crosshair::ChartCrosshair> {
+        self.crosshair.as_ref()
+    }
+
+    /// The attached crosshair mutably, when one is set.
+    pub fn crosshair_mut(
+        &mut self,
+    ) -> Option<&mut crate::widget::chart_widgets::chart_crosshair::ChartCrosshair> {
+        self.crosshair.as_mut()
+    }
+
+    /// The chart title, when one is set (CH-07).
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    /// Sets the chart title, painted centred at the top.
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        self.title = Some(title.into());
+        self.base.request_redraw();
+    }
+
+    /// Removes the chart title.
+    pub fn clear_title(&mut self) {
+        self.title = None;
+        self.base.request_redraw();
+    }
+
+    /// The x-axis title, when one is set.
+    pub fn x_axis_label(&self) -> Option<&str> {
+        self.x_axis_label.as_deref()
+    }
+
+    /// Sets the x-axis title, painted under the plot.
+    pub fn set_x_axis_label(&mut self, label: impl Into<String>) {
+        self.x_axis_label = Some(label.into());
+        self.base.request_redraw();
+    }
+
+    /// The y-axis title, when one is set.
+    pub fn y_axis_label(&self) -> Option<&str> {
+        self.y_axis_label.as_deref()
+    }
+
+    /// Sets the y-axis title, painted above the plot's leading edge.
+    pub fn set_y_axis_label(&mut self, label: impl Into<String>) {
+        self.y_axis_label = Some(label.into());
+        self.base.request_redraw();
     }
 
     /// The X window set by zooming, or `None` while the resolved data range is used.
@@ -475,12 +577,14 @@ impl LineChart {
         }
         self.ensure_primary();
         self.series[0].points.push((x, y));
+        self.invalidate_data_cache();
         self.base.request_redraw();
     }
 
     /// Removes all data points and series from the chart.
     pub fn clear_data(&mut self) {
         self.series.clear();
+        self.invalidate_data_cache();
         self.revalidate_hover();
         self.base.request_redraw();
     }
@@ -546,22 +650,49 @@ impl LineChart {
         match (self.x_min, self.x_max) {
             (Some(min), Some(max)) => (min, max),
             _ => {
-                let mut min = f64::INFINITY;
-                let mut max = f64::NEG_INFINITY;
-                for point in self.series.iter().flat_map(|series| series.points.iter()) {
-                    min = min.min(point.0);
-                    max = max.max(point.0);
-                }
-                if !min.is_finite() || !max.is_finite() {
+                let extents = self.extents();
+                if !extents.valid {
                     return (0.0, 10.0);
                 }
-                if (max - min).abs() < f64::EPSILON {
-                    return (min - 1.0, min + 1.0);
-                }
-                let padding = (max - min) * 0.1;
-                (min - padding, max + padding)
+                Self::padded_range(extents.x_min, extents.x_max)
             }
         }
+    }
+
+    /// The cached data bounds, computed once per data change (F-P12).
+    fn extents(&self) -> SeriesExtents {
+        let cached = self.flat_extents.get();
+        if cached.valid {
+            return cached;
+        }
+        let mut extents = SeriesExtents {
+            x_min: f64::INFINITY,
+            x_max: f64::NEG_INFINITY,
+            y_min: f64::INFINITY,
+            y_max: f64::NEG_INFINITY,
+            valid: false,
+        };
+        for point in self.series.iter().flat_map(|series| series.points.iter()) {
+            extents.x_min = extents.x_min.min(point.0);
+            extents.x_max = extents.x_max.max(point.0);
+            extents.y_min = extents.y_min.min(point.1);
+            extents.y_max = extents.y_max.max(point.1);
+        }
+        if extents.x_min.is_finite()
+            && extents.x_max.is_finite()
+            && extents.y_min.is_finite()
+            && extents.y_max.is_finite()
+        {
+            extents.valid = true;
+            self.flat_extents.set(extents);
+        }
+        extents
+    }
+
+    /// Drops the extents and the sorted-x index after a data mutation.
+    fn invalidate_data_cache(&mut self) {
+        self.flat_extents.set(SeriesExtents::default());
+        *self.sorted_x.borrow_mut() = None;
     }
 
     /// Width of the widest y-axis tick label.
@@ -605,34 +736,73 @@ impl LineChart {
         match (self.y_min, self.y_max) {
             (Some(min), Some(max)) => (min, max),
             _ => {
-                let mut min = f64::INFINITY;
-                let mut max = f64::NEG_INFINITY;
-                for point in self.series.iter().flat_map(|series| series.points.iter()) {
-                    min = min.min(point.1);
-                    max = max.max(point.1);
-                }
-                if !min.is_finite() || !max.is_finite() {
+                let extents = self.extents();
+                if !extents.valid {
                     return (0.0, 10.0);
                 }
-                if (max - min).abs() < f64::EPSILON {
-                    return (min - 1.0, min + 1.0);
-                }
-                let padding = (max - min) * 0.1;
-                (min - padding, max + padding)
+                Self::padded_range(extents.y_min, extents.y_max)
             }
         }
     }
 
+    /// Expands a raw data range by the historical 10 % padding.
+    fn padded_range(min: f64, max: f64) -> (f64, f64) {
+        if (max - min).abs() < f64::EPSILON {
+            return (min - 1.0, min + 1.0);
+        }
+        let padding = (max - min) * 0.1;
+        (min - padding, max + padding)
+    }
+
     /// Maps a window-relative pointer position to the nearest plotted point.
+    ///
+    /// Points are searched through a per-series x-sorted index (F-P12): the pointer's ±24 px
+    /// hit window is converted to a data interval and binary-searched, so a mouse move costs
+    /// `O(log n + k)` instead of scanning every point of every series.
     fn nearest_point(&self, pos: Point, plot_area: Rect) -> Option<(usize, usize)> {
         if !plot_area.contains_point(pos) {
             return None;
         }
         let (x_min, x_max) = self.resolve_x_range();
         let (y_min, y_max) = self.resolve_y_range();
+        let span = x_max - x_min;
+        if !span.is_finite() || span == 0.0 || plot_area.width == 0 {
+            return None;
+        }
+        let to_data = |px: i32| -> f64 {
+            x_min + ((px - plot_area.x) as f64 / plot_area.width as f64) * span
+        };
+        let left_bound = to_data(pos.x.saturating_sub(24));
+        let right_bound = to_data(pos.x.saturating_add(24));
+        let (left_bound, right_bound) = if left_bound <= right_bound {
+            (left_bound, right_bound)
+        } else {
+            (right_bound, left_bound)
+        };
+
+        let mut cache = self.sorted_x.borrow_mut();
+        if cache.is_none() {
+            *cache = Some(
+                self.series
+                    .iter()
+                    .map(|series| {
+                        let mut order: Vec<usize> = (0..series.points.len()).collect();
+                        order.sort_by(|a, b| series.points[*a].0.total_cmp(&series.points[*b].0));
+                        order
+                    })
+                    .collect(),
+            );
+        }
+        let sorted = cache.as_ref().expect("the x index was just built");
         let mut best: Option<(usize, usize, i64)> = None;
         for (series_index, series) in self.series.iter().enumerate() {
-            for (index, point) in series.points.iter().enumerate() {
+            let Some(order) = sorted.get(series_index) else { continue };
+            let start = order.partition_point(|&index| series.points[index].0 < left_bound);
+            for &index in &order[start..] {
+                let point = &series.points[index];
+                if point.0 > right_bound {
+                    break;
+                }
                 let pixel =
                     Self::map_to_pixel(point.0, point.1, x_min, x_max, y_min, y_max, plot_area);
                 let distance =
@@ -794,8 +964,8 @@ impl Draw for LineChart {
             let legend_items = if self.show_legend { self.series.len() } else { 0 };
             let layout = compute_cartesian_layout_measured(
                 rect,
-                self.show_labels,
-                self.show_labels,
+                self.show_labels || self.x_axis_label.is_some(),
+                self.show_labels || self.y_axis_label.is_some(),
                 legend_items,
                 widest_y_label,
             );
@@ -816,14 +986,15 @@ impl Draw for LineChart {
                 draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, true);
             }
             if self.show_legend {
-                let entries: Vec<(&str, Color)> = self
-                    .series
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, series)| !series.name.is_empty())
-                    .map(|(index, series)| (series.name.as_str(), self.series_color(index)))
-                    .collect();
-                draw_legend_entries(&mut adapter, &layout, &entries);
+                draw_legend_entries_iter(
+                    &mut adapter,
+                    &layout,
+                    self.series
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, series)| !series.name.is_empty())
+                        .map(|(index, series)| (series.name.as_str(), self.series_color(index))),
+                );
             }
             plot_area
         };
@@ -839,6 +1010,49 @@ impl Draw for LineChart {
             disabled_color,
         );
         self.last_plot_area = Some(plot_area);
+
+        // ── Title and axis titles (CH-07) ──
+        if self.title.is_some() || self.x_axis_label.is_some() || self.y_axis_label.is_some() {
+            let chrome = crate::widget::chart_widgets::charts::axis_chrome_color(0.85);
+            if let Some(title) = self.title.as_deref() {
+                let font =
+                    crate::widget::metrics::role_font(self.base.style(), 12.0).with_bold(true);
+                context.draw_text_fitted_cow(
+                    Rect::new(rect.x, rect.y, rect.width, 16),
+                    title,
+                    &font,
+                    chrome,
+                    crate::core::HorizontalAlignment::Center,
+                );
+            }
+            if let Some(label) = self.x_axis_label.as_deref() {
+                let font = crate::widget::metrics::role_font(self.base.style(), 10.0);
+                let band = Rect::new(
+                    plot_area.x,
+                    plot_area.y + plot_area.height as i32 + 14,
+                    plot_area.width,
+                    12,
+                );
+                context.draw_text_fitted_cow(
+                    band,
+                    label,
+                    &font,
+                    chrome,
+                    crate::core::HorizontalAlignment::Center,
+                );
+            }
+            if let Some(label) = self.y_axis_label.as_deref() {
+                let font = crate::widget::metrics::role_font(self.base.style(), 10.0);
+                let band = Rect::new(rect.x + 2, rect.y + 16, rect.width.min(120), 12);
+                context.draw_text_fitted_cow(
+                    band,
+                    label,
+                    &font,
+                    chrome,
+                    crate::core::HorizontalAlignment::Left,
+                );
+            }
+        }
 
         // ── Data series ──
         if self.series.iter().all(|series| series.points.len() < 2) {
@@ -907,9 +1121,15 @@ impl Draw for LineChart {
                     context.fill_circle(pixel, 3, self.series_color(series_index));
                 }
                 if self.show_tooltip && is_enabled {
-                    self.draw_tooltip(context, pixel, point, plot_area);
+                    self.draw_tooltip(context, pixel, point, series_index, plot_area);
                 }
             }
+        }
+
+        // ── Attached crosshair (COMP-F01) ──
+        if let Some(crosshair) = self.crosshair.as_mut() {
+            crosshair.base_mut().set_geometry(plot_area);
+            crosshair.draw(context);
         }
     }
 }
@@ -971,11 +1191,20 @@ impl LineChart {
         context: &mut RenderContext,
         pixel: Point,
         value: (f64, f64),
+        series_index: usize,
         plot: Rect,
     ) {
         use crate::core::HorizontalAlignment;
         let font = crate::widget::metrics::role_font(self.base.style(), 10.0);
-        let text = format!("{:.2}, {:.2}", value.0, value.1);
+        let series_name = self
+            .series
+            .get(series_index)
+            .map(|series| series.name.as_str())
+            .filter(|name| !name.is_empty());
+        let text = match series_name {
+            Some(name) => format!("{name}  {:.2}, {:.2}", value.0, value.1),
+            None => format!("{:.2}, {:.2}", value.0, value.1),
+        };
         let metrics = context.measure_text(&text, &font);
         let padding = 4i32;
         let width = metrics.width as i32 + padding * 2;
@@ -1122,12 +1351,20 @@ impl EventHandler for LineChart {
             Event::MouseMove { pos } => {
                 self.last_pointer = Some(*pos);
                 if let Some((origin, range)) = self.pan_origin {
-                    let span = range.1 - range.0;
-                    let width = plot_area.width.max(1) as f64;
-                    let shift = (origin.x - pos.x) as f64 / width * span;
-                    self.view_x = Some((range.0 + shift, range.1 + shift));
-                    self.base.request_redraw();
-                    return;
+                    // A drag only becomes a pan once it exceeds the click threshold; below it
+                    // the gesture is still a click on the point under the press (CH-06).
+                    let moved = self
+                        .press_start
+                        .is_some_and(|start| (pos.x - start.x).abs() + (pos.y - start.y).abs() > 4);
+                    if self.pan_actual || moved {
+                        self.pan_actual = true;
+                        let span = range.1 - range.0;
+                        let width = plot_area.width.max(1) as f64;
+                        let shift = (origin.x - pos.x) as f64 / width * span;
+                        self.view_x = Some((range.0 + shift, range.1 + shift));
+                        self.base.request_redraw();
+                        return;
+                    }
                 }
                 let next = self.nearest_point(*pos, plot_area);
                 if next != self.hovered {
@@ -1140,9 +1377,30 @@ impl EventHandler for LineChart {
                     }
                     self.base.request_redraw();
                 }
+                // Drive the attached crosshair from the same nearest point (COMP-F01).
+                let crosshair_point = self.hovered.and_then(|(series, index)| {
+                    self.series.get(series).and_then(|item| item.points.get(index)).copied()
+                });
+                let crosshair_pixel = crosshair_point.map(|point| {
+                    let (x_min, x_max) = self.resolve_x_range();
+                    let (y_min, y_max) = self.resolve_y_range();
+                    (
+                        Self::map_to_pixel(point.0, point.1, x_min, x_max, y_min, y_max, plot_area),
+                        point,
+                    )
+                });
+                if let Some(crosshair) = self.crosshair.as_mut() {
+                    match crosshair_pixel {
+                        Some((pixel, point)) => crosshair.show_at_data(pixel, point),
+                        None => crosshair.hide(),
+                    }
+                }
             }
             Event::MouseLeave { .. } => {
                 self.pan_origin = None;
+                if let Some(crosshair) = self.crosshair.as_mut() {
+                    crosshair.hide();
+                }
                 if let Some((series, index)) = self.hovered.take() {
                     self.point_unhovered.emit((series, index));
                     self.base.request_redraw();
@@ -1150,15 +1408,26 @@ impl EventHandler for LineChart {
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 let hit = self.nearest_point(*pos, plot_area);
+                self.press_start = Some(*pos);
+                self.pressed_point = hit;
+                self.pan_actual = false;
                 if self.zoom_enabled {
                     self.pan_origin = Some((*pos, self.resolve_x_range()));
-                } else if let Some((series, index)) = hit {
-                    self.point_clicked.emit((series, index));
                 }
                 self.base.set_mouse_pressed(true);
             }
             Event::MouseRelease { button, .. } if *button == 1 => {
+                // A press that never moved is a click on the point under it, whether or not
+                // zoom is enabled (CH-06).
+                if !self.pan_actual {
+                    if let Some((series, index)) = self.pressed_point {
+                        self.point_clicked.emit((series, index));
+                    }
+                }
                 self.pan_origin = None;
+                self.press_start = None;
+                self.pressed_point = None;
+                self.pan_actual = false;
                 self.base.set_mouse_pressed(false);
             }
             Event::Wheel { delta, .. } if self.zoom_enabled && delta.y != 0 => {
@@ -1538,5 +1807,69 @@ mod tests {
         assert_eq!(*seen.lock().unwrap(), vec![(0, 2)]);
         lc.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
         assert!(lc.hovered_point().is_none());
+    }
+
+    /// F-P12: the extents cache follows data mutations and the padded range is intact.
+    #[test]
+    fn extents_are_cached_and_follow_data_changes() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 400, 300));
+        lc.set_data(vec![(0.0, 0.0), (10.0, 20.0)]);
+        let (low, high) = lc.resolve_x_range();
+        assert!((low - -1.0).abs() < 1e-9 && (high - 11.0).abs() < 1e-9, "0..10 padded by 10%");
+        let (y_low, y_high) = lc.resolve_y_range();
+        assert!((y_low - -2.0).abs() < 1e-9 && (y_high - 22.0).abs() < 1e-9);
+
+        lc.add_point(20.0, 40.0);
+        let (low, high) = lc.resolve_x_range();
+        assert!(low < -1.0 && high > 11.0, "the cached extents were invalidated");
+    }
+
+    /// CH-06: with zoom on, a press that does not move is still a click on the point.
+    #[test]
+    fn a_click_without_movement_reaches_point_clicked_while_zoom_is_on() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 400, 300));
+        lc.set_data(vec![(0.0, 0.0), (10.0, 10.0)]);
+        lc.set_zoom_enabled(true);
+        let _ = crate::widget::svg::render_to_svg(&mut lc);
+        let plot = lc.last_plot_area.expect("the paint stored the plot area");
+        let (x_min, x_max) = lc.resolve_x_range();
+        let (y_min, y_max) = lc.resolve_y_range();
+        let pixel = LineChart::map_to_pixel(10.0, 10.0, x_min, x_max, y_min, y_max, plot);
+
+        let clicked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&clicked);
+        lc.point_clicked.connect(move |point| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*point);
+            }
+        });
+        lc.handle_event(&Event::MousePress { pos: pixel, button: 1, modifiers: 0 });
+        lc.handle_event(&Event::MouseRelease { pos: pixel, button: 1 });
+        assert_eq!(*clicked.lock().unwrap(), vec![(0, 1)], "the click was not swallowed by pan");
+    }
+
+    /// CH-05/CH-07: the tooltip adds a text run and the title/axis titles are painted.
+    #[test]
+    fn tooltip_series_name_and_titles_are_painted() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 400, 300));
+        lc.set_series(vec![LineSeries::new("Revenue", vec![(0.0, 0.0), (10.0, 10.0)])]);
+        lc.set_show_tooltip(true);
+        lc.set_title("Quarterly");
+        lc.set_x_axis_label("Month");
+        lc.set_y_axis_label("USD");
+        let before = crate::widget::svg::render_to_svg(&mut lc);
+        let runs_without_tooltip = crate::widget::svg::text_ink_boxes(&before).len();
+        assert!(runs_without_tooltip >= 3, "title and both axis titles are painted");
+
+        let plot = lc.last_plot_area.expect("plot area");
+        let (x_min, x_max) = lc.resolve_x_range();
+        let (y_min, y_max) = lc.resolve_y_range();
+        let pixel = LineChart::map_to_pixel(10.0, 10.0, x_min, x_max, y_min, y_max, plot);
+        lc.handle_event(&Event::MouseMove { pos: pixel });
+        let after = crate::widget::svg::render_to_svg(&mut lc);
+        assert!(
+            crate::widget::svg::text_ink_boxes(&after).len() > runs_without_tooltip,
+            "the tooltip adds a text run"
+        );
     }
 }

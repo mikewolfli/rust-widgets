@@ -24,9 +24,14 @@ pub mod font_combo_box;
 pub mod ime_preedit;
 #[cfg(widgets_unstripped)]
 pub mod inplace_editor;
+/// Companion pieces the input family pairs with (COMP-C01..C05).
+#[cfg(widgets_unstripped)]
+pub mod input_companions;
 /// The input grammars a single-line field can enforce.
 pub mod input_validator;
 pub mod keyboard;
+/// The single-line value editor an editable drop-down field carries (I-06).
+pub(crate) mod line_editor;
 pub mod lineedit;
 pub mod listbox;
 #[cfg(widgets_unstripped)]
@@ -40,8 +45,12 @@ pub mod multi_select_combo_box;
 pub mod number_picker;
 #[cfg(widgets_unstripped)]
 pub mod otp_input;
+/// Conversions and layout facts shared by the input family's companion popups (COMP-B01..B03).
+pub(crate) mod popup_support;
 #[cfg(widgets_unstripped)]
 pub mod range_slider;
+/// Recently committed values, newest first (COMP-B03).
+pub mod recent_values_popup;
 #[cfg(widgets_unstripped)]
 pub mod rich_edit;
 #[cfg(widgets_unstripped)]
@@ -51,11 +60,17 @@ pub mod search_box;
 #[cfg(widgets_unstripped)]
 pub mod shortcut_editor;
 pub mod spinbox;
+/// The candidate list an input field hangs under itself (COMP-B01).
+pub mod suggestion_popup;
 #[cfg(widgets_unstripped)]
 pub mod tag_input;
+/// Allocation-free case-fold comparisons shared by the input family (I-P05).
+pub(crate) mod text_match;
 pub mod textarea;
 #[cfg(widgets_unstripped)]
 pub mod textedit;
+/// A validation message anchored beside the field it accuses (COMP-B02).
+pub mod validation_bubble;
 // Re-export widget types
 #[cfg(widgets_unstripped)]
 pub use auto_complete_edit::AutoCompleteEdit;
@@ -73,6 +88,11 @@ pub use font_combo_box::FontComboBox;
 pub use ime_preedit::ImePreedit;
 #[cfg(widgets_unstripped)]
 pub use inplace_editor::InplaceEditor;
+#[cfg(widgets_unstripped)]
+pub use input_companions::{
+    Chip, DropSide, FormatAction, FormatActionSet, FormatToolbar, ScrollOrientation, Scrollbar,
+    StepButtons, StepDirection, StepOrientation,
+};
 pub use keyboard::Keyboard;
 pub use lineedit::{EchoMode, InputValidator, LineEdit};
 pub use listbox::{ListBox, SelectionMode};
@@ -97,6 +117,9 @@ pub use search_box::SearchBox;
 #[cfg(widgets_unstripped)]
 pub use shortcut_editor::{ShortcutEditor, ShortcutEntry};
 pub use spinbox::SpinBox;
+// One `SuggestionPopup`: COMP-B01's widget and COMP-C01's host were merged (principle #101), and
+// `input_companions` re-exports these names so COMP-C01's path still resolves to the same type.
+pub use suggestion_popup::{MatchMode, PopupItem, SuggestionPopup};
 #[cfg(widgets_unstripped)]
 pub use tag_input::TagInput;
 pub use textarea::TextArea;

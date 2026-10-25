@@ -50,7 +50,9 @@ pub const ATLAS_GC_FRAMES: u64 = 2;
 ///   definition.
 /// * `ch` is the character, not a shaped glyph id: the atlas is consulted from text layout,
 ///   where the character is what is known.
-/// * `size_px` is the device pixel size, because coverage is rasterised at one size.
+/// * `size_px` is the nominal device pixel size the square constructors use; the box actually
+///   rasterised is `cell_w x cell_h`, which [`Self::with_cell`] can set independently (G-202).
+/// * `cell_w`/`cell_h` are the device cell, because coverage is rasterised into one exact box.
 /// * `weight` is part of the key because a variable face is one face with a `wght` axis: the same
 ///   character at 400 and at 700 is different ink. A static face ignores it, so the key still
 ///   identifies exactly what was rasterised for every face this crate ships.
@@ -65,8 +67,12 @@ pub struct GlyphKey {
     pub face: &'static str,
     /// The character to rasterise.
     pub ch: char,
-    /// The device pixel size the glyph is rasterised at.
+    /// The nominal device pixel size [`Self::new`] gives both cell dimensions.
     pub size_px: u8,
+    /// The device cell width the glyph is rasterised into.
+    pub cell_w: u32,
+    /// The device cell height the glyph is rasterised into.
+    pub cell_h: u32,
     /// The requested weight, in the conventional `100..=900` scale.
     pub weight: u16,
     /// Whether the glyph is drawn with a synthetic oblique slant.
@@ -75,8 +81,33 @@ pub struct GlyphKey {
 
 impl GlyphKey {
     /// A key for `ch` at `size_px` pixels and `weight`, drawn from `face`.
+    ///
+    /// The cell is the em square: `size_px` wide and `size_px` tall. A caller with a different box
+    /// chains [`Self::with_cell`].
     pub const fn new(face: &'static str, ch: char, size_px: u8, weight: u16) -> Self {
-        Self { face, ch, size_px, weight, italic: false }
+        Self {
+            face,
+            ch,
+            size_px,
+            cell_w: size_px as u32,
+            cell_h: size_px as u32,
+            weight,
+            italic: false,
+        }
+    }
+
+    /// The same key with an explicit, possibly non-square device cell.
+    ///
+    /// Ordinary Latin text advances about 0.6 em while its line box is about 1.2 em, so its
+    /// drawing cell is never square; without this the atlas could only serve full-em glyphs
+    /// (G-202). `size_px` stays the nominal size so the square constructors and their keys are
+    /// unchanged, while [`Self::cell`] reports the explicit box. Both dimensions are part of the
+    /// key because coverage depends on the whole cell — the height sets the em and the width sets
+    /// the box — so a non-square key can never alias a square one with the same height.
+    pub const fn with_cell(mut self, width: u32, height: u32) -> Self {
+        self.cell_w = width;
+        self.cell_h = height;
+        self
     }
 
     /// The same key, drawn upright or with the synthetic oblique slant.
@@ -87,12 +118,11 @@ impl GlyphKey {
 
     /// The one device cell this key rasterises into.
     ///
-    /// The cell is the em square: `size_px` wide and `size_px` tall. Height is what the
-    /// rasteriser uses as the pixel size, and the square width leaves room for a glyph whose
-    /// advance is a full em. A caller that needs a different box asks the rasteriser directly
-    /// rather than through the atlas, because the cell is part of what was cached.
+    /// `new` makes it the em square (`size_px` by `size_px`); [`Self::with_cell`] replaces that
+    /// with an explicit box. The cell is part of what was cached, so the atlas and a direct paint
+    /// must be given the same one to agree byte for byte.
     pub const fn cell(self) -> Cell {
-        Cell::new(self.size_px as u32, self.size_px as u32)
+        Cell::new(self.cell_w, self.cell_h)
     }
 }
 
@@ -248,11 +278,11 @@ fn rasterise(key: GlyphKey, epoch: u64) -> AtlasSlot {
     // inventing ink.
     if let Some(face) = face_for_family(key.face) {
         if let Some(bitmap) = rasterize_face_at_weight(face, key.ch, cell, key.weight) {
-            let bitmap = oblique_if_requested(bitmap, cell, key.italic);
+            let bitmap = oblique_if_requested_shared(bitmap, cell, key.italic);
             return AtlasSlot {
                 width: cell.width,
                 height: cell.height,
-                bitmap: Rc::from(bitmap),
+                bitmap,
                 source: face.name,
                 ink: InkKind::Coverage,
                 hits: 0,
@@ -278,6 +308,17 @@ fn rasterise(key: GlyphKey, epoch: u64) -> AtlasSlot {
         hits: 0,
         last_epoch: epoch,
     }
+}
+
+/// [`oblique_if_requested`] for an already-shared buffer.
+///
+/// The upright case returns the same handle, so the common path copies nothing and allocates
+/// nothing (G-15); only the synthetic slant needs a new buffer, because it moves every row.
+fn oblique_if_requested_shared(bitmap: Rc<[u8]>, cell: Cell, italic: bool) -> Rc<[u8]> {
+    if !italic {
+        return bitmap;
+    }
+    Rc::from(oblique_if_requested(bitmap.to_vec(), cell, true))
 }
 
 /// Applies the same synthetic oblique the paint path uses: each row slides horizontally around
@@ -335,6 +376,30 @@ mod tests {
             source,
             "an upright request must not alter the bytes"
         );
+    }
+
+    /// A non-square device cell is its own cache entry and rasterises that exact box (G-202).
+    ///
+    /// Ordinary Latin text advances about 0.6 em in a 1.2 em line box, so before `with_cell` the
+    /// atlas could not serve it at all. The bytes must still match the uncached paint for the same
+    /// cell, which is the property the atlas exists to preserve.
+    #[test]
+    fn a_non_square_cell_is_a_distinct_key_and_matches_the_uncached_path() {
+        let square = GlyphKey::new("face", 'A', 16, 400);
+        let tall = square.with_cell(8, 16);
+        assert_ne!(square, tall, "a non-square cell must not alias the square entry");
+
+        let cell = tall.cell();
+        assert_eq!((cell.width, cell.height), (8, 16), "the explicit cell is the rasterised box");
+
+        // The uncached control: the active stack into a coverage-sized buffer. "face" names no
+        // shipped family, so the atlas takes the same active-stack fallback.
+        let mut expected = vec![0u8; cell.area()];
+        let _ = paint_active('A', cell, &mut expected);
+        let mut atlas = GlyphAtlas::new();
+        let slot = atlas.get_or_raster(tall);
+
+        assert_eq!(slot.bitmap(), &expected[..], "atlas bytes differ for a non-square cell");
     }
 
     fn key_for(ch: char, size_px: u8) -> GlyphKey {

@@ -41,44 +41,60 @@ const DIAL_NUMERALS: [(&str, f32); 4] = [("12", 0.0), ("3", 3.0), ("6", 6.0), ("
 /// [`Clock::set_time`]. [`System`](Self::System) lets the clock's `tick` method read the machine
 /// clock, so a face that is never fed still runs — and in both modes the `tick` signal is emitted
 /// once a second so a host can mirror the reading without polling.
+///
+/// [`System`](Self::System) is the **local** wall clock, because a wall clock shows the time the
+/// person in front of it reads; [`Utc`](Self::Utc) is the explicit alternative for a host that
+/// wants a zone-independent face.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ClockTimeSource {
     /// The host owns the time; `Widget::tick` only reports elapsed seconds.
     #[default]
     Manual,
-    /// `Widget::tick` reads the system clock (UTC) once a frame.
+    /// `Widget::tick` reads the system clock in the machine's local time zone.
     System,
+    /// `Widget::tick` reads the system clock in UTC.
+    Utc,
 }
 
 impl ClockTimeSource {
+    /// Every source, in publication order.
+    pub const ALL: [Self; 3] = [Self::Manual, Self::System, Self::Utc];
+
     /// The token this source is published as.
     pub const fn token(self) -> &'static str {
         match self {
             Self::Manual => "manual",
             Self::System => "system",
+            Self::Utc => "utc",
         }
     }
 
     /// Parses a published token. `None` for a spelling this control does not publish.
     pub fn from_token(token: &str) -> Option<Self> {
-        match token {
-            "manual" => Some(Self::Manual),
-            "system" => Some(Self::System),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|source| source.token() == token)
     }
 }
 
-/// The current UTC time as `(hour, minute, second, millisecond)`.
-fn system_time_of_day() -> Option<(u32, u32, u32, u32)> {
-    let elapsed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?;
-    let millis_of_day = (elapsed.as_millis() % 86_400_000) as u32;
-    Some((
-        millis_of_day / 3_600_000,
-        (millis_of_day % 3_600_000) / 60_000,
-        (millis_of_day % 60_000) / 1_000,
-        millis_of_day % 1_000,
-    ))
+/// The current wall-clock time as `(hour, minute, second, millisecond)`, in the zone the source
+/// names.
+///
+/// `chrono` carries the platform's time-zone database, so the conversion from an instant to a local
+/// reading is not re-derived here — the widget layer asks a time library rather than inspecting an
+/// OS-specific zone file (principle #36 keeps that knowledge out of the widget layer).
+fn system_time_of_day(source: ClockTimeSource) -> Option<(u32, u32, u32, u32)> {
+    use chrono::Timelike;
+    match source {
+        ClockTimeSource::System => {
+            let now = chrono::Local::now();
+            Some((now.hour(), now.minute(), now.second(), now.timestamp_subsec_millis()))
+        }
+        ClockTimeSource::Utc => {
+            let now = chrono::Utc::now();
+            Some((now.hour(), now.minute(), now.second(), now.timestamp_subsec_millis()))
+        }
+        // Only the two clock-backed sources reach this function; `Manual` never asks the machine.
+        ClockTimeSource::Manual => None,
+    }
 }
 
 /// Clock — an analog clock face.
@@ -101,12 +117,29 @@ pub struct Clock {
     /// `OnceLock`: it records the size and device scale that produced it and is rebuilt
     /// when either changes.
     numeral_cache: Option<NumeralCache>,
+    /// The tick-mark geometry, rebuilt only when the face's rectangle changes.
+    ///
+    /// The 59 minute marks and 12 hour marks are a function of the control's rectangle and the
+    /// face radius alone — the hands and the numerals move, the tick ring does not. They used to
+    /// be re-derived and re-submitted every frame; the cache holds the sampled segments so the
+    /// frame path only picks a colour and draws them.
+    tick_cache: Option<TickCache>,
     /// Where the time comes from; see [`ClockTimeSource`].
     time_source: ClockTimeSource,
     /// Milliseconds accumulated toward the next whole second the `tick` signal reports.
     pending_ms: u32,
     /// Emitted once per whole second the clock's `tick` method advances, with that second count.
     pub tick: Signal1<u32>,
+}
+
+/// The tick ring's sampled segments, keyed by the rectangle that produced them.
+struct TickCache {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    /// `(start, end, thickness)` per mark. A thickness of 2 marks an hour mark.
+    marks: Vec<(Point, Point, u32)>,
 }
 
 /// A dial numeral face with the measurements `draw_numerals` positions the glyphs by.
@@ -135,6 +168,7 @@ impl Clock {
             show_numerals: false,
             hand_shading: false,
             numeral_cache: None,
+            tick_cache: None,
             time_source: ClockTimeSource::Manual,
             pending_ms: 0,
             tick: Signal1::new(),
@@ -298,8 +332,8 @@ impl Clock {
     /// have to poll it.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
         let mut repainted = false;
-        if self.time_source == ClockTimeSource::System {
-            if let Some((hour, minute, second, millis)) = system_time_of_day() {
+        if matches!(self.time_source, ClockTimeSource::System | ClockTimeSource::Utc) {
+            if let Some((hour, minute, second, millis)) = system_time_of_day(self.time_source) {
                 let before = (self.hour, self.minute, self.second, self.millis);
                 self.set_time_with_millis(hour, minute, second, millis);
                 repainted = before != (self.hour, self.minute, self.second, self.millis);
@@ -313,6 +347,47 @@ impl Clock {
             repainted = true;
         }
         repainted
+    }
+
+    /// Rebuilds the tick ring when the face's rectangle changed, then reports it.
+    ///
+    /// The ring is 60 sampled segments whose endpoints depend only on the face centre and radius,
+    /// and the radius is itself a function of the rectangle. The rectangle therefore *is* the
+    /// cache key: a resize rebuilds once, and every still frame reuses the segment table.
+    fn ensure_tick_marks(&mut self, center: Point, radius: f32) -> bool {
+        let rect = self.geometry();
+        let fresh = self.tick_cache.as_ref().is_some_and(|cache| {
+            cache.x == rect.x
+                && cache.y == rect.y
+                && cache.width == rect.width
+                && cache.height == rect.height
+        });
+        if fresh {
+            return false;
+        }
+        let mut marks = Vec::with_capacity((MINUTE_MARKS + HOUR_MARKS) as usize);
+        for index in 0..MINUTE_MARKS {
+            if index % 5 == 0 {
+                continue;
+            }
+            let angle = Clock::angle_of(index as f32, MINUTE_MARKS as f32);
+            marks.push((
+                point_on_circle(center, radius * 0.94, angle),
+                point_on_circle(center, radius * 0.88, angle),
+                1,
+            ));
+        }
+        for index in 0..HOUR_MARKS {
+            let angle = Clock::angle_of(index as f32, HOUR_MARKS as f32);
+            marks.push((
+                point_on_circle(center, radius * 0.94, angle),
+                point_on_circle(center, radius * 0.82, angle),
+                2,
+            ));
+        }
+        self.tick_cache =
+            Some(TickCache { x: rect.x, y: rect.y, width: rect.width, height: rect.height, marks });
+        true
     }
 
     /// The centre and radius the face is drawn at.
@@ -453,7 +528,7 @@ impl Widget for Clock {
 
     /// A system-sourced clock free-runs; a manual one is driven by its host.
     fn is_animating(&self) -> bool {
-        self.time_source == ClockTimeSource::System
+        matches!(self.time_source, ClockTimeSource::System | ClockTimeSource::Utc)
     }
 
     impl_draw_bridge!();
@@ -560,27 +635,18 @@ impl Draw for Clock {
         ctx.draw_circle_stroke(center, radius_px, ink.with_alpha_f32(0.65), 1);
 
         // Minute marks first, then hour marks over them: an hour mark is longer, so it covers
-        // the minute mark at the same angle rather than the two coexisting.
-        for index in 0..MINUTE_MARKS {
-            if index % 5 == 0 {
-                continue;
+        // the minute mark at the same angle rather than the two coexisting. The segment table
+        // itself is rebuilt only by a resize; see `ensure_tick_marks`.
+        self.ensure_tick_marks(center, radius);
+        if let Some(cache) = self.tick_cache.as_ref() {
+            for (from, to, thickness) in &cache.marks {
+                let color = if *thickness == 2 {
+                    ink.with_alpha_f32(0.75)
+                } else {
+                    ink.with_alpha_f32(0.35)
+                };
+                ctx.draw_line_stroke(*from, *to, color, *thickness);
             }
-            let angle = Clock::angle_of(index as f32, MINUTE_MARKS as f32);
-            ctx.draw_line_stroke(
-                point_on_circle(center, radius * 0.94, angle),
-                point_on_circle(center, radius * 0.88, angle),
-                ink.with_alpha_f32(0.35),
-                1,
-            );
-        }
-        for index in 0..HOUR_MARKS {
-            let angle = Clock::angle_of(index as f32, HOUR_MARKS as f32);
-            ctx.draw_line_stroke(
-                point_on_circle(center, radius * 0.94, angle),
-                point_on_circle(center, radius * 0.82, angle),
-                ink.with_alpha_f32(0.75),
-                2,
-            );
         }
 
         if self.show_numerals {
@@ -797,5 +863,53 @@ mod tests {
             6,
             "each hand paints two extra strokes: {flat_strokes} -> {shaded_strokes}"
         );
+    }
+
+    /// The system source reports the machine's **local** wall clock, and the explicit `utc` source
+    /// reports UTC. Before this, `System` silently read UTC, so a wall clock in a non-UTC zone
+    /// disagreed with every other clock on the desktop.
+    #[test]
+    fn the_system_source_reads_local_time_and_utc_reads_utc() {
+        use chrono::Timelike;
+
+        let (local_h, local_m, _, _) =
+            system_time_of_day(ClockTimeSource::System).expect("the local clock is readable");
+        let now = chrono::Local::now();
+        assert_eq!((local_h, local_m), (now.hour(), now.minute()));
+
+        let (utc_h, utc_m, _, _) =
+            system_time_of_day(ClockTimeSource::Utc).expect("the UTC clock is readable");
+        let now = chrono::Utc::now();
+        assert_eq!((utc_h, utc_m), (now.hour(), now.minute()));
+
+        // `Manual` has no machine reading at all, so it must not fabricate one.
+        assert_eq!(system_time_of_day(ClockTimeSource::Manual), None);
+    }
+
+    /// The three published time sources round-trip through their tokens.
+    #[test]
+    fn every_time_source_round_trips_through_its_token() {
+        for source in ClockTimeSource::ALL {
+            assert_eq!(ClockTimeSource::from_token(source.token()), Some(source));
+        }
+        assert_eq!(ClockTimeSource::from_token("local"), None);
+    }
+
+    /// The tick ring is sampled once and reused until the face's rectangle changes.
+    #[test]
+    fn the_tick_ring_is_cached_until_the_rectangle_changes() {
+        let mut clock = Clock::new(Rect::new(0, 0, 140, 140));
+        let (center, radius) = clock.face();
+        assert!(clock.ensure_tick_marks(center, radius), "the first call builds the ring");
+        assert!(
+            !clock.ensure_tick_marks(center, radius),
+            "a second call with the same rectangle must reuse the table"
+        );
+        let marks = clock.tick_cache.as_ref().expect("the cache exists").marks.len();
+        assert_eq!(marks, (MINUTE_MARKS - MINUTE_MARKS / 5 + HOUR_MARKS) as usize);
+
+        clock.set_geometry(Rect::new(0, 0, 200, 200));
+        let (center, radius) = clock.face();
+        assert!(clock.ensure_tick_marks(center, radius), "a resize rebuilds the ring once");
     }
 }

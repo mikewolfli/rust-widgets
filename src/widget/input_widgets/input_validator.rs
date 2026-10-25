@@ -19,7 +19,7 @@
 //! (`LineEdit::insert_str`) and the one assignment path (`LineEdit::set_text`), so the rule
 //! belongs there. A plain `line_edit` carries no validator and reports itself valid.
 
-use crate::compat::{String, ToString, Vec};
+use crate::compat::{Box, Cow, String, ToString, Vec};
 
 /// The three-way outcome of validating a value.
 ///
@@ -69,6 +69,16 @@ pub trait Validator: core::fmt::Debug + Send + Sync {
 
     /// The message shown when [`Validator::state`] is not [`ValidationState::Acceptable`].
     fn message(&self) -> &'static str;
+
+    /// The message for `text`, which may quote the value that was refused.
+    ///
+    /// [`Validator::message`] is a static sentence, so a host rule could not say *which* value
+    /// was out of range and the field's error row could only show a generic hint (I-27). A rule
+    /// that has nothing value-specific to say inherits the static message, so this is an optional
+    /// refinement rather than a second required method.
+    fn message_for(&self, _text: &str) -> Cow<'_, str> {
+        Cow::Borrowed(self.message())
+    }
 
     /// The nearest acceptable value, when the rule can repair one.
     ///
@@ -293,6 +303,26 @@ impl Validator for RangeValidator {
         self.range_message()
     }
 
+    /// Names the bound and the refused value, so the field's error row can say *why* it refused
+    /// rather than repeating "in range" (I-27).
+    fn message_for(&self, text: &str) -> Cow<'_, str> {
+        let trimmed = text.trim();
+        match self {
+            Self::Int { minimum, maximum } => match trimmed.parse::<i64>() {
+                Ok(value) if !(*minimum..=*maximum).contains(&value) => {
+                    Cow::Owned(format!("{value} is outside {minimum}..={maximum}"))
+                }
+                _ => Cow::Borrowed(self.range_message()),
+            },
+            Self::Double { minimum, maximum } => match trimmed.parse::<f64>() {
+                Ok(value) if value.is_finite() && !(*minimum..=*maximum).contains(&value) => {
+                    Cow::Owned(format!("{value} is outside {minimum}..={maximum}"))
+                }
+                _ => Cow::Borrowed(self.range_message()),
+            },
+        }
+    }
+
     /// Clamps a parsable value into the range; an unparsable value is not repairable.
     fn fixup(&self, text: &str) -> Option<String> {
         match self {
@@ -322,12 +352,13 @@ impl Validator for RangeValidator {
 /// * literal characters and `\` escapes;
 /// * `.` for any character;
 /// * character classes `[abc]`, ranges `[a-z]`, and their negation `[^abc]`;
-/// * the quantifiers `*`, `+` and `?` on the preceding atom;
-/// * the anchors `^` (start) and `$` (end).
+/// * groupings `(...)` and alternation `a|b|c`, nested to any depth (I-05);
+/// * the quantifiers `*`, `+` and `?` on the preceding atom or group;
+/// * the anchors `^` (start) and `$` (end), at the top level.
 ///
-/// Grouping, alternation and back-references are **not** supported. An unsupported construct is
-/// matched literally, so a caller who needs it must use a full engine through the [`Validator`]
-/// trait instead of being silently given the wrong answer.
+/// Back-references and look-around are **not** supported; an unsupported construct is matched
+/// literally, so a caller who needs it must use a full engine through the [`Validator`] trait
+/// instead of being silently given the wrong answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatternValidator {
     pattern: String,
@@ -347,8 +378,10 @@ impl PatternValidator {
 
     /// Whether `text` matches the pattern.
     pub fn is_match(&self, text: &str) -> bool {
-        let chars: Vec<char> = text.chars().collect();
-        match_pattern(&self.pattern, &chars)
+        match CompiledPattern::compile(&self.pattern) {
+            Some(compiled) => compiled.is_match(text),
+            None => false,
+        }
     }
 }
 
@@ -369,12 +402,23 @@ impl Validator for PatternValidator {
     }
 }
 
-/// One atom of a compiled pattern: the matcher plus how many times it may repeat.
+/// One node of a compiled pattern.
+///
+/// The engine used to be a flat atom list, which could not express grouping or alternation at
+/// all: `"A|B"` was matched as the five characters it is spelled with, so the commonest
+/// completion filter a host writes silently never matched (I-05). A tree of sequences,
+/// alternations and repetitions is the smallest shape that supports both constructs while the
+/// rest of the grammar (classes, quantifiers, anchors) is unchanged.
 #[derive(Debug, Clone)]
-struct Atom {
-    kind: AtomKind,
-    min: usize,
-    max: Option<usize>,
+enum Node {
+    /// One matcher with its repetition span.
+    Atom { kind: AtomKind, min: usize, max: Option<usize> },
+    /// A parenthesised sequence, matched as a unit so a quantifier can repeat all of it.
+    Group(Vec<Node>),
+    /// An alternation of sequences, `a|b|c`.
+    Alt(Vec<Vec<Node>>),
+    /// A node repeated a bounded number of times — a quantified group.
+    Repeat { node: Box<Node>, min: usize, max: Option<usize> },
 }
 
 /// What one pattern position accepts.
@@ -401,70 +445,139 @@ impl AtomKind {
     }
 }
 
-impl Atom {
-    fn new(kind: AtomKind) -> Self {
-        Self { kind, min: 1, max: Some(1) }
+/// A pattern compiled once and matched against many candidates.
+///
+/// Compiling a pattern is the one part of matching that does not depend on the candidate, and the
+/// completion filter used to pay it once per candidate per keystroke (I-P05). A caller that
+/// matches a list against one pattern compiles it once here and reuses it.
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledPattern {
+    anchored_start: bool,
+    anchored_end: bool,
+    nodes: Vec<Node>,
+}
+
+impl CompiledPattern {
+    /// Compiles `pattern`, or returns `None` when it is malformed.
+    pub(crate) fn compile(pattern: &str) -> Option<Self> {
+        let chars: Vec<char> = pattern.chars().collect();
+        let anchored_start = chars.first() == Some(&'^');
+        let start = if anchored_start { 1 } else { 0 };
+        let anchored_end = chars.len() > start && chars.last() == Some(&'$');
+        let limit = if anchored_end { chars.len() - 1 } else { chars.len() };
+        let (branches, next) = parse_alternation(&chars, start, limit)?;
+        // A `)` with no opening `(` is a malformed pattern rather than a literal.
+        if next < limit {
+            return None;
+        }
+        Some(Self { anchored_start, anchored_end, nodes: collapse(branches) })
+    }
+
+    /// Whether `text` matches.
+    pub(crate) fn is_match(&self, text: &str) -> bool {
+        let chars: Vec<char> = text.chars().collect();
+        self.matches_chars(&chars)
+    }
+
+    /// Whether the character slice matches, with the same unanchored semantics as before.
+    fn matches_chars(&self, text: &[char]) -> bool {
+        if self.anchored_start {
+            return accepts(&self.nodes, text, 0, self.anchored_end);
+        }
+        (0..=text.len()).any(|start| accepts(&self.nodes, text, start, self.anchored_end))
     }
 }
 
-/// Compiles the pattern into atoms, or returns `None` for a malformed class.
-fn compile_pattern(pattern: &str) -> Option<(bool, bool, Vec<Atom>)> {
-    let chars: Vec<char> = pattern.chars().collect();
-    let mut index = 0usize;
-    let anchored_start = chars.first() == Some(&'^');
-    if anchored_start {
-        index = 1;
+/// Collapses a one-branch alternation to its sequence, keeping the branch list otherwise.
+fn collapse(mut branches: Vec<Vec<Node>>) -> Vec<Node> {
+    if branches.len() == 1 {
+        branches.pop().unwrap_or_default()
+    } else {
+        vec![Node::Alt(branches)]
     }
-    let anchored_end = chars.len() > index && chars.last() == Some(&'$');
-    let limit = if anchored_end { chars.len() - 1 } else { chars.len() };
-    let mut atoms: Vec<Atom> = Vec::new();
-    while index < limit {
-        let ch = chars[index];
-        let kind = match ch {
-            '.' => {
-                index += 1;
-                AtomKind::Any
-            }
-            '\\' => {
-                index += 1;
-                let escaped = chars.get(index).copied()?;
-                index += 1;
-                AtomKind::Literal(escaped)
-            }
-            '[' => {
-                let (kind, next) = compile_class(&chars, index)?;
-                index = next;
-                kind
-            }
-            _ => {
-                index += 1;
-                AtomKind::Literal(ch)
-            }
-        };
-        let mut atom = Atom::new(kind);
-        if index < limit {
-            match chars[index] {
-                '*' => {
-                    atom.min = 0;
-                    atom.max = None;
-                    index += 1;
-                }
-                '+' => {
-                    atom.min = 1;
-                    atom.max = None;
-                    index += 1;
-                }
-                '?' => {
-                    atom.min = 0;
-                    atom.max = Some(1);
-                    index += 1;
-                }
-                _ => {}
-            }
+}
+
+/// Parses `a|b|c` from `index`, stopping at `)` or `limit`.
+fn parse_alternation(
+    chars: &[char],
+    start: usize,
+    limit: usize,
+) -> Option<(Vec<Vec<Node>>, usize)> {
+    let mut branches = Vec::new();
+    let mut index = start;
+    loop {
+        let (sequence, next) = parse_sequence(chars, index, limit)?;
+        branches.push(sequence);
+        index = next;
+        if index < limit && chars.get(index) == Some(&'|') {
+            index += 1;
+            continue;
         }
-        atoms.push(atom);
+        return Some((branches, index));
     }
-    Some((anchored_start, anchored_end, atoms))
+}
+
+/// Parses atoms until `|`, `)` or `limit`.
+fn parse_sequence(chars: &[char], mut index: usize, limit: usize) -> Option<(Vec<Node>, usize)> {
+    let mut nodes = Vec::new();
+    while index < limit {
+        if matches!(chars[index], '|' | ')') {
+            break;
+        }
+        let (node, next) = parse_node(chars, index, limit)?;
+        nodes.push(node);
+        index = next;
+    }
+    Some((nodes, index))
+}
+
+/// Parses one atom, class or group plus the quantifier that follows it.
+fn parse_node(chars: &[char], index: usize, limit: usize) -> Option<(Node, usize)> {
+    let ch = chars[index];
+    let mut next = index;
+    let base = match ch {
+        '.' => {
+            next += 1;
+            Node::Atom { kind: AtomKind::Any, min: 1, max: Some(1) }
+        }
+        '\\' => {
+            next += 1;
+            let escaped = *chars.get(next)?;
+            next += 1;
+            Node::Atom { kind: AtomKind::Literal(escaped), min: 1, max: Some(1) }
+        }
+        '[' => {
+            let (kind, after) = compile_class(chars, index)?;
+            next = after;
+            Node::Atom { kind, min: 1, max: Some(1) }
+        }
+        '(' => {
+            let (branches, after) = parse_alternation(chars, index + 1, limit)?;
+            if chars.get(after) != Some(&')') {
+                return None;
+            }
+            next = after + 1;
+            Node::Group(collapse(branches))
+        }
+        _ => {
+            next += 1;
+            Node::Atom { kind: AtomKind::Literal(ch), min: 1, max: Some(1) }
+        }
+    };
+    if next >= limit {
+        return Some((base, next));
+    }
+    let (min, max) = match chars[next] {
+        '*' => (0, None),
+        '+' => (1, None),
+        '?' => (0, Some(1)),
+        _ => return Some((base, next)),
+    };
+    let node = match base {
+        Node::Atom { kind, .. } => Node::Atom { kind, min, max },
+        other => Node::Repeat { node: Box::new(other), min, max },
+    };
+    Some((node, next + 1))
 }
 
 /// Compiles one `[...]` class starting at `start`, returning it and the index after `]`.
@@ -509,54 +622,96 @@ fn compile_class(chars: &[char], start: usize) -> Option<(AtomKind, usize)> {
     None
 }
 
-/// Whether `text` matches `pattern` under the same grammar [`PatternValidator`] uses.
-///
-/// Shared with the completion matcher, so a host's pattern-style completion prefix and its
-/// validation rule cannot disagree about what a pattern means.
-#[cfg(widgets_unstripped)]
-pub(crate) fn pattern_matches(pattern: &str, text: &str) -> bool {
-    let chars: crate::compat::Vec<char> = text.chars().collect();
-    match_pattern(pattern, &chars)
+/// Whether `nodes` can consume `text` from `position` and reach an accepted end.
+fn accepts(nodes: &[Node], text: &[char], position: usize, anchored_end: bool) -> bool {
+    ends_of(nodes, text, position).into_iter().any(|end| !anchored_end || end == text.len())
 }
 
-/// Matches the compiled pattern against `text` with backtracking over quantifiers.
-fn match_pattern(pattern: &str, text: &[char]) -> bool {
-    let Some((anchored_start, anchored_end, atoms)) = compile_pattern(pattern) else {
-        return false;
-    };
-    if anchored_start {
-        return match_at(&atoms, 0, text, 0, anchored_end);
+/// Every position `nodes` can reach from `position`, longest match first.
+fn ends_of(nodes: &[Node], text: &[char], position: usize) -> Vec<usize> {
+    let mut reached = vec![position];
+    for node in nodes {
+        let mut next: Vec<usize> = Vec::new();
+        for pos in reached {
+            for end in node_ends(node, text, pos) {
+                if !next.contains(&end) {
+                    next.push(end);
+                }
+            }
+        }
+        if next.is_empty() {
+            return next;
+        }
+        reached = next;
     }
-    (0..=text.len()).any(|start| match_at(&atoms, 0, text, start, anchored_end))
+    reached
 }
 
-/// Tries to match `atoms[index..]` against `text[position..]`.
-fn match_at(
-    atoms: &[Atom],
-    index: usize,
-    text: &[char],
-    position: usize,
-    anchored_end: bool,
-) -> bool {
-    if index == atoms.len() {
-        return !anchored_end || position == text.len();
-    }
-    let atom = &atoms[index];
-    let max = atom.max.unwrap_or(text.len());
-    // Greedy, then backtrack: try the longest repetition first so `.*x` matches the last `x`.
-    let mut count = 0usize;
-    while count < max && position + count < text.len() && atom.kind.matches(text[position + count])
-    {
-        count += 1;
-    }
-    loop {
-        if count >= atom.min && match_at(atoms, index + 1, text, position + count, anchored_end) {
-            return true;
+/// Every position `node` can reach from `position`, longest (greediest) first.
+fn node_ends(node: &Node, text: &[char], position: usize) -> Vec<usize> {
+    match node {
+        Node::Atom { kind, min, max } => {
+            let mut ends = Vec::new();
+            if *min == 0 {
+                ends.push(position);
+            }
+            let mut count = 0usize;
+            let mut pos = position;
+            let limit = max.unwrap_or(text.len().saturating_add(1));
+            while count < limit && pos < text.len() && kind.matches(text[pos]) {
+                pos += 1;
+                count += 1;
+                if count >= *min {
+                    ends.push(pos);
+                }
+            }
+            // Greedy, then backtrack: try the longest repetition first so `.*x` matches
+            // the last `x`.
+            ends.reverse();
+            ends
         }
-        if count == 0 {
-            return false;
+        Node::Group(nodes) => ends_of(nodes, text, position),
+        Node::Alt(branches) => {
+            let mut ends = Vec::new();
+            for branch in branches {
+                for end in ends_of(branch, text, position) {
+                    if !ends.contains(&end) {
+                        ends.push(end);
+                    }
+                }
+            }
+            ends
         }
-        count -= 1;
+        Node::Repeat { node, min, max } => {
+            let mut ends = Vec::new();
+            if *min == 0 {
+                ends.push(position);
+            }
+            let max_count = max.unwrap_or(text.len().saturating_add(1));
+            let mut frontier = vec![position];
+            let mut count = 0usize;
+            while count < max_count && !frontier.is_empty() {
+                let mut next: Vec<usize> = Vec::new();
+                for pos in frontier {
+                    for end in node_ends(node, text, pos) {
+                        // A repetition that does not advance would loop forever; only a step
+                        // that consumes input counts as a repetition.
+                        if end > pos && !next.contains(&end) {
+                            next.push(end);
+                        }
+                    }
+                }
+                count += 1;
+                for pos in &next {
+                    if count >= *min && !ends.contains(pos) {
+                        ends.push(*pos);
+                    }
+                }
+                frontier = next;
+            }
+            ends.reverse();
+            ends
+        }
     }
 }
 
@@ -663,5 +818,49 @@ mod tests {
         let rule: &dyn Validator = &RangeValidator::int(0, 3);
         assert!(rule.state("2").is_acceptable());
         assert_eq!(rule.filter(" anything "), " anything ");
+    }
+
+    #[test]
+    fn a_pattern_supports_groups_and_alternation() {
+        // The constructs `"A|B"` needs, which the flat-atom engine could not express (I-05).
+        let images = PatternValidator::new("^(png|jpg|webp)$", "image extension");
+        assert!(images.is_match("png"));
+        assert!(images.is_match("jpg"));
+        assert!(images.is_match("webp"));
+        assert!(!images.is_match("gif"));
+        assert!(!images.is_match("pngjpg"), "the anchors apply to the whole alternation");
+
+        // A quantified group repeats the whole sequence rather than its last atom.
+        let pairs = PatternValidator::new("^(ab)+$", "pairs");
+        assert!(pairs.is_match("ab"));
+        assert!(pairs.is_match("abab"));
+        assert!(!pairs.is_match("a"));
+        assert!(!pairs.is_match("aba"));
+
+        // Groups nest.
+        let nested = PatternValidator::new("^((a|b)c)+$", "nested");
+        assert!(nested.is_match("acbc"));
+        assert!(!nested.is_match("acb"));
+    }
+
+    #[test]
+    fn a_compiled_pattern_matches_many_values() {
+        let compiled = CompiledPattern::compile("a|b").expect("a valid pattern");
+        assert!(compiled.is_match("a") && compiled.is_match("b"));
+        assert!(!compiled.is_match("c"));
+        // A malformed pattern is refused rather than matched as literals.
+        assert!(CompiledPattern::compile("(a").is_none());
+    }
+
+    #[test]
+    fn a_range_message_names_the_bound_and_the_refused_value() {
+        // The static message is still available, and the value-specific one refines it (I-27).
+        let range = RangeValidator::int(1, 100);
+        assert_eq!(range.message(), "Enter a whole number in range");
+        assert_eq!(range.message_for("999"), "999 is outside 1..=100");
+        // A rule with nothing value-specific to say keeps the static sentence.
+        assert_eq!(range.message_for("50"), "Enter a whole number in range");
+        let builtin: &dyn Validator = &InputValidator::Phone;
+        assert_eq!(builtin.message_for("12"), builtin.message());
     }
 }

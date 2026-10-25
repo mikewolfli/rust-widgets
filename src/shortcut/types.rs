@@ -718,6 +718,18 @@ pub struct ShortcutEntry {
     pub shortcut: Shortcut,
     /// Whether the shortcut is currently enabled.
     pub enabled: bool,
+    /// The scope this binding belongs to, or `None` for the global scope.
+    ///
+    /// # Why a scope is a string here (W-201)
+    ///
+    /// A window and a modal domain are both "a context the host is currently in", and the host
+    /// already names its contexts (a window id, a dialog id). Storing that name keeps the manager
+    /// free of a second identity scheme; the stack in
+    /// [`ShortcutManager`](crate::shortcut::ShortcutManager) orders the names by activation.
+    ///
+    /// `None` is the global scope and behaves exactly as before scopes existed, so an existing
+    /// `register` call keeps its current semantics.
+    pub scope: Option<String>,
 }
 
 /// How a platform writes the glyphs of a keyboard shortcut.

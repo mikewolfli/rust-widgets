@@ -311,39 +311,41 @@ impl BorderLayout {
     /// The previous behaviour required every edge extent to be stated in advance, which is
     /// exactly the workaround the hint channel exists to remove. A region that still has
     /// explicit extents is untouched, so every existing layout is unchanged.
+    ///
+    /// # Why the auto extents are values rather than a cloned layout
+    ///
+    /// The body used to clone the whole `BorderLayout` so it could write the resolved extent
+    /// back into the items. That copied five id vectors and their extent/stretch tables on
+    /// every arrangement of every container. The resolved values are now a five-entry array
+    /// passed to [`Self::arrange_tracks`], so the allocation reads `&self.north` and friends
+    /// exactly as the other entry points do (G-154).
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
-        let mut resolved = self.clone();
-        let pref_of = |id: ObjectId| {
-            ChildInfo::find(children, id).map(|info| info.hints.width.pref).unwrap_or(0)
-        };
-        let pref_height_of = |id: ObjectId| {
-            ChildInfo::find(children, id).map(|info| info.hints.height.pref).unwrap_or(0)
-        };
-        let fill = |items: &mut Vec<BorderItem>, horizontal: bool| {
-            let wanted = items
+        let wanted = |region: BorderRegion, horizontal: bool| -> u32 {
+            self.region(region)
                 .iter()
                 .filter(|item| item.extent == 0)
                 .map(|item| {
-                    if horizontal {
-                        pref_of(item.widget_id)
-                    } else {
-                        pref_height_of(item.widget_id)
-                    }
+                    ChildInfo::find(children, item.widget_id)
+                        .map(|info| {
+                            if horizontal {
+                                info.hints.width.pref
+                            } else {
+                                info.hints.height.pref
+                            }
+                        })
+                        .unwrap_or(0)
                 })
                 .max()
-                .unwrap_or(0);
-            if wanted > 0 {
-                for item in items.iter_mut().filter(|item| item.extent == 0) {
-                    item.extent = wanted;
-                }
-            }
+                .unwrap_or(0)
         };
-        fill(&mut resolved.north, false);
-        fill(&mut resolved.south, false);
-        fill(&mut resolved.west, true);
-        fill(&mut resolved.east, true);
-        let insets = resolved.insets(1.0);
-        resolved.arrange_tracks(rect, resolved.spacing, insets, 1.0, out);
+        let auto = [
+            wanted(BorderRegion::North, false),
+            wanted(BorderRegion::South, false),
+            wanted(BorderRegion::West, true),
+            wanted(BorderRegion::East, true),
+            0,
+        ];
+        self.arrange_tracks(rect, self.spacing, self.insets(1.0), 1.0, Some(auto), out);
     }
 
     fn arrange_tracks(
@@ -352,6 +354,7 @@ impl BorderLayout {
         spacing: u32,
         insets: (u32, u32, u32, u32),
         scale: f32,
+        auto: Option<[u32; 5]>,
         widgets: &mut dyn FnMut(ObjectId, Rect),
     ) {
         if rect.width == 0 || rect.height == 0 {
@@ -372,12 +375,22 @@ impl BorderLayout {
             rect.height.saturating_sub(top).saturating_sub(bottom),
         );
 
-        let north = allocate_tracks(&self.north, inner.height, spacing, scale);
-        let south =
-            allocate_tracks(&self.south, inner.height.saturating_sub(north.total), spacing, scale);
-        let west = allocate_tracks(&self.west, inner.width, spacing, scale);
-        let east =
-            allocate_tracks(&self.east, inner.width.saturating_sub(west.total), spacing, scale);
+        let north = allocate_tracks(&self.north, inner.height, spacing, scale, auto.map(|a| a[0]));
+        let south = allocate_tracks(
+            &self.south,
+            inner.height.saturating_sub(north.total),
+            spacing,
+            scale,
+            auto.map(|a| a[1]),
+        );
+        let west = allocate_tracks(&self.west, inner.width, spacing, scale, auto.map(|a| a[2]));
+        let east = allocate_tracks(
+            &self.east,
+            inner.width.saturating_sub(west.total),
+            spacing,
+            scale,
+            auto.map(|a| a[3]),
+        );
 
         // Vertical range left for the west/east bands and the center.
         let middle_top = inner.y.saturating_add(north.total as i32);
@@ -434,6 +447,7 @@ fn allocate_tracks(
     available: u32,
     spacing: u32,
     scale: f32,
+    auto_extent: Option<u32>,
 ) -> TrackAllocation {
     if items.is_empty() {
         return TrackAllocation { lengths: Vec::new(), spacing: 0, total: 0 };
@@ -444,7 +458,10 @@ fn allocate_tracks(
     let mut remaining = budget;
     let mut lengths = Vec::with_capacity(items.len());
     for item in items {
-        let extent = scale_extent(item.extent, scale).min(remaining);
+        // An extent of zero means "auto" on the hint-aware path; every other entry point
+        // passes `None`, so zero keeps its historical meaning there.
+        let extent = if item.extent == 0 { auto_extent.unwrap_or(0) } else { item.extent };
+        let extent = scale_extent(extent, scale).min(remaining);
         remaining -= extent;
         lengths.push(extent);
     }
@@ -554,7 +571,7 @@ impl Layout for BorderLayout {
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
-        self.arrange_tracks(rect, self.spacing, self.insets(1.0), 1.0, widgets);
+        self.arrange_tracks(rect, self.spacing, self.insets(1.0), 1.0, None, widgets);
     }
 
     /// The hint-aware path: an edge whose recorded extent is `0` takes the largest
@@ -574,7 +591,7 @@ impl Layout for BorderLayout {
         let scale = context.layout_scale.max(context.font_scale);
         let spacing = (self.spacing as f32 * scale).round() as u32;
         let insets = self.insets(scale);
-        self.arrange_tracks(rect, spacing, insets, scale, widgets);
+        self.arrange_tracks(rect, spacing, insets, scale, None, widgets);
     }
 }
 

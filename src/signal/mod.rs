@@ -47,7 +47,7 @@ mod event_signal_ref;
 mod generic_signal;
 mod hub;
 pub use core_signal::{ConnectionHandle, ConnectionScope, Priority, Signal};
-pub use event_bridge::EventSignalBinder;
+pub use event_bridge::{is_wired, unwired_events, EventSignalBinder};
 pub use event_signal_ref::EventSignalRef;
 pub use generic_signal::{GenericSignal, Signal1};
 pub use hub::CustomSignalHub;

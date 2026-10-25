@@ -279,36 +279,94 @@ impl Command {
 }
 
 /// Runs a line-editing operation and reports whether the document changed.
+///
+/// # Why the revision counter rather than a text comparison
+///
+/// The previous version took `editor.text()` before and after the operation and compared
+/// the two strings. That copied the whole document **twice per command** and then compared
+/// it — an O(document) cost on a path that fires for every line command, in a demo whose
+/// point is a large buffer. `CodeEditor::revision()` is the crate's own counter for exactly
+/// this question: it advances only when an edit is accepted, so an equality test on it is
+/// both O(1) and the definition the editor itself uses.
 fn edit(editor: &mut CodeEditor, operation: impl FnOnce(&mut CodeEditor)) -> bool {
-    let before = editor.text();
+    let before = editor.revision();
     operation(editor);
-    editor.text() != before
+    editor.revision() != before
+}
+
+/// The facts the window's status row is composed from.
+///
+/// # Why this lives in the command module
+///
+/// Two paths fill the status bar: the initial text at start-up, composed from a mounted
+/// editor through [`status_line`], and every later signal-driven refresh, where
+/// `app::wire_status_bar` owns a value of this type and re-renders it. Both used to carry
+/// their own copy of the template, so a wording change had to be made twice and the bar's
+/// format depended on which path wrote it last. [`StatusFacts::render`] is now the only
+/// place the template exists.
+#[derive(Clone)]
+pub struct StatusFacts {
+    /// Language name shown at the left of the bar.
+    pub language: String,
+    /// Zero-based caret line.
+    pub line: usize,
+    /// Zero-based caret column.
+    pub column: usize,
+    /// Document line count.
+    pub lines: usize,
+    /// Diagnostic counts by severity.
+    pub errors: usize,
+    /// Diagnostic counts by severity.
+    pub warnings: usize,
+    /// Diagnostic counts by severity.
+    pub infos: usize,
+    /// Whether the buffer differs from its save point.
+    pub modified: bool,
+}
+
+impl StatusFacts {
+    /// Reads every fact from `editor`.
+    ///
+    /// The diagnostic tally is collected here because the editor's own status row is hidden
+    /// in this demo: the window owns the single status bar.
+    pub fn of(editor: &CodeEditor) -> Self {
+        let (line, column) = editor.cursor();
+        Self {
+            language: editor.language_name(),
+            line,
+            column,
+            lines: editor.line_count(),
+            errors: editor.marker_count(MarkerSeverity::Error),
+            warnings: editor.marker_count(MarkerSeverity::Warning),
+            infos: editor.marker_count(MarkerSeverity::Info),
+            modified: editor.is_modified(),
+        }
+    }
+
+    /// The demo's one status-line template.
+    pub fn render(&self) -> String {
+        format!(
+            "{}  |  Ln {}, Col {}  |  {} lines  |  E{} W{} I{}{}",
+            self.language,
+            self.line + 1,
+            self.column + 1,
+            self.lines,
+            self.errors,
+            self.warnings,
+            self.infos,
+            if self.modified { " *" } else { "" }
+        )
+    }
 }
 
 /// Renders the demo's status line for a mounted editor.
 ///
-/// Returns `None` when the widget is not a `CodeEditor` (or was unmounted).
+/// Returns `None` when the widget is not a `CodeEditor` (or was unmounted). The text comes
+/// from [`StatusFacts::render`], the same formatter the signal path uses.
 pub fn status_line(editor: &CustomWidgetHandle) -> Option<String> {
     editor.read(|widget| {
         let editor = (widget as &dyn std::any::Any).downcast_ref::<CodeEditor>()?;
-        let (line, column) = editor.cursor();
-        let modified = if editor.is_modified() { " *" } else { "" };
-        // The diagnostic tally lives here because the editor's own status row is
-        // hidden in this demo (the window owns the single status bar).
-        let errors = editor.marker_count(MarkerSeverity::Error);
-        let warnings = editor.marker_count(MarkerSeverity::Warning);
-        let infos = editor.marker_count(MarkerSeverity::Info);
-        Some(format!(
-            "{}  |  Ln {}, Col {}  |  {} lines  |  E{} W{} I{}{}",
-            editor.language_name(),
-            line + 1,
-            column + 1,
-            editor.line_count(),
-            errors,
-            warnings,
-            infos,
-            modified
-        ))
+        Some(StatusFacts::of(editor).render())
     })?
 }
 
@@ -595,6 +653,30 @@ mod tests {
         editor.set_cursor(0, 0, false);
         assert!(Command::ToggleComment.apply(&mut editor));
         assert!(editor.text().starts_with("//"));
+    }
+
+    /// The two status-bar paths share one template.
+    ///
+    /// `status_line` (the start-up path) and `wire_status_bar` (the signal path) both render
+    /// through [`StatusFacts::render`]. This pins the exact text that template produces, so a
+    /// change in one path cannot silently diverge from the other.
+    #[test]
+    fn the_status_line_comes_from_the_shared_formatter() {
+        let mut editor = editor("first\nsecond");
+        editor.set_language(LanguageId::Rust);
+        // `set_text` leaves the buffer dirty on some paths; a saved buffer makes the
+        // expected string unambiguous.
+        editor.mark_saved();
+        editor.set_cursor(1, 2, false);
+
+        let facts = StatusFacts::of(&editor);
+        assert_eq!(facts.line, 1);
+        assert_eq!(facts.column, 2);
+        assert!(!facts.modified, "a saved buffer reports no modification marker");
+        assert_eq!(
+            facts.render(),
+            format!("Rust  |  Ln 2, Col 3  |  {} lines  |  E0 W0 I0", editor.line_count())
+        );
     }
 
     /// Every command the demo exposes, so tests stay exhaustive.

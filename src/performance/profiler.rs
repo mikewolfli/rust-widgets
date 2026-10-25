@@ -210,8 +210,8 @@ pub struct FrameProfiler {
     frame_times: VecDeque<Duration>,
     max_frames: usize,
     current_frame_start: Option<Instant>,
-    sections: HashMap<String, Duration>,
-    current_section: Option<(String, Instant)>,
+    sections: HashMap<&'static str, Duration>,
+    current_section: Option<(&'static str, Instant)>,
 }
 impl FrameProfiler {
     /// Creates a profiler that retains up to `max_frames` frame durations.
@@ -251,8 +251,13 @@ impl FrameProfiler {
     }
     /// Starts timing a named section of the current frame, replacing any section
     /// still open. Section names are independent of frame boundaries.
-    pub fn begin_section(&mut self, name: &str) {
-        self.current_section = Some((name.to_string(), Instant::now()));
+    ///
+    /// `name` is `&'static str` because this runs on the per-frame path: taking an
+    /// owned string copied the name on every call, so the profiler was itself a
+    /// source of per-frame allocation (G-71). This matches [`Profiler::begin`],
+    /// which already stores the caller's literal instead of a copy.
+    pub fn begin_section(&mut self, name: &'static str) {
+        self.current_section = Some((name, Instant::now()));
     }
     /// Stops the open section and adds the elapsed time to its running total for
     /// the current frame. Does nothing if no section is open.
@@ -296,8 +301,9 @@ impl FrameProfiler {
         self.frame_times.len()
     }
     /// Borrows the per-section totals for the frame in progress. The map is
-    /// emptied by `begin_frame` and is not cleared by `end_frame`.
-    pub fn sections(&self) -> &HashMap<String, Duration> {
+    /// emptied by `begin_frame` and is not cleared by `end_frame`. Keys are the
+    /// `&'static str` literals passed to [`Self::begin_section`], never copies.
+    pub fn sections(&self) -> &HashMap<&'static str, Duration> {
         &self.sections
     }
     /// Drops the recorded frame durations and all section timings. Does not
@@ -474,6 +480,26 @@ mod tests {
         }
         assert_eq!(profiler.frame_count(), 5);
         assert!(profiler.fps() > 0.0);
+    }
+
+    /// Section names are the caller's `&'static str` literals, so a frame section is
+    /// recorded under that exact name and accumulates across repeated begin/end pairs.
+    /// This is the observable half of G-71: the key type is a reference, not a
+    /// per-call `String` allocation.
+    #[test]
+    fn frame_sections_are_recorded_under_their_static_names() {
+        let mut profiler = FrameProfiler::new(4);
+        profiler.begin_frame();
+        for _ in 0..2 {
+            profiler.begin_section("layout");
+            sleep(Duration::from_millis(1));
+            profiler.end_section();
+        }
+        let sections = profiler.sections();
+        assert_eq!(sections.len(), 1, "both measurements share one literal key");
+        let total = sections.get("layout").copied().expect("section is recorded");
+        assert!(total >= Duration::from_millis(2), "durations accumulate across calls");
+        profiler.end_frame();
     }
 
     /// A zero-capacity frame profiler documents that it stores no samples, but its first `end_frame`

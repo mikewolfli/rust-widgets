@@ -89,39 +89,85 @@ pub(crate) fn glyph_rects(
     w: u32,
     h: u32,
 ) -> impl Iterator<Item = (i32, i32, i32, i32)> {
-    let width = w as i32;
-    let height = h as i32;
-    let mut rects = crate::compat::Vec::new();
     // A whitespace glyph and a zero-extent box produce no ink; the rasteriser returns early for
     // both, and so does this.
-    if !ch.is_whitespace() && w != 0 && h != 0 {
-        let (glyph, _) = crate::render::text::resolve(ch);
-        let gw = glyph.width as i32;
-        let gh = glyph.height as i32;
+    let glyph = if !ch.is_whitespace() && w != 0 && h != 0 {
         // A resolved glyph is always a real cell (8x8 or 16x16); the guard is belt-and-braces so
         // a hypothetical zero-sized face divides nothing.
-        if gw > 0 && gh > 0 {
-            for gy in 0..gh {
-                let y0 = y + (gy * height) / gh;
-                let mut y1 = y + ((gy + 1) * height) / gh;
-                if y1 <= y0 {
-                    y1 = y0 + 1;
-                }
-                for gx in 0..gw {
-                    if !glyph.bit(gx as u32, gy as u32) {
-                        continue;
-                    }
-                    let x0 = x + (gx * width) / gw;
-                    let mut x1 = x + ((gx + 1) * width) / gw;
-                    if x1 <= x0 {
-                        x1 = x0 + 1;
-                    }
-                    rects.push((x0, y0, x1, y1));
-                }
-            }
-        }
+        let (glyph, _) = crate::render::text::resolve(ch);
+        (glyph.width > 0 && glyph.height > 0).then_some(glyph)
+    } else {
+        None
+    };
+    GlyphRectScan {
+        glyph,
+        x,
+        y,
+        width: w as i32,
+        height: h as i32,
+        gw: glyph.map_or(0, |glyph| glyph.width as i32),
+        gh: glyph.map_or(0, |glyph| glyph.height as i32),
+        gx: 0,
+        gy: 0,
     }
-    rects.into_iter()
+}
+
+/// The lazy state behind [`glyph_rects`].
+///
+/// The rectangles used to be collected into a `Vec` first, so every glyph cost one allocation even
+/// when the caller consumed all of them immediately — which every caller does (the rasteriser and
+/// the SVG backend both walk the set once, per glyph, per frame). Scanning the bits in `next()`
+/// yields the same rectangles in the same order with no intermediate buffer (G-16).
+struct GlyphRectScan {
+    /// The face's 1-bit cell, or `None` when the character has no ink.
+    glyph: Option<crate::render::text::GlyphBitmap>,
+    /// Destination origin.
+    x: i32,
+    /// Destination origin.
+    y: i32,
+    /// Destination cell width.
+    width: i32,
+    /// Destination cell height.
+    height: i32,
+    /// Source cell width, in bitmap pixels.
+    gw: i32,
+    /// Source cell height, in bitmap pixels.
+    gh: i32,
+    /// Next source column to inspect.
+    gx: i32,
+    /// Next source row to inspect.
+    gy: i32,
+}
+
+impl Iterator for GlyphRectScan {
+    type Item = (i32, i32, i32, i32);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let glyph = self.glyph?;
+        while self.gy < self.gh {
+            let y0 = self.y + (self.gy * self.height) / self.gh;
+            let mut y1 = self.y + ((self.gy + 1) * self.height) / self.gh;
+            if y1 <= y0 {
+                y1 = y0 + 1;
+            }
+            while self.gx < self.gw {
+                let gx = self.gx;
+                self.gx += 1;
+                if !glyph.bit(gx as u32, self.gy as u32) {
+                    continue;
+                }
+                let x0 = self.x + (gx * self.width) / self.gw;
+                let mut x1 = self.x + ((gx + 1) * self.width) / self.gw;
+                if x1 <= x0 {
+                    x1 = x0 + 1;
+                }
+                return Some((x0, y0, x1, y1));
+            }
+            self.gx = 0;
+            self.gy += 1;
+        }
+        None
+    }
 }
 
 /// Blend one glyph's ink into a canvas, from a face's painted coverage.
@@ -187,12 +233,40 @@ pub(crate) fn blend_painted_glyph(
         // the honest answer: the alternative is to read four-byte pixels as coverage and paint noise.
         return false;
     }
-    let (width, height) = (cell.width as i32, cell.height as i32);
+    let italic = config.italic;
+    blend_coverage_bitmap(cell.width, cell.height, x, y, coverage, config, italic)
+}
+
+/// Blends one coverage bitmap of `cell_width` x `cell_height` pixels into the canvas at `(x, y)`.
+///
+/// Split out of [`blend_painted_glyph`] so a caller holding bytes that were painted **earlier** —
+/// the glyph atlas — blends them through exactly the same loop, weight curve and clip test. The
+/// arithmetic is unchanged: a glyph's ink is a linear area fraction, so it goes through
+/// [`glyph_coverage_weight`] and then [`blend_pixel`], byte for byte as before.
+///
+/// `apply_italic` is the synthetic oblique. The atlas slants its bitmap when it rasterises, so a
+/// caller passing those bytes asks for `false`; a direct paint passes `config.italic`. Doing the
+/// shear twice would move the ink two cells' worth (G-202).
+///
+/// Returns whether any ink was blended.
+pub(crate) fn blend_coverage_bitmap(
+    cell_width: u32,
+    cell_height: u32,
+    x: i32,
+    y: i32,
+    coverage: &[u8],
+    config: &mut GlyphDrawConfig,
+    apply_italic: bool,
+) -> bool {
+    let (width, height) = (cell_width as i32, cell_height as i32);
+    if width <= 0 || height <= 0 || coverage.len() < (width as usize) * (height as usize) {
+        return false;
+    }
     // Synthetic oblique: slide each row horizontally around the cell's vertical centre. Top rows
     // move right and bottom rows move left, so the slant stays inside the cell and the advance is
     // unchanged (G-18).
     let italic_shift = |py: i32| -> i32 {
-        if config.italic {
+        if apply_italic {
             (((height as f32 * 0.5) - py as f32) * 0.2).round() as i32
         } else {
             0
@@ -739,14 +813,23 @@ pub fn blend_pixel_with_mode(
     // the identity (`B(Cb, Cs) = Cs`), so the arithmetic below is bit-for-bit the old path.
     let blended = if mode == BlendMode::Normal {
         [src_f[0], src_f[1], src_f[2]]
-    } else if let Some(_f) = separable_blend(mode, dst_f[0], src_f[0]) {
-        [
-            separable_blend(mode, dst_f[0], src_f[0]).unwrap_or(src_f[0]),
-            separable_blend(mode, dst_f[1], src_f[1]).unwrap_or(src_f[1]),
-            separable_blend(mode, dst_f[2], src_f[2]).unwrap_or(src_f[2]),
-        ]
     } else {
-        non_separable_blend(mode, [dst_f[0], dst_f[1], dst_f[2]], [src_f[0], src_f[1], src_f[2]])
+        // One call decides which family the mode belongs to; the red channel's result *is* that
+        // answer. It used to be computed twice — once to test and once to store — so every
+        // non-`Normal` pixel paid for one extra blend function (G-11). The bytes are unchanged:
+        // the discarded call returned exactly the value bound here.
+        match separable_blend(mode, dst_f[0], src_f[0]) {
+            Some(red) => [
+                red,
+                separable_blend(mode, dst_f[1], src_f[1]).unwrap_or(src_f[1]),
+                separable_blend(mode, dst_f[2], src_f[2]).unwrap_or(src_f[2]),
+            ],
+            None => non_separable_blend(
+                mode,
+                [dst_f[0], dst_f[1], dst_f[2]],
+                [src_f[0], src_f[1], src_f[2]],
+            ),
+        }
     };
     let out_a = src_a + dst_f[3] * (1.0 - src_a);
     if out_a <= f32::EPSILON {
@@ -806,6 +889,39 @@ pub(crate) fn circle_fill_coverage(distance: f32, radius: f32) -> f32 {
     }
     (radius + 1.0 - distance).clamp(0.0, 1.0)
 }
+
+/// [`circle_fill_coverage`] taking the **squared** distance from the centre.
+///
+/// The clamp makes the answer exact outside a one-pixel band: a sample at distance `d <= r` is
+/// fully covered and one at `d >= r + 1` is empty, so only the edge band needs the square root
+/// (G-10). The thresholds are compared in `f64` because `dx * dx + dy * dy` is an `f32` value and
+/// `r * r` rounds in `f32`, while the wider product of two `f32` operands is exact — that makes
+/// `dist2 <= r * r` exactly equivalent to `sqrt(dist2) <= r`, so the two shortcuts below return
+/// the very value the old per-sample `sqrt` + clamp returned, bit for bit. A sample that lands in
+/// the band still evaluates the identical `f32` expression.
+fn circle_fill_coverage_at_sq(dist2: f32, radius: f32) -> f32 {
+    if radius <= 0.0 {
+        return 0.0;
+    }
+    let squared = dist2 as f64;
+    let r = radius as f64;
+    if squared <= r * r {
+        return 1.0;
+    }
+    let outer = r + 1.0;
+    if squared >= outer * outer {
+        return 0.0;
+    }
+    circle_fill_coverage_in_band(dist2, radius)
+}
+
+/// The square root the band case above needs, kept as the named entry point so the clamp lives in
+/// exactly one place.
+#[inline]
+fn circle_fill_coverage_in_band(dist2: f32, radius: f32) -> f32 {
+    circle_fill_coverage(dist2.sqrt(), radius)
+}
+
 pub(crate) fn circle_fill_coverage_grid(
     px: i32,
     py: i32,
@@ -822,8 +938,9 @@ pub(crate) fn circle_fill_coverage_grid(
             let sample_y = py as f32 + (sy as f32 + 0.5) / sample_count as f32;
             let dx = sample_x - center.x as f32;
             let dy = sample_y - center.y as f32;
-            let distance = (dx * dx + dy * dy).sqrt();
-            coverage_sum += circle_fill_coverage(distance, radius);
+            // The distance is no longer rooted here: the three cases the clamp distinguishes are
+            // decided on the squared distance, and only an edge-band sample pays for the `sqrt`.
+            coverage_sum += circle_fill_coverage_at_sq(dx * dx + dy * dy, radius);
         }
     }
     (coverage_sum / total as f32).clamp(0.0, 1.0)
@@ -848,10 +965,11 @@ pub(crate) fn circle_stroke_coverage_grid(
             let sample_y = py as f32 + (sy as f32 + 0.5) / sample_count as f32;
             let dx = sample_x - center.x as f32;
             let dy = sample_y - center.y as f32;
-            let distance = (dx * dx + dy * dy).sqrt();
-            // Ring coverage: outside inner radius and inside outer radius
-            let inner_coverage = circle_fill_coverage(distance, inner_radius);
-            let outer_coverage = circle_fill_coverage(distance, outer_radius);
+            // Both circles are answered from the one squared distance, so a ring's sample needs no
+            // root at all unless it falls in the outer band (G-10).
+            let dist2 = dx * dx + dy * dy;
+            let inner_coverage = circle_fill_coverage_at_sq(dist2, inner_radius);
+            let outer_coverage = circle_fill_coverage_at_sq(dist2, outer_radius);
             // Ring is outer circle minus inner circle
             coverage_sum += (outer_coverage - inner_coverage).max(0.0);
         }

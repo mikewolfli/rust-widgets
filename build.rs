@@ -279,13 +279,19 @@ fn declare_cfg_aliases() {
     // `NO_DECLARATIVE_VIEW` must be here: this script turns it into an `rustc-cfg`,
     // so without the rerun directive toggling the feature on an already-built tree
     // would reuse the cached aliases and appear to have no effect.
+    //
+    // Rule: every feature read through `feature_enabled` **that becomes an
+    // `rustc-cfg`** must be listed here. Cargo already tracks features for a normal
+    // build, but an out-of-tree invocation that sets `CARGO_FEATURE_*` directly would
+    // otherwise reuse a cached alias that describes the previous configuration.
+    // `portable` was listed for years without existing in `[features]`; a name that
+    // no build can set is a stale dependency, not documentation.
     for feature in [
         "desktop",
         "tablet",
         "mobile",
         "mini",
         "embedded",
-        "portable",
         "no-declarative-view",
         // The positive spelling (see the feature's own note in `Cargo.toml`). It does not generate a
         // `rustc-cfg` on its own — `declarative_view` is resolved from the opt-out — but it is
@@ -296,6 +302,14 @@ fn declare_cfg_aliases() {
         // becomes an `rustc-cfg`, so without the directive, toggling it on an
         // already-built tree would reuse the cached aliases and appear to do nothing.
         "designer",
+        // `cjk_outline` (the `cjk_outline_face` rustc-cfg) is derived from the single
+        // face **or any shard**, so all six inputs belong here.
+        "fonts-cjk",
+        "fonts-cjk-shard-latin",
+        "fonts-cjk-shard-symbols",
+        "fonts-cjk-shard-kana",
+        "fonts-cjk-shard-fullwidth",
+        "fonts-cjk-shard-han",
     ] {
         println!(
             "cargo:rerun-if-env-changed=CARGO_FEATURE_{}",

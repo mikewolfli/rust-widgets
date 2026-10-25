@@ -14,6 +14,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use core::cell::{Ref, RefCell};
 
 /// One timeline entry with inclusive start/end time units.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +62,64 @@ impl TimelineLaneMode {
 /// Height of the time-label header, in pixels.
 const TIME_LABEL_HEIGHT: u32 = 16;
 
+/// How close to a bar's edge a press has to land to resize it rather than move it.
+const TIMELINE_EDGE_GRAB: i32 = 4;
+
+/// How far the pointer must travel before a press on empty track becomes a pan.
+const TIMELINE_PAN_THRESHOLD: i32 = 3;
+
+/// A pointer gesture in progress on the time track.
+///
+/// The control owns no item model, so a drag only **reports** the new span through
+/// [`TimelineWidget::item_moved`] / [`TimelineWidget::item_resized`]; whether the host writes it
+/// back is the host's decision.
+enum TimelineDrag {
+    /// Dragging the empty track pans the visible range.
+    Pan {
+        /// Pointer x at the press.
+        origin_x: i32,
+        /// Viewport start at the press.
+        start: i64,
+        /// Viewport end at the press.
+        end: i64,
+        /// Whether the movement threshold has been passed.
+        moved: bool,
+    },
+    /// Dragging a bar's body moves it in time.
+    Move {
+        /// The dragged item.
+        index: usize,
+        /// Pointer x at the press.
+        origin_x: i32,
+        /// Item start at the press.
+        start: i64,
+        /// Item end at the press.
+        end: i64,
+    },
+    /// Dragging a bar's leading edge changes its start.
+    ResizeStart {
+        /// The dragged item.
+        index: usize,
+        /// Pointer x at the press.
+        origin_x: i32,
+        /// Item start at the press.
+        start: i64,
+        /// Item end at the press.
+        end: i64,
+    },
+    /// Dragging a bar's trailing edge changes its end.
+    ResizeEnd {
+        /// The dragged item.
+        index: usize,
+        /// Pointer x at the press.
+        origin_x: i32,
+        /// Item start at the press.
+        start: i64,
+        /// Item end at the press.
+        end: i64,
+    },
+}
+
 /// How many intervals the time-label header is divided into.
 const TIME_LABEL_TICKS: u32 = 4;
 
@@ -93,12 +152,22 @@ pub struct TimelineWidget {
     show_time_labels: bool,
     /// How items are assigned to rows.
     lane_mode: TimelineLaneMode,
+    /// Bumped whenever the item list changes; keys the lane cache.
+    items_revision: u64,
+    /// The lane packing, recomputed only when the items or the mode change (SP-P69).
+    lane_cache: RefCell<Option<(u64, TimelineLaneMode, Vec<Vec<usize>>)>>,
+    /// The pointer gesture in progress, if any.
+    drag: Option<TimelineDrag>,
     /// Emitted when selected item changes. Payload is selected item id.
     pub item_selected: Signal1<String>,
     /// Emitted when the visible time range changes. Payload is `(start, end)`.
     pub viewport_changed: Signal1<(i64, i64)>,
     /// Emitted when the item under the pointer changes; `None` when the pointer leaves.
     pub item_hovered: Signal1<Option<String>>,
+    /// Emitted with `(id, new start, new end)` while a bar is dragged to a new time span (SP-61).
+    pub item_moved: Signal1<(String, i64, i64)>,
+    /// Emitted with `(id, new start, new end)` while a bar's edge is dragged (SP-61).
+    pub item_resized: Signal1<(String, i64, i64)>,
 }
 
 impl TimelineWidget {
@@ -118,9 +187,14 @@ impl TimelineWidget {
             reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
             show_time_labels: false,
             lane_mode: TimelineLaneMode::Row,
+            items_revision: 1,
+            lane_cache: RefCell::new(None),
+            drag: None,
             item_selected: Signal1::new(),
             viewport_changed: Signal1::new(),
             item_hovered: Signal1::new(),
+            item_moved: Signal1::new(),
+            item_resized: Signal1::new(),
         }
     }
 
@@ -190,18 +264,35 @@ impl TimelineWidget {
         // the pointer maps through must both be recomputed.
         self.scroll_offset = self.scroll_offset.min(self.lane_count().saturating_sub(1));
         self.hovered_index = None;
+        self.drag = None;
         self.base.request_layout();
         self.base.request_redraw();
     }
 
     /// The rows of the current mode: each row is the item indices it holds.
     ///
-    /// # Why lanes are derived rather than stored
+    /// # Why the packing is cached rather than rebuilt
     ///
-    /// The packing is a pure function of the item list and the mode. Storing it would need
-    /// invalidation on every item edit, which is the class of bug a derivation cannot have; the list
-    /// is small enough that an O(items × lanes) pass is not the paint's cost.
-    fn lanes(&self) -> Vec<Vec<usize>> {
+    /// The packing is a pure function of the item list and the mode, and it used to be recomputed
+    /// on **both** the paint and the hit-test path — a pointer move and the frame that followed it
+    /// each ran the full `O(items × lanes)` pass (SP-P69). The cache is keyed by the item revision
+    /// and the mode, and both of those are bumped at every writer, so a stale packing is not
+    /// reachable.
+    fn lanes(&self) -> Ref<'_, Vec<Vec<usize>>> {
+        let fresh = self.lane_cache.borrow().as_ref().is_some_and(|(revision, mode, _)| {
+            *revision == self.items_revision && *mode == self.lane_mode
+        });
+        if !fresh {
+            let lanes = self.compute_lanes();
+            *self.lane_cache.borrow_mut() = Some((self.items_revision, self.lane_mode, lanes));
+        }
+        Ref::map(self.lane_cache.borrow(), |cache| {
+            &cache.as_ref().expect("the lane packing was just computed").2
+        })
+    }
+
+    /// Runs the packing for the current mode.
+    fn compute_lanes(&self) -> Vec<Vec<usize>> {
         match self.lane_mode {
             TimelineLaneMode::Row => (0..self.items.len()).map(|index| vec![index]).collect(),
             TimelineLaneMode::LanePacked => {
@@ -279,6 +370,8 @@ impl TimelineWidget {
     pub fn set_items(&mut self, items: Vec<TimelineItem>) {
         self.items = items;
         self.selected_index = None;
+        self.items_revision = self.items_revision.wrapping_add(1);
+        self.drag = None;
         self.recompute_viewport();
         self.base.request_layout();
         self.base.request_redraw();
@@ -445,6 +538,59 @@ impl TimelineWidget {
         )
     }
 
+    /// Converts a horizontal pointer delta into time units at the current scale.
+    fn pixels_to_time(&self, dx: i32, track_w: u32) -> i64 {
+        if track_w == 0 {
+            return 0;
+        }
+        let span = (self.viewport_end - self.viewport_start).max(1) as f64;
+        ((dx as f64 / track_w as f64) * span).round() as i64
+    }
+
+    /// Continues the drag in progress with the pointer at `pos` and puts the gesture back.
+    fn continue_drag(&mut self, drag: TimelineDrag, pos: Point) {
+        let (_, track_w) = self.track_geometry();
+        match drag {
+            TimelineDrag::Pan { origin_x, start, end, moved } => {
+                let dx = pos.x - origin_x;
+                if !moved && dx.abs() < TIMELINE_PAN_THRESHOLD {
+                    self.drag = Some(TimelineDrag::Pan { origin_x, start, end, moved });
+                    return;
+                }
+                let delta = self.pixels_to_time(dx, track_w);
+                self.set_viewport(start - delta, end - delta);
+                self.drag = Some(TimelineDrag::Pan { origin_x, start, end, moved: true });
+            }
+            TimelineDrag::Move { index, origin_x, start, end } => {
+                let delta = self.pixels_to_time(pos.x - origin_x, track_w);
+                if let Some(item) = self.items.get(index) {
+                    self.item_moved.emit((item.id.clone(), start + delta, end + delta));
+                }
+                self.drag = Some(TimelineDrag::Move { index, origin_x, start, end });
+                self.base.request_redraw();
+            }
+            TimelineDrag::ResizeStart { index, origin_x, start, end } => {
+                let delta = self.pixels_to_time(pos.x - origin_x, track_w);
+                // An edge cannot cross its counterpart, so the span never inverts.
+                let next_start = (start + delta).min(end - 1);
+                if let Some(item) = self.items.get(index) {
+                    self.item_resized.emit((item.id.clone(), next_start, end));
+                }
+                self.drag = Some(TimelineDrag::ResizeStart { index, origin_x, start, end });
+                self.base.request_redraw();
+            }
+            TimelineDrag::ResizeEnd { index, origin_x, start, end } => {
+                let delta = self.pixels_to_time(pos.x - origin_x, track_w);
+                let next_end = (end + delta).max(start + 1);
+                if let Some(item) = self.items.get(index) {
+                    self.item_resized.emit((item.id.clone(), start, next_end));
+                }
+                self.drag = Some(TimelineDrag::ResizeEnd { index, origin_x, start, end });
+                self.base.request_redraw();
+            }
+        }
+    }
+
     fn project_x(&self, value: i64, track_x: i32, track_w: u32) -> i32 {
         let start = self.viewport_start;
         let end = self.viewport_end.max(start + 1);
@@ -519,6 +665,22 @@ impl Widget for TimelineWidget {
                 Some(EventSignalRef::mapped("item_hovered", &self.item_hovered, |v| match v {
                     Some(id) => CapabilityValue::String(id.clone()),
                     None => CapabilityValue::Null,
+                }))
+            }
+            "item_moved" => Some(EventSignalRef::mapped("item_moved", &self.item_moved, |v| {
+                CapabilityValue::Tuple(alloc::vec![
+                    CapabilityValue::String(v.0.clone()),
+                    CapabilityValue::Int(v.1),
+                    CapabilityValue::Int(v.2),
+                ])
+            })),
+            "item_resized" => {
+                Some(EventSignalRef::mapped("item_resized", &self.item_resized, |v| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::String(v.0.clone()),
+                        CapabilityValue::Int(v.1),
+                        CapabilityValue::Int(v.2),
+                    ])
                 }))
             }
             _ => None,
@@ -643,6 +805,10 @@ impl EventHandler for TimelineWidget {
 
         match event {
             Event::MouseMove { pos } => {
+                if let Some(drag) = self.drag.take() {
+                    self.continue_drag(drag, *pos);
+                    return;
+                }
                 // Hover is painted (the hovered row takes `hovered_background`), so it must
                 // repaint — and only when the hovered item actually changes. Without this the
                 // highlight lagged until an unrelated event repainted.
@@ -656,15 +822,68 @@ impl EventHandler for TimelineWidget {
                 }
             }
             Event::MouseLeave { .. } => {
+                self.drag = None;
                 if self.hovered_index.take().is_some() {
                     self.item_hovered.emit(None);
                     self.base.request_redraw();
                 }
             }
             Event::MousePress { pos, button: 1, .. } => {
-                if let Some(index) = self.item_at(*pos) {
-                    let _ = self.select_index(index);
+                let (track_x, track_w) = self.track_geometry();
+                if track_w == 0 {
+                    return;
                 }
+                match self.item_at(*pos) {
+                    Some(index) => {
+                        let _ = self.select_index(index);
+                        // Three zones: the two edge bands resize, the body moves. Both report
+                        // through signals only — the host owns the item model (SP-61).
+                        let Some(item) = self.items.get(index) else { return };
+                        let x0 = self.project_x(item.start, track_x, track_w);
+                        let x1 = self.project_x(item.end, track_x, track_w).max(x0 + 2);
+                        let base = (index, pos.x, item.start, item.end);
+                        self.drag = Some(if (pos.x - x0).abs() <= TIMELINE_EDGE_GRAB {
+                            TimelineDrag::ResizeStart {
+                                index: base.0,
+                                origin_x: base.1,
+                                start: base.2,
+                                end: base.3,
+                            }
+                        } else if (pos.x - x1).abs() <= TIMELINE_EDGE_GRAB {
+                            TimelineDrag::ResizeEnd {
+                                index: base.0,
+                                origin_x: base.1,
+                                start: base.2,
+                                end: base.3,
+                            }
+                        } else {
+                            TimelineDrag::Move {
+                                index: base.0,
+                                origin_x: base.1,
+                                start: base.2,
+                                end: base.3,
+                            }
+                        });
+                    }
+                    None => {
+                        // Empty track: a drag pans the visible range, which is the primary
+                        // interaction a timeline is expected to offer (SP-60). The threshold
+                        // keeps a click on the row grid from shifting the range.
+                        let rect = self.geometry();
+                        let body_top = rect.y + self.axis_height() as i32;
+                        if pos.y >= body_top {
+                            self.drag = Some(TimelineDrag::Pan {
+                                origin_x: pos.x,
+                                start: self.viewport_start,
+                                end: self.viewport_end,
+                                moved: false,
+                            });
+                        }
+                    }
+                }
+            }
+            Event::MouseRelease { .. } => {
+                self.drag = None;
             }
             Event::Wheel { delta, modifiers } => {
                 let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
@@ -1078,11 +1297,16 @@ mod tests {
         assert_eq!(timeline.lanes().len(), 3);
 
         timeline.set_lane_mode(TimelineLaneMode::LanePacked);
-        let lanes = timeline.lanes();
-        assert_eq!(lanes.len(), 2, "two overlaps need two lanes, not three rows");
-        // `a` and `b` overlap, so they differ; `c` starts after `a` ended, so it shares that lane.
-        assert!(lanes.iter().any(|lane| lane.contains(&0) && lane.contains(&2)));
-        assert!(!lanes.iter().any(|lane| lane.contains(&0) && lane.contains(&1)));
+        {
+            // Scoped: `lanes` borrows the packing cache, which must be released before the
+            // capability writes below take `&mut timeline`.
+            let lanes = timeline.lanes();
+            assert_eq!(lanes.len(), 2, "two overlaps need two lanes, not three rows");
+            // `a` and `b` overlap, so they differ; `c` starts after `a` ended, so it shares that
+            // lane.
+            assert!(lanes.iter().any(|lane| lane.contains(&0) && lane.contains(&2)));
+            assert!(!lanes.iter().any(|lane| lane.contains(&0) && lane.contains(&1)));
+        }
 
         // The mode is published as a token, and an unknown token is refused.
         assert_eq!(

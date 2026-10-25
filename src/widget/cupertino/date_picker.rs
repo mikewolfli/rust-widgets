@@ -18,7 +18,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
-use crate::widget::misc_widgets::date_utils::{days_in_month, DAY_STRINGS, MONTH_NAMES};
+use crate::widget::misc_widgets::date_utils::{days_in_month, MONTH_NAMES};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -119,6 +119,33 @@ pub struct CupertinoDatePicker {
     pub date_changed: Signal1<(i32, u32, u32)>,
     /// Emitted with `(hour, minute)` when the time changes in time mode.
     pub time_changed: Signal1<(u32, u32)>,
+    /// Emitted with `(hour, minute, second)` in countdown mode, so a host showing a
+    /// countdown sees the seconds it is counting (MW-14).
+    pub countdown_changed: Signal1<(u32, u32, u32)>,
+    /// Localised month names, defaulting to the English table.
+    month_names: [String; 12],
+    /// Set when `month_names` changed and [`Self::month_labels`] must be rebuilt.
+    month_names_stale: bool,
+    /// Cached month captions, parallel to `month_names`.
+    month_labels: Vec<String>,
+    /// Cached minute captions for [`Self::minute_interval`].
+    minute_labels: Vec<String>,
+    /// `minute_interval` the cached minutes were built for; `0` means stale.
+    minute_key: u32,
+    /// Cached hour captions for the current 12/24-hour choice.
+    hour_labels: Vec<String>,
+    /// Whether `hour_labels` is currently the 24-hour table.
+    hour_labels_24: bool,
+    /// Cached AM/PM captions.
+    ampm_labels: Vec<String>,
+    /// Cached day-of-month captions (`1..=31`).
+    day_labels: Vec<String>,
+    /// Cached second captions (`00..=59`).
+    second_labels: Vec<String>,
+    /// Cached year captions around the selection.
+    year_labels: Vec<String>,
+    /// `(selected year, min year, max year)` the cached years were built for.
+    year_key: (i32, i32, i32),
 }
 
 impl CupertinoDatePicker {
@@ -148,6 +175,19 @@ impl CupertinoDatePicker {
             roll_direction: 1,
             date_changed: Signal1::new(),
             time_changed: Signal1::new(),
+            countdown_changed: Signal1::new(),
+            month_names: core::array::from_fn(|index| MONTH_NAMES[index].to_string()),
+            month_names_stale: true,
+            month_labels: Vec::new(),
+            minute_labels: Vec::new(),
+            minute_key: 0,
+            hour_labels: Vec::new(),
+            hour_labels_24: true,
+            ampm_labels: vec!["AM".to_string(), "PM".to_string()],
+            day_labels: (1..=31).map(|day| day.to_string()).collect(),
+            second_labels: (0..60).map(|second| format!("{second:02}")).collect(),
+            year_labels: Vec::new(),
+            year_key: (i32::MAX, i32::MAX, i32::MAX),
         }
     }
 
@@ -264,44 +304,135 @@ impl CupertinoDatePicker {
     }
 
     /// The displayed minute values, stepped by [`Self::minute_interval`].
-    fn minute_values(&self) -> Vec<String> {
-        let interval = self.minute_interval.max(1) as usize;
-        (0..60).step_by(interval).map(|minute| format!("{minute:02}")).collect()
+    fn minute_values(&self) -> &[String] {
+        &self.minute_labels
     }
 
     /// The hour wheel as `(selected offset, labels)`, honouring the 24/12-hour choice.
-    fn hour_values(&self) -> (i32, Vec<String>) {
+    fn hour_values(&self) -> (i32, &[String]) {
         if self.use_24_hour {
-            let hours = (0..24).map(|hour| format!("{hour:02}")).collect();
-            (self.selected_hour as i32, hours)
+            (self.selected_hour as i32, &self.hour_labels)
         } else {
             // 12-hour wheel: 12, 1, 2, ... 11. Midnight and noon both display as 12.
-            let mut hours = Vec::with_capacity(12);
-            hours.push("12".to_string());
-            hours.extend((1..12).map(|hour| hour.to_string()));
             let selected = if self.selected_hour.is_multiple_of(12) {
                 0
             } else {
                 (self.selected_hour % 12) as i32
             };
-            (selected, hours)
+            (selected, &self.hour_labels)
         }
     }
 
     /// The AM/PM wheel.
-    fn ampm_values(&self) -> (i32, Vec<String>) {
+    fn ampm_values(&self) -> (i32, &[String]) {
         let selected = if self.selected_hour < 12 { 0 } else { 1 };
-        (selected, vec!["AM".to_string(), "PM".to_string()])
+        (selected, &self.ampm_labels)
     }
 
     /// The time columns in draw order: hour, minute, and AM/PM when the clock is 12-hour.
-    fn time_columns(&self) -> Vec<(i32, Vec<String>)> {
+    fn time_columns(&self) -> Vec<(i32, &[String])> {
         let minute_offset = (self.selected_minute / self.minute_interval.max(1)) as i32;
         let mut columns = vec![self.hour_values(), (minute_offset, self.minute_values())];
         if !self.use_24_hour {
             columns.push(self.ampm_values());
         }
         columns
+    }
+
+    /// The date columns (year, month, day) in logical order, borrowing the cached caption
+    /// tables (L-P09).
+    fn date_columns(&self) -> (Vec<(i32, &[String])>, Vec<usize>) {
+        let max_days = days_in_month(self.selected_year, self.selected_month);
+        let months: &[String] = &self.month_labels;
+        let days: &[String] = &self.day_labels[..max_days as usize];
+        let logical = vec![
+            (2, self.year_labels.as_slice()),
+            (self.selected_month as i32 - 1, months),
+            (self.selected_day as i32 - 1, days),
+        ];
+        let order = match self.column_order {
+            DateColumnOrder::YearMonthDay => vec![0, 1, 2],
+            DateColumnOrder::DayMonthYear => vec![2, 1, 0],
+            DateColumnOrder::MonthDayYear => vec![1, 2, 0],
+        };
+        (logical, order)
+    }
+
+    /// Rebuilds the cached caption tables whose inputs changed (L-P09).
+    ///
+    /// The wheels are static text: minutes, hours, month names and day numbers do not change
+    /// while a user scrolls, yet the paint path used to format every one of them on every
+    /// frame. The tables are rebuilt on the setter that changes their input instead.
+    fn refresh_label_tables(&mut self) {
+        if self.minute_key != self.minute_interval {
+            self.minute_key = self.minute_interval;
+            let interval = self.minute_interval.max(1) as usize;
+            self.minute_labels =
+                (0..60).step_by(interval).map(|minute| format!("{minute:02}")).collect();
+        }
+        if self.hour_labels_24 != self.use_24_hour || self.hour_labels.is_empty() {
+            self.hour_labels_24 = self.use_24_hour;
+            self.hour_labels = if self.use_24_hour {
+                (0..24).map(|hour| format!("{hour:02}")).collect()
+            } else {
+                let mut hours = Vec::with_capacity(12);
+                hours.push("12".to_string());
+                hours.extend((1..12).map(|hour| hour.to_string()));
+                hours
+            };
+        }
+        if self.month_names_stale {
+            self.month_names_stale = false;
+            self.month_labels = self.month_names.to_vec();
+        }
+        let constraint = self.date_constraint();
+        let key = (self.selected_year, constraint.min_year, constraint.max_year);
+        if self.year_key != key {
+            self.year_key = key;
+            self.year_labels = (0..dimensions::PICKER_VISIBLE_ROWS)
+                .map(|row| {
+                    let year = self.selected_year + row as i32 - 2;
+                    if year >= constraint.min_year && year <= constraint.max_year {
+                        year.to_string()
+                    } else {
+                        String::new()
+                    }
+                })
+                .collect();
+        }
+    }
+
+    /// Replaces the month captions shown by the month wheel.
+    ///
+    /// An empty entry is rejected as a whole array rather than producing a wheel with blank
+    /// rows: a month name is the row's content, so a caller with nothing to say should keep the
+    /// default English table.
+    pub fn set_month_names(&mut self, names: [String; 12]) {
+        if names.iter().any(String::is_empty) {
+            return;
+        }
+        if self.month_names == names {
+            return;
+        }
+        self.month_names = names;
+        self.month_names_stale = true;
+        self.base.request_redraw();
+    }
+
+    /// The month captions currently used by the wheel.
+    pub fn month_names(&self) -> &[String; 12] {
+        &self.month_names
+    }
+
+    /// Emits the countdown tuple when the picker is in countdown mode.
+    fn emit_countdown(&self) {
+        if self.mode == CupertinoDatePickerMode::CountDownTimer {
+            self.countdown_changed.emit((
+                self.selected_hour,
+                self.selected_minute,
+                self.selected_second,
+            ));
+        }
     }
 
     /// The number of wheel columns the current mode paints.
@@ -329,6 +460,7 @@ impl CupertinoDatePicker {
         self.selected_hour = hour;
         self.selected_minute = minute;
         self.time_changed.emit((hour, minute));
+        self.emit_countdown();
         self.base.request_redraw();
     }
 
@@ -340,6 +472,7 @@ impl CupertinoDatePicker {
         }
         self.selected_second = second;
         self.time_changed.emit((self.selected_hour, self.selected_minute));
+        self.emit_countdown();
         self.base.request_redraw();
     }
 
@@ -603,6 +736,7 @@ impl Draw for CupertinoDatePicker {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
+        self.refresh_label_tables();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then fall back to a literal. Every colour below used to be
@@ -724,57 +858,23 @@ impl Draw for CupertinoDatePicker {
         let roll_shift =
             (self.roll.value() * row_height as f32 * self.roll_direction as f32) as i32;
 
-        let constraint = self.date_constraint();
-        let date_columns = || -> (Vec<(i32, Vec<String>)>, Vec<usize>) {
-            let years: Vec<String> = (0..dimensions::PICKER_VISIBLE_ROWS)
-                .map(|row| {
-                    let offset = row as i32 - 2;
-                    let year = self.selected_year + offset;
-                    if year >= constraint.min_year && year <= constraint.max_year {
-                        year.to_string()
-                    } else {
-                        String::new()
-                    }
-                })
-                .collect();
-            let months: Vec<String> = MONTH_NAMES.iter().map(|name| (*name).to_string()).collect();
-            let max_days = days_in_month(self.selected_year, self.selected_month);
-            let days: Vec<String> =
-                DAY_STRINGS[..max_days as usize].iter().map(|day| (*day).to_string()).collect();
-            let logical = vec![
-                (2, years),
-                (self.selected_month as i32 - 1, months),
-                (self.selected_day as i32 - 1, days),
-            ];
-            let order = match self.column_order {
-                DateColumnOrder::YearMonthDay => vec![0, 1, 2],
-                DateColumnOrder::DayMonthYear => vec![2, 1, 0],
-                DateColumnOrder::MonthDayYear => vec![1, 2, 0],
-            };
-            (logical, order)
-        };
         let (columns, order) = match self.mode {
-            CupertinoDatePickerMode::Date => date_columns(),
-            CupertinoDatePickerMode::CountDownTimer => {
-                let hours: Vec<String> = (0..24).map(|hour| format!("{hour:02}")).collect();
-                let minutes = self.minute_values();
-                let seconds: Vec<String> = (0..60).map(|second| format!("{second:02}")).collect();
-                (
-                    vec![
-                        (self.selected_hour as i32, hours),
-                        (self.selected_minute as i32, minutes),
-                        (self.selected_second as i32, seconds),
-                    ],
-                    vec![0, 1, 2],
-                )
-            }
+            CupertinoDatePickerMode::Date => self.date_columns(),
+            CupertinoDatePickerMode::CountDownTimer => (
+                vec![
+                    (self.selected_hour as i32, self.hour_labels.as_slice()),
+                    (self.selected_minute as i32, self.minute_labels.as_slice()),
+                    (self.selected_second as i32, self.second_labels.as_slice()),
+                ],
+                vec![0, 1, 2],
+            ),
             CupertinoDatePickerMode::Time => {
                 let columns = self.time_columns();
                 let order = (0..columns.len()).collect();
                 (columns, order)
             }
             CupertinoDatePickerMode::DateTime => {
-                let (mut columns, mut order) = date_columns();
+                let (mut columns, mut order) = self.date_columns();
                 let offset = columns.len();
                 columns.extend(self.time_columns());
                 order.extend(offset..columns.len());
@@ -817,7 +917,8 @@ impl Draw for CupertinoDatePicker {
                 let is_selected = row == 2;
                 let item_y = wheel_rect.y + (row * row_height) as i32 + roll_shift;
 
-                let metrics = context.measure_text(text, &font);
+                let metrics =
+                    crate::widget::base_widgets::measure_cache::measure_text(context, text, &font);
                 // Centred inside the row's own band. The old origin added `ascent` on top of
                 // an already-centred y, so the glyph box (which starts at the origin and runs
                 // a full line down) began half a line low — the fifth row was pushed past the

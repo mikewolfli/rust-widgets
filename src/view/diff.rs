@@ -94,6 +94,13 @@ pub enum Patch {
         /// Position among the parent's children, after any earlier patches in the same
         /// batch have been applied. Patches are ordered so this is unambiguous.
         index: usize,
+        /// Where the inserted subtree sits in the **new** tree, as child indices from the root.
+        ///
+        /// Carried because the diff already walks the new tree, so the answer is known when
+        /// the patch is emitted (G-166). The engine uses it to reserve ids and to find the
+        /// controls a batch created; deriving it afterwards meant one whole-tree search per
+        /// inserted node.
+        path: Vec<usize>,
         /// The subtree to create, as declared.
         node: Node,
     },
@@ -121,8 +128,13 @@ pub enum Patch {
         id: crate::core::ObjectId,
         /// Its parent.
         parent: crate::core::ObjectId,
-        /// Its position among that parent's children.
+        /// Its position among the parent's children.
         index: usize,
+        /// Where the replacement subtree sits in the **new** tree (G-166).
+        ///
+        /// The path of the old control is not it in general: a batch may also insert a
+        /// sibling before it, so the engine must address the new shape.
+        path: Vec<usize>,
         /// The replacement subtree.
         node: Node,
     },
@@ -286,7 +298,8 @@ pub fn diff(
     }
     let mut report = DiffReport::default();
     let mut root_path = Vec::new();
-    diff_node(old, new, &mut root_path, None, 0, id_of, &mut report);
+    let mut root_new_path = Vec::new();
+    diff_node(old, new, &mut root_path, &mut root_new_path, None, 0, id_of, &mut report);
     report
 }
 
@@ -337,7 +350,8 @@ pub fn diff_scoped(
     let index = old_path.last().copied().unwrap_or(0);
     let mut report = DiffReport::default();
     let mut path = old_path;
-    diff_node(old_node, new_node, &mut path, parent_id, index, id_of, &mut report);
+    let mut new_path = new_path;
+    diff_node(old_node, new_node, &mut path, &mut new_path, parent_id, index, id_of, &mut report);
     Some(report)
 }
 
@@ -480,16 +494,22 @@ impl<'a> PositionalKeys<'a> {
     }
 }
 
-/// Diff one pair of nodes, where `old` is at `path` in the old tree.
+/// Diff one pair of nodes, where `old` is at `old_path` in the old tree and `new` is at
+/// `new_path` in the new one.
 ///
 /// `index` is the position this node occupies in the **new** tree's host — the slot a
 /// `Replace` or `Insert` of it addresses. It is the declared index unless a transparent
 /// sibling precedes it, and it is also the first slot a transparent node's children use.
+///
+/// The two paths are tracked separately because a keyed match may move: the old path is how
+/// `id_of` addresses the mounted control, while the new path is what the emitted
+/// `Insert`/`Replace` carries for the engine (G-166).
 #[allow(clippy::too_many_arguments)]
 fn diff_node(
     old: &Node,
     new: &Node,
-    path: &mut Vec<usize>,
+    old_path: &mut Vec<usize>,
+    new_path: &mut Vec<usize>,
     parent_id: Option<crate::core::ObjectId>,
     index: usize,
     id_of: &dyn Fn(&[usize], usize) -> Option<crate::core::ObjectId>,
@@ -508,12 +528,12 @@ fn diff_node(
     // address; the arm below reports the "no control on either side" case as before.
     if super::is_transparent_node(old) && super::is_transparent_node(new) {
         if let Some(parent) = parent_id {
-            diff_children(old, new, path, parent, index, id_of, report);
+            diff_children(old, new, old_path, new_path, parent, index, id_of, report);
         }
         return;
     }
 
-    let old_id = id_of(path, index);
+    let old_id = id_of(old_path, index);
 
     // A type change is not an update: `label` and `button` are different controls with
     // different capabilities, so every property of the old one would be refused by the
@@ -538,17 +558,18 @@ fn diff_node(
         // attached next to the new control — invisible duplicates that no later diff knows
         // about, because the old tree they came from is gone.
         if super::is_transparent_node(old) {
-            remove_node(old, path, id_of, report);
+            remove_node(old, old_path, id_of, report);
         }
         match (old_id, parent_id) {
             (None, Some(parent)) => {
-                insert_new(new, parent, index, report);
+                insert_new(new, parent, index, new_path, report);
             }
             (_, Some(parent)) => {
                 report.patches.push(Patch::Replace {
                     id: old_id.unwrap_or(0),
                     parent,
                     index,
+                    path: new_path.clone(),
                     node: new.clone(),
                 });
                 report.replaced_subtrees += 1;
@@ -622,7 +643,7 @@ fn diff_node(
     }
 
     // ── Children ──────────────────────────────────────────
-    diff_children(old, new, path, old_id, 0, id_of, report);
+    diff_children(old, new, old_path, new_path, old_id, 0, id_of, report);
 }
 
 /// Emit the patches that create `node`'s controls under `parent`, starting at `slot`.
@@ -631,16 +652,32 @@ fn diff_node(
 /// transparent node declares no control at all, so an `Insert` of it would name a
 /// pseudo-widget that no constructor resolves. Its children take its place, each at the slot
 /// it occupies, which is what `apply::insert_subtree` does with a spacer's children.
-fn insert_new(node: &Node, parent: crate::core::ObjectId, slot: usize, report: &mut DiffReport) {
+///
+/// `path` is the inserted node's path in the **new** tree; it travels on the patch so the
+/// engine never has to search for it afterwards (G-166).
+fn insert_new(
+    node: &Node,
+    parent: crate::core::ObjectId,
+    slot: usize,
+    path: &mut Vec<usize>,
+    report: &mut DiffReport,
+) {
     if super::is_transparent_node(node) {
         let mut at = slot;
-        for child in &node.children {
-            insert_new(child, parent, at, report);
+        for (index, child) in node.children.iter().enumerate() {
+            path.push(index);
+            insert_new(child, parent, at, path, report);
+            path.pop();
             at += super::mounted_slots(child);
         }
         return;
     }
-    report.patches.push(Patch::Insert { parent, index: slot, node: node.clone() });
+    report.patches.push(Patch::Insert {
+        parent,
+        index: slot,
+        path: path.clone(),
+        node: node.clone(),
+    });
 }
 
 /// Emit a `Remove` for every control `node`'s declaration produced.
@@ -739,7 +776,8 @@ fn children_to_move(matches: &[Option<usize>]) -> std::collections::HashSet<usiz
 fn diff_children(
     old: &Node,
     new: &Node,
-    path: &mut Vec<usize>,
+    old_path: &mut Vec<usize>,
+    new_path: &mut Vec<usize>,
     parent_id: crate::core::ObjectId,
     base: usize,
     id_of: &dyn Fn(&[usize], usize) -> Option<crate::core::ObjectId>,
@@ -911,39 +949,42 @@ fn diff_children(
                 if !moved && unchanged {
                     continue;
                 }
-                path.push(old_index);
                 if moved {
                     if super::is_transparent_node(&old.children[old_index]) {
                         // A gap has no id, so there is nothing a `Move` could name — emitting
                         // one would produce `Move { id: 0 }`, a patch `apply` rejects.
                         // Its children are hosted by *this* container, so the honest
                         // description of "the gap's contents moved" is to take them out and
-                        // put them back at their new slots.
-                        remove_node(&old.children[old_index], path, id_of, report);
-                        insert_new(child, parent_id, slot, report);
-                        path.pop();
+                        // put them back at their new slots. The two paths differ here: the
+                        // removal addresses the old tree, the insert the new one (G-166).
+                        old_path.push(old_index);
+                        remove_node(&old.children[old_index], old_path, id_of, report);
+                        old_path.pop();
+                        new_path.push(new_index);
+                        insert_new(child, parent_id, slot, new_path, report);
+                        new_path.pop();
                         continue;
                     }
+                    old_path.push(old_index);
                     report.patches.push(Patch::Move {
-                        id: id_of(path.as_slice(), old_index).unwrap_or(0),
+                        id: id_of(old_path.as_slice(), old_index).unwrap_or(0),
                         parent: parent_id,
                         index: slot,
                     });
+                    old_path.pop();
                 }
                 if unchanged {
-                    path.pop();
                     continue;
                 }
                 // Recurse against the child's **old** index path.
                 //
-                // The old path is the right one to pass: `old` is the tree the previous build
-                // produced, `id_of` addresses that build, and the child being updated still
-                // occupies its old slot in it. The two indices differ exactly when a move
-                // happened — the case this branch exists for — so passing the new index would
-                // have the recursion read a different child's properties and emit writes
-                // against the wrong control. The comment here previously said the opposite of
-                // what the code did, and a dead `child_path` for the new index kept the
-                // misleading shape alive; both are gone.
+                // The old path is the right one for `id_of`: `old` is the tree the previous
+                // build produced, and the child being updated still occupies its old slot in
+                // it. The two indices differ exactly when a move happened — the case this
+                // branch exists for — so passing the new index would have the recursion read a
+                // different child's properties and emit writes against the wrong control. The
+                // new path travels alongside it only so an emitted `Insert`/`Replace` can
+                // address the tree the batch is building (G-166).
                 //
                 // The child's parent is *this* container (`parent_id`), not the child itself.
                 //
@@ -954,18 +995,26 @@ fn diff_children(
                 // re-registered the replacement under the freshly-deleted id, stranding it and
                 // emptying the real parent's child list. Passing the container id keeps the
                 // replacement in the slot the old control occupied.
+                old_path.push(old_index);
+                new_path.push(new_index);
                 diff_node(
                     &old.children[old_index],
                     child,
-                    path,
+                    old_path,
+                    new_path,
                     Some(parent_id),
                     slot,
                     id_of,
                     report,
                 );
-                path.pop();
+                old_path.pop();
+                new_path.pop();
             }
-            None => insert_new(child, parent_id, slot, report),
+            None => {
+                new_path.push(new_index);
+                insert_new(child, parent_id, slot, new_path, report);
+                new_path.pop();
+            }
         }
     }
 
@@ -974,9 +1023,9 @@ fn diff_children(
         if consumed[i] {
             continue;
         }
-        path.push(i);
-        remove_node(child, path, id_of, report);
-        path.pop();
+        old_path.push(i);
+        remove_node(child, old_path, id_of, report);
+        old_path.pop();
     }
 }
 
@@ -1881,7 +1930,7 @@ mod tests {
         let report = run_without_gap_ids(&old, &new);
         assert_eq!(report.patch_count(), 1, "just the insert: {:?}", report.patches);
         match &report.patches[0] {
-            Patch::Insert { parent, index, node } => {
+            Patch::Insert { parent, index, node, .. } => {
                 assert_eq!(*parent, 1, "the row hosts it");
                 assert_eq!(*index, 2, "the only control before it is at slot 1");
                 assert_eq!(node.key.as_deref(), Some("added"));
@@ -1940,12 +1989,49 @@ mod tests {
         );
         assert_eq!(report.patches_of_kind("Remove").len(), 1, "got {:?}", report.patches);
         match &report.patches_of_kind("Insert")[..] {
-            [Patch::Insert { parent, index, node }] => {
+            [Patch::Insert { parent, index, node, .. }] => {
                 assert_eq!(*parent, 1);
                 assert_eq!(*index, 0, "the gap is declared first now");
                 assert_eq!(node.key.as_deref(), Some("inside"));
             }
             other => panic!("expected one insert, got {other:?}"),
+        }
+    }
+
+    /// G-166: an `Insert` names the path its subtree occupies in the **new** tree, so the engine
+    /// never has to search for it.
+    #[test]
+    fn an_insert_patch_carries_the_new_trees_path() {
+        let old = Node::new("row").key("root").child(Node::new("panel").key("p"));
+        let new = Node::new("row")
+            .key("root")
+            .child(Node::new("panel").key("p").child(Node::new("label").key("added")));
+        let report = run(&old, &new);
+        assert_eq!(report.patch_count(), 1, "got {:?}", report.patches);
+        match &report.patches[0] {
+            Patch::Insert { path, .. } => assert_eq!(path, &vec![0, 0]),
+            other => panic!("expected Insert, got {other:?}"),
+        }
+    }
+
+    /// G-166: a `Replace` carries the replacement's path in the new tree, which differs from the
+    /// old one when a sibling was also inserted ahead of it.
+    #[test]
+    fn a_replace_patch_carries_its_new_path_after_a_sibling_insert() {
+        let old = Node::new("row").key("root").child(Node::new("label").key("a"));
+        let new = Node::new("row")
+            .key("root")
+            .child(Node::new("label").key("z"))
+            .child(Node::new("button").key("a"));
+        let report = run(&old, &new);
+        let replace = report
+            .patches
+            .iter()
+            .find(|patch| patch.kind_name() == "Replace")
+            .unwrap_or_else(|| panic!("expected a Replace, got {:?}", report.patches));
+        match replace {
+            Patch::Replace { path, .. } => assert_eq!(path, &vec![1], "the new slot, not the old"),
+            other => panic!("expected Replace, got {other:?}"),
         }
     }
 

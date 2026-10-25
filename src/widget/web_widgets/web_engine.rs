@@ -12,14 +12,14 @@
 //! `crate::web::SimpleJsEngine`) and returns the actual result or error.
 //! Without that feature, evaluation reports `Err` instead of faking success.
 
-use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, role_font, ControlMetrics};
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use alloc::vec::Vec;
@@ -166,6 +166,104 @@ pub enum WebEngineDownloadState {
     Completed,
 }
 
+/// One rendered block of the lightweight HTML page painter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HtmlBlock {
+    text: String,
+    kind: HtmlBlockKind,
+}
+
+/// How a parsed block is painted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HtmlBlockKind {
+    Text,
+    Heading,
+    Link,
+    Image,
+}
+
+/// Splits an HTML document into paintable text blocks.
+///
+/// This is deliberately a *reader*, not a browser engine: it strips tags, keeps the text of
+/// block-level elements as one block each, marks anchors and headings, and turns `<img>` into a
+/// placeholder. That is enough for a web view to show document content instead of a blank
+/// surface, which is the MW-10 gap this closes without claiming a DOM implementation.
+fn parse_html_blocks(html: &str) -> Vec<HtmlBlock> {
+    let mut blocks = Vec::new();
+    let mut text = String::new();
+    let mut kind = HtmlBlockKind::Text;
+    let mut in_anchor = false;
+    let bytes = html.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'<' {
+            let Some(end) = html[index..].find('>').map(|offset| index + offset) else {
+                break;
+            };
+            let tag = html[index + 1..end].trim().to_ascii_lowercase();
+            let closing = tag.starts_with('/');
+            let name = tag.trim_start_matches('/').split_whitespace().next().unwrap_or("");
+            match name {
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                    if closing && !text.is_empty() {
+                        blocks.push(HtmlBlock {
+                            text: text.trim().to_string(),
+                            kind: HtmlBlockKind::Heading,
+                        });
+                        text.clear();
+                    }
+                }
+                "a" => {
+                    if closing {
+                        if !text.trim().is_empty() {
+                            blocks.push(HtmlBlock {
+                                text: text.trim().to_string(),
+                                kind: HtmlBlockKind::Link,
+                            });
+                            text.clear();
+                        }
+                        in_anchor = false;
+                    } else {
+                        in_anchor = true;
+                    }
+                }
+                "img" => {
+                    let alt = tag
+                        .split("alt=\"")
+                        .nth(1)
+                        .and_then(|rest| rest.split('"').next())
+                        .unwrap_or("[image]")
+                        .to_string();
+                    blocks.push(HtmlBlock { text: alt, kind: HtmlBlockKind::Image });
+                }
+                "p" | "div" | "li" | "br" | "tr" | "section" | "article" | "header" | "footer" => {
+                    if !text.trim().is_empty() {
+                        blocks.push(HtmlBlock {
+                            text: text.trim().to_string(),
+                            kind: if in_anchor { HtmlBlockKind::Link } else { kind },
+                        });
+                        text.clear();
+                    }
+                    kind = HtmlBlockKind::Text;
+                }
+                _ => {}
+            }
+            index = end + 1;
+            continue;
+        }
+        let ch = html[index..].chars().next().unwrap_or(' ');
+        text.push(ch);
+        index += ch.len_utf8();
+    }
+    if !text.trim().is_empty() {
+        blocks.push(HtmlBlock {
+            text: text.trim().to_string(),
+            kind: if in_anchor { HtmlBlockKind::Link } else { kind },
+        });
+    }
+    blocks
+}
+
 /// Web engine view widget for web content rendering.
 pub struct WebEngineView {
     base: BaseWidget,
@@ -247,6 +345,20 @@ pub struct WebEngineView {
     pending_javascript: Option<String>,
     /// Most recently loaded HTML source (kept for inspection; no DOM layout).
     html_content: String,
+    /// The paintable blocks parsed from [`Self::html_content`].
+    html_blocks: Vec<HtmlBlock>,
+    /// Vertical page scroll offset in logical pixels (MW-10).
+    scroll_offset: i32,
+    /// The page's painted content height, measured by the last draw.
+    page_content_height: i32,
+    /// Where a host stores downloads, when it declared a directory.
+    download_dir: Option<String>,
+    /// Emitted as `(file name, fraction)` as a download progresses.
+    pub download_progress_changed: Signal1<(String, f32)>,
+    /// The zoom-out button's rectangle from the last paint.
+    zoom_out_rect: Option<Rect>,
+    /// The zoom-in button's rectangle from the last paint.
+    zoom_in_rect: Option<Rect>,
     /// Next id [`WebEngineView::create_page`] will issue.
     ///
     /// Starts at [`FIRST_PAGE_ID`] so a page id is never `0`: `0` is the "no widget"
@@ -679,6 +791,13 @@ impl WebEngineView {
             pending_javascript: None,
             cookie_persistence_enabled: false,
             html_content: String::new(),
+            html_blocks: Vec::new(),
+            scroll_offset: 0,
+            page_content_height: 0,
+            download_dir: None,
+            download_progress_changed: Signal1::new(),
+            zoom_out_rect: None,
+            zoom_in_rect: None,
             next_page_id: FIRST_PAGE_ID,
             #[cfg(feature = "js-engine")]
             js_engine: None,
@@ -866,6 +985,42 @@ impl WebEngineView {
         self.zoom_factor
     }
 
+    /// The page's vertical scroll offset in logical pixels.
+    pub fn scroll_offset(&self) -> i32 {
+        self.scroll_offset
+    }
+
+    /// Scrolls the page, clamped to the content the last frame measured.
+    pub fn set_scroll_offset(&mut self, offset: i32) {
+        let max = (self.page_content_height
+            - crate::widget::metrics::dimensions::WEB_URL_BAR_HEIGHT as i32)
+            .max(0);
+        let clamped = offset.clamp(0, max);
+        if clamped == self.scroll_offset {
+            return;
+        }
+        self.scroll_offset = clamped;
+        self.base.request_redraw();
+    }
+
+    /// The directory the host stores downloads in, when one was declared.
+    pub fn download_dir(&self) -> Option<&str> {
+        self.download_dir.as_deref()
+    }
+
+    /// Declares where downloads are written.
+    ///
+    /// The view itself performs no file I/O; the directory is carried so the host's download
+    /// handler and the progress readout name the same destination (MW-10).
+    pub fn set_download_dir(&mut self, dir: impl Into<String>) {
+        let dir = dir.into();
+        if self.download_dir.as_deref() == Some(dir.as_str()) {
+            return;
+        }
+        self.download_dir = if dir.is_empty() { None } else { Some(dir) };
+        self.base.request_redraw();
+    }
+
     /// Sets the page zoom factor, clamped to `0.25..=5.0`.
     pub fn set_zoom_factor(&mut self, factor: f32) {
         if !factor.is_finite() {
@@ -886,6 +1041,8 @@ impl WebEngineView {
         // Navigation and loading state are simulated (no DOM layout), but the
         // HTML source is retained so script evaluation and introspection work.
         self.html_content = html.to_string();
+        self.html_blocks = parse_html_blocks(html);
+        self.scroll_offset = 0;
         self.clear_find();
         self.url = "data:text/html".to_string();
         self.push_history(&self.url.clone());
@@ -911,6 +1068,7 @@ impl WebEngineView {
         // Data payloads are retained for introspection; no binary media decode
         // or layout happens in this simulated view.
         self.html_content = String::from_utf8_lossy(data).into_owned();
+        self.html_blocks = parse_html_blocks(&self.html_content);
         self.clear_find();
         self.url = base_url.to_string();
         self.push_history(&self.url.clone());
@@ -1365,6 +1523,19 @@ impl WebEngineView {
             Some(total) if total > 0 && received >= total => WebEngineDownloadState::Completed,
             _ => WebEngineDownloadState::InProgress,
         };
+        // The progress readout names the file the host is writing: the last path segment of
+        // the current URL is the only name this control has (MW-10).
+        let name = self
+            .url
+            .rsplit('/')
+            .find(|segment| !segment.is_empty())
+            .unwrap_or("download")
+            .to_string();
+        let fraction = match total {
+            Some(total) if total > 0 => (received as f32 / total as f32).clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        self.download_progress_changed.emit((name, fraction));
         self.base.request_redraw();
     }
 
@@ -1777,7 +1948,22 @@ impl EventHandler for WebEngineView {
             Event::MousePress { pos, button, .. }
                 if *button == 1 && self.geometry().contains_point(*pos) =>
             {
+                // The zoom controls are part of the page chrome, so they take the click before
+                // it is reported as a page activation (MW-10).
+                if self.zoom_in_rect.is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.set_zoom_factor(self.zoom_factor + 0.1);
+                    return;
+                }
+                if self.zoom_out_rect.is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.set_zoom_factor(self.zoom_factor - 0.1);
+                    return;
+                }
                 self.base.clicked.emit();
+            }
+            Event::Wheel { delta, .. } => {
+                // One notch scrolls roughly three text lines; the page clamps the offset to
+                // the height its last frame measured.
+                self.set_scroll_offset(self.scroll_offset - delta.y * 48);
             }
             Event::KeyPress { key, modifiers } => {
                 match *key {
@@ -1894,12 +2080,11 @@ impl Draw for WebEngineView {
                 HorizontalAlignment::Left,
             );
         }
-        // Content area hint
+        // A load in progress paints a quiet hint at the top of the page area; it never hides the
+        // content already parsed.
         if self.is_loading() {
             let hint_font = Font::default_ui();
             let hint_h = ctx.measure_text("M", &hint_font).height;
-            // The content area is what the bar leaves, derived from the bar itself rather than
-            // from a second copy of its height.
             let content = ControlMetrics::content_below_top_band(g, dimensions::WEB_URL_BAR_HEIGHT);
             if content.height > 0 {
                 ctx.draw_text_fitted_cow(
@@ -1914,6 +2099,124 @@ impl Draw for WebEngineView {
                     secondary,
                     HorizontalAlignment::Left,
                 );
+            }
+        }
+
+        // ── Page content ──
+        //
+        // A lightweight block renderer: headings, paragraphs, links and image placeholders at
+        // the page zoom factor, scrolled by `scroll_offset`. It is not a DOM layout engine, but
+        // it makes the loaded document visible, which is what a web view is for (MW-10).
+        let content = ControlMetrics::content_below_top_band(g, dimensions::WEB_URL_BAR_HEIGHT);
+        if content.height > 0 && !self.html_blocks.is_empty() {
+            let page_font = role_font(self.base.style(), 14.0 * self.zoom_factor);
+            let heading_font =
+                role_font(self.base.style(), 18.0 * self.zoom_factor).with_bold(true);
+            let line_h = ctx.measure_text("M", &page_font).height.max(1) as i32 + 2;
+            let text_width = content.width.saturating_sub(24);
+            let mut y = content.y + 6 - self.scroll_offset;
+            ctx.push_clip(content.x, content.y, content.width, content.height);
+            for block in &self.html_blocks {
+                if block.kind == HtmlBlockKind::Image {
+                    let image_rect =
+                        Rect::new(content.x + 8, y, text_width.min(180), (line_h * 3) as u32);
+                    ctx.fill_rect(image_rect, secondary.with_alpha(40));
+                    ctx.draw_rect_stroke(image_rect, secondary.with_alpha(120), 1);
+                    ctx.draw_text_fitted_cow(
+                        image_rect,
+                        &block.text,
+                        &page_font,
+                        ink.blend(&page, 0.45),
+                        HorizontalAlignment::Center,
+                    );
+                    y += line_h * 3 + 6;
+                    continue;
+                }
+                let font =
+                    if block.kind == HtmlBlockKind::Heading { &heading_font } else { &page_font };
+                let ranges = crate::widget::text_utils::wrap_to_width(
+                    &block.text,
+                    text_width,
+                    &mut |text: &str| ctx.measure_text(text, font).width,
+                );
+                let color = match block.kind {
+                    HtmlBlockKind::Link => accent,
+                    HtmlBlockKind::Heading => ink,
+                    _ => ink.blend(&page, 0.25),
+                };
+                for range in ranges {
+                    if y + line_h >= content.y && y < content.y + content.height as i32 {
+                        if let Some(text) = block.text.get(range) {
+                            ctx.draw_text_fitted_cow(
+                                Rect::new(content.x + 8, y, text_width, line_h as u32),
+                                text,
+                                font,
+                                color,
+                                HorizontalAlignment::Left,
+                            );
+                        }
+                    }
+                    y += line_h;
+                }
+                y += 6;
+            }
+            ctx.pop_clip();
+            self.page_content_height = (y + self.scroll_offset - content.y).max(0) + 6;
+
+            // Vertical scrollbar, drawn only when the page overflows.
+            let max_scroll = (self.page_content_height - content.height as i32).max(0);
+            if max_scroll > 0 {
+                let track = Rect::new(content.right() - 8, content.y, 8, content.height);
+                ctx.fill_rect(track, secondary.with_alpha(50));
+                let visible = content.height as i64;
+                let total = self.page_content_height.max(1) as i64;
+                let thumb_h = ((visible * visible / total) as u32).max(24).min(content.height);
+                let travel = content.height.saturating_sub(thumb_h) as i32;
+                let thumb_y = content.y
+                    + (travel as i64 * self.scroll_offset as i64 / max_scroll.max(1) as i64) as i32;
+                ctx.fill_rounded_rect(
+                    Rect::new(track.x + 1, thumb_y, 6, thumb_h),
+                    3,
+                    secondary.with_alpha(160),
+                );
+            }
+
+            // Zoom controls in the content's trailing bottom corner.
+            let button = 18u32;
+            let button_y = content.y + content.height as i32 - button as i32 - 6;
+            let zoom_out =
+                Rect::new(content.right() - 2 * button as i32 - 8, button_y, button, button);
+            let zoom_in = Rect::new(content.right() - button as i32 - 4, button_y, button, button);
+            self.zoom_out_rect = Some(zoom_out);
+            self.zoom_in_rect = Some(zoom_in);
+            for (rect, plus) in [(zoom_out, false), (zoom_in, true)] {
+                ctx.fill_rounded_rect(rect, 4, page.blend(&ink, 0.18));
+                let center = rect.center();
+                ctx.draw_line(
+                    Point::new(center.x - 4, center.y),
+                    Point::new(center.x + 4, center.y),
+                    ink,
+                );
+                if plus {
+                    ctx.draw_line(
+                        Point::new(center.x, center.y - 4),
+                        Point::new(center.x, center.y + 4),
+                        ink,
+                    );
+                }
+            }
+
+            // Download progress, along the page's bottom edge.
+            if self.download_state == WebEngineDownloadState::InProgress {
+                if let Some(total) = self.download_total.filter(|total| *total > 0) {
+                    let fraction = (self.download_received as f32 / total as f32).clamp(0.0, 1.0);
+                    let bar = Rect::new(content.x, content.bottom() - 4, content.width, 4);
+                    ctx.fill_rect(bar, secondary.with_alpha(60));
+                    let filled = (content.width as f32 * fraction) as u32;
+                    if filled > 0 {
+                        ctx.fill_rect(Rect::new(bar.x, bar.y, filled, bar.height), accent);
+                    }
+                }
             }
         }
 

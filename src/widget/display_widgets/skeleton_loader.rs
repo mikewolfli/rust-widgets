@@ -12,12 +12,12 @@
 //! - `Circle(r)` — circular avatar/image placeholder
 //! - `TextLine(w)` — three stacked text line placeholders
 
-use crate::compat::{vec, Vec};
+use crate::compat::{vec, RefCell, Vec};
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::style::Gradient;
-use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -109,6 +109,27 @@ pub struct SkeletonLoader {
     /// [`SkeletonLoader::tick`] from `delta_ms` — the same contract every other animation in
     /// the crate uses (BLUE23 \u00a73).
     phase: f32,
+    /// How many stacked rows a [`SkeletonShape::TextLine`] placeholder draws.
+    ///
+    /// Three is the historical picture; a caller laying out a longer paragraph can ask for
+    /// more. `Rect` and `Circle` ignore it.
+    text_line_rows: u32,
+    /// The fill boxes and clip outlines the shimmer lights up, keyed by the shape and rectangle
+    /// that produced them.
+    ///
+    /// The geometry depends on the placeholder shape and the control's rectangle, not on the
+    /// pulse phase, so rebuilding it every frame was pure waste: `paint_shimmer` re-sampled every
+    /// rounded corner and circle outline per frame. A `RefCell` because the paint path reads it
+    /// through `&self`, exactly as the draw trait requires.
+    shimmer_geometry: RefCell<Option<ShimmerGeometryCache>>,
+}
+
+/// Cached shimmer geometry for one `(shape, rectangle, rows)` triple.
+struct ShimmerGeometryCache {
+    shape: SkeletonShape,
+    rect: Rect,
+    text_line_rows: u32,
+    regions: Vec<(Rect, Vec<Point>)>,
 }
 
 impl SkeletonLoader {
@@ -123,6 +144,8 @@ impl SkeletonLoader {
             animated: true,
             shimmer: false,
             phase: 0.0,
+            text_line_rows: 3,
+            shimmer_geometry: RefCell::new(None),
         }
     }
 
@@ -136,6 +159,7 @@ impl SkeletonLoader {
             return;
         }
         self.shape = shape;
+        *self.shimmer_geometry.borrow_mut() = None;
         self.base.request_redraw();
     }
 
@@ -146,9 +170,15 @@ impl SkeletonLoader {
 
     /// Enables or disables the shimmer animation.
     ///
-    /// When disabled the placeholder draws at a static mid-opacity of 0.2.
+    /// When disabled the placeholder draws at a static mid-opacity of 0.2. A same-value write is
+    /// a no-op; a real change requests a repaint, so the still picture appears on the next frame
+    /// rather than whenever some unrelated event happens to repaint the control.
     pub fn set_animated(&mut self, animated: bool) {
+        if self.animated == animated {
+            return;
+        }
         self.animated = animated;
+        self.base.request_redraw();
     }
 
     /// Returns whether the shimmer animation is enabled.
@@ -159,6 +189,27 @@ impl SkeletonLoader {
     /// Returns whether the sweeping highlight band is enabled.
     pub fn shimmer(&self) -> bool {
         self.shimmer
+    }
+
+    /// How many stacked rows a `TextLine` placeholder draws. Defaults to three.
+    pub fn text_line_rows(&self) -> u32 {
+        self.text_line_rows
+    }
+
+    /// Sets how many stacked rows a `TextLine` placeholder draws.
+    ///
+    /// The draw path and the shimmer geometry derive their row count from this one field, so the
+    /// two cannot disagree. One row is the minimum: a zero-row paragraph would be an invisible
+    /// placeholder. `Rect` and `Circle` are unaffected.
+    pub fn set_text_line_rows(&mut self, rows: u32) {
+        let rows = rows.max(1);
+        if self.text_line_rows == rows {
+            return;
+        }
+        self.text_line_rows = rows;
+        // The cached shimmer geometry contains one region per row; the next paint rebuilds it.
+        *self.shimmer_geometry.borrow_mut() = None;
+        self.base.request_redraw();
     }
 
     /// Enables or disables the sweeping highlight band.
@@ -301,6 +352,7 @@ impl WidgetProperties for SkeletonLoader {
         match name {
             "active" => Ok(CapabilityValue::Bool(self.is_animated())),
             "shape" => Ok(CapabilityValue::String(skeleton_shape_to_str(self.shape()).to_string())),
+            "text_line_rows" => Ok(CapabilityValue::UInt(u64::from(self.text_line_rows()))),
             _ => base_property_get(self, name),
         }
     }
@@ -315,12 +367,16 @@ impl WidgetProperties for SkeletonLoader {
                 self.set_shape(expect_skeleton_shape(value)?);
                 Ok(())
             }
+            "text_line_rows" => {
+                self.set_text_line_rows(expect_u32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["active", "shape", BASE_PROPERTY_NAMES]
+        property_names_of!["active", "shape", "text_line_rows", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `skeleton_loader` publishes.
@@ -406,10 +462,10 @@ impl SkeletonLoader {
                 context.fill_circle_aa(center, r, color);
             }
             SkeletonShape::TextLine(w) => {
-                // Draw three stacked text-like lines to simulate paragraph text.
+                // Draw stacked text-like lines to simulate paragraph text.
                 //
                 // The rows are a **fixed** height and gap, so the placeholder is
-                // `3 * row + 2 * gap` tall in any rectangle. Every term used to be a
+                // `rows * row + (rows - 1) * gap` tall in any rectangle. Every term used to be a
                 // local literal, which is why the census cell drew a 12 px line in a
                 // 120 px box: the stack was the only fixed part of a control whose box
                 // was otherwise the caller's, so the same skeleton was a different
@@ -417,14 +473,15 @@ impl SkeletonLoader {
                 // name the two values the caller can now predict from the shape.
                 let line_h = dimensions::SKELETON_ROW_HEIGHT;
                 let gap = dimensions::SKELETON_ROW_GAP;
-                let total_h = 3 * line_h + 2 * gap;
+                let rows = self.text_line_rows.max(1);
+                let total_h = rows * line_h + rows.saturating_sub(1) * gap;
                 let start_y = cy - total_h as i32 / 2;
                 // A row is the caller's width clamped to the control, and never zero: an
                 // over-wide row would paint past the rectangle and a zero-width one would
                 // be an invisible element.
                 let row_w = w.clamp(1, rect.width.max(1));
-                for i in 0..3 {
-                    let y = start_y + i * (line_h + gap) as i32;
+                for i in 0..rows {
+                    let y = start_y + i as i32 * (line_h + gap) as i32;
                     let line_rect = Rect::new(cx - row_w as i32 / 2, y, row_w, line_h);
                     context.fill_rounded_rect(line_rect, 3, color);
                 }
@@ -469,16 +526,41 @@ impl SkeletonLoader {
         .add_stop(0.5, Color::rgba(255, 255, 255, SHIMMER_PEAK_ALPHA.round() as u8))
         .add_stop(1.0, Color::rgba(255, 255, 255, 0));
 
-        for (fill, outline) in self.shimmer_regions(rect) {
+        for (fill, outline) in self.ensure_shimmer_regions(rect).iter() {
             if fill.x >= rect.x + rect.width as i32 || fill.x + fill.width as i32 <= rect.x {
                 continue;
             }
             let points: Vec<Point> =
-                outline.into_iter().map(|point| Point::new(point.x + dx, point.y + dy)).collect();
-            context.execute_command(RenderCommand::ClipPath { points });
-            context.fill_gradient(fill, &gradient);
+                outline.iter().map(|point| Point::new(point.x + dx, point.y + dy)).collect();
+            context.execute_command(RenderCommand::ClipPath { points: points.into() });
+            context.fill_gradient(*fill, &gradient);
             context.pop_clip();
         }
+    }
+
+    /// Returns the shimmer geometry, rebuilding it only when the shape or rectangle changed.
+    ///
+    /// The outline point lists are the expensive part (a rounded corner is sampled in eight
+    /// steps per corner, a circle in thirty-two), and they do not depend on the pulse phase. The
+    /// cache therefore turns a per-frame re-sampling into a reference count bump.
+    fn ensure_shimmer_regions(&self, rect: Rect) -> core::cell::Ref<'_, [(Rect, Vec<Point>)]> {
+        let fresh = self.shimmer_geometry.borrow().as_ref().is_some_and(|cache| {
+            cache.shape == self.shape
+                && cache.rect == rect
+                && cache.text_line_rows == self.text_line_rows
+        });
+        if !fresh {
+            let regions = self.build_shimmer_regions(rect);
+            *self.shimmer_geometry.borrow_mut() = Some(ShimmerGeometryCache {
+                shape: self.shape,
+                rect,
+                text_line_rows: self.text_line_rows,
+                regions,
+            });
+        }
+        core::cell::Ref::map(self.shimmer_geometry.borrow(), |cache| {
+            cache.as_ref().map(|cache| cache.regions.as_slice()).unwrap_or(&[])
+        })
     }
 
     /// The geometry the highlight lights up, as `(fill box, outline)` pairs.
@@ -486,7 +568,7 @@ impl SkeletonLoader {
     /// One pair for a rectangle or a disc and one per row for a text line, so the
     /// gaps between stacked rows stay dark. The outline is in local coordinates;
     /// [`Self::paint_shimmer`] translates it by the context offset before use.
-    fn shimmer_regions(&self, rect: Rect) -> Vec<(Rect, Vec<Point>)> {
+    fn build_shimmer_regions(&self, rect: Rect) -> Vec<(Rect, Vec<Point>)> {
         let cx = rect.x + rect.width as i32 / 2;
         let cy = rect.y + rect.height as i32 / 2;
         match self.shape {
@@ -509,12 +591,13 @@ impl SkeletonLoader {
             SkeletonShape::TextLine(w) => {
                 let line_h = dimensions::SKELETON_ROW_HEIGHT;
                 let gap = dimensions::SKELETON_ROW_GAP;
-                let total_h = 3 * line_h + 2 * gap;
+                let rows = self.text_line_rows.max(1);
+                let total_h = rows * line_h + rows.saturating_sub(1) * gap;
                 let start_y = cy - total_h as i32 / 2;
                 let row_w = w.clamp(1, rect.width.max(1));
-                (0..3)
+                (0..rows)
                     .map(|i| {
-                        let y = start_y + i * (line_h + gap) as i32;
+                        let y = start_y + i as i32 * (line_h + gap) as i32;
                         let row = Rect::new(cx - row_w as i32 / 2, y, row_w, line_h);
                         (row, rounded_rect_outline(row, 3))
                     })
@@ -680,6 +763,80 @@ mod tests {
         assert!(!sl.is_animated());
         sl.set_animated(true);
         assert!(sl.is_animated());
+    }
+
+    /// Turning the animation off repaints the control and a same-value write is a no-op.
+    ///
+    /// Regression: `set_animated` wrote the flag and returned, so switching a running shimmer
+    /// off left the last animated frame on screen instead of the documented static 0.2 picture.
+    #[test]
+    fn setting_animated_requests_a_redraw_and_ignores_a_same_value_write() {
+        let mut sl = SkeletonLoader::new(Rect::new(0, 0, 200, 100));
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let f = std::sync::Arc::clone(&fired);
+            let scope = sl.connection_scope();
+            sl.redraw_requested_signal().connect_scoped(scope, move || {
+                f.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+
+        // Writing the value it already holds must not ask for a frame.
+        sl.set_animated(true);
+        assert!(!fired.load(std::sync::atomic::Ordering::SeqCst), "same value is a no-op");
+
+        sl.set_animated(false);
+        assert!(
+            fired.load(std::sync::atomic::Ordering::SeqCst),
+            "switching the animation off must repaint the static frame"
+        );
+    }
+
+    /// A `TextLine` placeholder draws the configured number of rows, and the shimmer geometry
+    /// follows the same field.
+    #[test]
+    fn the_text_line_row_count_is_configurable() {
+        let mut sl = SkeletonLoader::new(Rect::new(0, 0, 240, 200));
+        sl.set_shape(SkeletonShape::TextLine(180));
+        sl.set_animated(false);
+        assert_eq!(sl.text_line_rows(), 3, "three rows is the historical picture");
+
+        sl.set_text_line_rows(5);
+        assert_eq!(sl.text_line_rows(), 5);
+        let svg = render_to_svg(&mut sl);
+        assert_eq!(
+            svg.matches(&format!("height=\"{}\"", dimensions::SKELETON_ROW_HEIGHT)).count(),
+            5,
+            "five rows at SKELETON_ROW_HEIGHT: {svg}"
+        );
+
+        // The shimmer's region list is derived from the same field, one region per row.
+        let regions = sl.ensure_shimmer_regions(sl.geometry());
+        assert_eq!(regions.len(), 5);
+    }
+
+    /// The shimmer outline geometry is sampled once and reused until the shape or rectangle moves.
+    #[test]
+    fn shimmer_geometry_is_cached_until_the_shape_or_rectangle_changes() {
+        let mut sl = SkeletonLoader::new(Rect::new(0, 0, 200, 100));
+        sl.set_shape(SkeletonShape::TextLine(180));
+        {
+            let first = sl.ensure_shimmer_regions(sl.geometry());
+            assert_eq!(first.len(), 3);
+        }
+        let first_ptr = {
+            let regions = sl.ensure_shimmer_regions(sl.geometry());
+            regions.as_ptr()
+        };
+        let second_ptr = {
+            let regions = sl.ensure_shimmer_regions(sl.geometry());
+            regions.as_ptr()
+        };
+        assert_eq!(first_ptr, second_ptr, "an unchanged shape reuses the cached outlines");
+
+        sl.set_text_line_rows(2);
+        let regions = sl.ensure_shimmer_regions(sl.geometry());
+        assert_eq!(regions.len(), 2, "changing the row count invalidates the cache");
     }
 
     /// A `TextLine` skeleton is a fixed stack of rows, not a fraction of the control.

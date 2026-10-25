@@ -80,6 +80,9 @@ impl EventHandler for CodeEditor {
                 if self.hovered_tab.take().is_some() {
                     self.base.request_redraw();
                 }
+                if self.hovered_diagnostic.take().is_some() {
+                    self.base.request_redraw();
+                }
             }
             Event::Wheel { delta, modifiers } => self.handle_wheel(*delta, *modifiers),
             Event::TouchBegin { pos, .. } => self.pointer_press(*pos),

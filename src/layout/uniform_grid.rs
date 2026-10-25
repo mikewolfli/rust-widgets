@@ -207,6 +207,8 @@ impl Layout for UniformGridLayout {
         // non-growing path. Delegating to `GridLayout::add_widget` would grow the grid
         // once it is full, silently undoing the row/column counts the caller chose (S-43).
         if self.inner.place_next_free_cell(widget_id) {
+            // `cell_of` now reads the grid's reverse index, so recording the placement does
+            // not re-scan the cell array (G-151).
             if let Some((row, col)) = self.inner.cell_of(widget_id) {
                 self.record_placement(widget_id, row, col, 1, 1);
             }

@@ -139,6 +139,13 @@ pub struct BarcodeScanner {
     pub barcode_detected: Signal1<BarcodeResult>,
     /// The host's decoder, or `None` while the control is display-only.
     decoder: Option<Box<dyn BarcodeDecoder>>,
+    /// The symbologies this scanner accepts, by [`BarcodeFormat::name`] (case-insensitive).
+    ///
+    /// Empty means "accept every format", which is the behaviour the control had before this
+    /// filter existed. A non-empty list is a whitelist: a symbol of any other format is refused
+    /// before it is stored or announced, so a caller that only understands one symbology never
+    /// sees the ones it cannot use.
+    accepted_formats: Vec<String>,
 }
 
 impl BarcodeScanner {
@@ -154,6 +161,7 @@ impl BarcodeScanner {
             show_viewfinder: true,
             barcode_detected: Signal1::new(),
             decoder: None,
+            accepted_formats: Vec::new(),
         }
     }
 
@@ -259,6 +267,9 @@ impl BarcodeScanner {
     /// expected to call it). The result is stored, emitted on
     /// `barcode_detected`, and shown in the overlay.
     pub fn detect_barcode(&mut self, data: String, format: BarcodeFormat) {
+        if !self.accepts_format(format) {
+            return;
+        }
         use std::time::{SystemTime, UNIX_EPOCH};
         let timestamp =
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
@@ -266,6 +277,42 @@ impl BarcodeScanner {
         self.last_result = Some(result.clone());
         self.barcode_detected.emit(result);
         self.base.request_redraw();
+    }
+
+    /// The symbologies this scanner accepts, by [`BarcodeFormat::name`].
+    ///
+    /// An empty list accepts everything.
+    pub fn accepted_formats(&self) -> &[String] {
+        &self.accepted_formats
+    }
+
+    /// Restricts detection to the named symbologies.
+    ///
+    /// Each entry is compared against [`BarcodeFormat::name`] case-insensitively (and the
+    /// compact spellings `"qr"` / `"qr_code"` / `"qrcode"` map to QR Code), so a caller can
+    /// state the whitelist in the vocabulary it already uses. An empty list removes the filter.
+    /// A change requests a repaint because the viewfinder's status line follows the filter.
+    pub fn set_accepted_formats(&mut self, formats: Vec<String>) {
+        if self.accepted_formats == formats {
+            return;
+        }
+        self.accepted_formats = formats;
+        self.base.request_redraw();
+    }
+
+    /// Whether `format` passes this scanner's whitelist.
+    fn accepts_format(&self, format: BarcodeFormat) -> bool {
+        if self.accepted_formats.is_empty() {
+            return true;
+        }
+        let name = format.name();
+        self.accepted_formats.iter().any(|accepted| {
+            let accepted = accepted.trim();
+            accepted.eq_ignore_ascii_case(name)
+                || (format == BarcodeFormat::QRCode
+                    && (accepted.eq_ignore_ascii_case("qr")
+                        || accepted.eq_ignore_ascii_case("qr_code")))
+        })
     }
 
     /// Shows or hides the viewfinder overlay.

@@ -176,6 +176,12 @@ pub struct CandlestickChart {
     volumes: Vec<f64>,
     /// Indicator values aligned with `overlays`.
     overlay_values: Vec<CachedOverlay>,
+    /// Whether each overlay is drawn, aligned with `overlays`.
+    ///
+    /// A visibility flag per overlay is what lets a legend hide one series without
+    /// clearing the whole list and rebuilding it (FIN-04). `overlay_values` stays aligned
+    /// with `overlays`, so an index means the same thing in all three vectors.
+    overlay_visible: Vec<bool>,
     /// Price decimals inferred from the series, cached with it.
     inferred_decimals: usize,
     /// The padded price extent including overlays and price lines.
@@ -211,6 +217,7 @@ impl CandlestickChart {
             lows: Vec::new(),
             volumes: Vec::new(),
             overlay_values: Vec::new(),
+            overlay_visible: Vec::new(),
             inferred_decimals: 2,
             extent_cache: (0.0, 1.0),
             show_overlay_legend: true,
@@ -253,6 +260,7 @@ impl CandlestickChart {
 
     /// Recomputes every overlay once, for both the extent and the painter.
     fn rebuild_overlay_cache(&mut self) {
+        self.overlay_visible.resize(self.overlays.len(), true);
         self.overlay_values.clear();
         self.overlay_values.reserve(self.overlays.len());
         for overlay in &self.overlays {
@@ -302,7 +310,12 @@ impl CandlestickChart {
                 high = high.max(value_high);
             }
         };
-        for cached in &self.overlay_values {
+        for (overlay_index, cached) in self.overlay_values.iter().enumerate() {
+            // A hidden overlay must not stretch the axis: its values are not on screen, so
+            // including them would leave the visible series compressed for no reason.
+            if !self.overlay_visible.get(overlay_index).copied().unwrap_or(true) {
+                continue;
+            }
             match cached {
                 CachedOverlay::Single(values) => consider(values),
                 CachedOverlay::Triple(first, second, third) => {
@@ -346,6 +359,108 @@ impl CandlestickChart {
         &self.overlays
     }
 
+    /// Replaces the last bar in place for a streaming feed.
+    ///
+    /// A live candle is rewritten as ticks arrive. The only full-series entry point was
+    /// `set_series`, so each tick re-clamped the view, re-corrected the hover and rebuilt
+    /// every overlay over the whole history. This updates the last bar and recomputes only
+    /// each overlay's **last** value from its trailing window, so the cost does not grow
+    /// with the number of bars (J-P16).
+    ///
+    /// The price extent is grown to include the new values. It is **not** shrunk: proving
+    /// that a replaced value was the unique extreme would require rescanning the history,
+    /// which is the cost this method exists to avoid. A full `set_series` re-derives it
+    /// exactly, and a slightly wide axis is a reading inconvenience rather than a wrong one.
+    pub fn update_last_bar(&mut self, bar: Bar) -> bool {
+        let Some(index) = self.series.len().checked_sub(1) else { return false };
+        if !self.series.set_bar(index, bar) {
+            return false;
+        }
+        if let Some(slot) = self.closes.get_mut(index) {
+            *slot = bar.close;
+        }
+        if let Some(slot) = self.highs.get_mut(index) {
+            *slot = bar.high;
+        }
+        if let Some(slot) = self.lows.get_mut(index) {
+            *slot = bar.low;
+        }
+        if let Some(slot) = self.volumes.get_mut(index) {
+            *slot = bar.volume;
+        }
+        self.patch_overlay_tail(index);
+        self.grow_extent_with_bar(bar);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Appends one bar and advances each overlay by one value.
+    ///
+    /// The incremental counterpart of `set_series(..)` for a feed that opens a new candle:
+    /// one value per overlay is computed from its trailing window, and nothing is rescanned
+    /// (J-P16).
+    pub fn append_bar(&mut self, bar: Bar) {
+        self.series.push(bar);
+        self.closes.push(bar.close);
+        self.highs.push(bar.high);
+        self.lows.push(bar.low);
+        self.volumes.push(bar.volume);
+        let index = self.series.len().saturating_sub(1);
+        self.append_overlay_tail(index);
+        self.grow_extent_with_bar(bar);
+        self.base.request_redraw();
+    }
+
+    /// Grows the cached extent so a streamed bar stays inside the axis.
+    ///
+    /// Each bound is `min`/`max` against a padded value, so repeated updates are idempotent:
+    /// the padding is derived from the pre-call span and a value already inside the axis
+    /// cannot push the bound further out on the next tick. The extent never shrinks here;
+    /// a full `set_series` re-derives it exactly.
+    fn grow_extent_with_bar(&mut self, bar: Bar) {
+        let (mut low, mut high) = self.extent_cache;
+        let pad = (high - low).abs().max(1e-9) * 0.02;
+        for value in [bar.low, bar.high, bar.open, bar.close] {
+            if value.is_finite() {
+                low = low.min(value - pad);
+                high = high.max(value + pad);
+            }
+        }
+        self.extent_cache = (low, high);
+    }
+
+    /// Recomputes the overlay values at `index` in place.
+    fn patch_overlay_tail(&mut self, index: usize) {
+        for (overlay_index, overlay) in self.overlays.iter().enumerate() {
+            let Some(cached) = self.overlay_values.get_mut(overlay_index) else { continue };
+            patch_overlay_at(
+                cached,
+                *overlay,
+                index,
+                &self.closes,
+                &self.highs,
+                &self.lows,
+                &self.volumes,
+            );
+        }
+    }
+
+    /// Appends one overlay value at `index`.
+    fn append_overlay_tail(&mut self, index: usize) {
+        for (overlay_index, overlay) in self.overlays.iter().enumerate() {
+            let Some(cached) = self.overlay_values.get_mut(overlay_index) else { continue };
+            append_overlay_at(
+                cached,
+                *overlay,
+                index,
+                &self.closes,
+                &self.highs,
+                &self.lows,
+                &self.volumes,
+            );
+        }
+    }
+
     /// Appends an overlay.
     ///
     /// Appends rather than replaces, because the common case is a chart showing two or
@@ -353,13 +468,95 @@ impl CandlestickChart {
     /// calls [`Self::clear_overlays`] first.
     pub fn add_overlay(&mut self, overlay: Overlay) {
         self.overlays.push(overlay);
+        self.overlay_visible.push(true);
         self.rebuild_overlay_cache();
         self.base.request_redraw();
+    }
+
+    /// Appends an overlay that starts hidden.
+    pub fn add_overlay_hidden(&mut self, overlay: Overlay) {
+        self.overlays.push(overlay);
+        self.overlay_visible.push(false);
+        self.rebuild_overlay_cache();
+        self.base.request_redraw();
+    }
+
+    /// Removes the overlay at `index`.
+    ///
+    /// Returns whether an overlay was there. Before this, hiding one average meant
+    /// `clear_overlays` plus re-adding every other one, which also discarded the cached
+    /// indicator values (FIN-04).
+    pub fn remove_overlay(&mut self, index: usize) -> bool {
+        if index >= self.overlays.len() {
+            return false;
+        }
+        self.overlays.remove(index);
+        if index < self.overlay_visible.len() {
+            self.overlay_visible.remove(index);
+        }
+        self.rebuild_overlay_cache();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Shows or hides the overlay at `index`. Returns whether the state changed.
+    pub fn set_overlay_visible(&mut self, index: usize, visible: bool) -> bool {
+        let Some(slot) = self.overlay_visible.get_mut(index) else { return false };
+        if *slot == visible {
+            return false;
+        }
+        *slot = visible;
+        // A hidden series must not stretch the price axis, so the extent is re-derived.
+        self.rebuild_extent();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Whether the overlay at `index` is drawn. Unknown indices report `false`.
+    pub fn overlay_visible(&self, index: usize) -> bool {
+        self.overlay_visible.get(index).copied().unwrap_or(false)
+    }
+
+    /// The cached values of overlay `index`, one slice per drawn line.
+    ///
+    /// Borrowed rather than cloned: this is the read side of the cache the painter and the
+    /// axis both use, so a host reading a value sees the number that was drawn. A single
+    /// overlay returns one slice, a Bollinger or Donchian overlay three (upper, middle,
+    /// lower) in the order they were computed.
+    pub fn overlay_values(&self, index: usize) -> Option<Vec<&[f64]>> {
+        match self.overlay_values.get(index)? {
+            CachedOverlay::Single(values) => Some(alloc::vec![values.as_slice()]),
+            CachedOverlay::Triple(first, second, third) => {
+                Some(alloc::vec![first.as_slice(), second.as_slice(), third.as_slice()])
+            }
+        }
+    }
+
+    /// The overlay list as legend entries: `(label, colour, visible)`.
+    ///
+    /// This is the data a [`Legend`](crate::widget::companions::Legend) binds to: the
+    /// label is the overlay's factory spelling, the colour is the one the pane draws it in,
+    /// and the flag is [`Self::overlay_visible`]. Wiring `series_toggled` to
+    /// `set_overlay_visible` makes the legend's checkbox and the drawn band one state
+    /// (COMP-J03).
+    pub fn overlay_legend_entries(&self) -> Vec<(String, Color, bool)> {
+        self.overlays
+            .iter()
+            .enumerate()
+            .map(|(index, overlay)| {
+                (
+                    overlay.as_str().to_string(),
+                    Self::overlay_color(index),
+                    self.overlay_visible(index),
+                )
+            })
+            .collect()
     }
 
     /// Removes every overlay.
     pub fn clear_overlays(&mut self) {
         self.overlays.clear();
+        self.overlay_visible.clear();
         self.rebuild_overlay_cache();
         self.base.request_redraw();
     }
@@ -447,6 +644,35 @@ impl CandlestickChart {
     /// The bar under the pointer.
     pub fn hovered_bar(&self) -> Option<Bar> {
         self.hovered_index.and_then(|index| self.series.bars().get(index).copied())
+    }
+
+    /// The hovered bar's readings, ready for a `ChartTooltip`.
+    ///
+    /// The heading is the bar's own label when the host supplied one, then OHLC, volume and
+    /// the bar's change in the candle's direction colour. Assembling this in the control keeps
+    /// a host from rebuilding it from `hovered_bar()` in every consumer (COMP-J02).
+    pub fn hovered_summary(&self) -> Vec<crate::widget::companions::TooltipLine> {
+        use crate::widget::companions::TooltipLine;
+        let Some(index) = self.hovered_index else { return Vec::new() };
+        let Some(bar) = self.series.bars().get(index).copied() else { return Vec::new() };
+        let decimals = self.inferred_decimals;
+        let mut lines = Vec::with_capacity(7);
+        lines.push(TooltipLine::new(match self.series.label_at(index) {
+            Some(label) => label.to_string(),
+            None => alloc::format!("#{index}"),
+        }));
+        lines.push(TooltipLine::new(alloc::format!("O {}", format_fixed(bar.open, decimals))));
+        lines.push(TooltipLine::new(alloc::format!("H {}", format_fixed(bar.high, decimals))));
+        lines.push(TooltipLine::new(alloc::format!("L {}", format_fixed(bar.low, decimals))));
+        lines.push(TooltipLine::new(alloc::format!("C {}", format_fixed(bar.close, decimals))));
+        lines.push(TooltipLine::new(alloc::format!("V {:.0}", bar.volume)));
+        let change = bar.close - bar.open;
+        let color = if change >= 0.0 { Self::rising_color() } else { Self::falling_color() };
+        lines.push(TooltipLine::colored(
+            alloc::format!("Δ {}", format_fixed(change, decimals)),
+            color,
+        ));
+        lines
     }
 
     /// The plot area for this control's current geometry.
@@ -886,6 +1112,201 @@ impl CandlestickChart {
     }
 }
 
+/// The mean of the `period` closes ending at `index`, or `NAN` when the window is not
+/// complete or contains a non-finite sample.
+fn window_mean(values: &[f64], index: usize, period: usize) -> f64 {
+    if period == 0 || period > index + 1 || index >= values.len() {
+        return f64::NAN;
+    }
+    let window = &values[index + 1 - period..=index];
+    if !window.iter().all(|value| value.is_finite()) {
+        return f64::NAN;
+    }
+    window.iter().sum::<f64>() / period as f64
+}
+
+/// The population standard deviation of the window ending at `index`.
+fn window_deviation(values: &[f64], index: usize, period: usize) -> f64 {
+    if period == 0 || period > index + 1 || index >= values.len() {
+        return f64::NAN;
+    }
+    let window = &values[index + 1 - period..=index];
+    if !window.iter().all(|value| value.is_finite()) {
+        return f64::NAN;
+    }
+    let mean = window.iter().sum::<f64>() / period as f64;
+    let variance =
+        window.iter().map(|value| (value - mean) * (value - mean)).sum::<f64>() / period as f64;
+    variance.sqrt()
+}
+
+/// The windowed VWAP ending at `index`.
+fn window_vwap(
+    highs: &[f64],
+    lows: &[f64],
+    closes: &[f64],
+    volumes: &[f64],
+    index: usize,
+    period: usize,
+) -> f64 {
+    if period == 0 || period > index + 1 || index >= closes.len() {
+        return f64::NAN;
+    }
+    let start = index + 1 - period;
+    let mut weighted = 0.0;
+    let mut total = 0.0;
+    for offset in start..=index {
+        let (Some(high), Some(low), Some(close), Some(volume)) = (
+            highs.get(offset).copied(),
+            lows.get(offset).copied(),
+            closes.get(offset).copied(),
+            volumes.get(offset).copied(),
+        ) else {
+            return f64::NAN;
+        };
+        if !high.is_finite() || !low.is_finite() || !close.is_finite() || !volume.is_finite() {
+            return f64::NAN;
+        }
+        weighted += (high + low + close) / 3.0 * volume;
+        total += volume;
+    }
+    if total == 0.0 {
+        f64::NAN
+    } else {
+        weighted / total
+    }
+}
+
+/// The windowed Donchian channel ending at `index`, as `(upper, middle, lower)`.
+fn window_donchian(highs: &[f64], lows: &[f64], index: usize, period: usize) -> (f64, f64, f64) {
+    if period == 0 || period > index + 1 || index >= highs.len() || index >= lows.len() {
+        return (f64::NAN, f64::NAN, f64::NAN);
+    }
+    let start = index + 1 - period;
+    let high_window = &highs[start..=index];
+    let low_window = &lows[start..=index];
+    if !high_window.iter().all(|value| value.is_finite())
+        || !low_window.iter().all(|value| value.is_finite())
+    {
+        return (f64::NAN, f64::NAN, f64::NAN);
+    }
+    let upper = high_window.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let lower = low_window.iter().copied().fold(f64::INFINITY, f64::min);
+    (upper, (upper + lower) / 2.0, lower)
+}
+
+/// One overlay's value at `index`, computed from its trailing window only.
+fn overlay_single_value(
+    overlay: Overlay,
+    index: usize,
+    closes: &[f64],
+    highs: &[f64],
+    lows: &[f64],
+    volumes: &[f64],
+    previous: Option<f64>,
+) -> f64 {
+    match overlay {
+        Overlay::MovingAverage { period } => window_mean(closes, index, period),
+        Overlay::ExponentialMovingAverage { period } => {
+            let close = closes.get(index).copied().unwrap_or(f64::NAN);
+            if period == 0 || !close.is_finite() {
+                return close;
+            }
+            // One smoothing step from the previous EMA; only a missing/first previous
+            // value needs the full series, which cannot happen on the steady path.
+            match previous.filter(|value| value.is_finite()) {
+                Some(previous) => previous + (close - previous) * (2.0 / (period as f64 + 1.0)),
+                None => indicators::ema(closes, period).get(index).copied().unwrap_or(f64::NAN),
+            }
+        }
+        Overlay::Vwap { period } => window_vwap(highs, lows, closes, volumes, index, period),
+        // The band overlays carry three series and are handled by the triple path.
+        Overlay::BollingerBands { .. } | Overlay::DonchianChannel { .. } => f64::NAN,
+    }
+}
+
+/// Writes `value` at `index`, growing the series when it is one short.
+fn put_value(values: &mut Vec<f64>, index: usize, value: f64) {
+    if values.len() <= index {
+        values.resize(index + 1, f64::NAN);
+    }
+    values[index] = value;
+}
+
+/// Recomputes the cached overlay's value at `index` from its window.
+fn patch_overlay_at(
+    cached: &mut CachedOverlay,
+    overlay: Overlay,
+    index: usize,
+    closes: &[f64],
+    highs: &[f64],
+    lows: &[f64],
+    volumes: &[f64],
+) {
+    match (cached, overlay) {
+        (CachedOverlay::Single(values), _) => {
+            let previous = index.checked_sub(1).and_then(|slot| values.get(slot)).copied();
+            let value =
+                overlay_single_value(overlay, index, closes, highs, lows, volumes, previous);
+            put_value(values, index, value);
+        }
+        (
+            CachedOverlay::Triple(upper, middle, lower),
+            Overlay::BollingerBands { period, multiplier },
+        ) => {
+            let mean = window_mean(closes, index, period);
+            let deviation = window_deviation(closes, index, period);
+            put_value(middle, index, mean);
+            put_value(upper, index, mean + multiplier * deviation);
+            put_value(lower, index, mean - multiplier * deviation);
+        }
+        (CachedOverlay::Triple(upper, middle, lower), Overlay::DonchianChannel { period }) => {
+            let (top, center, bottom) = window_donchian(highs, lows, index, period);
+            put_value(upper, index, top);
+            put_value(middle, index, center);
+            put_value(lower, index, bottom);
+        }
+        _ => {}
+    }
+}
+
+/// Appends the cached overlay's value for `index`.
+fn append_overlay_at(
+    cached: &mut CachedOverlay,
+    overlay: Overlay,
+    index: usize,
+    closes: &[f64],
+    highs: &[f64],
+    lows: &[f64],
+    volumes: &[f64],
+) {
+    match (cached, overlay) {
+        (CachedOverlay::Single(values), _) => {
+            let previous = index.checked_sub(1).and_then(|slot| values.get(slot)).copied();
+            let value =
+                overlay_single_value(overlay, index, closes, highs, lows, volumes, previous);
+            values.push(value);
+        }
+        (
+            CachedOverlay::Triple(upper, middle, lower),
+            Overlay::BollingerBands { period, multiplier },
+        ) => {
+            let mean = window_mean(closes, index, period);
+            let deviation = window_deviation(closes, index, period);
+            middle.push(mean);
+            upper.push(mean + multiplier * deviation);
+            lower.push(mean - multiplier * deviation);
+        }
+        (CachedOverlay::Triple(upper, middle, lower), Overlay::DonchianChannel { period }) => {
+            let (top, center, bottom) = window_donchian(highs, lows, index, period);
+            upper.push(top);
+            middle.push(center);
+            lower.push(bottom);
+        }
+        _ => {}
+    }
+}
+
 /// Formats a price with exactly `decimals` places.
 ///
 /// Written out rather than using `format!("{:.*}", decimals, value)` because the `alloc`
@@ -1078,6 +1499,20 @@ impl Draw for CandlestickChart {
 
         self.draw_price_labels(context, &area);
         self.draw_candles(context, &area);
+        // The bar index under the candles, from the series' own labels (FIN-01).
+        let (start, end) = self.view_bounds();
+        super::volume_chart::draw_index_ticks(
+            context,
+            &area,
+            start,
+            end,
+            |index| match self.series.label_at(index) {
+                Some(label) => label.to_string(),
+                None => alloc::format!("{index}"),
+            },
+            &role_font(self.style(), 10.0),
+            chrome.ink.with_alpha(190),
+        );
         self.draw_overlays(context, &area);
         self.draw_price_lines(context, &area);
         if self.show_overlay_legend && !self.overlays.is_empty() {

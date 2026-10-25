@@ -175,8 +175,13 @@ impl CodeEditor {
         let model = self.model.borrow();
         let mut matches = Vec::new();
         for (line_index, line) in model.lines.iter().enumerate() {
-            let haystack: Vec<char> = line.chars().collect();
+            // A line shorter than the needle cannot contain it; this is a byte-length test,
+            // and a line's byte length is never below its character count.
+            if line.len() < needle.len() {
+                continue;
+            }
             if options.use_regex {
+                let haystack: Vec<char> = line.chars().collect();
                 for (start, end) in regex_matches(&haystack, &needle, options.case_sensitive) {
                     if whole_word_ok(&haystack, start, end - start, options, language) {
                         matches.push(SearchMatch {
@@ -188,27 +193,14 @@ impl CodeEditor {
                 }
                 continue;
             }
-            if haystack.len() < needle.len() {
-                continue;
-            }
-            let mut start = 0usize;
-            while start + needle.len() <= haystack.len() {
-                let candidate = &haystack[start..start + needle.len()];
-                let equal = if options.case_sensitive {
-                    candidate == needle.as_slice()
-                } else {
-                    window_matches_ignore_case(candidate, &needle, needle_ascii, &needle_lower)
-                };
-                if equal && whole_word_ok(&haystack, start, needle.len(), options, language) {
-                    matches.push(SearchMatch {
-                        line: line_index,
-                        start_column: start,
-                        end_column: start + needle.len(),
-                    });
-                    start += needle.len();
-                } else {
-                    start += 1;
-                }
+            for (start, end) in
+                scan_literal_line(line, &needle, &needle_lower, needle_ascii, options, language)
+            {
+                matches.push(SearchMatch {
+                    line: line_index,
+                    start_column: start,
+                    end_column: end,
+                });
             }
         }
         drop(model);
@@ -296,8 +288,8 @@ impl CodeEditor {
         }
         let needle_lower = lowercase_chars(&needle);
         let needle_ascii = needle.iter().all(|ch| ch.is_ascii());
-        let haystack: Vec<char> = text.chars().collect();
         if options.use_regex {
+            let haystack: Vec<char> = text.chars().collect();
             for (start, end) in regex_matches(&haystack, &needle, options.case_sensitive) {
                 if whole_word_ok(&haystack, start, end - start, options, self.config.language) {
                     out.push(SearchMatch {
@@ -309,28 +301,14 @@ impl CodeEditor {
             }
             return;
         }
-        if haystack.len() < needle.len() {
+        if text.len() < needle.len() {
             return;
         }
         let language = self.config.language;
-        let mut start = 0usize;
-        while start + needle.len() <= haystack.len() {
-            let window = &haystack[start..start + needle.len()];
-            let equal = if options.case_sensitive {
-                window == needle.as_slice()
-            } else {
-                window_matches_ignore_case(window, &needle, needle_ascii, &needle_lower)
-            };
-            if equal && whole_word_ok(&haystack, start, needle.len(), options, language) {
-                out.push(SearchMatch {
-                    line: line_index,
-                    start_column: start,
-                    end_column: start + needle.len(),
-                });
-                start += needle.len();
-            } else {
-                start += 1;
-            }
+        for (start, end) in
+            scan_literal_line(text, &needle, &needle_lower, needle_ascii, options, language)
+        {
+            out.push(SearchMatch { line: line_index, start_column: start, end_column: end });
         }
     }
 
@@ -951,6 +929,96 @@ fn window_matches_ignore_case(
         return window.iter().zip(needle).all(|(left, right)| left.eq_ignore_ascii_case(right));
     }
     window.iter().flat_map(|ch| ch.to_lowercase()).eq(needle_lower.iter().copied())
+}
+
+/// Every literal (non-regex) match in one line, as `(start_column, end_column)` char columns.
+///
+/// # Why the line is not collected into a `Vec<char>`
+///
+/// The scan used to materialise every line as a character vector so a window could be sliced
+/// out of it. On a large file that was one allocation of `O(line)` per line per keystroke of
+/// the query, on a path that already has to look at every line. The walk here is over the
+/// line's bytes with a running character column: it allocates only the result.
+///
+/// The one case that keeps the materialised form is a **non-ASCII, case-insensitive**
+/// needle, where Unicode lowercasing can expand one character into several and a 1:1 window
+/// comparison would no longer be equivalent. That path is rare enough that matching the old
+/// semantics is worth its cost.
+fn scan_literal_line(
+    line: &str,
+    needle: &[char],
+    needle_lower: &[char],
+    needle_ascii: bool,
+    options: SearchOptions,
+    language: LanguageId,
+) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    if needle.is_empty() {
+        return out;
+    }
+    if !options.case_sensitive && !needle_ascii {
+        let haystack: Vec<char> = line.chars().collect();
+        if haystack.len() < needle.len() {
+            return out;
+        }
+        let mut start = 0usize;
+        while start + needle.len() <= haystack.len() {
+            let window = &haystack[start..start + needle.len()];
+            let equal = window_matches_ignore_case(window, needle, needle_ascii, needle_lower);
+            if equal && whole_word_ok(&haystack, start, needle.len(), options, language) {
+                out.push((start, start + needle.len()));
+                start += needle.len();
+            } else {
+                start += 1;
+            }
+        }
+        return out;
+    }
+    let mut column = 0usize;
+    let mut byte = 0usize;
+    while byte < line.len() {
+        let mut matched = true;
+        let mut cursor = byte;
+        for wanted in needle {
+            match line[cursor..].chars().next() {
+                Some(ch) => {
+                    let equal = if options.case_sensitive {
+                        ch == *wanted
+                    } else {
+                        ch.eq_ignore_ascii_case(wanted)
+                    };
+                    if !equal {
+                        matched = false;
+                        break;
+                    }
+                    cursor += ch.len_utf8();
+                }
+                None => {
+                    matched = false;
+                    break;
+                }
+            }
+        }
+        if matched {
+            let before_ok =
+                line[..byte].chars().next_back().is_none_or(|ch| !language.is_word_char(ch));
+            let after_ok =
+                line[cursor..].chars().next().is_none_or(|ch| !language.is_word_char(ch));
+            if !options.whole_word || (before_ok && after_ok) {
+                out.push((column, column + needle.len()));
+                while byte < cursor {
+                    let ch = line[byte..].chars().next().unwrap_or(' ');
+                    byte += ch.len_utf8();
+                    column += 1;
+                }
+                continue;
+            }
+        }
+        let ch = line[byte..].chars().next().unwrap_or(' ');
+        byte += ch.len_utf8();
+        column += 1;
+    }
+    out
 }
 
 fn is_word_boundary(text: &[char], position: usize) -> bool {

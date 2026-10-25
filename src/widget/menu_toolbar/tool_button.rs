@@ -12,7 +12,8 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::menu_button::{
-    draw_menu_panel, menu_item_rect, menu_panel_rect, MenuItem,
+    draw_menu_panel, draw_menu_panel_with_branches, menu_item_rect, menu_panel_rect,
+    menu_submenu_panel_rect, MenuItem, MAX_SUBMENU_DEPTH,
 };
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 use crate::widget::metrics::{dimensions, effective_font, estimate_line_height, ControlMetrics};
@@ -29,36 +30,26 @@ const DELAYED_POPUP_MS: u32 = 500;
 
 /// Tool button popup mode.
 ///
-/// Selects how the button's attached menu is presented. A menu set with
-/// [`ToolButton::set_menu`] is owned and painted by the button itself: the mode only decides
-/// which gesture opens it. A button with no menu keeps its plain push-button behaviour, so
-/// the default mode cannot turn every tool-bar button into a popup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolButtonPopupMode {
-    /// Opening the menu requires a long or delayed press, so a quick click
-    /// performs the button's main action instead.
-    DelayedPopup,
-    /// The menu opens from a dedicated arrow area while the rest of the button
-    /// performs the main action.
-    MenuButtonPopup,
-    /// A click opens the menu immediately; there is no separate main action.
-    InstantPopup,
-}
+/// This is the menu family's [`MenuButtonPopup`](super::menu_button::MenuButtonPopup),
+/// re-exported under the tool-button spelling. The two had identical variant sets
+/// (principle #54); the tool button keeps its own default (`DelayedPopup`) by setting it
+/// explicitly in its constructor rather than by owning a second enum.
+pub use super::menu_button::MenuButtonPopup as ToolButtonPopupMode;
 
 /// Which way the popup indicator arrow of a tool button points.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ToolButtonArrowType {
-    /// A downward chevron, the historical indicator.
-    #[default]
-    Down,
-    /// An upward chevron.
-    Up,
-    /// A leftward chevron.
-    Left,
-    /// A rightward chevron.
-    Right,
-    /// No indicator; the whole button becomes the popup target.
-    None,
+///
+/// This is [`MenuArrowType`](super::menu_button::MenuArrowType); the two variant sets were
+/// identical and both defaulted to `Down` (principle #54). The tool-button name stays as an
+/// alias so the public path does not change.
+pub use super::menu_button::MenuArrowType as ToolButtonArrowType;
+
+/// One open child panel of a tool button's menu.
+///
+/// The panel owns the rows it shows, exactly as the menu family's other cascade owners do;
+/// the top-level list stays in `ToolButton::menu_items`.
+struct ToolSubmenuPanel {
+    items: Vec<MenuItem>,
+    rect: Rect,
 }
 
 /// Tool button style.
@@ -160,6 +151,10 @@ pub struct ToolButton {
     /// Emitted on every activation, with no payload; a convenience signal for
     /// handlers that do not care about the checked state.
     pub triggered: GenericSignal,
+    /// The open child panels, deepest last (M-08).
+    submenus: Vec<ToolSubmenuPanel>,
+    /// Emitted with the linked action id when a leaf row carrying one is chosen (COMP-G04).
+    pub action_triggered: Signal1<String>,
 }
 
 impl ToolButton {
@@ -198,6 +193,8 @@ impl ToolButton {
             clicked: Signal1::new(),
             toggled: Signal1::new(),
             triggered: GenericSignal::new(),
+            submenus: Vec::new(),
+            action_triggered: Signal1::new(),
         }
     }
 
@@ -448,6 +445,7 @@ impl ToolButton {
         self.menu_open = false;
         self.delayed_press = false;
         self.delayed_elapsed_ms = 0;
+        self.submenus.clear();
         self.reveal.set_open(false);
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::clear_popup_grab_for(self.id());
@@ -486,20 +484,107 @@ impl ToolButton {
         menu_panel_rect(self.geometry(), self.menu_items.len())
     }
 
-    /// The enabled menu row at `pos`, when the menu is open.
-    fn hit_test_item(&self, pos: Point) -> Option<usize> {
+    /// Whether `pos` lies in the open panel or any of its child panels.
+    fn menu_contains(&self, pos: Point) -> bool {
+        self.menu_open
+            && (self.menu_rect().contains_point(pos)
+                || self.submenus.iter().any(|panel| panel.rect.contains_point(pos)))
+    }
+
+    /// The rows shown at `level`: the button's menu at level 0, a child panel below it.
+    fn items_at_level(&self, level: usize) -> Option<&[MenuItem]> {
+        if level == 0 {
+            Some(&self.menu_items)
+        } else {
+            self.submenus.get(level - 1).map(|panel| panel.items.as_slice())
+        }
+    }
+
+    /// The panel rectangle at `level`.
+    fn panel_rect_at(&self, level: usize) -> Option<Rect> {
+        if level == 0 {
+            Some(self.menu_rect())
+        } else {
+            self.submenus.get(level - 1).map(|panel| panel.rect)
+        }
+    }
+
+    /// The deepest enabled row at `pos`, as `(level, index)`.
+    fn hit_test_row(&self, pos: Point) -> Option<(usize, usize)> {
         if !self.menu_open {
             return None;
         }
-        let panel = self.menu_rect();
-        if !panel.contains_point(pos) {
-            return None;
+        for level in (0..=self.submenus.len()).rev() {
+            let Some(panel) = self.panel_rect_at(level) else {
+                continue;
+            };
+            if !panel.contains_point(pos) {
+                continue;
+            }
+            let Some(items) = self.items_at_level(level) else {
+                continue;
+            };
+            for (index, item) in items.iter().enumerate() {
+                let row = menu_item_rect(panel, index);
+                if item.enabled && !item.separator && row.contains_point(pos) {
+                    return Some((level, index));
+                }
+            }
         }
-        self.menu_items.iter().enumerate().find_map(|(index, item)| {
-            let row = menu_item_rect(panel, index);
-            (item.enabled && row.contains_point(pos)).then_some(index)
-        })
+        None
     }
+
+    /// Opens the child panel of the branch row at `index` in `level` (M-08).
+    fn open_submenu_at(&mut self, level: usize, index: usize) {
+        if level >= MAX_SUBMENU_DEPTH {
+            return;
+        }
+        let Some(item) = self.items_at_level(level).and_then(|items| items.get(index)) else {
+            return;
+        };
+        if !item.enabled || item.separator {
+            return;
+        }
+        let Some(children) = item.submenu.clone().filter(|children| !children.is_empty()) else {
+            return;
+        };
+        let Some(parent) = self.panel_rect_at(level) else {
+            return;
+        };
+        let Some(anchor_row) = self.panel_rect_at(level).map(|panel| menu_item_rect(panel, index))
+        else {
+            return;
+        };
+        let count = children.len();
+        self.submenus.truncate(level);
+        self.submenus.push(ToolSubmenuPanel {
+            items: children,
+            rect: menu_submenu_panel_rect(parent, anchor_row, count),
+        });
+        self.base.request_redraw();
+    }
+
+    /// Chooses the row at `(level, index)`: a branch opens, a leaf emits and closes.
+    fn activate_row_at(&mut self, level: usize, index: usize) {
+        let Some(item) = self.items_at_level(level).and_then(|items| items.get(index)) else {
+            return;
+        };
+        if !item.enabled || item.separator {
+            return;
+        }
+        let is_branch = item.submenu.as_ref().is_some_and(|children| !children.is_empty());
+        if is_branch {
+            self.open_submenu_at(level, index);
+            return;
+        }
+        if let Some(action_id) = item.action_id.clone() {
+            self.action_triggered.emit(action_id);
+        }
+        self.triggered.emit();
+        self.close_menu();
+    }
+
+    // The enabled menu row at `pos`, when the menu is open.
 
     /// Sets the button style and requests a redraw.
     pub fn set_button_style(&mut self, style: ToolButtonStyle) {
@@ -725,8 +810,9 @@ impl Widget for ToolButton {
 
     /// The button and its open menu accept the pointer.
     ///
-    /// The panel hangs below the button's rectangle; without this override a press on a menu row
-    /// is rejected by the hit test and never reaches `hit_test_item`.
+    /// The panel and every child panel hang below/right of the button's rectangle; without
+    /// this override a press on a menu row is rejected by the hit test and never reaches
+    /// `hit_test_row`.
     fn contains_point(&self, point: Point) -> bool {
         self.base().contains_point_with_touch_expansion(point)
             || (self.menu_open && self.menu_rect().contains_point(point))
@@ -793,6 +879,11 @@ impl Widget for ToolButton {
                 CapabilityValue::Bool(*v)
             })),
             "triggered" => Some(EventSignalRef::unit("triggered", &self.triggered)),
+            "action_triggered" => {
+                Some(EventSignalRef::mapped("action_triggered", &self.action_triggered, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
             _ => None,
         }
     }
@@ -917,15 +1008,14 @@ impl EventHandler for ToolButton {
                 if self.base.is_enabled()
                     && *button == crate::event::mouse_button::PRIMARY
                     && (self.base.contains_point_with_touch_expansion(*pos)
-                        || (self.menu_open && self.menu_rect().contains_point(*pos))) =>
+                        || self.menu_contains(*pos)) =>
             {
-                if self.menu_open && self.menu_rect().contains_point(*pos) {
-                    // A press on the open panel selects a row; it is not a new button gesture.
-                    if self.hit_test_item(*pos).is_some() {
-                        self.triggered.emit();
+                if self.menu_open && self.menu_contains(*pos) {
+                    // A press on the open panel chooses a row; it is not a new button gesture.
+                    if let Some((level, index)) = self.hit_test_row(*pos) {
+                        self.activate_row_at(level, index);
                     }
                     self.suppress_click = true;
-                    self.close_menu();
                 } else if self.menu_open {
                     // A press on the button while its menu is open closes it, the toggle a menu
                     // button performs, instead of also performing the main action.
@@ -1187,6 +1277,20 @@ impl Draw for ToolButton {
             draw_menu_panel(context, panel, &self.menu_items, &[], &style, accent);
             if clipped {
                 context.pop_clip();
+            }
+            // The child panels hang to the right of the level that opened them, outside the
+            // top panel's reveal clip (M-08).
+            for (offset, submenu) in self.submenus.iter().enumerate() {
+                let branches_open = offset + 1 < MAX_SUBMENU_DEPTH;
+                draw_menu_panel_with_branches(
+                    context,
+                    submenu.rect,
+                    &submenu.items,
+                    &[],
+                    &style,
+                    accent,
+                    branches_open,
+                );
             }
         }
     }

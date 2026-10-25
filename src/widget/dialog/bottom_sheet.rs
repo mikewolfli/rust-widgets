@@ -63,6 +63,8 @@ pub struct BottomSheet {
     content_height: u32,
     /// The single content widget the sheet hosts, if any.
     content_widget: Option<ObjectId>,
+    /// The content geometry the last frame wrote, so a still frame does not repeat the write (G-P12).
+    placed_content: Option<(ObjectId, Rect)>,
     /// How the panel is presented.
     attachment: SheetAttachment,
     /// The handle drag in progress.
@@ -93,6 +95,7 @@ impl BottomSheet {
             open: false,
             content_height: geometry.height / 2,
             content_widget: None,
+            placed_content: None,
             attachment: SheetAttachment::Overlay,
             drag: None,
             drag_offset: 0.0,
@@ -434,33 +437,27 @@ impl Draw for BottomSheet {
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("bottom_sheet");
-        // `bottom_sheet` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
-        // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
-        // pane painted in that colour would be byte-identical to the frame behind it, so a
-        // resolved surface equal to the window fill is re-derived a visible step away from
-        // it, the same distinction `Colors::input_background` draws for a field.
-        //
-        // Read as its own lock acquisition and copied out as a value, so the guard is
-        // dropped before anything else touches the theme.
-        let window_fill = {
+        // One theme-manager read supplies the window fill and the fallback ink/border; the old
+        // path resolved a widget style and then took the manager lock again (G-P13).
+        let (window_fill, theme_ink, theme_border) = {
             let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    Some(active.colors.foreground),
+                    Some(active.colors.outline),
+                ),
+                None => (Color::WHITE, None, None),
+            }
         };
-        let ink = style
-            .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
-            .unwrap_or(Color::rgb(40, 40, 40));
-        let sheet_color = match style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-        {
+        let ink = style.text_color.or(theme_ink).unwrap_or(Color::rgb(40, 40, 40));
+        let sheet_color = match style.background_color {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.08),
         };
         let border_color = style
             .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .or(theme_border)
             .filter(|resolved| *resolved != sheet_color)
             .unwrap_or_else(|| sheet_color.blend(&ink, 0.35));
         let handle_color = ink.blend(&sheet_color, 0.35);
@@ -564,16 +561,22 @@ impl Draw for BottomSheet {
             let content_top = sheet_y + 8 + handle_height as i32 + 8;
             let content_height = sheet_y + sheet_height as i32 - content_top - 8;
             if content_height > 0 {
-                crate::set_widget_geometry(
-                    content,
+                let rect = Rect::new(
                     sheet_rect.x + 8,
                     content_top,
                     sheet_rect.width.saturating_sub(16),
                     content_height as u32,
                 );
-                crate::set_widget_visible(content, true);
-            } else {
+                // A still frame (the reveal settled and no drag) writes the same rectangle it
+                // wrote last frame; comparing first keeps the tree update off those frames (G-P12).
+                if self.placed_content != Some((content, rect)) {
+                    crate::set_widget_geometry(content, rect.x, rect.y, rect.width, rect.height);
+                    crate::set_widget_visible(content, true);
+                    self.placed_content = Some((content, rect));
+                }
+            } else if self.placed_content.is_some() {
                 crate::set_widget_visible(content, false);
+                self.placed_content = None;
             }
         }
     }

@@ -188,6 +188,15 @@ fn decode_loop(
 }
 
 /// Video player engine that wraps a decoder and exposes playback control.
+///
+/// # Who consumes it
+///
+/// This engine is a **standalone, host-driven component**: it is not mounted into the widget
+/// tree, and no in-crate control subscribes to its signals. [`Self::on_frame`] and
+/// [`Self::on_state_change`] are the host's hooks — a host that owns an engine connects them
+/// to its own presentation path, exactly as it drives `tick_frame`. `MediaPlayer` deliberately
+/// does not own one (it has no decoder and shares only the [`MediaClock`] *type*, not an
+/// instance), so there is no second, silent wiring path.
 pub struct VideoEngine {
     /// The decode thread and the channels to it.
     worker: DecodeWorker,

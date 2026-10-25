@@ -3,17 +3,18 @@
 
 //! Standalone TabBar widget — decoupled from TabWidget, draws a row/column of tabs.
 use crate::compat::Cow;
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
+use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
 use crate::widget::capability::coercion::{
-    expect_bool, expect_text_direction, expect_usize, text_direction_to_str,
+    expect_bool, expect_text_direction, expect_u32_saturating, expect_usize, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::TooltipManager;
 use crate::widget::container_widgets::tabwidget::{TabPosition, TabShape};
 use crate::widget::metrics::{
     expand_to_hit_area, focus_ring_color, role_font, FocusRing, FOCUS_RING_WIDTH,
@@ -54,6 +55,107 @@ const TAB_ICON_GAP: u32 = 4;
 /// This is the same "one metric, not two" rule the shared estimate exists for (BLUE24 U-14).
 fn estimate_text_width(text: &str, font: &Font) -> u32 {
     crate::widget::metrics::estimate_text_width(text, font, 1.0)
+}
+
+/// The stable hover id for one tab.
+///
+/// The tooltip pipeline addresses a hover source by id; a tab is not a widget, so the id is
+/// derived from the strip's own and the tab's index. The mix is the toolbar's, so the two controls
+/// cannot collide on an accidental linear id.
+fn hover_id(owner: ObjectId, index: usize) -> ObjectId {
+    owner.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (index as u64 + 1)
+}
+
+/// The cache key for one tab's elided title: the text, the label band, the font and the mode.
+fn elide_key(text: &str, budget: u32, font: &Font, mode: TabElideMode) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |value: u64| {
+        hash ^= value;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    for byte in text.as_bytes() {
+        mix(u64::from(*byte));
+    }
+    mix(0xFF);
+    mix(u64::from(budget));
+    mix(u64::from(font.size().to_bits()));
+    mix(u64::from(font.weight()));
+    for byte in font.family().as_bytes() {
+        mix(u64::from(*byte));
+    }
+    mix(match mode {
+        TabElideMode::None => 0,
+        TabElideMode::Right => 1,
+        TabElideMode::Left => 2,
+        TabElideMode::Middle => 3,
+    });
+    hash
+}
+
+/// Shortens `text` so its measured width fits `max_width`, keeping the **tail**.
+///
+/// The width-budget counterpart of [`crate::widget::text_utils::elide_start`], which is the
+/// character-count form. Same contract as `elide_to_width`: fitting text is returned borrowed, the
+/// ellipsis is part of the budget, and a budget too small for the ellipsis itself yields an empty
+/// slice rather than a glyph that overflows. The largest fitting suffix is found by binary search
+/// over character boundaries, so a multi-byte tail is never cut mid-character.
+fn elide_start_to_width<'a>(
+    text: &'a str,
+    max_width: u32,
+    measure: &mut dyn FnMut(&str) -> u32,
+) -> Cow<'a, str> {
+    const ELLIPSIS: char = '\u{2026}';
+    if measure(text) <= max_width {
+        return Cow::Borrowed(text);
+    }
+    let ellipsis_width = measure(&ELLIPSIS.to_string());
+    if max_width == 0 || ellipsis_width > max_width {
+        return Cow::Borrowed("");
+    }
+    // The ellipsis has to be measured as part of every candidate, so the suffix budget is what is
+    // left after it.
+    let char_count = text.chars().count();
+    let mut low = 0usize;
+    let mut high = char_count;
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        let start = byte_index_from_end(text, mid);
+        let mut candidate = String::with_capacity(3 + text.len() - start);
+        candidate.push(ELLIPSIS);
+        candidate.push_str(&text[start..]);
+        if measure(&candidate) <= max_width {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    if low == char_count {
+        return Cow::Borrowed(text);
+    }
+    let start = byte_index_from_end(text, low);
+    let mut out = String::with_capacity(3 + text.len() - start);
+    out.push(ELLIPSIS);
+    out.push_str(&text[start..]);
+    Cow::Owned(out)
+}
+
+/// The byte index of the first character of the last `keep` characters of `text`.
+fn byte_index_from_end(text: &str, keep: usize) -> usize {
+    let char_count = text.chars().count();
+    if keep >= char_count {
+        return 0;
+    }
+    let skip = char_count - keep;
+    text.char_indices().nth(skip).map(|(index, _)| index).unwrap_or(text.len())
+}
+
+/// The elided form of one tab's title, cached between frames.
+#[derive(Clone, Debug)]
+enum ElidedTitle {
+    /// The full title fits its label band and is painted from the tab itself.
+    Fits,
+    /// The title was shortened and this is the string to paint.
+    Elided(String),
 }
 
 /// A single tab in a `TabBar`.
@@ -143,6 +245,15 @@ pub enum TabElideMode {
     /// Elide the title at the tab's trailing edge, the historical rendering.
     #[default]
     Right,
+    /// Elide the title at its **leading** edge, keeping the identifying tail.
+    ///
+    /// The mode a file name wants: a list of `report-2026-10.csv` tabs keeps the extension and the
+    /// distinguishing suffix instead of three tabs that all read `report-…`.
+    Left,
+    /// Elide the **middle**, keeping both ends.
+    ///
+    /// For a path or URL whose head and tail are each identifying.
+    Middle,
 }
 
 /// What becomes current after the current tab is removed.
@@ -190,6 +301,18 @@ pub struct TabBar {
     /// uses for its title) makes hit testing, layout and painting agree *after* the
     /// first frame, and [`estimate_text_width`] only has to carry the first one.
     measured_title_widths: Vec<u32>,
+    /// The font-and-titles fold [`Self::measured_title_widths`] was measured for (K-P09).
+    ///
+    /// `draw` used to clear the widths and re-measure every title on every frame, which is one
+    /// shaped-text measurement per tab per paint for a label that had not changed. The fold covers
+    /// the font and every title, so any edit to either re-measures and nothing else does.
+    measured_title_signature: u64,
+    /// The elided title to paint per tab, and the inputs it was elided for (K-P09).
+    ///
+    /// `None` means the title fits and is painted borrowed. The entries are refreshed only when the
+    /// title, the label band, the font or the elide mode changes, so a static strip does no elision
+    /// work at all after the first frame.
+    elided_titles: Vec<Option<(u64, ElidedTitle)>>,
     /// The writing direction the horizontal strip runs in.
     ///
     /// # Why a tab strip needs this
@@ -228,6 +351,17 @@ pub struct TabBar {
     pub tab_close_requested: Signal1<usize>,
     /// Emitted when a tab is moved; payload is `(old_index, new_index)`.
     pub tab_moved: Signal1<(usize, usize)>,
+    /// The host-side hover/delay/show pipeline for tab tooltips (ADV-11).
+    ///
+    /// `TabBarTab::tooltip` was stored, published and never read, so a truncated title — the very
+    /// case a hint exists for — could not be read anywhere. The pipeline lives in the control
+    /// because a widget cannot reach a host's manager instance; the shape is the one `tool_bar`
+    /// already uses.
+    tooltips: TooltipManager,
+    /// The derived hover id currently registered with the tooltip pipeline.
+    tooltip_source: Option<ObjectId>,
+    /// Monotonic clock fed to the tooltip pipeline from [`Widget::tick`].
+    tooltip_now_ms: u64,
 }
 
 /// The resolved chrome colours shared by every tab in one draw pass.
@@ -261,6 +395,8 @@ impl TabBar {
             tab_min_width: TAB_MIN_WIDTH,
             tab_max_width: TAB_MAX_WIDTH,
             measured_title_widths: Vec::new(),
+            measured_title_signature: 0,
+            elided_titles: Vec::new(),
             direction: crate::core::TextDirection::default(),
             drag_target: None,
             scroll_buttons: false,
@@ -274,6 +410,9 @@ impl TabBar {
             current_changed: Signal1::new(),
             tab_close_requested: Signal1::new(),
             tab_moved: Signal1::new(),
+            tooltips: TooltipManager::new(geometry),
+            tooltip_source: None,
+            tooltip_now_ms: 0,
         }
     }
 
@@ -675,6 +814,55 @@ impl TabBar {
         true
     }
 
+    /// Registers the hovered tab's hint with the hover pipeline (ADV-11).
+    ///
+    /// The text precedence is the issue's rule: an explicit tooltip wins; otherwise a title that
+    /// was actually elided shows its full text, because the truncation is what hides it. A tab
+    /// whose title fits and has no tooltip registers nothing.
+    fn sync_hover_tooltip(&mut self) {
+        let Some(index) = self.hovered_index else {
+            if self.tooltip_source.take().is_some() {
+                self.tooltips.note_leave();
+            }
+            return;
+        };
+        let elided = matches!(
+            self.elided_titles.get(index).and_then(Option::as_ref).map(|(_, entry)| entry),
+            Some(ElidedTitle::Elided(_))
+        );
+        let Some(tab) = self.tabs.get(index) else {
+            if self.tooltip_source.take().is_some() {
+                self.tooltips.note_leave();
+            }
+            return;
+        };
+        let text = if !tab.tooltip().is_empty() {
+            Some(tab.tooltip().to_string())
+        } else if elided {
+            Some(tab.title().to_string())
+        } else {
+            None
+        };
+        match text {
+            Some(text) => {
+                let id = hover_id(self.base.id(), index);
+                self.tooltips.register(id, text);
+                self.tooltips.note_hover(id);
+                self.tooltip_source = Some(id);
+            }
+            None => {
+                if self.tooltip_source.take().is_some() {
+                    self.tooltips.note_leave();
+                }
+            }
+        }
+    }
+
+    /// Whether a tooltip is still waiting for its delay (or visible).
+    fn tooltip_owes_frames(&self) -> bool {
+        self.tooltip_source.is_some() || self.tooltips.tooltip().is_some()
+    }
+
     /// The largest scroll offset the strip allows.
     fn max_scroll_offset(&self) -> usize {
         let g = self.base.geometry();
@@ -932,7 +1120,98 @@ impl TabBar {
         }
         let has_icon = self.tabs[index].has_icon();
         let budget = Self::title_band_width(tab_rect, has_icon, self.closable);
-        elide_to_width(&self.tabs[index].title, budget, measure)
+        let title = self.tabs[index].title.as_str();
+        match self.elide_mode {
+            TabElideMode::None => Cow::Borrowed(title),
+            TabElideMode::Right => elide_to_width(title, budget, measure),
+            TabElideMode::Left => elide_start_to_width(title, budget, measure),
+            TabElideMode::Middle => {
+                crate::widget::text_utils::elide_middle_to_width(title, budget, measure)
+            }
+        }
+    }
+
+    /// A fold over every input `measured_title_widths` is measured from (K-P09).
+    fn measured_title_signature(&self, font: &Font) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |value: u64| {
+            hash ^= value;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        };
+        mix(u64::from(font.size().to_bits()));
+        mix(u64::from(font.weight()));
+        for byte in font.family().as_bytes() {
+            mix(u64::from(*byte));
+        }
+        mix(self.tabs.len() as u64);
+        for tab in &self.tabs {
+            for byte in tab.title.as_bytes() {
+                mix(u64::from(*byte));
+            }
+            // A title terminator, so "ab"+"c" cannot hash as "a"+"bc".
+            mix(0xFF);
+        }
+        hash
+    }
+
+    /// Rebuilds [`Self::measured_title_widths`] only when the font or a title changed (K-P09).
+    fn refresh_measured_title_widths(&mut self, font: &Font, context: &RenderContext) {
+        let signature = self.measured_title_signature(font);
+        if self.measured_title_signature == signature
+            && self.measured_title_widths.len() == self.tabs.len()
+        {
+            return;
+        }
+        self.measured_title_widths.clear();
+        for tab in &self.tabs {
+            let width = context.measure_text(&tab.title, font).width;
+            self.measured_title_widths.push(width);
+        }
+        self.measured_title_signature = signature;
+    }
+
+    /// Refreshes the cached elided title for one tab, if its inputs changed (K-P09).
+    fn refresh_elided_title(
+        &mut self,
+        index: usize,
+        tab_rect: Rect,
+        font: &Font,
+        measure: &mut dyn FnMut(&str) -> u32,
+    ) {
+        // Borrowed for the key fold and then released: cloning the title here would put back the
+        // per-frame allocation the cache exists to remove (K-P09).
+        let key = {
+            let tab = &self.tabs[index];
+            let budget = Self::title_band_width(tab_rect, tab.has_icon(), self.closable);
+            elide_key(&tab.title, budget, font, self.elide_mode)
+        };
+        if self.elided_titles.len() <= index {
+            self.elided_titles.resize_with(index + 1, || None);
+        }
+        if let Some((cached_key, _)) = self.elided_titles[index].as_ref() {
+            if *cached_key == key {
+                return;
+            }
+        }
+        // A vertical strip is exempt from eliding: its tabs are one text line wide, so a width
+        // budget there would blank every title.
+        let entry = if matches!(self.tab_position, TabPosition::West | TabPosition::East) {
+            ElidedTitle::Fits
+        } else {
+            match self.fitted_title(index, tab_rect, measure) {
+                Cow::Borrowed(_) => ElidedTitle::Fits,
+                Cow::Owned(text) => ElidedTitle::Elided(text),
+            }
+        };
+        self.elided_titles[index] = Some((key, entry));
+    }
+
+    /// The title to paint for tab `index`: the cached elided form, or the tab's own title.
+    fn painted_title(&self, index: usize) -> &str {
+        match self.elided_titles.get(index).and_then(Option::as_ref).map(|(_, entry)| entry) {
+            Some(ElidedTitle::Elided(text)) => text.as_str(),
+            _ => self.tabs[index].title.as_str(),
+        }
     }
 
     /// Computes the width of a tab, taking into account whether a close button
@@ -1111,6 +1390,8 @@ impl TabBar {
         tab_rect: Rect,
         chrome: &TabChrome,
         font: &Font,
+        title: &str,
+        title_height: i32,
     ) {
         let tab = &self.tabs[index];
         let is_current = self.current_index == Some(index);
@@ -1211,8 +1492,8 @@ impl TabBar {
             + if has_icon { (TAB_ICON_SIZE + TAB_ICON_GAP) as i32 } else { 0 };
         // The **effective font** — the resolved theme/caller font — replacing the fixed Arial face,
         // so the tab title honours the theme body font and the user's text scale (D09-STYLE-01).
-        let title_height = context.measure_text("M", font).height;
-        let text_y = tab_rect.y + (tab_rect.height as i32 - title_height as i32) / 2;
+        // The line height is measured once per frame and passed in, rather than measured per tab.
+        let text_y = tab_rect.y + (tab_rect.height as i32 - title_height) / 2;
         // The tab's icon, from whichever form is active. The legacy `Image` used to reserve the slot
         // above and then never be drawn -- the tab was wider for an icon that did not exist. Both
         // forms now paint through the shared seams.
@@ -1240,26 +1521,13 @@ impl TabBar {
                 }
             }
         }
-        // A horizontal title wider than the tab it sits in is elided with the shared
-        // primitive rather than painted across the neighbouring tab. The budget is the tab's
-        // own label band and it is measured with the renderer's callback, so the reserved
-        // width and the painted advance come from one metric; a fitting title is borrowed and
-        // drawn with the same call the control always made.
-        //
-        // A *vertical* strip is exempt: its tabs are one text line wide (24 px), so a width
-        // budget there would elide every title to nothing. That run keeps its existing
-        // horizontal label rather than being blanked by this change.
-        let title = match self.tab_position {
-            TabPosition::North | TabPosition::South => {
-                self.fitted_title(index, tab_rect, &mut |text: &str| {
-                    context.measure_text(text, font).width
-                })
-            }
-            TabPosition::West | TabPosition::East => Cow::Borrowed(tab.title.as_str()),
-        };
+        // A horizontal title wider than the tab it sits in is elided with the shared primitive
+        // rather than painted across the neighbouring tab. The elided string was decided once, in
+        // `draw`'s cache refresh, so this is a borrow rather than a search per frame (K-P09); a
+        // fitting title is the tab's own string.
         context.draw_text(
             Point::new(text_x, text_y),
-            &title,
+            title,
             font,
             text_color,
             HorizontalAlignment::Left,
@@ -1311,6 +1579,18 @@ impl Widget for TabBar {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Advances the tooltip clocks; `true` while a hint is pending or visible.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.tooltip_now_ms = self.tooltip_now_ms.saturating_add(u64::from(delta_ms));
+        let changed = self.tooltips.tick(u64::from(delta_ms), self.tooltip_now_ms);
+        changed || self.tooltip_owes_frames()
+    }
+
+    /// Only a pending or visible tooltip owes frames.
+    fn is_animating(&self) -> bool {
+        self.tooltip_owes_frames()
+    }
     /// Resolves a published event name to the control's own signal.
     ///
     /// # Why the field is named per arm
@@ -1402,11 +1682,11 @@ impl WidgetProperties for TabBar {
                 Ok(())
             }
             "tab_min_width" => {
-                self.set_tab_min_width(expect_usize(value)? as u32);
+                self.set_tab_min_width(expect_u32_saturating(value)?);
                 Ok(())
             }
             "tab_max_width" => {
-                self.set_tab_max_width(expect_usize(value)? as u32);
+                self.set_tab_max_width(expect_u32_saturating(value)?);
                 Ok(())
             }
             "direction" => {
@@ -1466,8 +1746,12 @@ impl EventHandler for TabBar {
                 let prev = self.hovered_index;
                 self.hovered_index = self.tab_at_position(*pos);
                 if prev != self.hovered_index {
+                    // A different tab is a different hint; re-register before the redraw.
+                    self.sync_hover_tooltip();
                     self.base.request_redraw();
                 }
+                // The bubble follows the pointer; this is the manager's own follow mode.
+                self.tooltips.note_pointer(*pos);
                 // Live reorder preview: the drop target follows the pointer, so the
                 // insertion line is where the release would land.
                 if self.dragging_from.is_some() {
@@ -1528,6 +1812,32 @@ impl EventHandler for TabBar {
                     self.base.request_redraw();
                 }
             }
+            // A wheel over the strip walks the visible run, which is what `scroll_by` was
+            // written for and what the event path never reached (ADV-13). One notch is one tab;
+            // the event's positive y means "towards the end of the run".
+            Event::Wheel { delta, modifiers } => {
+                let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
+                if scroll.lines_y != 0 {
+                    self.scroll_by(scroll.lines_y);
+                }
+            }
+            // The middle button closes the tab under the pointer, the browser convention. It
+            // goes through the same request the close button emits, so a host that already
+            // handles `tab_close_requested` (and decides how few tabs it will keep) needs no
+            // second path.
+            Event::MousePress { pos, button: 2, .. } if self.closable => {
+                if let Some(index) = self.tab_at_position(*pos) {
+                    if self.tabs[index].enabled {
+                        self.tab_close_requested.emit(index);
+                    }
+                }
+            }
+            Event::MouseLeave { .. } => {
+                // The hint belongs to the hover it was registered for; leaving drops it.
+                self.hovered_index = None;
+                self.tooltip_source = None;
+                self.tooltips.note_leave();
+            }
             Event::KeyPress { key, modifiers: _ } => match *key {
                 crate::event::key_codes::LEFT => {
                     self.step_selection(-1);
@@ -1586,20 +1896,31 @@ impl Draw for TabBar {
         if self.auto_hide && self.tabs.len() <= 1 {
             return;
         }
-        // Measure every label once, up front, for the whole strip. A tab's width depends
-        // on its own label, so measuring while drawing would leave tab `n` laid out from
-        // the estimate and tab `n+1` from a real metric — a strip whose later tabs are a
-        // different size from its first.
-        self.measured_title_widths.clear();
+        // Measure every label once, up front, for the whole strip — but only when a title or the
+        // font actually changed (K-P09). A tab's width depends on its own label, so measuring
+        // while drawing would leave tab `n` laid out from the estimate and tab `n+1` from a real
+        // metric; a strip whose later tabs are a different size from its first. The cache keeps
+        // that one-measurement rule without paying it on static frames.
         let font = self.label_font();
-        for tab in &self.tabs {
-            let width = context.measure_text(&tab.title, &font).width;
-            self.measured_title_widths.push(width);
+        self.refresh_measured_title_widths(&font, context);
+        // The elided forms are refreshed in their own pass, because a mutable borrow of the cache
+        // cannot coexist with the painter's immutable one.
+        for i in 0..self.tabs.len() {
+            if let Some(tab_rect) = self.tab_rect(i) {
+                self.refresh_elided_title(i, tab_rect, &font, &mut |text: &str| {
+                    context.measure_text(text, &font).width
+                });
+            }
         }
+        // One line-height measurement for the whole strip instead of one per tab.
+        let title_height = context.measure_text("M", &font).height as i32;
         let chrome = self.tab_chrome();
         for i in 0..self.tabs.len() {
             if let Some(tr) = self.tab_rect(i) {
-                self.draw_tab(context, i, tr, &chrome, &font);
+                // Both are immutable borrows, so the title stays borrowed and a static strip
+                // allocates nothing here (K-P09).
+                let title = self.painted_title(i);
+                self.draw_tab(context, i, tr, &chrome, &font, title, title_height);
             }
         }
 
@@ -1642,6 +1963,12 @@ impl Draw for TabBar {
                 );
             }
         }
+
+        // The tooltip pipeline owns the bubble; keeping it in the same control means a host does
+        // not need a second mounted widget to read a truncated tab title (ADV-11).
+        let geometry = self.geometry();
+        self.tooltips.set_geometry(geometry);
+        self.tooltips.draw(context);
     }
 }
 
@@ -2415,5 +2742,65 @@ mod tests {
         // With one tab left, auto-hide ignores pointer input.
         bar.handle_event(&Event::mouse_press(5, 5, 1));
         assert_eq!(bar.current_index(), Some(0));
+    }
+
+    /// A wheel over an overflowing strip walks the visible run (ADV-13).
+    #[test]
+    fn the_wheel_scrolls_an_overflowing_strip() {
+        let mut bar = TabBar::new(Rect::new(0, 0, 60, 24));
+        for index in 0..6 {
+            bar.add_tab(format!("Tab {index}"));
+        }
+        bar.set_scroll_buttons(true);
+        assert!(bar.is_overflowing());
+        assert_eq!(bar.scroll_offset(), 0);
+        bar.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(bar.scroll_offset(), 1, "a notch advances the run");
+        bar.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(bar.scroll_offset(), 0);
+    }
+
+    /// The middle button closes the tab under the pointer through the close request (ADV-13).
+    #[test]
+    fn the_middle_button_requests_a_close() {
+        use std::sync::{Arc, Mutex};
+        let mut bar = TabBar::new(Rect::new(0, 0, 400, 24));
+        bar.add_tab("One".to_string());
+        bar.add_tab("Two".to_string());
+        bar.set_closable(true);
+        let closed = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&closed);
+        bar.tab_close_requested.connect(move |index| sink.lock().unwrap().push(*index));
+
+        let rect = bar.tab_rect(1).expect("the second tab has a box");
+        bar.handle_event(&Event::mouse_press(rect.x + 2, rect.y + 2, 2));
+        assert_eq!(closed.lock().unwrap().as_slice(), &[1]);
+    }
+
+    /// The left and middle elide modes keep the identifying end of a title (ADV-12).
+    #[test]
+    fn left_and_middle_elision_keep_the_identifying_end() {
+        let mut bar = TabBar::new(Rect::new(0, 0, 400, 24));
+        bar.add_tab("report-2026-10.csv".to_string());
+        let tab_rect = Rect::new(0, 0, 60, 24);
+        let mut measure = |text: &str| text.chars().count() as u32 * 7;
+
+        bar.set_elide_mode(TabElideMode::Left);
+        let left = bar.fitted_title(0, tab_rect, &mut measure).into_owned();
+        assert!(left.starts_with('\u{2026}'), "the leading end is the elided one: {left}");
+        assert!(left.ends_with("csv"), "the suffix survives: {left}");
+
+        bar.set_elide_mode(TabElideMode::Middle);
+        let middle = bar.fitted_title(0, tab_rect, &mut measure).into_owned();
+        assert!(middle.contains('\u{2026}'));
+        assert!(middle.starts_with("rep"), "the head survives: {middle}");
+        // The tail characters come from the end of the title (the split is half/half, so how many
+        // survive depends on the budget, but the last one is the title's own last character).
+        assert!(middle.ends_with('v'), "the tail survives: {middle}");
+
+        // Right is still the default and still keeps the head.
+        bar.set_elide_mode(TabElideMode::Right);
+        let right = bar.fitted_title(0, tab_rect, &mut measure).into_owned();
+        assert!(right.starts_with("rep"));
     }
 }

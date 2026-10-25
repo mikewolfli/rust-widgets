@@ -114,24 +114,47 @@ impl GpuQualityTracker {
     }
 }
 
+/// Frame-path state of a [`GpuManager`].
+///
+/// Every field here is read or written as part of a frame update, so they share
+/// one lock: `begin_frame`/`end_frame` used to acquire four separate mutexes in
+/// sequence for one logical transaction (G-54). A single lock removes that
+/// serialisation and the wider contention window it created, without changing
+/// what any accessor observes.
+struct GpuManagerState {
+    /// Staging buffer pool (GPU-specific)
+    buffer_pool: GpuStagingBufferPool,
+    /// Performance monitor
+    performance_monitor: AdaptivePerformanceMonitor,
+    /// Quality tracker
+    quality_tracker: GpuQualityTracker,
+    /// Performance trap detector
+    trap_detector: PerformanceTrapDetector,
+    /// Performance warnings
+    warnings: Vec<String>,
+}
+
+/// Adds `message` to a warning list unless it is already present.
+///
+/// Shared by the constructor and the trap handler so both dedupe the same way;
+/// it takes the list rather than the manager because the trap handler already
+/// holds the state lock.
+fn push_warning(warnings: &mut Vec<String>, message: &str) {
+    if !warnings.iter().any(|existing| existing == message) {
+        warnings.push(message.to_string());
+    }
+}
+
 /// Hardware-adaptive GPU manager
 pub struct GpuManager {
     /// Selected adapter info
     adapter_info: AdapterInfo,
     /// Operation mode
     mode: GpuOperationMode,
-    /// Staging buffer pool (GPU-specific)
-    buffer_pool: Mutex<GpuStagingBufferPool>,
-    /// Performance monitor
-    performance_monitor: Mutex<AdaptivePerformanceMonitor>,
-    /// Quality tracker
-    quality_tracker: Mutex<GpuQualityTracker>,
-    /// Performance trap detector
-    trap_detector: Mutex<PerformanceTrapDetector>,
     /// Whether running in browser
     is_browser: bool,
-    /// Performance warnings
-    warnings: Mutex<Vec<String>>,
+    /// All frame-path state behind one lock (G-54).
+    state: Mutex<GpuManagerState>,
 }
 
 impl GpuManager {
@@ -200,22 +223,38 @@ impl GpuManager {
         };
         let trap_detector = PerformanceTrapDetector::new(low_fps_threshold, 10);
         let is_browser = super::adapter::detect_browser_forced_integrated_gpu();
-        let manager = Self {
-            adapter_info,
-            mode,
-            buffer_pool: Mutex::new(buffer_pool),
-            performance_monitor: Mutex::new(performance_monitor),
-            quality_tracker: Mutex::new(quality_tracker),
-            trap_detector: Mutex::new(trap_detector),
-            is_browser,
-            warnings: Mutex::new(Vec::new()),
-        };
-        if is_browser && manager.adapter_info.device_type.is_integrated() {
-            manager.add_warning(
+        let mut warnings = Vec::new();
+        if is_browser && adapter_info.device_type.is_integrated() {
+            push_warning(
+                &mut warnings,
                 "Browser is forcing integrated GPU. For best performance, run outside browser.",
             );
         }
-        Ok(manager)
+        // A degraded backend is not just a slow path; it is a fact the host must
+        // be able to report. Record it as a warning (visible through
+        // `GpuManager::warnings`) and log it once at construction (G-211).
+        #[cfg(feature = "gpu")]
+        if adapter_info.is_degraded_backend() {
+            let message = format!(
+                "GPU running on degraded backend tier: {} ({})",
+                adapter_info.backend_tier().label(),
+                adapter_info.backend
+            );
+            log::warn!("[gpu] {message}");
+            push_warning(&mut warnings, &message);
+        }
+        Ok(Self {
+            adapter_info,
+            mode,
+            is_browser,
+            state: Mutex::new(GpuManagerState {
+                buffer_pool,
+                performance_monitor,
+                quality_tracker,
+                trap_detector,
+                warnings,
+            }),
+        })
     }
 
     /// Returns the selected adapter info
@@ -240,132 +279,153 @@ impl GpuManager {
 
     /// Begins a new frame
     pub fn begin_frame(&self) {
-        lock(&self.performance_monitor).begin_frame();
-        lock(&self.buffer_pool).next_frame();
+        let mut state = lock(&self.state);
+        state.performance_monitor.begin_frame();
+        state.buffer_pool.next_frame();
     }
 
     /// Ends the current frame and updates performance monitoring
+    ///
+    /// The whole frame update runs under one lock acquisition (G-54) and takes a
+    /// single statistics snapshot (G-53), so the frame is neither half-visible to
+    /// another thread nor recomputed twice.
     pub fn end_frame(&self) -> Option<PerformanceStats> {
-        let sample = Some(lock(&self.performance_monitor).end_frame());
-        if let Some(ref s) = sample {
-            lock(&self.quality_tracker).finish_frame(s.frame_duration);
+        let mut state = lock(&self.state);
+        let sample = state.performance_monitor.end_frame();
+        state.quality_tracker.finish_frame(sample.frame_duration);
+
+        let fps = 1.0 / sample.frame_duration.as_secs_f32();
+        if let Some(trap) = state.trap_detector.check(fps) {
+            Self::handle_performance_trap(&mut state, trap);
         }
-        if let Some(ref sample) = sample {
-            let fps = 1.0 / sample.frame_duration.as_secs_f32();
-            if let Some(trap) = lock(&self.trap_detector).check(fps) {
-                self.handle_performance_trap(trap);
-            }
-        }
-        lock(&self.performance_monitor).auto_adjust_thresholds();
-        Some(lock(&self.performance_monitor).stats())
+        state.performance_monitor.auto_adjust_thresholds();
+        Some(state.performance_monitor.stats())
     }
 
     /// Handles a performance trap
-    fn handle_performance_trap(&self, trap: PerformanceTrap) {
+    ///
+    /// Takes the state by reference because the caller already holds the single
+    /// state lock; acquiring it again would deadlock a non-reentrant mutex.
+    fn handle_performance_trap(state: &mut GpuManagerState, trap: PerformanceTrap) {
         match &trap {
             PerformanceTrap::LowFrameRate { current_fps, .. } => {
                 log::warn!("[gpu] Low frame rate detected: {current_fps:.1} FPS");
             }
             PerformanceTrap::MemoryPressure { utilization } => {
                 log::warn!("[gpu] Memory pressure: {:.0}%", utilization * 100.0);
-                self.add_warning(&trap.message());
+                push_warning(&mut state.warnings, &trap.message());
             }
             PerformanceTrap::CpuOverload { utilization } => {
                 log::warn!("[gpu] CPU overload: {:.0}%", utilization * 100.0);
-                self.add_warning(&trap.message());
+                push_warning(&mut state.warnings, &trap.message());
             }
             PerformanceTrap::BrowserForcedIntegratedGpu => {
                 log::warn!("[gpu] Browser forcing integrated GPU");
-                self.add_warning(&trap.message());
+                push_warning(&mut state.warnings, &trap.message());
             }
-        }
-    }
-
-    /// Adds a warning message
-    fn add_warning(&self, message: &str) {
-        let mut warnings = lock(&self.warnings);
-        if !warnings.contains(&message.to_string()) {
-            warnings.push(message.to_string());
         }
     }
 
     /// Returns all warnings
     pub fn warnings(&self) -> Vec<String> {
-        lock(&self.warnings).clone()
+        lock(&self.state).warnings.clone()
     }
 
     /// Clears all warnings
     pub fn clear_warnings(&self) {
-        lock(&self.warnings).clear();
+        lock(&self.state).warnings.clear();
     }
 
     /// Returns the current quality level
     pub fn current_quality(&self) -> QualityLevel {
-        lock(&self.quality_tracker).quality_level()
+        lock(&self.state).quality_tracker.quality_level()
     }
 
     /// Sets the quality level manually
     pub fn set_quality(&self, level: QualityLevel) {
-        lock(&self.quality_tracker).set_quality_level(level);
+        lock(&self.state).quality_tracker.set_quality_level(level);
     }
 
     /// Returns buffer pool statistics
     pub fn buffer_pool_stats(&self) -> Option<GpuBufferPoolStats> {
-        Some(lock(&self.buffer_pool).memory_stats())
+        Some(lock(&self.state).buffer_pool.memory_stats())
     }
 
     /// Returns performance statistics
     pub fn performance_stats(&self) -> Option<PerformanceStats> {
-        Some(lock(&self.performance_monitor).stats())
+        Some(lock(&self.state).performance_monitor.stats())
+    }
+
+    /// The degradation tier of the selected adapter (G-211).
+    ///
+    /// Lets a host report a degraded start without parsing `adapter_info().backend`
+    /// itself. The same value is published process-wide through
+    /// [`publish_shared_selection`](crate::gpu::backend_ladder::publish_shared_selection)
+    /// so the renderer and the manager agree on the active backend.
+    #[cfg(feature = "gpu")]
+    pub fn backend_tier(&self) -> crate::gpu::backend_ladder::GpuBackendTier {
+        self.adapter_info.backend_tier()
+    }
+
+    /// Whether the manager is running below the primary backend tier (G-211).
+    #[cfg(feature = "gpu")]
+    pub fn is_degraded_backend(&self) -> bool {
+        self.adapter_info.is_degraded_backend()
     }
 
     /// Returns true if quality should be degraded
     pub fn should_degrade_quality(&self) -> bool {
-        lock(&self.performance_monitor).should_degrade()
+        lock(&self.state).performance_monitor.should_degrade()
     }
 
     /// Returns true if quality should be upgraded
     pub fn should_upgrade_quality(&self) -> bool {
-        lock(&self.performance_monitor).should_upgrade()
+        lock(&self.state).performance_monitor.should_upgrade()
     }
 
     /// Returns recommended actions based on current state
+    ///
+    /// Reads one snapshot for both checks (G-53); `performance_stats()` used to be
+    /// called twice in the same pass, which recomputed the whole window each time.
     pub fn recommended_actions(&self) -> Vec<GpuManagerAction> {
+        let state = lock(&self.state);
+        let quality = state.quality_tracker.quality_level();
+        let stats = state.performance_monitor.stats();
+        drop(state);
+
         let mut actions = Vec::new();
-        if self.current_quality() == QualityLevel::Low {
-            if let Some(stats) = self.performance_stats() {
-                if stats.current_fps < 15.0 {
-                    if self.is_browser {
-                        actions.push(GpuManagerAction::SuggestRestartOutsideBrowser);
-                    } else if !self.is_software() {
-                        actions.push(GpuManagerAction::SuggestSwitchToCpuMode);
-                    }
-                }
+        if quality == QualityLevel::Low && stats.current_fps < 15.0 {
+            if self.is_browser {
+                actions.push(GpuManagerAction::SuggestRestartOutsideBrowser);
+            } else if !self.is_software() {
+                actions.push(GpuManagerAction::SuggestSwitchToCpuMode);
             }
         }
-        if let Some(stats) = self.performance_stats() {
-            if stats.consecutive_bad_frames > 30 {
-                actions.push(GpuManagerAction::SuggestCloseOtherApplications);
-            }
+        if stats.consecutive_bad_frames > 30 {
+            actions.push(GpuManagerAction::SuggestCloseOtherApplications);
         }
         actions
     }
 
     /// Returns a summary of the current GPU configuration
     pub fn configuration_summary(&self) -> String {
+        // One snapshot under one lock: the three accessors this used to call each
+        // took the state lock separately.
+        let state = lock(&self.state);
+        let quality = state.quality_tracker.quality_level();
+        let stats = state.performance_monitor.stats();
+        let pool_stats = state.buffer_pool.memory_stats();
+        drop(state);
+
         let mut summary = String::new();
         summary.push_str(&format!("GPU: {}\n", self.adapter_info.name));
         summary.push_str(&format!("Type: {}\n", self.adapter_info.device_type));
         summary.push_str(&format!("Mode: {:?}\n", self.mode));
-        summary.push_str(&format!("Quality: {:?}\n", self.current_quality()));
-        if let Some(stats) = self.performance_stats() {
-            summary.push_str(&format!("FPS: {:.1}\n", stats.current_fps));
-            summary.push_str(&format!("Stability: {:.0}%\n", stats.stability * 100.0));
-        }
-        if let Some(pool_stats) = self.buffer_pool_stats() {
-            let utilization = pool_stats.used_size as f32 / pool_stats.total_size as f32 * 100.0;
-            summary.push_str(&format!("Buffer Pool: {utilization:.0}%\n"));
-        }
+        summary.push_str(&format!("Quality: {quality:?}\n"));
+        summary.push_str(&format!("FPS: {:.1}\n", stats.current_fps));
+        summary.push_str(&format!("Stability: {:.0}%\n", stats.stability * 100.0));
+        let utilization = pool_stats.used_size as f32 / pool_stats.total_size as f32 * 100.0;
+        summary.push_str(&format!("Buffer Pool: {utilization:.0}%\n"));
         summary
     }
 }
@@ -498,9 +558,11 @@ impl GpuManagerBuilder {
     ///
     /// # How each field is applied
     ///
-    /// * `allow_fallback` reaches [`AdapterSelector::allow_fallback`], which reads it on all
-    ///   three fallback rungs (`adapter.rs`). It is the field the selector already had; the
-    ///   builder was the only thing not connecting them.
+    /// * `allow_fallback` reaches [`AdapterSelector::allow_fallback`], which decides whether the
+    ///   CPU software rung may be used. Degraded *hardware* tiers (GL instead of
+    ///   Vulkan/Metal/DX12) are not gated by it: the ladder still prefers a GL adapter over
+    ///   failing and reports the degradation through [`GpuManager::backend_tier`] and
+    ///   [`GpuManager::warnings`], per principle #45.
     /// * `target_quality` seeds the manager's [`GpuQualityTracker`] after construction. The
     ///   tracker's own starting level is derived from the *adapter* (`GpuQualityTracker::new`),
     ///   which is the right default and the wrong answer when the caller has stated what it

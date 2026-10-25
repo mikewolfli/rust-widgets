@@ -100,6 +100,8 @@ pub struct Snackbar {
     queue: Vec<(String, Option<String>, Option<String>)>,
     /// Where the bar sits in the control's rectangle.
     anchor: SnackbarAnchor,
+    /// Whether the pointer is over the bar, which pauses the countdown (SP-67).
+    hovered: bool,
     /// Emitted when action is triggered.
     pub action_triggered: Signal1<String>,
     /// Emitted when snackbar is dismissed.
@@ -125,6 +127,7 @@ impl Snackbar {
             max_queued: SNACKBAR_MAX_QUEUED,
             queue: Vec::new(),
             anchor: SnackbarAnchor::default(),
+            hovered: false,
             action_triggered: Signal1::new(),
             dismissed: Signal1::new(),
         }
@@ -348,11 +351,18 @@ impl Snackbar {
     }
 
     fn action_rect(&self) -> Option<Rect> {
+        self.action_rect_in(self.bar_rect())
+    }
+
+    /// The action button's rectangle, for a bar the caller already resolved.
+    ///
+    /// The paint resolves the bar once and derives both boxes from it; the previous form had the
+    /// action rectangle call `bar_rect` again, so one frame computed the same band twice (SP-P73).
+    fn action_rect_in(&self, bar: Rect) -> Option<Rect> {
         self.action_label.as_ref()?;
         // Derived from the same bar the message is painted in, so the button sits on the right
         // end of the snackbar rather than at a fixed offset from the control's bottom edge —
         // which placed it 34 px below the bar in a 120 px cell.
-        let bar = self.bar_rect();
         let height = SNACKBAR_ACTION_HEIGHT.min(bar.height);
         let width = SNACKBAR_ACTION_WIDTH.min(bar.width);
         Some(Rect::new(
@@ -400,10 +410,16 @@ impl Widget for Snackbar {
         let mut moving = self.reveal.tick(delta_ms);
         if self.visible {
             if self.duration_ms > 0 {
-                self.elapsed_ms = self.elapsed_ms.saturating_add(delta_ms);
-                if self.elapsed_ms >= self.duration_ms {
-                    self.dismiss();
-                    return true;
+                // The countdown pauses while the pointer is on the bar: a message that vanishes
+                // from under a reading user is a usability defect, and a hover is exactly the
+                // signal that someone is reading it (SP-67). The reveal above is untouched, so
+                // an in-flight enter/exit still advances.
+                if !self.hovered {
+                    self.elapsed_ms = self.elapsed_ms.saturating_add(delta_ms);
+                    if self.elapsed_ms >= self.duration_ms {
+                        self.dismiss();
+                        return true;
+                    }
                 }
             }
             if self.indeterminate && self.progress.is_some() {
@@ -537,6 +553,20 @@ impl EventHandler for Snackbar {
         }
 
         match event {
+            Event::MouseEnter { .. } | Event::MouseMove { .. } => {
+                // Hover state for the countdown; the bar's own reveal keeps whatever progress it
+                // has, so the transition is unaffected (SP-67).
+                if !self.hovered {
+                    self.hovered = true;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered {
+                    self.hovered = false;
+                    self.base.request_redraw();
+                }
+            }
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(rect) = self.action_rect() {
                     if Self::point_in_rect(*pos, rect) {
@@ -569,7 +599,21 @@ impl Draw for Snackbar {
         // internally, so no guard is held across the draw (the mutex is not
         // re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("snackbar");
+        // One theme read for every derived colour, including the semantic progress token. The
+        // previous form took the manager lock three separate times and pulled the same palette
+        // apart in each (SP-P73).
+        let theme = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|active| {
+                (
+                    active.colors.background,
+                    active.colors.foreground,
+                    active.colors.inverse_surface,
+                    active.colors.on_inverse_surface,
+                    active.colors.success,
+                )
+            })
+        };
         // `Snackbar` is built on `WidgetKind::StatusBar` and classifies as
         // `Surface`, whose background is `theme.colors.background` — byte-identical
         // to the window behind it. The panel's own fill is therefore a step toward
@@ -577,11 +621,11 @@ impl Draw for Snackbar {
         // window.
         let resolved = style
             .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .or_else(|| theme.as_ref().map(|(background, ..)| *background))
             .unwrap_or(Color::rgb(248, 250, 253));
         let text_color = style
             .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .or_else(|| theme.as_ref().map(|(_, foreground, ..)| *foreground))
             .unwrap_or(Color::rgb(0, 0, 0));
         let background = resolved.blend(&text_color, 0.08);
         // The floating bar is the control's own emphasis surface: a first step away
@@ -596,14 +640,14 @@ impl Draw for Snackbar {
         // equivalent to the blend: a theme that wants its snackbar to *not* invert (a high-contrast
         // or print theme) can now say so, where the blend could only ever produce the inverted
         // pair. The blends survive as the fallback for a theme that predates the roles.
-        let (inverse_surface, on_inverse_surface) = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| (active.colors.inverse_surface, active.colors.on_inverse_surface))
-            .unwrap_or_else(|| {
+        let (inverse_surface, on_inverse_surface) = match theme.as_ref() {
+            Some((_, _, inverse, on_inverse, _)) => (*inverse, *on_inverse),
+            None => {
                 let surface = background.blend(&text_color, 0.85);
                 let on_surface = surface.blend(&background, 0.92);
                 (surface, on_surface)
-            });
+            }
+        };
         let bar_background = inverse_surface;
         let bar_border = bar_background.blend(&text_color, 0.18);
         // Text on the bar is the role's own paired ink, which is the reading the literal pair
@@ -618,8 +662,9 @@ impl Draw for Snackbar {
         let action_text = action_background.blend(&background, 0.92);
         // Progress is a completion *state*, so it reads the theme's success token.
         let track = bar_background.blend(&text_color, 0.12);
-        let progress_fill = crate::style::semantic_color(crate::style::SemanticColor::Success)
-            .map(|token| token.blend(&bar_background, 0.2))
+        let progress_fill = theme
+            .as_ref()
+            .map(|(_, _, _, _, success)| success.blend(&bar_background, 0.2))
             .unwrap_or_else(|| bar_background.blend(&background, 0.5));
 
         // ── The bar actually painted ──
@@ -664,7 +709,7 @@ impl Draw for Snackbar {
         let message_h = context.measure_text("M", message_font).height;
         // The message owns the band up to the action button: it used to be drawn at its full
         // measured width, so a longer message ran under the action label and past the bar.
-        let action_rect = self.action_rect();
+        let action_rect = self.action_rect_in(bar);
         if !self.message.is_empty() {
             let message_x = bar.x + SNACKBAR_PADDING_H;
             let message_right = action_rect

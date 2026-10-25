@@ -17,6 +17,22 @@ pub enum ToastLevel {
     Error,
 }
 
+/// The one mapping from a toast severity to the theme's semantic token.
+///
+/// The single and stacked toast controls both used to spell this match out, so adding a
+/// fifth severity meant editing both copies and a missed one painted the wrong colour
+/// silently (H-311). They now both call this implementation.
+impl From<ToastLevel> for crate::style::SemanticColor {
+    fn from(level: ToastLevel) -> Self {
+        match level {
+            ToastLevel::Info => Self::Info,
+            ToastLevel::Success => Self::Success,
+            ToastLevel::Warning => Self::Warning,
+            ToastLevel::Error => Self::Error,
+        }
+    }
+}
+
 /// One toast message item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToastItem {

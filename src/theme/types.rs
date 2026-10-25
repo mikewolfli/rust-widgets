@@ -6,7 +6,7 @@ use crate::core::{Color, Font};
 #[cfg(not(alloc_frugal))]
 use serde::{Deserialize, Serialize};
 
-use crate::style::{EasingFunction, MotionCurve, Shadow};
+use crate::style::{EasingFunction, MotionCurve, Padding, PaddingSpec, Shadow};
 
 /// High-level theme definition used by runtime style resolution.
 #[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
@@ -33,6 +33,20 @@ pub struct Theme {
     pub fonts: Fonts,
     /// Spacing tokens.
     pub spacing: Spacing,
+    /// Icon size tokens (THM-02).
+    ///
+    /// # Why icon sizes are themed
+    ///
+    /// Icon sizes are a scale, not a constant: a button, a menu row and a tab bar must agree on
+    /// what "small" and "medium" mean, or the same glyph reads as two different weights in one
+    /// window. Before this group existed each control carried its own literal
+    /// (`BUTTON_ICON_SIZE`, `TAB_ICON_SIZE`, `LARGE_ICON_SIZE`), so a theme could not state a
+    /// tighter or roomier icon system and there was no single value a new control could adopt.
+    ///
+    /// The defaults are the literals those controls already used, so a theme file written before
+    /// this field existed keeps rendering the sizes it always did.
+    #[cfg_attr(not(alloc_frugal), serde(default))]
+    pub icons: IconTokens,
     /// Border/elevation tokens.
     pub borders: Borders,
     /// Whether this theme draws **flat** faces: no bevel, no elevation, no material.
@@ -794,6 +808,52 @@ pub struct Spacing {
     pub extra_large: u32,
 }
 
+/// Icon size tokens, one per nominal slot (THM-02).
+///
+/// # Why three slots and not one size
+///
+/// The controls that carry icons fall into three visual weights: a compact row (tab bar, tool
+/// button), the default affordance (a push button), and a prominent one (ribbon bar, empty
+/// state). Naming the three slots keeps every control on one scale while still letting a larger
+/// icon be a statement about *which slot it occupies* rather than a literal each control
+/// happened to pick.
+///
+/// The values are the literals the shipped controls already carried — a tab's 16, a button's 18
+/// (`dimensions::BUTTON_ICON_SIZE`), a ribbon item's 32 — so adding the group changes no preset's
+/// rendering.
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(alloc_frugal), serde(default))]
+pub struct IconTokens {
+    /// The compact slot: inline and toolbar icons, 16 px.
+    pub small: u32,
+    /// The default slot: a push button's icon, 18 px.
+    pub medium: u32,
+    /// The prominent slot: a ribbon or empty-state icon, 32 px.
+    pub large: u32,
+}
+
+impl Default for IconTokens {
+    fn default() -> Self {
+        Self { small: 16, medium: 18, large: 32 }
+    }
+}
+
+/// Which [`IconTokens`] slot a caller asks for.
+///
+/// A closed set on purpose: a caller states the *role* of the icon it is drawing, and the theme
+/// owns the pixel value. An open `u32` argument would put the number back at the call site, which
+/// is what the token group exists to remove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IconSlot {
+    /// Inline and toolbar icons — the compact slot.
+    Small,
+    /// A push button's default icon — the medium slot.
+    Medium,
+    /// A prominent icon (ribbon bar, empty state) — the large slot.
+    Large,
+}
+
 /// Border and elevation behavior tokens.
 #[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
@@ -807,6 +867,19 @@ pub struct Borders {
 }
 
 impl Theme {
+    /// The nominal side of `slot`, in logical pixels (THM-02).
+    ///
+    /// The single read point for an icon size: a control names the slot its icon occupies and the
+    /// theme answers the number, so changing the icon scale is a theme edit rather than a sweep
+    /// over control literals.
+    pub fn icon_size(&self, slot: IconSlot) -> u32 {
+        match slot {
+            IconSlot::Small => self.icons.small,
+            IconSlot::Medium => self.icons.medium,
+            IconSlot::Large => self.icons.large,
+        }
+    }
+
     /// The drop shadow a face at `elevation` casts under this theme, or `None`.
     ///
     /// # Why this is a method here and not a serialised field
@@ -880,6 +953,24 @@ pub struct ThemeStyleToken {
     pub border_width: Option<u32>,
     /// Optional corner radius override.
     pub radius: Option<u32>,
+    /// Optional padding override (THM-01).
+    ///
+    /// # Why a token-level padding
+    ///
+    /// The only control-level padding a theme could reach was the global
+    /// [`Spacing::medium`], written into every role's base style by `role_base_style`. That makes
+    /// "buttons are tighter than text fields" and a compact preset impossible without moving the
+    /// spacing every other control also uses. This field is the per-kind/per-state statement: a
+    /// theme writes `"button": { "padding": { "all": 4 } }` and only that role moves.
+    ///
+    /// The cascade is carried as [`PaddingToken`] rather than as the style layer's
+    /// [`PaddingSpec`] because the theme schema stays on serialisable primitives (the rule
+    /// [`ShadowToken`] follows); `apply_token` resolves it into the style's `padding`.
+    ///
+    /// Default `None` (and `serde(default)`), so a theme file written before this field existed
+    /// keeps the base padding it always had.
+    #[cfg_attr(not(alloc_frugal), serde(default))]
+    pub padding: Option<PaddingToken>,
     /// Optional font override, applied to the resolved style's `font`.
     ///
     /// Without this the theme's nine font tokens were unreachable from
@@ -941,6 +1032,70 @@ pub struct ThemeStyleToken {
     /// no visible edge.
     #[cfg_attr(not(alloc_frugal), serde(default))]
     pub hairline: Option<SurfaceHairlineToken>,
+}
+
+/// A padding override as a theme file spells it: the four-level cascade on primitives (THM-01).
+///
+/// # Why this mirrors [`PaddingSpec`] instead of storing it
+///
+/// [`PaddingSpec`] is the style layer's type and carries private layers with no serialisation
+/// contract, while the theme schema deliberately stays on serialisable primitives (the rule
+/// [`ShadowToken`] follows). This record keeps the same seven statements and resolves through the
+/// style layer's own cascade, so there is one arithmetic for "side → axis → all → 0" rather than
+/// a second copy that could drift.
+///
+/// A field left as `None` inherits the layer below it, exactly as the style builder does:
+/// `{ "all": 8, "horizontal": 12 }` is 8 px above and below and 12 px left and right.
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(not(alloc_frugal), serde(default))]
+pub struct PaddingToken {
+    /// The least specific layer: all four sides.
+    pub all: Option<u32>,
+    /// Both vertical sides (top and bottom).
+    pub vertical: Option<u32>,
+    /// Both horizontal sides (left and right).
+    pub horizontal: Option<u32>,
+    /// The top side.
+    pub top: Option<u32>,
+    /// The right side.
+    pub right: Option<u32>,
+    /// The bottom side.
+    pub bottom: Option<u32>,
+    /// The left side.
+    pub left: Option<u32>,
+}
+
+impl PaddingToken {
+    /// Resolves the layers to concrete per-side values: `side → axis → all → 0`.
+    ///
+    /// The resolution runs through [`PaddingSpec`], so a theme token and a programmatic
+    /// `with_padding_spec` call cannot disagree about what the same cascade means.
+    pub fn resolve(&self) -> Padding {
+        let mut spec = PaddingSpec::new();
+        if let Some(all) = self.all {
+            spec = spec.set_uniform(all);
+        }
+        if let Some(vertical) = self.vertical {
+            spec = spec.set_vertical(vertical);
+        }
+        if let Some(horizontal) = self.horizontal {
+            spec = spec.set_horizontal(horizontal);
+        }
+        if let Some(top) = self.top {
+            spec = spec.top(top);
+        }
+        if let Some(right) = self.right {
+            spec = spec.right(right);
+        }
+        if let Some(bottom) = self.bottom {
+            spec = spec.bottom(bottom);
+        }
+        if let Some(left) = self.left {
+            spec = spec.left(left);
+        }
+        spec.resolve()
+    }
 }
 
 /// A surface elevation as a theme file spells it.

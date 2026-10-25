@@ -5,9 +5,21 @@
 //!
 //! BLUE28 B28.06: the style layer already had `high_contrast`, `motion_preference` and `locale`,
 //! but the platform side forwarded none of them. This module is the AppKit half of the answer:
-//! `NSWorkspace`'s accessibility display flags and `NSLocale.currentLocale`. The values are read
-//! on demand (the style layer takes a snapshot once per frame), never cached here — macOS posts
-//! notifications when these change, and a caller that polls sees the new value.
+//! `NSWorkspace`'s accessibility display flags and `NSLocale.currentLocale`.
+//!
+//! # Caching, and what invalidates it
+//!
+//! The style layer polls `Platform::environment_generation` every 250 ms (`src/style/environment.rs`),
+//! and that derivation reads each of these facts. Reading them fresh on every poll cost 4+ AppKit
+//! `msg_send` round trips four times a second for settings a user changes on the order of days, so
+//! the three facts named in [`cached_environment_fact`] — `high_contrast`, `reduce_motion` and
+//! `system_locale` (which caches both the `NSLocale` read and the environment-variable fallback) —
+//! are held in a one-second TTL slot. **The TTL is the only invalidation trigger**: the system
+//! colour notification below refreshes the accent palette but does not touch these slots or the
+//! environment revision (the missing push source is tracked as issue P-201), so a changed
+//! accessibility switch becomes visible within one second and no later. `system_theme` and
+//! `accent_color` are not cached here: the appearance read lives in `platform_impl`, and the accent
+//! is delivered by the notification instead of by polling.
 //!
 //! The accent has a second half: [`install_system_color_observer`] subscribes to AppKit's
 //! system-colour notification and calls the theme manager's explicit refresh. The frame's
@@ -16,8 +28,11 @@
 //! palette without rebuilding it every frame. The observer is the only notification
 //! subscription in this module; the other facts stay on-demand reads.
 //!
-//! `NSWorkspace` and `NSLocale` are main-thread-only in practice; every entry point answers `None`
-//! off the main thread rather than messaging AppKit from a worker and raising.
+//! `NSWorkspace`'s accessibility reads are main-thread-only in practice; their entry points answer
+//! `None` off the main thread rather than messaging AppKit from a worker and raising. That check
+//! stays **outside** the cache: an off-main answer of `None` describes this thread, not the host, so
+//! caching it would hand the UI thread a fabricated "cannot tell" for up to a second. `NSLocale` is
+//! documented thread-safe, so the locale read is not gated that way.
 
 #[cfg(feature = "runtime-fonts")]
 use crate::compat::Box;
@@ -32,6 +47,60 @@ use objc::declare::ClassDecl;
 use objc::runtime::{Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
 use std::ffi::{c_char, CStr};
+
+/// How long a cached AppKit environment fact may be reused.
+///
+/// One second, the same value the Windows backend uses for the same facts: it is far below the rate
+/// at which anyone flips an accessibility switch, and it removes four AppKit round trips per poll
+/// from the style layer's 250 ms cycle.
+const ENVIRONMENT_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The slot shape shared by every cached fact in this module.
+type EnvironmentFactCache<T> =
+    std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, T)>>>;
+
+/// Re-reads one AppKit environment fact at most once per [`ENVIRONMENT_TTL`].
+///
+/// # Cached facts and their invalidation trigger
+///
+/// | fact | slot | AppKit source |
+/// |---|---|---|
+/// | `high_contrast` | [`HIGH_CONTRAST_CACHE`] | `NSWorkspace.accessibilityDisplayShouldIncreaseContrast` |
+/// | `reduce_motion` | [`REDUCE_MOTION_CACHE`] | `NSWorkspace.accessibilityDisplayShouldReduceMotion` |
+/// | `system_locale` | [`SYSTEM_LOCALE_CACHE`] | `NSLocale.currentLocale`, then `LC_ALL`/`LANG` |
+///
+/// **Invalidation trigger: TTL expiry.** The system-colour observer refreshes the accent palette but
+/// does not clear these slots, so a fact changes at most one second after the host says so. The
+/// read runs with no lock held, so two threads that both miss sample the host instead of queueing
+/// behind each other.
+///
+/// Callers whose answer depends on being on a particular thread must keep that check **outside**
+/// this wrapper: caching a "wrong thread" answer would make it a host fact for a whole TTL.
+fn cached_environment_fact<T: Copy>(
+    cache: &'static EnvironmentFactCache<T>,
+    read: impl FnOnce() -> T,
+) -> T {
+    // `get_or_init`, not `get`: an uninitialised `OnceLock` answers `None` forever, so `get` here
+    // would read the slot, find it absent, run the read and drop the value — a cache that never
+    // caches.
+    let slot = cache.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(guard) = slot.lock() {
+        if let Some((sampled_at, value)) = *guard {
+            if sampled_at.elapsed() < ENVIRONMENT_TTL {
+                return value;
+            }
+        }
+    }
+    let value = read();
+    if let Ok(mut guard) = slot.lock() {
+        *guard = Some((std::time::Instant::now(), value));
+    }
+    value
+}
+
+static HIGH_CONTRAST_CACHE: EnvironmentFactCache<Option<bool>> = std::sync::OnceLock::new();
+static REDUCE_MOTION_CACHE: EnvironmentFactCache<Option<bool>> = std::sync::OnceLock::new();
+static SYSTEM_LOCALE_CACHE: EnvironmentFactCache<Option<&'static str>> = std::sync::OnceLock::new();
 
 /// Whether `+[NSWorkspace sharedWorkspace]` implements `selector`.
 ///
@@ -52,32 +121,39 @@ unsafe fn workspace_implements(selector: objc::runtime::Sel) -> Option<id> {
 ///
 /// `NSWorkspace.accessibilityDisplayShouldIncreaseContrast` is the same source winit's AppKit
 /// backend reads. `None` off the main thread or on an AppKit that does not implement the selector.
+/// Wrapped in the one-second environment cache described by [`cached_environment_fact`].
 pub(crate) fn high_contrast() -> Option<bool> {
     if !super::types::is_main_thread() {
         return None;
     }
-    // SAFETY: main thread established; the workspace and the selector are immutable AppKit facts.
-    unsafe {
-        let workspace = workspace_implements(sel!(accessibilityDisplayShouldIncreaseContrast))?;
-        let answer: BOOL = msg_send![workspace, accessibilityDisplayShouldIncreaseContrast];
-        Some(answer != NO)
-    }
+    cached_environment_fact(&HIGH_CONTRAST_CACHE, || {
+        // SAFETY: main thread established; the workspace and the selector are immutable AppKit
+        // facts.
+        unsafe {
+            let workspace = workspace_implements(sel!(accessibilityDisplayShouldIncreaseContrast))?;
+            let answer: BOOL = msg_send![workspace, accessibilityDisplayShouldIncreaseContrast];
+            Some(answer != NO)
+        }
+    })
 }
 
 /// Whether the user asked for reduced motion.
 ///
 /// The macOS "Reduce motion" accessibility setting. `None` off the main thread or when the
-/// selector is unavailable.
+/// selector is unavailable. Wrapped in the one-second environment cache described by
+/// [`cached_environment_fact`].
 pub(crate) fn reduce_motion() -> Option<bool> {
     if !super::types::is_main_thread() {
         return None;
     }
-    // SAFETY: as above.
-    unsafe {
-        let workspace = workspace_implements(sel!(accessibilityDisplayShouldReduceMotion))?;
-        let answer: BOOL = msg_send![workspace, accessibilityDisplayShouldReduceMotion];
-        Some(answer != NO)
-    }
+    cached_environment_fact(&REDUCE_MOTION_CACHE, || {
+        // SAFETY: as above.
+        unsafe {
+            let workspace = workspace_implements(sel!(accessibilityDisplayShouldReduceMotion))?;
+            let answer: BOOL = msg_send![workspace, accessibilityDisplayShouldReduceMotion];
+            Some(answer != NO)
+        }
+    })
 }
 
 /// Whether the user asked for translucent materials to be reduced.
@@ -168,6 +244,15 @@ static SYSTEM_COLOR_OBSERVER_INSTALLED: std::sync::atomic::AtomicBool =
 /// the main thread (AppKit notifications and `NSColor` are main-thread facts), when the
 /// Objective-C runtime refuses the observer class, or when AppKit returns no notification
 /// centre. A caller that receives `false` keeps the explicit refresh entry point as its hook.
+///
+/// # Threading and lock order
+///
+/// The callback runs on the main thread. It takes the theme mutex, so it must never be
+/// delivered **synchronously** from a scope that already holds that mutex: the mutex is not
+/// reentrant. AppKit posts this notification from its run loop, which is outside the frame
+/// step, so the delivery point is correct today; a caller that forwards the notification by
+/// hand must do so with no theme guard held. The lock order is theme -> frame_wait (see
+/// [`crate::theme::global_theme_manager`]), and this observer does not invert it.
 ///
 /// The observer and its `NSString` notification name are deliberately kept for the process
 /// lifetime: the notification centre does not retain a selector-based observer, and the name is
@@ -314,7 +399,24 @@ pub(crate) fn system_fonts() -> Vec<crate::platform::types::SystemFont> {
 ///
 /// AppKit returns an autoreleased `NSString`; the UTF-8 bytes are copied before the call returns,
 /// so no object outlives this function.
+///
+/// # Cost
+///
+/// Two allocations and a global lock used to be paid on every style-environment poll: the C string
+/// was copied into an owned `String`, `replace` allocated a second `String` for the same text, and
+/// the interner took its lock. Now the identifier is read with `to_string_lossy` — which **borrows**
+/// when the bytes are valid UTF-8, as a locale identifier always is — and the hyphen form is built in
+/// a single allocation with one pass that also decides whether any dash is needed at all. The final
+/// value is interned, so repeated reads of the same tag keep returning the same pointer, and it is
+/// held in the one-second environment cache (see [`cached_environment_fact`]) so the interner lock is
+/// not taken once per poll either. The returned string is byte-identical to the previous spelling:
+/// `en_US` → `en-US`.
 pub(crate) fn system_locale() -> Option<&'static str> {
+    cached_environment_fact(&SYSTEM_LOCALE_CACHE, system_locale_uncached)
+}
+
+/// The uncached half of [`system_locale`], kept separate so the cache wrapper stays the only reader.
+fn system_locale_uncached() -> Option<&'static str> {
     // SAFETY: every object messaged is an AppKit singleton or a child of one, and the UTF-8 buffer
     // is read before the autorelease pool that owns it can drain.
     unsafe {
@@ -330,8 +432,19 @@ pub(crate) fn system_locale() -> Option<&'static str> {
         if utf8.is_null() {
             return None;
         }
-        let tag: String = CStr::from_ptr(utf8).to_string_lossy().into_owned();
-        crate::platform::locale::intern(Some(tag.replace('_', "-"))).or_else(|| {
+        let raw = CStr::from_ptr(utf8).to_string_lossy();
+        // One allocation: `to_string_lossy` borrows when the identifier is valid UTF-8, and the
+        // hyphenated form is written straight out instead of building a copy and then replacing it
+        // into a second string. Identifiers without a territory (`en`) take the borrow, which then
+        // allocates nothing more than the interned copy `locale::intern` makes anyway.
+        let tag = if raw.contains('_') {
+            let mut tag = String::with_capacity(raw.len());
+            tag.extend(raw.chars().map(|ch| if ch == '_' { '-' } else { ch }));
+            tag
+        } else {
+            raw.into_owned()
+        };
+        crate::platform::locale::intern(Some(tag)).or_else(|| {
             crate::platform::locale::intern(crate::platform::locale::from_environment())
         })
     }

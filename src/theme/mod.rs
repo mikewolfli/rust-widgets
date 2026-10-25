@@ -75,9 +75,10 @@ pub use manager::{
 };
 pub use preset_states::preset_state_key_count;
 pub use types::{
-    AppearanceMode, BevelOverride, Borders, Colors, Fonts, Material, Motion, ShadowOverride,
-    ShadowToken, Spacing, SurfaceElevationToken, SurfaceHairlineToken, SurfaceMaterialToken,
-    SystemAccent, Theme, ThemeOverrides, ThemeStyleToken, WidgetRole,
+    AppearanceMode, BevelOverride, Borders, Colors, Fonts, IconSlot, IconTokens, Material, Motion,
+    PaddingToken, ShadowOverride, ShadowToken, Spacing, SurfaceElevationToken,
+    SurfaceHairlineToken, SurfaceMaterialToken, SystemAccent, Theme, ThemeOverrides,
+    ThemeStyleToken, WidgetRole,
 };
 
 #[cfg(test)]

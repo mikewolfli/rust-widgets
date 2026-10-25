@@ -128,6 +128,14 @@ pub struct BezierCurveEditor {
     hovered_handle: Option<DragTarget>,
     /// Whether the two handles are kept mirrored through the curve's midpoint.
     symmetric_handles: bool,
+    /// The two control-point readouts, formatted only when the points move (K-P11).
+    ///
+    /// The draw path rebuilt both `format!` strings every frame — two allocations per paint for a
+    /// pair of numbers that change only while a handle is being dragged.
+    cp1_label: String,
+    cp2_label: String,
+    /// The point pair [`Self::cp1_label`] / [`Self::cp2_label`] were formatted from.
+    label_points: Option<((f32, f32), (f32, f32))>,
     /// Emitted when the curve changes. Passes the first segment's two control handles.
     ///
     /// The payload is kept as the historical pair so the published event schema is unchanged;
@@ -137,10 +145,23 @@ pub struct BezierCurveEditor {
 }
 
 /// Identifies which control point is being dragged.
+///
+/// The segment index is part of the identity: a multi-segment curve draws a handle pair on every
+/// segment, so "control point 1" alone names one of N handles and the press could only ever grab
+/// the first segment's. The payload order is `(segment, handle)` through the variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DragTarget {
-    ControlPoint1,
-    ControlPoint2,
+    ControlPoint1(usize),
+    ControlPoint2(usize),
+}
+
+impl DragTarget {
+    /// The segment this handle belongs to.
+    fn segment(self) -> usize {
+        match self {
+            DragTarget::ControlPoint1(index) | DragTarget::ControlPoint2(index) => index,
+        }
+    }
 }
 
 impl BezierCurveEditor {
@@ -156,6 +177,9 @@ impl BezierCurveEditor {
             dragging: None,
             hovered_handle: None,
             symmetric_handles: false,
+            cp1_label: String::new(),
+            cp2_label: String::new(),
+            label_points: None,
             curve_changed: Signal1::new(),
         }
     }
@@ -222,6 +246,88 @@ impl BezierCurveEditor {
     /// The number of cubic segments the curve is made of.
     pub fn segment_count(&self) -> usize {
         self.segments.len()
+    }
+
+    /// The curve's control points as a token string.
+    ///
+    /// # Format
+    ///
+    /// One group per segment, groups separated by `|`, the four points of a segment separated by
+    /// `;`, and each point's two coordinates separated by `,` — so the historical single-segment
+    /// ease is `"0,0;0.25,0.1;0.75,0.9;1,1"`. This is the shape a document can store and a tool can
+    /// diff; it is deliberately not a `Debug` dump, which would carry the parameterisation too.
+    pub fn curve_points_token(&self) -> String {
+        let mut out = String::new();
+        for (index, segment) in self.segments.iter().enumerate() {
+            if index > 0 {
+                out.push('|');
+            }
+            for (point_index, point) in
+                [segment.p0, segment.p1, segment.p2, segment.p3].iter().enumerate()
+            {
+                if point_index > 0 {
+                    out.push(';');
+                }
+                let _ = core::fmt::Write::write_fmt(
+                    &mut out,
+                    format_args!("{:.4},{:.4}", point.0, point.1),
+                );
+            }
+        }
+        out
+    }
+
+    /// Replaces the curve from a [`Self::curve_points_token`] string.
+    ///
+    /// Every group must name exactly four points; a malformed token is refused as
+    /// [`CapabilityAccessError::TypeMismatch`] and leaves the curve untouched, so a bad write can
+    /// never leave a half-replaced curve. Segment parameters are redistributed evenly over the new
+    /// segment count, which is the parameterisation a freshly built piecewise curve has.
+    fn set_curve_points_token(&mut self, token: &str) -> Result<(), CapabilityAccessError> {
+        let mut segments: Vec<CubicSegment> = Vec::new();
+        for group in token.split('|') {
+            let group = group.trim();
+            if group.is_empty() {
+                return Err(CapabilityAccessError::TypeMismatch);
+            }
+            let mut points: Vec<(f32, f32)> = Vec::new();
+            for pair in group.split(';') {
+                let (x, y) = pair.split_once(',').ok_or(CapabilityAccessError::TypeMismatch)?;
+                let x: f32 = x.trim().parse().map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                let y: f32 = y.trim().parse().map_err(|_| CapabilityAccessError::TypeMismatch)?;
+                if !x.is_finite() || !y.is_finite() {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                }
+                points.push((x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)));
+            }
+            if points.len() != 4 {
+                return Err(CapabilityAccessError::TypeMismatch);
+            }
+            segments.push(CubicSegment {
+                p0: points[0],
+                p1: points[1],
+                p2: points[2],
+                p3: points[3],
+                t0: 0.0,
+                t1: 1.0,
+                split_fraction: 0.0,
+            });
+        }
+        if segments.is_empty() {
+            return Err(CapabilityAccessError::TypeMismatch);
+        }
+        let count = segments.len() as f32;
+        for (index, segment) in segments.iter_mut().enumerate() {
+            segment.t0 = index as f32 / count;
+            segment.t1 = (index + 1) as f32 / count;
+        }
+        if self.segments == segments {
+            return Ok(());
+        }
+        self.segments = segments;
+        self.emit_curve_changed();
+        self.base.request_redraw();
+        Ok(())
     }
 
     /// The number of on-curve points: one more than the segment count.
@@ -505,17 +611,86 @@ impl BezierCurveEditor {
     }
 
     /// Returns which control point handle is at the given position, if any.
+    ///
+    /// Every segment's two handles are candidates, and the nearest one within the threshold wins.
+    /// The single-segment form of this only ever answered for the first segment, so a curve with
+    /// more points drew handles that could not be grabbed.
     fn hit_test_handle(&self, pos: Point) -> Option<DragTarget> {
         let threshold = (HANDLE_RADIUS + 4) as f64;
-        let d1 = self.distance_to_handle(pos, self.control_point1());
-        let d2 = self.distance_to_handle(pos, self.control_point2());
-        if d1 < threshold && d1 <= d2 {
-            Some(DragTarget::ControlPoint1)
-        } else if d2 < threshold {
-            Some(DragTarget::ControlPoint2)
-        } else {
-            None
+        let mut best: Option<(f64, DragTarget)> = None;
+        for (index, segment) in self.segments.iter().enumerate() {
+            for (distance, target) in [
+                (self.distance_to_handle(pos, segment.p1), DragTarget::ControlPoint1(index)),
+                (self.distance_to_handle(pos, segment.p2), DragTarget::ControlPoint2(index)),
+            ] {
+                if distance >= threshold {
+                    continue;
+                }
+                if best.is_none_or(|(best_distance, _)| distance < best_distance) {
+                    best = Some((distance, target));
+                }
+            }
         }
+        best.map(|(_, target)| target)
+    }
+
+    /// Moves one segment's handle, applying the symmetry rule and announcing the change.
+    ///
+    /// The historical setters only address the first segment; a dragged handle belongs to
+    /// whichever segment it was drawn on, so the move goes through here. `curve_changed` keeps its
+    /// published payload (the first segment's pair), and the authoritative reader for the rest is
+    /// [`Self::segments`].
+    fn set_segment_handle(&mut self, target: DragTarget, x: f32, y: f32) {
+        let next = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
+        let index = target.segment();
+        let changed;
+        {
+            let Some(segment) = self.segments.get_mut(index) else {
+                return;
+            };
+            match target {
+                DragTarget::ControlPoint1(_) => {
+                    changed = segment.p1 != next;
+                    segment.p1 = next;
+                    if self.symmetric_handles {
+                        segment.p2 = (1.0 - next.0, 1.0 - next.1);
+                    }
+                }
+                DragTarget::ControlPoint2(_) => {
+                    changed = segment.p2 != next;
+                    segment.p2 = next;
+                    if self.symmetric_handles {
+                        segment.p1 = (1.0 - next.0, 1.0 - next.1);
+                    }
+                }
+            }
+        }
+        if changed {
+            self.emit_curve_changed();
+            self.base.request_redraw();
+        }
+    }
+
+    /// Rebuilds the two control-point labels when the points moved (K-P11).
+    ///
+    /// Called at the top of `draw`, before it borrows `self` through the style — the buffer needs a
+    /// mutable borrow, and the format is the only work this saves.
+    fn refresh_control_point_labels(&mut self) {
+        let points = (self.control_point1(), self.control_point2());
+        if self.label_points == Some(points) {
+            return;
+        }
+        self.cp1_label.clear();
+        let _ = core::fmt::Write::write_fmt(
+            &mut self.cp1_label,
+            format_args!("CP1: ({:.2}, {:.2})", points.0 .0, points.0 .1),
+        );
+        self.cp2_label.clear();
+        let _ = core::fmt::Write::write_fmt(
+            &mut self.cp2_label,
+            format_args!("CP2: ({:.2}, {:.2})", points.1 .0, points.1 .1),
+        );
+        self.label_points = Some(points);
     }
 
     /// Draws a single grid line with a subtle color.
@@ -611,6 +786,10 @@ impl WidgetProperties for BezierCurveEditor {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "snap_to_grid" => Ok(CapabilityValue::Bool(self.snap_to_grid())),
+            // The segment count and the full geometry: without them a capability client could
+            // not observe (or restore) the curve the control exists to edit.
+            "segments" => Ok(CapabilityValue::UInt(self.segment_count() as u64)),
+            "curve_points" => Ok(CapabilityValue::String(self.curve_points_token())),
             _ => base_property_get(self, name),
         }
     }
@@ -621,18 +800,26 @@ impl WidgetProperties for BezierCurveEditor {
                 self.set_snap_to_grid(expect_bool(value)?);
                 Ok(())
             }
+            "segments" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "curve_points" => {
+                let token = crate::widget::capability::coercion::expect_string(value)?;
+                self.set_curve_points_token(&token)
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["snap_to_grid", BASE_PROPERTY_NAMES]
+        property_names_of!["snap_to_grid", "segments", "curve_points", BASE_PROPERTY_NAMES]
     }
 }
 
 impl Draw for BezierCurveEditor {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        // Before anything borrows `self` for the frame, so a moved point refreshes the readouts
+        // and a static curve reuses them (K-P11).
+        self.refresh_control_point_labels();
         let is_enabled = self.base.is_enabled();
         let margin = HANDLE_RADIUS as i32 + 4;
         let draw_w = (rect.width as i32 - 2 * margin).max(1) as f32;
@@ -738,9 +925,8 @@ impl Draw for BezierCurveEditor {
         // ── Control polygon, curve and handles, segment by segment ──
         //
         // A handle the pointer is over, and the one being dragged, gains a halo in its own
-        // hue. Both facts come from the same `hit_test_handle` the press uses, so the
-        // handle that lights up is the handle a drag would move. Only the first segment's
-        // two handles are draggable, so only they take the hover/drag emphasis.
+        // hue. Both facts come from the same `hit_test_handle` the press uses, so the handle that
+        // lights up is the handle a drag would move — on every segment, not just the first.
         const SAMPLES_PER_SEGMENT: usize = 50;
         for (index, segment) in self.segments.iter().enumerate() {
             let seg_p0 = self.curve_to_pixel(segment.p0.0, segment.p0.1);
@@ -765,29 +951,27 @@ impl Draw for BezierCurveEditor {
                 seg_cp1,
                 cp1_color,
                 surface,
-                index == 0 && self.dragging == Some(DragTarget::ControlPoint1),
-                index == 0 && self.hovered_handle == Some(DragTarget::ControlPoint1),
+                self.dragging == Some(DragTarget::ControlPoint1(index)),
+                self.hovered_handle == Some(DragTarget::ControlPoint1(index)),
             );
             Self::draw_handle(
                 context,
                 seg_cp2,
                 cp2_color,
                 surface,
-                index == 0 && self.dragging == Some(DragTarget::ControlPoint2),
-                index == 0 && self.hovered_handle == Some(DragTarget::ControlPoint2),
+                self.dragging == Some(DragTarget::ControlPoint2(index)),
+                self.hovered_handle == Some(DragTarget::ControlPoint2(index)),
             );
         }
 
         // ── Labels ──
+        // Both readouts were formatted on every frame; they are now formatted when the points
+        // actually move (K-P11).
         let font = effective_font(style);
-        let cp1 = self.control_point1();
-        let cp2 = self.control_point2();
-        let cp1_label = format!("CP1: ({:.2}, {:.2})", cp1.0, cp1.1);
-        let cp2_label = format!("CP2: ({:.2}, {:.2})", cp2.0, cp2.1);
 
         context.draw_text(
             Point::new(rect.x + 4, rect.y + 12),
-            &cp1_label,
+            &self.cp1_label,
             font,
             // The labels name which control point is which, so the hue is information and stays
             // — but it has to be *readable* on the surface, which the handle's own colour is not:
@@ -799,7 +983,7 @@ impl Draw for BezierCurveEditor {
         );
         context.draw_text(
             Point::new(rect.x + 4, rect.y + 26),
-            &cp2_label,
+            &self.cp2_label,
             font,
             cp2_color.legible_on(surface, 4.5),
             HorizontalAlignment::Left,
@@ -857,14 +1041,7 @@ impl EventHandler for BezierCurveEditor {
             Event::MouseMove { pos } => {
                 if let Some(target) = self.dragging {
                     let (cx, cy) = self.pixel_to_curve(pos.x, pos.y);
-                    match target {
-                        DragTarget::ControlPoint1 => {
-                            self.set_control_point1(cx, cy);
-                        }
-                        DragTarget::ControlPoint2 => {
-                            self.set_control_point2(cx, cy);
-                        }
-                    }
+                    self.set_segment_handle(target, cx, cy);
                 }
                 // Moving over a handle changes which one is emphasised, so the frame that
                 // moved the pointer has to be repainted. The hit test is the same one the
@@ -1021,11 +1198,11 @@ mod tests {
         // Let's just check the function returns Some for positions near the curve.
         let cp1_pixel = editor.curve_to_pixel(0.25, 0.1);
         let hit = editor.hit_test_handle(cp1_pixel);
-        assert_eq!(hit, Some(DragTarget::ControlPoint1));
+        assert_eq!(hit, Some(DragTarget::ControlPoint1(0)));
 
         let cp2_pixel = editor.curve_to_pixel(0.75, 0.9);
         let hit = editor.hit_test_handle(cp2_pixel);
-        assert_eq!(hit, Some(DragTarget::ControlPoint2));
+        assert_eq!(hit, Some(DragTarget::ControlPoint2(0)));
 
         // Far away from any handle.
         let hit = editor.hit_test_handle(Point::new(5, 5));
@@ -1136,7 +1313,7 @@ mod tests {
 
         let cp1_pixel = editor.curve_to_pixel(0.25, 0.1);
         editor.handle_event(&Event::MouseMove { pos: cp1_pixel });
-        assert_eq!(editor.hovered_handle, Some(DragTarget::ControlPoint1));
+        assert_eq!(editor.hovered_handle, Some(DragTarget::ControlPoint1(0)));
         let hovered = crate::widget::svg::render_to_svg(&mut editor);
         assert_ne!(
             idle, hovered,

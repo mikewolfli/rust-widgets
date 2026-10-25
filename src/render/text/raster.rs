@@ -874,8 +874,17 @@ impl CoverageCache {
 
 /// Stores `coverage` under `key` for the next paint of the same glyph.
 fn cache_coverage(key: CoverageKey, coverage: crate::compat::Vec<u8>) {
-    let coverage: crate::compat::Rc<[u8]> = crate::compat::Rc::from(coverage);
+    cache_coverage_shared(key, crate::compat::Rc::from(coverage));
+}
+
+/// Stores an already-shared `coverage` under `key` (the atlas path, G-15).
+fn cache_coverage_shared(key: CoverageKey, coverage: crate::compat::Rc<[u8]>) {
     COVERAGE_CACHE.with(|cache| cache.borrow_mut().insert(key, coverage));
+}
+
+/// The coverage-cache key for one rasterisation request.
+fn coverage_key(face: FaceBytes, ch: char, cell: Cell, weight: u16) -> CoverageKey {
+    (face.bytes.as_ptr() as usize, ch, cell.width, cell.height, weight)
 }
 
 // Counts cache hits and misses for tests, so a test can prove the cache is on the path.
@@ -955,12 +964,13 @@ impl GlyphSource for VectorSource {
     }
 }
 
-/// Rasterises `ch` from `face` at an explicit weight into a fresh coverage buffer for the glyph
-/// atlas.
+/// Rasterises `ch` from `face` at an explicit weight into shared coverage for the glyph atlas.
 ///
 /// This is the same [`VectorSource::paint_in_face`] the [`GlyphSource`] path uses, with the same
 /// parse cache and the same per-cell coverage cache, so the bytes it returns are byte-identical to
-/// an uncached paint that selected the same face and instance. A face with no glyph for `ch`, or
+/// an uncached paint that selected the same face and instance. A coverage-cache hit returns the
+/// cached buffer as a refcounted slice instead of copying it into a fresh one, which is what lets
+/// the atlas blend without the per-glyph memcpy G-15 describes. A face with no glyph for `ch`, or
 /// one whose outline does not fit the fixed scratch, answers `None` and the atlas falls back to the
 /// active stack rather than fabricating ink.
 ///
@@ -981,16 +991,31 @@ pub(crate) fn rasterize_face_at_weight(
     ch: char,
     cell: Cell,
     weight: u16,
-) -> Option<crate::compat::Vec<u8>> {
+) -> Option<crate::compat::Rc<[u8]>> {
     if cell.is_empty() {
         return None;
     }
-    let mut out = crate::compat::vec![0u8; cell.area()];
+    let key = coverage_key(face, ch, cell, weight);
+    // A hit hands back the shared buffer itself: the atlas blends straight from it, so the
+    // full-cell copy `paint_in_face` must make for its caller-owned `out` is not needed here
+    // (G-15).
+    if let Some(cached) = CoverageCache::lookup(key) {
+        #[cfg(test)]
+        COVERAGE_CACHE_HITS.with(|hits| hits.set(hits.get() + 1));
+        return Some(cached);
+    }
+    #[cfg(test)]
+    COVERAGE_CACHE_MISSES.with(|misses| misses.set(misses.get() + 1));
+
+    let mut coverage = crate::compat::vec![0u8; cell.area()];
     super::variable::with_weighted_face(face, weight, |parsed| {
-        VectorSource::paint_in_face(ch, cell, &mut out, face, weight, parsed)
+        VectorSource::rasterize_into(ch, cell, &mut coverage, parsed)
     })
-    .flatten()
-    .map(|_| out)
+    .flatten()?;
+    // Stored after the pixels are final, so a later hit answers exactly what this miss did.
+    let coverage: crate::compat::Rc<[u8]> = crate::compat::Rc::from(coverage);
+    cache_coverage_shared(key, coverage.clone());
+    Some(coverage)
 }
 
 impl VectorSource {
@@ -1007,14 +1032,16 @@ impl VectorSource {
         face: &ttf_parser::Face<'_>,
     ) -> Option<Painted> {
         let area = cell.area();
-        let key: CoverageKey =
-            (face_bytes.bytes.as_ptr() as usize, ch, cell.width, cell.height, weight);
+        let key: CoverageKey = coverage_key(face_bytes, ch, cell, weight);
         // # Why the cache is consulted before anything else
         //
         // Coverage is a function of (face, instance weight, character, device cell) alone. A repaint
         // draws the same captions again and again, and rasterising them again was the dominant
         // per-widget cost in a frame (see `CoverageCache`). A hit is one hash lookup plus one memcpy
         // of a few hundred bytes.
+        //
+        // The copy is the contract of **this** entry point: the caller owns `out`. The atlas path
+        // (`rasterize_face_at_weight`) returns the cached buffer itself and skips it (G-15).
         if let Some(cached) = CoverageCache::lookup(key) {
             #[cfg(test)]
             COVERAGE_CACHE_HITS.with(|hits| hits.set(hits.get() + 1));
@@ -1028,6 +1055,24 @@ impl VectorSource {
         #[cfg(test)]
         COVERAGE_CACHE_MISSES.with(|misses| misses.set(misses.get() + 1));
 
+        Self::rasterize_into(ch, cell, out, face)?;
+        // Stored after the pixels are final, so a later hit answers exactly what this miss did.
+        cache_coverage(key, crate::compat::Vec::from(&out[..area]));
+
+        Some(Painted { source: face_bytes.name, source_cell: None, ink: InkKind::Coverage })
+    }
+
+    /// The rasterisation half shared by [`Self::paint_in_face`] and [`rasterize_face_at_weight`]:
+    /// glyph geometry, the winding fill and the coverage resolve, with no cache interaction.
+    ///
+    /// Split out so the direct path can write straight into its caller's buffer and the atlas path
+    /// can write into the buffer it is about to share — neither pays for the other's copy (G-15).
+    fn rasterize_into(
+        ch: char,
+        cell: Cell,
+        out: &mut [u8],
+        face: &ttf_parser::Face<'_>,
+    ) -> Option<()> {
         let glyph = face.glyph_index(ch)?;
 
         // The em the caller wants: the cell's height is the line box, and the glyph is scaled to fit
@@ -1080,10 +1125,7 @@ impl VectorSource {
         }
         out[..cell.area()].fill(0);
         resolve_coverage(&rows, sub_width, cell, out);
-        // Stored after the pixels are final, so a later hit answers exactly what this miss did.
-        cache_coverage(key, crate::compat::Vec::from(&out[..area]));
-
-        Some(Painted { source: face_bytes.name, source_cell: None, ink: InkKind::Coverage })
+        Some(())
     }
 }
 

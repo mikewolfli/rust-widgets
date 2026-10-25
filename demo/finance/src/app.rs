@@ -45,11 +45,12 @@
 //! OS 控件名。唯一需要运行时询问的是能力存在与否：`supports_surfaces()`。
 //! 自绘型控件的放置方式由 `src/platform/` 内部决定。
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use rust_widgets::app::{App, WidgetHandle, WindowHandle};
+use rust_widgets::app::{App, StatusBarHandle, WidgetHandle, WindowHandle};
 use rust_widgets::core::{ObjectId, Orientation, Rect};
-use rust_widgets::theme::{global_theme_manager, Theme};
+use rust_widgets::theme::{global_theme_manager, AppearanceMode, Theme};
 // The demo has a `Layout` struct of its own (the panel rects), so the library's layout
 // trait is imported under a distinct name rather than shadowing it.
 use rust_widgets::layout::{BoxLayout, Layout as LayoutTrait, LayoutConstraints};
@@ -63,28 +64,85 @@ use rust_widgets::widget::special_widgets::finance::{
 // Log System — 线程安全的事件日志
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// How many recent entries the log keeps in memory.
+///
+/// The demo appends on every panel event (hover, click, layout pass) and runs until its window
+/// closes, so an unbounded buffer grows with the event count — the price/volume/indicator panes
+/// emit pointer events as the cursor crosses bars. Past this limit the oldest entry is dropped:
+/// memory stays bounded, and the entries a reader cares about (the newest ones, including the
+/// one the status bar shows) are the ones that survive.
+const EVENT_LOG_CAPACITY: usize = 200;
+
 struct EventLog {
-    entries: Mutex<Vec<String>>,
+    entries: Mutex<VecDeque<String>>,
+    /// The status bar that shows the most recent entry, once one exists.
+    status: Mutex<Option<StatusBarHandle>>,
+    /// The text last written to that bar, so an identical event does not rewrite it.
+    shown: Mutex<String>,
 }
 
 impl EventLog {
     fn new() -> Self {
-        Self { entries: Mutex::new(Vec::new()) }
+        Self {
+            entries: Mutex::new(VecDeque::new()),
+            status: Mutex::new(None),
+            shown: Mutex::new(String::new()),
+        }
     }
 
     fn append(&self, message: impl Into<String>) {
         let message = message.into();
         println!("[EVENT] {}", message);
-        self.entries.lock().unwrap().push(message);
+        {
+            let mut entries = self.entries.lock().unwrap();
+            if entries.len() >= EVENT_LOG_CAPACITY {
+                entries.pop_front();
+            }
+            entries.push_back(message.clone());
+        }
+        self.publish(&message);
+    }
+
+    /// Writes `text` to the attached status bar unless it already shows it.
+    fn publish(&self, text: &str) {
+        let Some(status) = self.status.lock().unwrap().clone() else { return };
+        {
+            let mut shown = self.shown.lock().unwrap();
+            if *shown == text {
+                return;
+            }
+            shown.clear();
+            shown.push_str(text);
+        }
+        // Written after the cache lock is released: a native control write is the one call
+        // here that could reach host code, and holding a lock across it would turn a host
+        // callback that logs into a deadlock.
+        status.set_text(text);
+    }
+
+    /// Attaches the status bar that mirrors this log's newest entry.
+    ///
+    /// Called once, after the bar is created and before the screen is built, so both the
+    /// start-up lines and every later event reach it. The current newest entry is written
+    /// immediately: a bar left showing its creation text would be indistinguishable from a
+    /// broken one.
+    fn attach_status(&self, status: StatusBarHandle) {
+        *self.status.lock().unwrap() = Some(status);
+        // The new bar shows its creation text, which is not what `shown` records.
+        self.shown.lock().unwrap().clear();
+        let latest = self.latest();
+        if !latest.is_empty() {
+            self.publish(&latest);
+        }
     }
 
     fn snapshot(&self) -> Vec<String> {
-        self.entries.lock().unwrap().clone()
+        self.entries.lock().unwrap().iter().cloned().collect()
     }
 
     /// The most recent entry, for the status bar.
     fn latest(&self) -> String {
-        self.entries.lock().unwrap().last().cloned().unwrap_or_default()
+        self.entries.lock().unwrap().back().cloned().unwrap_or_default()
     }
 }
 
@@ -235,6 +293,13 @@ struct Layout {
     quotes: Rect,
     book: Rect,
     depth: Rect,
+    /// The status bar row, anchored to the bottom edge and spanning the window.
+    ///
+    /// It is part of this layout rather than created at a fixed rectangle: before, the bar
+    /// was placed once at `(0, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, WINDOW_WIDTH, …)` and never
+    /// moved, so enlarging the window left it floating above the bottom edge and shrinking it
+    /// clipped the row. Being a slot here means it is re-placed with the seven panels.
+    status: Rect,
 }
 
 /// The demo window's width, shared by the layout and the window it creates.
@@ -458,6 +523,14 @@ impl Layout {
             quotes: Rect::new(right_x, quotes_y, right_width, quotes_h),
             book: Rect::new(right_x, book_y, right_width, book_h),
             depth: Rect::new(right_x, depth_y, right_width, depth_h),
+            // Bottom-anchored and full width, derived from the size being laid out rather
+            // than from `WINDOW_WIDTH`/`WINDOW_HEIGHT`.
+            status: Rect::new(
+                0,
+                height.saturating_sub(STATUS_BAR_HEIGHT) as i32,
+                width,
+                STATUS_BAR_HEIGHT.min(height),
+            ),
         }
     }
 }
@@ -466,7 +539,8 @@ impl Layout {
 // Window layout — makes the panels follow the window
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Repositions the seven mounted panels whenever the window's client area changes.
+/// Repositions the seven mounted panels (and the status row) whenever the window's client area
+/// changes.
 ///
 /// # The defect this fixes
 ///
@@ -493,7 +567,7 @@ impl Layout {
 /// repeated per event — and accumulated per-frame work is exactly what a stutter looks like.
 /// Skipping a repeat here makes the second and later deliveries of one size free.
 struct PanelLayout {
-    /// `(id, which of the seven panels it is)`, in mount order.
+    /// `(id, which slot it is)`, in mount order, status row last.
     panels: Vec<(ObjectId, PanelSlot)>,
     /// Most recent client size, for the log line and for a `Rect`-only `update`.
     log: Arc<EventLog>,
@@ -517,6 +591,8 @@ enum PanelSlot {
     Quotes,
     Book,
     Depth,
+    /// The status bar row.
+    Status,
 }
 
 impl PanelSlot {
@@ -530,6 +606,7 @@ impl PanelSlot {
             Self::Quotes => layout.quotes,
             Self::Book => layout.book,
             Self::Depth => layout.depth,
+            Self::Status => layout.status,
         }
     }
 }
@@ -567,8 +644,10 @@ impl LayoutTrait for PanelLayout {
             widgets(*id, slot.rect_in(&layout));
         }
         self.log.append(format!(
-            "[Layout] window resized to {}x{} — 7 panels repositioned",
-            rect.width, rect.height
+            "[Layout] window resized to {}x{} — {} slot(s) repositioned",
+            rect.width,
+            rect.height,
+            self.panels.len()
         ));
     }
 }
@@ -610,25 +689,33 @@ fn mount<W: rust_widgets::widget::Widget + 'static>(
     }
 }
 
-/// Registers the seven panels with the window so they are repositioned on resize.
+/// Registers the seven panels and the status row with the window so they follow a resize.
 ///
 /// # Why this is called after every mount
 ///
 /// The layout needs the ids `mount_surface` returned, so it cannot be built until all seven are
 /// mounted. Registering it last means one call site, and a panel that failed to mount simply does not
 /// appear in the list — the layout places what exists rather than assuming all seven do.
+///
+/// The status bar is registered the same way the panels are: it is an ordinary control, so
+/// leaving it out of the layout is what made it keep its creation rectangle forever.
 fn register_window_layout(
     win: &WindowHandle,
     panels: Vec<(Option<ObjectId>, PanelSlot)>,
+    status: Option<ObjectId>,
     log: &Arc<EventLog>,
 ) {
-    let registered: Vec<(ObjectId, PanelSlot)> =
+    let mut registered: Vec<(ObjectId, PanelSlot)> =
         panels.into_iter().filter_map(|(id, slot)| id.map(|id| (id, slot))).collect();
     if registered.len() < 7 {
         log.append(format!(
             "[Layout] 只有 {} / 7 个面板挂载成功，窗口缩放时其余不会出现",
             registered.len()
         ));
+    }
+    match status {
+        Some(id) => registered.push((id, PanelSlot::Status)),
+        None => log.append("[Layout] status bar was not created; it will not follow a resize"),
     }
     win.set_layout(PanelLayout {
         panels: registered,
@@ -642,7 +729,7 @@ fn last_close(series: &PriceSeries) -> f64 {
     series.bars().last().map(|bar| bar.close).unwrap_or(100.0)
 }
 
-fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
+fn build_screen(win: &WindowHandle, log: &Arc<EventLog>, status: Option<ObjectId>) {
     let layout = Layout::compute();
     let series = sample_series();
     let close = last_close(&series);
@@ -743,7 +830,7 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
         QuoteColumn::ChangePercent,
     ]);
     // Sorted by the day's biggest movers, which is what a trader looks at first.
-    quotes.set_sort(QuoteSort::ChangeMagnitude);
+    quotes.set_sort(QuoteSort::ChangeMagnitudeDescending);
     let quote_log = Arc::clone(log);
     quotes.quote_clicked.connect(move |symbol| {
         quote_log.append(format!("[QuoteBoard] 选中 {symbol}"));
@@ -829,8 +916,21 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
         series.len()
     ));
 
-    // ── And verify the panels actually paint, not merely construct ──────────
-    log.append(format!("[paint] {}", verify_panels_paint(&layout, &series, close)));
+    // ── And optionally verify the panels actually paint, not merely construct ─
+    //
+    // Off by default. The check allocates an offscreen surface and renders a software frame per
+    // panel — seven of them on every launch, for a fact that does not change between launches.
+    // The same assertion runs as a test (`every_panel_paints_something_at_its_real_geometry`),
+    // which is where a regression is caught; setting the environment variable asks this launch
+    // to print the report too.
+    if paint_check_enabled() {
+        log.append(format!("[paint] {}", verify_panels_paint(&layout, &series, close)));
+    } else {
+        log.append(format!(
+            "[paint] start-up self-check skipped (set {PAINT_CHECK_ENV}=1 to render the 7 \
+             panels offscreen here)"
+        ));
+    }
 
     // ── Hand the panels to the window so they follow a resize ──────────────
     //
@@ -849,21 +949,40 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
             (id_ladder, PanelSlot::Book),
             (id_depth, PanelSlot::Depth),
         ],
+        status,
         log,
     );
-    log.append("[Layout] 7 个面板已注册到窗口布局，窗口缩放时会重新排布");
+    log.append("[Layout] 7 个面板 + 状态栏已注册到窗口布局，窗口缩放时会重新排布");
+}
+
+/// Environment variable that asks a launch to run the paint self-check.
+///
+/// The check renders all seven panels offscreen at their real geometry, which is worth doing
+/// when a reader wants to see the report — and pointless on every launch, because the same
+/// assertion is a test. Off unless this is set to `1` or `true`.
+const PAINT_CHECK_ENV: &str = "RUST_WIDGETS_DEMO_PAINT_CHECK";
+
+/// Whether this launch asked for the paint self-check.
+fn paint_check_enabled() -> bool {
+    matches!(std::env::var(PAINT_CHECK_ENV).ok().as_deref(), Some("1") | Some("true"))
 }
 
 /// Renders each panel offscreen at its **real geometry** and reports how many pixels it
 /// painted.
 ///
-/// # Why the demo does this
+/// # Why the demo has this at all
 ///
 /// A panel placed at a non-zero origin used to render blank in its upper band and clipped
 /// at its lower-right, because the frame was sized to the panel but the panel drew at its
 /// absolute position. Nothing about constructing or mounting a control reveals that — only
-/// asking it to paint does. Checking here means the demo says so out loud at startup rather
-/// than showing a subtly wrong screen that a reader has to notice.
+/// asking it to paint does.
+///
+/// # Why it is opt-in
+///
+/// It costs seven offscreen surfaces and seven software frames, and its verdict is the same on
+/// every launch. The assertion lives in
+/// [`tests::every_panel_paints_something_at_its_real_geometry`], so a regression fails there;
+/// the run path only performs it when `RUST_WIDGETS_DEMO_PAINT_CHECK=1` asks for the report.
 ///
 /// # Why this goes through `render_frame` rather than calling `Draw::draw` directly
 ///
@@ -968,6 +1087,34 @@ fn apply_appearance(default_dark: bool) {
     rust_widgets::reapply_active_theme();
 }
 
+/// Whether the active palette is dark.
+///
+/// Asked of the theme manager rather than mirrored in a `bool`: the theme is global state and
+/// another part of the process may switch it, so a private copy would point the menu entry the
+/// wrong way and the next click would select the palette already in use.
+fn dark_active() -> bool {
+    global_theme_manager()
+        .current_theme()
+        .map(|theme| theme.appearance == AppearanceMode::Dark)
+        .unwrap_or(false)
+}
+
+/// Switches to the other registered palette and repaints what is already mounted.
+///
+/// This is the one View entry with a real action, so the menu is not a row of inert labels.
+/// Both halves are required: `set_theme` changes what newly created controls use, and
+/// `reapply_active_theme` restyles the controls already on screen — without it the window keeps
+/// its old colours and the switch looks like a no-op.
+fn toggle_appearance(log: &Arc<EventLog>) {
+    let name = if dark_active() { "macos-light" } else { "macos-dark" };
+    if global_theme_manager().set_theme(name) {
+        rust_widgets::reapply_active_theme();
+        log.append(format!("[Menu] appearance '{name}'"));
+    } else {
+        log.append("[Menu] that appearance is not registered in this build");
+    }
+}
+
 /// Registers a full-coverage CJK face, once, before anything is painted.
 ///
 /// # Why the demo does this
@@ -1033,18 +1180,88 @@ pub fn run() {
     let win = app.new_window("Finance Demo — rust_widgets", 60, 60, WINDOW_WIDTH, WINDOW_HEIGHT);
     log.append(format!("[Window] created: id={:?}", win.raw_id()));
 
-    // A menu bar, so the demo has the same window chrome as the other demos and the
-    // financial panels are placed below it rather than under the title bar.
+    // ── Menu bar ──────────────────────────────────────────────────────────
+    //
+    // Same chrome as the other two demos, and a bar that actually works. A bar whose menus
+    // have no items and no host handler is an empty shell: `new_menu` only registers the
+    // title, and a popup opens only when the host answers `on_entry_triggered` with
+    // `MenuHandle::open_at`. So each menu gets items, a trigger handler, and the bar gets a
+    // popup handler — the wiring `demo/control` uses.
     let menu_bar = win.new_menu_bar(0, 0, 0, 0);
-    win.new_menu(&menu_bar, "File", 0, 0, 0, 0);
-    win.new_menu(&menu_bar, "View", 0, 0, 0, 0);
-    win.attach_menu_bar(&menu_bar);
+    let file_menu = win.new_menu(&menu_bar, "File", 0, 0, 0, 0);
+    let view_menu = win.new_menu(&menu_bar, "View", 0, 0, 0, 0);
+    for (menu, items) in [
+        (&file_menu, &[("Reload Data", "Ctrl+R"), ("Quit", "Ctrl+Q")][..]),
+        (&view_menu, &[("Toggle Appearance", "Ctrl+Shift+D")][..]),
+    ] {
+        for &(label, chord) in items {
+            win.new_menu_item(menu, label, Some(chord));
+        }
+    }
+
+    let file_log = Arc::clone(&log);
+    file_menu.on_triggered(move |label: String| match label.as_str() {
+        // The sample series is generated deterministically, so there is nothing to re-fetch.
+        // Saying that is honest; pretending to load would log a lie.
+        "Reload Data" => file_log.append(
+            "[Menu] Reload Data: the series is a fixed sample, so there is nothing to fetch",
+        ),
+        "Quit" => {
+            let requested = rust_widgets::quit();
+            file_log.append(if requested {
+                "[Menu] Quit requested"
+            } else {
+                "[Menu] Quit: this backend has no window loop to stop"
+            });
+        }
+        other => file_log.append(format!("[Menu] {other} chosen")),
+    });
+
+    let view_log = Arc::clone(&log);
+    view_menu.on_triggered(move |label: String| {
+        // One handler rather than a logging one plus an action one: `on_triggered`
+        // connections are appended and all of them fire, so two handlers would each run for
+        // every item and the label test would have to be repeated.
+        if label == "Toggle Appearance" {
+            toggle_appearance(&view_log);
+        } else {
+            view_log.append(format!("[Menu] {label} chosen"));
+        }
+    });
+
+    // The popup follows the entry: `entry` is the rectangle the user clicked, so the menu
+    // hangs from its bottom-left as AppKit does. The viewport is the real client area, so the
+    // popup is clamped into the window rather than into the creation size.
+    let menus = [("File".to_string(), file_menu), ("View".to_string(), view_menu)];
+    let window_id = win.raw_id();
+    let popup_log = Arc::clone(&log);
+    menu_bar.on_entry_triggered(move |title: String, entry: Rect| {
+        let Some(index) = menus.iter().position(|(name, _)| *name == title) else {
+            return;
+        };
+        let (width, height) =
+            rust_widgets::window_client_size(window_id).unwrap_or((WINDOW_WIDTH, WINDOW_HEIGHT));
+        let opened = menus[index].1.open_at(
+            entry.x,
+            entry.y + entry.height as i32,
+            Rect::new(0, 0, width, height),
+        );
+        popup_log.append(format!(
+            "[MenuBar] '{title}' popup opened={opened} items={}",
+            menus[index].1.item_count()
+        ));
+    });
+    let attached = win.attach_menu_bar(&menu_bar);
+    log.append(format!("[MenuBar] File / View with items; attached={attached}"));
 
     // A status bar along the bottom, carrying the most recent event.
     //
-    // The text is set once here and then updated from the log after the screen is
-    // built, so the bar reflects what actually happened rather than a static string:
-    // a status bar that never changes is indistinguishable from a broken one.
+    // It is created at its designed geometry and then registered with the window layout, so
+    // it follows a resize like the panels do. The log is attached **after** the screen is
+    // built: the start-up burst of entries would otherwise each cost a native write, and the
+    // only one that matters is the newest, which `attach_status` writes once. From then on
+    // every `append` updates the bar — setting the text once after start-up (the old
+    // behaviour) left it stale after the first interaction.
     let status = win.new_status_bar(
         "就绪",
         0,
@@ -1053,9 +1270,9 @@ pub fn run() {
         STATUS_BAR_HEIGHT,
     );
 
-    build_screen(&win, &log);
-
-    status.set_text(&log.latest());
+    let status_id = status.raw_id();
+    build_screen(&win, &log, (status_id != 0).then_some(status_id));
+    log.attach_status(status.clone());
 
     win.show();
     log.append(format!("[Window] shown: id={:?}", win.raw_id()));
@@ -1365,7 +1582,7 @@ mod tests {
         let before: Vec<String> = board.quotes().iter().map(|quote| quote.symbol.clone()).collect();
         assert_eq!(before, vec!["AAPL", "MSFT", "NVDA", "TSLA", "AMZN"]);
 
-        board.set_sort(QuoteSort::Symbol);
+        board.set_sort(QuoteSort::SymbolAscending);
         board.set_sort(QuoteSort::None);
         let restored: Vec<String> =
             board.quotes().iter().map(|quote| quote.symbol.clone()).collect();
@@ -1588,5 +1805,92 @@ mod tests {
         log.append("second");
         assert_eq!(log.latest(), "second");
         assert_eq!(log.snapshot().len(), 2);
+    }
+
+    /// The log keeps a bounded tail rather than growing for the life of the window.
+    #[test]
+    fn the_event_log_keeps_only_its_most_recent_entries() {
+        let log = EventLog::new();
+        for index in 0..EVENT_LOG_CAPACITY + 50 {
+            log.append(format!("event {index}"));
+        }
+        let entries = log.snapshot();
+        assert_eq!(entries.len(), EVENT_LOG_CAPACITY, "the log must stop growing at its cap");
+        assert_eq!(entries.first().map(String::as_str), Some("event 50"));
+        assert_eq!(
+            entries.last().cloned(),
+            Some(format!("event {}", EVENT_LOG_CAPACITY + 49)),
+            "the newest entry must be the last one kept"
+        );
+    }
+
+    /// An appended event reaches the attached status bar — after start-up, not only during it.
+    ///
+    /// `StatusBarHandle` is opaque, so a plain `Label` stands in for the native control: the
+    /// write path (`set_widget_text` through the handle) is the one the demo uses.
+    #[test]
+    fn an_appended_event_reaches_the_attached_status_bar() {
+        use rust_widgets::app::StatusBarHandle;
+        use rust_widgets::widget::runtime;
+        use rust_widgets::widget::Label;
+
+        let log = EventLog::new();
+        log.append("before attach");
+        let id =
+            runtime::register(Box::new(Label::new("就绪".to_string(), Rect::new(0, 0, 240, 20))))
+                .expect("the test thread has a widget registry");
+
+        log.attach_status(StatusBarHandle::from_raw(id));
+        assert_eq!(
+            rust_widgets::get_widget_text(id),
+            "before attach",
+            "attaching must show the newest entry already in the log, not the creation text"
+        );
+
+        log.append("after attach");
+        assert_eq!(
+            rust_widgets::get_widget_text(id),
+            "after attach",
+            "a later event must update the bar"
+        );
+
+        runtime::unregister(id);
+    }
+
+    /// The status row is bottom-anchored and full width at every window size.
+    #[test]
+    fn the_status_row_is_bottom_anchored_at_every_size() {
+        for (width, height) in [(640u32, 480u32), (1440, 900), (2560, 1440)] {
+            let layout = Layout::compute_for(width, height);
+            assert_eq!(layout.status.x, 0, "the status row starts at the left edge");
+            assert_eq!(layout.status.width, width, "the status row spans the window");
+            assert_eq!(layout.status.height, STATUS_BAR_HEIGHT);
+            assert_eq!(
+                layout.status.y + layout.status.height as i32,
+                height as i32,
+                "the status row must end at the bottom edge at {width}x{height}"
+            );
+            for (name, rect) in [("price", layout.price), ("quotes", layout.quotes)] {
+                assert!(
+                    rect.y + rect.height as i32 <= layout.status.y,
+                    "{name} must end above the status row at {width}x{height}"
+                );
+            }
+        }
+    }
+
+    /// The window layout really re-places the status row, not only the seven panels.
+    #[test]
+    fn the_window_layout_repositions_the_status_row() {
+        let layout = PanelLayout {
+            panels: vec![(7, PanelSlot::Status)],
+            log: Arc::new(EventLog::new()),
+            last_applied: std::cell::Cell::new(None),
+        };
+        let mut placed = Vec::new();
+        LayoutTrait::update(&layout, Rect::new(0, 0, 800, 600), &mut |id, rect| {
+            placed.push((id, rect));
+        });
+        assert_eq!(placed, vec![(7, Rect::new(0, 600 - 30, 800, 30))]);
     }
 }

@@ -8,10 +8,12 @@ use std::cell::RefCell;
 
 thread_local! {
     /// Reusable shadow layer buffer. Shadows are drawn per command, so allocating a full layer for
-    /// each one made every shadowed control pay a large zeroed allocation twice (G-11).
+    /// each one made every shadowed control pay a large zeroed allocation twice (G-11). The layer
+    /// is fully rewritten on each use, so a same-sized buffer needs no clear (G-67).
     static SHADOW_LAYER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     /// Reusable horizontal-pass buffer for [`box_blur_layer_rgba8`]. Kept separate from the layer
-    /// so a nested shadow (a layer inside a layer) still has its own scratch.
+    /// so a nested shadow (a layer inside a layer) still has its own scratch, and reused at the
+    /// same size without a zero fill because the pass overwrites every pixel (G-67).
     static SHADOW_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 // The blend-mode enum is defined once in the render layer and reused here rather than
@@ -480,20 +482,33 @@ fn clear_cpu_rgba8(pixels: &mut [u8], color: Rgba8) {
     }
 }
 fn fill_rect_cpu_rgba8(pixels: &mut [u8], width: u32, rect: PixelRect, color: Rgba8) {
+    if width == 0 || rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    // Callers hand this helper a framebuffer-clipped rectangle; an unclipped one must be a
+    // no-op rather than an out-of-range slice index.
+    if rect.x < 0 || rect.y < 0 {
+        return;
+    }
     let row_bytes = width as usize * 4;
     let x_start = rect.x as usize;
     let y_start = rect.y as usize;
-    let x_end = (rect.x as usize) + rect.width as usize;
-    let y_end = (rect.y as usize) + rect.height as usize;
-    for y in y_start..y_end {
-        let row_start = y * row_bytes;
-        for x in x_start..x_end {
-            let offset = row_start + (x * 4);
-            pixels[offset] = color.r;
-            pixels[offset + 1] = color.g;
-            pixels[offset + 2] = color.b;
-            pixels[offset + 3] = color.a;
+    let span = rect.width as usize * 4;
+    let first = y_start * row_bytes + x_start * 4;
+    let first_end = first.checked_add(span).filter(|end| *end <= pixels.len());
+    let Some(first_end) = first_end else { return };
+    // Expand the colour into one row, then copy that row into the following rows. A whole-row
+    // `copy_within` replaces `width` four-byte stores per line with one run copy (G-69).
+    for pixel in pixels[first..first_end].as_chunks_mut::<4>().0 {
+        *pixel = [color.r, color.g, color.b, color.a];
+    }
+    let y_end = y_start + rect.height as usize;
+    for y in (y_start + 1)..y_end {
+        let dst = y * row_bytes + x_start * 4;
+        if dst + span > pixels.len() {
+            return;
         }
+        pixels.copy_within(first..first_end, dst);
     }
 }
 fn stroke_rect_edges(rect: PixelRect, thickness: u32) -> [PixelRect; 4] {
@@ -901,6 +916,25 @@ fn draw_line_cpu_rgba8(
         }
     }
 }
+/// Largest integer whose square is at most `value` (integer square root).
+///
+/// The scanline circle paths need it once per row to turn the implicit
+/// `dx * dx + dy * dy <= r * r` test into an inclusive x interval. `f64::sqrt` supplies the
+/// seed and the two correction loops make the answer exact even when the square root lands a
+/// hair below an integer.
+fn isqrt_i128(value: i128) -> i128 {
+    if value <= 0 {
+        return 0;
+    }
+    let mut root = (value as f64).sqrt() as i128;
+    while (root + 1) * (root + 1) <= value {
+        root += 1;
+    }
+    while root * root > value {
+        root -= 1;
+    }
+    root
+}
 fn fill_circle_cpu_rgba8(
     pixels: &mut [u8],
     fb_width: u32,
@@ -915,24 +949,34 @@ fn fill_circle_cpu_rgba8(
         None => return,
     };
     let mut sink = PixelSink { pixels, width: fb_width, mode: blend };
-    // All circle math in i64: with the radius bounded only by `u32`, `r * r` overflows an
-    // `i32` past ~46k and a debug build panics on degenerate geometry before the clip can
-    // prune the loop.
-    let r = radius as i64;
+    // All circle math in `i128`: `radius` is `u32`, so `r * r` exceeds `i64` near the top of
+    // that range. The clip bounds the visible rows, but the implicit `dx * dx + dy * dy` test
+    // is evaluated with the same widened type.
+    let r = radius as i128;
     let r2 = r * r;
-    let cx = center.0 as i64;
-    let cy = center.1 as i64;
-    let x_start = clip_rect.x.max((cx - r).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
-    let y_start = clip_rect.y.max((cy - r).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
-    let x_end = clip_rect.right().min((cx + r + 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
-    let y_end = clip_rect.bottom().min((cy + r + 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+    let cx = center.0 as i128;
+    let cy = center.1 as i128;
+    let x_start = clip_rect.x.max((cx - r).clamp(i32::MIN as i128, i32::MAX as i128) as i32);
+    let y_start = clip_rect.y.max((cy - r).clamp(i32::MIN as i128, i32::MAX as i128) as i32);
+    let x_end =
+        clip_rect.right().min((cx + r + 1).clamp(i32::MIN as i128, i32::MAX as i128) as i32);
+    let y_end =
+        clip_rect.bottom().min((cy + r + 1).clamp(i32::MIN as i128, i32::MAX as i128) as i32);
+    let x_start = x_start as i128;
+    let x_end = x_end as i128;
+    // One square root per row yields both endpoints of the painted run, so the inner loop is a
+    // contiguous fill instead of a per-pixel distance test (G-68).
     for y in y_start..y_end {
-        for x in x_start..x_end {
-            let dx = x as i64 - cx;
-            let dy = y as i64 - cy;
-            if dx * dx + dy * dy <= r2 {
-                sink.set(x as u32, y as u32, color);
-            }
+        let dy = y as i128 - cy;
+        let remaining = r2 - dy * dy;
+        if remaining < 0 {
+            continue;
+        }
+        let half = isqrt_i128(remaining);
+        let row_x0 = (cx - half).max(x_start);
+        let row_x1 = (cx + half).min(x_end - 1);
+        for x in row_x0..=row_x1 {
+            sink.set(x as u32, y as u32, color);
         }
     }
 }
@@ -951,26 +995,55 @@ fn draw_circle_cpu_rgba8(
         None => return,
     };
     let mut sink = PixelSink { pixels, width: fb_width, mode: blend };
-    let r = radius as i64;
-    let outer = r + width as i64;
-    let inner = (r - width as i64).max(0);
+    let r = radius as i128;
+    let outer = r + width as i128;
+    let inner = (r - width as i128).max(0);
     let outer_r2 = outer * outer;
     let inner_r2 = inner * inner;
-    let cx = center.0 as i64;
-    let cy = center.1 as i64;
-    let x_start = clip_rect.x.max((cx - outer).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
-    let y_start = clip_rect.y.max((cy - outer).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+    let cx = center.0 as i128;
+    let cy = center.1 as i128;
+    let x_start = clip_rect.x.max((cx - outer).clamp(i32::MIN as i128, i32::MAX as i128) as i32);
+    let y_start = clip_rect.y.max((cy - outer).clamp(i32::MIN as i128, i32::MAX as i128) as i32);
     let x_end =
-        clip_rect.right().min((cx + outer + 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+        clip_rect.right().min((cx + outer + 1).clamp(i32::MIN as i128, i32::MAX as i128) as i32);
     let y_end =
-        clip_rect.bottom().min((cy + outer + 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+        clip_rect.bottom().min((cy + outer + 1).clamp(i32::MIN as i128, i32::MAX as i128) as i32);
+    let x_start = x_start as i128;
+    let x_end = x_end as i128;
     for y in y_start..y_end {
-        for x in x_start..x_end {
-            let dx = x as i64 - cx;
-            let dy = y as i64 - cy;
-            let d2 = dx * dx + dy * dy;
-            if d2 <= outer_r2 && d2 >= inner_r2 {
+        let dy = y as i128 - cy;
+        let dy2 = dy * dy;
+        let remaining_outer = outer_r2 - dy2;
+        if remaining_outer < 0 {
+            continue;
+        }
+        let outer_half = isqrt_i128(remaining_outer);
+        let row_x0 = (cx - outer_half).max(x_start);
+        let row_x1 = (cx + outer_half).min(x_end - 1);
+        if row_x0 > row_x1 {
+            continue;
+        }
+        // The hole is the row of pixels with `dx * dx < inner_r2 - dy * dy`. For integer
+        // `dx` that is `dx * dx <= remaining_inner - 1`, whose largest solution is
+        // `isqrt(remaining_inner - 1)` (G-68).
+        let remaining_inner = inner_r2 - dy2;
+        if remaining_inner <= 0 {
+            for x in row_x0..=row_x1 {
                 sink.set(x as u32, y as u32, color);
+            }
+        } else {
+            let inner_excl = isqrt_i128(remaining_inner - 1);
+            let left_hi = (cx - inner_excl - 1).min(row_x1);
+            if left_hi >= row_x0 {
+                for x in row_x0..=left_hi {
+                    sink.set(x as u32, y as u32, color);
+                }
+            }
+            let right_lo = (cx + inner_excl + 1).max(row_x0);
+            if right_lo <= row_x1 {
+                for x in right_lo..=row_x1 {
+                    sink.set(x as u32, y as u32, color);
+                }
             }
         }
     }
@@ -1195,6 +1268,22 @@ fn draw_path_non_zero_cpu_rgba8(
     }
 }
 
+/// Selects the nearest colour stop of `gradient_data` for a position `t` in `0.0..=1.0`.
+///
+/// Stops are evenly spaced and picked by their left edge, exactly as the previous per-pixel
+/// expression did; only the arithmetic that produces `t` changed (G-68).
+#[inline]
+fn gradient_stop(gradient_data: &[u8], stops: usize, t: f32) -> Rgba8 {
+    let idx = ((stops as f32 - 1.0) * t.clamp(0.0, 1.0)).clamp(0.0, (stops - 1) as f32) as usize;
+    let base = idx * 4;
+    Rgba8 {
+        r: gradient_data[base],
+        g: gradient_data[base + 1],
+        b: gradient_data[base + 2],
+        a: gradient_data[base + 3],
+    }
+}
+
 fn draw_gradient_cpu_rgba8(
     pixels: &mut [u8],
     fb_width: u32,
@@ -1219,33 +1308,34 @@ fn draw_gradient_cpu_rgba8(
     let x_end = clip_rect.right().min(rect.right());
     let y_end = clip_rect.bottom().min(rect.bottom());
 
-    // The span the ramp is spread over, and how far along it a coordinate is.
-    // Both are in `f64` because the ratio is then scaled by the stop count; doing
-    // it in `f32` loses the low bits on wide rectangles.
-    let span = match axis {
-        GradientAxis::Vertical => (rect.height as f64 - 1.0).max(1.0),
-        GradientAxis::Horizontal => (rect.width as f64 - 1.0).max(1.0),
+    // The span the ramp is spread over, and the reciprocal that replaces a per-pixel division.
+    // `f32` is enough for screen-sized ramps and halves the arithmetic width (G-68).
+    let (span, origin) = match axis {
+        GradientAxis::Vertical => ((rect.height as f32 - 1.0).max(1.0), rect.y as f32),
+        GradientAxis::Horizontal => ((rect.width as f32 - 1.0).max(1.0), rect.x as f32),
     };
-    let origin = match axis {
-        GradientAxis::Vertical => rect.y as f64,
-        GradientAxis::Horizontal => rect.x as f64,
-    };
+    let inv_span = 1.0 / span;
 
     for y in y_start..y_end {
-        for x in x_start..x_end {
-            let coordinate = match axis {
-                GradientAxis::Vertical => y as f64,
-                GradientAxis::Horizontal => x as f64,
-            };
-            let t = ((coordinate - origin) / span).clamp(0.0, 1.0);
-            let idx = ((stops as f64 - 1.0) * t).clamp(0.0, (stops - 1) as f64) as usize;
-            let color = Rgba8 {
-                r: gradient_data[idx * 4],
-                g: gradient_data[idx * 4 + 1],
-                b: gradient_data[idx * 4 + 2],
-                a: gradient_data[idx * 4 + 3],
-            };
-            blend_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color, blend);
+        match axis {
+            GradientAxis::Vertical => {
+                // A vertical ramp is constant across the row: one stop lookup serves the whole run.
+                let t = ((y as f32 - origin) * inv_span).clamp(0.0, 1.0);
+                let color = gradient_stop(gradient_data, stops, t);
+                for x in x_start..x_end {
+                    blend_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color, blend);
+                }
+            }
+            GradientAxis::Horizontal => {
+                // The reciprocal is applied per pixel instead of dividing by the span; the
+                // product is bounded per pixel, so it does not accumulate rounding like a
+                // running sum would (G-68).
+                for x in x_start..x_end {
+                    let t = ((x as f32 - origin) * inv_span).clamp(0.0, 1.0);
+                    let color = gradient_stop(gradient_data, stops, t);
+                    blend_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color, blend);
+                }
+            }
         }
     }
 }
@@ -1288,23 +1378,21 @@ fn draw_radial_gradient_cpu_rgba8(
     let x_end = clip_rect.right().min(rect.right());
     let y_end = clip_rect.bottom().min(rect.bottom());
 
-    let centre_x = rect.x as f64 + (rect.width as f64 - 1.0) / 2.0;
-    let centre_y = rect.y as f64 + (rect.height as f64 - 1.0) / 2.0;
+    let centre_x = rect.x as f32 + (rect.width as f32 - 1.0) / 2.0;
+    let centre_y = rect.y as f32 + (rect.height as f32 - 1.0) / 2.0;
     // Nearest edge, so the gradient fits inside the rectangle on both axes.
-    let radius = ((rect.width as f64).min(rect.height as f64) / 2.0).max(1.0);
+    let radius = ((rect.width as f32).min(rect.height as f32) / 2.0).max(1.0);
+    let inv_radius = 1.0 / radius;
 
     for y in y_start..y_end {
+        // `dy` is constant for the row; only `dx` changes, so one `dy * dy` serves the row.
+        let dy = y as f32 - centre_y;
+        let dy2 = dy * dy;
         for x in x_start..x_end {
-            let dx = x as f64 - centre_x;
-            let dy = y as f64 - centre_y;
-            let t = ((dx * dx + dy * dy).sqrt() / radius).clamp(0.0, 1.0);
-            let idx = ((stops as f64 - 1.0) * t).clamp(0.0, (stops - 1) as f64) as usize;
-            let color = Rgba8 {
-                r: gradient_data[idx * 4],
-                g: gradient_data[idx * 4 + 1],
-                b: gradient_data[idx * 4 + 2],
-                a: gradient_data[idx * 4 + 3],
-            };
+            let dx = x as f32 - centre_x;
+            // The per-pixel division became a multiply by the reciprocal (G-68).
+            let t = ((dx * dx + dy2).sqrt() * inv_radius).clamp(0.0, 1.0);
+            let color = gradient_stop(gradient_data, stops, t);
             blend_pixel_cpu_rgba8(pixels, fb_width, x as u32, y as u32, color, blend);
         }
     }
@@ -1572,12 +1660,22 @@ fn fill_rect_cpu_rgba8_blended(
         fill_rect_cpu_rgba8(pixels, width, rect, color);
         return;
     }
-    for y in rect.y..rect.bottom() {
-        for x in rect.x..rect.right() {
-            if x < 0 || y < 0 {
-                continue;
-            }
-            blend_pixel_cpu_rgba8(pixels, width, x as u32, y as u32, color, mode);
+    if width == 0 {
+        return;
+    }
+    // Intersect the source rectangle with the canvas once. The inner loop then runs entirely
+    // inside the framebuffer, so the row base and the row length are its only invariants and no
+    // per-pixel bounds or sign test is needed (G-69).
+    let height = (pixels.len() / (width as usize * 4)) as u32;
+    let Some(draw) = rect.intersect(PixelRect { x: 0, y: 0, width, height }) else { return };
+    let row_bytes = width as usize * 4;
+    let span = draw.width as usize * 4;
+    for y in draw.y..draw.bottom() {
+        let offset = y as usize * row_bytes + draw.x as usize * 4;
+        for pixel in pixels[offset..offset + span].as_chunks_mut::<4>().0 {
+            let dest = Rgba8 { r: pixel[0], g: pixel[1], b: pixel[2], a: pixel[3] };
+            let blended = blend_channels(color, dest, mode);
+            *pixel = [blended.r, blended.g, blended.b, blended.a];
         }
     }
 }
@@ -1636,20 +1734,24 @@ fn box_shadow_cpu_rgba8(
     // Independent, transparent shadow layer, retained by capacity between calls.
     SHADOW_LAYER.with(|cell| {
         let mut layer = cell.borrow_mut();
-        layer.clear();
-        layer.resize(lw * lh * 4, 0);
-        // Fill the body (clamped to the layer) with the shadow colour.
+        let needed = lw * lh * 4;
+        if layer.len() != needed {
+            layer.resize(needed, 0);
+        }
+        // Fill the body and clear the surrounding ring in one pass. Every byte of the layer is
+        // written below, so the previous `clear` + `resize` cost a second full memset for nothing
+        // (G-67).
         let bx0 = (visible.x as i64 - lx0 as i64).max(0) as usize;
         let by0 = (visible.y as i64 - ly0 as i64).max(0) as usize;
         let bx1 = ((visible.right() as i64 - lx0 as i64).clamp(0, lw as i64)) as usize;
         let by1 = ((visible.bottom() as i64 - ly0 as i64).clamp(0, lh as i64)) as usize;
-        for y in by0..by1 {
-            for x in bx0..bx1 {
+        let body = [color.r, color.g, color.b, color.a];
+        for y in 0..lh {
+            let in_body_y = y >= by0 && y < by1;
+            for x in 0..lw {
                 let o = (y * lw + x) * 4;
-                layer[o] = color.r;
-                layer[o + 1] = color.g;
-                layer[o + 2] = color.b;
-                layer[o + 3] = color.a;
+                let pixel = if in_body_y && x >= bx0 && x < bx1 { body } else { [0, 0, 0, 0] };
+                layer[o..o + 4].copy_from_slice(&pixel);
             }
         }
 
@@ -1691,54 +1793,91 @@ fn box_shadow_cpu_rgba8(
 /// Box-blurs an RGBA buffer in place using a separable moving average.
 ///
 /// A squared kernel rather than a true Gaussian: it matches the software
-/// backend, and being separable (two 1-D passes) keeps it O(radius) per pixel
-/// instead of O(radius²). The buffer is a self-contained layer, so the blur
-/// never reads the framebuffer (N-S-63).
+/// backend, and being separable (two 1-D passes) keeps it O(1) per pixel instead of
+/// O(radius) (G-67). The buffer is a self-contained layer, so the blur never reads the
+/// framebuffer (N-S-63).
 fn box_blur_layer_rgba8(layer: &mut [u8], width: usize, height: usize, radius: usize) {
     if radius == 0 || width == 0 || height == 0 {
         return;
     }
     SHADOW_SCRATCH.with(|cell| {
         let mut scratch = cell.borrow_mut();
-        scratch.clear();
-        scratch.resize(layer.len(), 0);
-        // Horizontal pass: `layer` -> `scratch`.
+        let needed = layer.len();
+        // The horizontal pass overwrites every pixel of the scratch, so a buffer that already
+        // has the right length needs neither a resize nor a zero fill (G-67).
+        if scratch.len() != needed {
+            scratch.resize(needed, 0);
+        }
+        // Horizontal pass: `layer` -> `scratch`. The window starts as `[0, radius]` (clamped)
+        // and slides right, adding the pixel that enters and removing the one that leaves.
+        // Signed accumulators: the leaving pixel can be brighter than the entering one, so an
+        // unsigned sum would underflow where the window stops growing and starts sliding.
+        let half = radius;
         for y in 0..height {
-            for x in 0..width {
-                let lo = x.saturating_sub(radius);
-                let hi = (x + radius).min(width - 1);
-                let mut sums = [0u32; 4];
-                let mut count = 0u32;
-                for kx in lo..=hi {
-                    let i = (y * width + kx) * 4;
-                    for c in 0..4 {
-                        sums[c] += layer[i + c] as u32;
-                    }
-                    count += 1;
-                }
-                let di = (y * width + x) * 4;
+            let row = y * width;
+            let mut sums = [0i64; 4];
+            for kx in 0..=half.min(width - 1) {
+                let i = (row + kx) * 4;
                 for c in 0..4 {
-                    scratch[di + c] = (sums[c] / count.max(1)) as u8;
+                    sums[c] += layer[i + c] as i64;
+                }
+            }
+            for x in 0..width {
+                let lo = x.saturating_sub(half);
+                let hi = x.saturating_add(half).min(width - 1);
+                let count = (hi - lo + 1) as i64;
+                let di = (row + x) * 4;
+                for c in 0..4 {
+                    scratch[di + c] = (sums[c] / count) as u8;
+                }
+                if x + 1 == width {
+                    break;
+                }
+                if x.saturating_add(1).saturating_add(half) < width {
+                    let entering = (row + x + 1 + half) * 4;
+                    for c in 0..4 {
+                        sums[c] += layer[entering + c] as i64;
+                    }
+                }
+                if x >= half {
+                    let leaving = (row + x - half) * 4;
+                    for c in 0..4 {
+                        sums[c] -= layer[leaving + c] as i64;
+                    }
                 }
             }
         }
-        // Vertical pass: `scratch` -> `layer`.
+        // Vertical pass: `scratch` -> `layer`, with the same sliding window down each column.
         for x in 0..width {
-            for y in 0..height {
-                let lo = y.saturating_sub(radius);
-                let hi = (y + radius).min(height - 1);
-                let mut sums = [0u32; 4];
-                let mut count = 0u32;
-                for ky in lo..=hi {
-                    let i = (ky * width + x) * 4;
-                    for c in 0..4 {
-                        sums[c] += scratch[i + c] as u32;
-                    }
-                    count += 1;
+            let mut sums = [0i64; 4];
+            for ky in 0..=half.min(height - 1) {
+                let i = (ky * width + x) * 4;
+                for c in 0..4 {
+                    sums[c] += scratch[i + c] as i64;
                 }
+            }
+            for y in 0..height {
+                let lo = y.saturating_sub(half);
+                let hi = y.saturating_add(half).min(height - 1);
+                let count = (hi - lo + 1) as i64;
                 let di = (y * width + x) * 4;
                 for c in 0..4 {
-                    layer[di + c] = (sums[c] / count.max(1)) as u8;
+                    layer[di + c] = (sums[c] / count) as u8;
+                }
+                if y + 1 == height {
+                    break;
+                }
+                if y.saturating_add(1).saturating_add(half) < height {
+                    let entering = ((y + 1 + half) * width + x) * 4;
+                    for c in 0..4 {
+                        sums[c] += scratch[entering + c] as i64;
+                    }
+                }
+                if y >= half {
+                    let leaving = ((y - half) * width + x) * 4;
+                    for c in 0..4 {
+                        sums[c] -= scratch[leaving + c] as i64;
+                    }
                 }
             }
         }

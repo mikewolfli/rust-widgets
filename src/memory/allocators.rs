@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::{vec, Box, Vec};
+use crate::compat::{Box, Vec};
 use alloc::alloc::{alloc, dealloc};
 use core::alloc::Layout;
+use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 
 /// Counters describing how much memory an application has requested and how well
@@ -248,7 +249,7 @@ impl Drop for ArenaAllocator {
 /// accessors, so moving it between threads transfers the sole handle.
 unsafe impl Send for ArenaAllocator {}
 
-/// A bump allocator with LIFO marker support, backed by a heap `Vec<u8>`.
+/// A bump allocator with LIFO marker support, backed by a heap byte buffer.
 ///
 /// Like [`ArenaAllocator`] this is a general scratch allocator, not a pool: it
 /// hands out raw uninitialised bytes and never reuses a region's contents. Its
@@ -257,18 +258,27 @@ unsafe impl Send for ArenaAllocator {}
 /// thread-safe on its own.
 #[derive(Debug)]
 pub struct StackAllocator {
-    buffer: Vec<u8>,
+    buffer: Vec<MaybeUninit<u8>>,
     offset: usize,
     marks: Vec<usize>,
 }
 
 impl StackAllocator {
-    /// Creates an allocator with a zero-initialised `capacity`-byte buffer.
+    /// Creates an allocator with a `capacity`-byte buffer.
     ///
-    /// The buffer is allocated immediately and zero-filled, so the cost is paid up
-    /// front even if nothing is allocated from it.
+    /// The buffer is allocated immediately but **not** initialised: [`Self::allocate`]
+    /// returns raw bytes that the caller is expected to write before reading, so
+    /// zero-filling the whole arena up front was pure cost (G-76). Debug builds fill the
+    /// bytes with a fixed pattern so a read-before-write is visible; release builds
+    /// perform no write at all.
     pub fn new(capacity: usize) -> Self {
-        Self { buffer: vec![0u8; capacity], offset: 0, marks: Vec::new() }
+        // `MaybeUninit` keeps the uninitialised buffer sound: a `Vec<MaybeUninit<u8>>` may
+        // expose a length over bytes that were never written, which a `Vec<u8>` may not.
+        let mut buffer: Vec<MaybeUninit<u8>> = Vec::new();
+        buffer.resize_with(capacity, MaybeUninit::uninit);
+        #[cfg(debug_assertions)]
+        buffer.fill(MaybeUninit::new(0xCD));
+        Self { buffer, offset: 0, marks: Vec::new() }
     }
 
     /// Allocates `size` bytes at the given `align` boundary (in bytes) and returns
@@ -286,7 +296,7 @@ impl StackAllocator {
         if !align.is_power_of_two() {
             return None;
         }
-        // Align the *absolute* address: a `Vec<u8>` guarantees only byte alignment,
+        // Align the *absolute* address: a `Vec` guarantees only byte alignment,
         // so masking the offset alone would leave the base's own misalignment in the
         // returned pointer. Fold the base address into the padding computation.
         let base = self.buffer.as_mut_ptr() as usize;
@@ -303,7 +313,7 @@ impl StackAllocator {
         // returned pointer is correctly aligned. The Vec's buffer is guaranteed to
         // be valid until the Vec is dropped (or reallocated, which never happens here
         // because the buffer is fixed at construction).
-        Some(unsafe { self.buffer.as_mut_ptr().add(aligned_offset) })
+        Some(unsafe { self.buffer.as_mut_ptr().add(aligned_offset) as *mut u8 })
     }
 
     /// Records the current bump position on an internal stack.
@@ -624,6 +634,20 @@ mod tests {
         assert!(ptr1.is_some());
         allocator.pop_to_marker();
         assert_eq!(allocator.used(), 0);
+    }
+
+    /// Debug builds fill the arena with a fixed pattern instead of zeros (G-76): the
+    /// constructor no longer zero-fills, and the pattern makes a read-before-write
+    /// visible. Release builds write nothing at all, so this assertion is debug-only.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_fresh_stack_allocator_is_filled_with_the_debug_pattern() {
+        let mut stack = StackAllocator::new(8);
+        let ptr = stack.allocate(8, 1).expect("the request fits");
+        // SAFETY: the debug constructor wrote the pattern over the whole buffer, so these
+        // eight bytes are initialised and live for as long as the allocator.
+        let bytes = unsafe { core::slice::from_raw_parts(ptr, 8) };
+        assert!(bytes.iter().all(|&byte| byte == 0xCD), "debug fill marks unwritten bytes");
     }
 
     /// Every allocation must land on an address that is a multiple of the

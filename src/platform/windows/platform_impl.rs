@@ -23,33 +23,58 @@ use crate::platform::windows::types::*;
 use crate::platform::DropEvent;
 use std::sync::atomic::Ordering;
 
-/// Re-reads a slow Windows environment fact at most once per [`ENVIRONMENT_TTL`].
+/// Re-reads a slow Windows environment fact at most once per the one-second environment TTL.
 ///
 /// `drive_frame` refreshes the style environment every frame, and on Windows each fact is a
 /// registry or GDI transaction: at 60 fps that is 120 registry reads a second for values a user
 /// changes on the order of days. The cache trades a one-second propagation delay for a settings
 /// change against removing that steady cost — the same shape (and TTL) the monitoring probes in
 /// `os_probes` use, and far below the rate at which anyone flips a system theme.
+///
+/// # What is cached, and when it is invalidated
+///
+/// Every slow environment fact this backend answers goes through this wrapper, each with its own
+/// slot:
+///
+/// | fact | slot | source |
+/// |---|---|---|
+/// | `text_scale` | [`TEXT_SCALE_CACHE`] | `Software\\Microsoft\\Accessibility` registry value |
+/// | `system_theme` | [`SYSTEM_THEME_CACHE`] | `Themes\\Personalize` registry value |
+/// | `dpi_scale_factor` | [`DPI_SCALE_CACHE`] | `GetDeviceCaps(LOGPIXELSX)` |
+/// | `high_contrast` | [`HIGH_CONTRAST_CACHE`] | `SystemParametersInfoW(SPI_GETHIGHCONTRAST)` |
+/// | `reduce_motion` | [`REDUCE_MOTION_CACHE`] | `SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION)` |
+/// | `system_locale` | [`SYSTEM_LOCALE_CACHE`] | `GetUserDefaultLocaleName` |
+///
+/// **Invalidation trigger: TTL expiry only.** A slot is re-read when its one-second window has
+/// elapsed, so a settings change becomes visible within that window at the latest. There
+/// is deliberately no push-based clear: `WM_SETTINGCHANGE` is not routed into this backend yet
+/// (the notification-source gap tracked as issue P-201), and this module must not claim a
+/// notification it does not receive. When that hook is added it must clear these slots, which is
+/// why each slot is a named static rather than a closure-local `OnceLock`.
 #[cfg(target_os = "windows")]
 fn cached_environment_fact<T: Copy>(
-    cache: &std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, T)>>>,
+    cache: &'static EnvironmentFactCache<T>,
     read: impl FnOnce() -> T,
 ) -> T {
     const ENVIRONMENT_TTL: std::time::Duration = std::time::Duration::from_secs(1);
-    if let Some(cache) = cache.get() {
-        if let Ok(guard) = cache.lock() {
-            if let Some((sampled_at, value)) = *guard {
-                if sampled_at.elapsed() < ENVIRONMENT_TTL {
-                    return value;
-                }
+    // `get_or_init`, not `get`: a `OnceLock` that nobody initialises answers `None` forever, so
+    // the earlier version of this wrapper read every slot, found it absent, ran the read and then
+    // dropped the value — a TTL cache that never cached, which is why the registry facts below
+    // were still being re-read on every style-environment poll. Initialising the slot here is what
+    // makes the TTL real.
+    let slot = cache.get_or_init(|| std::sync::Mutex::new(None));
+    if let Ok(guard) = slot.lock() {
+        if let Some((sampled_at, value)) = *guard {
+            if sampled_at.elapsed() < ENVIRONMENT_TTL {
+                return value;
             }
         }
     }
+    // The read runs with no lock held: a registry or `SystemParametersInfoW` transaction must not
+    // serialise every thread that asks for an environment fact.
     let value = read();
-    if let Some(cache) = cache.get() {
-        if let Ok(mut guard) = cache.lock() {
-            *guard = Some((std::time::Instant::now(), value));
-        }
+    if let Ok(mut guard) = slot.lock() {
+        *guard = Some((std::time::Instant::now(), value));
     }
     value
 }
@@ -64,6 +89,12 @@ static TEXT_SCALE_CACHE: EnvironmentFactCache<f32> = std::sync::OnceLock::new();
 static SYSTEM_THEME_CACHE: EnvironmentFactCache<Option<bool>> = std::sync::OnceLock::new();
 #[cfg(target_os = "windows")]
 static DPI_SCALE_CACHE: EnvironmentFactCache<f32> = std::sync::OnceLock::new();
+#[cfg(target_os = "windows")]
+static HIGH_CONTRAST_CACHE: EnvironmentFactCache<Option<bool>> = std::sync::OnceLock::new();
+#[cfg(target_os = "windows")]
+static REDUCE_MOTION_CACHE: EnvironmentFactCache<Option<bool>> = std::sync::OnceLock::new();
+#[cfg(target_os = "windows")]
+static SYSTEM_LOCALE_CACHE: EnvironmentFactCache<Option<&'static str>> = std::sync::OnceLock::new();
 // Only `set_widget_visible`'s `widgets_unstripped` body shows or hides a window, so a stripped
 // profile would import these and never use them.
 #[cfg(all(target_os = "windows", widgets_unstripped))]
@@ -303,10 +334,12 @@ impl Platform for WindowsPlatform {
             };
             if let Some(hwnd) = self.get_native_handle(widget_id) {
                 match flag {
+// SAFETY: `hwnd` was resolved from the live widget map above and the call only changes window state.
                     WindowStateFlag::Maximized => unsafe {
                         let cmd = if on { SW_MAXIMIZE } else { SW_RESTORE };
                         ShowWindow(hwnd, cmd);
                     },
+// SAFETY: `hwnd` was resolved from the live widget map above and the call only changes window state.
                     WindowStateFlag::Minimized => unsafe {
                         let cmd = if on { SW_MINIMIZE } else { SW_RESTORE };
                         ShowWindow(hwnd, cmd);
@@ -315,6 +348,7 @@ impl Platform for WindowsPlatform {
                         // Win32 has no "full screen" window flag: it is achieved by
                         // dropping the frame styles and filling the monitor. Reapply
                         // the styles to leave it, which is what the WM would do.
+// SAFETY: `hwnd` is live; the style read/write pair is the documented way to toggle a frame.
                         unsafe {
                             let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                             let frame =
@@ -324,6 +358,7 @@ impl Platform for WindowsPlatform {
                             ShowWindow(hwnd, SW_MAXIMIZE);
                         }
                     }
+// SAFETY: `hwnd` is live; the style read/write pair is the documented way to toggle a frame.
                     WindowStateFlag::Resizable => unsafe {
                         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                         let new_style = if on {
@@ -333,6 +368,7 @@ impl Platform for WindowsPlatform {
                         };
                         SetWindowLongW(hwnd, GWL_STYLE, new_style as i32);
                     },
+// SAFETY: `hwnd` is live; the style read/write pair is the documented way to toggle a frame.
                     WindowStateFlag::Decorated => unsafe {
                         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                         let decorative = WS_CAPTION | WS_THICKFRAME;
@@ -358,18 +394,23 @@ impl Platform for WindowsPlatform {
             };
             if let Some(hwnd) = self.get_native_handle(widget_id) {
                 let value = match flag {
+// SAFETY: `hwnd` was resolved from the live widget map above; these are read-only queries.
                     WindowStateFlag::Maximized => unsafe { IsZoomed(hwnd) != 0 },
+// SAFETY: `hwnd` was resolved from the live widget map above; these are read-only queries.
                     WindowStateFlag::Minimized => unsafe { IsIconic(hwnd) != 0 },
                     // Full screen is "no frame styles left", the inverse of the
                     // Decorated computation below.
+// SAFETY: `hwnd` was resolved from the live widget map above; the style query is read-only.
                     WindowStateFlag::Fullscreen => unsafe {
                         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                         style & (WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) == 0
                     },
+// SAFETY: `hwnd` was resolved from the live widget map above; the style query is read-only.
                     WindowStateFlag::Resizable => unsafe {
                         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                         style & (WS_THICKFRAME | WS_MAXIMIZEBOX) != 0
                     },
+// SAFETY: `hwnd` was resolved from the live widget map above; the style query is read-only.
                     WindowStateFlag::Decorated => unsafe {
                         let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
                         style & (WS_CAPTION | WS_THICKFRAME) != 0
@@ -398,6 +439,7 @@ impl Platform for WindowsPlatform {
         {
             use winapi::um::winuser::{SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER};
             if let Some(hwnd) = self.get_native_handle(widget_id) {
+// SAFETY: `hwnd` is live; `SetWindowPos` only repositions that window.
                 unsafe {
                     SetWindowPos(
                         hwnd,
@@ -455,6 +497,7 @@ impl Platform for WindowsPlatform {
                 }
                 // Set both the small (taskbar) and big (alt-tab) icons, which is
                 // what the shell reads.
+// SAFETY: `hwnd` is live and `icon` is the handle produced by the load call just above.
                 unsafe {
                     SendMessageW(hwnd, WM_SETICON, ICON_SMALL as usize, icon as isize);
                     SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, icon as isize);
@@ -644,29 +687,36 @@ impl Platform for WindowsPlatform {
     ///
     /// `HIGHCONTRASTW.dwFlags & HCF_HIGHCONTRASTON` is the OS's own answer, the same one
     /// `SystemParametersInfoW` reports to every application. `None` when the call fails.
+    ///
+    /// Cached for the shared one-second environment TTL: this is read on every style-environment
+    /// poll, and `SystemParametersInfoW` is a synchronous system call. The TTL expiry is the only
+    /// invalidation trigger today (see `cached_environment_fact`).
     #[cfg(target_os = "windows")]
     fn high_contrast(&self) -> Option<bool> {
         use winapi::shared::minwindef::DWORD;
         use winapi::um::winuser::{
             SystemParametersInfoW, HCF_HIGHCONTRASTON, HIGHCONTRASTW, SPI_GETHIGHCONTRAST,
         };
-        // SAFETY: `HIGHCONTRASTW` is a plain C struct sized by `cbSize`; the call writes only into
-        // the local value, and the string pointer is left null because this query does not use it.
-        unsafe {
-            let mut contrast: HIGHCONTRASTW = std::mem::zeroed();
-            contrast.cbSize = std::mem::size_of::<HIGHCONTRASTW>() as u32;
-            let ok = SystemParametersInfoW(
-                SPI_GETHIGHCONTRAST,
-                contrast.cbSize,
-                &mut contrast as *mut HIGHCONTRASTW as *mut _,
-                0,
-            );
-            if ok == 0 {
-                return None;
+        cached_environment_fact(&HIGH_CONTRAST_CACHE, || {
+            // SAFETY: `HIGHCONTRASTW` is a plain C struct sized by `cbSize`; the call writes only
+            // into the local value, and the string pointer is left null because this query does
+            // not use it.
+            unsafe {
+                let mut contrast: HIGHCONTRASTW = std::mem::zeroed();
+                contrast.cbSize = std::mem::size_of::<HIGHCONTRASTW>() as u32;
+                let ok = SystemParametersInfoW(
+                    SPI_GETHIGHCONTRAST,
+                    contrast.cbSize,
+                    &mut contrast as *mut HIGHCONTRASTW as *mut _,
+                    0,
+                );
+                if ok == 0 {
+                    return None;
+                }
+                let flags: DWORD = contrast.dwFlags;
+                Some(flags & HCF_HIGHCONTRASTON != 0)
             }
-            let flags: DWORD = contrast.dwFlags;
-            Some(flags & HCF_HIGHCONTRASTON != 0)
-        }
+        })
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -678,24 +728,30 @@ impl Platform for WindowsPlatform {
     ///
     /// Windows stores this as a `BOOL`: `0` means animations are disabled, which is what the
     /// accessibility "Show animations in Windows" switch writes. `None` when the query fails.
+    ///
+    /// Cached for the shared one-second environment TTL; see `cached_environment_fact` for the
+    /// invalidation trigger.
     #[cfg(target_os = "windows")]
     fn reduce_motion(&self) -> Option<bool> {
         use winapi::shared::minwindef::BOOL;
         use winapi::um::winuser::{SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION};
-        // SAFETY: the out-parameter is a local `BOOL`, which is exactly what this action writes.
-        unsafe {
-            let mut animations: BOOL = 1;
-            let ok = SystemParametersInfoW(
-                SPI_GETCLIENTAREAANIMATION,
-                0,
-                &mut animations as *mut BOOL as *mut _,
-                0,
-            );
-            if ok == 0 {
-                return None;
+        cached_environment_fact(&REDUCE_MOTION_CACHE, || {
+            // SAFETY: the out-parameter is a local `BOOL`, which is exactly what this action
+            // writes.
+            unsafe {
+                let mut animations: BOOL = 1;
+                let ok = SystemParametersInfoW(
+                    SPI_GETCLIENTAREAANIMATION,
+                    0,
+                    &mut animations as *mut BOOL as *mut _,
+                    0,
+                );
+                if ok == 0 {
+                    return None;
+                }
+                Some(animations == 0)
             }
-            Some(animations == 0)
-        }
+        })
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -707,23 +763,30 @@ impl Platform for WindowsPlatform {
     ///
     /// The API writes a BCP-47-ish tag such as `en-US` into the caller's buffer. An empty answer or
     /// a failure is `None`, never a fabricated `en-US`.
+    ///
+    /// Cached for the shared one-second environment TTL. `GetUserDefaultLocaleName` and the
+    /// interner's global lock were both paid on every style-environment poll; the interned tag is a
+    /// process-lifetime `&'static str`, so a cached hit hands back the same pointer the uncached
+    /// call would have. See `cached_environment_fact` for the invalidation trigger.
     #[cfg(target_os = "windows")]
     fn system_locale(&self) -> Option<&'static str> {
         use winapi::um::winnls::GetUserDefaultLocaleName;
         // `LOCALE_NAME_MAX_LENGTH` from `winnls.h`; the API documents this as the required size.
         const LOCALE_NAME_MAX_LENGTH: usize = 85;
-        // SAFETY: the buffer is owned by this stack frame and is exactly the documented size. The
-        // returned length includes the NUL and is bounded by the buffer size.
-        unsafe {
-            let mut buffer = [0u16; LOCALE_NAME_MAX_LENGTH];
-            let written = GetUserDefaultLocaleName(buffer.as_mut_ptr(), buffer.len() as i32);
-            if written <= 0 {
-                return None;
+        cached_environment_fact(&SYSTEM_LOCALE_CACHE, || {
+            // SAFETY: the buffer is owned by this closure frame and is exactly the documented size.
+            // The returned length includes the NUL and is bounded by the buffer size.
+            unsafe {
+                let mut buffer = [0u16; LOCALE_NAME_MAX_LENGTH];
+                let written = GetUserDefaultLocaleName(buffer.as_mut_ptr(), buffer.len() as i32);
+                if written <= 0 {
+                    return None;
+                }
+                let length = (written as usize - 1).min(buffer.len());
+                let tag = String::from_utf16_lossy(&buffer[..length]);
+                crate::platform::locale::intern(Some(tag))
             }
-            let length = (written as usize - 1).min(buffer.len());
-            let tag = String::from_utf16_lossy(&buffer[..length]);
-            crate::platform::locale::intern(Some(tag))
-        }
+        })
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -732,13 +795,13 @@ impl Platform for WindowsPlatform {
     }
 
     /// A revision of the environment facts, derived from their current values.
+    ///
+    /// Delegated to [`crate::platform::locale::environment_revision`], the shared accessor, so the
+    /// hashed fact set is the one the style snapshot consumes. Spelling the four facts out here is
+    /// what let an accent-colour or reduced-transparency change go unnoticed for the life of the
+    /// process (P-03), and what made adding a fact an eight-file edit (P-06).
     fn environment_generation(&self) -> u64 {
-        crate::platform::locale::generation_hash(
-            self.system_theme(),
-            self.high_contrast(),
-            self.reduce_motion(),
-            self.system_locale(),
-        )
+        crate::platform::locale::environment_revision(self)
     }
 
     /// The installed font families from DirectWrite, one entry per family.
@@ -980,19 +1043,20 @@ impl Platform for WindowsPlatform {
     /// A caller reaches here with either the **platform** id `create_window` returned (what a
     /// `WindowHandle` carries) or the **widget-registry** id of the window itself, depending
     /// on which layer it sits in. [`super::window_hwnd_for_widget_id`] resolves both, and an
-    /// id that names no window this backend owns is ignored rather than reported: the trait
-    /// returns `()`, and most ids arriving here are ordinary controls for which the library's
-    /// own `visible` flag is the whole story.
-    fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) {
+    /// id that names no window this backend owns answers `false` rather than quietly doing
+    /// nothing — most ids arriving here are ordinary controls for which the library's own
+    /// `visible` flag is the whole story, and the library paints those itself, so there is no
+    /// window here to show or hide (P-203).
+    fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) -> bool {
         #[cfg(widgets_unstripped)]
         {
             let Some(hwnd) = super::window_hwnd_for_widget_id(self, widget_id) else {
-                return;
+                return false;
             };
             // A canvas child is a surface, not a window: it is shown by mounting it, and
             // toggling it here would disagree with `unmount_surface`.
             if !unsafe { winapi::um::winuser::GetParent(hwnd) }.is_null() {
-                return;
+                return false;
             }
             // SAFETY: `hwnd` is a toplevel this backend created and still holds; `SW_SHOW`
             // and `SW_HIDE` only change its visibility state.
@@ -1005,10 +1069,12 @@ impl Platform for WindowsPlatform {
             // has invalidated yet shows its old (or unstyled) pixels until something else
             // happens to dirty it.
             super::canvas::invalidate_for_handle(hwnd);
+            true
         }
         #[cfg(not(widgets_unstripped))]
         {
             let _ = (widget_id, visible);
+            false
         }
     }
 
@@ -1395,6 +1461,7 @@ impl Platform for WindowsPlatform {
         // wait must learn about the stop immediately rather than after the idle interval.
         crate::platform::frame_wait::wake();
         #[cfg(target_os = "windows")]
+// SAFETY: posted to the current thread queue; no pointer or handle is involved.
         unsafe {
             use winapi::um::winuser::PostQuitMessage;
             PostQuitMessage(0);

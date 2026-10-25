@@ -35,7 +35,7 @@
 //! (`"cascader"`), from a CSS selector (`Cascader`), and through the typed
 //! `create_cascader` on `ControlBackend`.
 
-use crate::compat::RefCell;
+use crate::compat::{Instant, RefCell, String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
@@ -255,6 +255,36 @@ pub struct Cascader {
     scroll_offsets: Vec<usize>,
     /// Reveal progress of the overlay, `0.0..=1.0`, advanced by [`Cascader::tick`].
     reveal_progress: f32,
+    /// The text painted while nothing is selected (I-11).
+    ///
+    /// Defaults to the `"Select…"` the field used to hardcode, so an existing caller paints exactly
+    /// what it always did.
+    placeholder: String,
+    /// Prefix typed since the last navigation, for first-letter search (I-14).
+    type_ahead: String,
+    /// When the current type-ahead prefix began, for the shared 800 ms rule (I-P06 / I-14).
+    type_ahead_started: Option<Instant>,
+    /// Bumped whenever any input of the overlay's per-level row lists changes (I-P12).
+    levels_revision: u64,
+    /// Per-level row indices of the open overlay, rebuilt once per revision (I-P12).
+    level_rows: RefCell<LevelRows>,
+}
+
+/// The open overlay's row indices, per level (I-P12).
+///
+/// The paint, the hit test and the geometry used to filter and window a level independently —
+/// `filtered_indices` allocated a fresh index `Vec` each time, and the draw called it once per
+/// level per frame while the hit path called it again per click. This cache is built once per
+/// revision and read by all three.
+#[derive(Default)]
+struct LevelRows {
+    revision: u64,
+    /// Per level: how many rows the level has, before filtering.
+    counts: Vec<usize>,
+    /// Per level: the filtered indices, empty when the level is unfiltered (identity order).
+    filtered: Vec<Vec<usize>>,
+    /// Per level: the rows inside the painted window.
+    windowed: Vec<Vec<usize>>,
 }
 
 impl Cascader {
@@ -276,7 +306,116 @@ impl Cascader {
             max_visible: None,
             scroll_offsets: Vec::new(),
             reveal_progress: 1.0,
+            placeholder: String::from("Select…"),
+            type_ahead: String::new(),
+            type_ahead_started: None,
+            levels_revision: 0,
+            level_rows: RefCell::new(LevelRows::default()),
         }
+    }
+
+    /// The text painted while nothing is selected (I-11).
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
+    /// Sets the text painted while nothing is selected (I-11).
+    pub fn set_placeholder(&mut self, text: &str) {
+        if self.placeholder == text {
+            return;
+        }
+        self.placeholder = text.to_string();
+        self.base.request_redraw();
+    }
+
+    /// Invalidates the overlay's per-level row cache (I-P12).
+    fn invalidate_level_rows(&mut self) {
+        self.levels_revision = self.levels_revision.wrapping_add(1);
+    }
+
+    /// Rebuilds the overlay's per-level row cache when one of its inputs changed (I-P12).
+    fn ensure_level_rows(&self) {
+        let levels = self.visible_level_count();
+        if let Ok(cache) = self.level_rows.try_borrow() {
+            if cache.revision == self.levels_revision && cache.counts.len() == levels {
+                return;
+            }
+        }
+        let mut counts = Vec::with_capacity(levels);
+        let mut filtered = Vec::with_capacity(levels);
+        let mut windowed = Vec::with_capacity(levels);
+        for level in 0..levels {
+            let Some(siblings) = self.siblings_at(level) else {
+                counts.push(0);
+                filtered.push(Vec::new());
+                windowed.push(Vec::new());
+                continue;
+            };
+            let total = siblings.len();
+            counts.push(total);
+            // An unfiltered level keeps the identity order: there is nothing to collect, so the
+            // rows are generated from the count when they are read.
+            let rows: Vec<usize> = if self.filter.is_empty() || level != self.expanded_path.len() {
+                Vec::new()
+            } else {
+                let needle = crate::widget::input_widgets::text_match::fold(&self.filter);
+                siblings
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, option)| {
+                        crate::widget::input_widgets::text_match::contains(&option.label, &needle)
+                    })
+                    .map(|(index, _)| index)
+                    .collect()
+            };
+            let row_count = if rows.is_empty() { total } else { rows.len() };
+            let offset = self.scroll_offset(level).min(row_count);
+            let page = self.page_size(row_count);
+            let window: Vec<usize> = if rows.is_empty() {
+                (offset..(offset + page).min(total)).collect()
+            } else {
+                rows.iter().skip(offset).take(page).copied().collect()
+            };
+            filtered.push(rows);
+            windowed.push(window);
+        }
+        if let Ok(mut cache) = self.level_rows.try_borrow_mut() {
+            *cache = LevelRows { revision: self.levels_revision, counts, filtered, windowed };
+        }
+    }
+
+    /// The rows the level has, before filtering (I-P12).
+    fn level_row_count(&self, level: usize) -> usize {
+        self.ensure_level_rows();
+        if let Ok(cache) = self.level_rows.try_borrow() {
+            return cache.counts.get(level).copied().unwrap_or(0);
+        }
+        0
+    }
+
+    /// Runs `f` with the rows of `level` inside the painted window (I-P12).
+    fn with_level_window<R>(&self, level: usize, f: impl FnOnce(&[usize]) -> R) -> R {
+        self.ensure_level_rows();
+        if let Ok(cache) = self.level_rows.try_borrow() {
+            if let Some(rows) = cache.windowed.get(level) {
+                return f(rows);
+            }
+        }
+        f(&[])
+    }
+
+    /// Runs `f` with the rows the filter keeps at `level`, and the level's unfiltered count
+    /// (I-P12).
+    ///
+    /// An **unfiltered** level has nothing to collect, so `rows` is empty and the caller reads the
+    /// identity order from `count` — which is what keeps an unfiltered level free of allocation.
+    fn with_level_filtered<R>(&self, level: usize, f: impl FnOnce(&[usize], usize) -> R) -> R {
+        self.ensure_level_rows();
+        if let Ok(cache) = self.level_rows.try_borrow() {
+            let rows = cache.filtered.get(level).map(|rows| rows.as_slice()).unwrap_or(&[]);
+            return f(rows, cache.counts.get(level).copied().unwrap_or(0));
+        }
+        f(&[], 0)
     }
 
     /// Replaces the whole option tree, clearing any selection that no longer
@@ -293,6 +432,7 @@ impl Cascader {
         self.expanded_path.clear();
         self.filter.clear();
         *self.display_cache.borrow_mut() = None;
+        self.invalidate_level_rows();
         if !self.selected_path.is_empty() && self.resolve(&self.selected_path).is_none() {
             self.selected_path.clear();
         }
@@ -346,6 +486,7 @@ impl Cascader {
         self.filter.clear();
         self.scroll_offsets.clear();
         self.reveal_progress = 0.0;
+        self.invalidate_level_rows();
         self.base.request_redraw();
     }
 
@@ -360,6 +501,7 @@ impl Cascader {
         self.expanded = false;
         self.expanded_path.clear();
         self.filter.clear();
+        self.invalidate_level_rows();
         self.base.request_redraw();
     }
 
@@ -387,6 +529,7 @@ impl Cascader {
             return;
         }
         self.max_visible = max_visible;
+        self.invalidate_level_rows();
         self.base.request_redraw();
     }
 
@@ -408,19 +551,13 @@ impl Cascader {
             return;
         }
         self.scroll_offsets[level] = offset;
+        self.invalidate_level_rows();
         self.base.request_redraw();
     }
 
     /// Number of rows painted at once for a level with `rows` rows.
     pub fn page_size(&self, rows: usize) -> usize {
         self.max_visible.unwrap_or(rows).max(1)
-    }
-
-    /// The visible rows of `level`, with the level's scroll offset applied.
-    fn windowed_indices(&self, level: usize, rows: &[usize]) -> Vec<usize> {
-        let offset = self.scroll_offset(level).min(rows.len());
-        let page = self.page_size(rows.len());
-        rows.iter().skip(offset).take(page).copied().collect()
     }
 
     /// Whether tying filters the visible rows.
@@ -437,6 +574,7 @@ impl Cascader {
         }
         self.filterable = filterable;
         self.filter.clear();
+        self.invalidate_level_rows();
         self.base.request_redraw();
     }
 
@@ -693,8 +831,10 @@ impl Cascader {
     /// `cascader_choosing_from_an_earlier_level_discards_the_deeper_path` caught.
     /// `draw_overlay` and `row_at` both call this, so they cannot disagree again.
     fn level_rect(&self, level: usize) -> Rect {
-        let all = self.filtered_indices(level);
-        self.level_rect_for(level, self.page_size(all.len()).min(all.len()).max(1))
+        // The row count comes from the frame's own row cache, so a hit test allocates nothing
+        // (I-P12).
+        let rows = self.with_level_window(level, |window| window.len());
+        self.level_rect_for(level, rows.max(1))
     }
 
     /// [`Self::level_rect`] for a caller that already has the level's row count.
@@ -726,9 +866,8 @@ impl Cascader {
             return None;
         }
         let row = (offset as u32 / ROW_HEIGHT) as usize;
-        let visible = self.filtered_indices(level);
-        let windowed = self.windowed_indices(level, &visible);
-        windowed.get(row).copied()
+        // The window comes from the cached row list rather than a fresh filter (I-P12).
+        self.with_level_window(level, |window| window.get(row).copied())
     }
 
     /// The level under `pos`, when the pointer is over an open level.
@@ -759,6 +898,7 @@ impl Cascader {
         self.expanded_path.truncate(level);
         self.expanded_path.push(option_index);
         self.filter.clear();
+        self.invalidate_level_rows();
 
         if is_leaf {
             let path = self.expanded_path.clone();
@@ -846,6 +986,7 @@ impl WidgetProperties for Cascader {
                 Some(max) => Ok(CapabilityValue::UInt(max as u64)),
                 None => Ok(CapabilityValue::Null),
             },
+            "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -880,6 +1021,11 @@ impl WidgetProperties for Cascader {
                 }
                 Ok(())
             }
+            "placeholder" => {
+                let text = expect_string(value)?;
+                self.set_placeholder(&text);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -894,6 +1040,7 @@ impl WidgetProperties for Cascader {
             "filterable",
             "filter",
             "max_visible",
+            "placeholder",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -918,6 +1065,39 @@ impl WidgetProperties for Cascader {
             }
             "set_options" | "set_selected_path" => Err(CapabilityAccessError::OutOfRange),
             _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
+}
+
+/// The overlay's resolved colours, read once per frame (I-P07).
+#[derive(Clone, Copy)]
+struct OverlayPalette {
+    column_surface: Color,
+    highlight_surface: Color,
+    separator: Color,
+    on_highlight: Color,
+    branch_ink: Color,
+}
+
+impl OverlayPalette {
+    /// Reads the palette the open list is painted from.
+    fn resolve() -> Self {
+        let manager = crate::style::theme_manager();
+        match manager.current_theme() {
+            Some(active) => Self {
+                column_surface: active.colors.surface_container,
+                highlight_surface: active.colors.primary,
+                separator: active.colors.outline_variant,
+                on_highlight: active.colors.primary.contrast_color(),
+                branch_ink: active.colors.secondary,
+            },
+            None => Self {
+                column_surface: Color::WHITE,
+                highlight_surface: Color::rgb(232, 240, 254),
+                separator: Color::rgb(190, 192, 198),
+                on_highlight: Color::rgb(40, 44, 52),
+                branch_ink: Color::rgb(140, 144, 152),
+            },
         }
     }
 }
@@ -948,7 +1128,9 @@ impl Cascader {
 
         let text = self.cached_display_text();
         let is_empty = text.is_empty();
-        let display: &str = if is_empty { "Select…" } else { text.as_str() };
+        // The hint is the host's string, which defaults to the `"Select…"` the field used to
+        // hardcode (I-11).
+        let display: &str = if is_empty { self.placeholder.as_str() } else { text.as_str() };
         // A placeholder is dimmer than a real value, so an empty field cannot be
         // mistaken for a field whose value happens to be that word. It is the *resolved
         // ink* dimmed toward the field, not a fixed grey: the literal `150,154,162` did not
@@ -994,13 +1176,17 @@ impl Cascader {
 
     /// Draws every open level as a column, deepest last so it paints on top.
     fn draw_overlay(&self, context: &mut RenderContext) {
+        // One palette read for the whole overlay (I-P07): the column colours used to take the
+        // theme manager's lock once per open level per frame.
+        let palette = OverlayPalette::resolve();
+        // One row-index build for the whole overlay (I-P12): the paint, the hit test and the
+        // geometry below all read this cache.
+        self.ensure_level_rows();
         for level in 0..self.visible_level_count() {
-            // Filter once: the rows are handed to `draw_level` as they are, and the column's
-            // height comes from their count rather than from a second `filtered_indices` call.
-            let all = self.filtered_indices(level);
-            let visible = self.windowed_indices(level, &all);
-            let column = self.level_rect_for(level, visible.len());
-            self.draw_level(context, level, column, &visible);
+            self.with_level_window(level, |visible| {
+                let column = self.level_rect_for(level, visible.len());
+                self.draw_level(context, level, column, visible, &palette);
+            });
         }
     }
 
@@ -1022,28 +1208,16 @@ impl Cascader {
         level: usize,
         column: Rect,
         visible: &[usize],
+        palette: &OverlayPalette,
     ) {
-        // A single guard over the theme reads, released before drawing: `theme_manager()` is a
-        // non-reentrant mutex and the context's accessors cannot take it.
-        let (column_surface, highlight_surface, separator, on_highlight, branch_ink) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.surface_container,
-                    active.colors.primary,
-                    active.colors.outline_variant,
-                    active.colors.primary.contrast_color(),
-                    active.colors.secondary,
-                ),
-                None => (
-                    Color::WHITE,
-                    Color::rgb(232, 240, 254),
-                    Color::rgb(190, 192, 198),
-                    Color::rgb(40, 44, 52),
-                    Color::rgb(140, 144, 152),
-                ),
-            }
-        };
+        // The palette was read once for the whole overlay (I-P07); these are its copies.
+        let (column_surface, highlight_surface, separator, on_highlight, branch_ink) = (
+            palette.column_surface,
+            palette.highlight_surface,
+            palette.separator,
+            palette.on_highlight,
+            palette.branch_ink,
+        );
         let row_ink = self.style().text_color.unwrap_or_else(|| column_surface.contrast_color());
         // One role font for every row in this column: it used to be rebuilt per row, and on a
         // loading row twice.
@@ -1060,6 +1234,9 @@ impl Cascader {
         };
         // The index the path currently points at on this level, if any.
         let current = self.expanded_path.get(level).copied();
+        // The index the **committed** path points at on this level, if any: reopening the list used
+        // to lose the branch the user had already chosen (I-12).
+        let committed = self.selected_path.get(level).copied();
 
         for (row, &option_index) in visible.iter().enumerate() {
             let Some(option) = siblings.get(option_index) else {
@@ -1072,12 +1249,17 @@ impl Cascader {
                 ROW_HEIGHT,
             );
             let highlighted = option_index == current.unwrap_or(usize::MAX);
+            let chosen = committed == Some(option_index);
             if highlighted {
                 // The row the path points at is highlighted, which is how the user
                 // sees which branch the next column belongs to. The fill is the accent, so the
                 // row reads as a **selection** rather than as a paler grey; its ink is the
                 // accent's contrast colour, which is legible on that fill by construction.
                 context.fill_rect(row_rect, highlight_surface.with_alpha(reveal_alpha));
+            } else if chosen {
+                // The committed branch keeps a faint wash, so a reopened list shows the branch the
+                // value came from without competing with the row the browsed path is on (I-12).
+                context.fill_rect(row_rect, branch_ink.with_alpha(reveal_alpha / 8));
             }
             let row_line = context.text_line(row_rect, &row_font);
             // Fitted to the space left of the branch chevron / pending ellipsis zone (the
@@ -1129,6 +1311,44 @@ impl Cascader {
                     1,
                 );
             }
+            // A row on the committed path carries a check mark at its trailing edge, drawn in two
+            // strokes the same way `list_box` draws its check box (I-12). It sits to the left of
+            // the branch chevron's cell so the two marks cannot overlap.
+            if chosen {
+                let cx = row_rect.x + row_rect.width as i32 - 30;
+                let cy = row_rect.y + ROW_HEIGHT as i32 / 2;
+                context.draw_line_stroke(
+                    Point::new(cx, cy + 1),
+                    Point::new(cx + 3, cy + 4),
+                    on_highlight,
+                    2,
+                );
+                context.draw_line_stroke(
+                    Point::new(cx + 3, cy + 4),
+                    Point::new(cx + 9, cy - 4),
+                    on_highlight,
+                    2,
+                );
+            }
+        }
+
+        // A filter that matches nothing draws an empty panel; the sibling dropdowns in this family
+        // both say "(No matches)", and so does this one (I-13).
+        if visible.is_empty() && !self.filter.is_empty() && level == self.expanded_path.len() {
+            let row_rect = Rect::new(column.x, column.y, column.width, ROW_HEIGHT);
+            let row_line = context.text_line(row_rect, &row_font);
+            context.draw_text_fitted_cow(
+                Rect::new(
+                    row_rect.x + 8,
+                    row_line.y,
+                    (row_rect.width as i32 - 16).max(1) as u32,
+                    row_line.height.max(1),
+                ),
+                "(No matches)",
+                &row_font,
+                branch_ink,
+                HorizontalAlignment::Left,
+            );
         }
     }
 }
@@ -1171,7 +1391,10 @@ impl EventHandler for Cascader {
             Event::KeyDown((8, _)) if self.filterable && self.expanded => {
                 // On an empty filter there is nothing left to delete; leaving it
                 // alone keeps the key from closing the overlay unexpectedly.
-                self.filter.pop();
+                if !self.filter.is_empty() {
+                    self.filter.pop();
+                    self.invalidate_level_rows();
+                }
                 self.base.request_redraw();
             }
             Event::KeyDown((key, _)) | Event::KeyPress { key, .. } => match *key {
@@ -1202,6 +1425,7 @@ impl EventHandler for Cascader {
                     // Left retreats one level, keeping the shallower path browsed.
                     if !self.expanded_path.is_empty() {
                         self.expanded_path.pop();
+                        self.invalidate_level_rows();
                         self.base.request_redraw();
                     } else {
                         self.collapse();
@@ -1223,6 +1447,76 @@ impl EventHandler for Cascader {
                     self.visible_options_at(self.expanded_path.len().saturating_sub(1)).len()
                         as i32,
                 ),
+                // Page Up / Page Down move the browsed row by one painted window, the same
+                // semantic `list_box`, `combo_box` and `dropdown` give the two keys (I-14).
+                33 => {
+                    let level = self.expanded_path.len().saturating_sub(1);
+                    let page = self.page_size(self.level_row_count(level)) as i32;
+                    self.move_browsed(-page);
+                }
+                34 => {
+                    let level = self.expanded_path.len().saturating_sub(1);
+                    let page = self.page_size(self.level_row_count(level)) as i32;
+                    self.move_browsed(page);
+                }
+                // First-letter search inside the current level's filtered rows, the same
+                // type-ahead the rest of the family has (I-14).
+                32..=126 => {
+                    if let Some(ch) = char::from_u32(*key) {
+                        let level = self.expanded_path.len().saturating_sub(1);
+                        let now = Instant::now();
+                        let expired = self.type_ahead_started.is_none_or(|started| {
+                            now.duration_since(started).as_millis()
+                                > u128::from(
+                                    crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS,
+                                )
+                        });
+                        if expired {
+                            self.type_ahead.clear();
+                        }
+                        self.type_ahead_started = Some(now);
+                        self.type_ahead.push(ch);
+                        let needle =
+                            crate::widget::input_widgets::text_match::fold(&self.type_ahead);
+                        // The candidate rows come from the frame's own cache, so a keystroke
+                        // allocates no index list (I-P12 / I-14).
+                        let target = self.with_level_filtered(level, |rows, total| {
+                            let len = if rows.is_empty() { total } else { rows.len() };
+                            if len == 0 {
+                                return None;
+                            }
+                            let row_at = |position: usize| {
+                                if rows.is_empty() {
+                                    position
+                                } else {
+                                    rows[position]
+                                }
+                            };
+                            let start = self
+                                .expanded_path
+                                .get(level)
+                                .and_then(|index| (0..len).find(|position| row_at(*position) == *index))
+                                .map_or(0, |position| (position + 1) % len);
+                            (0..len).map(|offset| row_at((start + offset) % len)).find(|&index| {
+                                self.siblings_at(level)
+                                    .and_then(|siblings| siblings.get(index))
+                                    .is_some_and(|option| {
+                                        option.enabled
+                                            && crate::widget::input_widgets::text_match::starts_with(
+                                                &option.label,
+                                                &needle,
+                                            )
+                                    })
+                            })
+                        });
+                        if let Some(index) = target {
+                            self.expanded_path.truncate(level);
+                            self.expanded_path.push(index);
+                            self.invalidate_level_rows();
+                            self.base.request_redraw();
+                        }
+                    }
+                }
                 _ => {}
             },
             Event::Wheel { delta, modifiers } => {
@@ -1247,6 +1541,7 @@ impl EventHandler for Cascader {
                 if self.filterable && self.expanded && text.chars().all(|ch| !ch.is_control()) =>
             {
                 self.filter.push_str(text);
+                self.invalidate_level_rows();
                 self.base.request_redraw();
             }
             _ => {}
@@ -1326,6 +1621,7 @@ impl Cascader {
         if let Some(&option_index) = visible.get(next) {
             self.expanded_path.truncate(level);
             self.expanded_path.push(option_index);
+            self.invalidate_level_rows();
             // Keep the keyboard row inside the visible window when the level is capped.
             let page = self.page_size(visible.len());
             if next < self.scroll_offset(level) {
@@ -1410,6 +1706,28 @@ mod tests {
         assert_eq!(c.separator(), "/");
         assert!(!c.is_filterable());
         assert_eq!(c.display_text(), "");
+    }
+
+    #[test]
+    fn the_closed_field_placeholder_is_configurable() {
+        // I-11: the closed field painted a hardcoded "Select…".
+        let mut c = Cascader::new(Rect::new(0, 0, 200, 32));
+        assert_eq!(c.placeholder(), "Select…");
+        c.set_placeholder("Pick a region");
+        assert_eq!(c.placeholder(), "Pick a region");
+    }
+
+    #[test]
+    fn a_filter_with_no_matches_still_has_a_row_to_paint() {
+        // I-13: the empty state is a row of its own, so the column is one row tall even when the
+        // filter keeps nothing.
+        let mut c = cascader();
+        c.set_filterable(true);
+        c.expand();
+        c.filter = String::from("zzzz");
+        c.invalidate_level_rows();
+        assert!(c.filtered_indices(0).is_empty());
+        assert!(c.level_rect(0).height >= ROW_HEIGHT);
     }
 
     #[test]

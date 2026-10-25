@@ -79,6 +79,12 @@ pub struct OtpInput {
     pub submitted: Signal1<String>,
     /// Emitted when Escape is pressed — the user abandoned the entry.
     pub canceled: GenericSignal,
+    /// Whether the code may be edited (I-106).
+    read_only: bool,
+    /// Whether only ASCII digits are accepted; off accepts any alphanumeric (I-106).
+    digits_only: bool,
+    /// Whether the next keystroke replaces the whole code (I-106).
+    select_all_active: bool,
 }
 
 impl OtpInput {
@@ -95,6 +101,70 @@ impl OtpInput {
             completed: Signal1::new(),
             submitted: Signal1::new(),
             canceled: GenericSignal::new(),
+            read_only: false,
+            // The default is the verification-code scenario: letters must not slip in.
+            digits_only: true,
+            select_all_active: false,
+        }
+    }
+
+    /// Whether the code may be edited (I-106).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Sets the read-only state; a read-only field refuses every mutation (I-106).
+    pub fn set_read_only(&mut self, read_only: bool) {
+        if self.read_only == read_only {
+            return;
+        }
+        self.read_only = read_only;
+        self.base.request_redraw();
+    }
+
+    /// Whether only digits are accepted (I-106).
+    pub fn digits_only(&self) -> bool {
+        self.digits_only
+    }
+
+    /// Selects between digits-only and alphanumeric input (I-106).
+    pub fn set_digits_only(&mut self, digits_only: bool) {
+        if self.digits_only == digits_only {
+            return;
+        }
+        self.digits_only = digits_only;
+        // Re-apply the new rule to text already entered, so the box never holds a
+        // character the caller just said it does not accept.
+        let filtered: Vec<char> =
+            self.value.iter().copied().filter(|ch| self.accepts(*ch)).collect();
+        if filtered != self.value {
+            let filled_before = self.value.len();
+            self.value = filtered;
+            self.focused_index = self.focused_index.min(self.length.saturating_sub(1));
+            self.announce_after(filled_before);
+        } else {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Selects the whole code, so the next typed character replaces it (I-106).
+    pub fn select_all(&mut self) {
+        self.select_all_active = true;
+        self.focused_index = 0;
+        self.base.request_redraw();
+    }
+
+    /// Whether the whole code is currently selected (I-106).
+    pub fn is_all_selected(&self) -> bool {
+        self.select_all_active
+    }
+
+    /// Whether `ch` is accepted by the current input rule (I-106).
+    fn accepts(&self, ch: char) -> bool {
+        if self.digits_only {
+            ch.is_ascii_digit()
+        } else {
+            ch.is_alphanumeric()
         }
     }
 
@@ -113,7 +183,11 @@ impl OtpInput {
     ///
     /// Emits `value_changed` only when the result differs from the current code.
     pub fn set_value(&mut self, value: impl Into<String>) {
-        let chars = Self::sanitise(&value.into());
+        if self.read_only {
+            return;
+        }
+        self.select_all_active = false;
+        let chars = self.sanitise(&value.into());
         let next = &chars[..chars.len().min(self.length)];
         if self.value == next {
             return;
@@ -211,6 +285,10 @@ impl OtpInput {
 
     /// Removes the whole code and returns the focus to the first box.
     pub fn clear(&mut self) {
+        if self.read_only {
+            return;
+        }
+        self.select_all_active = false;
         self.focused_index = 0;
         if self.value.is_empty() {
             self.base.request_redraw();
@@ -227,7 +305,16 @@ impl OtpInput {
     /// a full code is rejected and leaves every field untouched, so a caller can
     /// tell an ignored keystroke from a recorded one.
     pub fn insert_char(&mut self, ch: char) -> bool {
-        if self.is_complete() || !ch.is_alphanumeric() {
+        if self.read_only || !self.accepts(ch) {
+            return false;
+        }
+        // A selected code is replaced whole by the first typed character.
+        if self.select_all_active {
+            self.value.clear();
+            self.focused_index = 0;
+            self.select_all_active = false;
+        }
+        if self.is_complete() {
             return false;
         }
         let filled_before = self.value.len();
@@ -251,6 +338,10 @@ impl OtpInput {
     /// nothing to delete, so it reports `false` rather than emitting a signal for
     /// a no-op.
     pub fn backspace(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
+        self.select_all_active = false;
         // The focus sits on or past the last filled box, so there is no character
         // under it: step back onto the previous one and clear that. This covers
         // `focused_index == value.len()`, the ordinary "delete the last digit"
@@ -292,7 +383,11 @@ impl OtpInput {
     /// That distinction matters downstream: `completed` is edge-triggered, so a
     /// duplicate paste must not look like a fresh fill.
     pub fn paste(&mut self, text: &str) -> usize {
-        let accepted: Vec<char> = Self::sanitise(text).into_iter().take(self.length).collect();
+        if self.read_only {
+            return 0;
+        }
+        self.select_all_active = false;
+        let accepted: Vec<char> = self.sanitise(text).into_iter().take(self.length).collect();
         // Nothing to insert, or the code already reads exactly this: both are
         // no-ops. The empty case matters because a paste of only separators must
         // leave an existing code alone rather than wiping it.
@@ -309,9 +404,9 @@ impl OtpInput {
         inserted
     }
 
-    /// Drops every character that is not alphanumeric.
-    fn sanitise(text: &str) -> Vec<char> {
-        text.chars().filter(|ch| ch.is_alphanumeric()).collect()
+    /// Drops every character the current input rule refuses (I-106).
+    fn sanitise(&self, text: &str) -> Vec<char> {
+        text.chars().filter(|ch| self.accepts(*ch)).collect()
     }
 
     /// Removes the character at `index` and pulls the following ones back, so the
@@ -420,6 +515,9 @@ impl WidgetProperties for OtpInput {
             )),
             "focused_index" => Ok(CapabilityValue::UInt(self.focused_index() as u64)),
             "is_complete" => Ok(CapabilityValue::Bool(self.is_complete())),
+            // I-106.
+            "read_only" => Ok(CapabilityValue::Bool(self.is_read_only())),
+            "digits_only" => Ok(CapabilityValue::Bool(self.digits_only())),
             _ => base_property_get(self, name),
         }
     }
@@ -452,6 +550,14 @@ impl WidgetProperties for OtpInput {
                 self.set_separator(parsed);
                 Ok(())
             }
+            "read_only" => {
+                self.set_read_only(expect_bool(value)?);
+                Ok(())
+            }
+            "digits_only" => {
+                self.set_digits_only(expect_bool(value)?);
+                Ok(())
+            }
             // Derived from the edit state.
             "focused_index" | "is_complete" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -466,6 +572,8 @@ impl WidgetProperties for OtpInput {
             "separator",
             "focused_index",
             "is_complete",
+            "read_only",
+            "digits_only",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -545,6 +653,10 @@ impl EventHandler for OtpInput {
                             (self.focused_index + 1).min(self.length.saturating_sub(1))
                         };
                         self.set_focused_index(next);
+                    }
+                    // Primary+A selects the whole code, so the next digit replaces it.
+                    65 if primary => {
+                        self.select_all();
                     }
                     // Primary+V pastes the clipboard into the boxes, which is how a code copied
                     // from a message actually gets entered.
@@ -758,12 +870,15 @@ impl Draw for OtpInput {
             Color::BLACK,
         );
 
+        // I-P68: the box stride is one geometry fact; it is computed once for the row rather
+        // than once per box inside the separator branch.
+        let (box_width, gap) = self.box_metrics();
         for index in 0..self.length {
             let slot = self.box_rect(index);
             let filled = self.value.get(index);
             let is_focused = enabled && index == self.focused_index;
 
-            if is_focused {
+            if is_focused || self.select_all_active {
                 context.fill_rect(slot, background.blend(&accent, 0.10));
             }
 
@@ -807,7 +922,6 @@ impl Draw for OtpInput {
             // Separator after the box, except past the last one.
             if let Some(sep) = self.separator {
                 if index + 1 < self.length {
-                    let (box_width, gap) = self.box_metrics();
                     let sep_x = slot.x + box_width as i32 + (gap as i32) / 2;
                     let mut sep_buf = [0u8; 4];
                     let sep_text = sep.encode_utf8(&mut sep_buf);

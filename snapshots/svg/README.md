@@ -29,7 +29,37 @@ fails the gate in between.
 generated automatically — this list is derived from the registry, never typed.
 3. Run `bash tools/check_svg_snapshots.sh`.
 
-## Controls (218)
+## Companion pairings (21)
+
+Each `pair_<name>.svg` (dark) and `pair_<name>.light.svg` (light) depicts a primary
+control together with the companion that belongs beside it. `<name>` is the primary's
+registry name, so the pair can be found from the control it extends.
+
+| # | Pair | Primary | Companion | Dark | Light |
+|---|---|---|---|---|---|
+| 1 | `pair_combo_box` | `combo_box` | `SuggestionPopup` | `pair_combo_box.svg` | `pair_combo_box.light.svg` |
+| 2 | `pair_line_edit` | `line_edit` | `ValidationBubble` | `pair_line_edit.svg` | `pair_line_edit.light.svg` |
+| 3 | `pair_auto_complete_edit` | `auto_complete_edit` | `RecentValuesPopup` | `pair_auto_complete_edit.svg` | `pair_auto_complete_edit.light.svg` |
+| 4 | `pair_fab` | `fab` | `SpeedDial` | `pair_fab.svg` | `pair_fab.light.svg` |
+| 5 | `pair_swipe_to_dismiss` | `swipe_to_dismiss` | `SwipeActions` | `pair_swipe_to_dismiss.svg` | `pair_swipe_to_dismiss.light.svg` |
+| 6 | `pair_navigation_drawer` | `navigation_drawer` | `DrawerSectionHeader` | `pair_navigation_drawer.svg` | `pair_navigation_drawer.light.svg` |
+| 7 | `pair_line_chart` | `line_chart` | `ChartCrosshair` | `pair_line_chart.svg` | `pair_line_chart.light.svg` |
+| 8 | `pair_data_grid` | `data_grid` | `GridFindBar` | `pair_data_grid.svg` | `pair_data_grid.light.svg` |
+| 9 | `pair_menu_button` | `menu_button` | `MenuPanel` | `pair_menu_button.svg` | `pair_menu_button.light.svg` |
+| 10 | `pair_canvas` | `canvas` | `LayerPanel` | `pair_canvas.svg` | `pair_canvas.light.svg` |
+| 11 | `pair_media_player` | `media_player` | `MediaTransportBar` | `pair_media_player.svg` | `pair_media_player.light.svg` |
+| 12 | `pair_video_player` | `video_player` | `SubtitleBar` | `pair_video_player.svg` | `pair_video_player.light.svg` |
+| 13 | `pair_list_box` | `list_box` | `Scrollbar` | `pair_list_box.svg` | `pair_list_box.light.svg` |
+| 14 | `pair_number_picker` | `number_picker` | `StepButtons` | `pair_number_picker.svg` | `pair_number_picker.light.svg` |
+| 15 | `pair_date_range_picker` | `date_range_picker` | `PresetChipBar` | `pair_date_range_picker.svg` | `pair_date_range_picker.light.svg` |
+| 16 | `pair_mobile_date_picker` | `mobile_date_picker` | `DrumColumn` | `pair_mobile_date_picker.svg` | `pair_mobile_date_picker.light.svg` |
+| 17 | `pair_ribbon_bar` | `ribbon_bar` | `KeyTipBadge` | `pair_ribbon_bar.svg` | `pair_ribbon_bar.light.svg` |
+| 18 | `pair_tag_input` | `tag_input` | `Chip` | `pair_tag_input.svg` | `pair_tag_input.light.svg` |
+| 19 | `pair_dialog` | `dialog` | `ModalHost` | `pair_dialog.svg` | `pair_dialog.light.svg` |
+| 20 | `pair_tag` | `tag` | `TagGroup` | `pair_tag.svg` | `pair_tag.light.svg` |
+| 21 | `pair_image_gallery` | `image_gallery` | `ColumnChooser` | `pair_image_gallery.svg` | `pair_image_gallery.light.svg` |
+
+## Controls (240)
 
 | # | Control | Dark | Light |
 |---|---|---|---|
@@ -227,27 +257,49 @@ generated automatically — this list is derived from the registry, never typed.
 | 192 | `tab_view` | `tab_view.svg` | `tab_view.light.svg` |
 | 193 | `search_bar` | `search_bar.svg` | `search_bar.light.svg` |
 | 194 | `shortcut_editor` | `shortcut_editor.svg` | `shortcut_editor.light.svg` |
-| 195 | `swipe_to_dismiss` | `swipe_to_dismiss.svg` | `swipe_to_dismiss.light.svg` |
-| 196 | `line_chart` | `line_chart.svg` | `line_chart.light.svg` |
-| 197 | `sparkline` | `sparkline.svg` | `sparkline.light.svg` |
-| 198 | `bar_chart` | `bar_chart.svg` | `bar_chart.light.svg` |
-| 199 | `candlestick_chart` | `candlestick_chart.svg` | `candlestick_chart.light.svg` |
-| 200 | `volume_chart` | `volume_chart.svg` | `volume_chart.light.svg` |
-| 201 | `depth_chart` | `depth_chart.svg` | `depth_chart.light.svg` |
-| 202 | `order_book` | `order_book.svg` | `order_book.light.svg` |
-| 203 | `quote_board` | `quote_board.svg` | `quote_board.light.svg` |
-| 204 | `indicator_chart` | `indicator_chart.svg` | `indicator_chart.light.svg` |
-| 205 | `pie_chart` | `pie_chart.svg` | `pie_chart.light.svg` |
-| 206 | `animated_image` | `animated_image.svg` | `animated_image.light.svg` |
-| 207 | `hero_animation` | `hero_animation.svg` | `hero_animation.light.svg` |
-| 208 | `bezier_curve_editor` | `bezier_curve_editor.svg` | `bezier_curve_editor.light.svg` |
-| 209 | `lottie_widget` | `lottie_widget.svg` | `lottie_widget.light.svg` |
-| 210 | `rive_widget` | `rive_widget.svg` | `rive_widget.light.svg` |
-| 211 | `video_player` | `video_player.svg` | `video_player.light.svg` |
-| 212 | `image_gallery` | `image_gallery.svg` | `image_gallery.light.svg` |
-| 213 | `audio_visualizer` | `audio_visualizer.svg` | `audio_visualizer.light.svg` |
-| 214 | `camera_preview` | `camera_preview.svg` | `camera_preview.light.svg` |
-| 215 | `barcode_scanner` | `barcode_scanner.svg` | `barcode_scanner.light.svg` |
-| 216 | `tool_button` | `tool_button.svg` | `tool_button.light.svg` |
-| 217 | `status_bar` | `status_bar.svg` | `status_bar.light.svg` |
-| 218 | `property_grid` | `property_grid.svg` | `property_grid.light.svg` |
+| 195 | `key_sequence_editor` | `key_sequence_editor.svg` | `key_sequence_editor.light.svg` |
+| 196 | `swipe_to_dismiss` | `swipe_to_dismiss.svg` | `swipe_to_dismiss.light.svg` |
+| 197 | `line_chart` | `line_chart.svg` | `line_chart.light.svg` |
+| 198 | `sparkline` | `sparkline.svg` | `sparkline.light.svg` |
+| 199 | `bar_chart` | `bar_chart.svg` | `bar_chart.light.svg` |
+| 200 | `candlestick_chart` | `candlestick_chart.svg` | `candlestick_chart.light.svg` |
+| 201 | `volume_chart` | `volume_chart.svg` | `volume_chart.light.svg` |
+| 202 | `depth_chart` | `depth_chart.svg` | `depth_chart.light.svg` |
+| 203 | `order_book` | `order_book.svg` | `order_book.light.svg` |
+| 204 | `quote_board` | `quote_board.svg` | `quote_board.light.svg` |
+| 205 | `indicator_chart` | `indicator_chart.svg` | `indicator_chart.light.svg` |
+| 206 | `pie_chart` | `pie_chart.svg` | `pie_chart.light.svg` |
+| 207 | `animated_image` | `animated_image.svg` | `animated_image.light.svg` |
+| 208 | `hero_animation` | `hero_animation.svg` | `hero_animation.light.svg` |
+| 209 | `bezier_curve_editor` | `bezier_curve_editor.svg` | `bezier_curve_editor.light.svg` |
+| 210 | `lottie_widget` | `lottie_widget.svg` | `lottie_widget.light.svg` |
+| 211 | `rive_widget` | `rive_widget.svg` | `rive_widget.light.svg` |
+| 212 | `video_player` | `video_player.svg` | `video_player.light.svg` |
+| 213 | `image_gallery` | `image_gallery.svg` | `image_gallery.light.svg` |
+| 214 | `audio_visualizer` | `audio_visualizer.svg` | `audio_visualizer.light.svg` |
+| 215 | `camera_preview` | `camera_preview.svg` | `camera_preview.light.svg` |
+| 216 | `barcode_scanner` | `barcode_scanner.svg` | `barcode_scanner.light.svg` |
+| 217 | `tool_button` | `tool_button.svg` | `tool_button.light.svg` |
+| 218 | `status_bar` | `status_bar.svg` | `status_bar.light.svg` |
+| 219 | `property_grid` | `property_grid.svg` | `property_grid.light.svg` |
+| 220 | `swatch` | `swatch.svg` | `swatch.light.svg` |
+| 221 | `filter_row` | `filter_row.svg` | `filter_row.light.svg` |
+| 222 | `legend` | `legend.svg` | `legend.light.svg` |
+| 223 | `chart_tooltip` | `chart_tooltip.svg` | `chart_tooltip.light.svg` |
+| 224 | `tooltip_manager` | `tooltip_manager.svg` | `tooltip_manager.light.svg` |
+| 225 | `zoom_pan_controller` | `zoom_pan_controller.svg` | `zoom_pan_controller.light.svg` |
+| 226 | `toast_host` | `toast_host.svg` | `toast_host.light.svg` |
+| 227 | `tile_loader` | `tile_loader.svg` | `tile_loader.light.svg` |
+| 228 | `zoom_control` | `zoom_control.svg` | `zoom_control.light.svg` |
+| 229 | `scale_bar` | `scale_bar.svg` | `scale_bar.light.svg` |
+| 230 | `compass` | `compass.svg` | `compass.light.svg` |
+| 231 | `timeline_axis` | `timeline_axis.svg` | `timeline_axis.light.svg` |
+| 232 | `dependency_editor` | `dependency_editor.svg` | `dependency_editor.light.svg` |
+| 233 | `diff_file_list` | `diff_file_list.svg` | `diff_file_list.light.svg` |
+| 234 | `markdown_outline_panel` | `markdown_outline_panel.svg` | `markdown_outline_panel.light.svg` |
+| 235 | `find_bar` | `find_bar.svg` | `find_bar.light.svg` |
+| 236 | `shape_canvas` | `shape_canvas.svg` | `shape_canvas.light.svg` |
+| 237 | `kanban_card_view` | `kanban_card_view.svg` | `kanban_card_view.light.svg` |
+| 238 | `kanban_column_header` | `kanban_column_header.svg` | `kanban_column_header.light.svg` |
+| 239 | `range_preset_bar` | `range_preset_bar.svg` | `range_preset_bar.light.svg` |
+| 240 | `grid_view_header` | `grid_view_header.svg` | `grid_view_header.light.svg` |

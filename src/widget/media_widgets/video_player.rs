@@ -123,6 +123,16 @@ impl VideoFrame {
     }
 }
 
+/// A tightly packed copy of a padded frame, reused between draws.
+struct PackedVideoFrame {
+    ptr: usize,
+    len: usize,
+    width: u32,
+    height: u32,
+    stride: u32,
+    data: Vec<u8>,
+}
+
 /// What the host-driven pipeline is currently doing.
 ///
 /// The control owns no demuxer or decoder; this enum records which stage of a host pipeline
@@ -309,6 +319,23 @@ pub struct VideoPlayer {
     metadata: VideoMetadata,
     /// Cached cue index for [`Self::subtitle_at`], so a forward-playing clock is O(1).
     subtitle_cursor: Cell<usize>,
+    /// A tightly packed copy of the presented frame, used when the host's frame has a row
+    /// stride larger than `width * 4` (MW-08). Keyed by the shared buffer's identity.
+    packed_frame: Option<PackedVideoFrame>,
+    /// How long the controls stay visible after the last pointer activity; `0` keeps them up.
+    auto_hide_ms: u64,
+    /// Milliseconds since the last pointer activity over the player.
+    idle_ms: u64,
+    /// Whether the seek bar is being dragged.
+    scrubbing: bool,
+    /// The time a drag is currently previewing, if any.
+    scrub_time: Option<f64>,
+    /// The seek bar's rectangle from the last paint, so a drag maps to the same span the user sees.
+    seek_bar_rect: Option<Rect>,
+    /// The transport buttons' rectangles from the last paint.
+    play_rect: Option<Rect>,
+    volume_rect: Option<Rect>,
+    fullscreen_rect: Option<Rect>,
 }
 
 impl VideoPlayer {
@@ -354,6 +381,15 @@ impl VideoPlayer {
             active_subtitle_track: None,
             metadata: VideoMetadata::default(),
             subtitle_cursor: Cell::new(0),
+            packed_frame: None,
+            auto_hide_ms: 3000,
+            idle_ms: 0,
+            scrubbing: false,
+            scrub_time: None,
+            seek_bar_rect: None,
+            play_rect: None,
+            volume_rect: None,
+            fullscreen_rect: None,
         }
     }
 
@@ -478,6 +514,9 @@ impl VideoPlayer {
             return;
         }
         self.looping = looping;
+        // The transport bar may show a loop indicator derived from this flag; without the
+        // repaint that indicator stayed stale (MW-09).
+        self.base.request_redraw();
     }
 
     /// Stops playback and rewinds to the start, leaving the source loaded.
@@ -902,6 +941,91 @@ impl VideoPlayer {
         self.controls_visible
     }
 
+    /// How long the controls stay visible after the last pointer activity, in milliseconds.
+    pub fn auto_hide_ms(&self) -> u64 {
+        self.auto_hide_ms
+    }
+
+    /// Sets the control-bar auto-hide delay; `0` keeps the controls visible permanently.
+    pub fn set_auto_hide_ms(&mut self, ms: u64) {
+        if self.auto_hide_ms == ms {
+            return;
+        }
+        self.auto_hide_ms = ms;
+        self.idle_ms = 0;
+        if ms == 0 {
+            self.controls_visible = true;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Resets the auto-hide countdown and shows the controls.
+    ///
+    /// A host that owns its own pointer pipeline can call this from its hover handler; the
+    /// control's own `MouseMove` handler calls it when the pointer enters the control bar.
+    pub fn notify_pointer_activity(&mut self) {
+        self.idle_ms = 0;
+        if !self.controls_visible {
+            self.controls_visible = true;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Maps a seek-bar x coordinate to a time on the timeline.
+    fn time_from_seek_x(&self, x: i32) -> f64 {
+        let Some(bar) = self.seek_bar_rect else {
+            return self.current_time;
+        };
+        if bar.width == 0 || self.duration <= 0.0 {
+            return 0.0;
+        }
+        let fraction = ((x - bar.x) as f64 / bar.width as f64).clamp(0.0, 1.0);
+        fraction * self.duration
+    }
+
+    /// Repacks a padded frame into a tightly packed buffer, reusing the previous result.
+    ///
+    /// Returns whether [`Self::packed_frame`] holds the bytes to paint. A tightly packed frame
+    /// needs no buffer at all, which is the common case (MW-08 / L-P06).
+    fn ensure_packed_frame(&mut self, frame: &VideoFrame) -> bool {
+        let tight = frame.width as usize * 4;
+        if frame.stride as usize == tight {
+            return false;
+        }
+        let ptr = frame.data.as_ptr() as usize;
+        let len = frame.data.len();
+        let reusable = matches!(
+            self.packed_frame.as_ref(),
+            Some(cached)
+                if cached.ptr == ptr
+                    && cached.len == len
+                    && cached.width == frame.width
+                    && cached.height == frame.height
+                    && cached.stride == frame.stride
+        );
+        if reusable {
+            return true;
+        }
+        let mut data = crate::compat::vec![0u8; tight * frame.height as usize];
+        for row in 0..frame.height as usize {
+            let start = row * frame.stride as usize;
+            let Some(pixels) = frame.data.get(start..start + tight) else {
+                break;
+            };
+            let destination = row * tight;
+            data[destination..destination + tight].copy_from_slice(pixels);
+        }
+        self.packed_frame = Some(PackedVideoFrame {
+            ptr,
+            len,
+            width: frame.width,
+            height: frame.height,
+            stride: frame.stride,
+            data,
+        });
+        true
+    }
+
     /// Advances the simulated playback clock by the given number of seconds
     /// (scaled by playback rate).
     /// This simulates video frame advancement; no media is decoded.
@@ -985,7 +1109,18 @@ impl Widget for VideoPlayer {
     // Trait contract: `u32` ms. This control's own `tick` takes seconds as `f64` because
     // playback position is a media clock rather than a frame delta; convert at the boundary.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        VideoPlayer::tick(self, f64::from(delta_ms) / 1000.0)
+        let finished = VideoPlayer::tick(self, f64::from(delta_ms) / 1000.0);
+        // The control bar hides itself after a period without pointer activity (MW-07). A
+        // paused or stopped player keeps its controls up: hiding them would leave the only way
+        // to resume invisible.
+        if self.auto_hide_ms > 0 && self.controls_visible && self.is_playing && !self.scrubbing {
+            self.idle_ms = self.idle_ms.saturating_add(u64::from(delta_ms));
+            if self.idle_ms >= self.auto_hide_ms {
+                self.controls_visible = false;
+                self.base.request_redraw();
+            }
+        }
+        finished
     }
 
     fn is_animating(&self) -> bool {
@@ -1209,8 +1344,10 @@ impl Draw for VideoPlayer {
         );
 
         // The control's chrome text (placeholder, time, rate) takes the **effective font**, so the
-        // theme body font and the user's text scale reach it (D09-STYLE-01).
-        let font = effective_font(self.style());
+        // theme body font and the user's text scale reach it (D09-STYLE-01). Cloned once because
+        // the frame-repack cache below mutates the control during this frame.
+        let font = effective_font(self.style()).clone();
+        let font = &font;
 
         if self.source.is_empty() {
             // Empty state. Fitted to the control's width so a narrow player truncates the
@@ -1234,11 +1371,19 @@ impl Draw for VideoPlayer {
         // The control owns no decoder, so the picture is exactly the buffer the host injected.
         // It is centred at its native pixel size and clipped to the player: scaling here would
         // invent a resampling policy the pipeline did not ask for.
-        if let Some(frame) = self.front.as_deref() {
+        if let Some(frame) = self.front.clone() {
             let dx = rect.x + (rect.width as i32 - frame.width as i32) / 2;
             let dy = rect.y + (rect.height as i32 - frame.height as i32) / 2;
             context.push_clip(rect.x, rect.y, rect.width, rect.height);
-            context.draw_image(dx, dy, frame.width, frame.height, frame.data.as_ref());
+            // A host may hand over a frame with padded rows; the image primitive is tightly
+            // packed, so such a frame is repacked once per buffer rather than drawn skewed
+            // (MW-08).
+            let needs_packing = self.ensure_packed_frame(&frame);
+            let pixels: &[u8] = match self.packed_frame.as_ref() {
+                Some(packed) if needs_packing => &packed.data,
+                _ => frame.data.as_ref(),
+            };
+            context.draw_image(dx, dy, frame.width, frame.height, pixels);
             context.pop_clip();
         }
 
@@ -1263,22 +1408,45 @@ impl Draw for VideoPlayer {
         // fitted to the player's width, and a cue outside its own time range draws nothing.
         if self.subtitles_enabled {
             if let Some(cue) = self.subtitle_at(self.current_time) {
-                let band_height = (rect.height as f32 * 0.16).clamp(18.0, 40.0) as u32;
+                // A cue is wrapped to the player's width and the band grows with the line
+                // count, capped at three lines; a long sentence used to be truncated to one
+                // strip (MW-09).
+                let band_width = rect.width.saturating_sub(16).max(1);
+                let line_height = context.measure_text("M", font).height.max(1);
+                let ranges = crate::widget::text_utils::wrap_to_width(
+                    &cue.text,
+                    band_width.saturating_sub(12),
+                    &mut |text: &str| context.measure_text(text, font).width,
+                );
+                let lines = ranges.len().clamp(1, 3);
+                let band_height =
+                    (lines as u32 * line_height + 6).min((rect.height / 2).max(line_height + 6));
                 let band = Rect::new(
                     rect.x + 8,
                     control_bar_top - band_height as i32 - 8,
-                    rect.width.saturating_sub(16),
+                    band_width,
                     band_height,
                 );
                 if band.y > rect.y {
                     context.fill_rounded_rect(band, 4, Color::rgba(0, 0, 0, 150));
-                    context.draw_text_fitted_cow(
-                        context.text_line(band, font),
-                        &cue.text,
-                        font,
-                        Color::WHITE,
-                        HorizontalAlignment::Center,
-                    );
+                    for (line, range) in ranges.iter().take(lines).enumerate() {
+                        let Some(text) = cue.text.get(range.clone()) else {
+                            continue;
+                        };
+                        let row = Rect::new(
+                            band.x + 6,
+                            band.y + 3 + line as i32 * line_height as i32,
+                            band.width.saturating_sub(12),
+                            line_height,
+                        );
+                        context.draw_text_fitted_cow(
+                            row,
+                            text,
+                            font,
+                            Color::WHITE,
+                            HorizontalAlignment::Center,
+                        );
+                    }
                 }
             }
         }
@@ -1314,13 +1482,14 @@ impl Draw for VideoPlayer {
             + (control_bar_height as i32 - dimensions::VIDEO_SEEK_BAR_HEIGHT as i32) / 2;
         let seek_bar_height = dimensions::VIDEO_SEEK_BAR_HEIGHT;
         // Both labels render in place: `format!` built a fresh `String` for the timestamp
-        // and another for the rate every frame.
+        // and another for the rate every frame. A drag previews the position it would seek to.
+        let shown_time = self.scrub_time.unwrap_or(self.current_time);
         let mut time_text = String::new();
         let _ = write!(
             time_text,
             "{:02}:{:02}/{:02}:{:02}",
-            (self.current_time as u32) / 60,
-            (self.current_time as u32) % 60,
+            (shown_time as u32) / 60,
+            (shown_time as u32) % 60,
             (self.duration as u32) / 60,
             (self.duration as u32) % 60,
         );
@@ -1352,6 +1521,12 @@ impl Draw for VideoPlayer {
         let time_x = if has_rate { rate_x } else { fs_box.x } - time_width - 8;
         let seek_bar_width = (time_x - 8 - seek_bar_x).max(0) as u32;
         let seek_bar_full = Rect::new(seek_bar_x, seek_bar_y, seek_bar_width, seek_bar_height);
+        // The transport rectangles are cached for the hit test, so a drag maps to exactly the
+        // span that was painted and the volume icon is clickable where its ink is (MW-07).
+        self.seek_bar_rect = Some(seek_bar_full);
+        self.play_rect = Some(Rect::new(rect.x + 8, control_bar_y, btn_side, control_bar_height));
+        self.volume_rect = Some(vol_box);
+        self.fullscreen_rect = Some(fs_box);
         context.fill_rounded_rect(
             seek_bar_full,
             seek_bar_height / 2,
@@ -1423,6 +1598,21 @@ impl EventHandler for VideoPlayer {
             return;
         }
         match event {
+            Event::MouseMove { pos } => {
+                let bar_top = self.geometry().bottom()
+                    - crate::widget::metrics::dimensions::VIDEO_CONTROL_BAR_HEIGHT as i32;
+                if pos.y >= bar_top && self.geometry().contains_point(*pos) && self.controls_visible
+                {
+                    self.notify_pointer_activity();
+                }
+            }
+            Event::Drag { pos, .. } => {
+                if self.scrubbing {
+                    let time = self.time_from_seek_x(pos.x);
+                    self.scrub_time = Some(time);
+                    self.seek(time);
+                }
+            }
             Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     let rect = self.geometry();
@@ -1430,7 +1620,6 @@ impl EventHandler for VideoPlayer {
                         return;
                     }
 
-                    // Check if clicked on the play/pause button area.
                     let control_bar_height = 36u32;
                     let control_bar_y = rect.y + rect.height as i32 - control_bar_height as i32;
 
@@ -1438,24 +1627,44 @@ impl EventHandler for VideoPlayer {
                         && pos.y < rect.y + rect.height as i32
                         && self.controls_visible
                     {
-                        // Play/pause button click area. The box matches the drawn button: a
-                        // 16 px icon in a strip at `x + 8`, full transport-bar height, so the hit
-                        // target and the ink are the same object (a glyph-measured box here and a
-                        // fixed icon box in `draw` would disagree on where the button is).
-                        let btn_rect = Rect::new(rect.x + 8, control_bar_y, 16, control_bar_height);
-                        if btn_rect.contains_point(*pos) {
+                        // The painted rectangles are the hit regions. The fallbacks match the
+                        // draw path's constants, so a press that arrives before the first
+                        // paint still addresses the button it looks like.
+                        let play_rect = self.play_rect.unwrap_or(Rect::new(
+                            rect.x + 8,
+                            control_bar_y,
+                            16,
+                            control_bar_height,
+                        ));
+                        if play_rect.contains_point(*pos) {
                             self.toggle_play();
                             return;
                         }
-                        // Fullscreen button, in the slot the draw path reserves for it.
-                        let fs_box = Rect::new(
+                        let fs_box = self.fullscreen_rect.unwrap_or(Rect::new(
                             rect.x + rect.width as i32 - 16 - 8 - 16 - 24,
                             control_bar_y,
                             16,
                             control_bar_height,
-                        );
+                        ));
                         if fs_box.contains_point(*pos) {
                             self.toggle_fullscreen();
+                            return;
+                        }
+                        // The volume icon cycles mute, which is the only action a speaker can
+                        // carry (MW-07).
+                        if self.volume_rect.is_some_and(|box_| box_.contains_point(*pos)) {
+                            self.set_muted(!self.muted);
+                            self.notify_pointer_activity();
+                            return;
+                        }
+                        // The seek bar starts a drag. The press also seeks, so a tap jumps in
+                        // one gesture while a drag keeps updating.
+                        if self.seek_bar_rect.is_some_and(|bar| bar.contains_point(*pos)) {
+                            let time = self.time_from_seek_x(pos.x);
+                            self.scrubbing = true;
+                            self.scrub_time = Some(time);
+                            self.seek(time);
+                            self.notify_pointer_activity();
                             return;
                         }
                     }
@@ -1468,6 +1677,16 @@ impl EventHandler for VideoPlayer {
                             self.show_controls();
                         }
                     }
+                }
+            }
+            // A scrub ends on release and commits the position already previewed.
+            Event::MouseRelease { pos, button } if self.scrubbing => {
+                if *button == 1 {
+                    let time = self.time_from_seek_x(pos.x);
+                    self.seek(time);
+                    self.scrubbing = false;
+                    self.scrub_time = None;
+                    self.notify_pointer_activity();
                 }
             }
             Event::KeyPress { key, modifiers } => {

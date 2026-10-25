@@ -58,6 +58,7 @@ use crate::widget::advanced_widgets::dial::Dial;
 use crate::widget::advanced_widgets::pie_menu::PieMenu;
 use crate::widget::advanced_widgets::ribbon_bar::RibbonBar;
 use crate::widget::advanced_widgets::tab_bar::TabBar;
+use crate::widget::companions::{Legend, LegendEntry};
 use crate::widget::container_widgets::carousel::Carousel;
 use crate::widget::container_widgets::groupbox::GroupBox;
 use crate::widget::container_widgets::mdiarea::MdiArea;
@@ -90,6 +91,7 @@ use crate::widget::menu_toolbar::menu::Menu;
 use crate::widget::menu_toolbar::menu_bar::MenuBar;
 use crate::widget::menu_toolbar::menu_button::{MenuButton, MenuItem};
 use crate::widget::menu_toolbar::tool_bar::ToolBar;
+use crate::widget::misc_widgets::date_range_picker::{RangePreset, RangePresetBar};
 use crate::widget::misc_widgets::segmented_button::{Segment, SegmentedButton};
 use crate::widget::nav_widgets::bottom_navigation_bar::BottomNavigationBar;
 use crate::widget::nav_widgets::navigation_drawer::NavigationDrawer;
@@ -342,6 +344,36 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             Some(dropdown) => {
                 dropdown.set_items(sample::list_items());
                 dropdown.set_selected_index(0);
+                true
+            }
+            None => false,
+        },
+
+        // ── Companions whose content is a caller-owned list ──
+        //
+        // A legend and a preset bar draw nothing but their own chrome when they have no
+        // entries, so the snapshot would be a two-element rectangle no reviewer could judge.
+        // The sample rows are the same kind of fixture as the table models above: they exist
+        // for the picture, while `create` still returns an empty control.
+        "legend" => match widget_as_mut::<Legend>(widget) {
+            Some(legend) => {
+                legend.set_entries(vec![
+                    LegendEntry::new("Revenue", Color::PRIMARY),
+                    LegendEntry::new("Cost", Color::rgb(230, 120, 60)),
+                    LegendEntry::new("Margin", Color::rgb(80, 170, 120)),
+                ]);
+                true
+            }
+            None => false,
+        },
+        "range_preset_bar" => match widget_as_mut::<RangePresetBar>(widget) {
+            Some(bar) => {
+                bar.set_presets(vec![
+                    RangePreset::new("Today", (2026, 9, 16), (2026, 9, 16)),
+                    RangePreset::new("Last 7 days", (2026, 9, 10), (2026, 9, 16)),
+                    RangePreset::new("This month", (2026, 9, 1), (2026, 9, 30)),
+                ]);
+                bar.select_index(1);
                 true
             }
             None => false,

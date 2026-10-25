@@ -23,7 +23,8 @@
 //! │ Group1   │ Group2   │ Group3   │ Group4           │  ← group title row
 //! └──────────────────────────────────────────────────┘
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::compat::Rc;
+use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -31,6 +32,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string_list, expec
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::TooltipManager;
 use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -342,6 +344,37 @@ pub struct RibbonBar {
     pub quick_access_overflow_clicked: GenericSignal,
     /// Emitted with `(tab, group)` when a group's overflow marker is pressed.
     pub group_overflow_clicked: Signal1<(usize, usize)>,
+    /// The group and item boxes for the current layout, built once per layout signature
+    /// (K-P08).
+    ///
+    /// `hit_item` runs on every pointer move and used to rebuild `group_rects` plus one
+    /// `compute_item_rects` per group — several `Vec` allocations — for a layout that changes only
+    /// with the geometry, the tab, the expand state or the item list. The cache is keyed on a
+    /// fold over exactly those facts, so it cannot serve a stale table, and the painter reads the
+    /// same table the hit test does.
+    layout_cache: crate::compat::RefCell<Option<(u64, Rc<Vec<GroupLayout>>)>>,
+    /// The host-side hover/delay/show pipeline for item tooltips (ADV-10).
+    tooltips: TooltipManager,
+    /// The derived hover id currently registered with the tooltip pipeline.
+    tooltip_source: Option<crate::core::ObjectId>,
+    /// Monotonic clock fed to the tooltip pipeline from [`Widget::tick`].
+    tooltip_now_ms: u64,
+}
+
+/// One group's box and the boxes of the items the layout could place inside it.
+///
+/// The painter and the hit test both need `(group index, group rect, item rects)`, so they share
+/// this one table instead of each deriving it (K-P08).
+type GroupLayout = (usize, Rect, Vec<(usize, Rect)>);
+
+/// The stable hover id for one ribbon item.
+///
+/// The tooltip pipeline addresses a hover source by id; an item is not a widget, so the id is
+/// derived from the owner's and the item's address. The mix is the one the toolbar uses, so the
+/// two controls cannot collide on an accidental linear id.
+fn hover_id(owner: ObjectId, tab: usize, group: usize, item: usize) -> ObjectId {
+    let address = (tab as u64) << 42 ^ (group as u64) << 21 ^ item as u64;
+    owner.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (address + 1)
 }
 
 /// The chrome colours one ribbon draw pass uses.
@@ -380,28 +413,24 @@ struct RibbonPalette {
 impl RibbonPalette {
     /// Derives the palette from the resolved style and the active theme.
     ///
-    /// The theme read is a separate manager lock, taken and released inside
-    /// `resolved_theme_style`, so it is not held across the draw — the global manager's mutex is
-    /// not re-entrant. The window fill is read as its own scoped acquisition and copied out, so
-    /// no guard is held while the rest of the palette is computed.
+    /// Both lookups are the cached, revision-validated forms (`resolved_theme_style_shared` and
+    /// `palette_shared`), so the whole palette is resolved from a refcount bump and a single
+    /// palette read rather than a manager lock per field.
     fn resolve(style: &crate::style::WidgetStyle) -> Self {
         let theme = crate::style::resolved_theme_style_shared("ribbon_bar");
-        let (window_fill, foreground, secondary, primary) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.secondary,
-                    active.colors.primary,
-                ),
-                None => (
-                    Color::rgb(240, 240, 240),
-                    Color::BLACK,
-                    Color::rgb(158, 158, 158),
-                    Color::rgb(33, 150, 243),
-                ),
+        // One palette read for the whole pass: `palette_shared` is the revision-validated cache, so
+        // this is a refcount bump rather than the manager lock the old four-field read took
+        // (K-P17).
+        let (window_fill, foreground, secondary, primary) = match crate::style::palette_shared() {
+            Some(colors) => {
+                (colors.background, colors.foreground, colors.secondary, colors.primary)
             }
+            None => (
+                Color::rgb(240, 240, 240),
+                Color::BLACK,
+                Color::rgb(158, 158, 158),
+                Color::rgb(33, 150, 243),
+            ),
         };
 
         let ink = style
@@ -469,6 +498,10 @@ impl RibbonBar {
             quick_access_clicked: Signal1::new(),
             quick_access_overflow_clicked: GenericSignal::new(),
             group_overflow_clicked: Signal1::new(),
+            layout_cache: crate::compat::RefCell::new(None),
+            tooltips: TooltipManager::new(geometry),
+            tooltip_source: None,
+            tooltip_now_ms: 0,
         }
     }
 
@@ -1104,15 +1137,15 @@ impl RibbonBar {
     pub fn group_overflow_rect(&self, gi: usize) -> Option<Rect> {
         let groups = self.groups.get(self.current_tab_index)?;
         let group = groups.get(gi)?;
-        let placed = self
-            .group_rects()
-            .into_iter()
-            .find(|(index, _)| *index == gi)
-            .map(|(_, rect)| self.compute_item_rects(gi, &rect).len())?;
-        if placed >= group.items().len() {
+        // One cached table serves the placed count and the group box; this used to build
+        // `group_rects` twice and re-lay out the group's items on every call, and the painter calls
+        // it once per group per frame (K-P08).
+        let layout = self.item_layout();
+        let (_, rect, placed) = layout.iter().find(|(index, _, _)| *index == gi)?;
+        if placed.len() >= group.items().len() {
             return None;
         }
-        let (_, rect) = self.group_rects().into_iter().find(|(index, _)| *index == gi)?;
+        let rect = *rect;
         Some(Rect::new(
             rect.x + rect.width as i32 - 22,
             rect.y + rect.height as i32 - GROUP_TITLE_HEIGHT - 18,
@@ -1124,6 +1157,47 @@ impl RibbonBar {
     /// Applies the panel reveal to the current expanded state.
     fn sync_panel_reveal(&mut self) {
         self.panel_reveal.set_open(self.expanded);
+    }
+
+    /// Registers the hovered item's tooltip with the hover pipeline (ADV-10).
+    ///
+    /// `RibbonItem::tooltip` had a field, an accessor and a setter from the start and **no reader**:
+    /// the painter and the event path never looked at it, so a caller's hint was silently dropped
+    /// and a long item label that the layout truncates could not be read anywhere. The pipeline is
+    /// the control's own [`TooltipManager`], the same shape `tool_bar` uses, because a widget cannot
+    /// reach a host's manager instance.
+    fn sync_hover_tooltip(&mut self) {
+        let Some((tab, gi, ii)) = self.hovered_item else {
+            if self.tooltip_source.take().is_some() {
+                self.tooltips.note_leave();
+            }
+            return;
+        };
+        let text = self
+            .groups
+            .get(tab)
+            .and_then(|groups| groups.get(gi))
+            .and_then(|group| group.items().get(ii))
+            .map(|item| item.tooltip().trim().to_string())
+            .filter(|text| !text.is_empty());
+        match text {
+            Some(text) => {
+                let id = hover_id(self.base.id(), tab, gi, ii);
+                self.tooltips.register(id, text);
+                self.tooltips.note_hover(id);
+                self.tooltip_source = Some(id);
+            }
+            None => {
+                if self.tooltip_source.take().is_some() {
+                    self.tooltips.note_leave();
+                }
+            }
+        }
+    }
+
+    /// Whether a tooltip is still waiting for its delay (or visible).
+    fn tooltip_owes_frames(&self) -> bool {
+        self.tooltip_source.is_some() || self.tooltips.tooltip().is_some()
     }
 
     // ── Layout helpers ────────────────────────────────────────────────────
@@ -1226,6 +1300,68 @@ impl RibbonBar {
         result
     }
 
+    /// A cheap fold over every fact the item layout reads (K-P08).
+    ///
+    /// The layout is a pure function of the panel rectangle, the current tab, the expand state and
+    /// the shape of that tab's groups (each group's item count, whether it is a gallery, and each
+    /// item's large/small classification). Folding those into one `u64` is O(items) integer work
+    /// with no allocation, which is what makes the cache self-correcting: nothing has to remember
+    /// to invalidate it when an item is added, resized or reclassified.
+    fn item_layout_signature(&self) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let panel = self.panel_rect();
+        for value in [
+            panel.x as u64,
+            panel.y as u64,
+            u64::from(panel.width),
+            u64::from(panel.height),
+            self.current_tab_index as u64,
+            u64::from(self.expanded),
+        ] {
+            hash ^= value;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        match self.groups.get(self.current_tab_index) {
+            Some(groups) => {
+                hash ^= groups.len() as u64;
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                for group in groups {
+                    for value in [group.items().len() as u64, u64::from(group.is_gallery())] {
+                        hash ^= value;
+                        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                    }
+                    for item in group.items() {
+                        hash ^= u64::from(item.is_large());
+                        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                    }
+                }
+            }
+            None => {
+                hash ^= u64::MAX;
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    /// The group and item boxes for the current layout, from the frame cache (K-P08).
+    fn item_layout(&self) -> Rc<Vec<GroupLayout>> {
+        let signature = self.item_layout_signature();
+        if let Some((cached_signature, layout)) = self.layout_cache.borrow().as_ref() {
+            if *cached_signature == signature {
+                return Rc::clone(layout);
+            }
+        }
+        let mut layout: Vec<GroupLayout> = Vec::new();
+        for (gi, group_rect) in self.group_rects() {
+            let rects = self.compute_item_rects(gi, &group_rect);
+            layout.push((gi, group_rect, rects));
+        }
+        let layout = Rc::new(layout);
+        *self.layout_cache.borrow_mut() = Some((signature, Rc::clone(&layout)));
+        layout
+    }
+
     /// Hit-test: given a position, returns which tab (if any) is under the cursor.
     ///
     /// Uses `Rect::contains_point` so the far edge stays **exclusive**, matching the
@@ -1250,26 +1386,23 @@ impl RibbonBar {
         if !self.expanded {
             return None;
         }
-        for (gi, group) in self.group_rects() {
-            let group_ref = match self.groups.get(self.current_tab_index) {
-                Some(g) => match g.get(gi) {
-                    Some(gr) => gr,
-                    None => continue,
-                },
+        let layout = self.item_layout();
+        let groups = self.groups.get(self.current_tab_index)?;
+        for (gi, _, item_rects) in layout.iter() {
+            let group_ref = match groups.get(*gi) {
+                Some(gr) => gr,
                 None => continue,
             };
             let items = group_ref.items();
             if items.is_empty() {
                 continue;
             }
-            // Compute item rectangles within this group
-            let item_rects = self.compute_item_rects(gi, &group);
             for (ii, ir) in item_rects {
                 // Exclusive far edge, per `Rect::contains_point`. The hand-written
                 // comparison that stood here let the boundary column hit the earlier
                 // item even though `draw` paints the later one over it.
-                if ir.contains_point(pos) && ii < items.len() {
-                    return Some((self.current_tab_index, gi, ii));
+                if ir.contains_point(pos) && *ii < items.len() {
+                    return Some((self.current_tab_index, *gi, *ii));
                 }
             }
         }
@@ -1516,13 +1649,12 @@ impl RibbonBar {
             _ => return,
         };
 
-        let group_rects = self.group_rects();
-        for (gi, gr) in &group_rects {
+        let layout = self.item_layout();
+        for (gi, gr, item_rects) in layout.iter() {
             let group = &groups[*gi];
 
             // ── Draw items within this group ──
-            let item_rects = self.compute_item_rects(*gi, gr);
-            for (ii, ir) in &item_rects {
+            for (ii, ir) in item_rects {
                 if let Some(item) = groups[*gi].items.get(*ii) {
                     let is_hovered = self.hovered_item == Some((self.current_tab_index, *gi, *ii));
 
@@ -1752,14 +1884,16 @@ impl Widget for RibbonBar {
         crate::core::Size::new(width, 120)
     }
 
-    /// Advances the panel reveal; `true` while it owes frames.
+    /// Advances the panel reveal and the tooltip clocks; `true` while either owes frames.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        self.panel_reveal.tick(delta_ms)
+        self.tooltip_now_ms = self.tooltip_now_ms.saturating_add(u64::from(delta_ms));
+        let tooltip_changed = self.tooltips.tick(u64::from(delta_ms), self.tooltip_now_ms);
+        self.panel_reveal.tick(delta_ms) || tooltip_changed || self.tooltip_owes_frames()
     }
 
-    /// Whether the panel is mid-transition.
+    /// Whether the panel is mid-transition or a tooltip is pending/visible.
     fn is_animating(&self) -> bool {
-        self.panel_reveal.is_animating()
+        self.panel_reveal.is_animating() || self.tooltip_owes_frames()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -1952,8 +2086,14 @@ impl EventHandler for RibbonBar {
                     || prev_item != self.hovered_item
                     || prev_min != self.minimize_hovered
                 {
+                    // A different item is a different tooltip: re-register before the redraw.
+                    if prev_item != self.hovered_item {
+                        self.sync_hover_tooltip();
+                    }
                     self.base.request_redraw();
                 }
+                // The bubble follows the pointer; this is the manager's own follow mode.
+                self.tooltips.note_pointer(*pos);
             }
 
             Event::MousePress { pos, button: 1, .. } => {
@@ -2150,6 +2290,9 @@ impl EventHandler for RibbonBar {
                 self.hovered_tab = None;
                 self.hovered_item = None;
                 self.minimize_hovered = false;
+                // Leaving the bar hides any hint; `note_leave` also drops the visible bubble.
+                self.tooltip_source = None;
+                self.tooltips.note_leave();
                 if self.temporarily_expanded {
                     self.temporarily_expanded = false;
                     self.expanded = false;
@@ -2318,6 +2461,12 @@ impl Draw for RibbonBar {
 
         // ── Draw content panel (if expanded) ──
         self.draw_panel(context, &palette);
+
+        // The tooltip pipeline owns the bubble; keeping it in the same control means a host does
+        // not need a second mounted widget to get hint text from the ribbon (ADV-10).
+        let geometry = self.geometry();
+        self.tooltips.set_geometry(geometry);
+        self.tooltips.draw(context);
     }
 }
 
@@ -2714,5 +2863,30 @@ mod tests {
         assert!(!ribbon.quick_access_overflowed_indices().is_empty());
         assert!(ribbon.quick_access_overflow_rect().is_some());
         assert!(ribbon.event_signal_dyn("quick_access_overflow_clicked").is_some());
+    }
+
+    /// A hovered item hands its stored tooltip to the pipeline (ADV-10).
+    #[test]
+    fn hovering_an_item_registers_its_tooltip() {
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 600, 200));
+        ribbon.add_tab("Home");
+        ribbon.add_group(0, "Clipboard");
+        let index = ribbon.add_item(0, 0, "Paste");
+        ribbon.groups[0][0].items_mut()[index].set_tooltip("Paste the clipboard");
+        ribbon.set_expanded(true);
+
+        let layout = ribbon.item_layout();
+        let (_, _, items) = layout.first().expect("the group has a layout");
+        let item_rect = items.first().expect("the item has a box").1;
+        ribbon.handle_event(&Event::mouse_move(item_rect.x + 2, item_rect.y + 2));
+        assert!(ribbon.tooltip_source.is_some(), "the hover registered a source");
+
+        // The manager shows it after its delay; one long tick is enough.
+        ribbon.tick(1_000);
+        assert_eq!(ribbon.tooltips.tooltip(), Some("Paste the clipboard"));
+
+        // And leaving hides it.
+        ribbon.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert!(ribbon.tooltips.tooltip().is_none());
     }
 }

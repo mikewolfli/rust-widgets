@@ -23,6 +23,7 @@ use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::widget_trait::InputMethodQuery;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::collections::HashMap;
 
 /// One logical line: `(start, content_end, end)` byte offsets.
 type LineSpan = (usize, usize, usize);
@@ -72,6 +73,22 @@ impl TextDeltaCommand {
             offset: prefix,
             removed: before[prefix..before.len() - suffix].to_string(),
             inserted: after[prefix..after.len() - suffix].to_string(),
+        }
+    }
+
+    /// A command for a mutation whose splice is already known (I-P60).
+    fn from_splice(
+        target: Rc<RefCell<String>>,
+        offset: usize,
+        removed: String,
+        inserted: String,
+    ) -> Self {
+        Self {
+            id: CommandId(NEXT_TEXT_COMMAND_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)),
+            target,
+            offset,
+            removed,
+            inserted,
         }
     }
 
@@ -232,6 +249,10 @@ pub struct TextArea {
     /// measurements — an entry is only reused while the document is unchanged — so the band's
     /// pixels do not move.
     band_width_cache: RefCell<Option<BandWidthCache>>,
+    /// The caret's blink state, advanced by [`TextArea::tick`] (I-116).
+    cursor_blink: crate::style::CursorBlink,
+    /// Whether the pointer is currently dragging the scrollbar thumb (I-118).
+    scrollbar_drag: bool,
 }
 
 /// One display row: the byte range of the value it paints.
@@ -265,8 +286,16 @@ struct DisplayRowCache {
 struct BandWidthCache {
     revision: u64,
     font: Font,
-    entries: Vec<(usize, usize, i32)>,
+    /// Measured `text[from..to]` advances, keyed by the byte range.
+    ///
+    /// A hash lookup replaces the old linear `Vec` scan (I-P61). The entry count is bounded so a
+    /// long-lived document cannot grow the cache without limit; a full cache is dropped rather
+    /// than evicted one entry at a time, which keeps the bookkeeping trivial.
+    entries: HashMap<(usize, usize), i32>,
 }
+
+/// Upper bound on memoised selection-band advances (I-P61).
+const BAND_WIDTH_CACHE_LIMIT: usize = 256;
 
 impl TextArea {
     /// Creates a new `TextArea` with the given initial text and geometry.
@@ -305,6 +334,8 @@ impl TextArea {
             revision: 0,
             display_rows_cache: RefCell::new(None),
             band_width_cache: RefCell::new(None),
+            cursor_blink: crate::style::CursorBlink::new(),
+            scrollbar_drag: false,
         }
     }
 
@@ -546,6 +577,62 @@ impl TextArea {
         self.notify_caret_change();
     }
 
+    /// Records an in-place splice as one undo step and emits `changed` (I-P60).
+    ///
+    /// Unlike [`Self::record_edit`] this needs no before-text clone: the caller already knows the
+    /// changed run and the inserted text, so ordinary typing costs one allocation proportional to
+    /// the edit instead of a whole-document copy.
+    ///
+    /// When `max_block_count` is active the budget may also drop lines from the front, which a
+    /// plain splice cannot describe; those callers pass `before = Some(...)` and the content diff
+    /// is recorded instead.
+    fn record_splice(
+        &mut self,
+        offset: usize,
+        removed: String,
+        inserted: String,
+        before: Option<String>,
+    ) {
+        if self.restoring_history {
+            return;
+        }
+        self.line_spans_cache.borrow_mut().take();
+        self.display_rows_cache.borrow_mut().take();
+        self.revision = self.revision.wrapping_add(1);
+        self.enforce_max_block_count();
+        match before {
+            Some(before) => {
+                // The line budget may have changed the value beyond the splice, so record the
+                // content diff instead of the (now incomplete) splice description.
+                *self.history_target.borrow_mut() = self.text.clone();
+                self.undo_stack.push(Box::new(TextDeltaCommand::new(
+                    self.history_target.clone(),
+                    &before,
+                    &self.text,
+                )));
+            }
+            None => {
+                // Advance the undo mirror with the same splice rather than replacing it with a
+                // whole-document clone, then file the matching delta.
+                {
+                    let mut target = self.history_target.borrow_mut();
+                    let start = offset.min(target.len());
+                    let end = (start + removed.len()).min(target.len());
+                    target.replace_range(start..end, &inserted);
+                }
+                self.undo_stack.push(Box::new(TextDeltaCommand::from_splice(
+                    self.history_target.clone(),
+                    offset,
+                    removed,
+                    inserted,
+                )));
+            }
+        }
+        self.scroll_caret_into_view();
+        self.changed.emit();
+        self.notify_caret_change();
+    }
+
     /// Replaces the entire text content.
     ///
     /// Emits the `changed` signal if the new text differs from the current text.
@@ -612,18 +699,44 @@ impl TextArea {
         if self.max_length > 0 && self.text.len() >= self.max_length {
             return;
         }
-        // Typing over a selection **replaces** it. This is the one thing every text field does and
-        // the only way to fix a word you just selected, so it happens before the boundary arithmetic
-        // below — the caret has to be at the range's start, not where it used to be.
-        self.replace_selection();
-        let boundary = floor_char_boundary(&self.text, self.cursor_pos);
-        self.cursor_pos = boundary;
-        let mut next = self.text.clone();
-        next.insert(self.cursor_pos, ch);
-        let new_cursor_pos = self.cursor_pos + ch.len_utf8();
-        self.set_text(next);
-        self.cursor_pos = new_cursor_pos.min(self.text.len());
-        self.notify_caret_change();
+        // The glyph's own UTF-8 bytes, so typing allocates no intermediate `String` (I-P60).
+        let mut glyph = [0u8; 4];
+        self.insert_text_in_place(ch.encode_utf8(&mut glyph));
+    }
+
+    /// Inserts `text` at the caret in place, replacing any selection.
+    ///
+    /// The single insertion path for both a single character and a committed/pasted run, so the
+    /// two cannot disagree about selection replacement, the length limit or undo (I-P60). It
+    /// mutates `self.text` directly and records the splice, so no whole-document candidate copy
+    /// is built per keystroke.
+    fn insert_text_in_place(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let selection = self.selection_range();
+        let removed = selection.map(|(start, end)| self.text[start..end].to_string());
+        let start = selection
+            .map(|(start, _)| start)
+            .unwrap_or_else(|| floor_char_boundary(&self.text, self.cursor_pos));
+        // Only the line-budget path needs a full before-image, because it may drop lines from the
+        // front and turn this splice into a larger change.
+        let before = self.max_block_count.map(|_| self.text.clone());
+        if let Some(removed) = removed.as_ref() {
+            self.text.replace_range(start..start + removed.len(), "");
+        }
+        self.text.insert_str(start, text);
+        if self.max_length > 0 && self.text.len() > self.max_length {
+            let boundary = floor_char_boundary(&self.text, self.max_length);
+            self.text.truncate(boundary);
+        }
+        self.cursor_pos = floor_char_boundary(&self.text, start + text.len());
+        self.selection_anchor = None;
+        let record_start = start.min(self.text.len());
+        let record_end = self.cursor_pos.max(record_start).min(self.text.len());
+        let inserted = self.text[record_start..record_end].to_string();
+        self.record_splice(record_start, removed.unwrap_or_default(), inserted, before);
+        self.base.request_redraw();
     }
 
     /// Inserts a single character.
@@ -643,29 +756,31 @@ impl TextArea {
     pub fn delete_char(&mut self) {
         // A selection is what Backspace means when there is one: the whole range goes, not just the
         // single character behind the caret.
-        let before = self.text.clone();
-        if self.replace_selection() {
-            self.record_edit(before);
-            self.base.request_redraw();
+        if let Some((start, end)) = self.selection_range() {
+            self.delete_range(start, end);
             return;
         }
+        // A no-op backspace at the start must not snapshot the whole value first (I-P60).
         if self.cursor_pos == 0 {
             return;
         }
-        let prev = self.text[..self.cursor_pos].char_indices().last().map(|(i, c)| {
-            if c == '\n' {
-                (i, 1)
-            } else {
-                (i, c.len_utf8())
-            }
-        });
-        if let Some((start, len)) = prev {
-            let mut next = self.text.clone();
-            next.replace_range(start..start + len, "");
-            self.set_text(next);
-            self.cursor_pos = start;
-            self.notify_caret_change();
+        let start = self.previous_char_boundary();
+        let end = floor_char_boundary(&self.text, self.cursor_pos);
+        self.delete_range(start, end);
+    }
+
+    /// Removes `start..end` as one splice and one undo step.
+    fn delete_range(&mut self, start: usize, end: usize) {
+        if start >= end || end > self.text.len() {
+            return;
         }
+        let removed = self.text[start..end].to_string();
+        let before = self.max_block_count.map(|_| self.text.clone());
+        self.text.replace_range(start..end, "");
+        self.cursor_pos = start;
+        self.selection_anchor = None;
+        self.record_splice(start, removed, String::new(), before);
+        self.base.request_redraw();
     }
 
     /// Returns the current cursor position (byte index into `text`).
@@ -1189,32 +1304,7 @@ impl TextArea {
     /// control gives the user no clue about. One snapshot and one guard for the whole insertion is
     /// what a user means by "paste".
     pub fn insert_str(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        let before = self.text.clone();
-        // Typing (or committing IME text, or pasting) over a selection replaces it — the same rule
-        // the single-character `insert` applies. Without this the caret's range was left in place
-        // and the committed text was spliced in *after* the selected run instead of over it, so a
-        // `TextInput` onto a selection appended rather than replaced.
-        let replaced = self.replace_selection();
-        let at = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
-        let mut next = self.text.clone();
-        next.insert_str(at, text);
-        self.text = next;
-        // Applied after the insertion so the limit bounds the final value. The boundary snap is
-        // not optional: `String::truncate` panics on a non-boundary index (see `set_max_length`).
-        if self.max_length > 0 && self.text.len() > self.max_length {
-            let boundary = floor_char_boundary(&self.text, self.max_length);
-            self.text.truncate(boundary);
-        }
-        self.cursor_pos = floor_char_boundary(&self.text, at + text.len());
-        self.selection_anchor = None;
-        self.line_spans_cache.borrow_mut().take();
-        if replaced || self.text != before {
-            self.record_edit(before);
-        }
-        self.base.request_redraw();
+        self.insert_text_in_place(text);
     }
 
     /// Copies the selected text to the platform clipboard, returning it.
@@ -1301,10 +1391,8 @@ impl TextArea {
     /// handled: it fell through to the character-input catch-all, where key code 46 is `.`, so
     /// pressing Delete typed a full stop and deleted nothing.
     pub fn delete_forward(&mut self) {
-        let before = self.text.clone();
-        if self.replace_selection() {
-            self.record_edit(before);
-            self.base.request_redraw();
+        if let Some((start, end)) = self.selection_range() {
+            self.delete_range(start, end);
             return;
         }
         if self.cursor_pos >= self.text.len() {
@@ -1312,10 +1400,7 @@ impl TextArea {
         }
         let start = floor_char_boundary(&self.text, self.cursor_pos);
         let end = self.next_char_boundary();
-        self.text.replace_range(start..end, "");
-        self.cursor_pos = start;
-        self.record_edit(before);
-        self.base.request_redraw();
+        self.delete_range(start, end);
     }
 
     /// Starts a pointer selection at the character `index`, extending from the anchor when `Shift`
@@ -1521,6 +1606,16 @@ impl Widget for TextArea {
         let floor = if field_height < material_field_height { field_height } else { 60 };
         let h = (line_count as u32 * LINE_H as u32 + 10).max(floor);
         Size::new(w, h)
+    }
+
+    /// Advances the caret blink and reports whether another frame is owed (I-116).
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        TextArea::tick(self, delta_ms)
+    }
+
+    /// A focused area keeps a blinking caret, so the host must keep scheduling frames (I-116).
+    fn is_animating(&self) -> bool {
+        self.focused
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -1728,10 +1823,13 @@ impl EventHandler for TextArea {
         match event {
             Event::FocusGained { .. } => {
                 self.focused = true;
+                // I-116: start the caret's blink cycle on focus.
+                self.cursor_blink.start();
                 self.request_redraw();
             }
             Event::FocusLost => {
                 self.focused = false;
+                self.cursor_blink.stop();
                 self.request_redraw();
             }
             // Platform-committed text (D09-INPUT-01), routed into the ordinary insert path. A
@@ -1759,14 +1857,8 @@ impl EventHandler for TextArea {
                 let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
                 let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
 
-                if primary && *key == 90 {
-                    let _ = self.undo();
-                    return;
-                }
-                if primary && *key == 89 {
-                    let _ = self.redo();
-                    return;
-                }
+                // I-117: select-all and copy remain available on a read-only area; undo/redo are
+                // mutations and therefore sit behind the guard below.
                 if primary && *key == 65 {
                     // Primary+A: select all. Handled on the control that owns the text, so a host
                     // whose window-level "select all" means something else does not swallow it.
@@ -1779,6 +1871,14 @@ impl EventHandler for TextArea {
                     return;
                 }
                 if self.read_only {
+                    return;
+                }
+                if primary && *key == 90 {
+                    let _ = self.undo();
+                    return;
+                }
+                if primary && *key == 89 {
+                    let _ = self.redo();
                     return;
                 }
                 if primary && *key == 88 {
@@ -1928,12 +2028,23 @@ impl EventHandler for TextArea {
             Event::MousePress { pos, button, modifiers, .. }
                 if *button == 1 && self.hit_test(*pos) =>
             {
+                // I-118: a press on the scrollbar thumb grabs it instead of moving the caret.
+                if self.scrollbar_contains(*pos) {
+                    self.scrollbar_drag = true;
+                    self.scrollbar_scroll_to(pos.y);
+                    self.request_redraw();
+                    return;
+                }
                 self.focused = true;
+                self.cursor_blink.start();
                 let index = self.byte_index_at(*pos);
                 self.press_at(index, crate::shortcut::Modifiers::from_event_bits(*modifiers));
             }
             Event::MouseMove { pos } => {
-                if self.dragging_selection {
+                if self.scrollbar_drag {
+                    self.scrollbar_scroll_to(pos.y);
+                    self.request_redraw();
+                } else if self.dragging_selection {
                     let index = self.byte_index_at(*pos);
                     self.drag_to(index);
                 }
@@ -1953,6 +2064,7 @@ impl EventHandler for TextArea {
             // A release anywhere ends the gesture, including outside the control: the anchor stays
             // where the press put it, so the selection the user made is kept.
             Event::MouseRelease { button, .. } if *button == 1 => {
+                self.scrollbar_drag = false;
                 self.end_drag();
             }
             _ => {}
@@ -2071,6 +2183,12 @@ impl Draw for TextArea {
                     let Some(display) = self.display_row(row) else {
                         break;
                     };
+                    // I-P62: stop at the bottom edge. The loop used to walk every display row of
+                    // the document, doing overlap and band-width work for rows far below the
+                    // viewport.
+                    if y + LINE_H > rect.y + rect.height as i32 {
+                        break;
+                    }
                     // The overlap of `[sel_start, sel_end)` with this display row's own content.
                     let from = sel_start.max(display.start).min(display.end);
                     let to = sel_end.min(display.end).max(from);
@@ -2120,7 +2238,8 @@ impl Draw for TextArea {
         }
 
         // -- Cursor --
-        if self.focused {
+        // I-116: the caret is only painted during the visible half of its blink cycle.
+        if self.focused && self.cursor_blink.is_visible() {
             let cursor_x = self.cursor_screen_x(origin_x);
             let cursor_y = self.cursor_screen_y(text_top);
             context.draw_line(
@@ -2130,10 +2249,93 @@ impl Draw for TextArea {
             );
         }
         context.pop_clip();
+        self.draw_scrollbar(context);
     }
 }
 
 impl TextArea {
+    /// Advances the caret blink by `delta_ms` and reports whether another frame is needed.
+    ///
+    /// The crate-wide `tick(delta_ms) -> bool` convention: a host that renders on demand keeps
+    /// owning the clock, and a blurred area never asks for a frame (I-116).
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.focused {
+            return false;
+        }
+        let running = self.cursor_blink.tick(delta_ms);
+        if running {
+            self.base.request_redraw();
+        }
+        running
+    }
+
+    /// The scrollbar's track rectangle, or `None` when the value fits the viewport (I-118).
+    fn scrollbar_track(&self) -> Option<(Rect, usize, usize)> {
+        let total = self.line_spans().len();
+        let visible = self.visible_line_count();
+        if total <= visible {
+            return None;
+        }
+        let rect = self.geometry();
+        let width = 4u32;
+        let track = Rect::new(
+            rect.x + rect.width.saturating_sub(width + 2) as i32,
+            rect.y.saturating_add(2),
+            width,
+            rect.height.saturating_sub(4),
+        );
+        Some((track, total, visible))
+    }
+
+    /// The thumb rectangle within `track`, proportional to the visible fraction.
+    fn scrollbar_thumb(&self, track: Rect, total: usize, visible: usize) -> Rect {
+        let height = ((visible as f32 / total as f32) * track.height as f32)
+            .max(8.0)
+            .min(track.height as f32) as u32;
+        let max_first = total.saturating_sub(visible);
+        let fraction = if max_first == 0 {
+            0.0
+        } else {
+            self.first_visible_line.min(max_first) as f32 / max_first as f32
+        };
+        let y = track.y + (((track.height - height) as f32) * fraction) as i32;
+        Rect::new(track.x, y, track.width, height)
+    }
+
+    /// Whether `pos` is on the scrollbar track (and therefore grabs the thumb).
+    fn scrollbar_contains(&self, pos: Point) -> bool {
+        self.scrollbar_track().map(|(track, _, _)| track.contains_point(pos)).unwrap_or(false)
+    }
+
+    /// Scrolls the value so the scrollbar dragged to `y` lands there (I-118).
+    fn scrollbar_scroll_to(&mut self, y: i32) {
+        let Some((track, total, visible)) = self.scrollbar_track() else {
+            return;
+        };
+        let thumb = self.scrollbar_thumb(track, total, visible);
+        let travel = (track.height.saturating_sub(thumb.height)).max(1) as f32;
+        let offset = (y - track.y - thumb.height as i32 / 2) as f32;
+        let max_first = total.saturating_sub(visible);
+        let fraction = (offset / travel).clamp(0.0, 1.0);
+        let next = (fraction * max_first as f32).round() as usize;
+        if next != self.first_visible_line {
+            self.first_visible_line = next;
+        }
+    }
+
+    /// Paints the right-edge scrollbar when the value is taller than the viewport (I-118).
+    fn draw_scrollbar(&self, context: &mut RenderContext) {
+        let Some((track, total, visible)) = self.scrollbar_track() else {
+            return;
+        };
+        let paper = self.style().background_color.unwrap_or(Color::WHITE);
+        let ink = self.style().text_color.unwrap_or(Color::BLACK);
+        let track_color = ink.blend(&paper, 0.18);
+        let thumb_color = ink.blend(&paper, 0.45);
+        context.fill_rect(track, track_color);
+        context.fill_rect(self.scrollbar_thumb(track, total, visible), thumb_color);
+    }
+
     /// The resolved body font the control paints and measures text with.
     ///
     /// Draw and the caret/hit-test helpers must read the same font, so a themed or scaled body font
@@ -2184,9 +2386,7 @@ impl TextArea {
             let cache = self.band_width_cache.borrow();
             if let Some(cache) = cache.as_ref() {
                 if cache.revision == self.revision && cache.font == *font {
-                    if let Some((_, _, width)) =
-                        cache.entries.iter().find(|(start, end, _)| *start == from && *end == to)
-                    {
+                    if let Some(width) = cache.entries.get(&(from, to)) {
                         return *width;
                     }
                 }
@@ -2198,15 +2398,17 @@ impl TextArea {
             Some(entry) => entry.revision != self.revision || entry.font != *font,
             None => true,
         };
-        if stale {
+        if stale
+            || cache.as_ref().is_some_and(|entry| entry.entries.len() >= BAND_WIDTH_CACHE_LIMIT)
+        {
             *cache = Some(BandWidthCache {
                 revision: self.revision,
                 font: font.clone(),
-                entries: Vec::new(),
+                entries: HashMap::new(),
             });
         }
         if let Some(entry) = cache.as_mut() {
-            entry.entries.push((from, to, width));
+            entry.entries.insert((from, to), width);
         }
         width
     }
@@ -2260,29 +2462,36 @@ impl TextArea {
     /// character boundary by construction.
     fn column_at_x(&self, line: &str, x: i32) -> usize {
         let target = x.max(0) as f32;
-        let mut best = 0usize;
-        let mut prefix_width = 0.0f32;
-        for (index, ch) in line.char_indices() {
-            let advance = self.char_advance_at(index, line);
-            // The midpoint decides which side of a character's centre the pointer is on, which is the
-            // conventional rule and the one that makes clicking the left half of a glyph put the
-            // caret before it.
-            if target < prefix_width + advance / 2.0 {
-                break;
+        let font = self.text_font();
+        // One measurement surface for the whole walk: the old per-character helper built a
+        // `SoftwarePaintBackend` and a `RenderContext` for every glyph it passed (I-P61).
+        Self::with_measurement(|context| {
+            let mut best = 0usize;
+            let mut prefix_width = 0.0f32;
+            let mut glyph = [0u8; 4];
+            for (index, ch) in line.char_indices() {
+                let advance = context.measure_text(ch.encode_utf8(&mut glyph), font).width as f32;
+                // The midpoint decides which side of a character's centre the pointer is on, which
+                // is the conventional rule and the one that makes clicking the left half of a
+                // glyph put the caret before it.
+                if target < prefix_width + advance / 2.0 {
+                    break;
+                }
+                prefix_width += advance;
+                best = index + ch.len_utf8();
             }
-            prefix_width += advance;
-            best = index + ch.len_utf8();
-        }
-        best
+            best
+        })
     }
 
-    /// The advance of the character at `byte_index` in `line`.
-    fn char_advance_at(&self, byte_index: usize, line: &str) -> f32 {
+    /// Runs `f` against a throwaway measurement surface.
+    ///
+    /// `measure_text` writes no command, so a zero-sized backend is enough and nothing is
+    /// rasterised while a layout is computed.
+    fn with_measurement<R>(f: impl FnOnce(&RenderContext) -> R) -> R {
         let mut measurement =
             crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
-        let context = RenderContext::new(&mut measurement);
-        let ch = line[byte_index..].chars().next().unwrap_or(' ');
-        context.measure_text(&ch.to_string(), self.text_font()).width as f32
+        f(&RenderContext::new(&mut measurement))
     }
 
     /// Computes the screen-space Y coordinate of the cursor (top of cursor line).

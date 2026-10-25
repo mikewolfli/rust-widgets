@@ -47,7 +47,7 @@
 //! across sessions. A designer that needs a durable identity uses the **key** (or the path in the
 //! document), and resolves it to an `ObjectId` at run time through this index.
 
-use crate::compat::{HashMap, String, Vec};
+use crate::compat::{Arc, HashMap, String, Vec};
 use crate::core::ObjectId;
 
 /// A read-only snapshot of a mounted tree's identity map.
@@ -57,14 +57,20 @@ use crate::core::ObjectId;
 #[derive(Debug, Clone, Default)]
 pub struct TreeIndex {
     /// Every node's `ObjectId`, by its path from the root.
-    path_to_id: HashMap<Vec<usize>, ObjectId>,
+    ///
+    /// The key is a shared `Arc` slice rather than an owned `Vec` so the reverse map below
+    /// can point at the **same** allocation: a snapshot therefore costs one path allocation
+    /// per node instead of one per map (G-167).
+    path_to_id: HashMap<Arc<[usize]>, ObjectId>,
     /// Every **keyed** node's `ObjectId`, by `(parent id, key)`.
     ///
     /// Keyed by the parent's id rather than the parent's path because a key is scoped to its
     /// siblings, and the parent's id survives an insertion above it while its path does not.
     key_to_id: HashMap<(Option<ObjectId>, String), ObjectId>,
     /// The reverse of `path_to_id`, for the "what is this control in the model?" direction.
-    id_to_path: HashMap<ObjectId, Vec<usize>>,
+    ///
+    /// Shares the path allocation with `path_to_id` (see the field comment above).
+    id_to_path: HashMap<ObjectId, Arc<[usize]>>,
     /// Keys claimed more than once under one parent, sorted for a stable report.
     ///
     /// A duplicated key identifies **neither** claimant, so neither is entered in `key_to_id`: this
@@ -137,7 +143,7 @@ impl TreeIndex {
 
     /// The path of `id` in this snapshot, or `None` when the id is not part of it.
     pub fn path_of(&self, id: ObjectId) -> Option<&[usize]> {
-        self.id_to_path.get(&id).map(Vec::as_slice)
+        self.id_to_path.get(&id).map(|path| path.as_ref())
     }
 
     /// The widget type name of `id`, or `None` when the id is not part of this snapshot.
@@ -177,7 +183,8 @@ impl TreeIndex {
     /// public constructor would let a caller build an index that disagrees with the tree it claims
     /// to describe.
     pub(crate) fn build(
-        path_to_id: HashMap<Vec<usize>, ObjectId>,
+        path_to_id: HashMap<Arc<[usize]>, ObjectId>,
+        id_to_path: HashMap<ObjectId, Arc<[usize]>>,
         widget_of: HashMap<ObjectId, String>,
         key_of: HashMap<ObjectId, String>,
         parent_of: HashMap<ObjectId, ObjectId>,
@@ -214,10 +221,6 @@ impl TreeIndex {
             }
         }
         duplicated_keys.sort();
-        let mut id_to_path: HashMap<ObjectId, Vec<usize>> = HashMap::new();
-        for (path, id) in &path_to_id {
-            id_to_path.insert(*id, path.clone());
-        }
         Self {
             path_to_id,
             key_to_id,
@@ -235,6 +238,39 @@ impl TreeIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Assemble both path maps from a forward-only fixture.
+    ///
+    /// The production builder takes the two maps from one walk (G-167); a fixture states the
+    /// paths once and derives the reverse table here so each test stays a declaration of the
+    /// tree it exercises.
+    fn build_index(
+        path_to_id: HashMap<Vec<usize>, ObjectId>,
+        widget_of: HashMap<ObjectId, String>,
+        key_of: HashMap<ObjectId, String>,
+        parent_of: HashMap<ObjectId, ObjectId>,
+        children_of: HashMap<ObjectId, Vec<ObjectId>>,
+        root: Option<ObjectId>,
+        generation: u64,
+    ) -> TreeIndex {
+        let mut forward: HashMap<Arc<[usize]>, ObjectId> = HashMap::new();
+        let mut reverse: HashMap<ObjectId, Arc<[usize]>> = HashMap::new();
+        for (path, id) in &path_to_id {
+            let shared: Arc<[usize]> = Arc::from(path.as_slice());
+            forward.insert(Arc::clone(&shared), *id);
+            reverse.insert(*id, shared);
+        }
+        TreeIndex::build(
+            forward,
+            reverse,
+            widget_of,
+            key_of,
+            parent_of,
+            children_of,
+            root,
+            generation,
+        )
+    }
 
     fn sample_index() -> TreeIndex {
         // A tiny two-level tree: root(1) -> panel(2, key "sidebar"), panel(2) -> label(3, key "title").
@@ -255,7 +291,7 @@ mod tests {
         let mut children_of: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
         children_of.insert(1u64, vec![2u64]);
         children_of.insert(2u64, vec![3u64]);
-        TreeIndex::build(path_to_id, widget_of, key_of, parent_of, children_of, Some(1), 7)
+        build_index(path_to_id, widget_of, key_of, parent_of, children_of, Some(1), 7)
     }
 
     /// Both directions must resolve: path → id and id → path.
@@ -334,8 +370,7 @@ mod tests {
         parent_of.insert(3u64, 1u64);
         let mut children_of: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
         children_of.insert(1u64, vec![2u64, 3u64]);
-        let index =
-            TreeIndex::build(path_to_id, widget_of, key_of, parent_of, children_of, Some(1), 1);
+        let index = build_index(path_to_id, widget_of, key_of, parent_of, children_of, Some(1), 1);
 
         assert_eq!(index.id_of_key(Some(1), "dup"), None, "the key identifies neither claimant");
         assert_eq!(index.duplicate_keys(), &[(Some(1), String::from("dup"))]);
@@ -374,8 +409,7 @@ mod tests {
         }
         let mut children_of: HashMap<ObjectId, Vec<ObjectId>> = HashMap::new();
         children_of.insert(1u64, vec![2u64, 3u64, 4u64]);
-        let index =
-            TreeIndex::build(path_to_id, widget_of, key_of, parent_of, children_of, Some(1), 2);
+        let index = build_index(path_to_id, widget_of, key_of, parent_of, children_of, Some(1), 2);
 
         assert_eq!(index.id_of_key(Some(1), "dup"), None, "three claimants map to none of them");
         assert_eq!(index.duplicate_keys(), &[(Some(1), String::from("dup"))]);

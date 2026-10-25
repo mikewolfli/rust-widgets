@@ -181,6 +181,9 @@ mod tests {
                             opacity: Some(0.5),
                             shadow: ShadowOverride::None,
                             touch_target: Some([44, 44]),
+                            // THM-01: the padding density token is part of the schema now; an
+                            // unset token must round-trip as unset like every other field.
+                            padding: None,
                             // Every one of the four surface dimensions is stated, so the
                             // round trip has something to lose in each of them.
                             elevation: Some(SurfaceElevationToken(Elevation::Level3)),

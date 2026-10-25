@@ -6,7 +6,7 @@
 //! Provides types for organizing draw commands into batches that can be
 //! recorded once and replayed efficiently by the renderer.
 
-use crate::compat::{fmt, Arc, HashMap, Rc, Vec};
+use crate::compat::{fmt, Arc, HashMap, Rc, Vec, VecDeque};
 
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::render::{
@@ -882,7 +882,8 @@ fn transform_command(
             // Crop the requested source rectangle into its own tightly packed RGBA buffer and
             // stretch that to `dest`. Replaying the full image would draw the wrong pixels, and
             // dropping it (the old behaviour) lost the command entirely (G-14).
-            let Some(cropped) = crop_source_rect(data, *source_width, *source_height, *source)
+            let Some(cropped) =
+                crop_source_rect_cached(data, *source_width, *source_height, *source)
             else {
                 log::warn!(
                     "[batch] DrawImageSubrect (image={image_id}) has an empty or out-of-bounds \
@@ -894,7 +895,7 @@ fn transform_command(
             note_image_bytes_translated(cropped.len());
             let applied_rect = state.apply_to_rect(dest);
             let combined_opacity = state.opacity * opacity;
-            let data: Arc<[u8]> = Arc::from(cropped);
+            let data: Arc<[u8]> = cropped;
             let data = if combined_opacity < 1.0 && data.len().is_multiple_of(4) {
                 baked_image(&data, combined_opacity)
             } else {
@@ -983,16 +984,18 @@ type BakedImageKey = (usize, usize, u32);
 type BakedImageEntry = (Arc<[u8]>, Arc<[u8]>);
 
 thread_local! {
-    /// Alpha-baked image variants, keyed by the source allocation's address, length and opacity.
+    // `HashMap::new` is const only under alloc_frugal (BTreeMap); the std profile cannot be const.
+    /// Alpha-baked image variants plus the FIFO order their keys are evicted in.
     ///
     /// Each entry holds the source `Arc` as well as the baked bytes. Keeping the source alive is
     /// what makes the address a stable identity: without it the allocation could be freed and a
     /// different image could reuse the same address. Bounded because a frame can fade many images.
-    static BAKED_IMAGES: core::cell::RefCell<HashMap<BakedImageKey, BakedImageEntry>> =
-        core::cell::RefCell::new(HashMap::new());
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
+    static BAKED_IMAGES: core::cell::RefCell<(VecDeque<BakedImageKey>, HashMap<BakedImageKey, BakedImageEntry>)> =
+        core::cell::RefCell::new((VecDeque::new(), HashMap::new()));
 }
 
-/// How many alpha-baked image variants one thread keeps before starting over.
+/// How many alpha-baked image variants one thread keeps before evicting the oldest.
 const BAKED_IMAGE_CACHE_LIMIT: usize = 32;
 
 /// Returns `source` with every alpha byte scaled by `opacity`, reusing a previously baked variant
@@ -1000,7 +1003,7 @@ const BAKED_IMAGE_CACHE_LIMIT: usize = 32;
 fn baked_image(source: &Arc<[u8]>, opacity: f32) -> Arc<[u8]> {
     let key = (source.as_ptr() as usize, source.len(), opacity.to_bits());
     if let Some(hit) =
-        BAKED_IMAGES.with(|cache| cache.borrow().get(&key).map(|(_, baked)| Arc::clone(baked)))
+        BAKED_IMAGES.with(|cache| cache.borrow().1.get(&key).map(|(_, baked)| Arc::clone(baked)))
     {
         return hit;
     }
@@ -1011,10 +1014,15 @@ fn baked_image(source: &Arc<[u8]>, opacity: f32) -> Arc<[u8]> {
     let baked: Arc<[u8]> = Arc::from(baked);
     BAKED_IMAGES.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if cache.len() >= BAKED_IMAGE_CACHE_LIMIT {
-            cache.clear();
+        // Evict the oldest entry instead of clearing the table: a fade cycle rotates through a
+        // small set of opacities, and clearing threw every warm variant away (G-205).
+        if cache.0.len() >= BAKED_IMAGE_CACHE_LIMIT {
+            if let Some(oldest) = cache.0.pop_front() {
+                cache.1.remove(&oldest);
+            }
         }
-        cache.insert(key, (Arc::clone(source), Arc::clone(&baked)));
+        cache.0.push_back(key);
+        cache.1.insert(key, (Arc::clone(source), Arc::clone(&baked)));
     });
     baked
 }
@@ -1061,6 +1069,67 @@ fn crop_source_rect(
         let dst = row * row_bytes;
         cropped[dst..dst + row_bytes].copy_from_slice(&data[src..src + row_bytes]);
     }
+    Some(cropped)
+}
+
+/// Key for the cropped-subrect cache: source address, source dimensions and the crop rectangle.
+///
+/// The dimensions are part of the key because they define the stride the crop is read with; two
+/// sources with the same address cannot have different dimensions while the `Arc` is held, but
+/// including them makes the key self-describing.
+type CroppedImageKey = (usize, u32, u32, i32, i32, u32, u32);
+/// A cropped variant: the source kept alive plus the cropped bytes.
+type CroppedImageEntry = (Arc<[u8]>, Arc<[u8]>);
+
+thread_local! {
+    // `HashMap::new` is const only under alloc_frugal (BTreeMap); the std profile cannot be const.
+    /// Cropped sub-rectangles, keyed by the source allocation's address, dimensions and rectangle.
+    ///
+    /// A batch that replays every frame crops the same source rectangle every frame. Keeping the
+    /// result by refcount makes the crop once per content instead of once per replay (G-04).
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
+    static CROPPED_IMAGES: core::cell::RefCell<(VecDeque<CroppedImageKey>, HashMap<CroppedImageKey, CroppedImageEntry>)> =
+        core::cell::RefCell::new((VecDeque::new(), HashMap::new()));
+}
+
+/// How many cropped sub-rectangles one thread keeps before evicting the oldest (G-04).
+const CROPPED_IMAGE_CACHE_LIMIT: usize = 32;
+
+/// Returns the cached crop of `source`'s `rect`, copying it at most once per content (G-04).
+///
+/// The key uses the source `Arc`'s address and the cache keeps the `Arc` alive, so the address
+/// cannot be recycled by a different image while the entry exists.
+fn crop_source_rect_cached(
+    source: &Arc<[u8]>,
+    source_width: u32,
+    source_height: u32,
+    rect: Rect,
+) -> Option<Arc<[u8]>> {
+    let key = (
+        source.as_ptr() as usize,
+        source_width,
+        source_height,
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height,
+    );
+    if let Some(hit) = CROPPED_IMAGES
+        .with(|cache| cache.borrow().1.get(&key).map(|(_, cropped)| Arc::clone(cropped)))
+    {
+        return Some(hit);
+    }
+    let cropped: Arc<[u8]> = crop_source_rect(source, source_width, source_height, rect)?.into();
+    CROPPED_IMAGES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0.len() >= CROPPED_IMAGE_CACHE_LIMIT {
+            if let Some(oldest) = cache.0.pop_front() {
+                cache.1.remove(&oldest);
+            }
+        }
+        cache.0.push_back(key);
+        cache.1.insert(key, (Arc::clone(source), Arc::clone(&cropped)));
+    });
     Some(cropped)
 }
 

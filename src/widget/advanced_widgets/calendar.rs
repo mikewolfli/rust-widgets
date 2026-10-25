@@ -21,6 +21,104 @@ use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use chrono::Datelike;
 
+/// The English month names, indexed `month - 1`.
+///
+/// One table, read through [`Calendar::month_name`]. The draw path used to ask `chrono` for
+/// `%B` inside the title and once per open-menu row, which allocated a `String` per label per
+/// frame; this is the same text, borrowed.
+const ENGLISH_MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// The English weekday names, indexed by `Weekday::num_days_from_monday()` (Monday first).
+///
+/// All seven are present. The header used to hardcode a three-letter list and a lookup keyed on
+/// only Mon/Sun, so any other `first_day_of_week` fell through to `Mon` for every column — six of
+/// the seven possible headers were wrong.
+const ENGLISH_WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/// The default `date_format` pattern, rendered through the calendar's names layer.
+const DEFAULT_DATE_FORMAT: &str = "%B %Y";
+
+/// The navigation title's cached text and the inputs it was built from.
+#[derive(Default)]
+struct MonthTitleCache {
+    /// The `date_format` pattern the text was rendered with.
+    format: String,
+    /// The year the text names.
+    year: i32,
+    /// The month the text names, `1..=12`.
+    month: u32,
+    /// The rendered title.
+    text: String,
+}
+
+/// The year menu's cached row labels and the window they cover.
+#[derive(Default)]
+struct YearMenuCache {
+    /// The first year of the window the labels were built for; `None` before the first build.
+    start: Option<i32>,
+    /// The five row labels.
+    labels: [String; 5],
+}
+
+/// The day grid's cached text line boxes and the geometry they were built for.
+#[derive(Default)]
+struct DayLineCache {
+    /// The inputs the boxes were built from; `None` before the first build.
+    key: Option<DayLineKey>,
+    /// One line box per cell, indexed `row * 7 + col`.
+    lines: Vec<Rect>,
+}
+
+/// Everything a day cell's text line box depends on.
+///
+/// The font is inside the key because the box's height is the font's line height, and its width
+/// is the cell's own — a theme switch that changes the role font must rebuild the table.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DayLineKey {
+    grid_x: i32,
+    grid_y: i32,
+    cell_w: u32,
+    cell_h: u32,
+    font_size_bits: u32,
+    font_weight: u16,
+    font_family_hash: u64,
+}
+
+impl DayLineKey {
+    /// Folds the inputs into one comparable value.
+    fn of(grid: Rect, cell_w: u32, cell_h: u32, font: &crate::core::Font) -> Self {
+        // FNV-1a over the family name: the table is rebuilt only on a theme/class change, so a
+        // per-frame hash of a short string is cheaper than storing an owned copy to compare.
+        let mut font_family_hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in font.family().as_bytes() {
+            font_family_hash ^= u64::from(*byte);
+            font_family_hash = font_family_hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Self {
+            grid_x: grid.x,
+            grid_y: grid.y,
+            cell_w,
+            cell_h,
+            font_size_bits: font.size().to_bits(),
+            font_weight: font.weight(),
+            font_family_hash,
+        }
+    }
+}
+
 /// Advance a date by `delta` months, clamping to the last valid day.
 fn advance_month(date: chrono::NaiveDate, delta: i32) -> Option<chrono::NaiveDate> {
     let total_months = date.year() * 12 + date.month() as i32 + delta;
@@ -180,6 +278,19 @@ pub struct Calendar {
     page_animation: bool,
     /// The grid's page-change reveal.
     page_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal,
+    /// Full month names, indexed `month - 1`; see [`Calendar::month_name`].
+    month_names: [String; 12],
+    /// Weekday names, indexed by `Weekday::num_days_from_monday()`; see [`Calendar::weekday_name`].
+    weekday_names: [String; 7],
+    /// The navigation title's rendered text, rebuilt only when its inputs change (K-P01).
+    title_cache: crate::compat::RefCell<MonthTitleCache>,
+    /// The year menu's row labels, rebuilt only when its window changes (K-P01).
+    year_menu_cache: crate::compat::RefCell<YearMenuCache>,
+    /// The day grid's text line boxes, rebuilt only when the grid geometry or font changes
+    /// (K-P01). A `RefCell` because `draw` resolves `style` once, which holds an immutable
+    /// borrow of `self` for the rest of the pass — the same reason `ToolBar` caches its item
+    /// bands this way.
+    day_line_cache: crate::compat::RefCell<DayLineCache>,
 }
 impl Calendar {
     /// Creates a calendar widget.
@@ -207,7 +318,7 @@ impl Calendar {
             selection_changed: Signal1::new(),
             activated: Signal1::new(),
             current_page_changed: Signal1::new(),
-            date_format: "%B %Y".to_string(),
+            date_format: DEFAULT_DATE_FORMAT.to_string(),
             hovered_date: None,
             date_text_color: None,
             disabled_dates: Vec::new(),
@@ -217,6 +328,11 @@ impl Calendar {
             today_button_visible: false,
             page_animation: false,
             page_reveal: crate::widget::menu_toolbar::popup_reveal::PopupReveal::new(true),
+            month_names: core::array::from_fn(|index| ENGLISH_MONTHS[index].to_string()),
+            weekday_names: core::array::from_fn(|index| ENGLISH_WEEKDAYS[index].to_string()),
+            title_cache: crate::compat::RefCell::new(MonthTitleCache::default()),
+            year_menu_cache: crate::compat::RefCell::new(YearMenuCache::default()),
+            day_line_cache: crate::compat::RefCell::new(DayLineCache::default()),
         }
     }
     /// Returns the date this calendar paints as "today".
@@ -234,6 +350,72 @@ impl Calendar {
             return;
         }
         self.today = date;
+        self.base.request_redraw();
+    }
+
+    /// The full name of `month` (`1..=12`).
+    ///
+    /// This and [`Calendar::weekday_name`] are the calendar's **date-name layer**: the title, the
+    /// month menu and the weekday header all read their text from here, so a caller that supplies
+    /// localised names sees them in every place at once, and the three sites cannot drift apart.
+    /// The default is English with all twelve months and all seven weekdays present.
+    pub fn month_name(&self, month: u32) -> &str {
+        let index = month.clamp(1, 12) as usize - 1;
+        &self.month_names[index]
+    }
+
+    /// The name of `weekday` from this calendar's names layer.
+    ///
+    /// Indexed by the weekday itself (`Weekday::num_days_from_monday`), not by its position in
+    /// the visible grid, so a `first_day_of_week` change cannot shift the names.
+    pub fn weekday_name(&self, weekday: chrono::Weekday) -> &str {
+        &self.weekday_names[weekday.num_days_from_monday() as usize]
+    }
+
+    /// The twelve month names this calendar paints, January first.
+    pub fn month_names(&self) -> &[String; 12] {
+        &self.month_names
+    }
+
+    /// Replaces the month names and repaints.
+    ///
+    /// A localisation hook, not a formatting one: the *order* is fixed (January first), so a
+    /// caller supplies the same twelve slots in its own language.
+    pub fn set_month_names(&mut self, names: [String; 12]) {
+        if self.month_names == names {
+            return;
+        }
+        self.month_names = names;
+        self.title_cache.get_mut().month = 0;
+        self.base.request_redraw();
+    }
+
+    /// The weekday names this calendar paints, indexed by `num_days_from_monday`.
+    pub fn weekday_names(&self) -> &[String; 7] {
+        &self.weekday_names
+    }
+
+    /// The seven weekdays in the order the header paints them.
+    ///
+    /// The header's columns are derived from `first_day_of_week` here, once, so the label column
+    /// and the weekend tint column cannot disagree about which weekday a column belongs to.
+    fn weekday_name_order(&self) -> [chrono::Weekday; 7] {
+        let first = self.first_day_of_week.num_days_from_monday();
+        core::array::from_fn(|index| {
+            let day = ((first + index as u32) % 7) as u8;
+            chrono::Weekday::try_from(day).unwrap_or(self.first_day_of_week)
+        })
+    }
+
+    /// Replaces the weekday names and repaints.
+    ///
+    /// Indexed by `num_days_from_monday`, the same index the header uses, so Monday's slot is
+    /// always slot 0 regardless of which day the header starts on.
+    pub fn set_weekday_names(&mut self, names: [String; 7]) {
+        if self.weekday_names == names {
+            return;
+        }
+        self.weekday_names = names;
         self.base.request_redraw();
     }
 
@@ -778,8 +960,81 @@ impl Calendar {
         Some(self.year_menu_start() + index as i32)
     }
 
-    /// Renders `display_month` through this calendar's `date_format` pattern into `out`.
+    /// The rendered navigation title, borrowed from the frame cache (K-P01).
     ///
+    /// The title used to be re-formatted every frame — `format("%B")`, `format("%Y")` or the
+    /// caller's own `date_format` pattern. The pattern is the only input besides the displayed
+    /// month, so the cache is keyed on exactly those three facts; a page change, a `date_format`
+    /// write or a names-layer swap rebuilds it and nothing else does.
+    fn month_title_text(&self) -> core::cell::RefMut<'_, String> {
+        let mut cache = self.title_cache.borrow_mut();
+        let month = self.display_month.month();
+        if cache.month != month
+            || cache.year != self.display_month.year()
+            || cache.format != self.date_format
+        {
+            let mut text = String::new();
+            self.write_month_title(&mut text);
+            cache.text = text;
+            cache.format.clear();
+            cache.format.push_str(&self.date_format);
+            cache.month = month;
+            cache.year = self.display_month.year();
+        }
+        core::cell::RefMut::map(cache, |cache| &mut cache.text)
+    }
+
+    /// The year menu's row label for `index`, borrowed from the window cache (K-P01).
+    fn year_menu_label(&self, index: usize) -> core::cell::RefMut<'_, str> {
+        let start = self.year_menu_start();
+        let mut cache = self.year_menu_cache.borrow_mut();
+        if cache.start != Some(start) {
+            for (slot, label) in cache.labels.iter_mut().enumerate() {
+                label.clear();
+                let _ = write!(label, "{}", start + slot as i32);
+            }
+            cache.start = Some(start);
+        }
+        core::cell::RefMut::map(cache, |cache| cache.labels[index].as_mut_str())
+    }
+
+    /// The text line box for the day cell at `(row, col)`, from the geometry cache (K-P01).
+    ///
+    /// The 42 boxes are a pure function of the grid's origin, the cell size and the day-number
+    /// font, so they are built once per geometry and reused. `context.text_line` is not free: it
+    /// measures the font's line height through the backend, and the loop asked it 42 times a
+    /// frame for answers that could not differ.
+    fn day_line_rect(
+        &self,
+        row: usize,
+        col: usize,
+        grid: Rect,
+        cell_w: u32,
+        cell_h: u32,
+        font: &crate::core::Font,
+        context: &RenderContext,
+    ) -> Rect {
+        let key = DayLineKey::of(grid, cell_w, cell_h, font);
+        let mut cache = self.day_line_cache.borrow_mut();
+        if cache.key != Some(key) {
+            cache.lines.clear();
+            for row in 0..6 {
+                for col in 0..7 {
+                    let cell = Rect::new(
+                        grid.x + col * cell_w as i32,
+                        grid.y + row * cell_h as i32,
+                        cell_w,
+                        cell_h,
+                    );
+                    cache.lines.push(context.text_line(cell, font));
+                }
+            }
+            cache.key = Some(key);
+        }
+        cache.lines[row * 7 + col]
+    }
+
+    /// Renders `display_month` through this calendar's `date_format` pattern into `out`.
     /// This is what makes `date_format` a live property: it was stored, published
     /// and settable from the day it was added, but `draw` painted a hardcoded
     /// `"<Month> <Year>"`, so setting it changed nothing on screen.
@@ -798,12 +1053,29 @@ impl Calendar {
     /// next to the grid paint.
     fn write_month_title(&self, out: &mut String) {
         use chrono::format::{Item, StrftimeItems};
+        // The default pattern is rendered through this calendar's names layer, because `%B` means
+        // "the month's name" and the layer is where that name lives. A caller-supplied pattern is
+        // left to `chrono`, whose own English names are the only thing a literal `%B` can mean once
+        // the caller spells the pattern itself.
+        if self.date_format == DEFAULT_DATE_FORMAT {
+            let _ = write!(
+                out,
+                "{} {}",
+                self.month_name(self.display_month.month()),
+                self.display_month.year()
+            );
+            return;
+        }
         let valid = StrftimeItems::new(&self.date_format).all(|item| !matches!(item, Item::Error));
         if valid {
             let _ = write!(out, "{}", self.display_month.format(&self.date_format));
         } else {
-            let _ =
-                write!(out, "{} {}", self.display_month.format("%B"), self.display_month.year());
+            let _ = write!(
+                out,
+                "{} {}",
+                self.month_name(self.display_month.month()),
+                self.display_month.year()
+            );
         }
     }
 
@@ -1523,33 +1795,34 @@ impl Draw for Calendar {
                 (band_right - left_edge).max(0) as u32,
                 title_line.height,
             );
-            let mut title = String::new();
             if self.dropdown_navigation || self.today_button_visible {
                 // The navigable layout: a month segment and a year segment, then the
                 // Today button. Every box comes from the same span derivation the hit
                 // test reads.
                 if self.dropdown_navigation {
                     let month_box = self.month_title_rect();
-                    let month_text = self.display_month.format("%B").to_string();
+                    let month_text = self.month_name(self.display_month.month());
                     context.draw_text_fitted_cow(
                         Rect::new(month_box.x, title_line.y, month_box.width, title_line.height),
-                        month_text.as_str(),
+                        month_text,
                         &title_font,
                         text_color,
                         HorizontalAlignment::Center,
                     );
                     if let Some(year_box) = self.year_title_rect() {
-                        let year_text = self.display_month.format("%Y").to_string();
+                        // The year segment is the cached year-menu window's first label offset by
+                        // two: the window starts at `year - 2`, so the displayed year is slot 2.
+                        let year_text = self.year_menu_label(2);
                         context.draw_text_fitted_cow(
                             Rect::new(year_box.x, title_line.y, year_box.width, title_line.height),
-                            year_text.as_str(),
+                            &year_text,
                             &title_font,
                             text_color,
                             HorizontalAlignment::Center,
                         );
                     }
                 } else {
-                    self.write_month_title(&mut title);
+                    let title = self.month_title_text();
                     let span = self.nav_content_span();
                     context.draw_text_fitted_cow(
                         Rect::new(span.x, title_line.y, span.width, title_line.height),
@@ -1569,7 +1842,7 @@ impl Draw for Calendar {
                     );
                 }
             } else {
-                self.write_month_title(&mut title);
+                let title = self.month_title_text();
                 context.draw_text_fitted_cow(
                     title_bounds,
                     title.as_str(),
@@ -1610,14 +1883,13 @@ impl Draw for Calendar {
                 border_color,
             );
             let cell_w = (hdr.width / 7).max(1) as i32;
-            let names = match self.first_day_of_week {
-                chrono::Weekday::Mon => ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-                chrono::Weekday::Sun => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
-                _ => ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-            };
-            for (i, name) in names.iter().enumerate() {
+            let names = self.weekday_name_order();
+            for (i, weekday) in names.iter().enumerate() {
                 let cell_x = hdr.x + cell_w * i as i32;
-                let is_weekend = i >= 5;
+                // The weekend tint follows the weekday itself, not its column position: with
+                // Sunday first, columns 5 and 6 are Friday and Saturday, so the old `i >= 5`
+                // coloured the wrong two headings.
+                let is_weekend = matches!(weekday, chrono::Weekday::Sat | chrono::Weekday::Sun);
                 let c = if !enabled {
                     dim_color
                 } else if is_weekend {
@@ -1644,7 +1916,7 @@ impl Draw for Calendar {
                 let label_bounds = Rect::new(cell_x, hdr.y + 6, cell_w as u32, 11);
                 context.draw_text_fitted_cow(
                     label_bounds,
-                    name,
+                    self.weekday_name(*weekday),
                     &role_font(style, 11.0).with_bold(true),
                     c,
                     HorizontalAlignment::Center,
@@ -1887,7 +2159,15 @@ impl Draw for Calendar {
                     // overhang into its neighbour, but the *number* belongs to the whole cell
                     // and must stay centred when that highlight is absent. Centring inside the
                     // tinted band instead would have shifted every non-today number by a pixel.
-                    let day_line = context.text_line(cell_rect, &day_font);
+                    let day_line = self.day_line_rect(
+                        row as usize,
+                        col as usize,
+                        grid,
+                        cell_w,
+                        cell_h,
+                        &day_font,
+                        context,
+                    );
                     day_text.clear();
                     let _ = core::fmt::Write::write_fmt(&mut day_text, format_args!("{day_num}"));
                     context.draw_text_fitted_cow(
@@ -1920,10 +2200,10 @@ impl Draw for Calendar {
                 if is_current {
                     context.fill_rect(band, calendar_bg.blend(&text_color, 0.14));
                 }
-                let label = option.format("%B").to_string();
+                let label = self.month_name(option.month());
                 context.draw_text_fitted_cow(
                     Rect::new(band.x + 6, band.y, band.width - 8, band.height),
-                    label.as_str(),
+                    label,
                     &font,
                     text_color,
                     HorizontalAlignment::Left,
@@ -1940,10 +2220,10 @@ impl Draw for Calendar {
                 if year == self.display_month.year() {
                     context.fill_rect(band, calendar_bg.blend(&text_color, 0.14));
                 }
-                let label = year.to_string();
+                let label = self.year_menu_label(row as usize);
                 context.draw_text_fitted_cow(
                     Rect::new(band.x + 6, band.y, band.width - 8, band.height),
-                    label.as_str(),
+                    &label,
                     &font,
                     text_color,
                     HorizontalAlignment::Left,
@@ -2725,5 +3005,37 @@ mod tests {
         assert!(cal.show_week_numbers());
         assert!(cal.is_vertical_header_visible());
         assert_eq!(cal.get("show_week_numbers"), Ok(CapabilityValue::Bool(true)));
+    }
+
+    /// All seven weekday names resolve, in the order the header paints them (ADV-01).
+    #[test]
+    fn every_weekday_name_resolves_and_the_order_follows_the_first_day() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let expected = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        for (index, name) in expected.iter().enumerate() {
+            let weekday = chrono::Weekday::try_from(index as u8).expect("0..6 is a weekday");
+            assert_eq!(cal.weekday_name(weekday), *name, "{weekday:?} must name itself");
+        }
+
+        assert_eq!(cal.weekday_name_order()[0], chrono::Weekday::Mon);
+        cal.set_first_day_of_week(chrono::Weekday::Sun);
+        assert_eq!(cal.weekday_name_order()[0], chrono::Weekday::Sun);
+        assert_eq!(cal.weekday_name_order()[6], chrono::Weekday::Sat);
+        // The names follow the weekday, not the column: Sunday is still Sunday.
+        assert_eq!(cal.weekday_name(cal.weekday_name_order()[0]), "Sun");
+    }
+
+    /// The names layer is one source for the header, the title and the month menu.
+    #[test]
+    fn replacing_the_names_changes_what_is_painted() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        let before = crate::widget::svg::render_to_svg(&mut cal);
+        let mut months = core::array::from_fn(|index| format!("M{}", index + 1));
+        months[0] = "Januar".to_string();
+        cal.set_month_names(months);
+        let after = crate::widget::svg::render_to_svg(&mut cal);
+        assert_ne!(before, after, "the header/title text comes from the names layer");
+        assert_eq!(cal.month_name(1), "Januar");
     }
 }

@@ -204,6 +204,36 @@ pub struct CupertinoAlertDialog {
 }
 
 impl CupertinoAlertDialog {
+    /// The panel rectangle, shared by the paint path and the hit test.
+    ///
+    /// The dialog is centred and clamped to the control's own box. Both used to compute this
+    /// separately, and the event path hard-coded a 200 px panel, so a control shorter than 200 px
+    /// painted its buttons where the user could not click them (MW-11).
+    fn panel_rect(&self) -> crate::core::Rect {
+        let rect = self.geometry();
+        let width = rect.width.min(320);
+        let height = rect.height.min(200);
+        crate::core::Rect::new(
+            rect.x + (rect.width as i32 - width as i32) / 2,
+            rect.y + (rect.height as i32 - height as i32) / 2,
+            width,
+            height,
+        )
+    }
+
+    /// The strip the action buttons occupy: the bottom third of the panel, floored at the line
+    /// the labels need. Painting and hit testing both read this one derivation.
+    fn button_row_rect(&self) -> crate::core::Rect {
+        let panel = self.panel_rect();
+        let row_height = (panel.height / 3).clamp(1, panel.height);
+        crate::core::Rect::new(
+            panel.x,
+            panel.y + panel.height as i32 - row_height as i32,
+            panel.width,
+            row_height,
+        )
+    }
+
     /// Creates a new CupertinoAlertDialog with the given geometry.
     pub fn new(geometry: crate::core::Rect) -> Self {
         let base =
@@ -432,11 +462,9 @@ impl Draw for CupertinoAlertDialog {
         // box, so its top landed 40 px above the control and the button row below it — and
         // the header separators — left the frame entirely. Clamping the panel to the box it
         // is painted in is what makes the control self-contained at any size.
-        let dialog_width = rect.width.min(320);
-        let dialog_x = rect.x + (rect.width as i32 - dialog_width as i32) / 2;
-        let dialog_height = rect.height.min(200);
-        let dialog_y = rect.y + (rect.height as i32 - dialog_height as i32) / 2;
-        let dialog_rect = crate::core::Rect::new(dialog_x, dialog_y, dialog_width, dialog_height);
+        let dialog_rect = self.panel_rect();
+        let dialog_width = dialog_rect.width;
+        let dialog_height = dialog_rect.height;
 
         // ── Backdrop, then panel ──
         context.fill_rect(rect, scrim);
@@ -488,11 +516,10 @@ impl Draw for CupertinoAlertDialog {
         }
 
         // ── Divider line above buttons ──
-        // Expressed as a fraction of the panel's height for the same reason: the fixed
-        // `height - 48` offset described a 200 px panel and moved the divider out of a
-        // shorter one.
-        let button_row_height = (dialog_height as i32 / 3).clamp(0, dialog_height as i32);
-        let divider_y = dialog_rect.y + dialog_height as i32 - button_row_height;
+        // The divider is the top edge of the button row, which is the same rectangle the hit
+        // test reads (MW-11).
+        let button_row = self.button_row_rect();
+        let divider_y = button_row.y;
         context.draw_line(
             Point::new(dialog_rect.x, divider_y),
             Point::new(dialog_rect.x + dialog_width as i32, divider_y),
@@ -509,8 +536,8 @@ impl Draw for CupertinoAlertDialog {
         // strip is floored at the measured line height and its vertical divider is clamped
         // to the panel's own bottom, which is what a two-button row needed and a shorter one
         // never got.
-        let button_top = divider_y;
-        let button_bottom = dialog_rect.y + dialog_height as i32;
+        let button_top = button_row.y;
+        let button_bottom = button_row.y + button_row.height as i32;
         let label_height = button_metrics.height.max(1) as i32;
         let label_y =
             (button_top + (button_bottom - button_top - label_height) / 2).max(button_top);
@@ -568,47 +595,44 @@ impl EventHandler for CupertinoAlertDialog {
             return;
         }
         match event {
-            Event::MouseRelease { pos, button } | Event::MousePress { pos, button, .. } => {
+            Event::MouseRelease { pos, button } => {
                 if *button != 1 {
                     return;
                 }
-
-                let rect = self.geometry();
-                let dialog_width = (rect.width as i32).min(320) as u32;
-                let dialog_x = rect.x + (rect.width as i32 - dialog_width as i32) / 2;
-                let dialog_height = 200u32;
-                let dialog_y = rect.y + (rect.height as i32 - dialog_height as i32) / 2;
-                let divider_y = dialog_y + dialog_height as i32 - 48;
-
-                // Check if click is in button area
-                if pos.y < divider_y || pos.y > dialog_y + dialog_height as i32 {
+                // The button row is the rectangle the paint path derived, so a control shorter
+                // than the nominal panel still has clickable buttons (MW-11).
+                let row = self.button_row_rect();
+                if !row.contains_point(*pos) {
                     return;
                 }
-                if pos.x < dialog_x || pos.x > dialog_x + dialog_width as i32 {
-                    return;
-                }
-
                 let has_cancel = !self.cancel_text.is_empty();
                 if has_cancel {
-                    let mid_x = dialog_x + dialog_width as i32 / 2;
+                    let mid_x = row.x + row.width as i32 / 2;
                     if pos.x < mid_x {
-                        // Cancel clicked
-                        if let Event::MouseRelease { .. } = event {
-                            self.canceled.emit();
-                        }
+                        self.canceled.emit();
                     } else {
-                        // Confirm clicked
-                        if let Event::MouseRelease { .. } = event {
-                            self.confirmed.emit();
-                        }
-                    }
-                } else {
-                    // Confirm clicked
-                    if let Event::MouseRelease { .. } = event {
                         self.confirmed.emit();
                     }
+                } else {
+                    self.confirmed.emit();
                 }
+                self.base.request_redraw();
             }
+            // A modal dialog's keyboard path: Enter confirms, Escape cancels when there is a
+            // cancel action (MW-12).
+            Event::KeyPress { key, .. } => match *key {
+                13 | 10 => {
+                    self.confirmed.emit();
+                    self.base.request_redraw();
+                }
+                27 if !self.cancel_text.is_empty() => {
+                    self.canceled.emit();
+                    self.base.request_redraw();
+                }
+                _ => {
+                    self.base.handle_event(event);
+                }
+            },
             _ => {
                 self.base.handle_event(event);
             }
@@ -628,12 +652,10 @@ pub struct CupertinoSlider {
     value: f32,
     min: f32,
     max: f32,
+    /// Whether a press on the track is still held, making `Drag` update the value (MW-13).
+    dragging: bool,
     /// Emitted with the new value whenever it changes — both on a programmatic
     /// [`CupertinoSlider::set_value`] that moves the knob and on a user drag.
-    /// The widget does not handle continuous drag-move, only press-to-jump; a
-    /// caller needing live drag updates drives [`CupertinoSlider::set_value`]
-    /// itself, which emits here too, so this signal is the single notification
-    /// channel out regardless of who changed the value.
     pub value_changed: Signal1<f32>,
 }
 
@@ -642,7 +664,14 @@ impl CupertinoSlider {
     /// Default range: 0.0 to 1.0, value at 0.0.
     pub fn new(geometry: crate::core::Rect) -> Self {
         let base = BaseWidget::new(WidgetKind::CupertinoSlider, geometry, "CupertinoSlider");
-        Self { base, value: 0.0, min: 0.0, max: 1.0, value_changed: Signal1::new() }
+        Self {
+            base,
+            value: 0.0,
+            min: 0.0,
+            max: 1.0,
+            dragging: false,
+            value_changed: Signal1::new(),
+        }
     }
 
     /// Sets the current value, clamped to [min, max].
@@ -933,11 +962,33 @@ impl EventHandler for CupertinoSlider {
 
                 let new_value = self.value_from_x(pos.x, track_left, track_width);
                 let clamped = ordered_clamp(new_value, self.min, self.max);
+                self.dragging = true;
                 if (clamped - self.value).abs() > f32::EPSILON {
                     self.value = clamped;
                     self.value_changed.emit(clamped);
                     self.base.request_redraw();
                 }
+            }
+            // A held pointer is the slider's main gesture: continuous updates while dragging,
+            // not just the initial press-to-jump (MW-13).
+            Event::Drag { pos, .. } if self.dragging => {
+                let rect = self.geometry();
+                let knob_radius = 12u32;
+                let track_left = rect.x + knob_radius as i32;
+                let track_width = rect.width as i32 - 2 * knob_radius as i32;
+                if track_width <= 0 {
+                    return;
+                }
+                let new_value = self.value_from_x(pos.x, track_left, track_width);
+                let clamped = ordered_clamp(new_value, self.min, self.max);
+                if (clamped - self.value).abs() > f32::EPSILON {
+                    self.value = clamped;
+                    self.value_changed.emit(clamped);
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseRelease { .. } if self.dragging => {
+                self.dragging = false;
             }
             _ => {
                 self.base.handle_event(event);
@@ -1150,10 +1201,10 @@ mod tests {
             f.store(true, Ordering::SeqCst);
         });
 
-        // Click on action area (right side of bar)
-        // Bar width = 375 - 24 = 351, action area is last ~metrics_width+32 px
-        // Approximate action area at x > 200
+        // A press on the action latches it, and a release over the same area confirms it. The
+        // action no longer fires on the press itself (L-P10).
         sb.handle_event(&Event::MousePress { pos: Point::new(340, 80), button: 1, modifiers: 0 });
+        sb.handle_event(&Event::MouseRelease { pos: Point::new(340, 80), button: 1 });
         assert!(fired.load(Ordering::SeqCst));
     }
 

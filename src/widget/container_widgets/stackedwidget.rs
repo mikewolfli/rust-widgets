@@ -15,6 +15,8 @@ use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+use super::theme_snapshot::ThemeSnapshot;
 /// Stacked widget.
 pub struct StackedWidget {
     base: BaseWidget,
@@ -82,19 +84,34 @@ impl StackedWidget {
     /// Removes a widget.
     pub fn remove_widget(&mut self, widget: ObjectId) {
         if let Some(index) = self.widgets.iter().position(|&id| id == widget) {
-            self.base.remove_child_linked(widget);
-            // A removed page is no longer part of the stack; clear its visibility too, so a host
-            // that renders by id cannot paint it over the selected one.
-            crate::set_widget_visible(widget, false);
-            self.widgets.remove(index);
-            if self.current_index >= index && self.current_index > 0 {
-                self.current_index -= 1;
-            }
-            if self.widgets.is_empty() {
-                self.current_index = 0;
-            }
-            self.sync_pages();
+            self.remove_widget_at(index);
         }
+    }
+
+    /// Removes the page at `index` (C-23).
+    ///
+    /// Returns `false` when `index` is out of range, so a host that only has an index does
+    /// not have to reverse it through [`Self::index_of`] first. The effect is exactly the
+    /// one [`Self::remove_widget`] has: the child is unlinked, hidden, the selection is
+    /// repaired, and the page model is re-applied. That method now delegates here, so the
+    /// two addresses cannot drift.
+    pub fn remove_widget_at(&mut self, index: usize) -> bool {
+        if index >= self.widgets.len() {
+            return false;
+        }
+        let widget = self.widgets.remove(index);
+        self.base.remove_child_linked(widget);
+        // A removed page is no longer part of the stack; clear its visibility too, so a host
+        // that renders by id cannot paint it over the selected one.
+        crate::set_widget_visible(widget, false);
+        if self.current_index >= index && self.current_index > 0 {
+            self.current_index -= 1;
+        }
+        if self.widgets.is_empty() {
+            self.current_index = 0;
+        }
+        self.sync_pages();
+        true
     }
     /// Returns number of widgets.
     pub fn count(&self) -> usize {
@@ -411,8 +428,11 @@ impl Draw for StackedWidget {
         //
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
+        //
+        // The resolved style and the window fill used to be two independent manager
+        // visits; `ThemeSnapshot` folds them into one read for the frame (C-P01).
+        let theme = ThemeSnapshot::capture("stacked_widget");
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("stacked_widget");
         // The stack's interior is a container surface, and neither step above can supply
         // one: `stacked_widget` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — **the window's
@@ -420,17 +440,14 @@ impl Draw for StackedWidget {
         // which is the exact invisible-surface defect the census exists to catch. A resolved
         // surface equal to the window fill is therefore re-derived a visible step away from
         // it, the same distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        let window_fill = theme.window_fill();
         let ink = style
             .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
         let themed_surface = match style
             .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.background_color))
         {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.08),
@@ -1237,5 +1254,20 @@ mod tests {
         sw.set_current_index(0);
         let _ = sw.selected_index();
         sw.handle_event(&crate::event::Event::MouseMove { pos: crate::core::Point::new(1, 1) });
+    }
+
+    /// C-23: removal by index behaves exactly like removal by id.
+    #[test]
+    fn remove_widget_at_matches_remove_widget() {
+        let mut sw = StackedWidget::new(Rect::new(0, 0, 200, 120));
+        sw.add_widget(1001);
+        sw.add_widget(1002);
+        sw.add_widget(1003);
+        sw.set_current_index(2);
+        assert!(!sw.remove_widget_at(9), "an out-of-range index is refused");
+        assert!(sw.remove_widget_at(1));
+        assert_eq!(sw.count(), 2);
+        assert_eq!(sw.index_of(1002), None);
+        assert_eq!(sw.selected_index(), Some(1), "the selection follows the removal");
     }
 }

@@ -4,7 +4,7 @@
 //! Grid layout manager — arranges items in a fixed row/column grid.
 use super::ChildInfo;
 use super::Layout;
-use crate::compat::{vec, Any, HashMap, Vec};
+use crate::compat::{vec, Any, Arc, HashMap, RefCell, Vec};
 use crate::core::{Alignment, ObjectId, Rect};
 use crate::style::EdgeOffsets;
 /// How a grid decides each row's height.
@@ -80,11 +80,55 @@ pub struct GridItemPosition {
     pub col_span: u32,
 }
 
+/// The inputs that decide a grid's track allocation.
+///
+/// The allocation is a pure function of these values: it does not read the widgets, the
+/// origin corner, or the cell alignments. Comparing the key therefore lets a repeated solve
+/// reuse the previous widths and offsets without being able to return a stale answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GridAllocationKey {
+    width: u32,
+    height: u32,
+    rows: u32,
+    cols: u32,
+    margin: u32,
+    margins: Option<EdgeOffsets>,
+    spacing_x: u32,
+    spacing_y: u32,
+    available_width: u32,
+    available_height: u32,
+    row_sizing: RowSizing,
+    column_stretches: Vec<u32>,
+    row_stretches: Vec<u32>,
+    column_minimums: Vec<u32>,
+    row_minimums: Vec<u32>,
+    hint_column_floors: Option<Vec<u32>>,
+    hint_row_floors: Option<Vec<u32>>,
+}
+
+/// A solved track allocation: the widths/heights and their origins.
+///
+/// Held behind an `Arc` so `place` can read it while `&self` is borrowed, and so the cache
+/// hands out a cheap clone instead of copying four vectors.
+#[derive(Debug, Clone)]
+struct GridAllocation {
+    col_widths: Vec<u32>,
+    col_x_offsets: Vec<i32>,
+    row_heights: Vec<u32>,
+    row_y_offsets: Vec<i32>,
+    spacing_x: u32,
+    spacing_y: u32,
+}
+
 /// Fixed-grid layout manager with row/column cell placement.
 pub struct GridLayout {
     rows: u32,
     cols: u32,
     spacing: u32,
+    /// Row gap override; `None` falls back to [`Self::spacing`].
+    row_spacing: Option<u32>,
+    /// Column gap override; `None` falls back to [`Self::spacing`].
+    column_spacing: Option<u32>,
     margin: u32,
     column_stretches: Vec<u32>,
     row_stretches: Vec<u32>,
@@ -109,6 +153,13 @@ pub struct GridLayout {
     row_sizing: RowSizing,
     origin_corner: GridOriginCorner,
     cells: Vec<Option<GridPlacement>>,
+    /// Reverse index from a widget to its origin cell.
+    ///
+    /// `cell_of` used to scan every cell, which made an arrange pass O(children x cells).
+    /// Every write path keeps this table in step with `cells`.
+    positions: HashMap<ObjectId, (u32, u32)>,
+    /// The last solved track allocation, keyed by its inputs.
+    allocation: RefCell<Option<(GridAllocationKey, Arc<GridAllocation>)>>,
 }
 impl GridLayout {
     /// The maximum number of cells the grid will allocate storage for.
@@ -134,6 +185,8 @@ impl GridLayout {
             rows: safe_rows,
             cols: safe_cols,
             spacing,
+            row_spacing: None,
+            column_spacing: None,
             margin,
             column_stretches: vec![1; safe_cols as usize],
             row_stretches: vec![1; safe_rows as usize],
@@ -144,6 +197,8 @@ impl GridLayout {
             row_sizing: RowSizing::Fill,
             origin_corner: GridOriginCorner::TopLeft,
             cells: vec![None; cell_count],
+            positions: HashMap::new(),
+            allocation: RefCell::new(None),
         }
     }
 
@@ -503,6 +558,7 @@ impl GridLayout {
                 self.cells[Self::cell_index(self.cols, r, c)] = Some(placement);
             }
         }
+        self.positions.insert(widget_id, (row, col));
     }
 
     /// The storage index of cell `(row, col)` under a given column count.
@@ -559,6 +615,7 @@ impl GridLayout {
                 self.cells[Self::cell_index(self.cols, r, c)] = Some(placement);
             }
         }
+        self.positions.insert(widget_id, (row, col));
         true
     }
 
@@ -576,6 +633,8 @@ impl GridLayout {
             return false;
         };
         self.cells[index] = Some(GridPlacement { widget_id, col_span: 1, row_span: 1 });
+        let cols = self.cols;
+        self.positions.insert(widget_id, ((index as u32) / cols, (index as u32) % cols));
         true
     }
 
@@ -584,12 +643,7 @@ impl GridLayout {
     /// A spanning widget occupies several cells; this reports the top-left one — the position
     /// its geometry is derived from — rather than whichever cell happens to be scanned first.
     pub fn cell_of(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
-        self.cells.iter().enumerate().find_map(|(index, cell)| match cell {
-            Some(placement) if placement.widget_id == widget_id => {
-                Some((index as u32 / self.cols, index as u32 % self.cols))
-            }
-            _ => None,
-        })
+        self.positions.get(&widget_id).copied()
     }
     /// Returns the number of occupied cells (widgets placed in grid).
     pub fn cell_count(&self) -> usize {
@@ -607,9 +661,43 @@ impl GridLayout {
     pub fn cols(&self) -> u32 {
         self.cols
     }
-    /// Returns the spacing between cells.
+    /// The spacing between cells.
     pub fn spacing(&self) -> u32 {
         self.spacing
+    }
+
+    /// Sets the gap between rows.
+    ///
+    /// `None` (the default) means the uniform [`Self::spacing`] applies, so a caller that
+    /// never calls this keeps exactly the previous geometry. A table with denser rows than
+    /// columns is the case the split exists for.
+    pub fn set_row_spacing(&mut self, spacing: u32) {
+        self.row_spacing = Some(spacing);
+    }
+
+    /// The effective gap between rows.
+    pub fn row_spacing(&self) -> u32 {
+        self.row_spacing.unwrap_or(self.spacing)
+    }
+
+    /// Clears the row-gap override, returning the row gap to [`Self::spacing`].
+    pub fn clear_row_spacing(&mut self) {
+        self.row_spacing = None;
+    }
+
+    /// Sets the gap between columns; see [`Self::set_row_spacing`].
+    pub fn set_column_spacing(&mut self, spacing: u32) {
+        self.column_spacing = Some(spacing);
+    }
+
+    /// The effective gap between columns.
+    pub fn column_spacing(&self) -> u32 {
+        self.column_spacing.unwrap_or(self.spacing)
+    }
+
+    /// Clears the column-gap override, returning the column gap to [`Self::spacing`].
+    pub fn clear_column_spacing(&mut self) {
+        self.column_spacing = None;
     }
     /// Returns the outer margin.
     pub fn margin(&self) -> u32 {
@@ -672,15 +760,18 @@ impl GridLayout {
         &self.row_stretches
     }
 
-    /// The one placement body. `hint_floors` are the per-column/per-row minima derived from
-    /// the children's own size hints; `None` means the layout's configured minimums alone.
-    fn place(
+    /// The allocation for this rect, from the cache when its inputs are unchanged.
+    ///
+    /// The allocation is a pure function of `(rect size, margins, gaps, stretch factors,
+    /// minimums, row sizing, hint floors)`. A grid normally resolves the same container
+    /// several times per frame (measure, arrange, paint), and every solve used to redo the
+    /// stretch division, the floor pass and two sorts. The key carries exactly those inputs,
+    /// so a hit cannot return a stale width.
+    fn allocation_for(
         &self,
         rect: Rect,
         hint_floors: Option<(&[u32], &[u32])>,
-        children: Option<&[ChildInfo]>,
-        widgets: &mut dyn FnMut(ObjectId, Rect),
-    ) {
+    ) -> Arc<GridAllocation> {
         // The margins and the inter-cell spacing are honoured only as far as the rect can
         // pay for them. When it cannot, the spacing is reduced *before* the available
         // extent is derived, so the cursor walk and the extent can never disagree: the
@@ -690,14 +781,82 @@ impl GridLayout {
         let (left, top, right, bottom) = self.insets(rect);
         let inner_width = rect.width.saturating_sub(left).saturating_sub(right);
         let inner_height = rect.height.saturating_sub(top).saturating_sub(bottom);
-        let spacing_x =
-            if self.cols > 1 { self.spacing.min(inner_width / (self.cols - 1)) } else { 0 };
+        let spacing_x = if self.cols > 1 {
+            self.column_spacing().min(inner_width / (self.cols - 1))
+        } else {
+            0
+        };
         let spacing_y =
-            if self.rows > 1 { self.spacing.min(inner_height / (self.rows - 1)) } else { 0 };
-
+            if self.rows > 1 { self.row_spacing().min(inner_height / (self.rows - 1)) } else { 0 };
         let available_width = inner_width.saturating_sub(spacing_x * (self.cols - 1));
         let available_height = inner_height.saturating_sub(spacing_y * (self.rows - 1));
 
+        let key = GridAllocationKey {
+            width: rect.width,
+            height: rect.height,
+            rows: self.rows,
+            cols: self.cols,
+            margin: self.margin,
+            margins: self.margins,
+            spacing_x,
+            spacing_y,
+            available_width,
+            available_height,
+            row_sizing: self.row_sizing,
+            column_stretches: self.column_stretches.clone(),
+            row_stretches: self.row_stretches.clone(),
+            column_minimums: self.column_minimums.clone(),
+            row_minimums: self.row_minimums.clone(),
+            hint_column_floors: hint_floors.map(|(cols, _)| cols.to_vec()),
+            hint_row_floors: hint_floors.map(|(_, rows)| rows.to_vec()),
+        };
+        {
+            // Compare against the borrowed key without rebuilding it: a hit is the common
+            // case, so it must not allocate four vectors just to prove equality.
+            let cache = self.allocation.borrow();
+            if let Some((cached, allocation)) = cache.as_ref() {
+                if cached.width == key.width
+                    && cached.height == key.height
+                    && cached.rows == key.rows
+                    && cached.cols == key.cols
+                    && cached.margin == key.margin
+                    && cached.margins == key.margins
+                    && cached.spacing_x == key.spacing_x
+                    && cached.spacing_y == key.spacing_y
+                    && cached.available_width == key.available_width
+                    && cached.available_height == key.available_height
+                    && cached.row_sizing == key.row_sizing
+                    && cached.column_stretches == self.column_stretches
+                    && cached.row_stretches == self.row_stretches
+                    && cached.column_minimums == self.column_minimums
+                    && cached.row_minimums == self.row_minimums
+                    && cached.hint_column_floors.as_deref() == hint_floors.map(|(cols, _)| cols)
+                    && cached.hint_row_floors.as_deref() == hint_floors.map(|(_, rows)| rows)
+                {
+                    return Arc::clone(allocation);
+                }
+            }
+        }
+        let allocation = Arc::new(self.compute_allocation(
+            spacing_x,
+            spacing_y,
+            available_width,
+            available_height,
+            hint_floors,
+        ));
+        *self.allocation.borrow_mut() = Some((key, Arc::clone(&allocation)));
+        allocation
+    }
+
+    /// Solves the track allocation; see [`Self::allocation_for`] for the cached entry point.
+    fn compute_allocation(
+        &self,
+        spacing_x: u32,
+        spacing_y: u32,
+        available_width: u32,
+        available_height: u32,
+        hint_floors: Option<(&[u32], &[u32])>,
+    ) -> GridAllocation {
         // Calculate column widths and x-offsets based on per-column stretch factors.
         // The total is summed in `u64`: two columns of weight `u32::MAX` must not overflow a
         // `u32` (a debug panic today, and a wrapped total that over-allocated two ~100px columns
@@ -743,11 +902,6 @@ impl GridLayout {
             // put the second row at y=60 with a height of 60).
             let cell_height = match self.row_sizing {
                 RowSizing::Fixed(height) => {
-                    // Clamp to the height **still available**, not to the container's total:
-                    // clamping each row independently let every row claim the full height,
-                    // so the later rows were placed past the bottom edge (a 60px container
-                    // with two 500px rows put the second row at y=60 with a height of 60).
-                    //
                     // The clamp is in `u32`: `height as i32` inverted for a height above
                     // `i32::MAX` (it became negative, so `.min` selected it and the cast back
                     // returned the full height), which skipped this clamp entirely.
@@ -833,6 +987,34 @@ impl GridLayout {
             row_y_offsets[row as usize] = current_y;
             current_y += row_heights[row as usize] as i32 + spacing_y as i32;
         }
+
+        GridAllocation {
+            col_widths,
+            col_x_offsets,
+            row_heights,
+            row_y_offsets,
+            spacing_x,
+            spacing_y,
+        }
+    }
+
+    /// The one placement body. `hint_floors` are the per-column/per-row minima derived from
+    /// the children's own size hints; `None` means the layout's configured minimums alone.
+    fn place(
+        &self,
+        rect: Rect,
+        hint_floors: Option<(&[u32], &[u32])>,
+        children: Option<&[ChildInfo]>,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let allocation = self.allocation_for(rect, hint_floors);
+        let (left, top, _, _) = self.insets(rect);
+        let col_widths = &allocation.col_widths;
+        let col_x_offsets = &allocation.col_x_offsets;
+        let row_heights = &allocation.row_heights;
+        let row_y_offsets = &allocation.row_y_offsets;
+        let spacing_x = allocation.spacing_x;
+        let spacing_y = allocation.spacing_y;
 
         // A spanning widget covers several cells and therefore appears in each of them; it is
         // emitted once, from its origin (top-left) cell, with the widths and heights of the
@@ -941,6 +1123,8 @@ impl Layout for GridLayout {
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
         if let Some(index) = self.cells.iter().position(|cell| cell.is_none()) {
             self.cells[index] = Some(GridPlacement { widget_id, col_span: 1, row_span: 1 });
+            let cols = self.cols;
+            self.positions.insert(widget_id, ((index as u32) / cols, (index as u32) % cols));
             return;
         }
         // Every existing cell is taken: append a fresh row and use its first cell. The new row
@@ -953,9 +1137,11 @@ impl Layout for GridLayout {
             );
             return;
         }
-        let index = self.rows.saturating_sub(1).saturating_mul(self.cols) as usize;
+        let row = self.rows.saturating_sub(1);
+        let index = row.saturating_mul(self.cols) as usize;
         if let Some(slot) = self.cells.get_mut(index) {
             *slot = Some(GridPlacement { widget_id, col_span: 1, row_span: 1 });
+            self.positions.insert(widget_id, (row, 0));
         }
     }
     fn remove_widget(&mut self, widget_id: ObjectId) {
@@ -967,6 +1153,7 @@ impl Layout for GridLayout {
                 *cell = None;
             }
         }
+        self.positions.remove(&widget_id);
         // The alignment belongs to the placement, so a removed widget must not leave a stale
         // entry behind that would apply to a later widget reusing the id.
         self.cell_alignments.remove(&widget_id);
@@ -990,10 +1177,14 @@ impl Layout for GridLayout {
         ids
     }
     fn has_child(&self, id: ObjectId) -> bool {
-        self.cells.iter().flatten().any(|placement| placement.widget_id == id)
+        self.positions.contains_key(&id)
+    }
+    fn widget_count(&self) -> usize {
+        self.positions.len()
     }
     fn clear(&mut self) {
         self.cells.fill(None);
+        self.positions.clear();
     }
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         self.place(rect, None, None, widgets);
@@ -1036,6 +1227,34 @@ impl Layout for GridLayout {
             }
         }
         self.place(rect, Some((&column_floors, &row_floors)), Some(children), out);
+    }
+
+    /// A single-cell query without running the whole arrangement.
+    ///
+    /// The default trait body performs a full [`Layout::update`] and keeps one result, so a
+    /// hit test that asks about one child pays for every child. The grid's cell map and the
+    /// cached allocation answer the same question directly.
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        let (row, col) = self.cell_of(id)?;
+        let placement = self.cells.get(Self::cell_index(self.cols, row, col)).copied().flatten()?;
+        let allocation = self.allocation_for(rect, None);
+        let (left, top, _, _) = self.insets(rect);
+        let last_col = (col + placement.col_span - 1).min(self.cols - 1);
+        let last_row = (row + placement.row_span - 1).min(self.rows - 1);
+        let (origin_row, origin_col) =
+            self.mirrored_cell(row, col, placement.row_span.max(1), placement.col_span.max(1));
+        let cell_width: u32 =
+            (col..=last_col).map(|c| allocation.col_widths[c as usize]).sum::<u32>()
+                + allocation.spacing_x * (last_col - col);
+        let cell_height: u32 =
+            (row..=last_row).map(|r| allocation.row_heights[r as usize]).sum::<u32>()
+                + allocation.spacing_y * (last_row - row);
+        Some(Rect::new(
+            rect.x + left as i32 + allocation.col_x_offsets[origin_col as usize],
+            rect.y + top as i32 + allocation.row_y_offsets[origin_row as usize],
+            cell_width,
+            cell_height,
+        ))
     }
 }
 
@@ -1640,5 +1859,112 @@ mod tests {
         let out = placed(&grid, Rect::new(0, 0, 100, 50));
         assert_eq!(rect_of(&out, 1), Rect::new(50, 25, 50, 25), "cell (0, 0) mirrors");
         assert_eq!(rect_of(&out, 2), Rect::new(0, 0, 50, 25), "cell (1, 1) mirrors");
+    }
+
+    // ── LAY-01: row and column gaps are independent ────────────────────────────────
+
+    #[test]
+    fn row_and_column_spacing_are_independent() {
+        let mut grid = GridLayout::new(2, 2, 0, 0);
+        grid.set_row_spacing(4);
+        grid.set_column_spacing(20);
+        assert_eq!(grid.row_spacing(), 4);
+        assert_eq!(grid.column_spacing(), 20);
+        for row in 0..2 {
+            for col in 0..2 {
+                grid.set_widget(row, col, (row * 2 + col + 1) as ObjectId);
+            }
+        }
+
+        let out = placed(&grid, Rect::new(0, 0, 120, 44));
+        // Columns: (120 - 20) / 2 = 50; rows: (44 - 4) / 2 = 20.
+        assert_eq!(rect_of(&out, 1), Rect::new(0, 0, 50, 20));
+        assert_eq!(rect_of(&out, 2), Rect::new(70, 0, 50, 20), "column gap is 20");
+        assert_eq!(rect_of(&out, 3), Rect::new(0, 24, 50, 20), "row gap is 4");
+        assert_eq!(rect_of(&out, 4), Rect::new(70, 24, 50, 20));
+    }
+
+    #[test]
+    fn the_uniform_spacing_is_the_fallback_for_both_axes() {
+        let mut grid = GridLayout::new(2, 2, 10, 0);
+        assert_eq!(grid.row_spacing(), 10);
+        assert_eq!(grid.column_spacing(), 10);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(0, 1, 2);
+        grid.set_widget(1, 0, 3);
+        grid.set_widget(1, 1, 4);
+        let out = placed(&grid, Rect::new(0, 0, 130, 70));
+        // Same geometry the single-spacing grid produced before the split existed.
+        assert_eq!(rect_of(&out, 1), Rect::new(0, 0, 60, 30));
+        assert_eq!(rect_of(&out, 2), Rect::new(70, 0, 60, 30));
+        assert_eq!(rect_of(&out, 3), Rect::new(0, 40, 60, 30));
+    }
+
+    #[test]
+    fn clearing_a_spacing_override_restores_the_uniform_gap() {
+        let mut grid = GridLayout::new(2, 2, 7, 0);
+        grid.set_row_spacing(1);
+        grid.set_column_spacing(2);
+        grid.clear_row_spacing();
+        grid.clear_column_spacing();
+        assert_eq!(grid.row_spacing(), 7);
+        assert_eq!(grid.column_spacing(), 7);
+    }
+
+    // ── G-151 / G-152: reverse index and cached allocation ─────────────────────────
+
+    #[test]
+    fn the_reverse_index_tracks_every_placement_write_path() {
+        let mut grid = GridLayout::new(2, 2, 0, 0);
+        grid.add_widget(1, 0);
+        assert_eq!(grid.cell_of(1), Some((0, 0)));
+        assert_eq!(grid.widget_count(), 1);
+
+        grid.set_widget(1, 1, 1);
+        assert_eq!(grid.cell_of(1), Some((1, 1)), "an explicit placement moves the index");
+
+        grid.add_widget(2, 0);
+        assert_eq!(grid.cell_of(2), Some((0, 0)), "auto-placement updates the index");
+
+        grid.remove_widget(1);
+        assert_eq!(grid.cell_of(1), None, "a removal drops the index entry");
+        assert_eq!(grid.widget_count(), 1);
+
+        grid.clear();
+        assert_eq!(grid.cell_of(2), None);
+        assert_eq!(grid.widget_count(), 0);
+    }
+
+    #[test]
+    fn the_cached_allocation_never_outlives_a_mutation() {
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(0, 1, 2);
+        let rect = Rect::new(0, 0, 100, 20);
+        let first = placed(&grid, rect);
+        let second = placed(&grid, rect);
+        assert_eq!(first, second, "a repeated solve reuses the allocation");
+
+        grid.set_column_stretch_for_col(0, 3);
+        let after = placed(&grid, rect);
+        let mut fresh = GridLayout::new(1, 2, 0, 0);
+        fresh.set_widget(0, 0, 1);
+        fresh.set_widget(0, 1, 2);
+        fresh.set_column_stretch_for_col(0, 3);
+        assert_eq!(after, placed(&fresh, rect), "a mutated grid matches a fresh one");
+    }
+
+    #[test]
+    fn child_rect_matches_the_full_arrangement() {
+        let mut grid = GridLayout::new(2, 3, 6, 4);
+        grid.set_widget_spanning(0, 0, 1, 2, 7);
+        grid.set_widget(1, 1, 8);
+        grid.set_widget(1, 2, 9);
+        let rect = Rect::new(5, 7, 320, 180);
+        let out = placed(&grid, rect);
+        for (id, expected) in out {
+            assert_eq!(grid.child_rect(id, rect), Some(expected), "id {id}");
+        }
+        assert_eq!(grid.child_rect(999, rect), None);
     }
 }

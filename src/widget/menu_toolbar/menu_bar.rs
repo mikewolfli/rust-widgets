@@ -13,10 +13,10 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::companions::TooltipManager;
 use crate::widget::menu_toolbar::action::{Action, MenuRole};
-use crate::widget::menu_toolbar::menu::Menu;
+use crate::widget::menu_toolbar::menu::{menu_mnemonic, strip_menu_mnemonic, Menu};
 use crate::widget::menu_toolbar::tool_bar::child_hover_id;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Horizontal gap on each side of a menu-bar title.
@@ -24,6 +24,12 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// Ten pixels is the macOS menu-bar spacing at body size: enough that adjacent titles read as
 /// separate targets, and included in `entry_width` so the hit box and the painted label agree.
 const MENU_ENTRY_TEXT_PADDING: u32 = 10;
+
+/// The leading column an entry with an icon reserves, in pixels.
+///
+/// The icon and the title are two columns of one entry, so the title starts after the icon
+/// rather than overlapping it (M-03).
+const MENU_ENTRY_ICON_SLOT: u32 = 18;
 
 /// Where a role's actions belong in the platform's menu bar.
 ///
@@ -90,6 +96,8 @@ pub struct MenuBarEntry {
     enabled: bool,
     /// Hover hint shown by the tooltip pipeline, or `""` for none.
     tooltip: String,
+    /// Optional icon painted in the entry's leading column (M-03).
+    icon: Option<IconSource>,
 }
 
 /// A hover source adapter over a menu-bar entry.
@@ -127,7 +135,23 @@ impl WidgetProperties for EntryTooltipSource<'_> {
 impl MenuBarEntry {
     /// Creates an enabled entry with the given title.
     pub fn new(title: impl Into<String>) -> Self {
-        Self { title: title.into(), enabled: true, tooltip: String::new() }
+        Self { title: title.into(), enabled: true, tooltip: String::new(), icon: None }
+    }
+
+    /// The entry's icon source, if one was assigned.
+    pub fn icon(&self) -> Option<IconSource> {
+        self.icon
+    }
+
+    /// Assigns the icon painted before the title. `None` removes it.
+    pub fn set_icon(&mut self, icon: Option<IconSource>) {
+        self.icon = icon;
+    }
+
+    /// Assigns the icon and returns `self`, for chaining onto [`MenuBarEntry::new`].
+    pub fn with_icon(mut self, icon: IconSource) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     /// The entry's hover hint, or `""` when none was set.
@@ -761,7 +785,11 @@ impl MenuBar {
         ControlMetrics::top_band(self.geometry(), dimensions::MENU_BAR_HEIGHT)
     }
 
-    fn entry_width(&self, title: &str) -> f32 {
+    /// Entry width measured with an already-resolved font.
+    ///
+    /// The draw loop and each hit-test walk resolve the font **once** and pass it in; the
+    /// previous per-entry `effective_font` rebuilt the resolution for every title (G-P02).
+    fn entry_width_with(&self, title: &str, font: &crate::core::Font, has_icon: bool) -> f32 {
         // Measured with the **effective font** through the shared ruler rather than the old
         // "8 px per byte + 16" guess (D09-STYLE-01 / D09-STYLE-02): the byte count over-measured
         // non-ASCII titles and ignored the font entirely, so a scaled theme font did not widen an
@@ -772,8 +800,9 @@ impl MenuBar {
         // `TOOLBAR_ITEM_INSET * 2` (4 px) gave the painter 2 px less than the measured title
         // and truncated every label. Measured on the GTK demo before this: "File" painted as
         // "…", "Edit" as "E…". The entry now reserves both the fit margin and a real gap.
-        let font = effective_font(self.style());
+        let icon = if has_icon { MENU_ENTRY_ICON_SLOT } else { 0 };
         (estimate_text_width(title, font, 1.0)
+            + icon
             + 2 * (crate::render::TEXT_FIT_MARGIN + MENU_ENTRY_TEXT_PADDING)) as f32
     }
     /// The rectangle of the entry at `index`, in the coordinate space the bar's own geometry
@@ -784,9 +813,10 @@ impl MenuBar {
     /// came from instead of guessing an offset. Returns `None` for an out-of-range index.
     pub fn entry_rect(&self, index: usize) -> Option<Rect> {
         let rect = self.band_rect();
+        let font = effective_font(self.style());
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
-            let w = self.entry_width(entry.title()) as i32;
+            let w = self.entry_width_with(entry.title(), font, entry.icon().is_some()) as i32;
             if i == index {
                 return Some(Rect { x, y: rect.y, width: w as u32, height: rect.height });
             }
@@ -800,9 +830,10 @@ impl MenuBar {
         if pos.y < rect.y || pos.y > rect.y + rect.height as f32 as i32 {
             return None;
         }
+        let font = effective_font(self.style());
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
-            let w = self.entry_width(entry.title()) as i32;
+            let w = self.entry_width_with(entry.title(), font, entry.icon().is_some()) as i32;
             if pos.x >= x && pos.x < x + w {
                 return Some(i);
             }
@@ -1137,8 +1168,10 @@ impl Draw for MenuBar {
             separator,
         );
         let mut x = rect.x;
+        let font = effective_font(style);
         for (i, entry) in self.entries.iter().enumerate() {
-            let w = self.entry_width(entry.title()) as i32;
+            let has_icon = entry.icon().is_some();
+            let w = self.entry_width_with(entry.title(), font, has_icon) as i32;
             let is_hovered = self.hovered_index == Some(i);
             let is_active = self.active_index == Some(i);
             let entry_rect = Rect { x, y: rect.y, width: w as u32, height: rect.height };
@@ -1164,15 +1197,48 @@ impl Draw for MenuBar {
             // advanced 32 px from `x + 24` — past the end of its own entry and 9.6 px over the
             // next title. Passing the entry rectangle and asking for `Center` states the
             // intent, and there is no midpoint left to misuse.
-            let font = effective_font(self.style());
-            let line = context.text_line(entry_rect, font);
-            context.draw_text_fitted_cow(
-                line,
-                entry.title(),
-                font,
-                fg,
-                HorizontalAlignment::Center,
-            );
+            //
+            // The font is resolved **once** for the whole bar (G-P02) and an icon, when the
+            // entry has one, occupies the leading column before the title (M-03).
+            let mut label_rect = entry_rect;
+            if let Some(source) = entry.icon() {
+                let line = context.text_line(entry_rect, font);
+                let side = MENU_ENTRY_ICON_SLOT.min(line.height.max(1)).min(entry_rect.height);
+                let icon_rect = Rect::new(
+                    entry_rect.x + 2,
+                    line.y + (line.height as i32 - side as i32) / 2,
+                    side,
+                    side,
+                );
+                if let Err(error) = crate::widget::paint_icon(context, source.into(), icon_rect, fg)
+                {
+                    log::warn!("menu bar entry icon could not be painted: {error:?}");
+                }
+                label_rect.x += MENU_ENTRY_ICON_SLOT as i32;
+                label_rect.width = label_rect.width.saturating_sub(MENU_ENTRY_ICON_SLOT);
+            }
+            // `&` markers strip from the painted title and the marked letter is underlined, the
+            // same derivation `Menu` uses for its rows (M-03).
+            let stripped = strip_menu_mnemonic(entry.title());
+            let line = context.text_line(label_rect, font);
+            context.draw_text_fitted_cow(line, &stripped, font, fg, HorizontalAlignment::Center);
+            if let Some(mnemonic) = menu_mnemonic(entry.title()) {
+                if let Some((byte, ch)) =
+                    stripped.char_indices().find(|(_, ch)| ch.eq_ignore_ascii_case(&mnemonic))
+                {
+                    let prefix = estimate_text_width(&stripped[..byte], font, 1.0);
+                    let through = estimate_text_width(&stripped[..byte + ch.len_utf8()], font, 1.0);
+                    context.fill_rect(
+                        Rect::new(
+                            line.x + prefix as i32,
+                            line.y + line.height as i32 - 1,
+                            through.saturating_sub(prefix).max(1),
+                            1,
+                        ),
+                        fg,
+                    );
+                }
+            }
             x += w;
         }
 

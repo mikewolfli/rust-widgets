@@ -32,7 +32,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Bar height of the progress indicator, in logical pixels.
@@ -59,6 +59,18 @@ pub struct SplashScreen {
     title: String,
     subtitle: String,
     progress: Option<f32>,
+    /// An optional brand/logo icon drawn in the logo band (OV-03).
+    logo: Option<IconSource>,
+    /// The shortest time the screen stays up before `finish` announces completion (OV-04).
+    ///
+    /// `0` keeps the historical behaviour: `finish` emits immediately.
+    min_display_ms: u32,
+    /// Milliseconds accumulated through `tick` since the screen was created.
+    visible_ms: u32,
+    /// Whether `finish` arrived before the minimum display time had elapsed.
+    finish_pending: bool,
+    /// Whether a deferred finish should also run the dismissal once it fires.
+    exit_when_finished: bool,
     /// Whether a dismiss (skip) affordance is offered.
     ///
     /// Separate from the control's own dismissal, which the host performs by
@@ -101,6 +113,11 @@ impl SplashScreen {
             title: title.into(),
             subtitle: String::new(),
             progress: None,
+            logo: None,
+            min_display_ms: 0,
+            visible_ms: 0,
+            finish_pending: false,
+            exit_when_finished: false,
             skippable: false,
             // At rest fully present: a splash screen is shown the moment it is mounted, so it must
             // not animate itself into existence.
@@ -163,6 +180,40 @@ impl SplashScreen {
         self.base.request_redraw();
     }
 
+    /// Returns the optional logo icon (OV-03).
+    pub fn logo(&self) -> Option<IconSource> {
+        self.logo
+    }
+
+    /// Sets a logo icon drawn in the logo band (OV-03).
+    ///
+    /// `None` restores the accent-filled block, which is the historical picture.
+    pub fn set_logo(&mut self, logo: Option<IconSource>) {
+        if self.logo == logo {
+            return;
+        }
+        self.logo = logo;
+        self.base.request_redraw();
+    }
+
+    /// Returns the minimum display time in milliseconds (OV-04).
+    pub fn min_display_ms(&self) -> u32 {
+        self.min_display_ms
+    }
+
+    /// Sets the minimum display time in milliseconds (OV-04).
+    ///
+    /// A `finish` that arrives earlier is deferred until the time has elapsed. `0` (the
+    /// default) keeps the historical immediate announcement.
+    pub fn set_min_display_ms(&mut self, milliseconds: u32) {
+        if self.min_display_ms == milliseconds {
+            return;
+        }
+        self.min_display_ms = milliseconds;
+        // Lowering the threshold past a pending finish lets the next tick report it; raising it
+        // holds the pending completion a little longer.
+    }
+
     /// Whether the user may skip this screen.
     pub fn is_skippable(&self) -> bool {
         self.skippable
@@ -184,11 +235,25 @@ impl SplashScreen {
     /// from the tree could not be reused for a restart. A host that wants the fade calls
     /// [`Self::fade_out`] as well -- see that method for why the two are separate.
     pub fn finish(&mut self) {
+        if self.min_display_ms > 0 && self.visible_ms < self.min_display_ms {
+            // The host finished initialising before the screen had been up long enough: hold the
+            // announcement until `tick` reaches the threshold, so the splash does not flash (OV-04).
+            self.finish_pending = true;
+            return;
+        }
+        self.emit_finished();
+    }
+
+    /// Announces completion and, when the host asked for it, starts the exit.
+    fn emit_finished(&mut self) {
+        self.finish_pending = false;
         self.finished.emit(self.title.clone());
         // Auto-hide is the "load finished → fade → remove" pipeline as one decision: the host
         // opted in by setting the flag, so `finish` starts the exit instead of leaving it to
-        // a second call that every host would have to remember.
-        if self.auto_hide_on_finish {
+        // a second call that every host would have to remember. A deferred `dismiss` sets the
+        // same intent through `exit_when_finished`.
+        if self.auto_hide_on_finish || self.exit_when_finished {
+            self.exit_when_finished = false;
             self.begin_dismiss();
         }
     }
@@ -209,11 +274,10 @@ impl SplashScreen {
     /// calls this one method instead of stitching `finish` + `fade_out` + a hide callback
     /// together, and the completion is reported by [`Self::fade_out_finished`].
     pub fn dismiss(&mut self) {
+        // `finish` owns the minimum-display gate; marking the intent here means a deferred
+        // completion still runs the exit once the threshold is reached (OV-04).
+        self.exit_when_finished = true;
         self.finish();
-        // `finish` already began the dismissal when auto-hide is on.
-        if !self.auto_hide_on_finish {
-            self.begin_dismiss();
-        }
     }
 
     /// Starts the fade and arranges for the control to hide when it reaches zero.
@@ -318,6 +382,10 @@ impl Widget for SplashScreen {
     /// A settled screen costs no frames: the driver reports false the step it reaches its target, so
     /// a splash that was never faded owes nothing and one that has finished fading stops.
     fn tick(&mut self, delta_ms: u32) -> bool {
+        self.visible_ms = self.visible_ms.saturating_add(delta_ms);
+        if self.finish_pending && self.visible_ms >= self.min_display_ms {
+            self.emit_finished();
+        }
         let moving = self.opacity.tick(delta_ms);
         // The completion is reported on the step the fade settles, not by polling opacity:
         // a caller watching `fade_out_finished` must be able to hide the control once rather
@@ -330,11 +398,11 @@ impl Widget for SplashScreen {
             }
             self.fade_out_finished.emit();
         }
-        moving
+        moving || self.finish_pending
     }
 
     fn is_animating(&self) -> bool {
-        self.opacity.is_moving()
+        self.opacity.is_moving() || self.finish_pending
     }
 
     impl_draw_bridge!();
@@ -477,8 +545,9 @@ impl Draw for SplashScreen {
         // behind it. A resolved surface equal to the theme's background is therefore
         // re-derived one step toward the ink, the same distinction `Colors::input_background`
         // draws for a field.
-        let themed_background =
-            crate::style::theme_manager().current_theme().map(|active| active.colors.background);
+        // One cached palette read supplies both the window fill and the accent (G-A01).
+        let palette = crate::style::palette_shared();
+        let themed_background = palette.as_ref().map(|colors| colors.background);
         let surface = match themed_background {
             Some(window_fill) if surface == window_fill => {
                 let ink = style
@@ -499,10 +568,8 @@ impl Draw for SplashScreen {
             .unwrap_or_else(|| surface.blend(&ink, 0.3));
         // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
         // the logo block and the completed portion of the bar follow the appearance.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::rgb(66, 133, 214));
+        let accent =
+            palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::rgb(66, 133, 214));
         // The subtitle and the unfilled track are dimmer than the ink but still readable on
         // the surface, so they are derived from it rather than being two more literals.
         let muted_ink = ink.blend(&surface, 0.4);
@@ -563,7 +630,19 @@ impl Draw for SplashScreen {
         let text_y = stack_top + logo_band;
 
         if logo_band > 0 {
-            context.fill_rect(Rect::new(centre_x - logo as i32 / 2, stack_top, logo, logo), accent);
+            let logo_rect = Rect::new(centre_x - logo as i32 / 2, stack_top, logo, logo);
+            // A caller-supplied brand mark replaces the accent block (OV-03); without one the
+            // historical block is painted untouched.
+            match self.logo {
+                Some(source) => {
+                    if let Err(error) =
+                        crate::widget::paint_icon(context, source.into(), logo_rect, accent)
+                    {
+                        log::warn!("splash logo could not be painted: {error:?}");
+                    }
+                }
+                None => context.fill_rect(logo_rect, accent),
+            }
         }
 
         context.draw_text(
@@ -600,7 +679,10 @@ impl Draw for SplashScreen {
         if let Some(skip) = self.skip_rect() {
             context.draw_rect(skip, border);
             let skip_font = effective_font(style);
-            let label_height = context.measure_text("Skip", skip_font).height as i32;
+            let label_height = crate::widget::base_widgets::measure_cache::measure_text(
+                context, "Skip", skip_font,
+            )
+            .height as i32;
             context.draw_text(
                 Point::new(
                     skip.x + skip.width as i32 / 2,
@@ -850,5 +932,33 @@ mod tests {
         assert_eq!(*finished.lock().expect("lock"), 1, "dismiss also announces completion");
         while splash.tick(1000) {}
         assert!(!splash.base.is_visible(), "and removes the screen once the fade settles");
+    }
+
+    #[test]
+    fn a_minimum_display_time_defers_finish() {
+        let mut splash = screen(320, 240);
+        splash.set_min_display_ms(100);
+        assert_eq!(splash.min_display_ms(), 100);
+        let done = Arc::new(Mutex::new(0usize));
+        let sink = Arc::clone(&done);
+        splash.finished.connect(move |_| {
+            *sink.lock().expect("lock") += 1;
+        });
+        splash.finish();
+        assert_eq!(*done.lock().expect("lock"), 0, "the screen has only just appeared");
+        assert!(splash.tick(50), "a pending finish keeps the frame bus alive");
+        assert_eq!(*done.lock().expect("lock"), 0);
+        splash.tick(50);
+        assert_eq!(*done.lock().expect("lock"), 1, "the threshold releases the announcement");
+    }
+
+    #[test]
+    fn a_logo_can_replace_the_accent_block() {
+        let mut splash = screen(320, 240);
+        assert_eq!(splash.logo(), None);
+        splash.set_logo(Some(IconSource::Builtin(crate::widget::IconName::Home)));
+        assert_eq!(splash.logo(), Some(IconSource::Builtin(crate::widget::IconName::Home)));
+        splash.set_logo(None);
+        assert_eq!(splash.logo(), None);
     }
 }

@@ -14,7 +14,8 @@ use crate::widget::capability::coercion::{expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::display_widgets::draw_line;
+use crate::widget::display_widgets::line::LineStyle;
+use crate::widget::display_widgets::{draw_line, draw_shaded_line};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -34,6 +35,12 @@ pub struct Divider {
     /// reach a divider that was never explicitly coloured, which is exactly the
     /// hardcoded-chrome defect the rendering census reports.
     color_is_explicit: bool,
+    /// The shading shape: plain, sunken or raised.
+    ///
+    /// `Divider` and `Line` are the same drawing primitive at different sizes, so they share
+    /// [`LineStyle`] rather than each declaring a three-variant copy (principle #54). The default
+    /// is `Plain`, which is exactly the single-line picture this control always painted.
+    style: LineStyle,
 }
 
 impl Divider {
@@ -45,6 +52,7 @@ impl Divider {
             thickness: 1,
             color: Color::rgba(180, 180, 180, 200),
             color_is_explicit: false,
+            style: LineStyle::Plain,
         }
     }
 
@@ -73,6 +81,23 @@ impl Divider {
             return;
         }
         self.thickness = thickness;
+        self.base.request_redraw();
+    }
+
+    /// The divider's shading style.
+    pub fn line_style(&self) -> LineStyle {
+        self.style
+    }
+
+    /// Sets the divider's shading style.
+    ///
+    /// [`LineStyle::Plain`] is the default and paints one solid line; `Sunken` and `Raised` paint
+    /// the same two-band treatment `Line` uses, through the shared helper.
+    pub fn set_line_style(&mut self, style: LineStyle) {
+        if self.style == style {
+            return;
+        }
+        self.style = style;
         self.base.request_redraw();
     }
 
@@ -172,6 +197,7 @@ impl WidgetProperties for Divider {
             )),
             "thickness" => Ok(CapabilityValue::Float(self.thickness() as f64)),
             "color" => Ok(CapabilityValue::Color(self.color())),
+            "line_style" => Ok(CapabilityValue::String(self.line_style().token().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -210,12 +236,19 @@ impl WidgetProperties for Divider {
                 self.set_color(color);
                 Ok(())
             }
+            "line_style" => {
+                let token = expect_string(value)?;
+                let style =
+                    LineStyle::from_token(&token).ok_or(CapabilityAccessError::TypeMismatch)?;
+                self.set_line_style(style);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["orientation", "thickness", "color", BASE_PROPERTY_NAMES]
+        property_names_of!["orientation", "thickness", "color", "line_style", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `divider` publishes.
@@ -239,7 +272,11 @@ impl Draw for Divider {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let color = self.line_color();
-        draw_line(context, rect, self.vertical, self.thickness, color);
+        match self.style {
+            LineStyle::Plain => draw_line(context, rect, self.vertical, self.thickness, color),
+            LineStyle::Sunken => draw_shaded_line(context, rect, self.vertical, color, true),
+            LineStyle::Raised => draw_shaded_line(context, rect, self.vertical, color, false),
+        }
     }
 }
 
@@ -323,5 +360,30 @@ mod tests {
         let geom = div.geometry();
         assert_eq!(geom.width, 100);
         assert_eq!(geom.height, 10);
+    }
+
+    /// The divider publishes the same three-state shading vocabulary as `Line`, and the two
+    /// shaded states paint one more stroke than the plain one.
+    #[test]
+    fn a_shaded_divider_reuses_the_line_style_vocabulary() {
+        let mut div = Divider::new(Rect::new(0, 0, 100, 10));
+        assert_eq!(div.line_style(), LineStyle::Plain, "plain is the historical picture");
+        let plain = crate::widget::svg::render_to_svg(&mut div);
+        let plain_lines = plain.matches("<line").count();
+
+        div.set_line_style(LineStyle::Sunken);
+        assert_eq!(div.line_style(), LineStyle::Sunken);
+        let sunken = crate::widget::svg::render_to_svg(&mut div);
+        assert_eq!(
+            sunken.matches("<line").count(),
+            plain_lines + 1,
+            "a shaded divider paints the second band"
+        );
+
+        // The token round-trips through the property route.
+        assert_eq!(div.get("line_style").unwrap(), CapabilityValue::String("sunken".to_string()));
+        div.set("line_style", CapabilityValue::String("raised".to_string())).unwrap();
+        assert_eq!(div.line_style(), LineStyle::Raised);
+        assert!(div.set("line_style", CapabilityValue::String("nope".to_string())).is_err());
     }
 }

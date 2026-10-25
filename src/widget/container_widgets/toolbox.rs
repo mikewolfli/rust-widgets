@@ -23,6 +23,8 @@ use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::theme_snapshot::ThemeSnapshot;
+
 /// The height of one tab in a vertical tool box, in logical pixels.
 const ITEM_HEIGHT: u32 = 32;
 /// The width of one tab in a horizontal tool box, in logical pixels.
@@ -79,6 +81,8 @@ pub struct ToolBox {
     mode: ToolBoxMode,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
+    /// The item under the pointer, for the tooltip query (C-28).
+    hovered_item: Option<usize>,
 }
 /// How a tool box treats its items' open state.
 ///
@@ -258,6 +262,7 @@ impl ToolBox {
             item_expanded_changed: Signal1::new(),
             mode: ToolBoxMode::Exclusive,
             registry: None,
+            hovered_item: None,
         }
     }
     /// Adds an item.
@@ -474,7 +479,21 @@ impl ToolBox {
     /// One open page fills the box, which is the only state the single-page modes produce. In
     /// [`ToolBoxMode::NonExclusive`] several pages are open at once and they tile the box along its
     /// long axis, each taking an equal share — the same "share the band" rule the strip uses.
-    fn page_rects(&self) -> Vec<(usize, Rect)> {
+    fn page_rects(&self, content: Rect) -> Vec<(usize, Rect)> {
+        if self.mode == ToolBoxMode::Popup {
+            // C-29: the open page is presented in a floating layer beside its trigger, not in the
+            // content band. `popup_rect` is the single derivation the painter, the hit test and
+            // the child placement share.
+            return match self.popup_rect(content) {
+                Some(rect) => self
+                    .items
+                    .iter()
+                    .position(|item| item.expanded)
+                    .map(|index| crate::compat::vec![(index, rect)])
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
+        }
         let open: Vec<usize> = self
             .items
             .iter()
@@ -485,7 +504,6 @@ impl ToolBox {
         if open.is_empty() {
             return Vec::new();
         }
-        let content = self.content_rect();
         let count = open.len() as u32;
         let share = content.height / count;
         open.into_iter()
@@ -510,6 +528,53 @@ impl ToolBox {
             .collect()
     }
 
+    /// The floating rectangle a [`ToolBoxMode::Popup`] page occupies (C-29).
+    ///
+    /// Anchored to the open item's own tab and placed just beyond it along the strip's short
+    /// axis, then clamped inside the content box so it can never leave the control. `None` when no
+    /// item is open (there is nothing to present) or the mode is not `Popup`.
+    fn popup_rect(&self, content: Rect) -> Option<Rect> {
+        if self.mode != ToolBoxMode::Popup {
+            return None;
+        }
+        let open = self.items.iter().position(|item| item.expanded)?;
+        let anchor = self.item_rect(open)?;
+        const GAP: i32 = 4;
+        const POPUP_MAJOR: u32 = 240;
+        const POPUP_MINOR: u32 = 180;
+        match self.orientation {
+            Orientation::Vertical => {
+                let height = content.height.min(POPUP_MINOR);
+                let max_y = content.y + content.height.saturating_sub(height) as i32;
+                let y =
+                    (anchor.y + anchor.height as i32 + GAP).clamp(content.y, max_y.max(content.y));
+                Some(Rect::new(content.x, y, content.width, height))
+            }
+            Orientation::Horizontal => {
+                let width = content.width.min(POPUP_MAJOR);
+                let max_x = content.x + content.width.saturating_sub(width) as i32;
+                let x =
+                    (anchor.x + anchor.width as i32 + GAP).clamp(content.x, max_x.max(content.x));
+                Some(Rect::new(x, content.y, width, content.height))
+            }
+        }
+    }
+
+    /// The item under the pointer, for the tooltip path (C-28).
+    pub fn hovered_item(&self) -> Option<usize> {
+        self.hovered_item
+    }
+
+    /// The tooltip of the item under the pointer, if it has one (C-28).
+    ///
+    /// The text was stored and there was no pointer path or query, so a host could not reach it.
+    /// An empty tooltip reports `None` rather than `Some("")`, which is the difference between
+    /// "no tooltip" and "a tooltip that renders nothing".
+    pub fn hovered_tooltip(&self) -> Option<&str> {
+        let index = self.hovered_item?;
+        self.items.get(index).map(|item| item.tooltip.as_str()).filter(|text| !text.is_empty())
+    }
+
     /// Places the open pages in the content box.
     ///
     /// The box comes from the same `content_rect` the painter uses, so a page and the area drawn
@@ -517,7 +582,9 @@ impl ToolBox {
     fn place_pages(&self) {
         #[cfg(not(alloc_frugal))]
         {
-            for (index, rect) in self.page_rects() {
+            // One content derivation for every page in this pass (C-P10).
+            let content = self.content_rect();
+            for (index, rect) in self.page_rects(content) {
                 if let Some(widget_id) = self.items[index].widget {
                     crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
                 }
@@ -837,6 +904,32 @@ impl ToolBox {
     }
     /// Returns index of item at position.
     fn item_at_position(&self, pos: Point) -> Option<usize> {
+        // C-P10: the strip is a uniform run, so the slot is solved arithmetically and only the
+        // candidate is confirmed against the painted rectangle. A mismatch falls back to the
+        // neighbouring slots and then to the scan, so the shortcut can only make it faster.
+        let rect = self.geometry();
+        let coordinate = match self.orientation {
+            Orientation::Horizontal => pos.x - rect.x,
+            Orientation::Vertical => pos.y - rect.y,
+        };
+        if coordinate < 0 {
+            return None;
+        }
+        let extent = self.item_extent().max(1) as f32;
+        let scroll =
+            if self.smooth_scroll { self.scroll_render } else { self.scroll_offset as f32 };
+        let slot = (coordinate as f32 / extent + scroll).floor();
+        if slot >= 0.0 {
+            let index = slot as usize;
+            if self.item_rect(index).is_some_and(|item_rect| item_rect.contains(pos)) {
+                return Some(index);
+            }
+            for neighbour in [index.saturating_sub(1), index + 1] {
+                if self.item_rect(neighbour).is_some_and(|item_rect| item_rect.contains(pos)) {
+                    return Some(neighbour);
+                }
+            }
+        }
         for i in 0..self.items.len() {
             if let Some(item_rect) = self.item_rect(i) {
                 if item_rect.contains(pos) {
@@ -1054,6 +1147,19 @@ impl EventHandler for ToolBox {
                     }
                 }
             }
+            Event::MouseMove { pos } => {
+                // C-28: track the hovered item so a host can drive the existing TooltipManager.
+                let hovered = self.item_at_position(*pos);
+                if hovered != self.hovered_item {
+                    self.hovered_item = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_item.take().is_some() {
+                    self.base.request_redraw();
+                }
+            }
             Event::KeyPress { key, .. } => {
                 // A tab that overflow has scrolled off the strip is still reachable by the arrow
                 // key that walks toward it: `set_current_index` scrolls the strip to keep the
@@ -1086,10 +1192,15 @@ impl EventHandler for ToolBox {
             }
             _ => {}
         }
+        // C-P10: one content derivation for the guard and for the page hit test, and the popup's
+        // own floating rect when that mode is active.
+        let content = self.content_rect();
         let allow_child_event = match event {
             Event::MousePress { pos, .. }
             | Event::MouseRelease { pos, .. }
-            | Event::MouseMove { pos } => self.content_rect().contains(*pos),
+            | Event::MouseMove { pos } => {
+                self.popup_rect(content).unwrap_or(content).contains(*pos)
+            }
             _ => true,
         };
         // Forward content events only to the open page that owns the point; a coordinate-free event
@@ -1103,7 +1214,7 @@ impl EventHandler for ToolBox {
                     | Event::MouseDoubleClick { pos, .. }
                     | Event::ContextMenu { pos } => {
                         let hit = self
-                            .page_rects()
+                            .page_rects(content)
                             .into_iter()
                             .find(|(_, rect)| rect.contains(*pos))
                             .and_then(|(index, _)| self.items[index].widget);
@@ -1141,10 +1252,15 @@ impl Draw for ToolBox {
         // rectangles in the snapshot were byte-identical, so an empty toolbox read as a bare
         // border with a hole in it. `splitter`, `stacked_widget`, `mdi_area` and `carousel`
         // all detect exactly this case and re-derive a visible step; this one did not.
-        let (window_fill, accent) = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| (active.colors.background, active.colors.accent))
-            .unwrap_or((Color::WHITE, Color::rgb(100, 100, 200)));
+        let (window_fill, accent) = {
+            // One theme read for the frame (C-P01): the window fill and the accent token used to
+            // be a single manager visit here, but the resolved style was a second one.
+            let theme = ThemeSnapshot::capture("tool_box");
+            match theme.palette {
+                Some(palette) => (palette.background, palette.accent),
+                None => (Color::WHITE, Color::rgb(100, 100, 200)),
+            }
+        };
         let page = match style.background_color {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&style.text_color.unwrap_or(Color::BLACK), 0.08),
@@ -1174,19 +1290,25 @@ impl Draw for ToolBox {
         // open page in its own band. This happens *before* the tab strip so the tabs stay on top of
         // their own surface: a page that painted a border or a background of its own could still
         // reach into the strip, and the tabs are the control's chrome rather than its content.
-        for (index, page_rect) in self.page_rects() {
-            let Some(widget_id) = self.items[index].widget else {
-                continue;
-            };
-            if let Some(ref reg) = self.registry {
-                // Two acquisitions are deliberate, not an oversight: the guard must not be held
-                // across `draw_widget`, because a nested container on the page borrows the same
-                // registry to draw its own children and would panic as an aliased `RefCell`
-                // borrow. Each acquisition is O(1), so there is nothing to merge here (VIEW-N04).
-                reg.borrow_mut().set_widget_geometry(widget_id, page_rect);
-                context.push_clip(page_rect.x, page_rect.y, page_rect.width, page_rect.height);
-                reg.borrow_mut().draw_widget(widget_id, context);
-                context.pop_clip();
+        //
+        // C-29: `Popup` mode draws its page in the floating rect and adds the layer's own frame,
+        // so the presentation actually reads as a popup rather than as the ordinary page band.
+        for (index, page_rect) in self.page_rects(content_rect) {
+            if let Some(widget_id) = self.items[index].widget {
+                if self.mode == ToolBoxMode::Popup {
+                    context.fill_rect(page_rect, page);
+                    context.draw_rect(page_rect, style.border_color.unwrap_or(selected_border));
+                }
+                if let Some(ref reg) = self.registry {
+                    // Two acquisitions are deliberate, not an oversight: the guard must not be held
+                    // across `draw_widget`, because a nested container on the page borrows the same
+                    // registry to draw its own children and would panic as an aliased `RefCell`
+                    // borrow. Each acquisition is O(1), so there is nothing to merge here (VIEW-N04).
+                    reg.borrow_mut().set_widget_geometry(widget_id, page_rect);
+                    context.push_clip(page_rect.x, page_rect.y, page_rect.width, page_rect.height);
+                    reg.borrow_mut().draw_widget(widget_id, context);
+                    context.pop_clip();
+                }
             }
         }
         // Draw items
@@ -2038,5 +2160,35 @@ mod tests {
         assert!(tb.tick(60));
         assert!(!tb.tick(1000));
         assert!(!tb.is_animating());
+    }
+
+    /// C-28: the pointer path records the hovered item and exposes its tooltip.
+    #[test]
+    fn hovering_an_item_exposes_its_tooltip() {
+        let mut tb = ToolBox::new(Rect::new(0, 0, 200, 300));
+        tb.add_item("Group".to_string(), None);
+        tb.item_mut(0).expect("item").tooltip = "First group".to_string();
+        assert_eq!(tb.hovered_tooltip(), None);
+        tb.handle_event(&crate::event::Event::MouseMove { pos: crate::core::Point::new(10, 10) });
+        assert_eq!(tb.hovered_item(), Some(0));
+        assert_eq!(tb.hovered_tooltip(), Some("First group"));
+        tb.handle_event(&crate::event::Event::MouseLeave { pos: crate::core::Point::new(10, 10) });
+        assert_eq!(tb.hovered_item(), None);
+    }
+
+    /// C-29: popup mode presents the page in a floating rectangle, not the page band.
+    #[test]
+    fn popup_mode_uses_a_floating_rect() {
+        let mut tb = ToolBox::new(Rect::new(0, 0, 200, 300));
+        tb.add_item("Group".to_string(), None);
+        tb.add_item("Other".to_string(), None);
+        tb.set_mode(ToolBoxMode::Popup);
+        assert!(tb.set_item_expanded(0, true));
+        let content = tb.content_rect();
+        let popup = tb.popup_rect(content).expect("an open popup has a rect");
+        assert_eq!(popup.height, 180, "the floating layer has its own extent");
+        assert!(popup.y >= content.y, "the layer stays inside the content box");
+        assert_ne!(popup, content, "it is a presentation of its own, not the page band");
+        assert_eq!(tb.page_rects(content), vec![(0, popup)]);
     }
 }

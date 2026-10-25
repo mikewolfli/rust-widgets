@@ -197,14 +197,24 @@ impl EmbeddedEngineShared {
         // in practice a task does not unwind here — the guard is the belt to that
         // suspenders, and pins the invariant for any future body that can panic.
         let _running_guard = RunningGuard { shared: self };
+        // One delivery buffer reused by every frame. This used to be `drain(..).collect::<Vec<_>>()`
+        // per frame — including idle frames — so a 60 Hz loop paid at least 60 allocations a
+        // second (G-19). `clear`/`extend` keep the capacity, and an idle frame skips delivery
+        // entirely.
+        let mut tasks: Vec<EmbeddedTask> = Vec::new();
         loop {
             let frame_start = Instant::now();
-            let (tasks, target_fps, still_running) = {
+            let (target_fps, still_running) = {
                 let mut state = self.lock_state();
                 let still_running = state.running;
                 let target_fps = state.target_fps;
-                let tasks = state.pending_tasks.drain(..).collect::<Vec<_>>();
-                (tasks, target_fps, still_running)
+                tasks.clear();
+                // Moving each task into the existing buffer does not allocate; the empty case is
+                // skipped so an idle frame goes straight to the tick wait.
+                if !state.pending_tasks.is_empty() {
+                    tasks.extend(state.pending_tasks.drain(..));
+                }
+                (target_fps, still_running)
             };
             if !still_running {
                 break;
@@ -213,7 +223,7 @@ impl EmbeddedEngineShared {
             // Every drained task is delivered, even if an earlier task in the same
             // frame panics: a panic is reported and the loop continues rather than
             // dropping the rest of the frame's tasks silently.
-            for task in tasks {
+            for task in tasks.drain(..) {
                 run_task(task, frame_index);
             }
             let frame_interval = frame_interval_for_fps(clamp_embedded_target_fps(target_fps));
@@ -255,20 +265,27 @@ impl EmbeddedEngineShared {
         // well as the normal one, so a panicking task cannot leave the engine stuck
         // "running" and no-op every subsequent call.
         let _running_guard = RunningGuard { shared: self };
+        // The same reusable delivery buffer as the desktop arm, so the two loops stay consistent
+        // (G-19). The busy-wait below is deliberate: this profile has no second thread to wake
+        // the loop, and pacing is the documented trade-off.
+        let mut tasks: Vec<EmbeddedTask> = Vec::new();
         loop {
             let frame_start = Instant::now();
-            let (tasks, target_fps, still_running) = {
+            let (target_fps, still_running) = {
                 let mut state = self.lock_state();
                 let still_running = state.running;
                 let target_fps = state.target_fps;
-                let tasks = state.pending_tasks.drain(..).collect::<Vec<_>>();
-                (tasks, target_fps, still_running)
+                tasks.clear();
+                if !state.pending_tasks.is_empty() {
+                    tasks.extend(state.pending_tasks.drain(..));
+                }
+                (target_fps, still_running)
             };
             if !still_running {
                 break;
             }
             let frame_index = self.frame_count.fetch_add(1, Ordering::SeqCst) + 1;
-            for task in tasks {
+            for task in tasks.drain(..) {
                 run_task(task, frame_index);
             }
             let frame_interval = frame_interval_for_fps(clamp_embedded_target_fps(target_fps));

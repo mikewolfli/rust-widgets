@@ -422,8 +422,8 @@ impl SegmentedControl {
             .collect()
     }
 
-    /// The painted width of every segment within `band_width`.
-    fn segment_widths(&self, band_width: u32) -> Vec<u32> {
+    /// The painted width of every segment within `band_width`, given the content widths.
+    fn widths_from_desired(&self, desired: &[u32], band_width: u32) -> Vec<u32> {
         let count = self.items.len();
         if count == 0 {
             return Vec::new();
@@ -438,12 +438,11 @@ impl SegmentedControl {
             }
             return widths;
         }
-        let desired = self.desired_segment_widths();
         let total: u32 = desired.iter().sum();
         if total <= band_width {
             // Content is smaller than the track: the extra room stays empty rather than being
             // handed to a short label, which is the whole point of fitting to content.
-            return desired;
+            return desired.to_vec();
         }
         // Content overflows: shrink proportionally, never below one pixel, and let the last segment
         // take the remainder.
@@ -462,15 +461,45 @@ impl SegmentedControl {
         widths
     }
 
+    /// The band and every segment rectangle, computed in one pass.
+    ///
+    /// The paint used to call `segment_rect` per segment, and each call re-derived *every* width
+    /// through `segment_widths` — `O(n²)` per frame on a control whose whole job is laying out a
+    /// handful of segments. The hit test paid the same cost on every pointer move (SP-P65). One
+    /// pass here gives both paths the same rectangles.
+    fn segment_layout(&self) -> (Rect, Vec<Rect>) {
+        let full =
+            ControlMetrics::full_width_band(self.geometry(), dimensions::SEGMENTED_CONTROL_HEIGHT);
+        if self.items.is_empty() {
+            return (full, Vec::new());
+        }
+        let desired = if self.size_to_fit { self.desired_segment_widths() } else { Vec::new() };
+        let band = if self.size_to_fit {
+            let total: u32 = desired.iter().sum();
+            Rect::new(full.x, full.y, total.min(full.width), full.height)
+        } else {
+            full
+        };
+        let widths = self.widths_from_desired(&desired, band.width);
+        let mut rects = Vec::with_capacity(widths.len());
+        let mut x = band.x;
+        for width in widths {
+            rects.push(Rect::new(x, band.y, width, band.height));
+            x += width as i32;
+        }
+        (band, rects)
+    }
+
+    /// One segment's rectangle from the single-pass layout.
+    ///
+    /// The paint and the hit test read [`Self::segment_layout`] directly so a frame lays the row
+    /// out once; this per-segment view exists for the layout assertions in this file's tests.
+    #[cfg(test)]
     fn segment_rect(&self, index: usize) -> Option<Rect> {
         if index >= self.items.len() || self.items.is_empty() {
             return None;
         }
-        let band = self.track_band();
-        let widths = self.segment_widths(band.width);
-        let width = widths.get(index).copied()?;
-        let x = band.x + widths.iter().take(index).map(|w| *w as i32).sum::<i32>();
-        Some(Rect::new(x, band.y, width, band.height))
+        self.segment_layout().1.get(index).copied()
     }
 
     /// The bar the control actually paints: full width, `dimensions::SEGMENTED_CONTROL_HEIGHT`
@@ -485,19 +514,11 @@ impl SegmentedControl {
     /// band once here is what keeps the paint, the hit test and the reported size on one
     /// value.
     fn track_band(&self) -> Rect {
-        let full =
-            ControlMetrics::full_width_band(self.geometry(), dimensions::SEGMENTED_CONTROL_HEIGHT);
-        if !self.size_to_fit || self.items.is_empty() {
-            return full;
-        }
-        // A content-fitted control is as wide as its segments need, never wider than the room it
-        // was given — that is what makes a two-word segment narrow and a long one wide.
-        let total: u32 = self.desired_segment_widths().iter().sum();
-        Rect::new(full.x, full.y, total.min(full.width), full.height)
+        self.segment_layout().0
     }
 
     fn hit_index(&self, pos: Point) -> Option<usize> {
-        let band = self.track_band();
+        let (band, rects) = self.segment_layout();
         if pos.x < band.x
             || pos.x >= band.x + band.width as i32
             || pos.y < band.y
@@ -505,26 +526,7 @@ impl SegmentedControl {
         {
             return None;
         }
-
-        for index in 0..self.items.len() {
-            let Some(seg) = self.segment_rect(index) else {
-                continue;
-            };
-            if pos.x >= seg.x && pos.x < seg.x + seg.width as i32 {
-                return Some(index);
-            }
-        }
-        None
-    }
-
-    /// The segment rectangle the indicator is sliding **from**.
-    fn indicator_from(&self) -> Option<Rect> {
-        self.segment_rect(self.slide_from)
-    }
-
-    /// The segment rectangle the indicator is sliding **to**.
-    fn indicator_to(&self) -> Option<Rect> {
-        self.segment_rect(self.selected_index.unwrap_or(self.slide_from))
+        rects.iter().position(|seg| pos.x >= seg.x && pos.x < seg.x + seg.width as i32)
     }
 }
 
@@ -835,15 +837,14 @@ impl Draw for SegmentedControl {
         // height, so there was nothing to divide — and it disagreed with the 32 px size the
         // control reports. The band is the single derivation the paint and the hit test share.
         let band = self.track_band();
+        // One layout pass for the whole frame: the fills, the dividers, the indicator and the
+        // labels all read the same rectangles (SP-P65).
+        let (_, segment_rects) = self.segment_layout();
 
         context.fill_rect(band, bar);
         context.draw_rect(band, divider);
 
-        for index in 0..self.items.len() {
-            let Some(seg) = self.segment_rect(index) else {
-                continue;
-            };
-
+        for (index, seg) in segment_rects.iter().copied().enumerate() {
             // A hovered segment is a weaker step than the selection, so the two read as one
             // affordance at two weights. The *selected* fill is drawn below as the sliding
             // indicator rather than here, so a segment never paints its own selection. A disabled
@@ -885,15 +886,16 @@ impl Draw for SegmentedControl {
             // Multi-selection has no single destination for a sliding pill, so each selected
             // segment is filled statically. The slide is single-select's way of saying "the value
             // moved"; a set has no one place to move to.
-            for index in 0..self.items.len() {
+            for (index, seg) in segment_rects.iter().copied().enumerate() {
                 if !self.is_selected(index) {
                     continue;
                 }
-                if let Some(seg) = self.segment_rect(index) {
-                    context.fill_rect(seg, selected_bg);
-                }
+                context.fill_rect(seg, selected_bg);
             }
-        } else if let (Some(from), Some(to)) = (self.indicator_from(), self.indicator_to()) {
+        } else if let (Some(from), Some(to)) = (
+            segment_rects.get(self.slide_from).copied(),
+            segment_rects.get(self.selected_index.unwrap_or(self.slide_from)).copied(),
+        ) {
             let t = self.slide.value();
             let lerp = |a: i32, b: i32| a + ((b - a) as f32 * t) as i32;
             let indicator = Rect::new(
@@ -906,10 +908,7 @@ impl Draw for SegmentedControl {
         }
 
         // ── Segment labels ──
-        for index in 0..self.items.len() {
-            let Some(seg) = self.segment_rect(index) else {
-                continue;
-            };
+        for (index, seg) in segment_rects.iter().copied().enumerate() {
             if let Some(item) = self.items.get(index) {
                 // The label contrasts with the fill it is painted on — the indicator for the
                 // selected segment, the bar for the rest — so it stays legible on either
@@ -931,18 +930,35 @@ impl Draw for SegmentedControl {
                 // Material's segmented control insets a segment's label by 16 px rather than the
                 // 8 the old literal used: at 8 the label of a two-character segment ran into the
                 // divider it sits beside.
-                context.draw_text(
-                    Point::new(
-                        seg.x
-                            + SEGMENT_LABEL_INSET
-                            + if item.icon.is_some() { SEGMENT_ICON_SLOT } else { 0 },
-                        line.y,
-                    ),
-                    &item.label,
-                    effective_font(style),
-                    label_color,
-                    HorizontalAlignment::Left,
-                );
+                //
+                // A label wider than its segment is **fitted** (ellipsised) inside the padded
+                // box instead of being drawn at full advance: unfitted ink crossed the segment
+                // boundary and printed into its neighbour, so the pill and the text disagreed
+                // about which segment was selected (SP-56).
+                let label_x = seg.x
+                    + SEGMENT_LABEL_INSET
+                    + if item.icon.is_some() { SEGMENT_ICON_SLOT } else { 0 };
+                let label_width =
+                    (seg.x + seg.width as i32 - SEGMENT_LABEL_INSET - label_x).max(0) as u32;
+                let font = effective_font(style);
+                let measured = context.measure_text(&item.label, font).width;
+                if measured <= label_width {
+                    context.draw_text(
+                        Point::new(label_x, line.y),
+                        &item.label,
+                        font,
+                        label_color,
+                        HorizontalAlignment::Left,
+                    );
+                } else if label_width > 0 {
+                    context.draw_text_fitted_cow(
+                        Rect::new(label_x, line.y, label_width, line.height),
+                        &item.label,
+                        font,
+                        label_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
                 if let Some(icon) = item.icon {
                     let side = 12u32.min(seg.height.saturating_sub(4)).max(1);
                     let icon_rect = Rect::new(

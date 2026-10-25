@@ -7,14 +7,14 @@
 //! to create a tag chip. Each tag is displayed as a rounded chip with an X button for removal.
 //! It emits `tags_changed` with the current list of tags on every change.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::Signal1;
 use crate::undo::{UndoStack, ValueCommand};
 use crate::widget::capability::coercion::{
-    expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
+    expect_bool, expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -46,6 +46,31 @@ struct TagInputState {
     input_buffer: String,
 }
 
+/// One chip's geometry inside the painted field.
+#[derive(Clone, Copy, Debug)]
+struct ChipBox {
+    index: usize,
+    x: i32,
+    y: i32,
+    width: i32,
+}
+
+/// The laid-out chip row(s), shared by the painter and the two hit tests (I-P58).
+#[derive(Debug)]
+struct ChipLayout {
+    chips: Vec<ChipBox>,
+    /// Chips that did not fit, rendered as a trailing "+N" chip (I-114).
+    hidden: usize,
+}
+
+struct ChipLayoutCache {
+    revision: u64,
+    width: u32,
+    multiline: bool,
+    font: Font,
+    layout: Rc<ChipLayout>,
+}
+
 /// TagInput widget — a text input that creates tags/chips on Enter or comma.
 pub struct TagInput {
     base: BaseWidget,
@@ -71,6 +96,22 @@ pub struct TagInput {
     alignment: crate::core::Alignment,
     /// The input caret's blink state, advanced by [`TagInput::tick`].
     cursor_blink: crate::style::CursorBlink,
+    /// Bumped whenever the tag list changes, so the chip layout can be cached (I-P58).
+    tags_revision: u64,
+    /// The chip geometry the painter and both hit tests share (I-P58).
+    chip_cache: RefCell<Option<ChipLayoutCache>>,
+    /// Whether chips wrap onto multiple rows (I-114).
+    multiline: bool,
+    /// First multi-row chip row the field paints (I-114).
+    chip_scroll: usize,
+    /// The x of the drag insertion indicator while a chip is being dragged (I-115).
+    drag_indicator: Option<i32>,
+    /// The candidate row the suggestion layer highlights (I-113).
+    suggestion_highlight: usize,
+    /// Whether the suggestion layer is open (I-113).
+    suggestions_open: bool,
+    /// The IME pre-edit string rendered inline before it is committed (I-115).
+    preedit: String,
     /// Emitted when the tags list changes, providing the full list of tags.
     pub tags_changed: Signal1<Vec<String>>,
     undo_stack: UndoStack,
@@ -93,6 +134,14 @@ impl TagInput {
             focused: false,
             alignment: crate::core::Alignment::Left,
             cursor_blink: crate::style::CursorBlink::new(),
+            tags_revision: 0,
+            chip_cache: RefCell::new(None),
+            multiline: false,
+            chip_scroll: 0,
+            drag_indicator: None,
+            suggestion_highlight: 0,
+            suggestions_open: false,
+            preedit: String::new(),
             tags_changed: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(TagInputState {
@@ -118,6 +167,7 @@ impl TagInput {
         }
         let before = self.snapshot_state();
         self.tags.push(trimmed.to_string());
+        self.bump_tags();
         self.record_state_change(before);
         self.tags_changed.emit(self.tags.clone());
         self.base.request_redraw();
@@ -129,6 +179,7 @@ impl TagInput {
         if index < self.tags.len() {
             let before = self.snapshot_state();
             self.tags.remove(index);
+            self.bump_tags();
             self.record_state_change(before);
             self.tags_changed.emit(self.tags.clone());
             self.base.request_redraw();
@@ -231,6 +282,10 @@ impl TagInput {
     /// This is the batch-entry path: a user copying a list from a spreadsheet expects the
     /// paste to become tags, not one long tag containing the separators.
     pub fn paste_text(&mut self, text: &str) {
+        // I-P59: one snapshot and one undo entry for the whole paste, not one per tag. The old
+        // loop recorded a step for each field it added, so undoing a pasted list took as many
+        // presses as the list had rows.
+        let before = self.snapshot_state();
         let mut added = false;
         for part in text.split([',', '\n', ';']) {
             let trimmed = part.trim();
@@ -243,15 +298,15 @@ impl TagInput {
             if self.tags.iter().any(|tag| tag == trimmed) {
                 continue;
             }
-            let before = self.snapshot_state();
             self.tags.push(trimmed.to_string());
-            self.record_state_change(before);
             added = true;
         }
         if added {
             self.input_buffer.clear();
             self.input_cursor = 0;
             self.input_anchor = None;
+            self.bump_tags();
+            self.record_state_change(before);
             self.tags_changed.emit(self.tags.clone());
             self.base.request_redraw();
         }
@@ -305,6 +360,7 @@ impl TagInput {
         let before = self.snapshot_state();
         let tag = self.tags.remove(from);
         self.tags.insert(to, tag);
+        self.bump_tags();
         self.record_state_change(before);
         self.tags_changed.emit(self.tags.clone());
         self.base.request_redraw();
@@ -324,6 +380,7 @@ impl TagInput {
         self.input_buffer = tag;
         self.input_cursor = self.input_buffer.len();
         self.input_anchor = None;
+        self.bump_tags();
         self.record_state_change(before);
         self.tags_changed.emit(self.tags.clone());
         self.base.request_redraw();
@@ -369,6 +426,7 @@ impl TagInput {
             let before = self.snapshot_state();
             self.tags.clear();
             self.input_buffer.clear();
+            self.bump_tags();
             self.record_state_change(before);
             self.tags_changed.emit(self.tags.clone());
             self.base.request_redraw();
@@ -429,6 +487,7 @@ impl TagInput {
         self.input_buffer.clear();
         self.input_cursor = 0;
         self.input_anchor = None;
+        self.bump_tags();
         self.record_state_change(before);
         if self.tags != old_tags {
             self.tags_changed.emit(self.tags.clone());
@@ -498,6 +557,7 @@ impl TagInput {
         self.input_buffer = state.input_buffer;
         self.input_cursor = self.input_buffer.len();
         self.input_anchor = None;
+        self.bump_tags();
         if self.tags != previous_tags {
             self.tags_changed.emit(self.tags.clone());
         }
@@ -571,7 +631,74 @@ impl TagInput {
     /// band's offset — so a click on the drawn X missed it by the height difference.
     /// Deriving both from `field_rect` is what makes hit and ink the same fact.
     fn field_rect(&self) -> Rect {
-        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+        let height = if self.multiline {
+            self.multiline_field_height()
+        } else {
+            dimensions::TEXT_FIELD_MIN_HEIGHT
+        };
+        ControlMetrics::full_width_band(self.geometry(), height)
+    }
+
+    /// The height a multi-line chip layout needs, capped by the offered rectangle (I-114).
+    fn multiline_field_height(&self) -> u32 {
+        let rows = self.multiline_row_count();
+        let needed = TAG_PADDING * 2 + rows as i32 * TAG_HEIGHT + (rows as i32 - 1) * TAG_GAP;
+        (needed.max(dimensions::TEXT_FIELD_MIN_HEIGHT as i32) as u32)
+            .min(self.geometry().height)
+            .max(dimensions::TEXT_FIELD_MIN_HEIGHT)
+    }
+
+    /// The number of chip rows the current tags need at the offered width (I-114).
+    fn multiline_row_count(&self) -> usize {
+        let available = (self.geometry().width as i32 - TAG_PADDING * 2).max(1);
+        let mut x = 0i32;
+        let mut rows = 1usize;
+        for tag in &self.tags {
+            let width = self.compute_chip_width(tag);
+            if x > 0 && x + width > available {
+                rows += 1;
+                x = 0;
+            }
+            x += width + TAG_GAP;
+        }
+        rows
+    }
+
+    /// Whether chips wrap onto multiple rows (I-114).
+    pub fn multiline(&self) -> bool {
+        self.multiline
+    }
+
+    /// Enables or disables multi-row chip layout (I-114).
+    ///
+    /// Off by default, which keeps the single-row layout and its pixels unchanged.
+    pub fn set_multiline(&mut self, multiline: bool) {
+        if self.multiline == multiline {
+            return;
+        }
+        self.multiline = multiline;
+        if !multiline {
+            self.chip_scroll = 0;
+        }
+        self.chip_cache.borrow_mut().take();
+        self.base.request_redraw();
+    }
+
+    /// The trailing "+N" chip's rectangle and hidden count, when chips overflow (I-114).
+    fn overflow_rect(&self) -> Option<(Rect, usize)> {
+        let layout = self.chip_layout();
+        if layout.hidden == 0 {
+            return None;
+        }
+        let (x, y) = layout
+            .chips
+            .last()
+            .map(|chip| (chip.x + chip.width + TAG_GAP, chip.y))
+            .unwrap_or((self.field_rect().x + TAG_PADDING, self.chip_row_y()));
+        let label = format!("+{}", layout.hidden);
+        let width =
+            estimate_text_width(&label, effective_font(self.style()), 1.0) as i32 + TAG_PADDING * 2;
+        Some((Rect::new(x, y, width as u32, TAG_HEIGHT as u32), layout.hidden))
     }
 
     /// The y of the chip row inside the painted field: the row is centred on the field.
@@ -585,56 +712,99 @@ impl TagInput {
         Point::new(chip_x + chip_width - TAG_PADDING - TAG_CLOSE_RADIUS, chip_y + TAG_HEIGHT / 2)
     }
 
+    /// Runs `f` against a throwaway measurement surface.
+    fn with_measurement<R>(f: impl FnOnce(&RenderContext) -> R) -> R {
+        let mut measurement =
+            crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
+        f(&RenderContext::new(&mut measurement))
+    }
+
+    /// The chip geometry the painter, the close hit test and the chip hit test all read (I-P58).
+    ///
+    /// One renderer measurement per chip, cached by the tag revision and the field width, so the
+    /// painter and the two hit tests cannot disagree about where a chip is or how wide it is.
+    fn chip_layout(&self) -> Rc<ChipLayout> {
+        let rect = self.field_rect();
+        let width = rect.width;
+        let font = effective_font(self.style()).clone();
+        if let Some(cache) = self.chip_cache.borrow().as_ref() {
+            if cache.revision == self.tags_revision
+                && cache.width == width
+                && cache.multiline == self.multiline
+                && cache.font == font
+            {
+                return Rc::clone(&cache.layout);
+            }
+        }
+        let max_x = rect.x + rect.width as i32 - TAG_PADDING;
+        let mut x = rect.x + TAG_PADDING;
+        let mut y = if self.multiline {
+            rect.y + TAG_PADDING - (self.chip_scroll * (TAG_HEIGHT + TAG_GAP) as usize) as i32
+        } else {
+            self.chip_row_y()
+        };
+        let mut chips = Vec::new();
+        let mut hidden = 0usize;
+        Self::with_measurement(|context| {
+            for (index, tag) in self.tags.iter().enumerate() {
+                let text_width = context.measure_text(tag, &font).width as i32;
+                let chip_width = text_width + TAG_PADDING * 2 + TAG_CLOSE_RADIUS * 2 + 4;
+                if x + chip_width > max_x {
+                    if !self.multiline {
+                        hidden = self.tags.len() - index;
+                        break;
+                    }
+                    x = rect.x + TAG_PADDING;
+                    y += TAG_HEIGHT + TAG_GAP;
+                    if y + TAG_HEIGHT > rect.y + rect.height as i32 - TAG_PADDING {
+                        hidden = self.tags.len() - index;
+                        break;
+                    }
+                }
+                // I-114: rows scrolled above the field are neither painted nor hit-tested.
+                if y + TAG_HEIGHT > rect.y + TAG_PADDING {
+                    chips.push(ChipBox { index, x, y, width: chip_width });
+                }
+                x += chip_width + TAG_GAP;
+            }
+        });
+        let layout = Rc::new(ChipLayout { chips, hidden });
+        *self.chip_cache.borrow_mut() = Some(ChipLayoutCache {
+            revision: self.tags_revision,
+            width,
+            multiline: self.multiline,
+            font,
+            layout: Rc::clone(&layout),
+        });
+        layout
+    }
+
     /// Hit-tests whether a point is within the close button of any tag chip.
     /// Returns the tag index if a close button was hit, or `None`.
     fn hit_tag_close(&self, pos: Point) -> Option<usize> {
-        // The **painted field**, so the circles the user can see are the ones that answer.
-        let rect = self.field_rect();
-        let mut current_x = rect.x + TAG_PADDING;
-        let chip_y = self.chip_row_y();
-        let max_width = rect.width as i32 - TAG_PADDING * 2;
-
-        for (index, tag) in self.tags.iter().enumerate() {
-            let chip_width = self.compute_chip_width(tag).min(max_width);
-            // Stop where the paint loop stops: a chip that is not drawn has no close button.
-            if current_x + chip_width > rect.x + rect.width as i32 - TAG_PADDING {
-                break;
-            }
-
-            // Check if the close button within this chip was hit
-            let close_center = self.tag_close_center(current_x, chip_width, chip_y);
+        for chip in &self.chip_layout().chips {
+            let close_center = self.tag_close_center(chip.x, chip.width, chip.y);
             let dx = (pos.x - close_center.x) as i64;
             let dy = (pos.y - close_center.y) as i64;
             if dx * dx + dy * dy <= (TAG_CLOSE_RADIUS as i64 + 2) * (TAG_CLOSE_RADIUS as i64 + 2) {
-                return Some(index);
+                return Some(chip.index);
             }
-
-            current_x += chip_width + TAG_GAP;
         }
         None
     }
 
     /// Hit-tests whether a point is on a tag chip (not only its close button).
     fn hit_tag_index(&self, pos: Point) -> Option<usize> {
-        let rect = self.field_rect();
-        let mut current_x = rect.x + TAG_PADDING;
-        let chip_y = self.chip_row_y();
-        let max_width = rect.width as i32 - TAG_PADDING * 2;
-        for (index, tag) in self.tags.iter().enumerate() {
-            let chip_width = self.compute_chip_width(tag).min(max_width);
-            if current_x + chip_width > rect.x + rect.width as i32 - TAG_PADDING {
-                break;
-            }
-            if pos.x >= current_x
-                && pos.x < current_x + chip_width
-                && pos.y >= chip_y
-                && pos.y < chip_y + TAG_HEIGHT
-            {
-                return Some(index);
-            }
-            current_x += chip_width + TAG_GAP;
-        }
-        None
+        self.chip_layout()
+            .chips
+            .iter()
+            .find(|chip| {
+                pos.x >= chip.x
+                    && pos.x < chip.x + chip.width
+                    && pos.y >= chip.y
+                    && pos.y < chip.y + TAG_HEIGHT
+            })
+            .map(|chip| chip.index)
     }
 
     /// Computes the width of a tag chip based on its text content.
@@ -646,6 +816,54 @@ impl TagInput {
     fn compute_chip_width(&self, tag: &str) -> i32 {
         let text_width = estimate_text_width(tag, effective_font(self.style()), 1.0) as i32;
         text_width + TAG_PADDING * 2 + TAG_CLOSE_RADIUS * 2 + 4
+    }
+
+    /// Marks the tag list as changed so the shared chip layout is rebuilt (I-P58).
+    fn bump_tags(&mut self) {
+        self.tags_revision = self.tags_revision.wrapping_add(1);
+        self.chip_cache.borrow_mut().take();
+    }
+
+    /// The suggestions that match the current input as a case-insensitive prefix (I-113).
+    fn visible_suggestions(&self) -> Vec<usize> {
+        if self.input_buffer.trim().is_empty() {
+            return Vec::new();
+        }
+        let prefix = self.input_buffer.trim().to_lowercase();
+        self.suggestions
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| candidate.to_lowercase().starts_with(&prefix))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// Puts the highlighted suggestion into the input buffer (I-113).
+    fn accept_highlighted(&mut self) -> bool {
+        let matches = self.visible_suggestions();
+        let Some(&index) = matches.get(self.suggestion_highlight) else {
+            return false;
+        };
+        self.input_buffer = self.suggestions[index].clone();
+        self.input_cursor = self.input_buffer.len();
+        // The completed text is selected in full (I-113), matching `complete_input`, so the
+        // next keystroke replaces it rather than appending to it.
+        self.input_anchor = Some(0);
+        self.suggestions_open = false;
+        self.suggestion_highlight = 0;
+        self.base.request_redraw();
+        true
+    }
+
+    /// Opens or closes the suggestion layer from the current filter (I-113).
+    fn refresh_suggestions(&mut self) {
+        let count = self.visible_suggestions().len();
+        self.suggestions_open = count > 0 && self.focused;
+        if count == 0 {
+            self.suggestion_highlight = 0;
+        } else if self.suggestion_highlight >= count {
+            self.suggestion_highlight = count - 1;
+        }
     }
 }
 
@@ -661,7 +879,8 @@ impl Widget for TagInput {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 28)
+        let height = if self.multiline { self.multiline_field_height().max(28) } else { 28 };
+        crate::core::Size::new(200, height)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -732,6 +951,8 @@ impl WidgetProperties for TagInput {
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
             )),
+            // I-114: the multi-row layout switch.
+            "multiline" => Ok(CapabilityValue::Bool(self.multiline())),
             _ => base_property_get(self, name),
         }
     }
@@ -747,12 +968,16 @@ impl WidgetProperties for TagInput {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
             }
+            "multiline" => {
+                self.set_multiline(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["tags", "placeholder", "alignment", BASE_PROPERTY_NAMES]
+        property_names_of!["tags", "placeholder", "alignment", "multiline", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `tag_input` publishes.
@@ -829,20 +1054,19 @@ impl Draw for TagInput {
             );
         }
 
-        let mut current_x = rect.x + TAG_PADDING;
+        // I-P58: one cached layout, shared with both hit tests, instead of a second estimate in
+        // the painter and a third measurement of the same label below.
+        let layout = self.chip_layout();
         let chip_y = self.chip_row_y();
-        let max_width = rect.width as i32 - TAG_PADDING * 2;
         let font = effective_font(style);
+        let mut last_x = rect.x + TAG_PADDING;
+        let mut last_y = chip_y;
 
         // ── Draw tag chips ──
-        for tag in &self.tags {
-            let chip_width = self.compute_chip_width(tag).min(max_width);
-            // The field's inner width is the row's bound. Without this the row kept painting
-            // chips — and then the input band — past the control, over its neighbours.
-            if current_x + chip_width > rect.x + rect.width as i32 - TAG_PADDING {
-                break;
-            }
-            let chip_rect = Rect::new(current_x, chip_y, chip_width as u32, TAG_HEIGHT as u32);
+        for chip in &layout.chips {
+            let tag = &self.tags[chip.index];
+            let chip_width = chip.width;
+            let chip_rect = Rect::new(chip.x, chip.y, chip_width as u32, TAG_HEIGHT as u32);
 
             // Chip background
             // The chip is this control's own chrome — a filled pill holding a tag — so its
@@ -850,7 +1074,10 @@ impl Draw for TagInput {
             // button is then the chip's *inverse* (white circle, accent X), which is what a
             // "remove this" affordance looks like on a coloured pill; deriving it keeps the
             // pair legible whatever the theme's accent is.
-            let chip_bg = if is_enabled {
+            // I-115: the dragged chip is highlighted so the gesture has a visible source.
+            let chip_bg = if self.dragging_tag == Some(chip.index) {
+                accent.unwrap_or(Color::rgb(25, 118, 210)).with_alpha(150)
+            } else if is_enabled {
                 accent.unwrap_or(Color::rgb(25, 118, 210))
             } else {
                 Color::rgba(180, 180, 180, 160)
@@ -860,19 +1087,19 @@ impl Draw for TagInput {
             // Chip text: the contrasting ink for the fill, so it stays legible when the
             // theme's accent is light.
             let text_color = chip_bg.contrast_color();
-            let text_x = current_x + TAG_PADDING;
+            let text_x = chip.x + TAG_PADDING;
             // The origin is the glyph box's top edge, so the row's centre is half the
             // difference of the line boxes — `chip_y + TAG_HEIGHT/2` began the box half a
             // line below the chip's middle.
             let tag_metrics = context.measure_text(tag, font);
             let text_origin =
-                Point::new(text_x, chip_y + (TAG_HEIGHT - tag_metrics.height as i32) / 2);
+                Point::new(text_x, chip.y + (TAG_HEIGHT - tag_metrics.height as i32) / 2);
             context.draw_text(text_origin, tag, font, text_color, HorizontalAlignment::Left);
 
             // Close button circle. It is the chip's *contrast* colour rather than white: on a
             // light-accent theme a white circle on the chip is a low-contrast disc, and the
             // "remove this" affordance has to read on whatever accent the theme supplies.
-            let close_center = self.tag_close_center(current_x, chip_width, chip_y);
+            let close_center = self.tag_close_center(chip.x, chip_width, chip.y);
             let close_bg = text_color;
             context.fill_circle(close_center, TAG_CLOSE_RADIUS as u32, close_bg);
 
@@ -890,13 +1117,40 @@ impl Draw for TagInput {
                 close_fg,
             );
 
-            current_x += chip_width + TAG_GAP;
+            last_x = chip.x + chip_width + TAG_GAP;
+            last_y = chip.y;
+        }
+
+        // I-115: the insertion line marks where the dragged chip will land.
+        if self.dragging_tag.is_some() {
+            let x = self.drag_indicator.unwrap_or(last_x);
+            context.draw_line(
+                Point::new(x, last_y),
+                Point::new(x, last_y + TAG_HEIGHT),
+                accent.unwrap_or(Color::rgb(25, 118, 210)),
+            );
+        }
+
+        // I-114: the chips that do not fit are summarised in a trailing "+N" chip instead of
+        // silently disappearing. Clicking it expands the field into its multi-row layout.
+        if let Some((overflow, hidden)) = self.overflow_rect() {
+            let chip_bg = accent.unwrap_or(Color::rgb(120, 120, 120));
+            context.fill_rounded_rect(overflow, TAG_CHIP_RADIUS, chip_bg);
+            context.draw_text(
+                Point::new(overflow.x + TAG_PADDING, overflow.y + 4),
+                &format!("+{hidden}"),
+                font,
+                chip_bg.contrast_color(),
+                HorizontalAlignment::Left,
+            );
+            last_x = overflow.x + overflow.width as i32 + TAG_GAP;
+            last_y = overflow.y;
         }
 
         // ── Input area ──
-        let input_x = current_x.min(rect.x + rect.width as i32 - MIN_INPUT_WIDTH);
+        let input_x = last_x.min(rect.x + rect.width as i32 - MIN_INPUT_WIDTH);
         let input_width = (rect.x + rect.width as i32 - TAG_PADDING - input_x).max(0);
-        let input_rect = Rect::new(input_x, chip_y, input_width as u32, TAG_HEIGHT as u32);
+        let input_rect = Rect::new(input_x, last_y, input_width as u32, TAG_HEIGHT as u32);
 
         // Input background (slightly inset).
         //
@@ -948,7 +1202,7 @@ impl Draw for TagInput {
         // far, and the advance the renderer uses is the font size, not 7. A caret that
         // disagrees with the glyphs beside it is a visible defect on its own.
         let input_band =
-            Rect::new(input_x + 4, chip_y, input_rect.width.saturating_sub(8), TAG_HEIGHT as u32);
+            Rect::new(input_x + 4, last_y, input_rect.width.saturating_sub(8), TAG_HEIGHT as u32);
         // The placeholder/typed text goes in the input band's own line box, not at the band's
         // top edge. `draw_text_fitted` aligns horizontally only — its origin is `bounds.y`
         // unchanged — so handing it the chip-height band pinned the text to the top of the
@@ -1009,6 +1263,68 @@ impl Draw for TagInput {
                 Point::new(cursor_x, cursor_y2),
                 Color::rgba(60, 140, 255, 200),
             );
+            // I-115: the IME composition string is painted inline with an underline until it is
+            // committed, so an East-Asian user can see what is being composed.
+            if !self.preedit.is_empty() {
+                let preedit_x = cursor_x + 2;
+                context.draw_text(
+                    Point::new(preedit_x, cursor_y1),
+                    &self.preedit,
+                    font,
+                    input_text_color,
+                    HorizontalAlignment::Left,
+                );
+                context.draw_line(
+                    Point::new(preedit_x, cursor_y2 - 1),
+                    Point::new(
+                        preedit_x + context.measure_text(&self.preedit, font).width as i32,
+                        cursor_y2 - 1,
+                    ),
+                    input_text_color,
+                );
+            }
+        }
+
+        // ── Suggestion layer (I-113) ──
+        if self.focused && self.suggestions_open {
+            let matches = self.visible_suggestions();
+            if !matches.is_empty() {
+                let row_height = 20i32;
+                let max_visible = 6usize;
+                let highlight = self.suggestion_highlight.min(matches.len() - 1);
+                let start = highlight.saturating_sub(max_visible - 1);
+                let visible = matches.len().min(max_visible);
+                let layer = Rect::new(
+                    rect.x,
+                    rect.y + rect.height as i32 + 2,
+                    rect.width,
+                    (visible as i32 * row_height) as u32,
+                );
+                context.fill_rect(layer, base_bg);
+                context.draw_rect(layer, accent.unwrap_or(Color::rgb(180, 180, 180)));
+                for (row, index) in matches.iter().skip(start).take(max_visible).enumerate() {
+                    let y = layer.y + row as i32 * row_height;
+                    let selected = start + row == highlight;
+                    if selected {
+                        context.fill_rect(
+                            Rect::new(
+                                layer.x + 1,
+                                y,
+                                layer.width.saturating_sub(2),
+                                row_height as u32,
+                            ),
+                            input_bg.blend(&accent.unwrap_or(Color::rgb(60, 140, 255)), 0.25),
+                        );
+                    }
+                    context.draw_text(
+                        Point::new(layer.x + 6, y + 2),
+                        &self.suggestions[*index],
+                        font,
+                        base_ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
         }
     }
 }
@@ -1020,6 +1336,13 @@ impl EventHandler for TagInput {
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
+                // I-114: the "+N" summary expands the field into its multi-row layout.
+                if let Some((overflow, _)) = self.overflow_rect() {
+                    if overflow.contains_point(*pos) {
+                        self.set_multiline(true);
+                        return;
+                    }
+                }
                 // Check if the click is on a tag's close button
                 if let Some(tag_index) = self.hit_tag_close(*pos) {
                     self.remove_tag(tag_index);
@@ -1043,14 +1366,46 @@ impl EventHandler for TagInput {
                     self.begin_edit_tag(index);
                 }
             }
+            Event::MouseMove { pos } => {
+                // I-115: while a chip is dragged, the insertion line follows the pointer.
+                if self.dragging_tag.is_some() {
+                    self.drag_indicator = Some(pos.x);
+                    self.base.request_redraw();
+                }
+            }
+            Event::Wheel { delta, modifiers, .. } => {
+                // I-114: a multi-row chip area scrolls by whole rows.
+                if self.multiline {
+                    let scroll =
+                        crate::event::wheel::WheelScroll::from_event(*delta, *modifiers, 1);
+                    let rows = self.multiline_row_count();
+                    let visible = ((self.field_rect().height - TAG_PADDING as u32 * 2
+                        + TAG_GAP as u32)
+                        / (TAG_HEIGHT + TAG_GAP) as u32)
+                        .max(1) as usize;
+                    let max_scroll = rows.saturating_sub(visible);
+                    let next = (self.chip_scroll as i64 - scroll.lines_y as i64)
+                        .clamp(0, max_scroll as i64) as usize;
+                    if next != self.chip_scroll {
+                        self.chip_scroll = next;
+                        self.chip_cache.borrow_mut().take();
+                        self.base.request_redraw();
+                    }
+                }
+            }
             Event::MouseRelease { pos, button } if *button == 1 => {
+                self.drag_indicator = None;
                 if let Some(from) = self.dragging_tag.take() {
                     if let Some(to) = self.hit_tag_index(*pos) {
                         self.move_tag(from, to);
                     }
                 }
+                self.base.request_redraw();
             }
-            Event::MouseLeave { .. } => self.dragging_tag = None,
+            Event::MouseLeave { .. } => {
+                self.dragging_tag = None;
+                self.drag_indicator = None;
+            }
             Event::FocusGained { .. } => {
                 self.set_focused(true);
             }
@@ -1086,8 +1441,51 @@ impl EventHandler for TagInput {
                     let _ = self.copy_input_to_clipboard();
                     return;
                 }
+                // I-115: Primary+A selects the input buffer (the chips are not text).
+                if primary_shortcut_pressed(*key, *modifiers, Key::A) {
+                    self.input_anchor = Some(0);
+                    self.input_cursor = self.input_buffer.len();
+                    self.base.request_redraw();
+                    return;
+                }
                 let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
+                // I-113: the open suggestion layer owns Up/Down/Enter/Tab/Escape.
+                if self.suggestions_open {
+                    let count = self.visible_suggestions().len();
+                    match *key {
+                        38 => {
+                            if self.suggestion_highlight > 0 {
+                                self.suggestion_highlight -= 1;
+                                self.base.request_redraw();
+                            }
+                            return;
+                        }
+                        40 => {
+                            if count > 0 && self.suggestion_highlight + 1 < count {
+                                self.suggestion_highlight += 1;
+                                self.base.request_redraw();
+                            }
+                            return;
+                        }
+                        13 => {
+                            if self.accept_highlighted() {
+                                self.commit_input();
+                            }
+                            return;
+                        }
+                        9 => {
+                            let _ = self.accept_highlighted();
+                            return;
+                        }
+                        27 => {
+                            self.suggestions_open = false;
+                            self.base.request_redraw();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 match *key {
                     8 => {
                         // Backspace removes the selection or the character before the caret;
@@ -1153,6 +1551,11 @@ impl EventHandler for TagInput {
                     9 => {
                         // Tab accepts the first matching suggestion.
                         self.complete_input();
+                        self.refresh_suggestions();
+                    }
+                    38 | 40 => {
+                        // Vertical movement belongs to the suggestion layer; with no layer open
+                        // these keys are not text and must not become `&`/`(`.
                     }
                     27 => {
                         // Escape — lose focus
@@ -1163,6 +1566,7 @@ impl EventHandler for TagInput {
                         if let Some(ch) = char::from_u32(*key) {
                             if ch.is_ascii_graphic() || ch == ' ' {
                                 self.push_input_text(&ch.to_string());
+                                self.refresh_suggestions();
                             }
                         }
                     }
@@ -1170,10 +1574,16 @@ impl EventHandler for TagInput {
             }
             Event::TextInput { text } | Event::ImeCommit { text } => {
                 if self.focused {
+                    self.preedit.clear();
                     self.push_input_text(text);
+                    self.refresh_suggestions();
                 }
             }
-            Event::ImePreedit { .. } => {}
+            Event::ImePreedit { text, .. } => {
+                // I-115: composition text is shown but not committed to the buffer.
+                self.preedit = text.clone();
+                self.base.request_redraw();
+            }
             _ => {
                 self.base.handle_event(event);
             }

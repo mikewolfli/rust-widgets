@@ -13,7 +13,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 
 /// Corner radius of the floating chrome, in logical pixels.
 const FLOATING_CORNER_RADIUS: u32 = 8;
@@ -510,25 +510,21 @@ impl Draw for PopupWindow {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("popup_window");
-        // `popup_window` is absent from `WidgetRole::for_kind_name`'s table, so it classifies
-        // as `Surface` and resolves to `theme.colors.background` — the window's own fill. A
-        // popup painted in that colour would be byte-identical to the frame behind it, so a
-        // resolved surface equal to the window fill is re-derived a visible step away from
-        // it: the popup is raised *above* the window, so the step is taken toward the
-        // foreground, the same distinction `Colors::input_background` draws for a field.
-        let window_fill = {
+        // One theme-manager read supplies the window fill and the fallback ink/border; the old
+        // path resolved a widget style and then took the manager lock again (G-P13).
+        let (window_fill, theme_ink, theme_border) = {
             let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.background,
+                    Some(active.colors.foreground),
+                    Some(active.colors.outline),
+                ),
+                None => (Color::WHITE, None, None),
+            }
         };
-        let ink = style
-            .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
-            .unwrap_or(Color::rgb(40, 40, 40));
-        let surface = match style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-        {
+        let ink = style.text_color.or(theme_ink).unwrap_or(Color::rgb(40, 40, 40));
+        let surface = match style.background_color {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.08),
         };
@@ -538,7 +534,7 @@ impl Draw for PopupWindow {
         let surface = if self.base.is_hovered() { surface.blend(&ink, 0.03) } else { surface };
         let border = style
             .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .or(theme_border)
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.35));
         // The title bar is a distinct band on the popup, derived from it so the two stay one
@@ -628,11 +624,18 @@ impl Draw for PopupWindow {
         // theme body font and the user's text scale (D09-STYLE-01).
         let title_font = effective_font(style);
         let title_h = context.measure_text("M", title_font).height;
+        // The title-bar close button occupies the strip's trailing edge, so the title elides
+        // before it rather than running underneath (DLG-18).
+        let close_button = self.close_button_rect();
+        let title_width = match close_button {
+            Some(button) => button.x.saturating_sub(rect.x + 8).max(0) as u32,
+            None => rect.width.saturating_sub(16),
+        };
         context.draw_text_fitted_cow(
             Rect::new(
                 rect.x + 8,
                 rect.y + (bar_height as i32 - title_h as i32) / 2,
-                rect.width.saturating_sub(16),
+                title_width,
                 title_h,
             ),
             &self.title,
@@ -640,6 +643,9 @@ impl Draw for PopupWindow {
             ink,
             HorizontalAlignment::Left,
         );
+        if let Some(button) = close_button {
+            crate::widget::draw_icon_centered(context, button, button.height, ink, IconName::Close);
+        }
     }
 }
 
@@ -650,6 +656,29 @@ impl Draw for PopupWindow {
 pub const TITLE_BAR_HEIGHT: u32 = 24;
 
 impl PopupWindow {
+    /// The title-bar close button, or `None` for a titleless popup.
+    ///
+    /// The paint and the press path both read this one derivation, so the mark and its target
+    /// cannot drift (DLG-18).
+    fn close_button_rect(&self) -> Option<Rect> {
+        if self.title.is_empty() {
+            return None;
+        }
+        let rect = self.base.geometry();
+        let bar_height = TITLE_BAR_HEIGHT.min(rect.height);
+        if bar_height == 0 || rect.width < 32 {
+            return None;
+        }
+        let side = 14.min(bar_height.saturating_sub(4)).max(1);
+        let inset = if self.floating_chrome { FLOATING_CORNER_RADIUS } else { 0 };
+        Some(Rect::new(
+            rect.x + rect.width as i32 - inset as i32 - side as i32 - 6,
+            rect.y + ((bar_height - side) / 2) as i32,
+            side,
+            side,
+        ))
+    }
+
     /// The rectangle available to the content child.
     ///
     /// Insets the top by the title bar **only when a title is set**, so a titleless
@@ -696,6 +725,12 @@ impl EventHandler for PopupWindow {
                 if self.resize_grip_rect().is_some_and(|rect| rect.contains_point(*pos)) {
                     self.resize_origin = Some(*pos);
                     self.resize_geometry = Some(self.base.geometry());
+                    return;
+                }
+                // The title bar's close button is a press target before the drag bar, so a
+                // click on the mark closes the popup instead of starting a move (DLG-18).
+                if self.close_button_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.close();
                     return;
                 }
                 // A press on the title bar starts moving the window; a press in the body is

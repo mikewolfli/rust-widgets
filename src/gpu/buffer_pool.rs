@@ -129,6 +129,15 @@ impl fmt::Display for GpuBufferPoolError {
 #[cfg(not(alloc_frugal))]
 impl core::error::Error for GpuBufferPoolError {}
 /// Configuration for the staging buffer pool
+///
+/// # Strategy fields are not wired yet (G-61)
+///
+/// `mapping_strategy`, `fence_strategy` and `use_coherent_memory` encode real
+/// GPU memory-profile knowledge, but the pool owns no GPU buffer, so nothing in
+/// this module consumes them. They are kept as the inputs a host-owned upload
+/// ring (or a future wgpu mapping path) will read; see each field for the exact
+/// boundary. Do not read them as evidence that mapping or fencing behaviour can
+/// currently be switched from this config.
 #[derive(Debug, Clone)]
 pub struct StagingBufferPoolConfig {
     /// Total pool size in bytes
@@ -142,10 +151,23 @@ pub struct StagingBufferPoolConfig {
     /// Small upload threshold
     pub small_upload_threshold: usize,
     /// Mapping strategy
+    ///
+    /// **Not wired to an implementation (G-61):** the pool has no backing
+    /// buffer to map. Reserved for the real wgpu mapping path, which must read
+    /// this field when it is introduced.
     pub mapping_strategy: MappingStrategy,
     /// Fence strategy
+    ///
+    /// **Not wired to an implementation (G-61):** waiting is CPU-side
+    /// bookkeeping (see [`GpuStagingBufferPool::wait_for_slot`]), so no fence
+    /// or timestamp is consulted. Reserved for the real upload path, which must
+    /// replace the CPU-side wait with this strategy.
     pub fence_strategy: FenceStrategy,
     /// Use coherent memory
+    ///
+    /// **Not wired to an implementation (G-61):** the pool allocates no GPU
+    /// memory, so this cannot change allocator behaviour today. Reserved for the
+    /// real mapping path, which must select the memory type from it.
     pub use_coherent_memory: bool,
     /// Alignment for buffer offsets
     pub alignment: usize,
@@ -212,8 +234,6 @@ pub struct GpuRingBufferSlot {
     pub size: usize,
     /// Whether this slot is currently in use
     pub in_use: bool,
-    /// Frame index when this slot was last used
-    pub last_used_frame: u64,
 }
 /// Rounds `value` up to the next multiple of `alignment` (a power of two),
 /// returning `None` on overflow so a `usize::MAX` request is rejected instead of
@@ -276,7 +296,6 @@ impl GpuStagingBufferPool {
                 offset: i * slot_size,
                 size: slot_size,
                 in_use: false,
-                last_used_frame: 0,
             });
         }
         Ok(Self {
@@ -311,7 +330,6 @@ impl GpuStagingBufferPool {
         // Mark current slot as used and move to next
         if let Some(slot) = self.slots.get_mut(self.current_slot) {
             slot.in_use = true;
-            slot.last_used_frame = self.current_frame;
         }
         self.current_slot = (self.current_slot + 1) % self.config.ring_slots;
         // Reset the new current slot
@@ -461,6 +479,17 @@ impl GpuStagingBufferPool {
     /// marked in-use by a previous frame is returned to the free pool. The call
     /// is a no-op for a slot that is already free or does not exist, which keeps
     /// callers that recycle eagerly from disturbing a still-active slot elsewhere.
+    ///
+    /// # Contract: unrelated to GPU completion (G-60)
+    ///
+    /// This wait consults **no** fence, timeline or map callback, so it says
+    /// nothing about whether the GPU has finished reading the slot's bytes.
+    /// Recycling a slot only means "the CPU will not allocate from it again until
+    /// the ring wraps"; a caller that actually hands slot data to a GPU upload
+    /// must synchronise on the device itself (a wgpu map callback or fence
+    /// status). Reusing a slot before that point is a data race, and waiting on
+    /// this function in the hope of avoiding it is a no-op. The real upload path
+    /// must replace this method's wait source; today it is bookkeeping only.
     pub fn wait_for_slot(&mut self, slot_index: usize) {
         if let Some(slot) = self.slots.get_mut(slot_index) {
             slot.in_use = false;
@@ -511,10 +540,23 @@ pub struct GpuBufferPoolStats {
     pub fallback_used: usize,
 }
 /// Hardware-adaptive upload batcher
+///
+/// Pending uploads are kept ordered by `destination_offset`, so an append is a
+/// push and an out-of-order insert is placed with a binary search rather than a
+/// linear scan. The batcher tracks whether the batch is overlap-free: while it
+/// is, a contiguous predecessor is the only candidate that can be merged and the
+/// safety check is O(log n); once an overlapping write enters the batch, merging
+/// is disabled for the rest of it because adjacency no longer proves write order.
 pub struct GpuUploadBatcher {
     config: StagingBufferPoolConfig,
+    /// Pending ranges, ordered by `destination_offset`.
     pending_uploads: Vec<GpuPendingUpload>,
     current_batch_size: usize,
+    /// Set when an inserted range overlapped a pending one. From then on the
+    /// pending ranges are not guaranteed to be disjoint, so the O(log n)
+    /// "predecessor is the only neighbour" check no longer holds and merging is
+    /// skipped for the rest of the batch (G-58).
+    has_overlaps: bool,
 }
 #[derive(Debug)]
 struct GpuPendingUpload {
@@ -524,49 +566,59 @@ struct GpuPendingUpload {
 impl GpuUploadBatcher {
     /// Creates a new upload batcher
     pub fn new(config: StagingBufferPoolConfig) -> Self {
-        Self { config, pending_uploads: Vec::new(), current_batch_size: 0 }
+        Self { config, pending_uploads: Vec::new(), current_batch_size: 0, has_overlaps: false }
     }
-    /// Adds an upload to the batch
+    /// Adds an upload to the batch.
+    ///
+    /// # Ownership
+    ///
+    /// The batcher **takes ownership** of `data` (G-58). A caller that needs the
+    /// bytes after this call must clone them deliberately; the batcher will not
+    /// copy them back, and a merge extends the batch's own buffer in place.
+    ///
+    /// Returns `false` (and consumes `data`) when the upload would exceed
+    /// `max_batch_size`.
     pub fn add_upload(&mut self, data: Vec<u8>, destination_offset: usize) -> bool {
         let size = data.len();
         // Check if adding this would exceed batch size
         if self.current_batch_size + size > self.config.max_batch_size {
             return false; // Would exceed batch size
         }
-        // Check if we should merge
-        if self.config.merge_uploads && size < self.config.small_upload_threshold {
-            // Try to find adjacent upload to merge with
-            if let Some(merged) = self.try_merge(&data, destination_offset) {
-                self.current_batch_size += merged;
-                return true;
+        // Keep `pending_uploads` ordered by destination offset: binary search
+        // replaces the two linear scans `try_merge` used to run (G-58).
+        let index =
+            self.pending_uploads.partition_point(|u| u.destination_offset < destination_offset);
+        if !self.has_overlaps {
+            let new_end = destination_offset.saturating_add(size);
+            let overlaps_before = index.checked_sub(1).and_then(|i| self.pending_uploads.get(i));
+            let overlaps_after = self.pending_uploads.get(index);
+            let overlaps = overlaps_before.is_some_and(|u| {
+                u.destination_offset.saturating_add(u.data.len()) > destination_offset
+            }) || overlaps_after.is_some_and(|u| u.destination_offset < new_end);
+            self.has_overlaps = overlaps;
+        }
+        // Merge only with the immediate predecessor. With a disjoint, ordered
+        // list that is the sole upload that can end exactly at `destination_offset`,
+        // matching the O(n) search this replaces.
+        if !self.has_overlaps
+            && self.config.merge_uploads
+            && size < self.config.small_upload_threshold
+        {
+            if let Some(previous) =
+                index.checked_sub(1).and_then(|i| self.pending_uploads.get_mut(i))
+            {
+                if previous.destination_offset.saturating_add(previous.data.len())
+                    == destination_offset
+                {
+                    previous.data.extend_from_slice(&data);
+                    self.current_batch_size += size;
+                    return true;
+                }
             }
         }
-        self.pending_uploads.push(GpuPendingUpload { data, destination_offset });
+        self.pending_uploads.insert(index, GpuPendingUpload { data, destination_offset });
         self.current_batch_size += size;
         true
-    }
-    /// Tries to merge with existing pending uploads
-    fn try_merge(&mut self, data: &[u8], offset: usize) -> Option<usize> {
-        let new_end = offset.saturating_add(data.len());
-        let candidate = self.pending_uploads.iter().position(|upload| {
-            upload.destination_offset.saturating_add(upload.data.len()) == offset
-        })?;
-        // Folding this write into an earlier upload is only valid when no other
-        // pending upload overlaps the range it would occupy. Otherwise applying
-        // the earlier (merged) write would reorder it ahead of a later write
-        // that covers the same bytes.
-        let overlaps = self.pending_uploads.iter().enumerate().any(|(i, other)| {
-            if i == candidate {
-                return false;
-            }
-            let other_end = other.destination_offset.saturating_add(other.data.len());
-            other.destination_offset < new_end && offset < other_end
-        });
-        if overlaps {
-            return None;
-        }
-        self.pending_uploads[candidate].data.extend_from_slice(data);
-        Some(data.len())
     }
     /// Returns the current batch size
     pub fn batch_size(&self) -> usize {
@@ -576,11 +628,15 @@ impl GpuUploadBatcher {
     pub fn is_full(&self) -> bool {
         self.current_batch_size >= self.config.max_batch_size
     }
-    /// Clears the batch and returns all pending uploads
+    /// Clears the batch and returns all pending uploads.
+    ///
+    /// Uploads are returned ordered by `destination_offset`, which is the order
+    /// the batch keeps them in while accumulating.
     pub fn flush(&mut self) -> Vec<(Vec<u8>, usize)> {
         let uploads =
             self.pending_uploads.drain(..).map(|u| (u.data, u.destination_offset)).collect();
         self.current_batch_size = 0;
+        self.has_overlaps = false;
         uploads
     }
     /// Returns the number of pending uploads
@@ -933,6 +989,27 @@ mod tests {
             vec![(vec![1, 1, 1], 0), (vec![2, 2], 2), (vec![3], 3)],
             "the trailing write must not be folded into the earlier upload across an overlap",
         );
+    }
+
+    /// G-58: a contiguous upload must merge with its ordered predecessor even
+    /// when the writes arrive out of order, and `flush` must report the merged
+    /// range at the earlier offset.
+    #[test]
+    fn upload_batcher_merges_into_ordered_predecessor() {
+        let mut config = StagingBufferPoolConfig::discrete();
+        config.merge_uploads = true;
+        config.small_upload_threshold = 4096;
+        let mut batcher = GpuUploadBatcher::new(config);
+
+        assert!(batcher.add_upload(vec![9], 0));
+        // Far-away range arrives before the one that is adjacent to offset 0.
+        assert!(batcher.add_upload(vec![7], 4));
+        assert!(batcher.add_upload(vec![8], 1));
+
+        assert_eq!(batcher.batch_size(), 3, "merged and unmerged bytes both count");
+        let uploads = batcher.flush();
+        assert_eq!(uploads, vec![(vec![9, 8], 0), (vec![7], 4)]);
+        assert_eq!(batcher.batch_size(), 0);
     }
 
     /// N-S-59: a small request that exceeds `max_batch_size` must take the

@@ -27,7 +27,7 @@ use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::widget::capability::coercion::expect_i64;
+use crate::widget::capability::coercion::expect_i32_saturating;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -35,6 +35,8 @@ use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+use super::theme_snapshot::ThemeSnapshot;
 
 /// Stepper widget for numeric increment/decrement with +/- buttons.
 pub struct Stepper {
@@ -266,19 +268,19 @@ impl WidgetProperties for Stepper {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "value" => {
-                self.set_value(expect_i64(value)? as i32);
+                self.set_value(expect_i32_saturating(value)?);
                 Ok(())
             }
             "minimum" => {
-                self.set_min(expect_i64(value)? as i32);
+                self.set_min(expect_i32_saturating(value)?);
                 Ok(())
             }
             "maximum" => {
-                self.set_max(expect_i64(value)? as i32);
+                self.set_max(expect_i32_saturating(value)?);
                 Ok(())
             }
             "step" => {
-                self.set_step(expect_i64(value)? as i32);
+                self.set_step(expect_i32_saturating(value)?);
                 Ok(())
             }
             _ => base_property_set(self, name, value),
@@ -303,20 +305,21 @@ impl Draw for Stepper {
         //
         // `resolved_theme_style` takes and releases the global manager's lock
         // internally, so no guard is held across the draw (the mutex is not
-        // re-entrant).
+        // re-entrant). `ThemeSnapshot` folds the resolved style and the palette read into
+        // one manager visit for the frame (C-P01).
+        let theme = ThemeSnapshot::capture("stepper");
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("stepper");
         let background = style
             .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::WHITE);
         let border = style
             .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.border_color))
             .unwrap_or_else(|| crate::core::Color::border_of(background));
         let text_color = style
             .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
         // A disabled control is a chrome state, so it reads a dimmed pair derived
         // from the resolved colours rather than a second literal grey.
@@ -428,15 +431,28 @@ impl EventHandler for Stepper {
                     self.increment();
                 }
             }
-            Event::KeyPress { key, .. } => match *key {
-                crate::event::key_codes::UP | crate::event::key_codes::RIGHT => self.increment(),
-                crate::event::key_codes::DOWN | crate::event::key_codes::LEFT => self.decrement(),
-                crate::event::key_codes::PAGE_UP => self.advance(self.step as i64 * 10),
-                crate::event::key_codes::PAGE_DOWN => self.advance(-(self.step as i64 * 10)),
-                crate::event::key_codes::HOME => self.set_value(self.min),
-                crate::event::key_codes::END => self.set_value(self.max),
-                _ => self.base.handle_event(event),
-            },
+            Event::KeyPress { key, .. } => {
+                // C-24: an unfocused stepper must not swallow arrow keys that belong to
+                // whatever control *is* focused. The mouse path is unaffected because a
+                // click on this control is unambiguous.
+                if self.base.focus_reason().is_none() {
+                    self.base.handle_event(event);
+                    return;
+                }
+                match *key {
+                    crate::event::key_codes::UP | crate::event::key_codes::RIGHT => {
+                        self.increment()
+                    }
+                    crate::event::key_codes::DOWN | crate::event::key_codes::LEFT => {
+                        self.decrement()
+                    }
+                    crate::event::key_codes::PAGE_UP => self.advance(self.step as i64 * 10),
+                    crate::event::key_codes::PAGE_DOWN => self.advance(-(self.step as i64 * 10)),
+                    crate::event::key_codes::HOME => self.set_value(self.min),
+                    crate::event::key_codes::END => self.set_value(self.max),
+                    _ => self.base.handle_event(event),
+                }
+            }
             _ => {
                 self.base.handle_event(event);
             }
@@ -689,5 +705,14 @@ mod tests {
             )),
             "the minus button is a fixed-size button on the row: {svg}"
         );
+    }
+
+    /// C-24: an unfocused stepper ignores the keyboard, so it cannot steal another control's keys.
+    #[test]
+    fn an_unfocused_stepper_ignores_arrow_keys() {
+        let mut s = Stepper::new(Rect::new(0, 0, 120, 30));
+        let before = s.value();
+        s.handle_event(&Event::KeyPress { key: crate::event::key_codes::UP, modifiers: 0 });
+        assert_eq!(s.value(), before, "no focus, no keyboard step");
     }
 }

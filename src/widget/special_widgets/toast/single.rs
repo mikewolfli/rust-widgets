@@ -11,7 +11,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// The horizontal padding of a toast's message from the accent stripe: 12.
@@ -52,8 +52,12 @@ pub struct Toast {
     level: ToastLevel,
     ttl_ms: u32,
     dismissible: bool,
+    /// Optional action label shown as a trailing button (SP-71).
+    action_label: Option<String>,
     /// Emitted when the toast is dismissed, with its message.
     pub dismissed: Signal1<String>,
+    /// Emitted when the action button is pressed.
+    pub action_triggered: Signal1<()>,
 }
 
 impl Toast {
@@ -65,8 +69,45 @@ impl Toast {
             level: ToastLevel::Info,
             ttl_ms: 3000,
             dismissible: true,
+            action_label: None,
             dismissed: Signal1::new(),
+            action_triggered: Signal1::new(),
         }
+    }
+
+    /// Adds a trailing action button with `label` (SP-71).
+    ///
+    /// The single-message control had no action at all, so "show one toast with a button" meant
+    /// building a whole `ToastStack` and an item. The label is measured and drawn exactly as the
+    /// stack draws its rows, and a press emits `action_triggered`.
+    pub fn with_action(mut self, label: impl Into<String>) -> Self {
+        let label = label.into();
+        self.action_label = (!label.is_empty()).then_some(label);
+        self
+    }
+
+    /// The action button's label, or `None` when there is no action.
+    pub fn action_label(&self) -> Option<&str> {
+        self.action_label.as_deref()
+    }
+
+    /// Sets or clears the action button's label.
+    pub fn set_action_label(&mut self, label: Option<impl Into<String>>) {
+        let next = label.map(Into::into).filter(|label| !label.is_empty());
+        if self.action_label == next {
+            return;
+        }
+        self.action_label = next;
+        self.base.request_redraw();
+    }
+
+    /// Emits the action, if the toast has one and is showing.
+    pub fn trigger_action(&mut self) -> bool {
+        if self.action_label.is_none() {
+            return false;
+        }
+        self.action_triggered.emit(());
+        true
     }
 
     /// Returns the message.
@@ -134,12 +175,16 @@ impl Toast {
 
     /// The rectangle of the close affordance, when it is shown.
     fn close_rect(&self) -> Option<Rect> {
+        self.close_rect_for(self.band())
+    }
+
+    /// The close affordance's rectangle inside `band`, when it is shown.
+    fn close_rect_for(&self, band: Rect) -> Option<Rect> {
         if !self.dismissible {
             return None;
         }
         // Placed from the toast's own band, so the dismiss control sits on the bar the message
         // is painted in rather than half way down a 120 px canvas that the toast does not fill.
-        let band = self.band();
         let size = TOAST_CLOSE_SIZE.min(band.height);
         Some(Rect::new(
             band.x + band.width as i32 - size as i32 - TOAST_CLOSE_INSET,
@@ -147,6 +192,22 @@ impl Toast {
             size,
             size,
         ))
+    }
+
+    /// The action button's rectangle, left of the close affordance when both are shown.
+    fn action_rect(&self) -> Option<Rect> {
+        let label = self.action_label.as_deref()?;
+        let band = self.band();
+        let right = self
+            .close_rect_for(band)
+            .map(|close| close.x - 4)
+            .unwrap_or(band.x + band.width as i32 - TOAST_PADDING_H);
+        // Measured in the font the label is painted in, so the button is as wide as its own ink
+        // rather than as wide as a default face would be.
+        let font = crate::widget::metrics::effective_font(self.base.style());
+        let width =
+            (estimate_text_width(label, font, 1.0) + 16).min((right - band.x).max(0) as u32);
+        Some(Rect::new(right - width as i32, band.y, width.max(1), band.height))
     }
 
     /// The bar the toast actually paints: full width, `dimensions::TOAST_HEIGHT` tall,
@@ -211,6 +272,11 @@ impl Widget for Toast {
             "dismissed" => Some(EventSignalRef::mapped("dismissed", &self.dismissed, |v| {
                 CapabilityValue::String(v.clone())
             })),
+            "action_triggered" => {
+                Some(EventSignalRef::mapped("action_triggered", &self.action_triggered, |_| {
+                    CapabilityValue::Null
+                }))
+            }
             _ => None,
         }
     }
@@ -296,6 +362,11 @@ impl EventHandler for Toast {
             Event::MousePress { pos, button: 1, .. } if self.is_over_close(*pos) => {
                 self.dismiss();
             }
+            Event::MousePress { pos, button: 1, .. }
+                if self.action_rect().is_some_and(|rect| rect.contains_point(*pos)) =>
+            {
+                self.trigger_action();
+            }
             Event::KeyPress { key: 27, modifiers: _ } => {
                 self.dismiss();
             }
@@ -336,12 +407,7 @@ impl Draw for Toast {
         let background = resolved.blend(&text_color, 0.08);
         // The severity stripe is a *state* indicator, so it reads the theme's
         // semantic tokens rather than a literal colour per level.
-        let accent = crate::style::semantic_color(match self.level {
-            ToastLevel::Info => crate::style::SemanticColor::Info,
-            ToastLevel::Success => crate::style::SemanticColor::Success,
-            ToastLevel::Warning => crate::style::SemanticColor::Warning,
-            ToastLevel::Error => crate::style::SemanticColor::Error,
-        })
+        let accent = crate::style::semantic_color(self.level.into())
         .map(|token| token.blend(&background, 0.15))
         .unwrap_or_else(|| background.blend(&text_color, 0.6));
         // The close affordance is secondary chrome, so it is a tint of the resolved
@@ -372,11 +438,33 @@ impl Draw for Toast {
         // body font and the user's text scale reach it (D09-STYLE-01).
         let font = effective_font(style);
         let line = context.text_line(band, font);
-        // Bounded to end before the close button, so a long message cannot run under it.
-        let text_width = self
-            .close_rect()
-            .map(|close| (close.x - text_x - 4).max(0) as u32)
-            .unwrap_or_else(|| band.width.saturating_sub(TOAST_PADDING_H as u32));
+        // Trailing chrome owns the right end: the action button when there is one, then the close
+        // affordance. The message is fitted into whatever they leave (SP-71).
+        let action = self.action_rect();
+        let close = self.close_rect_for(band);
+        let message_right = action
+            .map(|rect| rect.x - 4)
+            .or_else(|| close.map(|rect| rect.x - 4))
+            .unwrap_or(band.x + band.width as i32 - TOAST_PADDING_H);
+        let text_width = (message_right - text_x).max(0) as u32;
+        if let Some(action) = action {
+            if let Some(label) = self.action_label.as_deref() {
+                let button = Rect::new(
+                    action.x,
+                    action.y + (action.height.saturating_sub(line.height + 6) / 2) as i32,
+                    action.width,
+                    (line.height + 6).min(action.height),
+                );
+                context.fill_rect(button, text_color.with_alpha(18));
+                context.draw_text_line_cow(
+                    button,
+                    label,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Center,
+                );
+            }
+        }
         if !self.message.is_empty() && text_width > 0 {
             context.draw_text_fitted_cow(
                 Rect { x: text_x, y: line.y, width: text_width, height: line.height },
@@ -387,7 +475,7 @@ impl Draw for Toast {
             );
         }
 
-        if let Some(close) = self.close_rect() {
+        if let Some(close) = close {
             context.draw_line(
                 Point::new(close.x + 3, close.y + 3),
                 Point::new(close.x + close.width as i32 - 3, close.y + close.height as i32 - 3),

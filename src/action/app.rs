@@ -9,12 +9,14 @@
 //! Connect `ShortcutManager::shortcut_triggered` → `ActionRouter::route_action_id`.
 
 use crate::action::ActionManager;
-use crate::compat::String;
+use crate::action::UndoManager;
+use crate::compat::{lock, Mutex, String};
 use crate::event::Event;
 use crate::shortcut::Key;
 use crate::shortcut::Modifiers;
 use crate::shortcut::PlatformShortcutStyle;
 use crate::shortcut::Shortcut;
+use alloc::sync::Arc;
 
 /// Routes keyboard shortcuts to registered actions, bridging `shortcut` and `action` modules.
 pub struct ActionRouter<'a> {
@@ -63,7 +65,11 @@ impl<'a> ActionRouter<'a> {
         //      lookup (shortcut → action id) inside ActionManager.
         // Both registrations are required for the router to work
         // correctly in both directions.
+        //
+        // W-08: two writes in one body stay in step only while nothing else writes either table,
+        // so the invariant is checked after every successful registration instead of assumed.
         if self.action_mgr.bind_shortcut_type(&shortcut, action_id.clone()) {
+            self.assert_tables_reconciled();
             true
         } else {
             self.shortcut_mgr.unregister(&action_id);
@@ -71,6 +77,33 @@ impl<'a> ActionRouter<'a> {
             false
         }
     }
+
+    /// The two registration tables this router writes, compared.
+    ///
+    /// Empty means every registered chord routes to the same action in both tables. A non-empty
+    /// result is the W-08 failure mode: something wrote one table without the other.
+    pub fn shortcut_reconciliation(
+        &self,
+    ) -> crate::compat::Vec<crate::action::ShortcutDisagreement> {
+        self.action_mgr.shortcut_reconciliation(self.shortcut_mgr)
+    }
+
+    /// Debug-build gate run after each successful registration.
+    ///
+    /// A release build does not pay for the comparison; a debug build fails at the call that
+    /// broke the invariant, with the disagreement named, rather than at a later dispatch.
+    #[cfg(debug_assertions)]
+    fn assert_tables_reconciled(&self) {
+        let disagreements = self.shortcut_reconciliation();
+        debug_assert!(
+            disagreements.is_empty(),
+            "ActionRouter left the action and shortcut tables out of sync: {disagreements:?}"
+        );
+    }
+
+    /// Release-build no-op: see the debug counterpart.
+    #[cfg(not(debug_assertions))]
+    fn assert_tables_reconciled(&self) {}
 
     /// Registers an action, shortcut, and callback as one complete binding.
     pub fn connect_callback<F>(
@@ -103,6 +136,10 @@ impl<'a> ActionRouter<'a> {
     /// `⇧⌘Z`) and `Primary+Y` on Windows/Linux (`Ctrl+Y`). The physical-Control
     /// spellings remain available through [`Shortcut::ctrl`] for code that needs the
     /// Control key on every platform.
+    ///
+    /// This is the low-level form: it binds two caller-supplied closures. A host that keeps an
+    /// [`UndoManager`] uses [`Self::connect_undo_redo_stack`] instead, which binds the same
+    /// accelerators to the active context's stack-top operations.
     pub fn connect_undo_redo<U, R>(&mut self, undo: U, redo: R) -> bool
     where
         U: FnMut() + Send + Sync + 'static,
@@ -111,6 +148,25 @@ impl<'a> ActionRouter<'a> {
         let undo_ok = self.connect_callback("undo", Shortcut::primary(Key::Z), "Undo", undo);
         let redo_ok = self.connect_callback("redo", Self::redo_shortcut(), "Redo", redo);
         undo_ok && redo_ok
+    }
+
+    /// Binds the undo/redo accelerators to an [`UndoManager`]'s active stack.
+    ///
+    /// This is the W-202 convenience wrapper: the stack owns the command objects, so the host
+    /// only says which manager to drive. The manager is shared rather than borrowed because the
+    /// signal slots outlive this call, and the lock is held only for the duration of one
+    /// undo/redo operation.
+    pub fn connect_undo_redo_stack(&mut self, stack: Arc<Mutex<UndoManager>>) -> bool {
+        let for_undo = Arc::clone(&stack);
+        let for_redo = Arc::clone(&stack);
+        self.connect_undo_redo(
+            move || {
+                lock(&for_undo).undo();
+            },
+            move || {
+                lock(&for_redo).redo();
+            },
+        )
     }
 
     /// The platform's conventional redo accelerator.
@@ -140,6 +196,7 @@ impl<'a> ActionRouter<'a> {
             return false;
         }
         if self.action_mgr.bind_shortcut_type(&shortcut, action_id.clone()) {
+            self.assert_tables_reconciled();
             return true;
         }
         self.shortcut_mgr.unregister(&action_id);

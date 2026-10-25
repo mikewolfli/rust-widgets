@@ -24,8 +24,8 @@
 //!               ├── slot: Arc<SlotSlot<T>>
 //!               │     ├── callback: Mutex<SlotCallback<T>>  — Owned or Borrowed
 //!               │     └── pending: Mutex<VecDeque<T>>
-//!               ├── once: bool          — auto-disconnect after first emit
-//!               ├── blocked: bool       — skip this slot on emit
+//!               ├── once: AtomicBool   — auto-disconnect after first emit
+//!               ├── blocked: AtomicBool — skip this slot on emit
 //!               └── priority: Priority  — High > Normal > Low
 //! ```
 //!
@@ -35,7 +35,7 @@
 use crate::compat::{lock, read_lock, write_lock, Box, HashMap, Vec};
 use crate::compat::{Mutex, RwLock, VecDeque};
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Slot execution priority. Higher-priority slots fire before lower-priority ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -277,8 +277,17 @@ impl<T: Clone + Send + 'static> SlotSlot<T> {
 struct SlotEntry<T: Clone + Send + 'static> {
     /// Present while the entry is connected; absent only after logical removal.
     slot: Option<Arc<SlotSlot<T>>>,
-    once: bool,
-    blocked: bool,
+    /// Whether the slot auto-disconnects after its first delivery.
+    ///
+    /// An atomic rather than a `bool` because emit reads it under a shared lock and only the
+    /// first emitter may claim the slot by flipping it to `false`; that claim is what replaces
+    /// the per-slot write lock the emit path used to take (W-P05).
+    once: AtomicBool,
+    /// Whether this slot is skipped on emit.
+    ///
+    /// An atomic for the same reason: `block`/`unblock` are control-plane operations and must
+    /// not force every emit to take an exclusive lock merely to read a flag.
+    blocked: AtomicBool,
     priority: Priority,
 }
 
@@ -381,25 +390,27 @@ impl<T: Clone + Send + 'static> SignalInner<T> {
     }
 
     fn block(&self, handle: ConnectionHandle) -> bool {
-        if let Some(entry) = write_lock(&self.slots).get_mut(&handle) {
-            entry.blocked = true;
-            true
-        } else {
-            false
+        match read_lock(&self.slots).get(&handle) {
+            Some(entry) => {
+                entry.blocked.store(true, Ordering::Release);
+                true
+            }
+            None => false,
         }
     }
 
     fn unblock(&self, handle: ConnectionHandle) -> bool {
-        if let Some(entry) = write_lock(&self.slots).get_mut(&handle) {
-            entry.blocked = false;
-            true
-        } else {
-            false
+        match read_lock(&self.slots).get(&handle) {
+            Some(entry) => {
+                entry.blocked.store(false, Ordering::Release);
+                true
+            }
+            None => false,
         }
     }
 
     fn is_blocked(&self, handle: ConnectionHandle) -> Option<bool> {
-        read_lock(&self.slots).get(&handle).map(|entry| entry.blocked)
+        read_lock(&self.slots).get(&handle).map(|entry| entry.blocked.load(Ordering::Acquire))
     }
 
     fn set_priority(&self, handle: ConnectionHandle, priority: Priority) -> bool {
@@ -555,8 +566,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
             handle,
             SlotEntry {
                 slot: Some(Arc::new(SlotSlot::new(callback))),
-                once,
-                blocked: false,
+                once: AtomicBool::new(once),
+                blocked: AtomicBool::new(false),
                 priority,
             },
         );
@@ -789,32 +800,50 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// cross-signal lock cycle (E-29) — and behind its own per-slot mutex, which is what lets a
     /// concurrent emit defer its value instead of dropping it (E-21).
     fn deliver_to(&self, identity: usize, handle: ConnectionHandle, value: &mut EmitValue<'_, T>) {
-        let (slot, removed_once, priority) = {
-            let mut slots = write_lock(&self.inner.slots);
+        // Snapshot the slot under a **shared** lock and read the control flags atomically.
+        //
+        // # Why not a write lock per slot (W-P05)
+        //
+        // The old claim took `slots.write()` for every slot of every emit, so an N-slot signal
+        // paid N exclusive acquisitions and concurrent emitters collided on all of them. Nothing
+        // in the common path needs exclusivity: cloning the slot's `Arc` and reading `blocked`
+        // are shared operations. Only a **once** slot needs to remove itself, and that is the one
+        // case that upgrades to a write lock below.
+        let (slot, was_once, priority) = {
+            let slots = read_lock(&self.inner.slots);
             let Some(entry) = slots.get(&handle) else {
                 return;
             };
-            if entry.blocked {
-                (None, false, entry.priority)
-            } else {
-                let slot = entry.slot.clone();
-                let priority = entry.priority;
-                let removed_once = entry.once;
-                if removed_once {
-                    slots.remove(&handle);
-                }
-                (slot, removed_once, priority)
+            if entry.blocked.load(Ordering::Acquire) {
+                return;
             }
+            (entry.slot.clone(), entry.once.load(Ordering::Acquire), entry.priority)
         };
-        if removed_once {
+        let Some(slot) = slot else {
+            // Disconnected by a prior callback in this pass.
+            return;
+        };
+        if was_once {
+            // Upgrade to the write lock only to claim the once slot. `swap` decides the winner:
+            // exactly one emitter observes `true`, and only that emitter may deliver.
+            let claimed = {
+                let mut slots = write_lock(&self.inner.slots);
+                match slots.get(&handle) {
+                    Some(entry) if entry.once.swap(false, Ordering::AcqRel) => {
+                        slots.remove(&handle);
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if !claimed {
+                // Another emitter claimed it first (or it was disconnected meanwhile).
+                return;
+            }
             // A once-slot leaves both the map and the order bucket, so a later emit does not
             // walk a handle that no longer resolves.
             self.inner.remove_order(handle, priority);
         }
-        let Some(slot) = slot else {
-            // Blocked, or disconnected by a prior callback in this pass.
-            return;
-        };
 
         // A same-thread re-entrant emit must skip the slot already on the stack: its callback is
         // executing on this very thread, so running it again would recurse without bound. The

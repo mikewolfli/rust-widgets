@@ -569,7 +569,7 @@ pub enum OpenError {
     /// The host has no default handler for this target on `PATH`.
     NoHandler,
 }
-/// Native-runtime capability contract used by desktop-oriented negotiation.
+/// Capability contract a **hosted** (desktop-oriented) backend negotiates.
 ///
 /// This is the same flag set as [`PlatformCapabilities`], and deliberately so:
 /// the negotiation result and the backend's own report must not be able to
@@ -577,11 +577,15 @@ pub enum OpenError {
 /// `from_platform_caps` copy, which is exactly how the two drift — a new
 /// capability would be added to one and silently dropped by the other.
 ///
-/// The name is kept because it is the vocabulary of the negotiation API
-/// (`CapabilityContract::Native(..)`, `Platform::native_capability_contract`),
-/// and renaming it would be a needless break for callers. Because it is an alias,
-/// the two types are interchangeable and no conversion is possible to get wrong.
-pub type NativeCapabilityContract = PlatformCapabilities;
+/// The name describes what the contract *is* (the hosted half of the capability split)
+/// rather than a rendering mechanism; see [`CapabilityContract::Hosted`].
+pub type HostedCapabilityContract = PlatformCapabilities;
+
+/// Legacy mechanism-vocabulary spelling of [`HostedCapabilityContract`].
+#[deprecated(
+    note = "use `HostedCapabilityContract`; the contract splits hosted from embedded, not native from other mechanisms"
+)]
+pub type NativeCapabilityContract = HostedCapabilityContract;
 /// Embedded-runtime capability contract used by constrained-profile negotiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddedCapabilityContract {
@@ -595,13 +599,13 @@ pub struct EmbeddedCapabilityContract {
 /// Runtime capability negotiation result split by profile contract.
 ///
 /// A backend answers with exactly one of these, matching the family it was
-/// built for: see [`Platform::native_capability_contract`] and
+/// built for: see [`Platform::hosted_capability_contract`] and
 /// [`Platform::embedded_capability_contract`]. The variant tells the caller
 /// which half of the capability model applies, so it must not have to guess
 /// from the widget set.
 pub enum CapabilityContract {
     /// Desktop/hosted backend, described by the full capability set.
-    Native(NativeCapabilityContract),
+    Hosted(HostedCapabilityContract),
     /// Constrained backend, described by the reduced embedded set.
     Embedded(EmbeddedCapabilityContract),
 }

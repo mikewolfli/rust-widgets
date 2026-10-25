@@ -43,7 +43,13 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     /// Rect geometry recorded during layout.update() callbacks.
-    static GEOMETRY_SNAPSHOT: RefCell<Vec<(ObjectId, Rect)>> = const { RefCell::new(Vec::new()) };
+    ///
+    /// A map, not a vector: the previous `Vec` made recording a frame of `n` widgets O(n²)
+    /// because every record searched for an existing entry. The map answers the same
+    /// "overwrite the last rect" contract in O(1). Output stays deterministic through a
+    /// one-time sort in `run_once` (G-159).
+    static GEOMETRY_SNAPSHOT: RefCell<HashMap<ObjectId, Rect>> =
+        RefCell::new(HashMap::new());
 
     /// Layout information registered for native programmatic layouts.
     static NATIVE_LAYOUTS: RefCell<Vec<NativeLayoutEntry>> = const { RefCell::new(Vec::new()) };
@@ -275,13 +281,9 @@ impl LayoutInspector {
             return;
         }
         GEOMETRY_SNAPSHOT.with(|snap| {
-            let mut snap = snap.borrow_mut();
-            // Update in-place if already recorded, else push.
-            if let Some(entry) = snap.iter_mut().find(|(id, _)| *id == widget_id) {
-                entry.1 = rect;
-            } else {
-                snap.push((widget_id, rect));
-            }
+            // Insert overwrites an existing entry, which is the documented "last wins"
+            // contract and is O(1) instead of a linear search (G-159).
+            snap.borrow_mut().insert(widget_id, rect);
         });
     }
 
@@ -434,9 +436,11 @@ impl LayoutInspector {
     /// D3: Detect widgets with zero width or height.
     ///
     /// Returns (issues, geometry_map) where geometry_map is a
-    /// snapshot of all recorded rects keyed by (parent_id, widget_id).
+    /// deterministic (id-sorted) snapshot of all recorded rects.
     fn check_zero_sizes() -> (Vec<Issue>, Vec<(ObjectId, Rect)>) {
-        let geometries = GEOMETRY_SNAPSHOT.with(|snap| snap.borrow().clone());
+        let mut geometries: Vec<(ObjectId, Rect)> = GEOMETRY_SNAPSHOT
+            .with(|snap| snap.borrow().iter().map(|(id, rect)| (*id, *rect)).collect());
+        geometries.sort_by_key(|(id, _)| *id);
         let issues = geometries
             .iter()
             .filter(|(_, rect)| rect.width == 0 || rect.height == 0)
@@ -475,18 +479,12 @@ impl LayoutInspector {
             return Vec::new();
         }
 
-        // Build a widget_id → parent lookup.
-        let mut parent_of: HashMap<ObjectId, Option<ObjectId>> = HashMap::new();
-        for id in registry.all_ids() {
-            if let Some(entry) = registry.get(id) {
-                parent_of.insert(id, entry.parent);
-            }
-        }
-
-        // Group widget ids by their (optional) parent.
+        // Group widget ids by their (optional) parent. The parent is read per recorded id
+        // through the registry's own hash lookup; the previous version copied the parent of
+        // every registered widget into a fresh map on every run (G-159).
         let mut children_by_parent: HashMap<Option<ObjectId>, Vec<ObjectId>> = HashMap::new();
         for (widget_id, _) in geometries {
-            let parent = parent_of.get(widget_id).copied().flatten();
+            let parent = registry.get(*widget_id).and_then(|entry| entry.parent);
             children_by_parent.entry(parent).or_default().push(*widget_id);
         }
 

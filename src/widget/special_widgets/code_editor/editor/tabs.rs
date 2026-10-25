@@ -13,8 +13,36 @@ impl CodeEditor {
     // ── Tabs ────────────────────────────────────────────────────────────────
 
     /// Returns the open buffers.
+    ///
+    /// This is the explicit whole-text form: every buffer's full contents are copied. A
+    /// host that only needs titles and modified flags should call
+    /// [`Self::buffer_summaries`], which allocates a title per tab and nothing else. The
+    /// active slot is filled from the live mirror first, because the mirror is where the
+    /// active document lives while it is active (J-P12).
     pub fn buffers(&self) -> Vec<EditorBuffer> {
-        self.model.borrow().all_buffers.clone()
+        let model = self.model.borrow();
+        let mut buffers = model.all_buffers.clone();
+        if let Some(active) = buffers.get_mut(model.active_tab) {
+            active.text = model.text.borrow().clone();
+        }
+        buffers
+    }
+
+    /// Returns `(title, modified, language)` for every open buffer, without its text.
+    ///
+    /// A tab strip needs no document contents, and `buffers()` cloned every open file to
+    /// answer it — megabytes per frame for a host that redraws its tab bar from this call.
+    pub fn buffer_summaries(&self) -> Vec<(String, bool, Option<LanguageId>)> {
+        let model = self.model.borrow();
+        model
+            .all_buffers
+            .iter()
+            .enumerate()
+            .map(|(index, buffer)| {
+                let modified = if index == model.active_tab { model.dirty } else { buffer.modified };
+                (buffer.title.clone(), modified, buffer.language)
+            })
+            .collect()
     }
 
     /// Opens a new buffer and activates it, returning its index.
@@ -126,12 +154,15 @@ impl CodeEditor {
         // minimap bucket belongs to the buffer being left.
         self.invalidate_line_states();
         self.minimap_line_count = 0;
+        self.completion_index = None;
         // Locked ranges are document coordinates too, so they are dropped rather
         // than inherited by the buffer being entered. A host that re-locks the
         // new buffer re-adds them after the switch.
         self.read_only_spans.clear();
         self.refresh_derived_state();
-        self.text_changed.emit(self.text());
+        // A switch replaces every line, so it is described as a wholesale change rather
+        // than by cloning the new document into the signal payload (J-P12).
+        self.text_change.emit(TextChange::document(self.line_count()));
         self.tab_changed.emit(index);
         self.emit_cursor_and_selection();
         self.base.request_layout();

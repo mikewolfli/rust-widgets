@@ -116,6 +116,60 @@ fn gdk_dpi_scale_override() -> f32 {
     }
 }
 
+/// Connects the GTK settings behind the environment facts to the shared notification revision.
+///
+/// # The defect this closes (P-201)
+///
+/// [`crate::platform::environment_notify`] documents that a backend calls
+/// [`bump`](crate::platform::environment_notify::bump) from its native change callback, and
+/// [`Platform::notify_environment_changed`] promises that a notified backend drops its cached
+/// facts so the next read goes to the host. Nothing on GTK listened, so the only thing that ever
+/// noticed a theme or animation change was the 250 ms derived poll — and a cached fact could not
+/// be dropped early at all.
+///
+/// # Why these three properties
+///
+/// They are exactly the GTK settings the environment facts read:
+/// `gtk-theme-name` backs [`Platform::high_contrast`], `gtk-enable-animations` backs
+/// [`Platform::reduce_motion`], and `gtk-application-prefer-dark-theme` is what the theme manager
+/// resolves an app's appearance from. There is no GTK signal for "the user changed their desktop
+/// accent", so that fact stays derived — the honest limit, not a fabricated signal.
+///
+/// # Why it runs once and only on the main thread
+///
+/// `gtk::Settings` is main-thread-only and process-wide, so one handler per property is enough for
+/// the session. A call from any other thread is ignored: GTK would abort the process, and the
+/// handler is installed by [`LinuxPlatform::init`](crate::platform::Platform::init) on the thread
+/// that owns the toolkit anyway.
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+fn watch_environment_settings() {
+    static WATCHED: crate::compat::atomic::AtomicBool =
+        crate::compat::atomic::AtomicBool::new(false);
+    if !gtk::is_initialized_main_thread() {
+        return;
+    }
+    if WATCHED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Some(settings) = gtk::Settings::default() else {
+        // No display, so there is nothing to listen to. Leave `WATCHED` set: a later attempt has
+        // the same answer, and re-arming it on every `init()` would only repeat the lookup.
+        return;
+    };
+    for property in ["gtk-theme-name", "gtk-application-prefer-dark-theme", "gtk-enable-animations"]
+    {
+        // `connect_notify_local` rather than `connect_notify`: `GtkSettings` is main-thread-only and
+        // `!Send`, and GTK emits these signals on the thread `gtk::init` ran on — which is the
+        // thread installing them. The handler itself captures nothing, so it is safe either way;
+        // the local spelling states the actual threading contract.
+        let _ = settings.connect_notify_local(Some(property), |_, _| {
+            // The single entry point the trait and the style watcher share; it bumps the
+            // process-wide revision and therefore invalidates every environment cache.
+            crate::platform::profile::notify_environment_changed();
+        });
+    }
+}
+
 impl Platform for LinuxPlatform {
     fn as_any(&self) -> &dyn crate::compat::Any {
         self
@@ -339,14 +393,24 @@ impl Platform for LinuxPlatform {
     /// This is a **heuristic**, documented as such on the trait; `None` when GTK is not available
     /// or no theme name is set. Not overridden without `gtk-native`: a state-only build has no
     /// toolkit to ask.
+    ///
+    /// The reading is cached through the shared TTL wrapper: the style layer re-reads the
+    /// environment revision on a 250 ms poll and each read is a `gtk::Settings` lookup. The
+    /// `notify::gtk-theme-name` handler installed by [`watch_environment_settings`] bumps the
+    /// shared revision, which drops this cache immediately rather than a second later (P-02 /
+    /// P-201).
     #[cfg(all(unix_desktop, feature = "gtk-native"))]
     fn high_contrast(&self) -> Option<bool> {
         if !gtk::is_initialized_main_thread() {
             return None;
         }
-        let settings = gtk::Settings::default()?;
-        let name = settings.gtk_theme_name()?;
-        Some(name.contains("Contrast"))
+        static CACHE: crate::platform::environment_cache::EnvironmentFactCache<Option<bool>> =
+            crate::compat::OnceLock::new();
+        crate::platform::environment_cache::cached_environment_fact(&CACHE, || {
+            let settings = gtk::Settings::default()?;
+            let name = settings.gtk_theme_name()?;
+            Some(name.contains("Contrast"))
+        })
     }
 
     #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
@@ -358,13 +422,20 @@ impl Platform for LinuxPlatform {
     ///
     /// `gtk-enable-animations` is the switch GTK itself honours; when it is off the user asked for
     /// no transitions, which is exactly the reduced-motion fact. `None` without `gtk-native`.
+    ///
+    /// Cached and invalidated exactly like [`Self::high_contrast`], through the
+    /// `notify::gtk-enable-animations` signal.
     #[cfg(all(unix_desktop, feature = "gtk-native"))]
     fn reduce_motion(&self) -> Option<bool> {
         if !gtk::is_initialized_main_thread() {
             return None;
         }
-        let settings = gtk::Settings::default()?;
-        Some(!settings.is_gtk_enable_animations())
+        static CACHE: crate::platform::environment_cache::EnvironmentFactCache<Option<bool>> =
+            crate::compat::OnceLock::new();
+        crate::platform::environment_cache::cached_environment_fact(&CACHE, || {
+            let settings = gtk::Settings::default()?;
+            Some(!settings.is_gtk_enable_animations())
+        })
     }
 
     #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
@@ -372,23 +443,23 @@ impl Platform for LinuxPlatform {
         None
     }
 
-    /// The locale named by the process environment.
+    /// The locale named by the process environment, cached for one second.
     ///
     /// GTK has no synchronous "current locale" API that does not duplicate the C library's
     /// answer, so this reads the POSIX variables through
-    /// [`crate::platform::locale::from_environment`]. The value is interned for the style layer.
+    /// [`crate::platform::locale::interned_from_environment`]. Caching there keeps the four
+    /// `std::env::var` reads off the 250 ms environment poll (P-02/P-04), and the value is interned
+    /// once for the style layer's snapshot.
     fn system_locale(&self) -> Option<&'static str> {
-        crate::platform::locale::intern(crate::platform::locale::from_environment())
+        crate::platform::locale::interned_from_environment()
     }
 
     /// A revision of the environment facts, derived from their current values.
+    ///
+    /// See [`crate::platform::locale::environment_revision`]: the shared accessor hashes the
+    /// complete fact set the style snapshot reads (P-03/P-06).
     fn environment_generation(&self) -> u64 {
-        crate::platform::locale::generation_hash(
-            self.system_theme(),
-            self.high_contrast(),
-            self.reduce_motion(),
-            self.system_locale(),
-        )
+        crate::platform::locale::environment_revision(self)
     }
 
     /// The installed families from fontconfig (`fc-list`); empty when it is absent.
@@ -526,7 +597,7 @@ impl Platform for LinuxPlatform {
         true
     }
 
-    /// Shows or hides a GTK toplevel.
+    /// Shows or hides a GTK toplevel, reporting whether this backend owned the id.
     ///
     /// # Why this has to exist
     ///
@@ -542,14 +613,17 @@ impl Platform for LinuxPlatform {
     /// here with one or the other depending on which layer it sits in, and resolving both
     /// keeps the caller from having to know which it holds.
     ///
-    /// The trait's signature returns `()`, so an id that names no GTK window is ignored
-    /// rather than reported. That is the common case, not an error: most ids arriving here
-    /// are ordinary controls, for which the model flag is the whole story.
+    /// # What the answer means (P-203)
+    ///
+    /// `true` when the id resolved to a GTK toplevel and the show/hide was applied; `false`
+    /// when it named no toplevel, when GTK is not available on this thread, or when the widget
+    /// is an ordinary control (for which the library's own `visible` flag is the whole story).
+    /// A caller that ignores the answer behaves exactly as before.
     #[cfg(all(unix_desktop, feature = "gtk-native"))]
-    fn set_widget_visible(&self, widget_id: crate::core::ObjectId, visible: bool) {
+    fn set_widget_visible(&self, widget_id: crate::core::ObjectId, visible: bool) -> bool {
         // GTK widgets are main-thread-only; driving them from anywhere else would abort.
         if !gtk::is_initialized_main_thread() {
-            return;
+            return false;
         }
         let native = self.native.lock_guard();
         let host = if native.windows.contains_key(&widget_id) {
@@ -558,7 +632,7 @@ impl Platform for LinuxPlatform {
             crate::widget::runtime::host_window_for(widget_id)
         };
         let Some(window) = host.and_then(|host| native.windows.get(&host)) else {
-            return;
+            return false;
         };
         if visible {
             // `show_all` rather than `show`: a child created before its parent was realized
@@ -568,6 +642,7 @@ impl Platform for LinuxPlatform {
         } else {
             window.hide();
         }
+        true
     }
 
     /// Queue a redraw on the surface that paints this id.
@@ -619,6 +694,9 @@ impl Platform for LinuxPlatform {
             } else if let Err(e) = gtk::init() {
                 log::error!("[linux] gtk::init() failed: {:?}", e);
             }
+            // The toolkit is up on this thread, so its settings signals can be watched. `init()`
+            // is the one place every entry path passes through before a window exists (P-201).
+            watch_environment_settings();
         }
         #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
         {}
@@ -1701,6 +1779,30 @@ impl Platform for LinuxPlatform {
         #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
         {
             None
+        }
+    }
+
+    /// A revision bumped by GDK's `owner-change` signal, or `0` when this build cannot report.
+    ///
+    /// # What each answer means (P-202)
+    ///
+    /// * A non-zero value: a handler is attached to the display clipboard, and the value advances
+    ///   every time the selection's owner changes — including when another application takes it.
+    /// * `0`: no display clipboard is reachable from this build/thread, so this backend cannot
+    ///   report changes. That is the trait's honest "not reported", not a fabricated constant.
+    ///
+    /// The counter and the handler live in [`super::gdk_clipboard`], next to the rest of the GDK
+    /// clipboard binding, so the write path and the change signal describe the same object.
+    fn clipboard_generation(&self) -> u64 {
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        {
+            super::gdk_clipboard::generation()
+        }
+        #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
+        {
+            // No GDK clipboard in this build; the in-process record cannot be changed from
+            // outside the process, so `0` ("cannot report") is the truthful answer.
+            0
         }
     }
 

@@ -54,3 +54,53 @@ pub(crate) fn draw_line(
         );
     }
 }
+
+/// Paints a two-line sunken/raised separator.
+///
+/// Both `Line` and `Divider` publish the same three-state shading vocabulary, so the treatment
+/// has one implementation: two adjacent 1 px bands centred in `rect`, with `sunken` deciding
+/// which edge is dark. The derived highlight and shadow come from `color`, so a themed line and a
+/// themed divider move together. A control that is one pixel thick in the cross axis has no room
+/// for two rows and paints the leading band, so the style still has visible ink.
+pub(crate) fn draw_shaded_line(
+    context: &mut crate::render::RenderContext,
+    rect: crate::core::Rect,
+    vertical: bool,
+    color: crate::core::Color,
+    sunken: bool,
+) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let highlight = color.blend(&crate::core::Color::WHITE, 0.45);
+    let shadow = color.blend(&crate::core::Color::BLACK, 0.35);
+    let (first, second) = if sunken { (shadow, highlight) } else { (highlight, shadow) };
+
+    let extent = if vertical { rect.width } else { rect.height };
+    if extent < 2 {
+        draw_line(context, rect, vertical, 1, first);
+        return;
+    }
+
+    if vertical {
+        let middle = rect.x + rect.width as i32 / 2;
+        draw_line(
+            context,
+            crate::core::Rect::new(middle - 1, rect.y, 1, rect.height),
+            true,
+            1,
+            first,
+        );
+        draw_line(context, crate::core::Rect::new(middle, rect.y, 1, rect.height), true, 1, second);
+    } else {
+        let middle = rect.y + rect.height as i32 / 2;
+        draw_line(
+            context,
+            crate::core::Rect::new(rect.x, middle - 1, rect.width, 1),
+            false,
+            1,
+            first,
+        );
+        draw_line(context, crate::core::Rect::new(rect.x, middle, rect.width, 1), false, 1, second);
+    }
+}

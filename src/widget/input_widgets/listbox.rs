@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! List box widget.
-use crate::compat::{RefCell, String, ToString, Vec};
+use crate::compat::{Instant, RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
 use crate::event::{Event, EventHandler, WheelScroll};
@@ -120,6 +120,8 @@ pub struct ListBox {
     edit_triggers: EditTriggers,
     /// The prefix typed since the last navigation, for first-letter type-ahead.
     type_ahead: String,
+    /// When the current type-ahead prefix began, for the shared 800 ms rule (I-P06).
+    type_ahead_started: Option<Instant>,
     /// Emitted when a rename gesture lands on a row. The host owns the editor.
     pub rename_requested: Signal1<usize>,
     /// Emitted with the row whose label or presentation metadata changed.
@@ -325,6 +327,7 @@ impl ListBox {
             columns: 1,
             edit_triggers: EditTriggers::NONE,
             type_ahead: String::new(),
+            type_ahead_started: None,
             rename_requested: Signal1::new(),
             item_changed: Signal1::new(),
             item_revision: 0,
@@ -889,6 +892,19 @@ impl ListBox {
     /// that cannot lie; a caller that needs to preserve a selection should sort its own model
     /// and call [`ListBox::set_items`] equivalent mutators itself.
     pub fn sort_items(&mut self) {
+        // Ascending byte order is the convenient default, not the only order: `sort_items_by`
+        // carries the comparison, so a descending or case-insensitive sort is one call away
+        // (I-23).
+        self.sort_items_by(|left, right| left.cmp(right));
+    }
+
+    /// Sorts the rows with a caller-supplied comparison.
+    ///
+    /// The comparison receives the two labels; the per-row metadata travels with its label, so
+    /// icons, check states and data tokens stay attached to the rows they belong to. Selection
+    /// is cleared for the reason [`Self::sort_items`] documents: an index into the old order
+    /// names a different row after the sort.
+    pub fn sort_items_by(&mut self, compare: impl Fn(&str, &str) -> core::cmp::Ordering) {
         if self.items.len() < 2 {
             return;
         }
@@ -896,7 +912,7 @@ impl ListBox {
             let metas = self.item_meta.iter().cloned();
             self.items.drain(..).zip(metas).collect()
         };
-        rows.sort_by(|left, right| left.0.cmp(&right.0));
+        rows.sort_by(|left, right| compare(&left.0, &right.0));
         let old_len = rows.len();
         self.items = rows.iter().map(|(text, _)| text.clone()).collect();
         self.item_meta = rows.into_iter().map(|(_, meta)| meta).collect();
@@ -958,11 +974,18 @@ impl ListBox {
     }
 
     /// Selects the first row at or after `start` whose label begins with `prefix`.
+    ///
+    /// The prefix is folded once and each label compared byte-wise, instead of allocating a
+    /// lowercased copy of every row (I-P05).
     fn find_prefix(&self, prefix: &str, start: usize) -> Option<usize> {
-        let needle = prefix.to_lowercase();
+        let needle = crate::widget::input_widgets::text_match::fold(prefix);
         let count = self.items.len();
         (0..count).map(|offset| (start + offset) % count).find(|&index| {
-            self.is_item_enabled(index) && self.items[index].to_lowercase().starts_with(&needle)
+            self.is_item_enabled(index)
+                && crate::widget::input_widgets::text_match::starts_with(
+                    &self.items[index],
+                    &needle,
+                )
         })
     }
 
@@ -1625,6 +1648,20 @@ impl EventHandler for ListBox {
                     // only be traversed with the arrows or the pointer.
                     32..=126 => {
                         if let Some(ch) = char::from_u32(*key) {
+                            // A prefix older than the shared timeout is dropped before this key
+                            // extends it, so a stale search cannot keep intercepting the first
+                            // letter of the next one (I-P06). Clearing queues no frame.
+                            let now = Instant::now();
+                            let expired = self.type_ahead_started.is_none_or(|started| {
+                                now.duration_since(started).as_millis()
+                                    > u128::from(
+                                        crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS,
+                                    )
+                            });
+                            if expired {
+                                self.type_ahead.clear();
+                            }
+                            self.type_ahead_started = Some(now);
                             self.type_ahead.push(ch);
                             let start = self.current_row.map_or(0, |row| row + 1);
                             if let Some(target) = self.find_prefix(&self.type_ahead, start) {
@@ -1634,6 +1671,7 @@ impl EventHandler for ListBox {
                     }
                     _ => {
                         self.type_ahead.clear();
+                        self.type_ahead_started = None;
                     }
                 }
             }
@@ -1676,6 +1714,9 @@ impl Draw for ListBox {
         // than a second literal blue; a focused row is the same accent at a lighter weight, and a
         // hovered row lighter still — a pointer position rather than a selection, so it must read
         // as "a click would land here" without competing with the row actually chosen.
+        //
+        // The palette is the frame's **one** manager lock (I-P07); `resolved_theme_style_shared`
+        // above is a thread-local cache hit after the first frame and takes none.
         let accent = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.primary)
@@ -1826,6 +1867,33 @@ impl Draw for ListBox {
                     separator,
                 );
             }
+        }
+
+        // ── Scroll position indicator (I-22) ──
+        //
+        // A long list scrolled only by wheel or keyboard gave no on-screen position feedback.
+        // This is the dropdown's popup thumb at the same 4 px width, drawn on the content box's
+        // trailing edge: the track is the surface mixed toward the border, the thumb the
+        // separator tone. It appears only when there is something to scroll.
+        let bottom = self.bottom_scroll_offset();
+        if bottom > 0 {
+            let page = self.viewport_rows().max(1);
+            let total = self.items.len().max(1);
+            let track_height = content.height as i32;
+            let thumb_height = ((track_height as usize * page) / total)
+                .max(8)
+                .min(track_height.max(8) as usize) as i32;
+            let max_offset = bottom.max(1) as i32;
+            let thumb_top = content.y
+                + ((track_height - thumb_height) * self.scroll_offset.min(bottom) as i32
+                    / max_offset);
+            let rail_x = content.x + content.width as i32 - 4;
+            context.fill_rect(
+                Rect::new(rail_x, content.y, 4, content.height),
+                surface.blend(&border, 0.35),
+            );
+            context
+                .fill_rect(Rect::new(rail_x, thumb_top, 4, thumb_height.max(1) as u32), separator);
         }
 
         // ── Keyboard focus ring ──

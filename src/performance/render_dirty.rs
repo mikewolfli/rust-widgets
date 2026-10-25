@@ -3,9 +3,8 @@
 
 //! Helper for rendering only dirty regions using clip rects.
 
-// The render path itself no longer collects into a `Vec`; the tests build fixtures with one.
-#[cfg(test)]
 use crate::compat::Vec;
+use crate::core::Rect;
 use crate::performance::DirtyRegionTracker;
 
 /// Fraction of the frame area above which repainting regions costs more than a full
@@ -46,11 +45,39 @@ pub const FULL_REPAINT_AREA_RATIO: f32 = 0.5;
 /// When the damage is too large or too scattered to be worth regioning, the damage is still
 /// painted — as one clip over its bounding rectangle rather than as one clip per region. That is
 /// the cheapest correct answer, and it is still a single traversal.
+///
+/// # Allocation
+///
+/// This is a convenience wrapper around [`render_dirty_regions_into`] and allocates
+/// the region buffer on every call. A frame loop should call the `_into` variant
+/// with a `Vec` it owns, so the buffer's capacity survives across frames (G-72).
 pub fn render_dirty_regions(
     tracker: &mut DirtyRegionTracker,
     ctx: &mut crate::render::RenderContext,
+    render_all: impl FnMut(&mut crate::render::RenderContext),
+) {
+    let mut regions = Vec::new();
+    render_dirty_regions_into(tracker, ctx, &mut regions, render_all);
+}
+
+/// Buffer-reusing form of [`render_dirty_regions`].
+///
+/// `regions` is cleared and refilled with the rectangles of the merged region set
+/// before the bucketed traversal, so a frame loop can hold one `Vec` for its whole
+/// lifetime and pay no per-frame region allocation (G-72). The merge/fallback
+/// decision and the paint calls are identical to [`render_dirty_regions`]. When the
+/// bounding-rect path is taken the buffer is left empty, because the single clip is
+/// built from the bounding rectangle rather than from a region list.
+pub fn render_dirty_regions_into(
+    tracker: &mut DirtyRegionTracker,
+    ctx: &mut crate::render::RenderContext,
+    regions: &mut Vec<Rect>,
     mut render_all: impl FnMut(&mut crate::render::RenderContext),
 ) {
+    // The buffer belongs to the caller and may still hold a previous frame's rectangles,
+    // so it is emptied up front: an early return must not leave a stale list behind.
+    regions.clear();
+
     // 1. Bound the work *before* merging (D09-RENDER-01).
     //
     // `merge` restarts its scan after each union, so its cost grows with the square of the
@@ -94,10 +121,10 @@ pub fn render_dirty_regions(
         return;
     }
 
-    // 5. One traversal, bucketed into the merged region set.
-    let regions: crate::compat::Vec<crate::core::Rect> =
-        tracker.regions().iter().map(|region| region.rect).collect();
-    ctx.begin_region_buckets(&regions);
+    // 5. One traversal, bucketed into the merged region set. The caller's buffer is
+    //    reused instead of collecting into a fresh `Vec` per call.
+    regions.extend(tracker.regions().iter().map(|region| region.rect));
+    ctx.begin_region_buckets(regions.as_slice());
     render_all(ctx);
     ctx.end_region_buckets();
     tracker.clear();
@@ -372,5 +399,36 @@ mod tests {
             );
         }
         assert!(tracker.is_empty(), "the damage is consumed");
+    }
+
+    /// The buffer-reusing entry point fills the caller's vector with the rectangles it
+    /// rendered and leaves it empty on a pass that paints nothing, so a frame loop can
+    /// keep one `Vec` and never observe a stale region list (G-72).
+    #[test]
+    fn the_region_buffer_is_reused_and_never_left_stale() {
+        let mut tracker = DirtyRegionTracker::new();
+        tracker.add(Rect::new(0, 0, 10, 10));
+        tracker.add(Rect::new(200, 200, 10, 10));
+        let mut backend = SoftwarePaintBackend::new(Size::new(400, 400), 1.0);
+        backend.begin_frame(Color::rgb(0, 0, 0));
+        let mut regions = Vec::new();
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            render_dirty_regions_into(&mut tracker, &mut ctx, &mut regions, |_| {});
+            assert_eq!(ctx.region_bucket_passes(), 2, "both small regions are painted separately");
+        }
+        assert_eq!(regions.len(), 2, "the caller's buffer holds the rendered region rectangles");
+        let capacity = regions.capacity();
+
+        // A pass with no damage must empty the buffer, not leave the previous list for a caller
+        // that inspects it, while keeping the allocation for the next frame.
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            render_dirty_regions_into(&mut tracker, &mut ctx, &mut regions, |_| {});
+            assert_eq!(ctx.region_bucket_passes(), 0);
+        }
+        assert!(regions.is_empty(), "an empty tracker leaves the buffer empty");
+        assert_eq!(regions.capacity(), capacity, "the allocation survives across calls");
+        backend.end_frame();
     }
 }

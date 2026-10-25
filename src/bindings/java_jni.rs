@@ -748,6 +748,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativePollWidgetTr
 ) -> jlongArray {
     let mut widget_id_out: u64 = 0;
     let kind_code =
+// SAFETY: C ABI call with a valid writable out-pointer; the callee only writes it.
         unsafe { crate::bindings::rw_poll_widget_trigger_event(&mut widget_id_out as *mut u64) };
     if kind_code == 0 {
         return std::ptr::null_mut();
@@ -833,6 +834,7 @@ pub extern "system" fn Java_io_github_rustwidgets_RustWidgets_nativeFreeString(
     ptr: jlong,
 ) {
     if ptr != 0 {
+// SAFETY: `ptr` is a string previously handed out by the C ABI and is freed exactly once here.
         unsafe {
             crate::bindings::rw_free_string(ptr as *mut std::ffi::c_char);
         }

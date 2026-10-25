@@ -27,27 +27,79 @@
 //! | key | what it is | why it exists |
 //! |---|---|---|
 //! | `events: { "<published_name>": "<handler>" }` | the published route | a name the capability table validates; adding a published event makes it declarable with no loader edit |
-//! | `on_*` | the compatibility route | the same handler reached through a **marker**: `on_close` means `Closed`, `on_selection_changed` means `SelectionChanged`. These are trigger *intents* the published table does not name, and `on_double_click`/`on_focus`/`on_blur` exist because a pointer-driven control routes them through a value callback that the published signal cannot address. |
+//! | `on_*` | the compatibility route | the same handler reached through a **marker**: `on_close` means `Closed`, `on_selection_changed` means `SelectionChanged`. A marker names a trigger *intent*, which is a different thing from a published name. |
 //!
 //! So: `events:` is the route a designer writes, and `on_*` is the route an existing hand-written
 //! layout keeps. `tools/check_json_event_route.sh` asserts this boundary mechanically — every
 //! `on_*` key the loader reads must carry a trigger marker, and every `events:` name must be a
 //! name the capability publishes.
+//!
+//! # How a marker reaches its trigger
+//!
+//! A marker intent is carried by exactly one channel, and the three questions below are the whole
+//! decision — the loader asks them in this order and has no per-key `match` of its own:
+//!
+//! 1. [`JsonTriggerMarker::base_signal`] — the widget's own base signal (`clicked`, `closed`,
+//!    `focus_gained`, `focus_lost`). The runtime's focus router drives the two focus signals
+//!    through `BaseWidget::handle_event`, so `on_focus` / `on_blur` have a real channel even though
+//!    the capability table publishes no per-control focus event.
+//! 2. [`JsonTriggerMarker::uses_value_callback`] — the app layer's value-trigger channel, which is
+//!    the only route to `ValueChanged` / `SelectionChanged` for controls whose value signal the
+//!    capability table does not publish under a name.
+//! 3. [`JsonTriggerMarker::published_counterpart`] — a published name for an intent no widget
+//!    callback can carry. `on_double_click` is the case: the click callback reports one click and
+//!    cannot distinguish two, so the intent is wired through the published `double_clicked` event
+//!    that the controls distinguishing a second click actually publish.
+//!
+//! # What a document still cannot express
+//!
+//! The gesture recognisers in `src/gesture/` emit the spellings of `GestureKind::name()` — `tap`,
+//! `double_tap`, `long_press`, `long_press_drag`, `pan`, `swipe`, `fling`, `two_finger_tap`,
+//! `two_finger_swipe`, `pinch`, `rotate`. The capability table publishes **none** of them, so no
+//! `events:` name and no `on_*` key can reach a gesture. Inventing a name here would create exactly
+//! the second name source rule #101 forbids (the loader's `events:` route validates against the
+//! capability table, and the table has no row to validate against), so the gap is stated instead of
+//! papered over. It closes when a control publishes a gesture event and resolves it through
+//! `event_signal_dyn`; this module then needs no edit at all.
 
 use crate::json::EventHandlerContext;
 use crate::WidgetTriggerEvent;
+
+/// The base-widget signal that announces one trigger intent.
+///
+/// # Why a marker points at a signal rather than at a callback
+///
+/// [`BaseWidget`](crate::widget::BaseWidget) emits `clicked`, `closed`, `focus_gained` and
+/// `focus_lost` itself; the runtime focus router reaches the last two through
+/// `BaseWidget::handle_event`. Binding a marker to the signal is what gives `on_focus` / `on_blur` a
+/// channel without inventing a published name the capability table does not declare — the marker
+/// travels on the widget's own event, not on a handle callback that has no way to report focus.
+///
+/// Crate-internal: [`JsonTriggerMarker::base_signal`] is the public answer, and the loader is the
+/// only consumer that needs to know *which* signal to connect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BaseSignal {
+    /// `BaseWidget::clicked`.
+    Clicked,
+    /// `BaseWidget::closed`.
+    Closed,
+    /// `BaseWidget::focus_gained`.
+    FocusGained,
+    /// `BaseWidget::focus_lost`.
+    FocusLost,
+}
 
 /// Which event a declared handler is bound to.
 ///
 /// # Why this is a *value* and not the published name alone
 ///
-/// A layout declares a handler against a name. Two of those names are validated by the capability
-/// table (`clicked`, `value_changed` — rule #101's published route), and two are **trigger
-/// markers** that the loader's marker callback recognises (`Closed`, `SelectionChanged`), which
-/// are not published names at all. Keeping the distinction in the data rather than in a `match`
-/// is what lets the gate in `tools/check_json_event_route.py` check it — and it is what lets
-/// [`JsonEventBinding::uses_value_callback`] answer "which of the two callback tables does this
-/// reach?" without asking a live control.
+/// A layout declares a handler against a name. Some names are validated by the capability table
+/// (`clicked`, `value_changed` — rule #101's published route); others are **trigger markers** that
+/// name an intent (`Closed`, `SelectionChanged`, `FocusGained`), which are not published names at
+/// all. Keeping the distinction in the data rather than in a `match` is what lets the gate in
+/// `tools/check_json_event_route.py` check it — and it is what lets
+/// [`JsonEventBinding::published_name`] answer "is this the published route or a marker route?"
+/// without asking a live control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsonEventBinding {
     /// A name the capability table publishes. Wired to the control's own signal, so a control
@@ -58,9 +110,13 @@ pub enum JsonEventBinding {
         /// Whether the event's declared payload is non-empty.
         ///
         /// Read from the capability's [`EventSchema`](crate::widget::capability::EventSchema) at
-        /// declaration time rather than assumed. A payload-free name travels the click callback and
-        /// a payload-carrying one the value callback; binding a name to the wrong one is what made
-        /// `"events": {"value_changed": "h"}` fire on a *press*.
+        /// declaration time rather than assumed, so a designer can tell a unit event from a
+        /// value-carrying one without a live control. The loader itself no longer chooses a
+        /// callback from it: a published name is subscribed through
+        /// [`Widget::event_signal_dyn`](crate::widget::Widget::event_signal_dyn), which delivers the
+        /// payload whichever shape it is. The flag survives because the gate and the round-trip
+        /// tests assert it against the table (rule #95), and because a binding that disagreed with
+        /// the table would mean the two name sources had drifted.
         has_payload: bool,
         /// The trigger intent the published **name** names, independent of its payload.
         ///
@@ -84,17 +140,20 @@ pub enum JsonEventBinding {
 }
 
 impl JsonEventBinding {
-    /// Whether this binding must reach the **value** callback table rather than the click table.
+    /// Which channel the binding's **marker** needs, for each route.
     ///
-    /// # The rule, in one place
+    /// # Where this is consulted
     ///
-    /// A published name's answer is its **marker's**: a value-bearing intent travels on
-    /// `on_value_changed` and a pointer-driven one on `on_click`. Deriving it from the marker rather
-    /// than the raw payload keeps the callback consistent with the trigger the handler is told
-    /// about. A marker key carries its own answer for the same reason.
+    /// The loader reaches a published name through the control's own dynamic signal (which carries
+    /// the payload and which no callback table can select), so this answers the *marker* route: a
+    /// value-bearing marker (`ValueChanged`, `SelectionChanged`) travels the app layer's
+    /// value-trigger channel, and every other marker has a signal or a published name of its own
+    /// (see [`JsonTriggerMarker::base_signal`] and
+    /// [`JsonTriggerMarker::published_counterpart`]).
     ///
-    /// This is the single place the choice is made, so the wiring and any test that asserts the
-    /// wiring cannot disagree about it.
+    /// It is derived from the marker on **both** variants rather than from the raw payload: that is
+    /// the single place the answer is stated, so a test asserting the wiring and the wiring itself
+    /// cannot disagree.
     pub fn uses_value_callback(self) -> bool {
         match self {
             Self::Published { marker, .. } => marker.uses_value_callback(),
@@ -164,29 +223,25 @@ pub enum JsonTriggerMarker {
 impl JsonTriggerMarker {
     /// Whether this marker's handler must be reached through the **value** callback table.
     ///
-    /// # Why some markers share a kind
+    /// # Why the answer is the marker's own, not its trigger kind
     ///
-    /// `DoubleClicked`, `FocusGained` and `FocusLost` all report `Clicked` or `ValueChanged`
-    /// because the routing callback they arrive through cannot carry a finer distinction: the
-    /// pointer path only tells the loader "a press arrived" and the value path only "a value
-    /// arrived". Stating that here — rather than at each call site — is what keeps two keys with
-    /// the same limitation from appearing to behave differently.
+    /// Only two intents are value-trigger facts: a value change and a selection change. They travel
+    /// the app layer's value-trigger channel because a control whose value signal the capability
+    /// table publishes under no name has no other way for the loader to reach it.
     ///
-    /// That same limitation is what decides the callback: a marker the pointer path produces
-    /// (`Clicked`, `DoubleClicked`, `Closed`) travels on `on_click`, and one the value path
-    /// produces (`ValueChanged`, `SelectionChanged`, both focus markers) on `on_value_changed`.
-    /// Deriving it from [`Self::trigger_kind`] keeps the two answers from disagreeing, which is
-    /// how `on_double_click` came to be wired to a callback that could never report a double
-    /// click.
+    /// Every other intent has a signal of its own — `clicked` / `closed` / `focus_gained` /
+    /// `focus_lost` on the base widget, `double_clicked` through its published name — so answering
+    /// from [`Self::trigger_kind`] would be wrong for the two focus markers: no
+    /// `WidgetTriggerKind` variant names a focus change, and their kind is therefore the coarse
+    /// `Unknown` (see [`Self::trigger_kind`]). Deriving the callback from that coarse kind is how
+    /// `on_double_click` came to be wired to a callback that could never report a double click, and
+    /// how `on_focus` / `on_blur` would be wired to the value callback again if the loader's
+    /// channel order ever changed.
     pub fn uses_value_callback(self) -> bool {
-        matches!(
-            self.trigger_kind(),
-            crate::platform::WidgetTriggerKind::ValueChanged
-                | crate::platform::WidgetTriggerKind::SelectionChanged
-        )
+        matches!(self, Self::ValueChanged | Self::SelectionChanged)
     }
 
-    /// Whether this marker travels on the **close** callback (the widget's `closed` signal).
+    /// Whether this marker travels on the **close** signal (the widget's `closed`).
     ///
     /// # Why `Closed` now has a channel
     ///
@@ -194,41 +249,80 @@ impl JsonTriggerMarker {
     /// layer, so [`Self::unroutable_reason`] refused it. [`BaseWidget::closed`](crate::widget::BaseWidget::closed)
     /// now exists and every closeable control emits it from its own `close`/`dismiss` path, so
     /// `Closed` has a real signal to reach and is bound rather than refused.
+    ///
+    /// Derived from [`Self::base_signal`] rather than from a second `match`, so the two answers
+    /// cannot disagree about which channel a close takes.
     pub fn uses_close_callback(self) -> bool {
-        matches!(self, Self::Closed)
+        matches!(self.base_signal(), Some(BaseSignal::Closed))
     }
 
-    /// Why this marker cannot be routed to a live callback, or `None` when it can.
+    /// The base-widget signal that carries this marker's trigger, when one does.
     ///
-    /// # Why a marker is refused rather than approximated
+    /// `None` means the intent is not a base-widget fact: a value change is a per-control value
+    /// signal ([`Self::uses_value_callback`]) and a double click is carried by its published name
+    /// ([`Self::published_counterpart`]).
     ///
-    /// [`Self::uses_value_callback`] can only choose between two callbacks — the click one
-    /// and the value one — so a marker whose real trigger is neither cannot be honoured. It
-    /// used to be bound to whichever was nearer, which produced a handler that ran on the
-    /// **wrong** event and was told the right one had happened:
+    /// # Why focus belongs here (W-05)
     ///
-    /// * `on_double_click` → the click callback, i.e. the *single*-click signal. The handler
-    ///   fired on the first click and could never be reached by a double click.
+    /// `on_focus` / `on_blur` used to have no channel at all: the marker was refused because the
+    /// only callbacks available were the click one and the value one, and neither fires on focus.
+    /// [`BaseWidget::focus_gained`](crate::widget::BaseWidget::focus_gained) and
+    /// [`BaseWidget::focus_lost`](crate::widget::BaseWidget::focus_lost) do, and the runtime's focus
+    /// router drives them through `BaseWidget::handle_event`, so the intent has a real emitter.
+    /// Pointing at it is what lets the two keys route without a published name the capability table
+    /// does not declare.
+    pub(crate) fn base_signal(self) -> Option<BaseSignal> {
+        match self {
+            Self::Clicked => Some(BaseSignal::Clicked),
+            Self::Closed => Some(BaseSignal::Closed),
+            Self::FocusGained => Some(BaseSignal::FocusGained),
+            Self::FocusLost => Some(BaseSignal::FocusLost),
+            Self::DoubleClicked | Self::ValueChanged | Self::SelectionChanged => None,
+        }
+    }
+
+    /// Why this marker cannot be routed through a widget **callback**, or `None` when it can.
+    ///
+    /// # Why a marker is never approximated
+    ///
+    /// The click callback and the value callback are the only two a widget exposes generically, so
+    /// a marker whose real trigger is neither cannot be honoured by either. It used to be bound to
+    /// whichever was nearer, which produced a handler that ran on the **wrong** event and was told
+    /// the right one had happened:
+    ///
+    /// * `on_double_click` → the click callback, i.e. the *single*-click signal. The handler fired
+    ///   on the first click and could never be reached by a double click.
     /// * `on_focus` / `on_blur` → the value callback, which fires when the control's *value*
     ///   changes, not when it gains or loses focus.
     ///
-    /// `Closed` used to be on this list too ("no producer"). It is now routed through
-    /// [`Self::uses_close_callback`] to the widget's `closed` signal, so it is no longer refused.
+    /// All three markers named above now have a real channel, so none of them is left unrouted:
     ///
-    /// Returning a reason instead of a guess is the same principle the crate applies
+    /// * `on_focus` / `on_blur` travel on the widget's own focus signals
+    ///   ([`Self::base_signal`]) and no longer report a reason at all.
+    /// * `on_double_click` keeps its reason — no widget callback can carry it — and travels on its
+    ///   published counterpart, `double_clicked` ([`Self::published_counterpart`]); the loader wires
+    ///   that name and refuses with a message naming it when the control does not publish it.
+    ///
+    /// `Closed` was on this list once too ("no producer"); it is now the widget's own `closed`
+    /// signal ([`Self::uses_close_callback`]).
+    ///
+    /// So this answers "can a *widget callback* carry it?" — `Some` is a refusal by the callback
+    /// route, not a refusal of the binding. The loader consults it to pick the published channel
+    /// instead of a callback, and a marker with neither a counterpart nor a callback is refused
+    /// outright. Returning a reason instead of a guess is the same principle the crate applies
     /// elsewhere: a capability that is absent is reported, never fabricated.
     pub fn unroutable_reason(self) -> Option<&'static str> {
         match self {
             Self::DoubleClicked => Some(
-                "`on_double_click` has no double-click signal to connect to; a control's click \
-                 signal does not distinguish one click from two, so binding it there would fire \
-                 the handler on a single click",
-            ),
-            Self::FocusGained | Self::FocusLost => Some(
-                "`on_focus` / `on_blur` have no focus signal to connect to through this route; \
-                 the value callback fires on a value change, not on focus",
+                "`on_double_click` cannot be carried by a widget callback: the click callback \
+                 reports a single click and the value callback reports value changes, so neither \
+                 can tell the handler that a second click arrived. It is wired through the \
+                 published `double_clicked` event, which only controls that distinguish a second \
+                 click publish",
             ),
             Self::Clicked | Self::ValueChanged | Self::SelectionChanged | Self::Closed => None,
+            // Focus now has a channel of its own; see `Self::base_signal`.
+            Self::FocusGained | Self::FocusLost => None,
         }
     }
 
@@ -255,22 +349,31 @@ impl JsonTriggerMarker {
 
     /// The `WidgetTriggerKind` this marker reports as.
     ///
-    /// # Why some markers share a kind
+    /// # Why some markers share a kind, and the focus markers report `Unknown`
     ///
-    /// `DoubleClicked`, `FocusGained` and `FocusLost` all report `Clicked` or `ValueChanged`
-    /// because the routing callback they arrive through cannot carry a finer distinction: the
-    /// pointer path only tells the loader "a press arrived" and the value path only "a value
-    /// arrived". Stating that here — rather than at each call site — is what keeps two keys with
-    /// the same limitation from appearing to behave differently.
+    /// The platform enum is coarser than the marker set. `DoubleClicked` reports `Clicked` because no
+    /// variant names a second click.
+    ///
+    /// The two **focus** markers report
+    /// [`WidgetTriggerKind::Unknown`](crate::platform::WidgetTriggerKind::Unknown): no variant names a
+    /// focus change, and the two nearest claims are both false — `ValueChanged` says the control's
+    /// value changed and `Clicked` says it was activated. `Unknown` is the enum's own word for "no
+    /// concrete trigger semantic is known", which is true, and the handler still knows which wire
+    /// fired because it registered for `on_focus` or `on_blur`. Reporting a wrong-but-specific kind
+    /// is the failure this module refuses elsewhere (a handler told the right event happened while
+    /// running on another one).
+    ///
+    /// The **channel** a marker travels on is [`Self::base_signal`] / [`Self::uses_value_callback`]
+    /// / [`Self::published_counterpart`], not this value: the kind is what the handler is told, not
+    /// how the binding is made.
     pub fn trigger_kind(self) -> crate::platform::WidgetTriggerKind {
         use crate::platform::WidgetTriggerKind;
         match self {
             Self::Clicked | Self::DoubleClicked => WidgetTriggerKind::Clicked,
-            Self::FocusGained | Self::FocusLost | Self::ValueChanged => {
-                WidgetTriggerKind::ValueChanged
-            }
+            Self::ValueChanged => WidgetTriggerKind::ValueChanged,
             Self::SelectionChanged => WidgetTriggerKind::SelectionChanged,
             Self::Closed => WidgetTriggerKind::Closed,
+            Self::FocusGained | Self::FocusLost => WidgetTriggerKind::Unknown,
         }
     }
 
@@ -288,9 +391,9 @@ impl JsonTriggerMarker {
     /// The mapping is deliberately conservative: a name whose intent this function does not
     /// recognise falls back to the payload question (`has_payload` → `ValueChanged`, else
     /// `Clicked`), which is exactly the previous behaviour and remains correct for the common
-    /// `clicked` / `value_changed` cases. A name that *is* recognised as an intent with no live
-    /// signal (`closed`, `double_clicked`, focus) then travels through
-    /// [`Self::unroutable_reason`] and is refused rather than mis-bound.
+    /// `clicked` / `value_changed` cases. A name that *is* recognised as an intent with no signal of
+    /// its own (`closed`, `double_clicked`, focus) then travels its own channel, and a name whose
+    /// channel the control cannot provide is refused rather than mis-bound.
     pub fn for_published_name(name: &str, has_payload: bool) -> Self {
         // Normalise before classifying, not only before matching the schema. The schema lookup uses
         // `normalize_key` (which strips `_`/`-`/space and lower-cases), so `selection-changed` and
@@ -356,9 +459,23 @@ pub const EVENTS_KEY: &str = "events";
 /// `on_*` keys are trigger *intents*; `events:` names are names the capability table publishes.
 /// Two of the intents overlap a published name (`clicked`, `value_changed`), `selection_changed`
 /// and `closed` overlap one each, and `double_clicked` is published by controls that actually
-/// distinguish a second click (the canvas, grid/table cells, tree nodes). The two **focus**
-/// intents have no published equivalent anywhere in the census. That was previously only stated in
-/// prose, so a new marker could quietly be added with no published route and nothing would notice.
+/// distinguish a second click (the canvas and the image view; the grid/table/tree publish their own
+/// `cell_double_clicked` / `node_double_clicked` spellings and are not the same intent).
+///
+/// # Why the focus rows are `None` (W-05)
+///
+/// The capability census contains no per-control "this control gained focus" event. The two names
+/// that mention focus are different intents: `focus_changed` is a **dialog's** report that keyboard
+/// focus moved between its own children (its payload is the focused child's id), and
+/// `window_focus_changed` is a window-chrome report that the whole window gained or lost focus.
+/// Wiring `on_focus` to either would run the handler on the wrong event while telling it the
+/// control had gained focus — the exact defect this table exists to prevent — so the rows stay
+/// `None` and the intent travels on the widget's own focus signals instead
+/// ([`JsonTriggerMarker::base_signal`]). That is also why these keys are *not* refused: `None` here
+/// means "no published spelling", not "no channel".
+///
+/// The initial prose version of this table stated the correspondence only in words, so a new marker
+/// could quietly be added with no published route and nothing would notice.
 ///
 /// Keeping the answer in one table lets [`JsonTriggerMarker::published_counterpart`] answer it for
 /// the binder and lets a gate reject a future marker that claims a published name which no control
@@ -379,6 +496,9 @@ pub const MARKER_PUBLISHED_EVENTS: &[(JsonTriggerMarker, Option<&'static str>)] 
 /// A gate reads this to require an explicit decision for a new marker: a marker added to
 /// [`MARKER_KEYS`] without a row in [`MARKER_PUBLISHED_EVENTS`] is absent from the table rather
 /// than silently "unpublished", and a marker whose row is `None` is recorded here.
+///
+/// `None` means "no published spelling", **not** "no channel": the two focus markers are carried
+/// by the widget's own focus signals ([`JsonTriggerMarker::base_signal`]) and are routable.
 pub fn markers_without_published_counterpart() -> impl Iterator<Item = JsonTriggerMarker> {
     MARKER_PUBLISHED_EVENTS.iter().filter_map(|(marker, name)| name.is_none().then_some(*marker))
 }
@@ -543,7 +663,9 @@ std::thread_local! {
 
 /// Retains a load-time binding token until its control is torn down.
 ///
-/// Called by the loader's no-token `bind_one`; a caller that wants to release the wire itself uses
+/// Called by the loader's no-token `bind_one` for **both** routes — a published name and an `on_*`
+/// marker each yield a token, so unloading a document releases the whole set rather than only the
+/// published half. A caller that wants to release its own wire uses
 /// [`crate::json::JsonLoader::bind_one_releasable`] instead and owns the token.
 pub(crate) fn retain_binding(widget_id: crate::core::ObjectId, binding: DynamicBinding) {
     LOADED_BINDINGS.with(|map| {
@@ -611,6 +733,14 @@ pub fn bind_published_event(
 ///
 /// See [`bind_published_event`] for why this is public. `key` must be one the marker table lists;
 /// an unknown key is reported and refused rather than guessed at.
+///
+/// # Which channel the key reaches
+///
+/// The marker decides, not this function: the widget's own base signal, the app layer's
+/// value-trigger channel, or — for an intent no widget callback can carry, such as
+/// `on_double_click` — the published name its capability counterpart declares. The channel choice
+/// and the refusal when none is available are therefore the same in the loader and in a generated
+/// program, which is the point of routing both through [`crate::json::bind_event_binding`].
 pub fn bind_marker_event(
     widget_id: crate::core::ObjectId,
     key: &str,
@@ -677,51 +807,110 @@ mod tests {
     }
 
     #[test]
-    fn markers_that_share_a_callback_share_their_kind() {
-        // The pointer path cannot distinguish one press from two, and the value path cannot
-        // distinguish focus from a value change. Collapsing them is honest; inventing a
-        // distinction the callback cannot carry would be a marker the handler can never observe.
+    fn a_handler_is_told_the_nearest_kind_the_platform_enum_has() {
+        // No `WidgetTriggerKind` variant names a second click, so a double click reports the click
+        // kind — the marker, not the kind, is what keeps `on_double_click` off the click signal.
         assert_eq!(
             JsonTriggerMarker::DoubleClicked.trigger_kind(),
             JsonTriggerMarker::Clicked.trigger_kind()
         );
+        // No variant names a focus change either, and both nearer claims are false (`ValueChanged`
+        // says the value changed, `Clicked` says the control was activated), so the focus markers
+        // report `Unknown` rather than a specific lie.
         assert_eq!(
             JsonTriggerMarker::FocusGained.trigger_kind(),
-            JsonTriggerMarker::ValueChanged.trigger_kind()
+            crate::platform::WidgetTriggerKind::Unknown
         );
         assert_eq!(
             JsonTriggerMarker::FocusLost.trigger_kind(),
-            JsonTriggerMarker::ValueChanged.trigger_kind()
+            crate::platform::WidgetTriggerKind::Unknown
         );
     }
 
-    /// A marker whose real trigger has **no** callback is refused, not bound to the nearer
-    /// one. `trigger_kind` collapses `DoubleClicked` onto `Clicked` precisely because the
-    /// route cannot carry the difference — so binding it to the click callback made the
-    /// handler fire on a single click while being told a double click had happened.
+    /// A marker whose intent **no widget callback** can carry states so, and the loader then picks
+    /// the channel that can. `trigger_kind` collapses `DoubleClicked` onto `Clicked` precisely
+    /// because the click callback cannot carry the difference — so binding it there made the handler
+    /// fire on a single click while being told a double click had happened.
     ///
-    /// `Closed` is deliberately **not** in this list any more: it now has a real channel (the
-    /// widget's `closed` signal, see [`JsonTriggerMarker::uses_close_callback`]), so it is bound
-    /// rather than refused.
+    /// `Closed` and the two focus markers are deliberately **not** in this list any more: each has a
+    /// real channel of its own (the widget's `closed` / `focus_gained` / `focus_lost` signals, see
+    /// [`JsonTriggerMarker::base_signal`]), so they are bound rather than rerouted.
     #[test]
-    fn a_marker_with_no_signal_to_reach_is_refused() {
-        for marker in [
-            JsonTriggerMarker::DoubleClicked,
-            JsonTriggerMarker::FocusGained,
-            JsonTriggerMarker::FocusLost,
-        ] {
-            let reason = marker.unroutable_reason();
-            assert!(reason.is_some(), "{marker:?} must state why it cannot be routed");
-            let reason = reason.expect("checked above");
+    fn a_marker_no_callback_can_carry_states_so_and_keeps_a_published_route() {
+        let marker = JsonTriggerMarker::DoubleClicked;
+        let reason = marker
+            .unroutable_reason()
+            .expect("`on_double_click` must state why a widget callback cannot carry it");
+        assert!(
+            reason.contains("on_") && reason.contains("double_clicked"),
+            "the reason must name both the key an author wrote and the published name that does \
+             carry it: {reason}"
+        );
+        assert_eq!(
+            marker.published_counterpart(),
+            Some("double_clicked"),
+            "a marker refused by the callback route must have a published route to fall back on"
+        );
+    }
+
+    /// Every marker has a channel, so the refusal cannot quietly grow to cover a working key.
+    ///
+    /// This is the invariant the loader relies on: a marker is either carried by the widget's own
+    /// base signal, by the value-trigger channel, or by its published counterpart. A marker with
+    /// none of the three would be a key that validates and never fires — exactly what rule #97
+    /// forbids — so it must report a reason instead.
+    #[test]
+    fn every_marker_has_a_channel_or_a_stated_reason() {
+        use JsonTriggerMarker::*;
+        for marker in
+            [Clicked, DoubleClicked, FocusGained, FocusLost, ValueChanged, SelectionChanged, Closed]
+        {
+            let channels = usize::from(marker.base_signal().is_some())
+                + usize::from(marker.uses_value_callback())
+                + usize::from(marker.published_counterpart().is_some());
             assert!(
-                reason.contains("on_"),
-                "{marker:?}'s reason must name the key an author wrote: {reason}"
+                channels >= 1,
+                "{marker:?} has no channel at all, so a handler could never run"
             );
+            if marker.unroutable_reason().is_some() {
+                assert!(
+                    marker.published_counterpart().is_some(),
+                    "{marker:?} is refused by the callback route with no published name to fall \
+                     back on, so the binding would be dropped"
+                );
+            }
         }
     }
 
-    /// The markers that *do* have a reachable signal stay routable, so the refusal cannot
-    /// quietly grow to cover the working keys. `Closed` is here because its producer now exists.
+    /// The focus intents travel on the widget's own focus signals (W-05).
+    ///
+    /// # The defect this pins
+    ///
+    /// `on_focus` / `on_blur` were refused outright: the only callbacks the loader could reach were
+    /// the click one and the value one, and neither fires on focus. They have no published
+    /// counterpart either (the capability table publishes no per-control focus event), so both
+    /// routes were dead. Pointing the markers at `BaseWidget::focus_gained` / `focus_lost` — which
+    /// the runtime's focus router emits — is the channel that makes them route.
+    #[test]
+    fn the_focus_markers_route_on_the_widgets_own_signals() {
+        assert_eq!(JsonTriggerMarker::FocusGained.base_signal(), Some(BaseSignal::FocusGained));
+        assert_eq!(JsonTriggerMarker::FocusLost.base_signal(), Some(BaseSignal::FocusLost));
+        assert!(
+            JsonTriggerMarker::FocusGained.unroutable_reason().is_none()
+                && JsonTriggerMarker::FocusLost.unroutable_reason().is_none(),
+            "the focus markers now have a real emitter, so refusing them would drop the handler"
+        );
+        assert!(
+            !JsonTriggerMarker::FocusGained.uses_value_callback()
+                && !JsonTriggerMarker::FocusLost.uses_value_callback(),
+            "a focus change is not a value change"
+        );
+    }
+
+    /// A marker with a published counterpart is still refused **by the callback route**, so the
+    /// loader cannot accidentally bind `on_double_click` to a single click.
+    ///
+    /// `Closed` is here because its producer now exists.
     #[test]
     fn the_routable_markers_stay_routable() {
         assert!(JsonTriggerMarker::Clicked.unroutable_reason().is_none());
@@ -750,7 +939,8 @@ mod tests {
     /// `events: {"closed": …}` bound the click callback and the handler ran on a click while
     /// being told the control had closed. `closed` and `double_clicked` are payload-free and yet
     /// name intents the click signal cannot carry, so they must resolve to their own markers —
-    /// which then travel through `unroutable_reason` and are refused.
+    /// `closed` then travels the widget's `closed` signal, and `double_clicked` is carried by its
+    /// published name rather than by a widget callback.
     #[test]
     fn a_published_name_carries_its_own_intent() {
         // The genuine click stays a click.
@@ -773,8 +963,8 @@ mod tests {
             JsonTriggerMarker::DoubleClicked
         );
         // ...and each is routed through the channel its intent needs. `closed` now has a real
-        // signal, so it is **routed** (not refused); `double_clicked` still has none, so it is
-        // refused rather than mis-bound to the click callback.
+        // signal, so it is **routed** (not refused); `double_clicked` is refused by the *callback*
+        // route and wired through its published name instead (see `unroutable_reason`).
         assert!(
             JsonTriggerMarker::for_published_name("closed", false).uses_close_callback(),
             "`closed` must route to the close channel"
@@ -783,9 +973,13 @@ mod tests {
             JsonTriggerMarker::for_published_name("closed", false).unroutable_reason().is_none(),
             "`closed` has a producer now, so it must not be refused"
         );
-        assert!(JsonTriggerMarker::for_published_name("double_clicked", false)
-            .unroutable_reason()
-            .is_some());
+        let double_click = JsonTriggerMarker::for_published_name("double_clicked", false);
+        assert!(double_click.unroutable_reason().is_some());
+        assert_eq!(
+            double_click.published_counterpart(),
+            Some("double_clicked"),
+            "the callback route's refusal must leave the published name as the channel"
+        );
     }
 
     /// `double_clicked` must not be swallowed by the `clicked` substring check.

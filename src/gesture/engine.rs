@@ -290,6 +290,8 @@ pub trait GestureRecognizer: std::fmt::Debug + Send {
 /// by delegation. A host-supplied chain keeps its boxed trait objects, because those types are not
 /// known to the crate (see [`GestureEngine::from_recognizers`]).
 #[derive(Debug)]
+// Variants stay inline on purpose: the fixed built-in chain is what keeps this allocation-free.
+#[allow(clippy::large_enum_variant)]
 enum StandardRecognizer {
     Tap(TapGesture),
     DoubleTap(DoubleTapGesture),
@@ -388,6 +390,8 @@ impl GestureRecognizer for StandardRecognizer {
 
 /// One chain entry: a built-in recogniser stored inline, or a caller-supplied boxed one.
 #[derive(Debug)]
+// The built-in recogniser is inline by design; boxing it would restore the per-entry allocation.
+#[allow(clippy::large_enum_variant)]
 enum RecognizerSlot {
     Standard(StandardRecognizer),
     Custom(Box<dyn GestureRecognizer>),
@@ -526,6 +530,15 @@ impl GestureEngine {
         let priorities = &self.priorities;
         for (index, slot) in self.recognizers.iter_mut().enumerate() {
             let r = slot.as_recognizer();
+            // W-P02: a recogniser that has reported `Finished` and cannot re-arm from this event
+            // is skipped. The only built-in recogniser that reports a phase is `Pinch`, which is
+            // `Finished` while it has fewer than two contacts: a move in that state can only
+            // update a single point and cannot produce a pinch, so the work is pure overhead.
+            // Touch begin/end (and the mouse press/release pair) are deliberately *not* skipped —
+            // they are what lets the recogniser start the next gesture.
+            if !can_rearm_recognizer(event) && r.status() == GestureState::Finished {
+                continue;
+            }
             // The raw event first: recognizers that track the touch sequence directly
             // (tap, press, swipe, pinch, rotate) read this one.
             let mut hit = r.process(event, now_ms);
@@ -705,6 +718,50 @@ pub(crate) fn distance(a: Point, b: Point) -> f32 {
     let dx = (a.x as i64 - b.x as i64) as f32;
     let dy = (a.y as i64 - b.y as i64) as f32;
     (dx * dx + dy * dy).sqrt()
+}
+
+/// Whether two pointer contacts form a double-tap pair under this thread's tuning.
+///
+/// # One rule for touch and mouse (W-203)
+///
+/// `DoubleTapGesture` used to spell the interval and the movement bound out inline, and the
+/// event layer had no shared definition at all. This predicate is the single spelling: the touch
+/// recogniser feeds it the two `Tap` positions, and the event layer's mouse tracker feeds it the
+/// two press positions. A change to [`GestureTuning::double_tap_timeout_ms`] or
+/// [`GestureTuning::max_stationary_distance`] therefore moves both input families at once.
+///
+/// The inputs are `(position, monotonic_ms)` pairs. The time delta saturates, so a caller that
+/// supplies the newer reading first gets a zero interval rather than a wrapped one.
+pub(crate) fn is_double_tap_pair(first: (Point, u64), second: (Point, u64)) -> bool {
+    let tuning = tuning();
+    crate::event::double_click::is_double_click_pair(
+        first,
+        second,
+        tuning.double_tap_timeout_ms,
+        tuning.max_stationary_distance,
+    )
+}
+
+/// Whether `event` can change a finished recogniser's state.
+///
+/// Every touch event is included, not just the begin/end pair: `PinchGesture` reports
+/// `Finished` while it holds fewer than two contacts, yet it still tracks the single contact it
+/// does hold through `TouchMove`, so skipping moves would give it a stale position when the second
+/// finger lands. What the skip actually removes is work for events from an unrelated family
+/// (a key press, a resize, a wheel), which no finished recogniser can act on and which the
+/// feedback loop used to pay for on every event.
+fn can_rearm_recognizer(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::TouchBegin { .. }
+            | Event::TouchEnd { .. }
+            | Event::TouchMove { .. }
+            | Event::MousePress { .. }
+            | Event::MouseRelease { .. }
+            | Event::Tap { .. }
+            | Event::DoubleTap { .. }
+            | Event::Timer { .. }
+    )
 }
 
 /// The per-axis displacement from `from` to `to`, computed without overflow.

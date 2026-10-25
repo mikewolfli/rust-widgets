@@ -352,3 +352,87 @@ fn command_modifier_bit_matches_primary_shortcut() {
     control_manager.register("physical", Shortcut::ctrl(Key::Z), "Control only");
     assert!(control_manager.handle_event(&Event::KeyPress { key: 90, modifiers: 0b0010 }));
 }
+
+/// W-201: a scoped binding shadows the global binding on the same chord while its scope is active,
+/// and the two do not conflict at registration time.
+#[test]
+fn a_scoped_binding_shadows_the_global_one() {
+    let mut manager = ShortcutManager::new();
+    assert!(manager.register("global_save", Shortcut::primary(Key::S), "Global save"));
+    assert!(
+        manager.register_in("dialog", "dialog_save", Shortcut::primary(Key::S), "Dialog save"),
+        "the same chord is allowed in a different scope"
+    );
+
+    assert_eq!(
+        manager.action_for_key(Key::S, Modifiers::PRIMARY).as_deref(),
+        Some("global_save"),
+        "with no scope active only the global binding resolves"
+    );
+
+    manager.push_scope("dialog");
+    assert_eq!(
+        manager.action_for_key(Key::S, Modifiers::PRIMARY).as_deref(),
+        Some("dialog_save"),
+        "the innermost scope wins"
+    );
+    assert!(manager.has_scoped_shortcut("dialog", &Shortcut::primary(Key::S)));
+    assert!(manager.has_shortcut(&Shortcut::primary(Key::S)), "the global view is untouched");
+
+    manager.pop_scope();
+    assert_eq!(
+        manager.action_for_key(Key::S, Modifiers::PRIMARY).as_deref(),
+        Some("global_save"),
+        "popping the scope restores the global binding"
+    );
+    assert!(manager.unregister("dialog_save"));
+    assert!(!manager.has_scoped_shortcut("dialog", &Shortcut::primary(Key::S)));
+}
+
+/// W-201: a modal scope shields every layer below it, including global bindings it does not
+/// shadow itself.
+#[test]
+fn a_modal_scope_shields_the_layers_below() {
+    let mut manager = ShortcutManager::new();
+    assert!(manager.register("global_save", Shortcut::primary(Key::S), "Global save"));
+    manager.push_modal_scope("dialog");
+
+    assert_eq!(
+        manager.action_for_key(Key::S, Modifiers::PRIMARY),
+        None,
+        "the modal dialog did not bind Ctrl+S, and it must not reach the global binding"
+    );
+
+    assert!(manager.register_in("dialog", "dialog_ok", Shortcut::primary(Key::Enter), "OK"));
+    assert_eq!(
+        manager.action_for_key(Key::Enter, Modifiers::PRIMARY).as_deref(),
+        Some("dialog_ok")
+    );
+
+    manager.pop_scope();
+    assert_eq!(
+        manager.action_for_key(Key::S, Modifiers::PRIMARY).as_deref(),
+        Some("global_save"),
+        "closing the modal restores the layer below"
+    );
+}
+
+/// W-201: conflicts are judged inside a scope, so two scopes may bind one chord to different
+/// actions while a duplicate within one scope is still refused.
+#[test]
+fn shortcut_conflicts_are_scoped() {
+    let mut manager = ShortcutManager::new();
+    assert!(manager.register_in("window_a", "a_save", Shortcut::primary(Key::S), "A"));
+    assert!(manager.register_in("window_b", "b_save", Shortcut::primary(Key::S), "B"));
+    assert!(
+        !manager.register_in("window_a", "a_other", Shortcut::primary(Key::S), "Other"),
+        "a second action for one chord in the same scope is still a conflict"
+    );
+    assert_eq!(
+        manager.action_for_key(Key::S, Modifiers::PRIMARY),
+        None,
+        "neither window is active, so no scoped binding resolves"
+    );
+    manager.push_scope("window_b");
+    assert_eq!(manager.action_for_key(Key::S, Modifiers::PRIMARY).as_deref(), Some("b_save"));
+}

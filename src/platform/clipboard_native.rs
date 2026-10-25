@@ -8,8 +8,8 @@
 //! This module used to be called `clipboard_stubs`, but it never contained stubs: the macOS
 //! `NSPasteboard`, Windows `OpenClipboard`, Linux and WASM implementations are the production
 //! bindings, and `cf_html` is the real byte-offset encoder/decoder. It was renamed to say what it
-//! is (PLAT-13). The old path is kept as a `#[deprecated]` alias in `platform::mod`, so an
-//! existing `platform::clipboard_stubs::…` path still compiles and forwards here.
+//! is (PLAT-13). The old forwarding alias was removed once a repository-wide search showed it had
+//! no caller (P-302), so this name is now the only path to these bindings.
 
 /// The CF_HTML wire format used by the Windows clipboard's `HTML Format`.
 ///
@@ -145,8 +145,7 @@ pub mod macos {
     /// value written to the pasteboard used to leak one. `autorelease` hands ownership to the
     /// enclosing pool, so the string is reclaimed after the current run-loop turn — the correct
     /// lifetime for a value that is only read during the following `NSPasteboard` call.
-    ///
-    /// # SAFETY
+    /// # Safety
     /// Must be called on a thread with an active autorelease pool (AppKit's main thread has one).
     unsafe fn nsstring(s: &str) -> id {
         NSString::alloc(nil).init_str(s).autorelease()
@@ -171,6 +170,9 @@ pub mod macos {
 
     impl MacOsClipboard {
         /// Get the general pasteboard and clear its contents.
+        ///
+        /// # Safety
+        /// Must run on AppKit main thread, which owns the pasteboard objects used here.
         unsafe fn prepare_pasteboard() -> id {
             let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
             let _: i64 = msg_send![pb, clearContents];
@@ -178,6 +180,9 @@ pub mod macos {
         }
 
         /// Read plain text from NSPasteboard.
+        ///
+        /// # Safety
+        /// `pb` must be a live `NSPasteboard` obtained on the calling (main) thread.
         unsafe fn read_plain_text(pb: id) -> Option<String> {
             let items: id = msg_send![pb, pasteboardItems];
             let count: usize = msg_send![items, count];
@@ -199,6 +204,7 @@ pub mod macos {
 
     impl RichClipboardBackend for MacOsClipboard {
         fn set_contents(&self, content: ClipboardContent) -> bool {
+            // SAFETY: FFI transition inside `catch_unwind`; the enclosing method checks thread affinity and contains any panic.
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb = Self::prepare_pasteboard();
                 match &content {
@@ -279,6 +285,7 @@ pub mod macos {
         }
 
         fn get_contents(&self) -> Option<ClipboardContent> {
+            // SAFETY: FFI transition inside `catch_unwind`; the enclosing method checks thread affinity and contains any panic.
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
                 let items: id = msg_send![pb, pasteboardItems];
@@ -306,6 +313,7 @@ pub mod macos {
         }
 
         fn has_format(&self, content_type: &str) -> bool {
+            // SAFETY: FFI transition inside `catch_unwind`; the enclosing method checks thread affinity and contains any panic.
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
                 let ns_type = nsstring(pasteboard_type_name(content_type));
@@ -324,6 +332,7 @@ pub mod macos {
         /// pasteboard's own `dataForType:`, which is the accessor that carries an arbitrary type
         /// string verbatim (see `set_contents`' `Custom` arm).
         fn get_contents_for_type(&self, content_type: &str) -> Option<Vec<u8>> {
+            // SAFETY: FFI transition inside `catch_unwind`; the enclosing method checks thread affinity and contains any panic.
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
                 match content_type {
@@ -400,6 +409,10 @@ pub mod windows {
     pub struct WindowsClipboard;
 
     impl WindowsClipboard {
+        /// The clipboard text, or `None` when it holds none.
+        ///
+        /// # Safety
+        /// The clipboard must already be open on the calling thread; callers own that state.
         unsafe fn read_unicode_text() -> Option<String> {
             let h_mem = GetClipboardData(CF_UNICODETEXT);
             if h_mem.is_null() {
@@ -422,6 +435,9 @@ pub mod windows {
         ///
         /// The clipboard must already be open: `GetClipboardData` is only valid between
         /// `OpenClipboard` and `CloseClipboard`, and this leaves that ownership with the caller.
+        ///
+        /// # Safety
+        /// The clipboard must already be open on the calling thread, as documented above.
         unsafe fn read_html_fragment() -> Option<String> {
             let cf_html_format = Self::html_format_id();
             let h_html = GetClipboardData(cf_html_format);
@@ -455,6 +471,9 @@ pub mod windows {
         }
 
         /// Get the registered clipboard format ID for "HTML Format".
+        ///
+        /// # Safety
+        /// No caller invariants: the format name is a static literal with no interior NUL.
         unsafe fn html_format_id() -> UINT {
             let name = std::ffi::CString::new("HTML Format").unwrap();
             // winapi's *-A entry points take `*const i8` (CHAR); `c_char` is
@@ -467,8 +486,11 @@ pub mod windows {
         /// `RegisterClipboardFormatA` names any string and returns the same id for the same name
         /// for the life of the process, so this is the Win32 mechanism a custom type is carried
         /// under (the CF_* constants only cover the formats Windows itself defines). A name that
-        /// cannot be encoded as a NUL-terminated C string, or one whose registration fails,
+        /// can be encoded as a NUL-terminated C string, or one whose registration fails,
         /// answers `0`, which no real format id is (registered ids start at `0xC000`).
+        ///
+        /// # Safety
+        /// No caller invariants: the name is encoded here and the call mutates only process clipboard registration state.
         unsafe fn registered_format_id(content_type: &str) -> UINT {
             let Ok(name) = std::ffi::CString::new(content_type) else {
                 return 0;
@@ -479,6 +501,7 @@ pub mod windows {
 
     impl RichClipboardBackend for WindowsClipboard {
         fn set_contents(&self, content: ClipboardContent) -> bool {
+            // SAFETY: FFI transition inside `catch_unwind`; `on_main_thread` was checked above and any panic is contained.
             let result = std::panic::catch_unwind(|| unsafe {
                 if OpenClipboard(std::ptr::null_mut()) == FALSE {
                     return false;
@@ -633,6 +656,7 @@ pub mod windows {
         }
 
         fn get_contents(&self) -> Option<ClipboardContent> {
+            // SAFETY: FFI transition inside `catch_unwind`; the enclosing method checks thread affinity and contains any panic.
             let result = std::panic::catch_unwind(|| unsafe {
                 if OpenClipboard(std::ptr::null_mut()) == FALSE {
                     return None;
@@ -654,6 +678,7 @@ pub mod windows {
         }
 
         fn has_format(&self, content_type: &str) -> bool {
+            // SAFETY: FFI transition inside `catch_unwind`; the enclosing method checks thread affinity and contains any panic.
             let result = std::panic::catch_unwind(|| unsafe {
                 if OpenClipboard(std::ptr::null_mut()) == FALSE {
                     return false;
@@ -688,6 +713,7 @@ pub mod windows {
         /// of `text/plain`. The fixed byte-oriented kinds are served too, so a caller that reads
         /// everything by type gets a uniform answer.
         fn get_contents_for_type(&self, content_type: &str) -> Option<Vec<u8>> {
+            // SAFETY: FFI transition inside `catch_unwind`; the enclosing method checks thread affinity and contains any panic.
             let result = std::panic::catch_unwind(|| unsafe {
                 if OpenClipboard(std::ptr::null_mut()) == FALSE {
                     return None;
@@ -814,6 +840,7 @@ pub mod objc2_macos {
         if !on_main_thread() {
             return None;
         }
+        // SAFETY: FFI transition inside `catch_unwind`; `on_main_thread` was checked above and any panic is contained.
         let result = std::panic::catch_unwind(|| unsafe {
             let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
             MacOsObjc2Clipboard::read_plain_text(pb)
@@ -823,7 +850,9 @@ pub mod objc2_macos {
 
     impl MacOsObjc2Clipboard {
         /// Get the general pasteboard and clear its contents.
-        #[allow(clippy::missing_safety_doc)]
+        ///
+        /// # Safety
+        /// Must run on AppKit main thread; `msg_send!` requires the receiver to stay live for the call.
         unsafe fn prepare_pasteboard() -> *mut AnyObject {
             let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
             let _: i64 = msg_send![pb, clearContents];
@@ -831,7 +860,9 @@ pub mod objc2_macos {
         }
 
         /// Read plain text from NSPasteboard.
-        #[allow(clippy::missing_safety_doc)]
+        ///
+        /// # Safety
+        /// `pb` must be a live `NSPasteboard` obtained on the calling (main) thread.
         unsafe fn read_plain_text(pb: *mut AnyObject) -> Option<String> {
             let items: *mut AnyObject = msg_send![pb, pasteboardItems];
             let count: usize = msg_send![items, count];
@@ -861,6 +892,7 @@ pub mod objc2_macos {
                 );
                 return false;
             }
+            // SAFETY: FFI transition inside `catch_unwind`; the enclosing method checks thread affinity and contains any panic.
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb = Self::prepare_pasteboard();
 
@@ -945,6 +977,7 @@ pub mod objc2_macos {
             if !on_main_thread() {
                 return None;
             }
+            // SAFETY: FFI transition inside `catch_unwind`; the enclosing method checks thread affinity and contains any panic.
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
                 let items: *mut AnyObject = msg_send![pb, pasteboardItems];
@@ -976,6 +1009,7 @@ pub mod objc2_macos {
             if !on_main_thread() {
                 return false;
             }
+            // SAFETY: FFI transition inside `catch_unwind`; the enclosing method checks thread affinity and contains any panic.
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
                 let ns_type = NSString::from_str(pasteboard_type_name(content_type));
@@ -995,6 +1029,7 @@ pub mod objc2_macos {
             if !on_main_thread() {
                 return None;
             }
+            // SAFETY: FFI transition inside `catch_unwind`; the enclosing method checks thread affinity and contains any panic.
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
                 match content_type {

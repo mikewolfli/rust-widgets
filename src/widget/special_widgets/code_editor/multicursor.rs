@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Multiple carets: an ordered, deduplicated caret set plus the edit-projection
-//! helper that applies one logical edit at every caret in a single pass.
+//! Multiple carets: an ordered, deduplicated caret set plus the offset helpers
+//! multi-caret edits use.
 //!
 //! Zed's signature editing model is "one command, many carets". A single widget
-//! can own that: the caret set, the merge/deduplicate rules, and the pure
-//! function that maps a batch of replacements onto the document text are all
-//! local state. Everything above it (LSP rename-all, AI multi-edit) is a plugin
-//! concern and stays out of this module.
+//! can own that: the caret set and the merge/deduplicate rules are local state.
+//! The edits themselves are applied in place through the document model (see
+//! `CodeEditor::apply_caret_edits`); this module supplies the caret set and the
+//! character-offset conversions its callers need. Everything above it (LSP
+//! rename-all, AI multi-edit) is a plugin concern and stays out of this module.
 
 use super::types::{Cursor, TextPosition};
 use alloc::string::String;
@@ -126,18 +127,10 @@ impl MultiCursor {
     }
 }
 
-/// One replacement expressed in absolute character offsets.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OffsetEdit {
-    /// Inclusive start offset.
-    pub start: usize,
-    /// Exclusive end offset.
-    pub end: usize,
-    /// Replacement text.
-    pub insert: String,
-}
-
 /// Converts a line/column position into an absolute character offset.
+///
+/// Used by the line-command paths that rebuild a range of whole lines by hand; the
+/// per-caret edit path works in document positions and needs no offset projection.
 pub(crate) fn char_offset(lines: &[String], position: TextPosition) -> usize {
     let mut offset = 0usize;
     for line in 0..position.line.min(lines.len()) {
@@ -159,90 +152,6 @@ pub(crate) fn position_at_offset(lines: &[String], offset: usize) -> TextPositio
     }
     let last = lines.len().saturating_sub(1);
     TextPosition::new(last, lines.get(last).map(|line| line.chars().count()).unwrap_or(0))
-}
-
-/// Applies a batch of edits in a single pass over `text`.
-///
-/// Edits are sorted by start offset and applied left-to-right while counting the
-/// cumulative length delta, so every caret ends up correct even when earlier
-/// edits changed the document length. Overlapping edits are dropped (the
-/// earliest wins).
-///
-/// The pass walks `char_indices` once and slices the input between edits; it no
-/// longer materialises the document as a `Vec<char>`, which cost one allocation
-/// and one scalar write per character of the file on every multi-caret keystroke.
-///
-/// Returns the new text and, per input edit, the absolute offset where its caret
-/// should land (`None` when the edit was dropped).
-pub(crate) fn project(text: &str, edits: &[OffsetEdit]) -> (String, Vec<Option<usize>>) {
-    let total_chars = text.chars().count();
-    let mut order: Vec<usize> = (0..edits.len()).collect();
-    order.sort_by_key(|&index| (edits[index].start, edits[index].end));
-
-    let mut result = String::with_capacity(text.len());
-    let mut carets: Vec<Option<usize>> = vec![None; edits.len()];
-    let mut scanner = CharScanner::new(text, total_chars);
-    let mut consumed_char = 0usize;
-    let mut consumed_byte = 0usize;
-    let mut delta: isize = 0;
-
-    for &index in &order {
-        let edit = &edits[index];
-        let start = edit.start.min(total_chars);
-        let end = edit.end.min(total_chars).max(start);
-        if start < consumed_char {
-            // Overlaps an edit already applied; skip it.
-            continue;
-        }
-        let start_byte = scanner.byte_at(start);
-        let end_byte = scanner.byte_at(end);
-        result.push_str(&text[consumed_byte..start_byte]);
-        let new_start = (start as isize + delta).max(0) as usize;
-        let insert_len = edit.insert.chars().count();
-        result.push_str(&edit.insert);
-        carets[index] = Some(new_start + insert_len);
-        delta += insert_len as isize - (end - start) as isize;
-        consumed_char = end;
-        consumed_byte = end_byte;
-    }
-
-    result.push_str(&text[consumed_byte..]);
-    (result, carets)
-}
-
-/// Forward-only character-index to byte-offset scanner.
-///
-/// Edits arrive in ascending order, so one cursor over the text answers every
-/// boundary they need without re-walking from the start or collecting the text.
-struct CharScanner<'a> {
-    iter: core::str::CharIndices<'a>,
-    len: usize,
-    char_pos: usize,
-    byte_pos: usize,
-}
-
-impl<'a> CharScanner<'a> {
-    fn new(text: &'a str, len: usize) -> Self {
-        Self { iter: text.char_indices(), len, char_pos: 0, byte_pos: 0 }
-    }
-
-    /// Returns the byte offset of character `target`, clamped to the text end.
-    fn byte_at(&mut self, target: usize) -> usize {
-        let target = target.min(self.len);
-        while self.char_pos < target {
-            match self.iter.next() {
-                Some((byte, ch)) => {
-                    self.byte_pos = byte + ch.len_utf8();
-                    self.char_pos += 1;
-                }
-                None => {
-                    self.byte_pos = self.len;
-                    self.char_pos = target;
-                }
-            }
-        }
-        self.byte_pos
-    }
 }
 
 #[cfg(test)]
@@ -293,47 +202,5 @@ mod tests {
         assert_eq!(position_at_offset(&lines, 4), TextPosition::new(1, 0));
         assert_eq!(position_at_offset(&lines, 5), TextPosition::new(1, 1));
         assert_eq!(position_at_offset(&lines, 7), TextPosition::new(2, 0));
-    }
-
-    #[test]
-    fn project_inserts_at_every_caret_and_reports_new_offsets() {
-        let edits = vec![
-            OffsetEdit { start: 0, end: 0, insert: String::from("X") },
-            OffsetEdit { start: 2, end: 2, insert: String::from("Y") },
-        ];
-        let (text, carets) = project("abc", &edits);
-        assert_eq!(text, "XabYc");
-        assert_eq!(carets, vec![Some(1), Some(4)]);
-    }
-
-    #[test]
-    fn project_deletes_ranges_from_the_right() {
-        let edits = vec![
-            OffsetEdit { start: 0, end: 1, insert: String::new() },
-            OffsetEdit { start: 4, end: 5, insert: String::new() },
-        ];
-        let (text, carets) = project("aXbYc", &edits);
-        assert_eq!(text, "XbY");
-        assert_eq!(carets, vec![Some(0), Some(3)]);
-    }
-
-    #[test]
-    fn project_drops_overlapping_edits() {
-        let edits = vec![
-            OffsetEdit { start: 0, end: 3, insert: String::from("Z") },
-            OffsetEdit { start: 1, end: 2, insert: String::from("!") },
-        ];
-        let (text, carets) = project("abcd", &edits);
-        assert_eq!(text, "Zd");
-        assert_eq!(carets[0], Some(1));
-        assert_eq!(carets[1], None, "the overlapping edit is dropped");
-    }
-
-    #[test]
-    fn project_clamps_out_of_range_offsets() {
-        let edits = vec![OffsetEdit { start: 99, end: 99, insert: String::from("!") }];
-        let (text, carets) = project("ab", &edits);
-        assert_eq!(text, "ab!");
-        assert_eq!(carets, vec![Some(3)]);
     }
 }

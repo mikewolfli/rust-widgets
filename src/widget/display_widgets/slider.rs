@@ -11,7 +11,7 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{
-    expect_bool, expect_i64, expect_orientation, orientation_to_str,
+    expect_bool, expect_i32_saturating, expect_orientation, orientation_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -975,16 +975,22 @@ impl Slider {
     /// tick on every frame, up to a hundred times while dragging. The labels depend only
     /// on the range, the interval, the effective face and the device scale, so they are
     /// built once per change and read-only afterwards.
-    fn refresh_tick_labels(&mut self, context: &RenderContext, font: &Font) {
+    fn refresh_tick_labels(&mut self, context: &RenderContext) {
         let scale_bits = context.dpi_scale().to_bits();
-        let unchanged = self.tick_label_cache.font.as_ref() == Some(font)
-            && self.tick_label_cache.dpi_scale_bits == scale_bits
-            && self.tick_label_cache.minimum == self.minimum
-            && self.tick_label_cache.maximum == self.maximum
-            && self.tick_label_cache.interval == self.tick_interval;
+        let unchanged = {
+            let source = crate::widget::metrics::effective_font(self.style());
+            self.tick_label_cache.font.as_ref() == Some(source)
+                && self.tick_label_cache.dpi_scale_bits == scale_bits
+                && self.tick_label_cache.minimum == self.minimum
+                && self.tick_label_cache.maximum == self.maximum
+                && self.tick_label_cache.interval == self.tick_interval
+        };
         if unchanged {
             return;
         }
+        // The face is cloned only on the frame that actually rebuilds the labels; a still
+        // control reads the resolved font by reference.
+        let font = crate::widget::metrics::effective_font(self.style()).clone();
 
         self.tick_label_cache.labels.clear();
         let count = self.tick_count();
@@ -992,7 +998,7 @@ impl Slider {
             let value = self.tick_value(index);
             let mut label = String::new();
             let _ = write!(label, "{}", value);
-            let metrics = context.measure_text(&label, font);
+            let metrics = context.measure_text(&label, &font);
             self.tick_label_cache.labels.push(CachedTickLabel {
                 text: label,
                 width: metrics.width,
@@ -1266,23 +1272,23 @@ impl WidgetProperties for Slider {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "minimum" => {
-                self.set_minimum(expect_i64(value)? as i32);
+                self.set_minimum(expect_i32_saturating(value)?);
                 Ok(())
             }
             "maximum" => {
-                self.set_maximum(expect_i64(value)? as i32);
+                self.set_maximum(expect_i32_saturating(value)?);
                 Ok(())
             }
             "value" => {
-                self.set_value(expect_i64(value)? as i32);
+                self.set_value(expect_i32_saturating(value)?);
                 Ok(())
             }
             "single_step" => {
-                self.set_single_step(expect_i64(value)? as i32);
+                self.set_single_step(expect_i32_saturating(value)?);
                 Ok(())
             }
             "page_step" => {
-                self.set_page_step(expect_i64(value)? as i32);
+                self.set_page_step(expect_i32_saturating(value)?);
                 Ok(())
             }
             "orientation" => {
@@ -1294,7 +1300,7 @@ impl WidgetProperties for Slider {
                 Ok(())
             }
             "tick_interval" => {
-                self.set_tick_interval(expect_i64(value)? as i32);
+                self.set_tick_interval(expect_i32_saturating(value)?);
                 Ok(())
             }
             "tracking" => {
@@ -1302,7 +1308,7 @@ impl WidgetProperties for Slider {
                 Ok(())
             }
             "slider_position" => {
-                self.set_slider_position(expect_i64(value)? as i32);
+                self.set_slider_position(expect_i32_saturating(value)?);
                 Ok(())
             }
             _ => base_property_set(self, name, value),
@@ -1504,8 +1510,7 @@ impl Draw for Slider {
         // Resolve the label face once, outside the tick loop, and refresh the cached
         // labels before the style is borrowed for the rest of the draw.
         if self.tick_labels && self.tick_position != TickPosition::NoTicks {
-            let tick_font = crate::widget::metrics::effective_font(self.style()).clone();
-            self.refresh_tick_labels(context, &tick_font);
+            self.refresh_tick_labels(context);
         }
 
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
@@ -1526,24 +1531,22 @@ impl Draw for Slider {
         // is what keeps the two profiles rendering alike rather than inventing a palette
         // for the profile that has none (principle #37).
         #[cfg(device_profile)]
-        let (window_fill, foreground, primary, accent, muted) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.primary,
-                    active.colors.accent,
-                    active.colors.secondary,
-                ),
-                None => (
-                    Color::rgb(240, 240, 240),
-                    Color::BLACK,
-                    Color::rgb(33, 150, 243),
-                    Color::rgb(255, 152, 0),
-                    Color::rgb(158, 158, 158),
-                ),
-            }
+        let (window_fill, foreground, primary, accent, muted) = match crate::style::palette_shared()
+        {
+            Some(colors) => (
+                colors.background,
+                colors.foreground,
+                colors.primary,
+                colors.accent,
+                colors.secondary,
+            ),
+            None => (
+                Color::rgb(240, 240, 240),
+                Color::BLACK,
+                Color::rgb(33, 150, 243),
+                Color::rgb(255, 152, 0),
+                Color::rgb(158, 158, 158),
+            ),
         };
         #[cfg(not(device_profile))]
         let (window_fill, foreground, primary, accent, muted) = (
@@ -1865,6 +1868,23 @@ mod tests {
     /// Helper to create a default slider with a standard geometry.
     fn make_slider() -> Slider {
         Slider::new(Rect::new(0, 0, 200, 30))
+    }
+
+    /// `set` must clamp an out-of-range integer instead of wrapping it with `as`.
+    ///
+    /// Before the coercion helper, `set("minimum", Int(1 << 40))` narrowed through
+    /// `as i32` to `0`, injecting a value unrelated to the request and potentially
+    /// inverting `minimum <= maximum`. The saturating helper keeps the magnitude
+    /// and the existing range invariant.
+    #[test]
+    fn set_clamps_an_out_of_range_integer_instead_of_wrapping() {
+        let mut slider = make_slider();
+        slider.set("minimum", CapabilityValue::Int(1 << 40)).expect("an integer is accepted");
+        assert_eq!(slider.minimum(), i32::MAX);
+        assert!(slider.minimum() <= slider.maximum());
+
+        slider.set("value", CapabilityValue::Int(-(1 << 40))).expect("an integer is accepted");
+        assert_eq!(slider.value(), slider.minimum());
     }
 
     // ── 0. Writing direction (BLUE21 P2-10) ──

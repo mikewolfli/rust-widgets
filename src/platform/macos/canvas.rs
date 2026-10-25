@@ -273,6 +273,9 @@ extern "C" fn mouse_entered(this: &Object, _cmd: Sel, event: id) {
 /// are replaced rather than appended — appending on every call would leak an area per
 /// resize. `NSTrackingActiveInKeyWindow` is used so hover follows the same rule as
 /// clicks (an inactive window does not highlight controls under the pointer).
+///
+/// # Safety
+/// `view` must be a live `NSView` and the call must run on the main thread.
 unsafe fn install_tracking_area(view: id) {
     let existing: id = msg_send![view, trackingAreas];
     if existing != nil {
@@ -340,6 +343,9 @@ extern "C" fn update_tracking_areas(this: &Object, _cmd: Sel) {
 ///
 /// `locationInWindow` is bottom-up; the canvas is flipped, so the conversion has
 /// to go through `convertPoint:fromView:` rather than subtracting.
+///
+/// # Safety
+/// `view` and `event` must be live AppKit objects; `event` may be null, which reads as `None`.
 unsafe fn event_local_point(view: id, event: id) -> Option<Point> {
     if event == nil {
         return None;
@@ -352,6 +358,9 @@ unsafe fn event_local_point(view: id, event: id) -> Option<Point> {
 ///
 /// `NSEvent`'s `modifierFlags` is the same source `map_key_modifiers` reads for keys,
 /// so a pointer press and a key press report the same bitfield for the same held keys.
+///
+/// # Safety
+/// `event` must be a live `NSEvent` or null; a null event reads as zero modifiers.
 unsafe fn ns_event_modifier_flags(event: id) -> u64 {
     if event == nil {
         return 0;
@@ -365,6 +374,9 @@ unsafe fn ns_event_modifier_flags(event: id) -> u64 {
 /// Returns `0` for a null event, which callers compare with `>= 2`, so a missing
 /// event degrades to a single click rather than panicking. `clickCount` is an
 /// `NSInteger`, i.e. `isize` in the C ABI the runtime uses here.
+///
+/// # Safety
+/// `event` must be a live `NSEvent` or null; a null event reads as zero clicks.
 unsafe fn click_count(event: id) -> isize {
     if event == nil {
         return 0;
@@ -378,6 +390,9 @@ unsafe fn click_count(event: id) -> isize {
 /// library is absolute, so the origin is added back before hit-testing. `frame` is
 /// read live rather than cached because AppKit is free to move the view (auto layout,
 /// a resize) without telling this module.
+///
+/// # Safety
+/// `view` must be a live `NSView` on the main thread.
 unsafe fn view_origin(view: id) -> Point {
     let frame: NSRect = msg_send![view, frame];
     Point::new(frame.origin.x as i32, frame.origin.y as i32)
@@ -763,6 +778,9 @@ const KEY_TAB: u32 = 48;
 ///
 /// Control characters are excluded: Enter, Tab and Escape are meaningful as
 /// [`Event::KeyPress`] and the widget maps them to editing commands there.
+///
+/// # Safety
+/// `event` must be a live key `NSEvent` on the main thread.
 unsafe fn printable_characters(event: id) -> Option<String> {
     characters_of(event, false)
 }
@@ -773,6 +791,9 @@ unsafe fn printable_characters(event: id) -> Option<String> {
 /// platform boundary produce the framework key code for `⌘A` (65) rather than the text
 /// `"a"` (which would be inserted instead of selecting). See
 /// [`super::accelerator::logical_key`].
+///
+/// # Safety
+/// `event` must be a live key `NSEvent` on the main thread.
 unsafe fn characters_ignoring_modifiers(event: id) -> Option<String> {
     characters_of(event, true)
 }
@@ -783,6 +804,9 @@ unsafe fn characters_ignoring_modifiers(event: id) -> Option<String> {
 /// The selector is selected by a boolean rather than passed in because `msg_send!`
 /// resolves a selector at compile time; a runtime `Sel` value has to go through
 /// `performSelector:`, which would add an `id` return that is harder to narrow safely.
+///
+/// # Safety
+/// `event` must be a live key `NSEvent` on the main thread.
 unsafe fn characters_of(event: id, ignoring_modifiers: bool) -> Option<String> {
     let characters: id = if ignoring_modifiers {
         msg_send![event, charactersIgnoringModifiers]
@@ -904,6 +928,9 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _rect: NSRect) {
 /// class to be KVC-compliant for that key, and a plain `NSView` subclass is not
 /// — it raises `NSUnknownKeyException`, which aborts the process because a
 /// foreign exception cannot unwind through Rust.
+///
+/// # Safety
+/// `view` must be a live `NSView` on the main thread.
 unsafe fn widget_id_of(view: id) -> Option<ObjectId> {
     let value = objc_getAssociatedObject(view as *mut c_void, association_key() as *const c_void);
     if value.is_null() {
@@ -918,6 +945,9 @@ unsafe fn widget_id_of(view: id) -> Option<ObjectId> {
 /// The id is stored directly as a pointer-sized value (no boxing, no retention),
 /// which is safe here because it is a plain integer and the association is
 /// cleaned up by AppKit when the view is released.
+///
+/// # Safety
+/// `view` must be a live `NSView` and the call must run on the main thread.
 unsafe fn set_widget_id(view: id, widget_id: ObjectId) {
     objc_setAssociatedObject(
         view as *mut c_void,
@@ -1400,6 +1430,9 @@ extern "C" fn window_did_resize_impl(this: &Object, cmd: Sel, notification: id) 
 }
 
 /// `windowDidResize:` — records the new client size and queues a `Resized` trigger.
+///
+/// # Safety
+/// `this` must be the delegate object and `notification` a live resize notification, as AppKit guarantees.
 unsafe fn window_did_resize(this: &Object, _cmd: Sel, notification: id) {
     let widget_id = associated_widget_id(this, window_association_key());
     if widget_id == 0 {

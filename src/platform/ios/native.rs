@@ -54,7 +54,8 @@ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSData, NSLocale, NSString, NSURL};
 use objc2_ui_kit::{
     NSObjectUIAccessibility, UIAccessibilityDarkerSystemColorsEnabled,
-    UIAccessibilityIsReduceMotionEnabled, UIApplication, UIColor, UIContentSizeCategory,
+    UIAccessibilityIsReduceMotionEnabled, UIAccessibilityIsReduceTransparencyEnabled,
+    UIApplication, UIColor, UIContentSizeCategory,
     UIContentSizeCategoryAccessibilityExtraExtraExtraLarge,
     UIContentSizeCategoryAccessibilityExtraExtraLarge,
     UIContentSizeCategoryAccessibilityExtraLarge, UIContentSizeCategoryAccessibilityLarge,
@@ -235,6 +236,18 @@ pub(crate) fn high_contrast() -> bool {
 /// `UIAccessibilityIsReduceMotionEnabled()`, the "Reduce motion" accessibility switch.
 pub(crate) fn reduce_motion() -> bool {
     UIAccessibilityIsReduceMotionEnabled()
+}
+
+/// Whether the user asked for translucent materials to be reduced.
+///
+/// `UIAccessibilityIsReduceTransparencyEnabled()` is UIKit's answer to the accessibility
+/// "Reduce Transparency" switch (Settings → Accessibility → Display & Text Size). It is the same
+/// kind of read as the two switches above: a thread-safe C accessor that reads the current system
+/// state, so it answers on any thread and needs no main-thread marker. The value is the host's own,
+/// never a default — a device with the setting off answers `false`, which is a different fact from
+/// "UIKit cannot be asked" (the trait's `None`, returned by the caller when this FFI is absent).
+pub(crate) fn reduce_transparency() -> bool {
+    UIAccessibilityIsReduceTransparencyEnabled()
 }
 
 /// The user's locale, from `NSLocale.currentLocale`.

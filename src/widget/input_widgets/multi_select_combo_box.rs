@@ -23,7 +23,7 @@ use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_horizontal_alignment, horizontal_alignment_to_str,
+    expect_bool, expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -31,6 +31,8 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::cell::Ref;
+use std::cell::RefCell;
 use std::collections::HashSet;
 
 /// Space between the indicator's leading edge and the end of the summary's box.
@@ -125,6 +127,12 @@ pub struct MultiSelectComboBox {
     max_visible: Option<usize>,
     /// Index of the first row painted in the open list.
     scroll_offset: usize,
+    /// Placeholder shown instead of the empty-selection summary (I-104).
+    placeholder: String,
+    /// Bumped whenever the items or the selection change (I-P68).
+    summary_revision: u64,
+    /// Memoised summary text, keyed by `summary_revision` (I-P68).
+    summary_cache: RefCell<Option<(u64, String)>>,
 }
 
 impl MultiSelectComboBox {
@@ -157,12 +165,37 @@ impl MultiSelectComboBox {
             active_index: 0,
             max_visible: None,
             scroll_offset: 0,
+            placeholder: String::new(),
+            summary_revision: 0,
+            summary_cache: RefCell::new(None),
         }
+    }
+
+    /// The text shown when nothing is selected (I-104).
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
+    /// Sets the empty-selection placeholder (I-104).
+    pub fn set_placeholder(&mut self, placeholder: &str) {
+        if self.placeholder == placeholder {
+            return;
+        }
+        self.placeholder = placeholder.to_string();
+        self.summary_cache.borrow_mut().take();
+        self.base.request_redraw();
+    }
+
+    /// Bumps the summary cache key after an item or selection change (I-P68).
+    fn bump_summary(&mut self) {
+        self.summary_revision = self.summary_revision.wrapping_add(1);
+        self.summary_cache.borrow_mut().take();
     }
 
     /// Adds an item to the combo box.
     pub fn add_item(&mut self, item: MultiSelectItem) {
         self.items.push(item);
+        self.bump_summary();
         self.base.request_redraw();
     }
 
@@ -181,6 +214,7 @@ impl MultiSelectComboBox {
                 // old_idx == index is dropped
             }
             self.selected = new_selected;
+            self.bump_summary();
             self.base.request_redraw();
             true
         } else {
@@ -193,6 +227,7 @@ impl MultiSelectComboBox {
         self.items.clear();
         self.selected.clear();
         self.expanded = false;
+        self.bump_summary();
         self.base.request_redraw();
     }
 
@@ -228,6 +263,7 @@ impl MultiSelectComboBox {
     /// Selects the item at the given index (if enabled). Returns true if selection changed.
     pub fn select(&mut self, index: usize) -> bool {
         if index < self.items.len() && self.items[index].enabled && self.selected.insert(index) {
+            self.bump_summary();
             self.emit_selection_changed();
             self.base.request_redraw();
             return true;
@@ -238,6 +274,7 @@ impl MultiSelectComboBox {
     /// Deselects the item at the given index. Returns true if selection changed.
     pub fn deselect(&mut self, index: usize) -> bool {
         if self.selected.remove(&index) {
+            self.bump_summary();
             self.emit_selection_changed();
             self.base.request_redraw();
             return true;
@@ -283,6 +320,7 @@ impl MultiSelectComboBox {
     pub fn clear_selection(&mut self) {
         if !self.selected.is_empty() {
             self.selected.clear();
+            self.bump_summary();
             self.emit_selection_changed();
             self.base.request_redraw();
         }
@@ -322,6 +360,10 @@ impl MultiSelectComboBox {
     fn write_summary_text(&self, out: &mut String) {
         let selected_count = self.selected.len();
         if selected_count == 0 {
+            if !self.placeholder.is_empty() {
+                out.push_str(&self.placeholder);
+                return;
+            }
             out.push_str("Nothing selected");
         } else if selected_count <= 2 {
             // Borrowed in place: `selected_texts` cloned every selected label into a fresh
@@ -347,9 +389,24 @@ impl MultiSelectComboBox {
     /// The summary text; see [`Self::write_summary_text`]. Kept for `size_hint`, which
     /// measures the widest summary the selection can currently produce.
     fn summary_text(&self) -> String {
-        let mut out = String::new();
-        self.write_summary_text(&mut out);
-        out
+        self.summary_cached().as_str().to_string()
+    }
+
+    /// The summary string, rebuilt only when the items or selection change (I-P68).
+    fn summary_cached(&self) -> Ref<'_, String> {
+        let stale = self
+            .summary_cache
+            .borrow()
+            .as_ref()
+            .is_none_or(|(revision, _)| *revision != self.summary_revision);
+        if stale {
+            let mut text = String::new();
+            self.write_summary_text(&mut text);
+            *self.summary_cache.borrow_mut() = Some((self.summary_revision, text));
+        }
+        Ref::map(self.summary_cache.borrow(), |cache| {
+            &cache.as_ref().expect("the summary cache was just filled").1
+        })
     }
 
     /// Toggles the expanded/collapsed state.
@@ -456,12 +513,12 @@ impl MultiSelectComboBox {
             }
         }
         if self.selected.len() != before {
+            self.bump_summary();
             self.emit_selection_changed();
             self.base.request_redraw();
-            true
-        } else {
-            false
+            return true;
         }
+        false
     }
 }
 
@@ -554,6 +611,10 @@ impl WidgetProperties for MultiSelectComboBox {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "selected_count" => Ok(CapabilityValue::UInt(self.selected_count() as u64)),
+            // I-104: the selected values are readable as a comma-joined string (the same
+            // list-as-string spelling `tag_input` publishes).
+            "selected_items" => Ok(CapabilityValue::String(self.selected_texts().join(","))),
+            "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
             "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
             "alignment" => Ok(CapabilityValue::String(
                 horizontal_alignment_to_str(self.alignment()).to_string(),
@@ -568,7 +629,11 @@ impl WidgetProperties for MultiSelectComboBox {
                 self.set_expanded(expect_bool(value)?);
                 Ok(())
             }
-            "selected_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "selected_count" | "selected_items" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "placeholder" => {
+                self.set_placeholder(&expect_string(value)?);
+                Ok(())
+            }
             "alignment" => {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
@@ -578,7 +643,14 @@ impl WidgetProperties for MultiSelectComboBox {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["selected_count", "expanded", "alignment", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "selected_count",
+            "selected_items",
+            "expanded",
+            "placeholder",
+            "alignment",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `multi_select_combo_box` publishes.
@@ -616,15 +688,23 @@ impl Draw for MultiSelectComboBox {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("multi_select_combo_box");
-        let themed_ink = theme.as_ref().and_then(|t| t.text_color);
-        let themed_border = theme.as_ref().and_then(|t| t.border_color);
+        // I-P68: one theme read serves the ink, the border, the fill and the accent. The draw
+        // used to take the manager lock twice (the resolved style and then the primary).
+        let (themed_ink, themed_border, themed_field, themed_accent) = {
+            let manager = crate::style::theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    Some(active.colors.foreground),
+                    Some(active.colors.outline_variant),
+                    Some(active.colors.background),
+                    Some(active.colors.primary),
+                ),
+                None => (None, None, None, None),
+            }
+        };
 
         let ink = style.text_color.or(themed_ink).unwrap_or(Color::BLACK);
-        let field = style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-            .unwrap_or(Color::WHITE);
+        let field = style.background_color.or(themed_field).unwrap_or(Color::WHITE);
         let border = style
             .border_color
             .or(themed_border)
@@ -657,12 +737,9 @@ impl Draw for MultiSelectComboBox {
         context.draw_rounded_rect_stroke(rect, 4, border_color, 1);
 
         // The accent is the theme's `primary`: the hue a theme is expected to vary most,
-        // which is what makes the ticks and the arrow follow the appearance. It is read as
-        // its own lock acquisition, released before the draw's other theme reads.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or_else(|| ink.blend(&field, 0.4));
+        // which is what makes the ticks and the arrow follow the appearance. It comes from the
+        // same single theme read as the inks above (I-P68).
+        let accent = themed_accent.unwrap_or_else(|| ink.blend(&field, 0.4));
 
         // The summary's box and the indicator's box come from **one** derivation, so the
         // summary yields to the indicator instead of being written at an unconstrained offset.
@@ -671,8 +748,8 @@ impl Draw for MultiSelectComboBox {
         let font = effective_font(style);
         let line = context.text_line(rect, font);
         let geometry = self.indicator_geometry(line.height);
-        let mut summary = String::new();
-        self.write_summary_text(&mut summary);
+        // I-P68: the summary is rebuilt only on a selection/item change.
+        let summary = self.summary_cached();
         // Fitted into the box the indicator left, on that box's own line box: a glyph origin is
         // the box's top edge, so the old `padding + 13` put a 13 px font's origin on the field's
         // middle line and drew the summary half a line low.
@@ -721,6 +798,9 @@ impl Draw for MultiSelectComboBox {
         // field's own colour rather than the window's.
         context.fill_rounded_rect(drop_rect, 2, field);
         context.draw_rounded_rect_stroke(drop_rect, 2, border, 1);
+        // I-103: the list is clipped to its own rectangle, so a narrow list cannot paint over
+        // the control's neighbours.
+        context.push_clip(drop_rect.x, drop_rect.y, drop_rect.width, drop_rect.height);
 
         for (row, i) in (first..last).enumerate() {
             let item = &self.items[i];
@@ -782,6 +862,7 @@ impl Draw for MultiSelectComboBox {
             );
         }
 
+        context.pop_clip();
         // A capped list shows a thin thumb, so a window of a longer list cannot look like
         // the whole list.
         if self.max_visible.is_some() && self.items.len() > self.page_size() && last > first {
@@ -832,6 +913,10 @@ impl EventHandler for MultiSelectComboBox {
                             self.active_index = idx;
                             self.toggle(idx);
                         }
+                    } else {
+                        // I-103: a press outside both the field and the open list dismisses it.
+                        self.expanded = false;
+                        self.base.request_redraw();
                     }
                 }
             }

@@ -2085,7 +2085,8 @@ mod tests {
                 (0.0, Color::rgb(255, 0, 0)),
                 (0.5, Color::rgb(0, 255, 0)),
                 (1.0, Color::rgb(0, 0, 255)),
-            ],
+            ]
+            .into(),
         });
         svg.end_frame();
         let result = svg.finish();
@@ -2396,14 +2397,14 @@ mod tests {
                 filled: true,
             },
             RenderCommand::DrawPath {
-                points: vec![Point::new(10, 10), Point::new(60, 20), Point::new(40, 70)],
+                points: vec![Point::new(10, 10), Point::new(60, 20), Point::new(40, 70)].into(),
                 closed: true,
                 color: Color::GREEN,
                 filled: false,
                 width: 2,
             },
             RenderCommand::DrawPath {
-                points: vec![Point::new(10, 10), Point::new(60, 20), Point::new(40, 70)],
+                points: vec![Point::new(10, 10), Point::new(60, 20), Point::new(40, 70)].into(),
                 closed: false,
                 color: Color::GREEN,
                 filled: true,
@@ -2436,13 +2437,13 @@ mod tests {
             },
             RenderCommand::Blur { radius: 3 },
             RenderCommand::ClipPath {
-                points: vec![Point::new(5, 5), Point::new(95, 5), Point::new(95, 95)],
+                points: vec![Point::new(5, 5), Point::new(95, 5), Point::new(95, 95)].into(),
             },
             RenderCommand::SetBlendMode { mode: BlendMode::Multiply },
             RenderCommand::DrawConicGradient {
                 center: point,
                 start_angle: 0.0,
-                stops: vec![(0.0, Color::RED), (1.0, Color::BLUE)],
+                stops: vec![(0.0, Color::RED), (1.0, Color::BLUE)].into(),
             },
         ];
         #[cfg(feature = "3d")]

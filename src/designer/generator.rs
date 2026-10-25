@@ -284,13 +284,6 @@ impl GenerationReport {
             && self.cross_profile_caveats.is_empty()
     }
 
-    /// Gaps whose reason is an event name that cannot be resolved.
-    pub fn unresolvable_events(&self) -> impl Iterator<Item = &GenerationGap> {
-        self.unsupported
-            .iter()
-            .filter(|gap| gap.reason_kind() == Some(GenerationGapReason::UnresolvableEvent))
-    }
-
     /// A one-line summary a designer can show without reading the whole report.
     pub fn summary(&self) -> String {
         format!(
@@ -1101,6 +1094,45 @@ fn emit_node(
         report.wires_emitted += 1;
     }
     for (key, handler) in node.declared_marker_handlers() {
+        // A marker whose intent no widget callback can carry — `on_double_click` — is wired at run
+        // time through the published event its capability counterpart names. The generated program
+        // binds through the library, which refuses a control that does not publish that name, so the
+        // report has to say the same thing before the program is built: a document whose control
+        // cannot carry the intent must not read as a clean run (rule #100).
+        //
+        // The old loop emitted every marker prop unconditionally, so `on_double_click` on a button
+        // produced a program that looked wired and warned at run time.
+        if let Some(marker) = crate::json::marker_for_key(&key) {
+            if marker.unroutable_reason().is_some() {
+                let counterpart = marker.published_counterpart();
+                let carried = counterpart.is_some_and(|name| {
+                    event_is_published(&node.widget, name)
+                        && event_resolves_dynamically(&node.widget, name) != Some(false)
+                });
+                if !carried {
+                    let detail = counterpart.map_or_else(
+                        || String::from("and it has no published event to carry it"),
+                        |name| {
+                            format!(
+                                "and `{name}` is the published event that carries it, which this \
+                                 control does not publish or cannot resolve"
+                            )
+                        },
+                    );
+                    report.unsupported.push(GenerationGap {
+                        path: path.to_vec(),
+                        widget: node.widget.clone(),
+                        reason: format!(
+                            "{}: `{key}` on {} cannot be carried by a widget callback {detail}; \
+                             the generated wire `{handler}` would be refused at run time",
+                            GenerationGapReason::UnresolvableEvent.token(),
+                            node_label(path, &node.widget)
+                        ),
+                    });
+                    continue;
+                }
+            }
+        }
         let prop = format!("{WIRE_PROP_PREFIX}{key}");
         let _ = write!(
             out,
@@ -2687,6 +2719,71 @@ mod tests {
         let unknown = target_probe(&factory, "definitely_not_a_control", TargetProfile::Default);
         assert!(!unknown.availability.is_unsupported());
         assert!(!unknown.availability.is_usable());
+    }
+
+    /// W-06: a marker that only a published event can carry is reported when the control cannot
+    /// publish it, and emitted when it can.
+    ///
+    /// `on_double_click` names an intent no widget callback can carry, so the generated program
+    /// binds it through `double_clicked`. The generator used to emit every marker prop
+    /// unconditionally: a `button` document produced a program that looked wired and warned at run
+    /// time, while a `canvas` — which publishes `double_clicked` — produced the same thing and
+    /// worked. The report now tells the two apart before the program is compiled (rule #100).
+    #[test]
+    fn a_double_click_marker_is_reported_only_when_the_control_cannot_carry_it() {
+        const BUTTON: &str = r#"{
+          "window": { "id": "root", "layout": { "type": "vbox", "children": [
+            { "button": { "id": "b", "text": "B", "on_double_click": "on_twice" } }
+          ] } }
+        }"#;
+        let request = GenerationRequest {
+            json: String::from(BUTTON),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_button"),
+        };
+        let generated = generate(&request).expect("the document still generates, with the gap");
+        assert!(!generated.report.is_clean(), "a button cannot carry `on_double_click`");
+        let gap = generated
+            .report
+            .unsupported
+            .iter()
+            .find(|gap| gap.reason.contains("on_double_click"))
+            .unwrap_or_else(|| panic!("no gap names the marker: {:?}", generated.report));
+        assert_eq!(gap.reason_kind(), Some(GenerationGapReason::UnresolvableEvent));
+        assert!(
+            gap.reason.contains("double_clicked"),
+            "the gap must name the published event that would carry it: {}",
+            gap.reason
+        );
+        assert!(
+            !generated.source.contains("__wire_on_double_click"),
+            "a wire that cannot fire must not be emitted; only the `REFUSED` comment may name it"
+        );
+
+        const CANVAS: &str = r#"{
+          "window": { "id": "root", "layout": { "type": "vbox", "children": [
+            { "canvas": { "id": "c", "on_double_click": "on_twice" } }
+          ] } }
+        }"#;
+        let request = GenerationRequest {
+            json: String::from(CANVAS),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_canvas"),
+        };
+        let generated = generate(&request).expect("a canvas document generates");
+        assert!(
+            generated.source.contains("__wire_on_double_click"),
+            "the canvas publishes `double_clicked`, so the marker must be emitted as a wire"
+        );
+        assert!(
+            !generated.report.unsupported.iter().any(|gap| gap.reason.contains("on_double_click")),
+            "a wire the control can carry must not be reported as a gap: {:?}",
+            generated.report
+        );
     }
 
     /// B26.02: a property literal the declared schema refuses must be reported at generation time

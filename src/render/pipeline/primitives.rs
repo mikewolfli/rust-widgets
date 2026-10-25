@@ -9,14 +9,18 @@
 use crate::compat::Vec;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::pipeline::pixel_ops::{
-    blend_painted_glyph, circle_fill_coverage_grid, circle_stroke_coverage_grid, inset_rect,
-    line_stroke_coverage_grid, pixel_visible, rounded_rect_coverage, rounded_rect_coverage_grid,
-    rounded_rect_effective_radius, write_pixel_with_mode, GlyphDrawConfig,
+    blend_painted_glyph, circle_fill_coverage_grid, circle_stroke_coverage_grid, fill_pixels,
+    inset_rect, line_stroke_coverage_grid, pixel_visible, rounded_rect_coverage,
+    rounded_rect_coverage_grid, rounded_rect_effective_radius, u32_to_i32_saturating,
+    write_pixel_with_mode, GlyphDrawConfig,
 };
 use crate::render::BlendMode;
 // Imported separately because it only exists when a colour face does — see its own docs.
 #[cfg(feature = "fonts-emoji-color")]
 use crate::render::pipeline::pixel_ops::blend_color_glyph;
+// The atlas fast path (G-202) is only reachable when shaping is compiled in.
+#[cfg(feature = "text-shaping")]
+use crate::render::pipeline::pixel_ops::blend_coverage_bitmap;
 use crate::render::text::{is_combining_mark, is_variation_selector};
 use crate::render::SoftwareSurface;
 
@@ -73,6 +77,94 @@ fn visible_bounds(
         return None;
     }
     Some((left, top, right, bottom))
+}
+
+/// Writes a rectangle through `blend`, intersecting the surface and the active clip once.
+///
+/// Every axis-aligned primitive here reduces to "some rows of one colour": a wide horizontal or
+/// vertical line, the middle band of a rounded rectangle, one brush stamp of a diagonal line.
+/// Routing them all through one function keeps the clip arithmetic and the `Normal`-and-opaque
+/// `memcpy` fast path in one place instead of once per primitive. The bytes are the ones a
+/// per-pixel `write_pixel_with_mode(.., 1.0)` produces: a plain store for an opaque `Normal`, the
+/// same composite for anything else.
+fn write_solid_bounds(
+    blend: BlendMode,
+    clip: Option<(i32, i32, u32, u32)>,
+    frame: &mut [u8],
+    screen: (u32, u32),
+    rect: (i32, i32, u32, u32),
+    color: Color,
+) {
+    let (x, y, width, height) = rect;
+    let Some((left, top, right, bottom)) = visible_bounds(x, y, width, height, screen, clip) else {
+        return;
+    };
+    write_solid_rows(blend, frame, screen.0, top, bottom, left, right, color);
+}
+
+/// Writes `color` across `left..right` on every row of `top..bottom`.
+///
+/// The bounds must already be inside the surface **and** the clip; the callers get them from
+/// [`visible_bounds`] or intersect them with the clip's own rectangle. Doing it that way is what
+/// removes the per-pixel clip test and the per-pixel blend dispatch from the fill loops.
+fn write_solid_rows(
+    blend: BlendMode,
+    frame: &mut [u8],
+    width: u32,
+    top: i32,
+    bottom: i32,
+    left: i32,
+    right: i32,
+    color: Color,
+) {
+    if right <= left || bottom <= top {
+        return;
+    }
+    if matches!(blend, BlendMode::Normal) && color.a == 255 {
+        let stride = width as usize * 4;
+        let row_len = (right - left) as usize * 4;
+        for y in top..bottom {
+            let start = y as usize * stride + left as usize * 4;
+            fill_pixels(&mut frame[start..start + row_len], color);
+        }
+        return;
+    }
+    for y in top..bottom {
+        for x in left..right {
+            write_pixel_with_mode(blend, frame, width, x as u32, y as u32, color, 1.0);
+        }
+    }
+}
+
+/// The columns a rounded-rectangle **corner row** can ink, as `(first, last)`.
+///
+/// A corner row's ink is the union of two circles, one radius in from each side, so the horizontal
+/// half-extent at that row is `sqrt(r^2 - dy^2)` around each centre. `dy` is the smallest distance
+/// from the corner centre to either sample row of this pixel row, which maximises the extent, and
+/// the limits are rounded outwards — so this trims only columns whose every sample would have
+/// scored `0.0`. It never changes a pixel; it only skips the empty corners of a large radius (G-08).
+fn corner_row_reach(
+    py: i32,
+    corner_cy: i32,
+    left_cx: i32,
+    right_cx: i32,
+    radius: i32,
+) -> (i32, i32) {
+    // Above this radius the `f32` spacing no longer resolves a pixel, so the trim would be guessing.
+    // A radius that large cannot put the arc inside the surface anyway, so sampling the whole band
+    // is both correct and no slower than this function's caller used to be.
+    if radius <= 0 || radius > (1 << 20) {
+        return (i32::MIN, i32::MAX);
+    }
+    // `point_in_rounded_rect_f32` samples at 0.25 and 0.75 within the pixel; the nearest sample to
+    // the centre is half a pixel from the row's midline minus a quarter. Using a full half pixel
+    // keeps the bound conservative.
+    let dy = (((py as f32 + 0.5) - corner_cy as f32).abs() - 0.5).max(0.0);
+    let r = radius as f32;
+    let half_extent = (r * r - dy * dy).max(0.0).sqrt();
+    let first = (left_cx as f32 - half_extent).floor() as i32;
+    let last = (right_cx as f32 + half_extent).ceil() as i32;
+    (first, last)
 }
 
 impl SoftwareSurface {
@@ -161,6 +253,23 @@ impl SoftwareSurface {
         );
     }
     /// Fills a rounded rectangle using coverage blending.
+    ///
+    /// # Why each row is split into bands
+    ///
+    /// `point_in_rounded_rect_f32` answers "inside" as soon as a pixel is between the corner
+    /// circles horizontally (`left + r <= px < right - r`) or vertically, so the interior of the
+    /// shape is fully covered no matter where it is sampled. It used to be sampled 2x2 anyway:
+    /// four geometry tests for a pixel in the middle of a button, where the answer is always
+    /// `1.0`. Each row is now one of two shapes (G-08):
+    ///
+    /// * a **middle row** (`top + r <= py < bottom - r`): every column is coverage `1.0`, written
+    ///   as one solid span through the same blend-aware write a covered pixel already used;
+    /// * a **corner row**: the middle band is still solid, and only the left and right corner
+    ///   bands run the per-pixel 2x2 sampler. Their ends come from the corner-circle equation, so
+    ///   a row near the top of the shape samples only the few columns its arc can reach.
+    ///
+    /// The corner bands keep the exact sampling they had, and the solid spans write the `1.0`
+    /// that sampling returns for those pixels, so the frame is bit-identical.
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color) {
         if rect.width == 0 || rect.height == 0 {
             return;
@@ -170,25 +279,91 @@ impl SoftwareSurface {
         let height = size.height as i32;
         let clip = self.current_clip();
         let frame = self.buffer.back_mut();
+        let blend = self.blend_mode;
         let x0 = rect.x.max(0);
         let y0 = rect.y.max(0);
         let x1 = (rect.right() - 1).min(width - 1);
         let y1 = (rect.bottom() - 1).min(height - 1);
+        if x1 < x0 || y1 < y0 {
+            return;
+        }
         let effective_radius = rounded_rect_effective_radius(rect, radius);
+        // The band edges saturate: a radius past `i32::MAX` puts every column in a corner band, and
+        // the trim below then declines to narrow it, so an out-of-range radius degrades to the old
+        // per-pixel sampling rather than to a wrong picture.
+        let r = u32_to_i32_saturating(effective_radius);
+        let middle_first = rect.x.saturating_add(r);
+        let middle_after_last = rect.right().saturating_sub(r);
+        let top_band_last = rect.y.saturating_add(r).saturating_sub(1);
+        let bottom_band_first = rect.bottom().saturating_sub(r);
+        // The clip's own rectangle, resolved once: a solid span is intersected with it instead of
+        // paying a `pixel_visible` test per pixel. The corner bands keep the per-pixel test.
+        let (clip_left, clip_right, clip_top, clip_bottom) = match clip {
+            Some((clip_x, clip_y, clip_w, clip_h)) => (
+                clip_x,
+                clip_x.saturating_add(u32_to_i32_saturating(clip_w)),
+                clip_y,
+                clip_y.saturating_add(u32_to_i32_saturating(clip_h)),
+            ),
+            None => (i32::MIN, i32::MAX, i32::MIN, i32::MAX),
+        };
         for py in y0..=y1 {
-            for px in x0..=x1 {
-                let coverage = rounded_rect_coverage(px, py, rect, effective_radius);
-                if coverage > 0.0 {
-                    blend_pixel_clipped!(
-                        self.blend_mode,
-                        clip,
-                        frame,
-                        size.width,
-                        px,
-                        py,
-                        color,
-                        coverage
-                    );
+            let top_corner = py <= top_band_last;
+            let bottom_corner = py >= bottom_band_first;
+            let row_visible = py >= clip_top && py < clip_bottom;
+            if !top_corner && !bottom_corner {
+                let start = x0.max(clip_left);
+                let end = x1.min(clip_right.saturating_sub(1));
+                if row_visible {
+                    write_solid_rows(blend, frame, size.width, py, py + 1, start, end + 1, color);
+                }
+                continue;
+            }
+            let corner_cy =
+                if top_corner { rect.y.saturating_add(r) } else { rect.bottom().saturating_sub(r) };
+            let (reach_first, reach_last) =
+                corner_row_reach(py, corner_cy, middle_first, middle_after_last, r);
+            // Left corner band: the columns before the first fully covered one.
+            let left_band_start = x0.max(reach_first);
+            let left_band_end = middle_first.saturating_sub(1).min(x1);
+            if left_band_start <= left_band_end {
+                for px in left_band_start..=left_band_end {
+                    let coverage = rounded_rect_coverage(px, py, rect, effective_radius);
+                    if coverage > 0.0 {
+                        blend_pixel_clipped!(
+                            blend, clip, frame, size.width, px, py, color, coverage
+                        );
+                    }
+                }
+            }
+            // Middle band: fully covered even on a corner row.
+            let middle_start = middle_first.max(x0).max(clip_left);
+            let middle_end =
+                middle_after_last.saturating_sub(1).min(x1).min(clip_right.saturating_sub(1));
+            if row_visible {
+                write_solid_rows(
+                    blend,
+                    frame,
+                    size.width,
+                    py,
+                    py + 1,
+                    middle_start,
+                    middle_end + 1,
+                    color,
+                );
+            }
+            // Right corner band. Clamped to `middle_first` so a saturated radius, which collapses
+            // the middle band, cannot make this band overlap the left one.
+            let right_band_start = middle_after_last.max(middle_first).max(x0);
+            let right_band_end = x1.min(reach_last);
+            if right_band_start <= right_band_end {
+                for px in right_band_start..=right_band_end {
+                    let coverage = rounded_rect_coverage(px, py, rect, effective_radius);
+                    if coverage > 0.0 {
+                        blend_pixel_clipped!(
+                            blend, clip, frame, size.width, px, py, color, coverage
+                        );
+                    }
                 }
             }
         }
@@ -337,6 +512,22 @@ impl SoftwareSurface {
         self.draw_line_with_width(from, to, color, 1);
     }
     /// Draws a line segment with explicit stroke width.
+    ///
+    /// # Why the axis-aligned cases do not walk Bresenham's stamps
+    ///
+    /// The brush is a `stroke_width`-square stamped at every point of the Bresenham walk, so a wide
+    /// line used to pay `stroke_width^2` clipped, blend-dispatched pixel writes per step — a 20 px
+    /// line cost 400 writes for each pixel of its length (G-09). When the segment is horizontal or
+    /// vertical each step moves exactly one pixel along that axis, so consecutive stamps overlap and
+    /// the union is the brush box of the first point unioned with the brush box of the last.
+    ///
+    /// That union is only the same picture as the stamps when one write is idempotent — an opaque
+    /// `Normal` write — because the overlap means the old loop painted those pixels **twice**, and a
+    /// second composite (a translucent colour, a `Screen`/`Multiply` backdrop) does not repeat the
+    /// first. So the span path is taken for the idempotent case only, and everything else runs the
+    /// stamp walk below, which paints each stamp once in the same order as before. The stamp walk
+    /// itself is not per-pixel any more: one stamp is one solid rectangle, so the clip and the blend
+    /// dispatch are resolved once per stamp rather than once per brush pixel.
     pub fn draw_line_with_width(
         &mut self,
         from: Point,
@@ -348,12 +539,40 @@ impl SoftwareSurface {
             return;
         }
         let size = self.buffer.size();
-        let width = size.width;
-        let height = size.height;
         let clip = self.current_clip();
         let frame = self.buffer.back_mut();
+        let blend = self.blend_mode;
         let brush_start = -(stroke_width as i32 / 2);
-        let brush_end = brush_start + stroke_width as i32 - 1;
+        let idempotent = matches!(blend, BlendMode::Normal) && color.a == 255;
+        if idempotent && (from.y == to.y || from.x == to.x) {
+            // The brush covers `[brush_start, brush_start + stroke_width)` around each point, and
+            // consecutive points are one pixel apart, so the union runs from the first stamp's near
+            // edge to the last stamp's far edge.
+            let x_start = from.x.min(to.x);
+            let x_end = from.x.max(to.x);
+            let y_start = from.y.min(to.y);
+            let y_end = from.y.max(to.y);
+            let span_width = (x_end as i64 - x_start as i64)
+                .saturating_add(stroke_width as i64)
+                .clamp(0, u32::MAX as i64) as u32;
+            let span_height = (y_end as i64 - y_start as i64)
+                .saturating_add(stroke_width as i64)
+                .clamp(0, u32::MAX as i64) as u32;
+            write_solid_bounds(
+                blend,
+                clip,
+                frame,
+                (size.width, size.height),
+                (
+                    x_start.saturating_add(brush_start),
+                    y_start.saturating_add(brush_start),
+                    span_width,
+                    span_height,
+                ),
+                color,
+            );
+            return;
+        }
         let mut x0 = from.x;
         let mut y0 = from.y;
         let x1 = to.x;
@@ -364,15 +583,19 @@ impl SoftwareSurface {
         let sy = if y0 < y1 { 1 } else { -1 };
         let mut err = dx + dy;
         loop {
-            for oy in brush_start..=brush_end {
-                for ox in brush_start..=brush_end {
-                    let px = x0 + ox;
-                    let py = y0 + oy;
-                    if px >= 0 && py >= 0 && (px as u32) < width && (py as u32) < height {
-                        set_pixel_clipped!(self.blend_mode, clip, frame, width, px, py, color);
-                    }
-                }
-            }
+            write_solid_bounds(
+                blend,
+                clip,
+                frame,
+                (size.width, size.height),
+                (
+                    x0.saturating_add(brush_start),
+                    y0.saturating_add(brush_start),
+                    stroke_width,
+                    stroke_width,
+                ),
+                color,
+            );
             if x0 == x1 && y0 == y1 {
                 break;
             }
@@ -975,32 +1198,24 @@ impl SoftwareSurface {
         // readings of one run agree.
         let tracking = font.letter_spacing() * scale;
         let last_index = shaped.clusters().len().saturating_sub(1);
-        // One scratch for the whole line, sized for the tallest and widest cell it needs: a glyph
-        // is rasterised into it, blended, and overwritten by the next — so no glyph is ever
-        // resident. The buffer is owned by the surface and reused across lines and frames; a
-        // per-glyph `vec![0u8; ..]` was one allocation per character per frame.
-        let max_cell = shaped
-            .clusters()
-            .iter()
-            .map(|cluster| {
-                let w = cluster.advance.max(1.0).round() as u32;
-                (w as usize) * (glyph_height as usize)
-            })
-            .max()
-            .unwrap_or(0);
+        // One scratch for the whole line, and for every line after it: a glyph is rasterised into
+        // it, blended, and overwritten by the next — so no glyph is ever resident. It is grown
+        // **when a wider cell appears** instead of being sized by a second pass over the clusters:
+        // that scan computed a maximum the loop then re-derived per glyph, so every line paid two
+        // walks over its clusters to size one buffer (G-15).
         let mut coverage = core::mem::take(&mut self.text_coverage_scratch);
-        if coverage.len() < max_cell {
-            coverage.resize(max_cell, 0);
-        }
+        // The largest cell painted into the buffer so far. It only ever grows, so a short cell never
+        // shrinks the allocation and the next line — and the next frame — reuses its capacity.
+        let mut max_cell = coverage.len();
         let frame = self.buffer.back_mut();
         // A **second** scratch, four bytes per pixel, used only when the active stack resolves a
-        // cluster through a colour face. It is allocated once per line and only when the build has
-        // such a face, so a build without one pays nothing. Keeping it separate from `coverage`
-        // rather than sizing `coverage` at `max_cell * 4` unconditionally is what keeps the 8x8
-        // path's allocation exactly as it was — every existing snapshot stays byte-identical.
+        // cluster through a colour face. It lives in a thread-local slot, so it keeps its capacity
+        // across lines and frames rather than being allocated once per line (G-15). Keeping it
+        // separate from `coverage` rather than sizing `coverage` at four bytes per pixel
+        // unconditionally is what keeps the 8x8 path's allocation unchanged — every existing
+        // snapshot stays byte-identical.
         #[cfg(feature = "fonts-emoji-color")]
-        let mut color_scratch: crate::compat::Vec<u8> =
-            crate::compat::vec![0u8; max_cell.saturating_mul(4)];
+        let mut color_scratch = take_color_scratch();
         for (index, cluster) in shaped.clusters().iter().enumerate() {
             let glyph_width = cluster.advance.max(1.0).round() as i32;
             let display_char = cluster
@@ -1008,6 +1223,18 @@ impl SoftwareSurface {
                 .chars()
                 .find(|ch| !is_combining_mark(*ch) && !is_variation_selector(*ch));
             if let Some(ch) = display_char {
+                let cell_len = (glyph_width as usize).saturating_mul(glyph_height as usize);
+                if cell_len > max_cell {
+                    coverage.resize(cell_len, 0);
+                    max_cell = cell_len;
+                }
+                #[cfg(feature = "fonts-emoji-color")]
+                {
+                    let color_len = cell_len.saturating_mul(4);
+                    if color_scratch.len() < color_len {
+                        color_scratch.resize(color_len, 0);
+                    }
+                }
                 let mut config = GlyphDrawConfig {
                     canvas: &mut *frame,
                     canvas_width: size.width,
@@ -1037,6 +1264,18 @@ impl SoftwareSurface {
                 );
                 #[cfg(not(feature = "fonts-emoji-color"))]
                 let drawn = false;
+                // The glyph atlas answers only the requests it can reproduce byte for byte — see
+                // `blend_glyph_from_atlas` for exactly which. Everything else falls through to the
+                // direct paint below, which is unchanged (G-202).
+                #[cfg(feature = "text-shaping")]
+                let drawn = drawn
+                    || blend_glyph_from_atlas(
+                        ch,
+                        pen_x.round() as i32,
+                        origin.y,
+                        font.family(),
+                        &mut config,
+                    );
                 if !drawn {
                     blend_painted_glyph(
                         ch,
@@ -1052,9 +1291,10 @@ impl SoftwareSurface {
                 pen_x += tracking;
             }
         }
-        // Give the scratch back for the next line. Held across the loop above so a glyph can
-        // overwrite it in place without reallocating.
+        // Give both scratches back for the next line and the next frame.
         self.text_coverage_scratch = coverage;
+        #[cfg(feature = "fonts-emoji-color")]
+        return_color_scratch(color_scratch);
     }
 
     /// Paints `text` as a run of shaped glyph ids, with the face's ligatures enabled.
@@ -1077,10 +1317,7 @@ impl SoftwareSurface {
         color: Color,
         alignment: HorizontalAlignment,
     ) -> bool {
-        use crate::render::text::{
-            outline_glyph_at_weight, shaping, Cell, OutlinePoint, OUTLINE_MAX_CONTOURS,
-            OUTLINE_MAX_POINTS,
-        };
+        use crate::render::text::{outline_glyph_at_weight, shaping, Cell};
 
         let scale = self.dpi_scale();
         let weight = font.weight();
@@ -1101,9 +1338,10 @@ impl SoftwareSurface {
             HorizontalAlignment::Right => origin.x - width as i32,
         };
         let cell = Cell::new(width.max(1), line.height);
-        let mut points = vec![OutlinePoint { x: 0.0, y: 0.0 }; OUTLINE_MAX_POINTS];
-        let mut contours = vec![(0usize, 0usize); OUTLINE_MAX_CONTOURS];
-        let mut polygon: Vec<Point> = Vec::new();
+        // Taken from the thread's outline slot and put back when the run ends: the three buffers used
+        // to be allocated per call, i.e. three per label per frame, for data that is not per-call
+        // (G-14).
+        let mut scratch = take_outline_scratch();
         for (index, (&glyph_id, &(x_offset, y_offset))) in
             run.glyph_ids.iter().zip(run.positions.iter()).enumerate()
         {
@@ -1112,23 +1350,31 @@ impl SoftwareSurface {
                 cell,
                 font.family(),
                 weight,
-                &mut points,
-                &mut contours,
+                &mut scratch.points,
+                &mut scratch.contours,
             ) else {
                 continue;
             };
-            let vertex_count = contours[..count].iter().map(|&(_, end)| end).max().unwrap_or(0);
+            let vertex_count =
+                scratch.contours[..count].iter().map(|&(_, end)| end).max().unwrap_or(0);
             if vertex_count == 0 {
                 continue;
             }
-            polygon.clear();
-            polygon.extend(points[..vertex_count].iter().map(|point| {
+            scratch.polygon.clear();
+            scratch.polygon.extend(scratch.points[..vertex_count].iter().map(|point| {
                 let x = origin_x as f32 + x_offset + tracking * index as f32 + point.x;
                 let y = origin.y as f32 + y_offset + point.y;
                 Point::new(x.round() as i32, y.round() as i32)
             }));
-            let _ = self.fill_path_non_zero_borrowed(&polygon, &contours[..count], color, 0, 0);
+            let _ = self.fill_path_non_zero_borrowed(
+                &scratch.polygon,
+                &scratch.contours[..count],
+                color,
+                0,
+                0,
+            );
         }
+        return_outline_scratch(scratch);
         true
     }
     /// Draws an RGBA image at the specified position and size.
@@ -1153,10 +1399,24 @@ impl SoftwareSurface {
         if width == 0 || height == 0 {
             return;
         }
-        let expected_len = (width as usize) * (height as usize) * 4;
+        // The expected length is computed with checked `usize` arithmetic: a bare
+        // `width * height * 4` overflowed on `(1 << 31, 1 << 31)` in debug (panic)
+        // and wrapped to 0 in release, so the length guard passed an under-sized
+        // buffer and the row loop below indexed out of bounds. `None` means the
+        // rectangle cannot describe any real buffer, so the whole blit is skipped —
+        // the same degradation an over-short buffer already gets, with no change to
+        // the normal path.
+        let Some(expected_len) =
+            (width as usize).checked_mul(height as usize).and_then(|pixels| pixels.checked_mul(4))
+        else {
+            return;
+        };
         if data.len() < expected_len {
             return;
         }
+        // From here `data.len() >= width * height * 4`, and `visible_bounds` keeps
+        // `row - y < height`, `left - x <= width` and `left - x + columns <= width`,
+        // so every source slice below is provably inside `data`.
         let clip = self.current_clip();
         let screen_width = size.width;
         let screen_height = size.height;
@@ -1551,4 +1811,283 @@ fn inside_top_left(ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32, px: f32
         }
     }
     true
+}
+
+/// Reusable outline buffers for [`SoftwareSurface::draw_text_glyph_run`].
+///
+/// The fixed-capacity outline arrays and the translated polygon were three allocations **per
+/// call** — three per label per frame — although nothing about them depends on the label (G-14).
+/// They are taken from a thread-local slot and put back when the run finishes, so the steady state
+/// allocates nothing, and taking rather than borrowing makes re-entry safe: a nested glyph run finds
+/// an empty slot and allocates its own buffers instead of aliasing this one.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+struct OutlineScratch {
+    /// Glyph outline vertices, at the capacity the outliner requires.
+    points: Vec<crate::render::text::OutlinePoint>,
+    /// `(start, end)` vertex ranges of the outline's contours.
+    contours: Vec<(usize, usize)>,
+    /// The translated polygon handed to the scan converter; kept for its capacity.
+    polygon: Vec<Point>,
+}
+
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+impl OutlineScratch {
+    fn new() -> Self {
+        Self {
+            points: crate::compat::vec![
+                crate::render::text::OutlinePoint { x: 0.0, y: 0.0 };
+                crate::render::text::OUTLINE_MAX_POINTS
+            ],
+            contours: crate::compat::vec![
+                (0usize, 0usize); crate::render::text::OUTLINE_MAX_CONTOURS
+            ],
+            polygon: Vec::new(),
+        }
+    }
+}
+
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+thread_local! {
+    /// The outline slot, already at full capacity so the first glyph run does not allocate either.
+    static OUTLINE_SCRATCH: core::cell::RefCell<Option<OutlineScratch>> =
+        core::cell::RefCell::new(Some(OutlineScratch::new()));
+}
+
+/// Takes the thread's outline slot, allocating one only when a nested run holds it.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+fn take_outline_scratch() -> OutlineScratch {
+    OUTLINE_SCRATCH
+        .with(|slot| match slot.try_borrow_mut() {
+            Ok(mut slot) => slot.take(),
+            Err(_) => None,
+        })
+        .unwrap_or_else(OutlineScratch::new)
+}
+
+/// Returns an outline slot to the thread when the slot is still empty.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+fn return_outline_scratch(scratch: OutlineScratch) {
+    OUTLINE_SCRATCH.with(|slot| {
+        if let Ok(mut slot) = slot.try_borrow_mut() {
+            if slot.is_none() {
+                *slot = Some(scratch);
+            }
+        }
+    });
+}
+
+#[cfg(feature = "fonts-emoji-color")]
+thread_local! {
+    /// Four-byte-per-pixel glyph scratch for [`SoftwareSurface::draw_text`], reused across lines and
+    /// frames. It used to be allocated once per line (G-15); it lives here rather than on the
+    /// surface because a colour face is the only thing that needs it, and the surface's own
+    /// coverage scratch is one byte per pixel by contract.
+    static TEXT_COLOR_SCRATCH: core::cell::RefCell<Vec<u8>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes the thread's colour-glyph scratch, leaving an empty buffer behind.
+#[cfg(feature = "fonts-emoji-color")]
+fn take_color_scratch() -> Vec<u8> {
+    TEXT_COLOR_SCRATCH.with(|slot| match slot.try_borrow_mut() {
+        Ok(mut slot) => core::mem::take(&mut *slot),
+        Err(_) => Vec::new(),
+    })
+}
+
+/// Returns a colour-glyph scratch, keeping the larger of the two buffers.
+#[cfg(feature = "fonts-emoji-color")]
+fn return_color_scratch(scratch: Vec<u8>) {
+    TEXT_COLOR_SCRATCH.with(|slot| {
+        if let Ok(mut slot) = slot.try_borrow_mut() {
+            if scratch.capacity() > slot.capacity() {
+                *slot = scratch;
+            }
+        }
+    });
+}
+
+/// The key face for a request whose family names no shipped face. Such a key is rasterised through
+/// the active stack, so its bitmap is identified by the character and the cell alone — every unnamed
+/// family shares the entry, and the leading control scalar keeps the name from colliding with one.
+#[cfg(feature = "text-shaping")]
+const ATLAS_STACK_RESOLVED_FACE: &str = "\u{1}";
+
+/// How many atlas lookups advance the glyph atlas' epoch.
+///
+/// `SoftwareSurface` exposes no per-frame hook this module can see, so the atlas' collection window
+/// is driven by a lookup count: one epoch is roughly a frame's worth of glyphs for an ordinary
+/// window, and [`crate::render::text::ATLAS_GC_FRAMES`] then keeps a caption resident for several
+/// frames. This is a policy, not a correctness requirement — a reaped slot is rasterised again on
+/// its next use with the same bytes, so only the hit rate depends on the number (G-202).
+#[cfg(feature = "text-shaping")]
+const ATLAS_LOOKUPS_PER_EPOCH: u32 = 4096;
+
+#[cfg(feature = "text-shaping")]
+thread_local! {
+    /// The atlas the text path paints from. It is owned by the thread because no renderer state is
+    /// reachable from this module.
+    static TEXT_GLYPH_ATLAS: core::cell::RefCell<crate::render::text::GlyphAtlas> =
+        core::cell::RefCell::new(crate::render::text::GlyphAtlas::new());
+    /// The lookup count that stands in for a frame boundary — see [`ATLAS_LOOKUPS_PER_EPOCH`].
+    #[allow(clippy::missing_const_for_thread_local)]
+    static TEXT_GLYPH_ATLAS_CALLS: core::cell::Cell<u32> = core::cell::Cell::new(0);
+}
+
+/// Paints `ch` from the thread's glyph atlas when the atlas reproduces the request byte for byte.
+///
+/// # Which requests the atlas can serve (G-202)
+///
+/// * **Cell shape** — every device cell a label draws into is expressible: `GlyphKey::with_cell`
+///   stores the width and height independently (G-202), so ordinary Latin text — an advance of
+///   about 0.6 em inside a line box of about 1.2 em — is served as well as a full-em CJK glyph.
+/// * **Cell size** — both dimensions must fit a `u8`, so a line box larger than 255 device pixels
+///   keeps the direct path.
+/// * **Weight** — the default weight only: `paint_active_at_weight` moves a variable face's `wght`
+///   axis, while the atlas' stack fallback paints the face's default instance.
+/// * **Face choice** — the atlas paints with the face the family names and falls back to the active
+///   stack when that face does not cover the character; the direct path always paints through the
+///   active stack. The two agree exactly when the family names no shipped face, or names the same
+///   face the coverage lookup picks for `ch`.
+///
+/// The atlas applies the synthetic oblique itself when the key says `italic`, so the blend below
+/// passes `apply_italic = false` — the shear must not happen twice.
+///
+/// Returns `false` when this request is not one the atlas can serve; the caller then runs the direct
+/// paint, which is untouched.
+#[cfg(feature = "text-shaping")]
+fn blend_glyph_from_atlas(
+    ch: char,
+    x: i32,
+    y: i32,
+    family: &str,
+    config: &mut GlyphDrawConfig,
+) -> bool {
+    if config.w == 0 || config.h == 0 || config.w > u8::MAX as u32 || config.h > u8::MAX as u32 {
+        return false;
+    }
+    if config.weight != crate::core::Font::default_weight() {
+        return false;
+    }
+    let family_face = crate::render::text::shaping::face_for_family(family);
+    if let Some(face) = family_face {
+        let Some(stack_face) = crate::render::text::face_for_char(ch) else {
+            return false;
+        };
+        if !core::ptr::eq(face.bytes.as_ptr(), stack_face.bytes.as_ptr()) {
+            return false;
+        }
+    }
+    let key = crate::render::text::GlyphKey::new(
+        family_face.map_or(ATLAS_STACK_RESOLVED_FACE, |face| face.name),
+        ch,
+        config.h as u8,
+        config.weight,
+    )
+    // The real drawing cell, not the em square: a Latin cluster advances ~0.6 em in a ~1.2 em
+    // line box, and the explicit cell lets the atlas serve that box byte for byte (G-202).
+    .with_cell(config.w, config.h)
+    .with_italic(config.italic);
+    let advance_epoch = TEXT_GLYPH_ATLAS_CALLS.with(|calls| {
+        let next = calls.get().wrapping_add(1);
+        calls.set(next);
+        next % ATLAS_LOOKUPS_PER_EPOCH == 0
+    });
+    let slot = TEXT_GLYPH_ATLAS.with(|atlas| match atlas.try_borrow_mut() {
+        Ok(mut atlas) => {
+            if advance_epoch {
+                atlas.begin_frame();
+            }
+            Some(atlas.get_or_raster(key))
+        }
+        Err(_) => None,
+    });
+    let Some(slot) = slot else {
+        return false;
+    };
+    if slot.width() != config.w || slot.height() != config.h {
+        return false;
+    }
+    // Colour ink is four bytes per pixel and would read as noise here; the atlas reserves the
+    // one-byte coverage box, so this cannot happen — refusing is cheaper than trusting that.
+    if !matches!(
+        slot.ink(),
+        crate::render::text::InkKind::Bitmap | crate::render::text::InkKind::Coverage
+    ) {
+        return false;
+    }
+    blend_coverage_bitmap(slot.width(), slot.height(), x, y, slot.bitmap(), config, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Size;
+
+    /// An overflowing `width × height × 4` must skip the blit, not wrap the guard.
+    ///
+    /// Before the guard used checked arithmetic, `(1 << 31) * (1 << 31) * 4` panicked in
+    /// debug and wrapped to 0 in release. The wrapped zero made
+    /// `data.len() < expected_len` false for a tiny buffer, and the row loop indexed out
+    /// of bounds. A skipped blit is the same degradation an over-short buffer gets.
+    #[test]
+    fn draw_image_with_overflowing_dimensions_is_ignored() {
+        let mut surface = SoftwareSurface::new(Size::new(4, 4), 1.0);
+        surface.begin_frame(Color::WHITE);
+        surface.draw_image(0, 0, 1 << 31, 1 << 31, &[0, 0, 0, 0]);
+        surface.draw_image(0, 0, u32::MAX, u32::MAX, &[]);
+        surface.end_frame();
+
+        let rgba = surface.frame_rgba();
+        assert!(
+            rgba.as_chunks::<4>().0.iter().all(|pixel| pixel.iter().all(|&byte| byte == 255)),
+            "an impossible size leaves the surface untouched"
+        );
+    }
+
+    /// The normal path still paints exactly the pixels the caller supplied.
+    #[test]
+    fn draw_image_paints_a_buffer_that_matches_its_dimensions() {
+        let mut surface = SoftwareSurface::new(Size::new(2, 2), 1.0);
+        surface.begin_frame(Color::WHITE);
+        let data = [255u8, 0, 0, 255].repeat(4);
+        surface.draw_image(0, 0, 2, 2, &data);
+        surface.end_frame();
+        let rgba = surface.frame_rgba();
+        assert_eq!(&rgba[..4], &[255, 0, 0, 255]);
+    }
+
+    /// The banded `fill_rounded_rect` must ink exactly the pixels the per-pixel sampler inks.
+    ///
+    /// This is the equivalence the G-08 fast path promises: the corner bands keep the original
+    /// 2x2 sampler, the middle band writes the `1.0` that sampler returns. Comparing the two
+    /// against a black backdrop makes a dropped or widened span visible as a channel difference.
+    #[test]
+    fn the_banded_rounded_fill_matches_the_per_pixel_sampler() {
+        let cases = [(40u32, 16u32), (17, 9), (100, 40), (10, 10), (7, 30)];
+        for (width, height) in cases {
+            for radius in 0..=12u32 {
+                let rect = Rect::new(0, 0, width, height);
+                let mut banded = SoftwareSurface::new(Size::new(width + 4, height + 4), 1.0);
+                banded.begin_frame(Color::BLACK);
+                banded.fill_rounded_rect(rect, radius, Color::WHITE);
+                banded.end_frame();
+                let produced = banded.frame_rgba();
+
+                let effective = rounded_rect_effective_radius(rect, radius);
+                for py in 0..height as i32 {
+                    for px in 0..width as i32 {
+                        let expected =
+                            (rounded_rect_coverage(px, py, rect, effective) * 255.0).round() as u8;
+                        let index = (py as usize * (width + 4) as usize + px as usize) * 4;
+                        let actual = produced[index];
+                        assert!(
+                            actual.abs_diff(expected) <= 1,
+                            "rect {width}x{height} r={radius} at ({px},{py}): banded={actual} expected={expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

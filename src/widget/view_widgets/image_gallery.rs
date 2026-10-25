@@ -23,6 +23,8 @@ use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::borrow::Cow;
 
+use super::thumbnail_cache::ThumbnailCache;
+
 /// Metadata for a single image in the gallery.
 #[derive(Debug, Clone)]
 pub struct GalleryImage {
@@ -280,6 +282,8 @@ pub struct ImageGallery {
     pan_drag: Option<(f32, f32)>,
     /// Emitted with the new strip offset whenever it changes.
     pub strip_scrolled: Signal1<usize>,
+    /// Down-sampled preview/thumbnail bitmaps, keyed by image index and target size (F-P11).
+    thumbnails: ThumbnailCache,
 }
 
 impl ImageGallery {
@@ -308,6 +312,7 @@ impl ImageGallery {
             pan_y: 0,
             pan_drag: None,
             strip_scrolled: Signal1::new(),
+            thumbnails: ThumbnailCache::new(geometry),
         }
     }
 
@@ -338,6 +343,7 @@ impl ImageGallery {
     /// image on display has been replaced, even when the index happens to stay the same.
     pub fn set_images(&mut self, images: Vec<GalleryImage>) {
         self.images = images;
+        self.thumbnails.clear();
         if self.images.is_empty() {
             self.current_index = 0;
         } else if self.current_index >= self.images.len() {
@@ -354,6 +360,8 @@ impl ImageGallery {
             return;
         }
         self.images.remove(index);
+        // Every index at and after `index` now names a different image.
+        self.thumbnails.clear();
         if !self.images.is_empty() && self.current_index >= self.images.len() {
             self.current_index = self.images.len() - 1;
             self.image_changed.emit(self.current_index);
@@ -364,6 +372,7 @@ impl ImageGallery {
     /// Removes all images from the gallery.
     pub fn clear_images(&mut self) {
         self.images.clear();
+        self.thumbnails.clear();
         self.current_index = 0;
         self.image_changed.emit(0);
         self.base.request_redraw();
@@ -1061,7 +1070,16 @@ impl Draw for ImageGallery {
                             preview_rect.width,
                             preview_rect.height,
                         );
-                        context.draw_image(x, y, draw_w, draw_h, pixels);
+                        // Resample once per `(image, zoom, stage)` instead of every frame (F-P11).
+                        let resampled = self.thumbnails.thumbnail_for_sized(
+                            self.current_index as u64,
+                            &decoded.inner.data,
+                            (source_w, source_h),
+                            (draw_w, draw_h),
+                        );
+                        if let crate::image::ImageData::Rgba8(resampled_pixels) = &resampled {
+                            context.draw_image(x, y, draw_w, draw_h, resampled_pixels);
+                        }
                         context.pop_clip();
                     }
                 }
@@ -1266,7 +1284,23 @@ impl Draw for ImageGallery {
                             image.height(),
                             inner_rect,
                         );
-                        context.draw_image(fitted.x, fitted.y, fitted.width, fitted.height, pixels);
+                        // The strip used to hand the renderer the whole source image for every
+                        // visible tile; the cache generates each tile-size bitmap once (F-P11).
+                        let resampled = self.thumbnails.thumbnail_for_sized(
+                            img_idx as u64,
+                            &image.inner.data,
+                            (image.width(), image.height()),
+                            (fitted.width.max(1), fitted.height.max(1)),
+                        );
+                        if let crate::image::ImageData::Rgba8(resampled_pixels) = &resampled {
+                            context.draw_image(
+                                fitted.x,
+                                fitted.y,
+                                fitted.width,
+                                fitted.height,
+                                resampled_pixels,
+                            );
+                        }
                     }
                 }
             }

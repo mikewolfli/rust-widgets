@@ -5,6 +5,7 @@
 - [架构概述](chapters/architecture.md)
 - [核心类型](chapters/core-types.md)
 - [控件系统](chapters/widget-system.md)
+- [控件族详解](chapters/widgets-detail.md)
 - [布局系统](chapters/layout-system.md)
 - [事件系统](chapters/event-system.md)
 - [渲染系统](chapters/rendering-system.md)

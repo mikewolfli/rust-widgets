@@ -101,6 +101,7 @@ pub(crate) struct LinuxNativeState {
 }
 
 #[cfg(all(unix_desktop, feature = "gtk-native"))]
+// SAFETY: `LinuxNativeState` is only driven from the GTK main thread; the GTK widgets it owns are `!Send`, so moving the wrapper between threads does not permit concurrent GTK access.
 unsafe impl Send for LinuxNativeState {}
 
 // SAFETY: `LinuxPlatform` is only ever driven from the UI thread. The GTK

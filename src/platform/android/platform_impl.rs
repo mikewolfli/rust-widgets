@@ -74,6 +74,27 @@ fn cached_density_scale() -> f32 {
     value
 }
 
+/// The environment facts behind [`Platform::environment_generation`], cached for one second.
+///
+/// Every one of these is a JNI round trip (a `Configuration` read, an `AccessibilityManager`
+/// lookup, a `ContentResolver` query, `Locale.getDefault`), while the style layer re-reads the
+/// revision on a 250 ms poll. They share the process-wide TTL wrapper so the invalidation rule is
+/// the same one every other backend uses, and so a host notification drops them immediately
+/// (P-02 / P-201).
+#[cfg(feature = "android-jni")]
+static SYSTEM_THEME_CACHE: crate::platform::environment_cache::EnvironmentFactCache<Option<bool>> =
+    crate::compat::OnceLock::new();
+#[cfg(feature = "android-jni")]
+static HIGH_CONTRAST_CACHE: crate::platform::environment_cache::EnvironmentFactCache<Option<bool>> =
+    crate::compat::OnceLock::new();
+#[cfg(feature = "android-jni")]
+static REDUCE_MOTION_CACHE: crate::platform::environment_cache::EnvironmentFactCache<Option<bool>> =
+    crate::compat::OnceLock::new();
+#[cfg(feature = "android-jni")]
+static LOCALE_CACHE: crate::platform::environment_cache::EnvironmentFactCache<
+    Option<&'static str>,
+> = crate::compat::OnceLock::new();
+
 impl Platform for AndroidPlatform {
     // The uniform widget-property methods are answered once, over `self.state`, by the
     // shared expansion in `platform::state_impl` rather than re-written per backend.
@@ -199,11 +220,16 @@ impl Platform for AndroidPlatform {
     /// Whether Android's night mode is on, from the current `Configuration`.
     ///
     /// `None` without an attached `Context`: the backend cannot ask the activity's configuration
-    /// until the host has handed it over.
+    /// until the host has handed it over. The reading is cached for
+    /// [`crate::platform::environment_cache::ENVIRONMENT_TTL`] because the style layer re-reads the
+    /// environment revision on a 250 ms poll and each read is a JNI round trip (P-02).
     fn system_theme(&self) -> Option<bool> {
         #[cfg(feature = "android-jni")]
         {
-            crate::platform::android_jni::system_theme()
+            crate::platform::environment_cache::cached_environment_fact(
+                &SYSTEM_THEME_CACHE,
+                crate::platform::android_jni::system_theme,
+            )
         }
         #[cfg(not(feature = "android-jni"))]
         {
@@ -212,10 +238,16 @@ impl Platform for AndroidPlatform {
     }
 
     /// Whether Android's high-text-contrast setting is on.
+    ///
+    /// Cached like [`Self::system_theme`]: the answer comes from an `AccessibilityManager` lookup
+    /// over JNI, not a local field.
     fn high_contrast(&self) -> Option<bool> {
         #[cfg(feature = "android-jni")]
         {
-            crate::platform::android_jni::high_contrast()
+            crate::platform::environment_cache::cached_environment_fact(
+                &HIGH_CONTRAST_CACHE,
+                crate::platform::android_jni::high_contrast,
+            )
         }
         #[cfg(not(feature = "android-jni"))]
         {
@@ -224,10 +256,15 @@ impl Platform for AndroidPlatform {
     }
 
     /// Whether the animator duration scale is zero.
+    ///
+    /// Cached like [`Self::system_theme`]: reading it goes through the `ContentResolver` over JNI.
     fn reduce_motion(&self) -> Option<bool> {
         #[cfg(feature = "android-jni")]
         {
-            crate::platform::android_jni::reduce_motion()
+            crate::platform::environment_cache::cached_environment_fact(
+                &REDUCE_MOTION_CACHE,
+                crate::platform::android_jni::reduce_motion,
+            )
         }
         #[cfg(not(feature = "android-jni"))]
         {
@@ -236,10 +273,15 @@ impl Platform for AndroidPlatform {
     }
 
     /// The default locale, from `Locale.getDefault()`.
+    ///
+    /// The JNI call and the interning happen once per
+    /// [`crate::platform::environment_cache::ENVIRONMENT_TTL`], not once per environment poll.
     fn system_locale(&self) -> Option<&'static str> {
         #[cfg(feature = "android-jni")]
         {
-            crate::platform::locale::intern(crate::platform::android_jni::system_locale())
+            crate::platform::environment_cache::cached_environment_fact(&LOCALE_CACHE, || {
+                crate::platform::locale::intern(crate::platform::android_jni::system_locale())
+            })
         }
         #[cfg(not(feature = "android-jni"))]
         {
@@ -248,13 +290,12 @@ impl Platform for AndroidPlatform {
     }
 
     /// A revision of the environment facts, derived from their current values.
+    ///
+    /// Derived through [`crate::platform::locale::environment_revision`] so the fact set is the one
+    /// the style snapshot consumes — including the accent colour and the reduced-transparency
+    /// preference, which a per-backend spelling of the hash had missed (P-03/P-06).
     fn environment_generation(&self) -> u64 {
-        crate::platform::locale::generation_hash(
-            self.system_theme(),
-            self.high_contrast(),
-            self.reduce_motion(),
-            self.system_locale(),
-        )
+        crate::platform::locale::environment_revision(self)
     }
 
     /// The fonts installed under `/system/fonts` on the device.
@@ -866,6 +907,7 @@ impl crate::platform::contract::MobilePlatformExtension for AndroidPlatform {
             // `JObject` does not own the reference; the GlobalRef created by
             // `set_activity_context` is what keeps it alive.
             let context_obj: jni::objects::JObject<'_> =
+// SAFETY: `native_handle` is the `jobject` kept alive by the global ref installed by `set_activity_context`.
                 unsafe { jni::objects::JObject::from_raw(native_handle as jni::sys::jobject) };
             crate::platform::android_jni::with_jni_env(|env| {
                 crate::platform::android_jni::set_activity_context(env, &context_obj)

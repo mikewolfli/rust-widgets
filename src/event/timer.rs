@@ -9,7 +9,9 @@ use super::types::Event;
 use crate::compat::Condvar;
 use crate::compat::{format, lock, Box, HashMap, Instant, MiniToString, Mutex, String, Vec};
 use crate::core::ObjectId;
+use alloc::collections::BinaryHeap;
 use alloc::sync::Arc;
+use core::cmp::Ordering;
 use core::time::Duration;
 #[cfg(not(alloc_frugal))]
 use std::thread;
@@ -20,6 +22,40 @@ struct TimerEntry {
     /// How late this timer is allowed to fire, so a coarse timer can be coalesced with
     /// neighbours instead of waking the loop for each one.
     tolerance: Duration,
+    /// Identity of the heap entry that currently describes this timer.
+    ///
+    /// A heap cannot remove an arbitrary element efficiently, so a re-arm or a stop leaves the old
+    /// deadline in place and bumps this generation. When the stale entry reaches the top it fails
+    /// the generation check and is discarded. This is what makes insert/remove O(log n) without a
+    /// second index that could drift from the map.
+    generation: u64,
+}
+
+/// A scheduled deadline in the timer min-heap (W-P09).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HeapDeadline {
+    fire_at: Instant,
+    target: ObjectId,
+    id: u32,
+    generation: u64,
+}
+
+impl Ord for HeapDeadline {
+    /// Reversed so `BinaryHeap` (a max-heap) pops the **earliest** deadline first.
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .fire_at
+            .cmp(&self.fire_at)
+            .then_with(|| other.target.cmp(&self.target))
+            .then_with(|| other.id.cmp(&self.id))
+            .then_with(|| other.generation.cmp(&self.generation))
+    }
+}
+
+impl PartialOrd for HeapDeadline {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl TimerEntry {
@@ -100,7 +136,56 @@ fn next_fire_deadline(interval: Duration) -> Result<Instant, String> {
 #[derive(Default)]
 struct TimerState {
     timers: HashMap<(ObjectId, u32), TimerEntry>,
+    /// Min-heap of deadlines. Stale entries (a re-armed or stopped timer's old generation) are
+    /// discarded lazily when they reach the top, so `nearest_deadline` is O(1) amortised instead
+    /// of the O(n) scan it used to be (W-P09).
+    deadlines: BinaryHeap<HeapDeadline>,
+    /// Monotonic source of heap-entry identities.
+    next_generation: u64,
     running: bool,
+}
+
+impl TimerState {
+    /// Whether `deadline` still describes the timer's current schedule.
+    fn is_live(&self, deadline: &HeapDeadline) -> bool {
+        self.timers
+            .get(&(deadline.target, deadline.id))
+            .is_some_and(|entry| entry.generation == deadline.generation)
+    }
+
+    /// Pops stale heap tops and returns the earliest live fire time, if any.
+    ///
+    /// Only the threaded worker parks on a deadline; the `mini` pump drains due timers on every
+    /// call, so it does not need to ask for the next one.
+    #[cfg(not(alloc_frugal))]
+    fn discard_stale_and_peek(&mut self) -> Option<Instant> {
+        loop {
+            let top = *self.deadlines.peek()?;
+            if self.is_live(&top) {
+                return Some(top.fire_at);
+            }
+            self.deadlines.pop();
+        }
+    }
+
+    /// Allocates a generation and records the timer plus its heap entry.
+    fn schedule(
+        &mut self,
+        key: (ObjectId, u32),
+        interval: Duration,
+        repeating: bool,
+        next_fire: Instant,
+        tolerance: Duration,
+    ) {
+        self.next_generation = self.next_generation.wrapping_add(1);
+        let generation = self.next_generation;
+        let entry = TimerEntry { interval, repeating, next_fire, tolerance, generation };
+        // `fire_at` is `next_fire + tolerance`; spelling it here keeps the heap key and the
+        // entry's own answer identical by construction.
+        let fire_at = entry.fire_at();
+        self.timers.insert(key, entry);
+        self.deadlines.push(HeapDeadline { fire_at, target: key.0, id: key.1, generation });
+    }
 }
 
 /// Shared timer state plus the signal the worker waits on (D09-EVT-05).
@@ -148,14 +233,6 @@ impl TimerShared {
     fn notify(&self) {
         self.signal.notify_one();
     }
-
-    /// The earliest `next_fire` among the registered timers, if any.
-    ///
-    /// Called with the state lock held. `None` means "no timer to wait for", which is
-    /// what makes the worker block indefinitely instead of polling.
-    fn nearest_deadline(state: &TimerState) -> Option<Instant> {
-        state.timers.values().map(|entry| entry.fire_at()).min()
-    }
 }
 
 /// Emits timer events into the event queue for one-shot and repeating timers.
@@ -184,7 +261,11 @@ impl TimerManager {
     #[cfg(not(alloc_frugal))]
     pub fn new(sender: EventSender) -> Self {
         let shared = Arc::new(TimerShared {
-            state: Mutex::new(TimerState { timers: HashMap::new(), running: true }),
+            state: Mutex::new(TimerState {
+                timers: HashMap::new(),
+                running: true,
+                ..Default::default()
+            }),
             signal: Condvar::new(),
             wake_count: core::sync::atomic::AtomicU64::new(0),
         });
@@ -199,14 +280,12 @@ impl TimerManager {
         //   fires as soon as it is due rather than on a fixed 2 ms tick, and a late
         //   notification recomputes the wait rather than delaying the next check.
         let thread_handle = thread::spawn(move || {
-            // Scratch buffers reused across every wake. They used to be allocated fresh on each
-            // loop iteration, which meant two `Vec`s per timer tick even when no timer was due.
+            // Scratch buffer reused across every wake. It used to be allocated fresh on each loop
+            // iteration, which meant a `Vec` per timer tick even when no timer was due.
             let mut due_events: Vec<(ObjectId, u32)> = Vec::new();
-            let mut keys: Vec<(ObjectId, u32)> = Vec::new();
             loop {
                 worker_shared.wake_count.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
                 due_events.clear();
-                keys.clear();
 
                 {
                     let mut guard = lock(&worker_shared.state);
@@ -216,27 +295,44 @@ impl TimerManager {
 
                     let now = Instant::now();
 
-                    // Collect everything already due and advance repeating deadlines.
-                    keys.extend(guard.timers.keys().copied());
-                    for key in keys.iter().copied() {
-                        if let Some(entry) = guard.timers.get_mut(&key) {
-                            if now >= entry.fire_at() {
-                                due_events.push(key);
-                                if entry.repeating {
-                                    // Use Instant::now() + interval to avoid cumulative drift.
-                                    // If a timer fires late due to load, reset based on current time
-                                    // so subsequent firings are not delayed by the accumulated drift.
-                                    entry.next_fire = Instant::now() + entry.interval;
-                                }
-                            }
+                    // W-P09: fire from the min-heap. Each iteration either pops a due timer or
+                    // stops at the first deadline still in the future, so the cost is
+                    // O(due · log n) rather than O(n) for every wake-up. Stale generations (a
+                    // re-armed or stopped timer) are dropped as they reach the top.
+                    while let Some(top) = guard.deadlines.peek().copied() {
+                        if !guard.is_live(&top) {
+                            guard.deadlines.pop();
+                            continue;
                         }
-                    }
-
-                    for &(target, id) in &due_events {
-                        if let Some(entry) = guard.timers.get(&(target, id)) {
-                            if !entry.repeating {
-                                guard.timers.remove(&(target, id));
+                        if now < top.fire_at {
+                            break;
+                        }
+                        guard.deadlines.pop();
+                        let key = (top.target, top.id);
+                        let (repeating, interval, tolerance) = match guard.timers.get(&key) {
+                            Some(entry) => (entry.repeating, entry.interval, entry.tolerance),
+                            None => continue,
+                        };
+                        due_events.push(key);
+                        if repeating {
+                            // Use Instant::now() + interval to avoid cumulative drift.
+                            // If a timer fires late due to load, reset based on current time
+                            // so subsequent firings are not delayed by the accumulated drift.
+                            let next_fire = Instant::now() + interval;
+                            guard.next_generation = guard.next_generation.wrapping_add(1);
+                            let generation = guard.next_generation;
+                            if let Some(entry) = guard.timers.get_mut(&key) {
+                                entry.next_fire = next_fire;
+                                entry.generation = generation;
                             }
+                            guard.deadlines.push(HeapDeadline {
+                                fire_at: next_fire + tolerance,
+                                target: key.0,
+                                id: key.1,
+                                generation,
+                            });
+                        } else {
+                            guard.timers.remove(&key);
                         }
                     }
 
@@ -245,7 +341,7 @@ impl TimerManager {
                         // no timer is registered. `spurious_wakeup` loops rather than assuming
                         // the notification was the one we expected — the state is re-read under
                         // the lock each time, which is the condition-variable contract.
-                        match TimerShared::nearest_deadline(&guard) {
+                        match guard.discard_stale_and_peek() {
                             Some(deadline) => {
                                 let wait_for = deadline.saturating_duration_since(Instant::now());
                                 // A deadline already in the past collapses to a zero timeout,
@@ -282,7 +378,11 @@ impl TimerManager {
     /// carries no `Send`/`Sync` requirement on the queue.
     #[cfg(alloc_frugal)]
     pub fn new(sender: EventSender) -> Self {
-        let state = Arc::new(Mutex::new(TimerState { timers: HashMap::new(), running: true }));
+        let state = Arc::new(Mutex::new(TimerState {
+            timers: HashMap::new(),
+            running: true,
+            ..Default::default()
+        }));
         Self { state, sender, thread_handle: None }
     }
 
@@ -344,13 +444,9 @@ impl TimerManager {
             return Err("timer interval must be > 0".to_string());
         }
 
-        let entry = TimerEntry {
-            interval,
-            repeating,
-            next_fire: next_fire_deadline(interval)?,
-            tolerance: precision.tolerance(),
-        };
-        self.lock_timers().timers.insert((target, id), entry);
+        let next_fire = next_fire_deadline(interval)?;
+        let tolerance = precision.tolerance();
+        self.lock_timers().schedule((target, id), interval, repeating, next_fire, tolerance);
         // The worker may be parked indefinitely (no timers) or until an older deadline;
         // an added timer can be nearer than that, so it must be woken to recompute.
         self.notify_worker();
@@ -388,6 +484,7 @@ impl TimerManager {
             let mut guard = self.lock_timers();
             let had = !guard.timers.is_empty();
             guard.timers.clear();
+            guard.deadlines.clear();
             had
         };
         if had_timers {
@@ -403,7 +500,6 @@ impl TimerManager {
     /// loop iteration) invoke this periodically to fire due timers.
     #[cfg(alloc_frugal)]
     pub fn pump(&self) {
-        let now = Instant::now();
         let mut due_events = Vec::new();
 
         {
@@ -412,23 +508,41 @@ impl TimerManager {
                 return;
             }
 
-            // Iterate the timer map directly instead of first copying every key into a second
-            // `Vec`. Only the due set has to outlive the lock, so one buffer is enough.
-            for (key, entry) in guard.timers.iter_mut() {
-                if now >= entry.fire_at() {
-                    due_events.push(*key);
-                    if entry.repeating {
-                        // Reset based on current time to avoid cumulative drift.
-                        entry.next_fire = Instant::now() + entry.interval;
-                    }
+            let now = Instant::now();
+            // W-P09: the same min-heap discipline as the threaded worker. Only the due set has to
+            // outlive the lock, so one buffer is enough.
+            while let Some(top) = guard.deadlines.peek().copied() {
+                if !guard.is_live(&top) {
+                    guard.deadlines.pop();
+                    continue;
                 }
-            }
-
-            for &(target, id) in &due_events {
-                if let Some(entry) = guard.timers.get(&(target, id)) {
-                    if !entry.repeating {
-                        guard.timers.remove(&(target, id));
+                if now < top.fire_at {
+                    break;
+                }
+                guard.deadlines.pop();
+                let key = (top.target, top.id);
+                let (repeating, interval, tolerance) = match guard.timers.get(&key) {
+                    Some(entry) => (entry.repeating, entry.interval, entry.tolerance),
+                    None => continue,
+                };
+                due_events.push(key);
+                if repeating {
+                    // Reset based on current time to avoid cumulative drift.
+                    let next_fire = Instant::now() + interval;
+                    guard.next_generation = guard.next_generation.wrapping_add(1);
+                    let generation = guard.next_generation;
+                    if let Some(entry) = guard.timers.get_mut(&key) {
+                        entry.next_fire = next_fire;
+                        entry.generation = generation;
                     }
+                    guard.deadlines.push(HeapDeadline {
+                        fire_at: next_fire + tolerance,
+                        target: key.0,
+                        id: key.1,
+                        generation,
+                    });
+                } else {
+                    guard.timers.remove(&key);
                 }
             }
         }
@@ -752,7 +866,85 @@ mod mini_tests {
             repeating: false,
             next_fire: deadline,
             tolerance: TimerPrecision::Coarse.tolerance(),
+            generation: 1,
         };
         assert_eq!(entry.fire_at(), deadline + TimerPrecision::Coarse.tolerance());
+    }
+
+    /// W-P09: the deadline index reports the earliest timer instead of scanning the map.
+    #[test]
+    fn the_timer_heap_reports_the_earliest_deadline() {
+        let now = Instant::now();
+        let mut state = TimerState { running: true, ..Default::default() };
+        state.schedule(
+            (1, 1),
+            Duration::from_millis(100),
+            false,
+            now + Duration::from_millis(100),
+            Duration::ZERO,
+        );
+        state.schedule(
+            (2, 2),
+            Duration::from_millis(50),
+            false,
+            now + Duration::from_millis(50),
+            Duration::ZERO,
+        );
+        state.schedule(
+            (3, 3),
+            Duration::from_millis(200),
+            false,
+            now + Duration::from_millis(200),
+            Duration::ZERO,
+        );
+        assert_eq!(state.discard_stale_and_peek(), Some(now + Duration::from_millis(50)));
+        assert_eq!(state.timers.len(), 3, "peeking must not consume live entries");
+    }
+
+    /// W-P09: re-arming a timer retires the previous deadline without a linear search.
+    #[test]
+    fn a_rearmed_timer_retires_its_old_deadline() {
+        let now = Instant::now();
+        let mut state = TimerState { running: true, ..Default::default() };
+        state.schedule(
+            (1, 1),
+            Duration::from_millis(10),
+            false,
+            now + Duration::from_millis(10),
+            Duration::ZERO,
+        );
+        let first = state.timers.get(&(1, 1)).expect("scheduled").generation;
+        state.schedule(
+            (1, 1),
+            Duration::from_millis(500),
+            false,
+            now + Duration::from_millis(500),
+            Duration::ZERO,
+        );
+        let second = state.timers.get(&(1, 1)).expect("re-scheduled").generation;
+        assert_ne!(first, second, "a re-arm must allocate a new generation");
+        assert_eq!(
+            state.discard_stale_and_peek(),
+            Some(now + Duration::from_millis(500)),
+            "the stale earlier deadline must be discarded, not reported"
+        );
+        assert_eq!(state.deadlines.len(), 1, "the stale entry is gone");
+    }
+
+    /// W-P09: stopping a timer leaves no live deadline behind (the heap entry is discarded lazily).
+    #[test]
+    fn a_stopped_timer_has_no_live_deadline() {
+        let now = Instant::now();
+        let mut state = TimerState { running: true, ..Default::default() };
+        state.schedule(
+            (1, 1),
+            Duration::from_millis(10),
+            false,
+            now + Duration::from_millis(10),
+            Duration::ZERO,
+        );
+        state.timers.remove(&(1, 1));
+        assert_eq!(state.discard_stale_and_peek(), None);
+        assert!(state.deadlines.is_empty(), "the stale entry is discarded on the way out");
     }
 }

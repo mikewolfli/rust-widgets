@@ -14,7 +14,7 @@ use crate::core::{Color, Point, Rect};
 use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::widget::capability::coercion::{expect_f64, expect_u32};
+use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -46,6 +46,17 @@ pub struct Rating {
     /// host reading the control still sees the committed value. The preview is what the row
     /// illustrates the pointer would commit, and `MouseLeave` clears it.
     hover_preview: Option<u32>,
+    /// The exact value the pointer would commit, including a half step.
+    ///
+    /// [`Self::hover_preview`] is the whole-star projection the painter and the published signal
+    /// use; this field keeps the fraction so a half-step rating commits what the pointer actually
+    /// points at.
+    hover_preview_exact: Option<f32>,
+    /// Whether pointer and keyboard input commit half-star steps.
+    ///
+    /// Off by default, which is the historical whole-star behaviour. When on, the horizontal
+    /// position inside a star maps to `n + 0.5` or `n + 1.0`.
+    allow_half_step: bool,
     /// Whether mouse and keyboard input are ignored entirely.
     ///
     /// A read-only rating is a display of someone else's score rather than an input: it keeps
@@ -56,6 +67,12 @@ pub struct Rating {
     /// Kept as `u32` so an existing subscriber's handler signature is unchanged; the exact
     /// value is available from [`Rating::rating_exact`] inside the handler.
     pub rating_changed: Signal1<u32>,
+    /// Emitted whenever the hover preview changes.
+    ///
+    /// The payload has the same meaning as [`Rating::hover_preview`]: the number of whole stars
+    /// under the pointer, or `None` when the pointer leaves the row. A host that shows a hover
+    /// hint no longer has to poll the control.
+    pub hover_preview_changed: Signal1<Option<u32>>,
 }
 
 impl Rating {
@@ -68,8 +85,11 @@ impl Rating {
             max_rating: 5,
             star_size: dimensions::RATING_STAR_SIZE,
             hover_preview: None,
+            hover_preview_exact: None,
+            allow_half_step: false,
             read_only: false,
             rating_changed: Signal1::new(),
+            hover_preview_changed: Signal1::new(),
         }
     }
 
@@ -209,9 +229,68 @@ impl Rating {
         }
         self.read_only = read_only;
         if read_only {
-            self.hover_preview = None;
+            self.clear_hover_preview();
         }
         self.base.request_redraw();
+    }
+
+    /// Whether pointer and keyboard input commit half-star steps.
+    pub fn allow_half_step(&self) -> bool {
+        self.allow_half_step
+    }
+
+    /// Enables or disables half-star commits.
+    ///
+    /// The default is `false`, which keeps every existing interaction path at whole stars. When
+    /// enabled, a click at the left half of a star commits `n + 0.5` and the right half `n + 1.0`;
+    /// the arrow keys move by `0.5`.
+    pub fn set_allow_half_step(&mut self, allow: bool) {
+        if self.allow_half_step == allow {
+            return;
+        }
+        self.allow_half_step = allow;
+        self.base.request_redraw();
+    }
+
+    /// Clears both the projected and the exact hover preview, reporting the change once.
+    fn clear_hover_preview(&mut self) {
+        let had_preview = self.hover_preview.is_some();
+        self.hover_preview = None;
+        self.hover_preview_exact = None;
+        if had_preview {
+            self.hover_preview_changed.emit(None);
+        }
+    }
+
+    /// Records a pointer preview at `pos`, emitting only when the whole-star projection changes.
+    fn update_hover_preview(&mut self, pos: Point) {
+        let Some(index) = self.star_index_at(pos) else {
+            self.clear_hover_preview();
+            return;
+        };
+        let exact = if self.allow_half_step {
+            self.star_cell(index)
+                .map(|cell| {
+                    let fraction =
+                        ((pos.x - cell.x) as f32 / cell.width.max(1) as f32).clamp(0.0, 1.0);
+                    if fraction < 0.5 {
+                        index as f32 + 0.5
+                    } else {
+                        index as f32 + 1.0
+                    }
+                })
+                .unwrap_or(index as f32 + 1.0)
+        } else {
+            index as f32 + 1.0
+        };
+        self.hover_preview_exact = Some(exact);
+        let preview = index + 1;
+        if self.hover_preview != Some(preview) {
+            self.hover_preview = Some(preview);
+            self.hover_preview_changed.emit(Some(preview));
+            // Only the star row changed; the preview is a narrow, region-sized frame.
+            self.request_frame_repaint(None);
+        }
     }
 
     /// The number of stars under the pointer, or `None` when the pointer is elsewhere.
@@ -381,6 +460,14 @@ impl Widget for Rating {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "hover_preview_changed" => Some(EventSignalRef::mapped(
+                "hover_preview_changed",
+                &self.hover_preview_changed,
+                |preview: &Option<u32>| match preview {
+                    Some(count) => CapabilityValue::UInt(u64::from(*count)),
+                    None => CapabilityValue::Null,
+                },
+            )),
             _ => None,
         }
     }
@@ -407,6 +494,7 @@ impl WidgetProperties for Rating {
             "value" => Ok(CapabilityValue::Float(f64::from(self.rating_exact()))),
             "max" => Ok(CapabilityValue::UInt(u64::from(self.max_rating()))),
             "star_size" => Ok(CapabilityValue::UInt(u64::from(self.star_size()))),
+            "allow_half_step" => Ok(CapabilityValue::Bool(self.allow_half_step())),
             // The proportional fill, in `0.0..=1.0`. `value` alone is not enough for a consumer that
             // wants a bar or a percentage: it would have to know `max`, and dividing in the consumer is
             // the second derivation this contract removes.
@@ -436,6 +524,10 @@ impl WidgetProperties for Rating {
                 self.set_star_size(expect_u32(value)?);
                 Ok(())
             }
+            "allow_half_step" => {
+                self.set_allow_half_step(expect_bool(value)?);
+                Ok(())
+            }
             // Derived from `value` and `max`, so writing either would be a second way to say the same
             // thing — and one of the two would be able to disagree.
             "fill" | "display_text" => Err(CapabilityAccessError::ReadOnlyProperty),
@@ -444,7 +536,15 @@ impl WidgetProperties for Rating {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["value", "max", "star_size", "fill", "display_text", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "value",
+            "max",
+            "star_size",
+            "allow_half_step",
+            "fill",
+            "display_text",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `rating` publishes.
@@ -611,17 +711,11 @@ impl EventHandler for Rating {
                 // Previewing is paint-only. `rating` is deliberately not written here, so a
                 // host reading the control while the pointer moves still sees the committed
                 // score.
-                let preview = self.star_index_at(*pos).map(|index| index + 1);
-                if self.hover_preview != preview {
-                    self.hover_preview = preview;
-                    // Only the star row changed; the preview is a narrow, region-sized frame.
-                    self.request_frame_repaint(None);
-                }
+                self.update_hover_preview(*pos);
             }
             Event::MouseLeave { .. } => {
-                if self.hover_preview.take().is_some() {
-                    self.request_frame_repaint(None);
-                }
+                self.clear_hover_preview();
+                self.request_frame_repaint(None);
             }
             Event::MouseRelease { pos, button } => {
                 if *button != 1 {
@@ -633,6 +727,20 @@ impl EventHandler for Rating {
                 let Some(index) = self.star_index_at(*pos) else {
                     return;
                 };
+                if self.allow_half_step {
+                    // The horizontal position inside the star decides the half step. This is the
+                    // fraction the painter already uses to fill the star, so what is drawn and
+                    // what is committed are the same quantity.
+                    let fraction = self
+                        .star_cell(index)
+                        .map(|cell| {
+                            ((pos.x - cell.x) as f32 / cell.width.max(1) as f32).clamp(0.0, 1.0)
+                        })
+                        .unwrap_or(1.0);
+                    let exact = index as f32 + if fraction < 0.5 { 0.5 } else { 1.0 };
+                    self.set_rating_exact(exact);
+                    return;
+                }
                 // Clicking the same star as the current rating toggles between that star and
                 // clearing; any other star sets that many. Compared against the whole-star
                 // projection so a 4.5 rating still toggles its fourth star off rather than
@@ -642,17 +750,26 @@ impl EventHandler for Rating {
             }
             Event::KeyPress { key, .. } => match *key {
                 key_codes::LEFT => {
-                    let next = (self.rating_exact() - 1.0).max(0.0);
+                    let step = if self.allow_half_step { 0.5 } else { 1.0 };
+                    let next = (self.rating_exact() - step).max(0.0);
                     self.set_rating_exact(next);
                 }
                 key_codes::RIGHT => {
-                    let next = (self.rating_exact() + 1.0).min(self.max_rating as f32);
+                    let step = if self.allow_half_step { 0.5 } else { 1.0 };
+                    let next = (self.rating_exact() + step).min(self.max_rating as f32);
                     self.set_rating_exact(next);
                 }
                 key_codes::SPACE => {
                     // Space commits the preview, if there is one. With no preview it is a
-                    // no-op rather than an implicit "rate zero".
-                    if let Some(count) = self.hover_preview.take() {
+                    // no-op rather than an implicit "rate zero". The exact preview is used when
+                    // half steps are enabled, so Space and the click agree.
+                    if let Some(exact) = self.hover_preview_exact.take() {
+                        self.hover_preview = None;
+                        self.hover_preview_changed.emit(None);
+                        self.set_rating_exact(exact);
+                        self.request_frame_repaint(None);
+                    } else if let Some(count) = self.hover_preview.take() {
+                        self.hover_preview_changed.emit(None);
                         self.set_rating(count);
                         self.request_frame_repaint(None);
                     }
@@ -1180,5 +1297,69 @@ mod tests {
         r.set_read_only(false);
         r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
         assert_eq!(r.rating(), 3, "turning it off restores input");
+    }
+
+    /// With half steps enabled, a click maps the star's horizontal fraction to `n + 0.5` or
+    /// `n + 1.0`, which is the same fraction the painter fills.
+    #[test]
+    fn a_half_step_rating_commits_the_stars_fraction() {
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        assert!(!r.allow_half_step(), "whole stars are the historical behaviour");
+        r.set_allow_half_step(true);
+        assert!(r.allow_half_step());
+
+        let row = r.star_row();
+        let mid_y = row.y + row.height as i32 / 2;
+        let third = r.star_cell(2).expect("the third star fits");
+
+        // Left half of the third star commits 2.5.
+        r.handle_event(&Event::MouseRelease {
+            pos: Point::new(third.x + (third.width as i32 / 4), mid_y),
+            button: 1,
+        });
+        assert!((r.rating_exact() - 2.5).abs() < 1e-6, "got {}", r.rating_exact());
+
+        // Right half commits three whole stars.
+        r.handle_event(&Event::MouseRelease {
+            pos: Point::new(third.x + (third.width as i32 * 3 / 4), mid_y),
+            button: 1,
+        });
+        assert!((r.rating_exact() - 3.0).abs() < 1e-6, "got {}", r.rating_exact());
+    }
+
+    /// The arrow keys move by half a star when half steps are enabled.
+    #[test]
+    fn half_steps_apply_to_the_keyboard_too() {
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        r.set_allow_half_step(true);
+        r.set_rating_exact(2.0);
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::RIGHT, modifiers: 0 });
+        assert!((r.rating_exact() - 2.5).abs() < 1e-6);
+        r.handle_event(&Event::KeyPress { key: crate::event::key_codes::LEFT, modifiers: 0 });
+        assert!((r.rating_exact() - 2.0).abs() < 1e-6);
+    }
+
+    /// Hover preview changes are published as a signal, and leaving reports `None`.
+    #[test]
+    fn hover_preview_changes_are_published() {
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        let seen = std::sync::Arc::new(Mutex::new(Vec::<Option<u32>>::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        r.hover_preview_changed.connect(move |value: Arc<Option<u32>>| {
+            sink.lock().unwrap().push(*value);
+        });
+
+        let row = r.star_row();
+        let mid_y = row.y + row.height as i32 / 2;
+        let second = r.star_cell(1).expect("the second star fits");
+        r.handle_event(&Event::MouseMove { pos: Point::new(second.x + 2, mid_y) });
+        assert_eq!(r.hover_preview(), Some(2));
+
+        // Moving inside the same star is not a new value.
+        r.handle_event(&Event::MouseMove { pos: Point::new(second.x + 4, mid_y) });
+        r.handle_event(&Event::mouse_leave(300, 300));
+        assert_eq!(r.hover_preview(), None);
+
+        assert_eq!(*seen.lock().unwrap(), vec![Some(2), None]);
     }
 }

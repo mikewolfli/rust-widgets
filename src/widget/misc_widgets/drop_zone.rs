@@ -22,6 +22,9 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// The length of one dash in the outline, in pixels; the gap is the same length.
+const DASH_LENGTH: u32 = 8;
+
 /// The feedback a drop zone is currently showing.
 ///
 /// # Why five states and not a `hovered` bool
@@ -141,6 +144,28 @@ pub struct DropZone {
     show_count_badge: bool,
     /// File names collected by the accepted drops.
     dropped_files: Vec<String>,
+    /// The dashed outline's segment list, rebuilt only when its inputs change (K-P16).
+    ///
+    /// The border paints one stroke per 8 px dash on each of four sides — roughly 150 calls for a
+    /// 600 px zone — and the segment list depends only on the geometry. Holding the list means a
+    /// static frame replays points instead of recomputing them; the strokes themselves are still
+    /// one command each, because the renderer has no multi-segment primitive that would keep the
+    /// pixels identical.
+    dash_segments: Vec<(Point, Point)>,
+    /// The geometry and dash length [`Self::dash_segments`] was built for.
+    dash_key: Option<(i32, i32, u32, u32, u32)>,
+    /// The `Drop <type> here` hint, rebuilt only when the type changes (K-P16).
+    hint_text: String,
+    /// The accepted type [`Self::hint_text`] was built for.
+    hint_key: Option<String>,
+    /// The count badge's numeral, rebuilt only when the count changes (K-P16).
+    count_text: String,
+    /// The file count [`Self::count_text`] was built for.
+    count_key: Option<usize>,
+    /// The collected-file summary line, rebuilt only when the list changes (MISC-10).
+    files_text: String,
+    /// The first name and length [`Self::files_text`] was built from.
+    files_key: Option<(String, usize)>,
     /// Which of the five drag feedback states the zone is currently in.
     ///
     /// See [`DropZoneState`] for why this is not a `hovered` bool.
@@ -168,6 +193,14 @@ impl DropZone {
             hover_style: DropZoneHoverStyle::Highlight,
             show_count_badge: false,
             dropped_files: Vec::new(),
+            dash_segments: Vec::new(),
+            dash_key: None,
+            hint_text: String::new(),
+            hint_key: None,
+            count_text: String::new(),
+            count_key: None,
+            files_text: String::new(),
+            files_key: None,
             state: DropZoneState::Idle,
             zone_entered: Signal1::new(),
             zone_exited: Signal1::new(),
@@ -319,6 +352,98 @@ impl DropZone {
     /// The file names collected by accepted drops.
     pub fn dropped_files(&self) -> &[String] {
         &self.dropped_files
+    }
+
+    /// Removes every collected file name and resets the confirmation state.
+    ///
+    /// The list was append-only for the life of the control: `dropped_files` had a getter and no
+    /// way to empty it, so a zone that had once accepted a drop painted its `Dropped` confirmation
+    /// and its badge forever.
+    pub fn clear_dropped_files(&mut self) {
+        let had_files = !self.dropped_files.is_empty();
+        self.dropped_files.clear();
+        if had_files || self.state == DropZoneState::Dropped {
+            self.set_state(DropZoneState::Idle);
+            self.base.request_redraw();
+        }
+    }
+
+    /// Takes the collected file names out of the zone, leaving it empty and idle.
+    ///
+    /// The read-and-clear counterpart of [`Self::clear_dropped_files`], for a host that consumes
+    /// the drop and wants the zone ready for the next one.
+    pub fn take_dropped_files(&mut self) -> Vec<String> {
+        let files = core::mem::take(&mut self.dropped_files);
+        if !files.is_empty() || self.state == DropZoneState::Dropped {
+            self.set_state(DropZoneState::Idle);
+            self.base.request_redraw();
+        }
+        files
+    }
+
+    /// Rebuilds the cached dash segments and the two derived strings when their inputs change
+    /// (K-P16).
+    ///
+    /// Called at the top of `draw`, before the frame borrows `self` through the style. The dash
+    /// list depends only on the geometry, the hint only on `accepted_type` and the count only on
+    /// the list length, so a static frame does none of this work.
+    fn refresh_cached_text(&mut self, rect: Rect) {
+        let dash_key = (rect.x, rect.y, rect.width, rect.height, DASH_LENGTH);
+        if self.dash_key != Some(dash_key) {
+            self.dash_segments.clear();
+            let dash = DASH_LENGTH;
+            let right = rect.x + rect.width as i32 - 1;
+            let bottom = rect.y + rect.height as i32 - 1;
+            let mut x = rect.x;
+            while x + dash as i32 <= rect.x + rect.width as i32 {
+                self.dash_segments
+                    .push((Point::new(x, rect.y), Point::new(x + dash as i32, rect.y)));
+                self.dash_segments
+                    .push((Point::new(x, bottom), Point::new(x + dash as i32, bottom)));
+                x += (dash * 2) as i32;
+            }
+            let mut y = rect.y;
+            while y + dash as i32 <= rect.y + rect.height as i32 {
+                self.dash_segments
+                    .push((Point::new(rect.x, y), Point::new(rect.x, y + dash as i32)));
+                self.dash_segments.push((Point::new(right, y), Point::new(right, y + dash as i32)));
+                y += (dash * 2) as i32;
+            }
+            self.dash_key = Some(dash_key);
+        }
+
+        if self.hint_key.as_deref() != Some(self.accepted_type.as_str()) {
+            self.hint_text.clear();
+            let _ = core::fmt::Write::write_fmt(
+                &mut self.hint_text,
+                format_args!("Drop {} here", self.accepted_type),
+            );
+            self.hint_key = Some(self.accepted_type.clone());
+        }
+
+        let count = self.dropped_files.len();
+        if self.count_key != Some(count) {
+            self.count_text.clear();
+            let _ = core::fmt::Write::write_fmt(&mut self.count_text, format_args!("{count}"));
+            self.count_key = Some(count);
+        }
+
+        // "first name +N": one line is all the well has room for, and the count is what the rest
+        // of the list amounts to (MISC-10).
+        let first = self.dropped_files.first().cloned().unwrap_or_default();
+        let files_key = (first, count);
+        if self.files_key.as_ref() != Some(&files_key) {
+            self.files_text.clear();
+            if count == 1 {
+                self.files_text.push_str(files_key.0.as_str());
+            } else if count > 1 {
+                let _ = core::fmt::Write::write_fmt(
+                    &mut self.files_text,
+                    format_args!("{} +{}", files_key.0, count - 1),
+                );
+            }
+            self.files_key = Some(files_key);
+        }
     }
 
     /// The file names a payload contributes.
@@ -560,15 +685,18 @@ impl EventHandler for DropZone {
 impl Draw for DropZone {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        // Refreshed before the frame borrows `self` through the style, so the caches need no
+        // interior mutability and a static frame does none of this work (K-P16).
+        self.refresh_cached_text(rect);
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. Without the theme step
         // a light/dark switch would change nothing on screen, because the fills below
         // were previously hardcoded.
         //
-        // The theme read is a separate manager lock, taken and released inside
-        // `resolved_theme_style`, so it is not held across the draw — the global
-        // manager's mutex is not re-entrant.
+        // The style lookups are the cached, revision-validated forms — `resolved_theme_style_shared`
+        // is a refcount bump on a hit and `palette_shared` answers the window fill without another
+        // lock, which is the same value the old scoped manager read copied out (K-P17).
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("drop_zone");
         let ink = style
@@ -583,10 +711,8 @@ impl Draw for DropZone {
         // window fill is therefore re-derived a visible step toward the ink, the same guard
         // `dial.rs` and `slider.rs` apply to their own faces. A drop zone has to show a well it
         // drops into, so the fallback steps *away* from the window rather than landing on it.
-        let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
-        };
+        let window_fill =
+            crate::style::palette_shared().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let surface = match style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -649,38 +775,8 @@ impl Draw for DropZone {
             DropZoneState::Dropped => (ink, 2),
             DropZoneState::Rejected => (outline.blend(&ink, 0.25), 1),
         };
-        let dash = 8u32;
-        let mut x = rect.x;
-        while x + dash as i32 <= rect.x + rect.width as i32 {
-            context.draw_line_stroke(
-                Point::new(x, rect.y),
-                Point::new(x + dash as i32, rect.y),
-                border,
-                stroke,
-            );
-            context.draw_line_stroke(
-                Point::new(x, rect.y + rect.height as i32 - 1),
-                Point::new(x + dash as i32, rect.y + rect.height as i32 - 1),
-                border,
-                stroke,
-            );
-            x += (dash * 2) as i32;
-        }
-        let mut y = rect.y;
-        while y + dash as i32 <= rect.y + rect.height as i32 {
-            context.draw_line_stroke(
-                Point::new(rect.x, y),
-                Point::new(rect.x, y + dash as i32),
-                border,
-                stroke,
-            );
-            context.draw_line_stroke(
-                Point::new(rect.x + rect.width as i32 - 1, y),
-                Point::new(rect.x + rect.width as i32 - 1, y + dash as i32),
-                border,
-                stroke,
-            );
-            y += (dash * 2) as i32;
+        for (from, to) in &self.dash_segments {
+            context.draw_line_stroke(*from, *to, border, stroke);
         }
 
         // A dashed outline says "a control is here" but not what it wants. The accepted type is
@@ -689,19 +785,31 @@ impl Draw for DropZone {
         // accepted. The band is inset past the dashes so the text never sits on the outline.
         let font = crate::widget::metrics::effective_font(style);
         if rect.width > 40 && rect.height > 24 {
-            let mut hint = String::new();
-            let _ = core::fmt::Write::write_fmt(
-                &mut hint,
-                format_args!("Drop {} here", self.accepted_type),
-            );
             let inner = Rect::new(rect.x + 10, rect.y, rect.width.saturating_sub(20), rect.height);
             context.draw_text_fitted_cow(
                 inner,
-                &hint,
+                &self.hint_text,
                 font,
                 ink.blend(&fill, 0.30),
                 HorizontalAlignment::Center,
             );
+            // What actually landed, which the count badge alone does not say (MISC-10). The line
+            // sits below the cue, bounded to the well and ellipsised by the shared primitive.
+            if !self.files_text.is_empty() {
+                let line = Rect::new(
+                    rect.x + 10,
+                    rect.y + rect.height as i32 - 20,
+                    rect.width.saturating_sub(20),
+                    16,
+                );
+                context.draw_text_fitted_cow(
+                    line,
+                    &self.files_text,
+                    font,
+                    ink.blend(&fill, 0.15),
+                    HorizontalAlignment::Center,
+                );
+            }
         }
 
         // The dropped-count badge: a small disc at the top-right whose number is the number of
@@ -713,11 +821,6 @@ impl Draw for DropZone {
                 rect.y + radius as i32 + 2,
             );
             context.fill_circle(center, radius, ink);
-            let mut count = String::new();
-            let _ = core::fmt::Write::write_fmt(
-                &mut count,
-                format_args!("{}", self.dropped_files.len()),
-            );
             let badge_font = crate::core::Font::bold("Arial", 9.0);
             let band = Rect::new(
                 center.x - radius as i32,
@@ -727,7 +830,7 @@ impl Draw for DropZone {
             );
             context.draw_text_fitted_cow(
                 band,
-                &count,
+                &self.count_text,
                 &badge_font,
                 ink.contrast_color(),
                 HorizontalAlignment::Center,
@@ -964,5 +1067,40 @@ mod tests {
         assert_eq!(rejected.load(Ordering::SeqCst), 1);
         assert!(z.event_signal_dyn("zone_entered").is_some());
         assert!(z.event_signal_dyn("dropped").is_some());
+    }
+
+    /// The collected names can be emptied or taken, and either way the zone returns to rest
+    /// (MISC-09).
+    #[test]
+    fn the_collected_files_can_be_cleared_and_taken() {
+        let mut z = DropZone::new(Rect::new(0, 0, 200, 120), "text/plain");
+        z.set_multi_file(true);
+        z.on_drop(&DragPayload::new("text/plain", "one.txt"), Point::new(0, 0));
+        z.on_drop(&DragPayload::new("text/plain", "two.txt"), Point::new(0, 0));
+        assert_eq!(z.dropped_files().len(), 2);
+
+        let taken = z.take_dropped_files();
+        assert_eq!(taken, vec!["one.txt".to_string(), "two.txt".to_string()]);
+        assert!(z.dropped_files().is_empty(), "taking empties the zone");
+
+        z.on_drop(&DragPayload::new("text/plain", "three.txt"), Point::new(0, 0));
+        z.clear_dropped_files();
+        assert!(z.dropped_files().is_empty());
+    }
+
+    /// The well names what landed, folding several files into `first +N` (MISC-10).
+    #[test]
+    fn the_dropped_names_reach_the_picture() {
+        use crate::widget::svg::render_to_svg;
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut z = DropZone::new(Rect::new(0, 0, 200, 120), "text/plain");
+        z.set_multi_file(true);
+        let empty = render_to_svg(&mut z);
+        z.on_drop(&DragPayload::new("text/plain", "report.csv"), Point::new(0, 0));
+        let one = render_to_svg(&mut z);
+        assert_ne!(empty, one, "a dropped name must appear");
+        z.on_drop(&DragPayload::new("text/plain", "notes.txt"), Point::new(0, 0));
+        let two = render_to_svg(&mut z);
+        assert_ne!(one, two, "the folded `+N` form is a different string");
     }
 }

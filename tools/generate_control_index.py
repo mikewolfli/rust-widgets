@@ -370,6 +370,10 @@ def registry_names() -> list[str]:
     not a control at all — it is the whole icon set drawn as a grid (BLUE25 ICON-7), produced by
     `examples/export_icon_sheet.rs` rather than by the control registry. Listing it would invent a
     control named `icon_sheet` that no factory can construct.
+
+    The **companion pairings are excluded** too: `pair_combo_box.svg` is a scene containing two
+    controls, not a control. They are listed in their own section from the exporter's `PAIRS`
+    table, so a pair can never be mistaken for a nineteenth control row.
     """
     extras = extra_appearances()
     names = sorted(
@@ -378,8 +382,27 @@ def registry_names() -> list[str]:
         if not path.name.endswith(".light.svg")
         and path.name[: -len(".svg")] not in extras
         and not path.name.startswith("icon_sheet")
+        and not path.name.startswith("pair_")
     )
     return names
+
+
+def pair_appearances() -> list[tuple[str, str, str]]:
+    """The companion pairings, as `(stem, primary, companion)`.
+
+    Read from `export_control_svgs.rs`'s own `PAIRS` table. The exporter and this page must
+    describe the same set: a pair listed here but not exported would be a broken image link, and
+    one exported but not listed would be a file nothing accounts for.
+    """
+    if not EXPORTER.exists():
+        return []
+    text = EXPORTER.read_text(encoding="utf-8")
+    match = re.search(r"PAIRS[^=]*=\s*&\[(.*?)\];", text, re.DOTALL)
+    if match is None:
+        return []
+    return re.findall(
+        r'\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)', match.group(1)
+    )
 
 
 def classify(name: str, families: dict[str, str], sources: dict[str, str]) -> str:
@@ -404,6 +427,7 @@ def main() -> int:
     sources = source_families()
     names = registry_names()
     extras = extra_appearances()
+    pairs = pair_appearances()
     if not names:
         print(f"error: no snapshots found in {SNAPSHOTS}", file=sys.stderr)
         return 1
@@ -448,6 +472,12 @@ def main() -> int:
         "这些图片由 `examples/export_control_svgs.rs` 从**控件注册表**导出，"
         "并由 `tools/check_svg_snapshots.sh` 门禁保证「重新生成的结果与提交的字节完全一致」。"
         "因此它们是**产物**而不是手绘插图：任何控件的绘制改动都会在这里以 diff 的形式出现。"
+    )
+    out.append("")
+    out.append(
+        "`snapshots/svg/icon_sheet.svg` 与 `icon_sheet.light.svg` 是**图标雪碧图**（整套 "
+        "`IconName` 排成网格），不是控件快照：它由 `examples/export_icon_sheet.rs` 生成，"
+        "并由同一个 `tools/check_svg_snapshots.sh` 门禁校验字节一致，因此不列入上表。"
     )
     out.append("")
     out.append("| | |")
@@ -501,6 +531,29 @@ def main() -> int:
             )
         out.append("")
 
+    # The companion pairings are a second kind of picture, not a second control list: one scene
+    # with a primary and its companion. They get their own table so a reader looking for "what
+    # does a suggestion popup look like beside a combo box" does not have to scan the control
+    # families for a file whose name starts with `pair_`.
+    if pairs:
+        out.append(f"## Companion pairings ({len(pairs)})")
+        out.append("")
+        out.append(
+            "每张 `pair_<name>.svg`（深色）与 `pair_<name>.light.svg`（浅色）都是**一个主控件**"
+            "与**它的伴随控件**画在同一张 240 x 120 画布上的合影。`<name>` 是主控件的注册名，"
+            "因此从控件本身就能找到它的配对图。"
+        )
+        out.append("")
+        out.append("| 配对 | 主控件 | 伴随控件 | 深色 | 浅色 |")
+        out.append("|---|---|---|---|---|")
+        for stem, primary, companion in pairs:
+            out.append(
+                f"| `pair_{stem}` | `{primary}` | `{companion}` "
+                f"| ![{stem} (dark)](snapshots/svg/pair_{stem}.svg) "
+                f"| ![{stem} (light)](snapshots/svg/pair_{stem}.light.svg) |"
+            )
+        out.append("")
+
     output = DEFAULT_OUTPUT
     # `newline=""` is what keeps this byte-stable across hosts.
     #
@@ -514,7 +567,7 @@ def main() -> int:
     # so the file this produces must be LF on every host. Passing `newline=""` disables the
     # translation and makes the output the bytes this function actually computes.
     output.write_text("\n".join(out) + "\n", encoding="utf-8", newline="")
-    print(f"wrote {output.relative_to(ROOT)}: {len(names)} controls in {len(ordered)} families")
+    print(f"wrote {output.relative_to(ROOT)}: {len(names)} controls in {len(ordered)} families, {len(pairs)} companion pairs")
     for family in ordered:
         print(f"  {family}: {len(grouped[family])}")
     if unclassified:

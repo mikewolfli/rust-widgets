@@ -5,6 +5,7 @@
 - [Architecture Overview](chapters/architecture.md)
 - [Core Types](chapters/core-types.md)
 - [Widget System](chapters/widget-system.md)
+- [Widget Families in Detail](chapters/widgets-detail.md)
 - [Layout System](chapters/layout-system.md)
 - [Event System](chapters/event-system.md)
 - [Rendering System](chapters/rendering-system.md)

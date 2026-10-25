@@ -45,6 +45,11 @@ pub struct MaterialSnackbar {
     slide: PropertyDriver,
     /// Whether an animated dismissal is in progress.
     closing: bool,
+    /// The action button's rectangle from the last paint, so the hit test uses the same
+    /// text measurement the ink does (MW-15).
+    action_rect: Option<Rect>,
+    /// Whether the press landed on the action button and has not been released yet.
+    pressed_action: bool,
 }
 
 impl MaterialSnackbar {
@@ -64,6 +69,8 @@ impl MaterialSnackbar {
             elapsed_ms: 0,
             slide: PropertyDriver::at(0.0, MotionSlot::Normal),
             closing: false,
+            action_rect: None,
+            pressed_action: false,
         }
     }
 
@@ -87,6 +94,8 @@ impl MaterialSnackbar {
             return;
         }
         self.action_text = text.to_string();
+        self.action_rect = None;
+        self.pressed_action = false;
         self.base.request_redraw();
     }
 
@@ -415,6 +424,11 @@ impl Draw for MaterialSnackbar {
             let metrics = context.measure_text(&self.action_text, &action_font);
 
             let action_x = bar_rect.x + bar_rect.width as i32 - metrics.width as i32 - 16;
+            // The hit region is the measured ink plus padding, cached for the event path.
+            // The old estimate (0.6 x point size x byte count) disagreed with this by tens
+            // of pixels on mixed-case text, so clicks missed the label they aimed at.
+            self.action_rect =
+                Some(Rect::new(action_x - 8, bar_rect.y, metrics.width + 16, bar_height));
             // Same top-edge origin as the message: centre on the line box, not on the
             // ascent/descent midpoint, which sat the action half a line low.
             let action_y = bar_rect.y + (bar_height as i32 - metrics.height as i32) / 2;
@@ -426,6 +440,8 @@ impl Draw for MaterialSnackbar {
                 primary,
                 HorizontalAlignment::Left,
             );
+        } else {
+            self.action_rect = None;
         }
     }
 }
@@ -442,50 +458,60 @@ impl EventHandler for MaterialSnackbar {
         }
 
         match event {
-            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
-
                 let rect = self.geometry();
                 let bar_height = 48u32;
                 let bar_y = rect.y + rect.height as i32 - bar_height as i32 - 16;
                 let bar_rect =
                     Rect::new(rect.x + 12, bar_y, rect.width.saturating_sub(24), bar_height);
-
                 if !bar_rect.contains_point(*pos) {
                     return;
                 }
-
-                // Check if the click is in the action area (right side)
-                if !self.action_text.is_empty() {
-                    let action_font = role_font(self.style(), 14.0).with_bold(true);
-                    let action_area_width =
-                        context_proxy_measure_text(&self.action_text, &action_font) + 32;
-
-                    if pos.x >= bar_rect.x + bar_rect.width as i32 - action_area_width {
-                        self.action_pressed.emit();
-                        self.base.request_redraw();
-                        return;
-                    }
+                // The action button is the rectangle the paint path cached; before the first
+                // paint it is derived from the same estimated advance the layout uses (MW-15).
+                // A press only latches the state; the signal fires on release exactly once
+                // (L-P10).
+                let action = self.action_rect.unwrap_or_else(|| {
+                    let font = role_font(self.style(), 14.0).with_bold(true);
+                    let width =
+                        crate::widget::metrics::estimate_text_width(&self.action_text, &font, 1.0);
+                    Rect::new(
+                        bar_rect.right() - width as i32 - 24,
+                        bar_rect.y,
+                        width + 16,
+                        bar_height,
+                    )
+                });
+                self.pressed_action = action.contains_point(*pos);
+                // Remember the derived rectangle so the release hit-tests the same area the
+                // press latched.
+                self.action_rect = Some(action);
+                if !self.pressed_action {
+                    // Click anywhere else on the snackbar dismisses it.
+                    self.dismiss();
                 }
-
-                // Click anywhere else on the snackbar dismisses it
-                self.dismiss();
+            }
+            Event::MouseRelease { pos, button } => {
+                if *button != 1 {
+                    return;
+                }
+                // A press that has dragged off the action cancels it, which is the standard
+                // desktop button contract.
+                let within = self.action_rect.is_some_and(|action| action.contains_point(*pos));
+                if self.pressed_action && within {
+                    self.action_pressed.emit();
+                    self.base.request_redraw();
+                }
+                self.pressed_action = false;
             }
             _ => {
                 self.base.handle_event(event);
             }
         }
     }
-}
-
-/// Helper to measure text width without a RenderContext reference for hit-testing.
-/// Falls back to an approximate width calculation when context is unavailable.
-fn context_proxy_measure_text(text: &str, font: &crate::core::Font) -> i32 {
-    // Approximate width: average char width ~0.6 * font size
-    let char_width = (font.size() * 0.6) as i32;
-    (text.len() as i32 * char_width).max(0)
 }
 
 #[cfg(test)]
@@ -545,12 +571,20 @@ pub struct RailItem {
     pub icon: String,
     /// Text label shown beneath (or beside) the icon.
     pub label: String,
+    /// An unread/notification count drawn as a trailing capsule.
+    pub badge: Option<u32>,
 }
 
 impl RailItem {
     /// Creates a new rail item with the given icon and label.
     pub fn new(icon: &str, label: &str) -> Self {
-        Self { icon: icon.to_string(), label: label.to_string() }
+        Self { icon: icon.to_string(), label: label.to_string(), badge: None }
+    }
+
+    /// The same item with a badge count.
+    pub fn with_badge(mut self, badge: u32) -> Self {
+        self.badge = Some(badge);
+        self
     }
 }
 
@@ -566,6 +600,9 @@ const RAIL_MAX_WIDTH: u32 = 80;
 /// the click target drift from the destination it describes.
 const RAIL_ITEM_HEIGHT: u32 = 72;
 
+/// The height reserved for an optional header widget above the rail's items.
+const RAIL_HEADER_HEIGHT: u32 = 56;
+
 /// Material Design navigation rail for tablets (BLUE11 R10.22).
 ///
 /// A vertically stacked set of destinations with one selected at a time. The
@@ -580,6 +617,8 @@ pub struct MaterialNavigationRail {
     /// One-based ordering is not implied; indices are positions in
     /// `MaterialNavigationRail::items()`.
     pub current_changed: Signal1<usize>,
+    /// An optional header widget (an avatar, a fab, a search box) drawn above the items.
+    header_widget: Option<crate::compat::Box<dyn Widget>>,
 }
 
 impl MaterialNavigationRail {
@@ -593,6 +632,7 @@ impl MaterialNavigationRail {
             item_icon_sources: Vec::new(),
             selected_index: 0,
             current_changed: Signal1::new(),
+            header_widget: None,
         }
     }
 
@@ -657,6 +697,94 @@ impl MaterialNavigationRail {
         self.item_icon_sources.clear();
         self.selected_index = 0;
         self.base.request_redraw();
+    }
+
+    /// Removes the item at `index`, returning whether it existed.
+    ///
+    /// The selection follows the list: removing a row before it moves the selection up one,
+    /// removing the selected row keeps the numeric position (which now names the next item), and
+    /// an emptied list resets to zero.
+    pub fn remove_item(&mut self, index: usize) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        self.items.remove(index);
+        self.item_icon_sources.remove(index);
+        if self.items.is_empty() {
+            self.selected_index = 0;
+        } else if index < self.selected_index {
+            self.selected_index -= 1;
+        } else {
+            self.selected_index = self.selected_index.min(self.items.len() - 1);
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Replaces one item's caption, returning whether the index exists.
+    pub fn set_item_label(&mut self, index: usize, label: &str) -> bool {
+        let Some(item) = self.items.get_mut(index) else {
+            return false;
+        };
+        if item.label == label {
+            return true;
+        }
+        item.label = label.to_string();
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Replaces one item's icon text/name, returning whether the index exists.
+    pub fn set_item_icon(&mut self, index: usize, icon: &str) -> bool {
+        let Some(item) = self.items.get_mut(index) else {
+            return false;
+        };
+        if item.icon == icon {
+            return true;
+        }
+        item.icon = icon.to_string();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Sets one item's badge, returning whether the index exists.
+    pub fn set_item_badge(&mut self, index: usize, badge: Option<u32>) -> bool {
+        let Some(item) = self.items.get_mut(index) else {
+            return false;
+        };
+        if item.badge == badge {
+            return true;
+        }
+        item.badge = badge;
+        self.base.request_redraw();
+        true
+    }
+
+    /// Installs an optional header widget drawn above the first item.
+    ///
+    /// The widget is painted in a band of its own height at the top of the rail; the item
+    /// positions and hit tests shift below it. Passing `None` removes the slot.
+    pub fn set_header_widget(&mut self, widget: Option<crate::compat::Box<dyn Widget>>) {
+        let rect = self.geometry();
+        let width = rect.width.min(RAIL_MAX_WIDTH);
+        self.header_widget = widget;
+        if let Some(widget) = self.header_widget.as_mut() {
+            widget.set_geometry(crate::core::Rect::new(rect.x, rect.y, width, RAIL_HEADER_HEIGHT));
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The header slot, when one is installed.
+    pub fn header_widget_mut(&mut self) -> Option<&mut (dyn Widget + '_)> {
+        self.header_widget.as_deref_mut()
+    }
+
+    /// The y offset the first item starts at (below the header, when present).
+    fn items_top(&self) -> i32 {
+        self.geometry().y + if self.header_widget.is_some() { RAIL_HEADER_HEIGHT as i32 } else { 0 }
     }
 }
 
@@ -806,16 +934,33 @@ impl Draw for MaterialNavigationRail {
             border,
         );
 
-        if self.items.is_empty() {
+        if self.items.is_empty() && self.header_widget.is_none() {
             return;
+        }
+
+        // ── Optional header slot ──
+        if self.header_widget.is_some() {
+            let header = Rect::new(rect.x, rect.y, rail_width, RAIL_HEADER_HEIGHT.min(rect.height));
+            if let Some(widget) = self.header_widget.as_mut() {
+                widget.set_geometry(header);
+                if let Some(drawable) = crate::widget::draw_bridge::draw_of(widget.as_mut()) {
+                    drawable.draw(context);
+                }
+            }
+            context.draw_line(
+                Point::new(header.x, header.bottom() - 1),
+                Point::new(header.right() - 1, header.bottom() - 1),
+                border,
+            );
         }
 
         let item_height = RAIL_ITEM_HEIGHT;
         let icon_font = role_font(style, 14.0);
         let label_font = role_font(style, 12.0);
+        let items_top = self.items_top();
 
         for (i, item) in self.items.iter().enumerate() {
-            let item_y = rect.y + (i as u32 * item_height) as i32;
+            let item_y = items_top + (i as u32 * item_height) as i32;
             let is_selected = i == self.selected_index;
 
             // ── Selected indicator bar ──
@@ -872,6 +1017,34 @@ impl Draw for MaterialNavigationRail {
                 );
             }
 
+            // ── Badge ──
+            // A count capsule at the icon's trailing top corner, on the same role colours the
+            // icon uses so it reads as part of the same destination.
+            if let Some(badge) = item.badge {
+                let mut text = String::new();
+                {
+                    use core::fmt::Write as _;
+                    let _ = write!(text, "{badge}");
+                }
+                let metrics = context.measure_text(&text, &label_font);
+                let width = (metrics.width + 8).max(14);
+                let height = metrics.height.max(12);
+                let badge_rect = Rect::new(
+                    rect.x + (rail_width as i32 + icon_side as i32) / 2 - width as i32 + 2,
+                    item_y + 10,
+                    width,
+                    height,
+                );
+                context.fill_rounded_rect(badge_rect, height / 2, primary);
+                context.draw_text_fitted_cow(
+                    badge_rect,
+                    &text,
+                    &label_font,
+                    primary.contrast_color(),
+                    HorizontalAlignment::Center,
+                );
+            }
+
             // ── Label ──
             // Centred in a band whose top is the label's top edge: the origin is the glyph box,
             // so `item_y + 44 + height / 2` put every label half a line low.
@@ -916,8 +1089,9 @@ impl EventHandler for MaterialNavigationRail {
                 }
 
                 let item_height = RAIL_ITEM_HEIGHT;
+                let items_top = self.items_top();
                 for i in 0..self.items.len() {
-                    let item_y = rect.y + (i as u32 * item_height) as i32;
+                    let item_y = items_top + (i as u32 * item_height) as i32;
                     let item_rect = crate::core::Rect::new(
                         rect.x,
                         item_y,

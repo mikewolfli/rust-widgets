@@ -12,7 +12,9 @@ use crate::compat::{HashMap, Rc, RefCell, Vec, VecDeque};
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::render::backend::surface::PathClip;
 use crate::render::default_software_render_config;
-use crate::render::pipeline::pixel_ops::{fill_pixels, pixel_visible, write_pixel_with_mode};
+use crate::render::pipeline::pixel_ops::{
+    fill_pixels, pixel_visible, set_pixel, write_pixel_with_mode,
+};
 use crate::render::{
     BackBuffer, BlendMode, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
 };
@@ -67,16 +69,20 @@ type TextMetricsCache = HashMap<(u64, u64), (u64, TextMetrics)>;
 type ShapeCache = HashMap<(u64, u64), (u64, Rc<ShapedText>)>;
 
 thread_local! {
+    // `HashMap::new` is const only when `compat::HashMap` is a `BTreeMap` (alloc_frugal); the
+    // std profile uses `RandomState`, so the initializer cannot be wrapped in `const { .. }`.
     // Two independently seeded hashes rather than an owning key: the pair is computed from the
     // borrowed inputs, so a lookup allocates nothing, and two 64-bit values make an accidental
     // match between different inputs effectively impossible. A cache miss is the only way an
     // input can reach the shaping path, so a collision would show as a wrong width, not as
     // corruption.
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
     static TEXT_METRICS: RefCell<TextMetricsCache> = RefCell::new(HashMap::new());
     // Insertion order, for FIFO eviction. The caches used to `clear()` when full, so one entry
     // over the bound discarded the whole working set and the next frame re-shaped everything.
     static TEXT_METRICS_ORDER: RefCell<VecDeque<(u64, u64)>> =
         const { RefCell::new(VecDeque::new()) };
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
     static TEXT_SHAPES: RefCell<ShapeCache> = RefCell::new(HashMap::new());
     static TEXT_SHAPES_ORDER: RefCell<VecDeque<(u64, u64)>> =
         const { RefCell::new(VecDeque::new()) };
@@ -147,6 +153,7 @@ const GRADIENT_LUT_CACHE_LIMIT: usize = 16;
 
 thread_local! {
     /// Resolved gradient ramps, keyed by a fingerprint of their stops, in insertion order.
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
     static GRADIENT_LUTS: RefCell<GradientLutCache> = RefCell::new((VecDeque::new(), HashMap::new()));
 }
 
@@ -168,9 +175,29 @@ fn gradient_ramp_fingerprint(gradient: &Gradient) -> u64 {
     hasher.finish()
 }
 
-/// Returns the resolved 256-sample ramp for `gradient`, building it at most once per content.
-fn gradient_ramp_lut(gradient: &Gradient) -> Rc<[Color; GRADIENT_LUT_SIZE]> {
-    let key = gradient_ramp_fingerprint(gradient);
+/// Fingerprints a bare `(position, color)` stop slice exactly as [`gradient_ramp_fingerprint`]
+/// hashes the equivalent `Gradient`, so both builders address the same cache entry (G-203).
+fn gradient_stops_fingerprint(stops: &[(f32, Color)]) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    stops.len().hash(&mut hasher);
+    for (position, color) in stops {
+        position.to_bits().hash(&mut hasher);
+        color.r.hash(&mut hasher);
+        color.g.hash(&mut hasher);
+        color.b.hash(&mut hasher);
+        color.a.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Returns the cached ramp for `key`, building it with `build` on a miss.
+///
+/// The cache is FIFO-bounded by [`GRADIENT_LUT_CACHE_LIMIT`]; a hit costs one refcount bump.
+fn cached_ramp_lut(
+    key: u64,
+    build: impl FnOnce() -> [Color; GRADIENT_LUT_SIZE],
+) -> Rc<[Color; GRADIENT_LUT_SIZE]> {
     GRADIENT_LUTS.with(|cache| {
         let existing = {
             let cache = cache.borrow();
@@ -179,11 +206,7 @@ fn gradient_ramp_lut(gradient: &Gradient) -> Rc<[Color; GRADIENT_LUT_SIZE]> {
         if let Some(lut) = existing {
             return lut;
         }
-        let mut lut = [Color::BLACK; GRADIENT_LUT_SIZE];
-        for (index, slot) in lut.iter_mut().enumerate() {
-            *slot = gradient.interpolate(index as f32 / (GRADIENT_LUT_SIZE - 1) as f32);
-        }
-        let lut = Rc::new(lut);
+        let lut = Rc::new(build());
         let mut cache = cache.borrow_mut();
         if cache.0.len() >= GRADIENT_LUT_CACHE_LIMIT {
             if let Some(oldest) = cache.0.pop_front() {
@@ -194,6 +217,129 @@ fn gradient_ramp_lut(gradient: &Gradient) -> Rc<[Color; GRADIENT_LUT_SIZE]> {
         cache.1.insert(key, Rc::clone(&lut));
         lut
     })
+}
+
+/// Samples a ramp of `(position, color)` stops at `pos`.
+///
+/// This mirrors [`Gradient::interpolate`] step for step (boundary stops, `partition_point`
+/// bracketing, the zero-span guard, and the truncating channel lerp), so a ramp built from a bare
+/// stop slice is bit-identical to one built from the equivalent `Gradient`. It is the single
+/// sampler both conic raster paths use (G-203); the removed private `conic_stop_color` differed
+/// only for a stop span below `0.0001`, where it stretched the span instead of dividing by it.
+fn ramp_stop_color(stops: &[(f32, Color)], position: f32) -> Color {
+    if stops.is_empty() {
+        return Color::TRANSPARENT;
+    }
+    if stops.len() == 1 {
+        return stops[0].1;
+    }
+    let last = stops.len() - 1;
+    if position <= stops[0].0 {
+        return stops[0].1;
+    }
+    if position >= stops[last].0 {
+        return stops[last].1;
+    }
+    let index = stops.partition_point(|stop| stop.0 <= position);
+    let (current_position, current_color) = stops[index - 1];
+    let (next_position, next_color) = stops[index];
+    let span = next_position - current_position;
+    if span <= 0.0 {
+        return current_color;
+    }
+    let t = ((position - current_position) / span).clamp(0.0, 1.0);
+    let channel = |from: u8, to: u8| -> u8 { ((1.0 - t) * from as f32 + t * to as f32) as u8 };
+    Color::rgba(
+        channel(current_color.r, next_color.r),
+        channel(current_color.g, next_color.g),
+        channel(current_color.b, next_color.b),
+        channel(current_color.a, next_color.a),
+    )
+}
+
+/// Resolves a full 256-sample ramp from `stops` with [`ramp_stop_color`].
+fn build_ramp(stops: &[(f32, Color)]) -> [Color; GRADIENT_LUT_SIZE] {
+    let mut lut = [Color::BLACK; GRADIENT_LUT_SIZE];
+    for (index, slot) in lut.iter_mut().enumerate() {
+        *slot = ramp_stop_color(stops, index as f32 / (GRADIENT_LUT_SIZE - 1) as f32);
+    }
+    lut
+}
+
+/// Returns the resolved 256-sample ramp for `gradient`, building it at most once per content.
+fn gradient_ramp_lut(gradient: &Gradient) -> Rc<[Color; GRADIENT_LUT_SIZE]> {
+    cached_ramp_lut(gradient_ramp_fingerprint(gradient), || {
+        // The sampler and its cache speak the `(position, color)` pairs a conic command carries;
+        // bridge once per build, not once per lookup.
+        let stops: Vec<(f32, Color)> =
+            gradient.stops.iter().map(|stop| (stop.position, stop.color)).collect();
+        build_ramp(&stops)
+    })
+}
+
+/// Returns the resolved 256-sample ramp for a bare `(position, color)` stop slice, building it at
+/// most once per content.
+///
+/// Shares [`GRADIENT_LUTS`] with [`gradient_ramp_lut`], so a `Gradient` and the identical stop
+/// pairs a conic command carries resolve to the same cached table (G-203).
+pub(crate) fn ramp_lut_for_stops(stops: &[(f32, Color)]) -> Rc<[Color; GRADIENT_LUT_SIZE]> {
+    cached_ramp_lut(gradient_stops_fingerprint(stops), || build_ramp(stops))
+}
+
+/// How the shared conic kernel commits each sampled pixel.
+///
+/// The two callers historically wrote differently — the `DrawConicGradient` command arm stored the
+/// colour verbatim, while `fill_rect_gradient` composited through the surface blend mode — so the
+/// write policy travels with the call rather than being folded into the loop, which keeps both
+/// paths' pixels unchanged (G-203).
+pub(crate) enum ConicWrite {
+    /// Store the sampled colour, including its alpha, over the destination.
+    Replace,
+    /// Composite through `mode` at full coverage.
+    Blend(BlendMode),
+}
+
+/// Rasterises a conic (swept) gradient over `bounds`, the one implementation both
+/// `DrawConicGradient` and `GradientType::Conic` use (G-203).
+///
+/// `bounds` is `(x0, y0, x1, y1)` with `x1`/`y1` exclusive and already clipped by the caller.
+/// `start_angle` is in radians and rotates the ramp index, not the geometry. The per-pixel angle
+/// stays in radians because that is what `atan2` returns; the degree-to-radian conversion stays
+/// with the caller, which needs it once per fill rather than once per pixel (G-12).
+pub(crate) fn fill_conic_ramp(
+    frame: &mut [u8],
+    surface_width: u32,
+    bounds: (u32, u32, u32, u32),
+    center: Point,
+    start_angle: f32,
+    lut: &[Color; GRADIENT_LUT_SIZE],
+    write: ConicWrite,
+) {
+    const TAU: f32 = core::f32::consts::TAU;
+    let (x0, y0, x1, y1) = bounds;
+    let cx = center.x as f32;
+    let cy = center.y as f32;
+    for y in y0..y1 {
+        let dy = y as f32 - cy;
+        for x in x0..x1 {
+            let dx = x as f32 - cx;
+            let angle = dy.atan2(dx) + core::f32::consts::PI;
+            let angle = (angle + start_angle) % TAU;
+            // A negative remainder wraps once more. `fill_rect_gradient` always did this; the
+            // command arm used to clamp the negative position to the ramp start instead, which
+            // differed only for a negative start angle.
+            let angle = if angle < 0.0 { angle + TAU } else { angle };
+            let pos = angle / TAU;
+            let index = ((pos.clamp(0.0, 1.0) * (GRADIENT_LUT_SIZE - 1) as f32) as usize)
+                .min(GRADIENT_LUT_SIZE - 1);
+            match write {
+                ConicWrite::Replace => set_pixel(frame, surface_width, x, y, lut[index]),
+                ConicWrite::Blend(mode) => {
+                    write_pixel_with_mode(mode, frame, surface_width, x, y, lut[index], 1.0)
+                }
+            }
+        }
+    }
 }
 
 impl SoftwareSurface {
@@ -451,6 +597,43 @@ impl SoftwareSurface {
         let y1 = rect.y.saturating_add(rect.height as i32).max(0) as u32;
         let x1 = x1.min(size.width);
         let y1 = y1.min(size.height);
+
+        // A conic ramp is angular, so it cannot be expressed by the per-pixel position the other
+        // types use; it is rasterised by the kernel shared with `DrawConicGradient` (G-203). The
+        // bounds are intersected with the clip here, which admits exactly the pixels the per-pixel
+        // `pixel_visible` check used to keep.
+        if gradient.gradient_type == GradientType::Conic {
+            let (visible_x0, visible_x1) = match clip {
+                Some((clip_x, _, clip_w, _)) => {
+                    intersect_axis(x0, x1, clip_x, clip_x.saturating_add(clip_w as i32))
+                }
+                None => (x0, x1),
+            };
+            let (visible_y0, visible_y1) = match clip {
+                Some((_, clip_y, _, clip_h)) => {
+                    intersect_axis(y0, y1, clip_y, clip_y.saturating_add(clip_h as i32))
+                }
+                None => (y0, y1),
+            };
+            if visible_x1 <= visible_x0 || visible_y1 <= visible_y0 {
+                return;
+            }
+            // `Gradient::angle` is in **degrees** while the kernel takes radians, so the conversion
+            // is paid once per fill instead of once per pixel (G-12).
+            let lut = gradient_ramp_lut(gradient);
+            let blend_mode = self.blend_mode;
+            fill_conic_ramp(
+                self.buffer.back_mut(),
+                size.width,
+                (visible_x0, visible_y0, visible_x1, visible_y1),
+                gradient.center,
+                gradient.angle.to_radians(),
+                &lut,
+                ConicWrite::Blend(blend_mode),
+            );
+            return;
+        }
+
         let frame = self.buffer.back_mut();
 
         // Resolve the ramp through the shared per-content cache. Every pixel previously ran
@@ -470,6 +653,13 @@ impl SoftwareSurface {
         let linear_dot = linear_dx * linear_dx + linear_dy * linear_dy;
         let linear_step = if linear_dot == 0.0 { 0.0 } else { linear_dx / linear_dot };
 
+        // Radial geometry is constant along a row, so the row's `dy` and `dy*dy` are hoisted out
+        // of the pixel loop. The `sqrt` stays per pixel: the ramp index is quantised from the
+        // distance for every radius below `radius`, not only at the edge, so an annulus-only
+        // shortcut would change pixels. Keeping the original arithmetic order is the item's
+        // stated fallback when a bit-exact rewrite is not provable (G-12).
+        let radial_cx = gradient.center.x as f32;
+
         for y in y0..y1 {
             let row_start = if linear_dot == 0.0 {
                 0.0
@@ -477,6 +667,12 @@ impl SoftwareSurface {
                 ((x0 as f32 - gradient.start_point.x as f32) * linear_dx
                     + (y as f32 - gradient.start_point.y as f32) * linear_dy)
                     / linear_dot
+            };
+            let radial_dy2 = if matches!(gradient.gradient_type, GradientType::Radial) {
+                let dy = y as f32 - gradient.center.y as f32;
+                dy * dy
+            } else {
+                0.0
             };
             for x in x0..x1 {
                 let pos = match gradient.gradient_type {
@@ -488,31 +684,18 @@ impl SoftwareSurface {
                         }
                     }
                     GradientType::Radial => {
-                        let dx = x as f32 - gradient.center.x as f32;
-                        let dy = y as f32 - gradient.center.y as f32;
-                        let dist = (dx * dx + dy * dy).sqrt();
+                        let dx = x as f32 - radial_cx;
+                        let dist = (dx * dx + radial_dy2).sqrt();
                         if gradient.radius <= 0.0 {
                             0.0
                         } else {
                             (dist / gradient.radius).clamp(0.0, 1.0)
                         }
                     }
-                    GradientType::Conic => {
-                        let dx = x as f32 - gradient.center.x as f32;
-                        let dy = y as f32 - gradient.center.y as f32;
-                        // The per-pixel angle is in **radians** (that is what `atan2` returns),
-                        // while `Gradient::angle` is documented in **degrees** — so it is converted
-                        // before being added. Adding it raw rotated the ramp by `angle` *radians*
-                        // (~117° for the common `conic(center, 90.0)`) and made a caller's degree
-                        // value meaningless. The same conversion is applied by the SVG backend's
-                        // `conic_sample`, so the two agree.
-                        let angle = dy.atan2(dx) + core::f32::consts::PI;
-                        let start = gradient.angle.to_radians();
-                        let angle = (angle + start) % core::f32::consts::TAU;
-                        let angle =
-                            if angle < 0.0 { angle + core::f32::consts::TAU } else { angle };
-                        angle / core::f32::consts::TAU
-                    }
+                    // The conic case returned before the loop started. `return` rather than
+                    // `unreachable!()`: a draw path should not panic if a later edit moves the
+                    // early return, and skipping the fill is the safe failure (G-203).
+                    GradientType::Conic => return,
                 };
                 let color = lut[lut_index(pos)];
                 if pixel_visible(clip, x as i32, y as i32) {
@@ -576,7 +759,11 @@ impl SoftwareSurface {
             return;
         };
         let coverage = path_coverage(points, rect);
-        let backdrop = capture_region(self.buffer.back.as_slice(), size.width as usize, rect);
+        let backdrop = crate::render::backend::paint::capture_region(
+            self.buffer.back.as_slice(),
+            size.width as usize,
+            rect,
+        );
         if let Some(slot) = self.path_clips.last_mut() {
             *slot = Some(PathClip { rect, coverage, backdrop });
         }
@@ -585,6 +772,16 @@ impl SoftwareSurface {
     pub fn current_clip(&self) -> Option<(i32, i32, u32, u32)> {
         self.clip_stack.last().copied()
     }
+}
+
+/// Narrows the half-open range `start..end` to `clip_start..clip_end`.
+///
+/// `clip_end` is the saturating sum [`pixel_visible`] compares against, so turning the clip into a
+/// loop bound keeps the exact pixel set the per-pixel check admitted.
+fn intersect_axis(start: u32, end: u32, clip_start: i32, clip_end: i32) -> (u32, u32) {
+    let clip_start = clip_start.max(0) as u32;
+    let clip_end = clip_end.max(0) as u32;
+    (start.max(clip_start), end.min(clip_end))
 }
 
 /// The bounding box of `points`, or `None` when the path cannot enclose an area.
@@ -766,24 +963,6 @@ fn apply_path_clip(frame: &mut [u8], size: Size, clip: &PathClip) {
             );
         }
     }
-}
-
-/// Copies a clipped region out of `back` into a tightly packed RGBA buffer.
-fn capture_region(back: &[u8], surface_width: usize, rect: (i32, i32, u32, u32)) -> Vec<u8> {
-    let (x, y, width, height) = rect;
-    let row_bytes = width as usize * 4;
-    let mut out = vec![0u8; row_bytes * height as usize];
-    for row in 0..height as usize {
-        let source = (y as usize + row) * surface_width * 4 + x as usize * 4;
-        let destination = row * row_bytes;
-        if let (Some(source), Some(target)) = (
-            back.get(source..source + row_bytes),
-            out.get_mut(destination..destination + row_bytes),
-        ) {
-            target.copy_from_slice(source);
-        }
-    }
-    out
 }
 
 // Test-only counters of how many times the shaping and measurement work actually ran. They make

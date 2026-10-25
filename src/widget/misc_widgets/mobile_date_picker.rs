@@ -45,6 +45,13 @@ pub struct MobileDatePicker {
     year_start: i32,
     /// Last year in the drum.
     year_end: i32,
+    /// The day count `day_items` was built for, so a month change that does not move it can skip
+    /// the rebuild (K-P13).
+    day_items_count: u32,
+    /// The measured line height of the row text, keyed by the font it was measured with (K-P13).
+    row_text_metrics: crate::compat::RefCell<Option<((u32, u16, u64), u32)>>,
+    /// The column the keyboard is on: `0` year, `1` month, `2` day (MISC-12).
+    focus_column: usize,
     /// Emitted with a "YYYY-MM-DD" string when the date changes.
     pub date_changed: Signal1<String>,
 }
@@ -65,18 +72,53 @@ impl MobileDatePicker {
             year_span: 50,
             year_start: 2025 - 50,
             year_end: 2025 + 50,
+            day_items_count: 31,
+            row_text_metrics: crate::compat::RefCell::new(None),
+            focus_column: 0,
             date_changed: Signal1::new(),
         }
         .with_rebuilt_items()
     }
 
     /// Rebuilds the cached drum columns for the current date.
+    ///
+    /// Each column is rebuilt only when its own inputs moved (K-P13): the year list depends on the
+    /// range, the month list is constant, and the day list only on how many days the month has. A
+    /// day step inside the same month used to rebuild all three lists — the year column alone can
+    /// be over a hundred strings.
     fn rebuild_drum_items(&mut self) {
         self.year = self.year.clamp(self.year_start, self.year_end);
+        // The year list is a contiguous run, so a matching length means matching contents: a date
+        // step (which is what calls this in practice) cannot change either end of the range.
+        let expected_years =
+            (self.year_end.saturating_sub(self.year_start).saturating_add(1)).max(0) as usize;
+        if self.year_items.len() != expected_years {
+            self.rebuild_year_items();
+        }
+        if self.month_items.is_empty() {
+            self.month_items = MONTH_NAMES.iter().map(|&n| n.to_string()).collect();
+        }
+        self.rebuild_day_items();
+    }
+
+    /// Rebuilds only the year column.
+    ///
+    /// The range setters call this directly rather than going through
+    /// [`Self::rebuild_drum_items`]: a range can move while keeping its length, so the length check
+    /// there would keep a stale list.
+    fn rebuild_year_items(&mut self) {
+        // A range change can drop the cached list entirely; rebuilding it is the whole point.
         self.year_items = (self.year_start..=self.year_end).map(|y| y.to_string()).collect();
-        self.month_items = MONTH_NAMES.iter().map(|&n| n.to_string()).collect();
+    }
+
+    /// Rebuilds only the day column, and only when the month's length changed.
+    fn rebuild_day_items(&mut self) {
         let max_day = days_in_month(self.year, self.month);
+        if max_day == self.day_items_count && !self.day_items.is_empty() {
+            return;
+        }
         self.day_items = (1..=max_day).map(|d| format!("{d:02}")).collect();
+        self.day_items_count = max_day;
     }
 
     /// The number of years offered on either side of the selected year.
@@ -92,7 +134,10 @@ impl MobileDatePicker {
         self.year_span = span;
         self.year_start = self.year.saturating_sub(span as i32);
         self.year_end = self.year.saturating_add(span as i32);
-        self.rebuild_drum_items();
+        // The range changed even if its length did not, so the year list is rebuilt explicitly.
+        self.year = self.year.clamp(self.year_start, self.year_end);
+        self.rebuild_year_items();
+        self.rebuild_day_items();
         self.base.request_redraw();
     }
 
@@ -107,7 +152,10 @@ impl MobileDatePicker {
         }
         self.year_start = start;
         self.year_end = end;
-        self.rebuild_drum_items();
+        // A shifted range can keep its length, so rebuild the list rather than infer it.
+        self.year = self.year.clamp(self.year_start, self.year_end);
+        self.rebuild_year_items();
+        self.rebuild_day_items();
         self.base.request_redraw();
     }
 
@@ -269,22 +317,21 @@ impl Draw for MobileDatePicker {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
         // is not re-entrant.
+        // The style lookups are the cached, revision-validated forms, so the whole frame reads the
+        // palette once and neither lookup takes the manager lock (K-P17).
         let style = self.base.style();
         // `mobile_date_picker` is not in the role table, so it classifies as `Surface` and its
         // resolved background is the window fill itself; the drum below therefore derives its own
         // distinct surface rather than painting the window's.
         let theme = crate::style::resolved_theme_style_shared("mobile_date_picker");
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme.
-        let (window_fill, foreground, primary, secondary, disabled) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    active.colors.background,
-                    active.colors.foreground,
-                    active.colors.primary,
-                    active.colors.secondary,
-                    active.colors.disabled,
+        let (window_fill, foreground, primary, secondary, disabled) =
+            match crate::style::palette_shared() {
+                Some(colors) => (
+                    colors.background,
+                    colors.foreground,
+                    colors.primary,
+                    colors.secondary,
+                    colors.disabled,
                 ),
                 None => (
                     Color::rgb(240, 240, 240),
@@ -293,8 +340,7 @@ impl Draw for MobileDatePicker {
                     Color::rgb(158, 158, 158),
                     Color::rgb(200, 200, 200),
                 ),
-            }
-        };
+            };
 
         let ink = style
             .text_color
@@ -372,6 +418,20 @@ impl Draw for MobileDatePicker {
 
         for (col_idx, (sel_offset, items, _label)) in columns.iter().enumerate() {
             let col_x = drum_rect.x + (col_idx as u32 * col_width) as i32;
+            // The row's line height is one number for the whole font, so it is measured once per
+            // font rather than once per visible row per column (K-P13).
+            let row_text_height = self.row_text_height(&font, context);
+            // The today marker is read from the clock on each paint rather than cached, so it
+            // follows a date rollover with no invalidation to get wrong (MISC-11).
+            let today = chrono::Local::now().date_naive();
+            let is_today_column = |item_index: i32| -> bool {
+                use chrono::Datelike;
+                match col_idx {
+                    0 => self.year_start + item_index == today.year(),
+                    1 => item_index + 1 == today.month() as i32,
+                    _ => item_index + 1 == today.day() as i32,
+                }
+            };
 
             // Vertical rule between columns. Drawn as a *line* rather than a 1 px wide
             // rectangle: `draw_rect_stroke` on a 1-wide rect emits a degenerate element
@@ -390,6 +450,11 @@ impl Draw for MobileDatePicker {
             let highlight_rect =
                 Rect::new(col_x + 4, highlight_y, col_width.saturating_sub(8), row_height);
             context.fill_rounded_rect(highlight_rect, 6, highlight);
+            // The keyboard's column is outlined while the control has focus, so the arrows have a
+            // visible target (MISC-12's focus, the ring every other control uses).
+            if self.base.draws_focus_ring() && col_idx == self.focus_column {
+                context.draw_rounded_rect_stroke(highlight_rect, 6, selected_ink, 1);
+            }
 
             // Draw the five visible rows
             for row in 0..dimensions::PICKER_VISIBLE_ROWS {
@@ -402,22 +467,31 @@ impl Draw for MobileDatePicker {
                 let is_selected = row == 2;
                 let item_y = drum_rect.y + (row * row_height) as i32;
 
-                let metrics = context.measure_text(text, &font);
                 // Centred inside the row's own band. The old origin added `ascent` on top of
                 // an already-centred y, so the glyph box (which starts at the origin and runs
                 // a full line down) began half a line low — the fifth row was pushed past the
                 // control and only its top edge was ever painted.
-                let text_y = item_y + (row_height as i32 - metrics.height as i32) / 2;
+                let text_y = item_y + (row_height as i32 - row_text_height as i32) / 2;
 
                 let text_color = if is_selected { selected_ink } else { row_ink };
 
                 context.draw_text_fitted_cow(
-                    Rect::new(col_x, text_y, col_width, metrics.height),
+                    Rect::new(col_x, text_y, col_width, row_text_height),
                     text,
                     &font,
                     text_color,
                     HorizontalAlignment::Center,
                 );
+
+                // Today is a reference point, not a selection: a small accent dot inside the row's
+                // trailing edge, so it cannot be mistaken for the highlight bar (MISC-11).
+                if is_today_column(item_idx) {
+                    context.fill_circle(
+                        Point::new(col_x + col_width as i32 - 8, item_y + row_height as i32 / 2),
+                        3,
+                        primary,
+                    );
+                }
             }
 
             // Up arrow indicator (top of column)
@@ -441,6 +515,50 @@ impl Draw for MobileDatePicker {
                 HorizontalAlignment::Left,
             );
         }
+    }
+}
+
+impl MobileDatePicker {
+    /// Steps the focused column by `delta`, with the same clamping every other path uses.
+    fn step_column(&mut self, delta: i32) {
+        match self.focus_column {
+            0 => {
+                let new_year = self.year.saturating_add(delta);
+                let max_day = days_in_month(new_year, self.month);
+                self.set_date(new_year, self.month, self.day.min(max_day));
+            }
+            1 => {
+                let new_month = (self.month as i32 + delta).clamp(1, 12) as u32;
+                let max_day = days_in_month(self.year, new_month);
+                self.set_date(self.year, new_month, self.day.min(max_day));
+            }
+            _ => {
+                let max_days = days_in_month(self.year, self.month) as i32;
+                let new_day = (self.day as i32 + delta).clamp(1, max_days) as u32;
+                self.set_date(self.year, self.month, new_day);
+            }
+        }
+    }
+
+    /// The line height of the drum's row text, measured once per font (K-P13).
+    ///
+    /// The draw loop asked `measure_text` once per visible row per column — fifteen measurements
+    /// per frame — for a height that is a property of the font alone.
+    fn row_text_height(&self, font: &crate::core::Font, context: &RenderContext) -> u32 {
+        let mut family_hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in font.family().as_bytes() {
+            family_hash ^= u64::from(*byte);
+            family_hash = family_hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let key = (font.size().to_bits(), font.weight(), family_hash);
+        if let Some((cached_key, height)) = *self.row_text_metrics.borrow() {
+            if cached_key == key {
+                return height;
+            }
+        }
+        let height = context.measure_text("M", font).height;
+        *self.row_text_metrics.borrow_mut() = Some((key, height));
+        height
     }
 }
 
@@ -520,6 +638,30 @@ impl EventHandler for MobileDatePicker {
                     _ => {}
                 }
             }
+            // The keyboard path (MISC-12): left/right move the focused column, up/down change that
+            // column by one through the same `set_date` clamp and signal the wheel and click paths
+            // use, and Enter re-announces the current date so a host can confirm it.
+            Event::KeyPress { key, .. } => match *key {
+                crate::event::key_codes::LEFT => {
+                    self.focus_column = self.focus_column.saturating_sub(1);
+                    self.base.request_redraw();
+                }
+                crate::event::key_codes::RIGHT => {
+                    self.focus_column = (self.focus_column + 1).min(2);
+                    self.base.request_redraw();
+                }
+                crate::event::key_codes::UP => {
+                    self.step_column(1);
+                }
+                crate::event::key_codes::DOWN => {
+                    self.step_column(-1);
+                }
+                crate::event::key_codes::ENTER => {
+                    let date = self.date_string();
+                    self.date_changed.emit(date);
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -531,7 +673,7 @@ mod tests {
     use crate::widget::svg::render_to_svg;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     };
 
     fn make_picker() -> MobileDatePicker {
@@ -883,5 +1025,38 @@ mod tests {
         picker.set_year_span(5);
         assert_eq!(picker.year_range(), (picker.year() - 5, picker.year() + 5));
         assert_eq!(picker.get("year_span"), Ok(CapabilityValue::UInt(5)));
+    }
+
+    /// The arrow keys move a focus column and change that column only (MISC-12).
+    #[test]
+    fn the_keyboard_steps_the_focused_column() {
+        let mut picker = make_picker();
+        picker.set_date(2026, 6, 15);
+
+        // The year column is focused initially.
+        picker.handle_event(&Event::key_press(crate::event::key_codes::UP, 0));
+        assert_eq!(picker.year(), 2027);
+        assert_eq!(picker.month(), 6);
+
+        picker.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        picker.handle_event(&Event::key_press(crate::event::key_codes::UP, 0));
+        assert_eq!(picker.month(), 7, "the focus moved to the month column");
+        assert_eq!(picker.year(), 2027);
+
+        picker.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        picker.handle_event(&Event::key_press(crate::event::key_codes::DOWN, 0));
+        assert_eq!(picker.day(), 14, "and then to the day column");
+    }
+
+    /// Enter re-announces the current date, which is the keyboard's confirm path.
+    #[test]
+    fn enter_re_emits_the_date() {
+        let confirmed = Arc::new(Mutex::new(Vec::new()));
+        let mut picker = make_picker();
+        let sink = Arc::clone(&confirmed);
+        picker.date_changed.connect(move |value| sink.lock().unwrap().push(value.to_string()));
+        picker.set_date(2026, 3, 9);
+        picker.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert_eq!(confirmed.lock().unwrap().last().map(String::as_str), Some("2026-03-09"));
     }
 }

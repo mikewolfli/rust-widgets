@@ -210,6 +210,28 @@ impl Platform for IosMobilePlatform {
         }
     }
 
+    /// Whether the user asked for translucent materials to be reduced, from UIKit.
+    ///
+    /// `UIAccessibilityIsReduceTransparencyEnabled()` is the system "Reduce Transparency"
+    /// accessibility switch, the same source and the same shape as the two reads above: a
+    /// thread-safe UIKit accessor, so this answers on any thread. The value is the host's real
+    /// answer — `Some(true)` stops the style layer from painting translucent materials, and
+    /// `Some(false)` records that the user left the switch off. `None` is reserved for the profile
+    /// that genuinely cannot ask: a build without the UIKit FFI (`ios-uikit-ffi`), or a non-Apple
+    /// host, where the module compiles but no UIKit exists. The trait's default `None` used to be
+    /// the answer everywhere, which made every iOS material take the opaque fallback even when the
+    /// system reported the preference (issue P-205).
+    fn reduce_transparency(&self) -> Option<bool> {
+        #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
+        {
+            Some(super::native::reduce_transparency())
+        }
+        #[cfg(not(all(apple_uikit, feature = "ios-uikit-ffi")))]
+        {
+            None
+        }
+    }
+
     /// The user's locale, from `NSLocale.currentLocale`.
     fn system_locale(&self) -> Option<&'static str> {
         #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
@@ -239,13 +261,14 @@ impl Platform for IosMobilePlatform {
     }
 
     /// A revision of the environment facts, derived from their current values.
+    ///
+    /// [`crate::platform::locale::environment_revision`] is the shared accessor, so the hashed fact
+    /// set is the one the style snapshot reads. That matters here in particular: the iOS backend
+    /// reports the reduced-transparency switch (`Self::reduce_transparency`), and a revision that
+    /// hashed only appearance/contrast/motion/locale would leave a change to it undetected for the
+    /// life of the process (P-03/P-06).
     fn environment_generation(&self) -> u64 {
-        crate::platform::locale::generation_hash(
-            self.system_theme(),
-            self.high_contrast(),
-            self.reduce_motion(),
-            self.system_locale(),
-        )
+        crate::platform::locale::environment_revision(self)
     }
 
     /// The font families UIKit reports; empty without the UIKit FFI.

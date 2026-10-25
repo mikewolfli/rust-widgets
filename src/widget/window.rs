@@ -29,19 +29,31 @@ pub struct Window {
     /// its accessors are absent rather than carrying a duplicate local enum.
     #[cfg(device_profile)]
     material: Material,
-    /// Minimum client size requested from the platform, when one was set.
-    min_size: Option<(u32, u32)>,
-    /// Maximum client size recorded for the host. The platform trait has no maximum-size call,
-    /// so this is reported to a host that applies it itself.
-    max_size: Option<(u32, u32)>,
-    /// Whether the window is modal. The platform trait has no modality call, so this is a
-    /// host-facing flag rather than a window-system request.
+    // G-301: `min_size`/`max_size` are deliberately **not** stored here. `BaseWidget` owns the
+    // single authoritative bound store, and `Window::set_min_size`/`set_max_size` forward into it
+    // so the platform request and the layout hint reported by `Widget::hints` cannot drift apart.
+    /// Whether the window is modal.
+    ///
+    /// Host-facing intent record only (G-302): the platform trait has no modality call and no
+    /// library production code reads this field. [`Window::is_modal`] is the host's query path.
+    /// The value is not a mirror of platform state, so there is no authoritative source for it
+    /// to drift from.
     modal: bool,
-    /// Whether the window asks to float above others (host-facing, like `modal`).
+    /// Whether the window asks to float above others.
+    ///
+    /// Host-facing intent record only (G-302), like [`Self::modal`]: no platform call and no
+    /// in-library reader. [`Window::is_always_on_top`] is the query path.
     always_on_top: bool,
-    /// Window opacity in `0.0..=1.0` (host-facing).
+    /// Window opacity in `0.0..=1.0`.
+    ///
+    /// Host-facing intent record only (G-302): neither the draw path nor any other library code
+    /// reads it. [`Window::opacity`] is the query path for a host that applies it.
     opacity: f32,
     /// Icon path requested through the platform, when one was set.
+    ///
+    /// The only field of the host-facing group with a platform write path, but still no
+    /// in-library reader (G-302): [`Window::icon`] reports what was requested to the host. It is
+    /// retained because deleting it would delete the public getter with it.
     icon: Option<String>,
     /// Whether the window paints its own chrome for a borderless window.
     ///
@@ -62,8 +74,6 @@ impl Window {
             button_spacing: 40,
             #[cfg(device_profile)]
             material: Material::None,
-            min_size: None,
-            max_size: None,
             modal: false,
             always_on_top: false,
             opacity: 1.0,
@@ -186,30 +196,38 @@ impl Window {
         crate::platform::runtime::get_platform().is_window_in_state(self.id(), flag)
     }
 
-    /// Requests a minimum client size from the platform.
+    /// Requests a minimum client size from the platform and records it as the layout floor.
+    ///
+    /// [`BaseWidget::min_size`] is the single authoritative store (G-301). This setter forwards
+    /// into it and [`Window::min_size`] reads it back, so the platform request and the floor
+    /// reported by `Widget::hints` are the same value. The platform call's answer is returned;
+    /// the bound is recorded even when the backend refuses it, which preserves the previous
+    /// [`Window::min_size`] behaviour of reporting what was requested rather than what the OS
+    /// accepted.
     #[cfg(not(alloc_frugal))]
     pub fn set_min_size(&mut self, width: u32, height: u32) -> bool {
-        self.min_size = Some((width, height));
+        self.base.set_min_size(Some(Size::new(width, height)));
         crate::platform::runtime::get_platform().set_window_min_size(self.id(), width, height)
     }
 
-    /// The minimum client size last requested.
+    /// The minimum client size, read from the authoritative [`BaseWidget::min_size`] store.
     pub fn min_size(&self) -> Option<(u32, u32)> {
-        self.min_size
+        self.base.min_size().map(|size| (size.width, size.height))
     }
 
-    /// Records a maximum client size for the host to apply.
+    /// Records a maximum client size as the layout ceiling for the host to apply.
+    ///
+    /// [`BaseWidget::max_size`] is the single authoritative store (G-301): this forwards into it
+    /// and [`Window::max_size`] reads it back. It does not request a repaint (G-111): the maximum
+    /// is a layout bound, not a pixel-visible fact, and the base setter already treats a
+    /// same-value write as a no-op.
     pub fn set_max_size(&mut self, width: u32, height: u32) {
-        if self.max_size == Some((width, height)) {
-            return;
-        }
-        self.max_size = Some((width, height));
-        self.base.request_redraw();
+        self.base.set_max_size(Some(Size::new(width, height)));
     }
 
-    /// The maximum client size last recorded.
+    /// The maximum client size, read from the authoritative [`BaseWidget::max_size`] store.
     pub fn max_size(&self) -> Option<(u32, u32)> {
-        self.max_size
+        self.base.max_size().map(|size| (size.width, size.height))
     }
 
     /// Marks the window modal for the host.
@@ -222,7 +240,7 @@ impl Window {
             return;
         }
         self.modal = modal;
-        self.base.request_redraw();
+        // No repaint (G-111): modality is host intent, not a pixel the draw path reads.
     }
 
     /// Whether the window is marked modal.
@@ -236,7 +254,7 @@ impl Window {
             return;
         }
         self.always_on_top = always_on_top;
-        self.base.request_redraw();
+        // No repaint (G-111): stacking intent is not a pixel the draw path reads.
     }
 
     /// Whether the window asks to float above others.
@@ -254,7 +272,7 @@ impl Window {
             return;
         }
         self.opacity = opacity;
-        self.base.request_redraw();
+        // No repaint (G-111): opacity is applied by the host, not by this draw path.
     }
 
     /// The window opacity last set.
@@ -304,10 +322,17 @@ impl Window {
     /// `enabled` — suppressing it would leak the resources it exists to release.
     pub fn close(&mut self) {
         self.hide();
-        // Emit the base lifecycle signal **and** this window's own one. The base signal is what a
-        // handle-layer `on_close` (and the JSON/designer `closed` route) connects to, so emitting
-        // only `self.closed` left those handlers silent; emitting both means either listener fires
-        // from whichever path closed the window.
+        self.emit_closed();
+    }
+
+    /// The single emission point for the window's close contract (G-303).
+    ///
+    /// Both signals are emitted together and callers must not repeat the pair: `base.closed` is
+    /// what a handle-layer `on_close` (and the JSON/designer `closed` route) connects to, while
+    /// [`Window::closed`] is this control's own published event. Emitting only one left the other
+    /// listener silent, so every close path — programmatic, painted chrome, and the platform's
+    /// `Event::Quit` — routes through here.
+    fn emit_closed(&mut self) {
         self.base.closed.emit();
         self.closed.emit();
     }
@@ -432,8 +457,7 @@ impl EventHandler for Window {
             }
         }
         if matches!(event, Event::Quit) {
-            self.base.closed.emit();
-            self.closed.emit();
+            self.emit_closed();
         }
     }
 }
@@ -793,6 +817,53 @@ mod window_contract_tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
 
+    /// G-301: one authoritative store. The host-facing pair and the base/layout path read and
+    /// write the same bound, in both directions.
+    #[test]
+    fn window_size_bounds_share_the_base_store() {
+        let mut window = Window::new("Doc".to_string(), Rect::new(0, 0, 400, 300));
+
+        let _ = window.set_min_size(320, 240);
+        assert_eq!(window.min_size(), Some((320, 240)));
+        assert_eq!(window.base().min_size(), Some(Size::new(320, 240)));
+
+        window.base_mut().set_min_size(Some(Size::new(300, 200)));
+        assert_eq!(window.min_size(), Some((300, 200)), "the window getter reads the base store");
+
+        window.set_max_size(800, 600);
+        assert_eq!(window.max_size(), Some((800, 600)));
+        assert_eq!(window.base().max_size(), Some(Size::new(800, 600)));
+        assert_eq!(window.hints().width.max, 800, "the layout ceiling is the same store");
+    }
+
+    /// G-303: both lifecycle signals are emitted from one point, so every close path fires both.
+    #[test]
+    fn every_close_path_emits_both_closed_signals() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut window = Window::new("Doc".to_string(), Rect::new(0, 0, 400, 300));
+        let base_hits = Arc::new(AtomicUsize::new(0));
+        let own_hits = Arc::new(AtomicUsize::new(0));
+        let base_counter = base_hits.clone();
+        window.base.closed.connect(move || {
+            base_counter.fetch_add(1, Ordering::SeqCst);
+        });
+        let own_counter = own_hits.clone();
+        window.closed.connect(move || {
+            own_counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        window.close();
+        assert_eq!(base_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(own_hits.load(Ordering::SeqCst), 1);
+
+        // The platform-driven path goes through the same emission point.
+        window.handle_event(&Event::Quit);
+        assert_eq!(base_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(own_hits.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn host_facing_window_facts_round_trip() {
         let mut window = Window::new("Doc".to_string(), Rect::new(0, 0, 400, 300));
@@ -807,6 +878,11 @@ mod window_contract_tests {
         window.set_max_size(800, 600);
         assert_eq!(window.max_size(), Some((800, 600)));
         assert_eq!(window.min_size(), None);
+        let _ = window.set_min_size(320, 240);
+        assert_eq!(window.min_size(), Some((320, 240)));
+        assert_eq!(window.icon(), None);
+        window.set_icon("/tmp/doc.png");
+        assert_eq!(window.icon(), Some("/tmp/doc.png"));
     }
 
     #[test]

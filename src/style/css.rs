@@ -17,12 +17,14 @@
 //! assert!(!sheet.rules().is_empty());
 //! ```
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use crate::compat::{format, vec, Box, HashMap, MiniToString, Rc, String, Vec};
 use crate::core::Color;
-use crate::style::selector::ElementRef;
-use crate::style::{PseudoState, Selector, StyleRule, StyleSheet, WidgetStyle};
+use crate::style::selector::{ElementRef, RuleIndexKey};
+use crate::style::{
+    BorderStyle, CornerRadii, PseudoState, Selector, StyleRule, StyleSheet, WidgetStyle,
+};
 use crate::widget::WidgetKind;
 
 /// A declaration value already converted from its source text.
@@ -42,21 +44,51 @@ enum CachedDeclValue {
 
 // The most recently parsed declaration values, keyed by kind and a hash of the source text.
 // The stored text is compared on a hit, so a hash collision is a miss rather than a wrong value.
-type DeclCacheEntry = (String, CachedDeclValue);
-type InlineDeclEntry = (String, Rc<Vec<(String, String)>>);
+struct DeclCacheEntry {
+    /// The source text, so a hash collision misses instead of returning a different value.
+    text: String,
+    /// The converted value.
+    value: CachedDeclValue,
+    /// Monotonic use stamp; the smallest one is evicted at capacity (G-161).
+    last_used: u64,
+}
+
+/// A parsed inline declaration list, plus the use stamp that orders eviction.
+struct InlineDeclEntry {
+    /// The source text, compared on a hash hit.
+    text: String,
+    /// The split declarations; shared with the caller so a hit clones a pointer, not the list.
+    declarations: Rc<Vec<(String, String)>>,
+    /// Monotonic use stamp; the smallest one is evicted at capacity (G-161).
+    last_used: u64,
+}
 
 thread_local! {
+    // `HashMap::new` is const only under alloc_frugal (BTreeMap); the std profile cannot be const.
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
     static DECL_CACHE: RefCell<HashMap<(u8, u64), DeclCacheEntry>> =
         RefCell::new(HashMap::new());
     /// Parsed semicolon-separated declaration lists (the inline-CSS form), keyed by text hash.
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
     static INLINE_DECL_CACHE: RefCell<HashMap<u64, InlineDeclEntry>> =
         RefCell::new(HashMap::new());
+    /// The monotonically increasing stamp both caches use to order eviction.
+    static CACHE_TICK: Cell<u64> = const { Cell::new(0) };
 }
 
 /// How many converted declaration values one thread keeps.
 const DECL_CACHE_LIMIT: usize = 512;
 /// How many inline declaration lists one thread keeps.
 const INLINE_DECL_CACHE_LIMIT: usize = 64;
+
+/// The next use stamp, shared by both caches so "oldest" is one global order.
+fn next_cache_tick() -> u64 {
+    CACHE_TICK.with(|tick| {
+        let next = tick.get().wrapping_add(1);
+        tick.set(next);
+        next
+    })
+}
 
 /// FNV-1a over declaration text. Cheap (linear in the value) and allocation-free.
 fn declaration_hash(text: &str) -> u64 {
@@ -151,6 +183,44 @@ impl CssSelector {
                 subject: Box::new(subject.to_selector()?),
             },
         })
+    }
+
+    /// The narrowing key this selector is filed under in a [`RuleIndex`] (G-162).
+    ///
+    /// Mirrors the typed selector's `selector_index_key`: the **subject** of a combinator is the
+    /// only fact about the element, and one constituent of an `And` is enough to file the rule
+    /// under (an element matching the compound satisfies every constituent).
+    pub(crate) fn index_key(&self) -> RuleIndexKey<'_> {
+        match self {
+            CssSelector::Kind(name) => RuleIndexKey::Kind(name),
+            CssSelector::Class(name) => RuleIndexKey::Class(name),
+            CssSelector::Id(id) => RuleIndexKey::Id(id),
+            CssSelector::Universal | CssSelector::State(_) => RuleIndexKey::Any,
+            CssSelector::And(selectors) => {
+                if let Some(id) = selectors.iter().find_map(|selector| match selector {
+                    CssSelector::Id(id) => Some(id.as_str()),
+                    _ => None,
+                }) {
+                    return RuleIndexKey::Id(id);
+                }
+                if let Some(class) = selectors.iter().find_map(|selector| match selector {
+                    CssSelector::Class(class) => Some(class.as_str()),
+                    _ => None,
+                }) {
+                    return RuleIndexKey::Class(class);
+                }
+                if let Some(kind) = selectors.iter().find_map(|selector| match selector {
+                    CssSelector::Kind(kind) => Some(kind.as_str()),
+                    _ => None,
+                }) {
+                    return RuleIndexKey::Kind(kind);
+                }
+                RuleIndexKey::Any
+            }
+            CssSelector::Descendant(_, subject) | CssSelector::Child(_, subject) => {
+                subject.index_key()
+            }
+        }
     }
 
     /// Check if this selector matches a widget with the given properties.
@@ -255,6 +325,29 @@ pub struct CssRule {
     pub selector_text: String,
     /// The rule's declarations, in source order. No deduplication is performed,
     /// so a property written twice appears twice.
+    pub declarations: Vec<CssDeclaration>,
+}
+
+/// A rule whose selector has been parsed **once**, plus its cascade weight (G-164).
+///
+/// # Why this type exists
+///
+/// The apply path and the trace both need "these rules, with their selectors resolved".
+/// [`StyleSheetManager`](crate::style::stylesheet::StyleSheetManager) parses at registration and
+/// the trace used to re-parse every sheet on every call — including
+/// [`CssParser::parse_rules`]'s whole-text `chars()` expansion. Handing both the same prepared
+/// rule set means a trace costs a selector match and nothing else, and the two consumers cannot
+/// disagree about how a selector parsed. `selector` is `None` when the text is not a selector this
+/// parser accepts; a caller reports that rather than silently dropping the rule.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedCssRule {
+    /// The selector as it appeared in the source.
+    pub selector_text: String,
+    /// The parsed selector, or `None` when the text is not a selector this parser accepts.
+    pub selector: Option<CssSelector>,
+    /// Cascade weight of `selector`, computed once here rather than per apply (G-162).
+    pub specificity: u32,
+    /// The rule's declarations, in source order.
     pub declarations: Vec<CssDeclaration>,
 }
 
@@ -390,6 +483,198 @@ const CSS_SUPPORTED_KINDS: &[WidgetKind] = &[
     WidgetKind::Mention,
 ];
 
+/// The property names [`CssParser::apply_value`] acts on.
+///
+/// This is the parser's vocabulary, not a second implementation: every entry has a match arm in
+/// `apply_value`, and the behavioural test `known_property_list_matches_what_apply_one_handles`
+/// iterates this array to prove each one actually changes a style (G-404).
+const KNOWN_PROPERTIES: &[&str] = &[
+    "color",
+    "text-color",
+    "foreground",
+    "background",
+    "background-color",
+    "border-color",
+    "border-width",
+    "border-style",
+    "border-radius",
+    "font-size",
+    "font-weight",
+    "font-family",
+    "padding",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+    "margin",
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+    "opacity",
+    "background-gradient",
+    "shadow",
+    "touch-target",
+    "touch-target-size",
+];
+
+/// Where [`CssParser::apply_value_with`] sends the value it parsed.
+///
+/// Two destinations exist so the trace can ask "would this declaration apply?" by running the
+/// parser's **own** match arms without building a scratch [`WidgetStyle`] (G-164). `Apply` writes
+/// into a style; `Check` discards the value after it has been parsed, which is exactly the
+/// judgement the trace needs. One table, two consumers — a second validation table is what would
+/// let the two disagree about whether a declaration is valid.
+enum ValueSink<'a> {
+    /// Write into the caller's style.
+    Apply(&'a mut WidgetStyle),
+    /// Parse only: the value is validated and thrown away.
+    Check,
+}
+
+impl ValueSink<'_> {
+    fn text_color(&mut self, color: Color) {
+        if let Self::Apply(style) = self {
+            style.text_color = Some(color);
+        }
+    }
+
+    fn background_color(&mut self, color: Color) {
+        if let Self::Apply(style) = self {
+            style.background_color = Some(color);
+        }
+    }
+
+    fn border_color(&mut self, color: Color) {
+        if let Self::Apply(style) = self {
+            style.border_color = Some(color);
+        }
+    }
+
+    fn border_width(&mut self, width: u32) {
+        if let Self::Apply(style) = self {
+            style.border_width = Some(width);
+        }
+    }
+
+    fn border_style(&mut self, border_style: BorderStyle) {
+        if let Self::Apply(style) = self {
+            style.border_style = Some(border_style);
+        }
+    }
+
+    /// Writes the four corners, and keeps the historical scalar in step when it can express the
+    /// same shape (STY-01).
+    fn corner_radii(&mut self, radii: CornerRadii) {
+        if let Self::Apply(style) = self {
+            style.corner_radii = Some(radii);
+            if radii.is_uniform() {
+                style.border_radius = Some(radii.top_left);
+            }
+        }
+    }
+
+    fn padding(&mut self, padding: crate::style::Padding) {
+        if let Self::Apply(style) = self {
+            style.padding = padding;
+        }
+    }
+
+    fn padding_top(&mut self, value: u32) {
+        if let Self::Apply(style) = self {
+            style.padding.top = value;
+        }
+    }
+
+    fn padding_right(&mut self, value: u32) {
+        if let Self::Apply(style) = self {
+            style.padding.right = value;
+        }
+    }
+
+    fn padding_bottom(&mut self, value: u32) {
+        if let Self::Apply(style) = self {
+            style.padding.bottom = value;
+        }
+    }
+
+    fn padding_left(&mut self, value: u32) {
+        if let Self::Apply(style) = self {
+            style.padding.left = value;
+        }
+    }
+
+    fn margin(&mut self, margin: crate::style::Margin) {
+        if let Self::Apply(style) = self {
+            style.margin = margin;
+        }
+    }
+
+    fn margin_top(&mut self, value: u32) {
+        if let Self::Apply(style) = self {
+            style.margin.top = value;
+        }
+    }
+
+    fn margin_right(&mut self, value: u32) {
+        if let Self::Apply(style) = self {
+            style.margin.right = value;
+        }
+    }
+
+    fn margin_bottom(&mut self, value: u32) {
+        if let Self::Apply(style) = self {
+            style.margin.bottom = value;
+        }
+    }
+
+    fn margin_left(&mut self, value: u32) {
+        if let Self::Apply(style) = self {
+            style.margin.left = value;
+        }
+    }
+
+    fn opacity(&mut self, opacity: f32) {
+        if let Self::Apply(style) = self {
+            style.opacity = Some(opacity);
+        }
+    }
+
+    fn gradient(&mut self, gradient: crate::style::Gradient) {
+        if let Self::Apply(style) = self {
+            style.background_gradient = Some(gradient);
+        }
+    }
+
+    fn shadow(&mut self, shadow: Option<crate::style::Shadow>) {
+        if let Self::Apply(style) = self {
+            style.shadow = shadow;
+        }
+    }
+
+    fn touch_target(&mut self, size: crate::core::Size) {
+        if let Self::Apply(style) = self {
+            style.touch_target = Some(size);
+        }
+    }
+
+    /// Reads-modifies-writes the style's font, creating the default one when the style has none.
+    ///
+    /// In `Check` mode the closure is never built, so validation allocates no font.
+    fn font(&mut self, update: impl FnOnce(&mut crate::core::Font)) {
+        if let Self::Apply(style) = self {
+            match &mut style.font {
+                Some(font) => update(font),
+                None => {
+                    let mut font = crate::core::Font::default_ui();
+                    update(&mut font);
+                    style.font = Some(font);
+                }
+            }
+        }
+    }
+}
+
 /// CSS parser that converts CSS text into `StyleSheet` + property application.
 pub struct CssParser;
 
@@ -490,6 +775,28 @@ impl CssParser {
         }
 
         Ok(rules)
+    }
+
+    /// Parses CSS text into rules whose selectors are resolved once (G-164).
+    ///
+    /// This is the parse a registered sheet keeps and a trace consumes, so neither re-expands the
+    /// source text nor re-parses a selector per call. A selector this parser cannot express is
+    /// carried as `None` rather than dropped here: the registration path filters it (an unmatched
+    /// rule is the honest reading of an unknown kind) while the trace reports it.
+    pub fn parse_prepared_rules(css: &str) -> Result<Vec<ParsedCssRule>, String> {
+        Ok(Self::parse_rules(css)?
+            .into_iter()
+            .map(|rule| {
+                let selector = Self::parse_selector(&rule.selector_text);
+                let specificity = selector.as_ref().map_or(0, CssSelector::specificity);
+                ParsedCssRule {
+                    selector_text: rule.selector_text,
+                    selector,
+                    specificity,
+                    declarations: rule.declarations,
+                }
+            })
+            .collect())
     }
 
     /// Parse a selector string into a `CssSelector`.
@@ -648,26 +955,10 @@ impl CssParser {
     }
 
     fn parse_pseudo_state(name: &str) -> Option<PseudoState> {
-        match name {
-            // `:normal` is the selector the enum documents for "the resting state, matching only
-            // when no other state is set", and it was the one state the parser could not spell —
-            // `WidgetState` has no `Normal` suffix problem (it is `"normal"`), so a sheet was
-            // unable to target the resting control that everything else is written against.
-            "normal" => Some(PseudoState::Normal),
-            "hover" => Some(PseudoState::Hover),
-            "pressed" | "active" => Some(PseudoState::Pressed),
-            "disabled" => Some(PseudoState::Disabled),
-            "focused" | "focus" => Some(PseudoState::Focused),
-            "checked" => Some(PseudoState::Checked),
-            "selected" => Some(PseudoState::Selected),
-            // The three validation states the theme's own `"<kind>:<state>"` keys already accept. A
-            // sheet that spells `line_edit:error` must resolve to the same state the JSON path
-            // does, or the two ways of describing a style would disagree about what `error` means.
-            "error" | "invalid" => Some(PseudoState::Error),
-            "warning" => Some(PseudoState::Warning),
-            "success" | "valid" => Some(PseudoState::Success),
-            _ => None,
-        }
+        // One spelling source drives both directions: the canonical `WidgetState` suffix table
+        // plus its documented aliases (G-405). A `match` here used to hold a second copy of the
+        // vocabulary, so a state added to the enum had to be remembered in this function too.
+        PseudoState::from_state_suffix(name)
     }
 
     /// Parse declaration block text into a list of declarations.
@@ -774,10 +1065,17 @@ impl CssParser {
     /// Splits and trims an inline declaration list once per distinct text (G-21).
     fn cached_inline_declarations(text: &str) -> Result<Rc<Vec<(String, String)>>, String> {
         let hash = declaration_hash(text);
-        if let Some(hit) = INLINE_DECL_CACHE.with(|cache| {
-            let cache = cache.borrow();
-            cache.get(&hash).cloned().filter(|(stored, _)| stored == text).map(|(_, list)| list)
-        }) {
+        let hit = INLINE_DECL_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let entry = cache.get_mut(&hash)?;
+            if entry.text != text {
+                return None;
+            }
+            // Refresh the stamp so eviction takes the genuinely coldest entry (G-161).
+            entry.last_used = next_cache_tick();
+            Some(Rc::clone(&entry.declarations))
+        });
+        if let Some(hit) = hit {
             return Ok(hit);
         }
         let mut declarations = Vec::new();
@@ -793,9 +1091,21 @@ impl CssParser {
         INLINE_DECL_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
             if cache.len() >= INLINE_DECL_CACHE_LIMIT {
-                cache.clear();
+                // Same single-entry eviction as the declaration cache (G-161).
+                let victim =
+                    cache.iter().min_by_key(|(_, entry)| entry.last_used).map(|(key, _)| *key);
+                if let Some(victim) = victim {
+                    cache.remove(&victim);
+                }
             }
-            cache.insert(hash, (String::from(text), Rc::clone(&declarations)));
+            cache.insert(
+                hash,
+                InlineDeclEntry {
+                    text: String::from(text),
+                    declarations: Rc::clone(&declarations),
+                    last_used: next_cache_tick(),
+                },
+            );
         });
         Ok(declarations)
     }
@@ -828,34 +1138,33 @@ impl CssParser {
     ///
     /// # Why this is a list and not a second match
     ///
-    /// The alternative was to make `Self::apply_one` return whether it matched, but
-    /// that would tempt a caller to treat the unknown case as an error everywhere —
-    /// including in the stylesheet path, where ignoring is correct. Naming the
-    /// vocabulary separately keeps the two policies independent, and the test
-    /// `known_property_list_matches_what_apply_one_handles` fails if this list and
-    /// `apply_one`'s arms ever disagree.
+    /// The alternative was to make [`Self::apply_value`] return whether it matched, but that
+    /// would tempt a caller to treat the unknown case as an error everywhere — including in the
+    /// stylesheet path, where ignoring is correct. Naming the vocabulary separately keeps the two
+    /// policies independent.
+    ///
+    /// # Why the list is now the same set the apply handles (G-404)
+    ///
+    /// The list used to name `border-style` and `font-weight` with **no** arm behind them, so a
+    /// declaration was accepted, cached and silently dropped, while `css_trace` used this method
+    /// to decide "known" and therefore never reported the two as inert. The list is now
+    /// [`KNOWN_PROPERTIES`], `apply_value` implements every entry, and
+    /// `known_property_list_matches_what_apply_one_handles` iterates the list itself (rather than
+    /// a hand-copied subset) so the two cannot drift apart again.
+    ///
+    /// Matching is ASCII case-insensitive, which is what CSS specifies for property names;
+    /// [`Self::apply_value`] applies the same rule, so "known" and "applies" agree for every
+    /// spelling.
     pub fn is_known_property(property: &str) -> bool {
-        const KNOWN: &[&str] = &[
-            "color",
-            "text-color",
-            "foreground",
-            "background",
-            "background-color",
-            "border-color",
-            "border-width",
-            "border-style",
-            "border-radius",
-            "font-size",
-            "font-weight",
-            "font-family",
-            "padding",
-            "margin",
-            "opacity",
-            "background-gradient",
-            "shadow",
-            "touch-target",
-        ];
-        KNOWN.iter().any(|known| known.eq_ignore_ascii_case(property))
+        KNOWN_PROPERTIES.iter().any(|known| known.eq_ignore_ascii_case(property))
+    }
+
+    /// The property names this parser acts on, in the order they are documented.
+    ///
+    /// One list, read by [`Self::is_known_property`] and by the trace (through it), and kept in
+    /// step with [`Self::apply_value`]'s arms by a behavioural test (G-404).
+    pub fn known_properties() -> &'static [&'static str] {
+        KNOWN_PROPERTIES
     }
 
     /// Returns one already-converted declaration value, parsing it at most once per exact text.
@@ -870,12 +1179,20 @@ impl CssParser {
     ) -> Result<T, String> {
         let key = (kind, declaration_hash(value));
         let hit = DECL_CACHE.with(|cache| {
-            let cache = cache.borrow();
-            cache.get(&key).cloned().filter(|(stored, _)| stored == value)
+            let mut cache = cache.borrow_mut();
+            let entry = cache.get_mut(&key)?;
+            if entry.text != value {
+                // Another text hashed to the same key: treat it as a miss rather than returning a
+                // value for different text.
+                return None;
+            }
+            // Refresh the stamp so eviction takes the genuinely coldest entry (G-161).
+            entry.last_used = next_cache_tick();
+            Some(entry.value.clone())
         });
-        if let Some((_, parsed)) = hit {
-            if let Some(value) = extract(&parsed) {
-                return Ok(value);
+        if let Some(parsed) = hit {
+            if let Some(extracted) = extract(&parsed) {
+                return Ok(extracted);
             }
         }
         let parsed = parse(value)?;
@@ -885,9 +1202,23 @@ impl CssParser {
         DECL_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
             if cache.len() >= DECL_CACHE_LIMIT {
-                cache.clear();
+                // Evict the single coldest entry rather than clearing the table (G-161). A clear
+                // threw away every warm value at once on the 513th distinct declaration, and the
+                // next apply re-parsed all of them.
+                let victim =
+                    cache.iter().min_by_key(|(_, entry)| entry.last_used).map(|(key, _)| *key);
+                if let Some(victim) = victim {
+                    cache.remove(&victim);
+                }
             }
-            cache.insert(key, (String::from(value), parsed));
+            cache.insert(
+                key,
+                DeclCacheEntry {
+                    text: String::from(value),
+                    value: parsed,
+                    last_used: next_cache_tick(),
+                },
+            );
         });
         Ok(extracted)
     }
@@ -964,102 +1295,227 @@ impl CssParser {
         )
     }
 
+    /// Empties this thread's declaration cache.
+    ///
+    /// Test-only: the cache is thread-local internal state, and a test that measures its contents
+    /// must start from a known point rather than from whatever an earlier test on the same worker
+    /// thread left behind (G-161).
+    #[cfg(test)]
+    fn clear_decl_cache() {
+        DECL_CACHE.with(|cache| cache.borrow_mut().clear());
+    }
+
+    /// How many converted declaration values this thread holds. Test-only (G-161).
+    #[cfg(test)]
+    fn decl_cache_len() -> usize {
+        DECL_CACHE.with(|cache| cache.borrow().len())
+    }
+
+    /// Whether `value` is currently cached as a length. Test-only (G-161).
+    #[cfg(test)]
+    fn decl_cache_contains(value: &str) -> bool {
+        let key = (1u8, declaration_hash(value));
+        DECL_CACHE.with(|cache| cache.borrow().get(&key).is_some_and(|entry| entry.text == value))
+    }
+
     /// Apply a single CSS declaration to a WidgetStyle.
     fn apply_one(decl: &CssDeclaration, style: &mut WidgetStyle) -> Result<(), String> {
         Self::apply_value(&decl.property, &decl.value, style)
     }
 
+    /// Checks one declaration's property and value without writing a style.
+    ///
+    /// This is the trace's "would this apply?" question (G-164): it runs the **same** match arms
+    /// as [`Self::apply_value`] through the `Check` sink, so the verdict is the apply's own rather
+    /// than a second rule set's, and no scratch [`WidgetStyle`] is built or mutated. An unknown
+    /// property is not an error here — the apply ignores it by design — so a caller that needs
+    /// to distinguish the two asks [`Self::is_known_property`] first, as the trace does.
+    pub fn validate_declaration(declaration: &CssDeclaration) -> Result<(), String> {
+        Self::apply_value_with(&declaration.property, &declaration.value, &mut ValueSink::Check)
+    }
+
     /// Applies one already-split declaration. Borrowing the halves is what lets the inline-list
     /// cache apply on a hit without cloning the property and value strings (G-21).
     fn apply_value(property: &str, value: &str, style: &mut WidgetStyle) -> Result<(), String> {
+        Self::apply_value_with(property, value, &mut ValueSink::Apply(style))
+    }
+
+    /// The shared declaration writer behind [`Self::apply_value`] and
+    /// [`Self::validate_declaration`].
+    ///
+    /// Property names are ASCII case-insensitive in CSS. The exact spelling is tried first (the
+    /// hot path: a parsed sheet already carries the lowercase form), and only a spelling that
+    /// actually contains an uppercase letter pays for a lowercase copy. That keeps "known" and
+    /// "applies" agreeing for every spelling without allocating on the common path (G-404).
+    fn apply_value_with(
+        property: &str,
+        value: &str,
+        sink: &mut ValueSink<'_>,
+    ) -> Result<(), String> {
+        if Self::apply_value_spelled(property, value, sink)? {
+            return Ok(());
+        }
+        if property.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            let lowered = property.to_ascii_lowercase();
+            if Self::apply_value_spelled(&lowered, value, sink)? {
+                return Ok(());
+            }
+        }
+        // Unknown property — ignore (CSS spec: ignore unknown properties)
+        Ok(())
+    }
+
+    /// One match arm per entry in [`KNOWN_PROPERTIES`]; `Ok(false)` means "not a property this
+    /// parser acts on".
+    fn apply_value_spelled(
+        property: &str,
+        value: &str,
+        sink: &mut ValueSink<'_>,
+    ) -> Result<bool, String> {
         match property {
             "color" | "text-color" | "foreground" => {
-                style.text_color = Some(Self::cached_color(value)?);
+                sink.text_color(Self::cached_color(value)?);
             }
             "background" | "background-color" => {
-                style.background_color = Some(Self::cached_color(value)?);
+                sink.background_color(Self::cached_color(value)?);
             }
             "border-color" => {
-                style.border_color = Some(Self::cached_color(value)?);
+                sink.border_color(Self::cached_color(value)?);
             }
             "border-width" => {
-                style.border_width = Some(Self::cached_length(value)?);
+                sink.border_width(Self::cached_length(value)?);
+            }
+            "border-style" => {
+                sink.border_style(Self::parse_border_style(value)?);
             }
             "border-radius" => {
-                style.border_radius = Some(Self::cached_length(value)?);
+                // G-404 / STY-01: the CSS 1-4 value shorthand, mapped by the same helper the
+                // `padding` and `margin` shorthands use (top-left, top-right, bottom-right,
+                // bottom-left). One value still means "all four corners", so an existing sheet
+                // written `border-radius: 4px` produces exactly the shape it did before.
+                let vals = Self::cached_lengths(value, 4)?;
+                sink.corner_radii(CornerRadii::new(vals[0], vals[1], vals[2], vals[3]));
             }
             "padding" => {
                 let vals = Self::cached_lengths(value, 4)?;
-                style.padding = crate::style::Padding::new(vals[0], vals[1], vals[2], vals[3]);
+                sink.padding(crate::style::Padding::new(vals[0], vals[1], vals[2], vals[3]));
             }
-            "padding-top" => style.padding.top = Self::cached_length(value)?,
-            "padding-right" => style.padding.right = Self::cached_length(value)?,
-            "padding-bottom" => style.padding.bottom = Self::cached_length(value)?,
-            "padding-left" => style.padding.left = Self::cached_length(value)?,
+            "padding-top" => sink.padding_top(Self::cached_length(value)?),
+            "padding-right" => sink.padding_right(Self::cached_length(value)?),
+            "padding-bottom" => sink.padding_bottom(Self::cached_length(value)?),
+            "padding-left" => sink.padding_left(Self::cached_length(value)?),
             "margin" => {
                 let vals = Self::cached_lengths(value, 4)?;
-                style.margin = crate::style::Margin::new(vals[0], vals[1], vals[2], vals[3]);
+                sink.margin(crate::style::Margin::new(vals[0], vals[1], vals[2], vals[3]));
             }
-            "margin-top" => style.margin.top = Self::cached_length(value)?,
-            "margin-right" => style.margin.right = Self::cached_length(value)?,
-            "margin-bottom" => style.margin.bottom = Self::cached_length(value)?,
-            "margin-left" => style.margin.left = Self::cached_length(value)?,
+            "margin-top" => sink.margin_top(Self::cached_length(value)?),
+            "margin-right" => sink.margin_right(Self::cached_length(value)?),
+            "margin-bottom" => sink.margin_bottom(Self::cached_length(value)?),
+            "margin-left" => sink.margin_left(Self::cached_length(value)?),
             "opacity" => {
                 let val =
                     Self::parse_float(value).map_err(|_| format!("Invalid opacity: {value}"))?;
                 // D09-STYLE-04: `f32::clamp` alone leaves `NaN` in the style state; the shared
                 // policy (`NaN` -> opaque, `±∞` -> endpoints) keeps it in `0.0..=1.0`.
-                let val = crate::style::normalized_opacity(val);
-                // Opacity handling is rendering-pipeline specific; store for reference
-                style.opacity = Some(val);
+                sink.opacity(crate::style::normalized_opacity(val));
             }
             "font-size" => {
                 let size = Self::cached_float(value)?;
-                if let Some(font) = &mut style.font {
+                sink.font(|font| {
                     font.set_size(size);
-                } else {
-                    let mut font = crate::core::Font::default_ui();
-                    font.set_size(size);
-                    style.font = Some(font);
-                }
+                });
+            }
+            "font-weight" => {
+                // G-404: listed as known with no arm behind it, so `font-weight: 700` was
+                // accepted and silently discarded. Numeric weights and the named weights CSS
+                // allows now reach `Font`'s own weight channel.
+                let weight = Self::parse_font_weight(value)?;
+                sink.font(|font| *font = font.with_weight_value(weight));
+            }
+            "font-family" => {
+                let family = value.trim().trim_matches('"').trim_matches('\'').to_string();
+                sink.font(|font| {
+                    font.set_family(family.clone());
+                });
             }
             // ── Gradient, shadow, touch target ──────────────────────────
             // `WidgetStyle` carries these three and CSS could not set any of them,
             // so a stylesheet could not express the whole style record. Covered here
             // so the CSS surface and the style type agree on what is settable.
             "background-gradient" => {
-                style.background_gradient = Some(Self::cached_gradient(value)?);
+                sink.gradient(Self::cached_gradient(value)?);
             }
             "shadow" => {
                 // `none` is a meaningful value, not an omission: it clears a shadow
                 // the theme or a lower-priority sheet supplied.
                 if value.trim().eq_ignore_ascii_case("none") {
-                    style.shadow = None;
+                    sink.shadow(None);
                 } else {
-                    style.shadow = Some(Self::cached_shadow(value)?);
+                    sink.shadow(Some(Self::cached_shadow(value)?));
                 }
             }
             "touch-target" | "touch-target-size" => {
                 // Order is `width height`, matching the two-value CSS shorthand the
                 // spacing properties already use.
                 let vals = Self::cached_lengths(value, 2)?;
-                style.touch_target = Some(crate::core::Size::new(vals[0], vals[1]));
+                sink.touch_target(crate::core::Size::new(vals[0], vals[1]));
             }
-            "font-family" => {
-                let family = value.trim().trim_matches('"').trim_matches('\'').to_string();
-                if let Some(font) = &mut style.font {
-                    font.set_family(family);
-                } else {
-                    let mut font = crate::core::Font::default_ui();
-                    font.set_family(family);
-                    style.font = Some(font);
-                }
-            }
-            _ => {
-                // Unknown property — ignore (CSS spec: ignore unknown properties)
-            }
+            _ => return Ok(false),
         }
-        Ok(())
+        Ok(true)
+    }
+
+    /// Parses `border-style` into the style primitive's own vocabulary (G-404).
+    ///
+    /// `none` is a value, not a missing declaration: it suppresses a border a lower layer set.
+    /// An unsupported line style is refused rather than mapped onto `solid`, because painting a
+    /// solid line for a requested dash is the kind of silent substitution this crate treats as a
+    /// defect.
+    fn parse_border_style(value: &str) -> Result<BorderStyle, String> {
+        let text = value.trim();
+        if text.eq_ignore_ascii_case("solid") {
+            Ok(BorderStyle::Solid)
+        } else if text.eq_ignore_ascii_case("dashed") {
+            Ok(BorderStyle::Dashed)
+        } else if text.eq_ignore_ascii_case("dotted") {
+            Ok(BorderStyle::Dotted)
+        } else if text.eq_ignore_ascii_case("none") {
+            Ok(BorderStyle::None)
+        } else {
+            Err(format!(
+                "unsupported border-style '{text}': expected `solid`, `dashed`, `dotted` or `none`"
+            ))
+        }
+    }
+
+    /// Parses `font-weight` into `Font`'s 100..=900 scale (G-404).
+    ///
+    /// A numeric value is rounded to the nearest hundred and clamped into the range `Font::is_valid`
+    /// accepts, so `450` becomes `500` rather than a font the renderer refuses. The relative
+    /// keywords are resolved against a regular base (`lighter` -> 300, `bolder` -> 700); a stylesheet
+    /// has no parent weight to be relative to at parse time, and inventing one silently would be
+    /// worse than a documented fixed step.
+    fn parse_font_weight(value: &str) -> Result<u16, String> {
+        let text = value.trim();
+        let weight = if text.eq_ignore_ascii_case("normal") {
+            400
+        } else if text.eq_ignore_ascii_case("bold") {
+            700
+        } else if text.eq_ignore_ascii_case("lighter") {
+            300
+        } else if text.eq_ignore_ascii_case("bolder") {
+            700
+        } else {
+            let numeric: u16 = text.parse().map_err(|_| {
+                format!(
+                    "invalid font-weight '{text}': expected 100..=900 or `normal`/`bold`/\
+                     `lighter`/`bolder`"
+                )
+            })?;
+            let rounded = ((u32::from(numeric) + 50) / 100) * 100;
+            rounded.clamp(100, 900) as u16
+        };
+        Ok(weight)
     }
 
     /// Parse a CSS color value (#fff, #ffffff, rgb(r,g,b), rgba(r,g,b,a), named colors)
@@ -2073,45 +2529,24 @@ mod tests {
         );
     }
 
-    /// `is_known_property` must accept exactly what `apply_one` acts on, and reject
+    /// `is_known_property` must accept exactly what `apply_value` acts on, and reject
     /// everything else.
     ///
     /// # Why this test is the point of the two lists
     ///
-    /// `apply_one` silently ignores an unknown property, so a name this list claims but
-    /// `apply_one` does not handle would be reported as applied while changing nothing
-    /// — the exact failure mode the list exists to prevent. Checking it by *behaviour*
-    /// rather than by reading the source means adding a property to `apply_one` without
-    /// adding it here fails here, not in a user's program.
+    /// `apply_value` silently ignores an unknown property, so a name the list claims but the apply
+    /// does not handle would be reported as applied while changing nothing — the exact failure mode
+    /// the list exists to prevent. The loop below walks [`CssParser::known_properties`] itself,
+    /// not a hand-copied subset: the previous version named twelve of the eighteen entries and
+    /// omitted precisely the two that had no implementation (`border-style`, `font-weight`), so it
+    /// stayed green while the trace called them known and the apply dropped them (G-404).
     #[test]
     fn known_property_list_matches_what_apply_one_handles() {
-        // Every name the list claims must actually modify a style.
-        for property in [
-            "color",
-            "background-color",
-            "border-color",
-            "border-width",
-            "border-radius",
-            "font-size",
-            "padding",
-            "margin",
-            "opacity",
-            "background-gradient",
-            "shadow",
-            "touch-target",
-        ] {
+        for property in CssParser::known_properties() {
             assert!(CssParser::is_known_property(property), "{property} should be known");
             let before = WidgetStyle::default();
             let mut after = before.clone();
-            let value = match property {
-                "color" | "background-color" | "border-color" => "#123456",
-                "border-radius" | "font-size" | "opacity" => "4",
-                "padding" | "margin" | "touch-target" => "2 2",
-                "border-width" => "1",
-                "background-gradient" => "linear-gradient(90deg, #FFF, #000)",
-                "shadow" => "0 1 2 #000",
-                _ => unreachable!(),
-            };
+            let value = sample_value(property);
             CssParser::apply_declaration_text(&format!("{property}: {value}"), &mut after)
                 .unwrap_or_else(|error| panic!("{property} should parse, got: {error}"));
             assert_ne!(
@@ -2119,7 +2554,21 @@ mod tests {
                 format!("{before:?}"),
                 "{property} is listed as known but applying it changed nothing"
             );
+            // The trace's judgement, through the pure-parse wrapper, must agree with the apply.
+            let declaration =
+                CssDeclaration { property: String::from(*property), value: String::from(value) };
+            assert!(
+                CssParser::validate_declaration(&declaration).is_ok(),
+                "{property} must validate the same value it applies"
+            );
         }
+
+        // `boundary` names are case-insensitive in CSS and the apply agrees with the list.
+        assert!(CssParser::is_known_property("Color"));
+        let mut cased = WidgetStyle::default();
+        CssParser::apply_declaration_text("Color: #123456", &mut cased)
+            .expect("a case variant is a declaration like any other");
+        assert_eq!(cased.text_color, Some(Color::rgba(0x12, 0x34, 0x56, 255)));
 
         // A misspelling must be rejected rather than reported as applied.
         assert!(!CssParser::is_known_property("backgrond-color"));
@@ -2133,6 +2582,150 @@ mod tests {
         assert!(error.contains("empty value"), "the error should say the value is empty: {error}");
 
         assert!(CssParser::apply_declaration_text("  ", &mut style).is_err());
+    }
+
+    /// A value that parses for each property the parser knows, used by the behavioural lock above.
+    fn sample_value(property: &str) -> &'static str {
+        match property {
+            "color" | "text-color" | "foreground" | "background" | "background-color"
+            | "border-color" => "#123456",
+            "border-width" | "border-radius" | "padding-top" | "padding-right"
+            | "padding-bottom" | "padding-left" | "margin-top" | "margin-right"
+            | "margin-bottom" | "margin-left" => "2",
+            "border-style" => "dashed",
+            "font-size" => "16",
+            "font-weight" => "700",
+            "font-family" => "Inter",
+            "padding" | "margin" | "touch-target" | "touch-target-size" => "2 2",
+            "opacity" => "0.5",
+            "background-gradient" => "linear-gradient(90deg, #FFF, #000)",
+            "shadow" => "0 1 2 #000",
+            other => panic!("the lock needs a sample value for `{other}`"),
+        }
+    }
+
+    // ── Per-corner radii (STY-01) ────────────────────────────────────────
+
+    /// The CSS 1–4 value shorthand maps onto the four corners in the same order the `padding`
+    /// and `margin` shorthands use, and one value still means "all four".
+    #[test]
+    fn border_radius_shorthand_maps_one_to_four_values() {
+        let apply = |value: &str| {
+            let mut style = WidgetStyle::default();
+            CssParser::apply_declaration_text(&format!("border-radius: {value}"), &mut style)
+                .unwrap_or_else(|error| panic!("border-radius: {value} should parse: {error}"));
+            style
+        };
+
+        let one = apply("4px");
+        assert_eq!(one.resolved_corner_radii(), crate::style::CornerRadii::all(4));
+        assert_eq!(one.border_radius, Some(4), "the scalar keeps describing a uniform shape");
+
+        let two = apply("4px 8px");
+        assert_eq!(
+            two.resolved_corner_radii(),
+            crate::style::CornerRadii::new(4, 8, 4, 8),
+            "two values are (top/bottom, left/right)"
+        );
+
+        let three = apply("4px 8px 12px");
+        assert_eq!(
+            three.resolved_corner_radii(),
+            crate::style::CornerRadii::new(4, 8, 12, 8),
+            "three values are (top-left, top-right/bottom-left, bottom-right)"
+        );
+
+        let four = apply("1px 2px 3px 4px");
+        assert_eq!(
+            four.resolved_corner_radii(),
+            crate::style::CornerRadii::new(1, 2, 3, 4),
+            "four values are clockwise from the top-left"
+        );
+        assert_eq!(
+            four.border_radius, None,
+            "a non-uniform shape cannot be written into the scalar honestly"
+        );
+    }
+
+    // ── The two properties the table claimed but the apply did not implement (G-404) ──
+
+    /// `font-weight` reaches `Font`'s own weight channel, numerically or by name.
+    #[test]
+    fn font_weight_sets_the_fonts_weight() {
+        for (value, expected) in
+            [("700", 700u16), ("400", 400), ("bold", 700), ("normal", 400), ("450", 500)]
+        {
+            let mut style = WidgetStyle::default();
+            CssParser::apply_declaration_text(&format!("font-weight: {value}"), &mut style)
+                .unwrap_or_else(|error| panic!("font-weight: {value} should parse: {error}"));
+            let font = style.font.expect("a weight needs a font to live on");
+            assert_eq!(font.weight(), expected, "font-weight: {value}");
+        }
+
+        let error =
+            CssParser::apply_declaration_text("font-weight: heavy", &mut WidgetStyle::default())
+                .expect_err("an unsupported weight word must be refused");
+        assert!(error.contains("font-weight"), "{error}");
+    }
+
+    /// `border-style` reaches the style primitive, and an unsupported line style is refused
+    /// rather than painted as the default.
+    #[test]
+    fn border_style_sets_the_border_style() {
+        for (value, expected) in [
+            ("solid", crate::style::BorderStyle::Solid),
+            ("dashed", crate::style::BorderStyle::Dashed),
+            ("Dotted", crate::style::BorderStyle::Dotted),
+            ("none", crate::style::BorderStyle::None),
+        ] {
+            let mut style = WidgetStyle::default();
+            CssParser::apply_declaration_text(&format!("border-style: {value}"), &mut style)
+                .unwrap_or_else(|error| panic!("border-style: {value} should parse: {error}"));
+            assert_eq!(style.border_style, Some(expected), "border-style: {value}");
+        }
+
+        let error =
+            CssParser::apply_declaration_text("border-style: wavy", &mut WidgetStyle::default())
+                .expect_err("an unsupported line style must be refused");
+        assert!(error.contains("border-style"), "{error}");
+    }
+
+    // ── Cache eviction (G-161) ──────────────────────────────────────────
+
+    /// Overflowing the declaration cache evicts the coldest entry instead of clearing the table.
+    #[test]
+    fn the_declaration_cache_evicts_one_entry_instead_of_clearing() {
+        CssParser::clear_decl_cache();
+        // Fill past the limit with distinct lengths; each is its own cache key.
+        for value in 0..(DECL_CACHE_LIMIT + 8) {
+            let declaration = format!("border-width: {value}px");
+            CssParser::apply_declaration_text(&declaration, &mut WidgetStyle::default())
+                .unwrap_or_else(|error| panic!("{declaration} should parse: {error}"));
+        }
+        assert_eq!(
+            CssParser::decl_cache_len(),
+            DECL_CACHE_LIMIT,
+            "the cache keeps its capacity; a whole-table clear would leave only the tail"
+        );
+        assert!(
+            CssParser::decl_cache_contains(&format!("{}px", DECL_CACHE_LIMIT + 7)),
+            "the newest value must stay warm"
+        );
+        assert!(!CssParser::decl_cache_contains("0px"), "the oldest value must be the one evicted");
+
+        // A hit refreshes the stamp, so the touched entry survives the next eviction.
+        let touched = format!("{}px", DECL_CACHE_LIMIT + 1);
+        CssParser::apply_declaration_text(
+            &format!("border-width: {touched}"),
+            &mut WidgetStyle::default(),
+        )
+        .expect("a cache hit");
+        CssParser::apply_declaration_text("border-width: 99999px", &mut WidgetStyle::default())
+            .expect("one more value, forcing an eviction");
+        assert!(
+            CssParser::decl_cache_contains(&touched),
+            "a recently used entry must survive eviction"
+        );
     }
 
     /// `A B` and `A > B` are different selectors, and neither is a compound AND.

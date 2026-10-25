@@ -193,6 +193,39 @@ impl MjpegDecoder {
         Some((info.width as u32, info.height as u32))
     }
 
+    /// The largest dimension this decoder accepts on either axis: 16384.
+    ///
+    /// A JPEG SOF can declare 65535x65535. At four bytes per pixel that is
+    /// roughly 16 GiB, and its byte count overflows `usize` on a 32-bit target,
+    /// so the declared size is refused before `with_capacity` rather than
+    /// trusted. The bound matches the image-side JPEG decoder
+    /// (`src/image/decoder.rs`).
+    const MAX_DIMENSION: usize = 16_384;
+
+    /// The RGBA capacity a decoded frame needs, or an error when the stream's
+    /// declared size is impossible.
+    ///
+    /// This is the single place that turns a JPEG header's dimensions into an
+    /// allocation size, so a hostile header cannot reach `with_capacity` with a
+    /// wrapped or absurd length.
+    fn frame_capacity(width: usize, height: usize) -> Result<usize, String> {
+        if width == 0 || height == 0 {
+            return Err(format!("MJPEG frame declares an empty size: {width}x{height}"));
+        }
+        if width > Self::MAX_DIMENSION || height > Self::MAX_DIMENSION {
+            return Err(format!(
+                "MJPEG frame declares {width}x{height}, which exceeds the supported maximum \
+                 of {}x{}",
+                Self::MAX_DIMENSION,
+                Self::MAX_DIMENSION
+            ));
+        }
+        width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| format!("MJPEG frame {width}x{height} does not fit in memory"))
+    }
+
     /// Decode a single JPEG frame to RGBA pixel data, returning the frame's own
     /// pixel dimensions alongside the bytes.
     ///
@@ -211,13 +244,14 @@ impl MjpegDecoder {
         let info = decoder.info().ok_or("No JPEG info available")?;
         let width = info.width as usize;
         let height = info.height as usize;
+        let capacity = Self::frame_capacity(width, height)?;
 
         // `decoder.decode()` returns the raw sample bytes in the stream's pixel
         // format (L8/L16 grayscale, RGB24, or CMYK32), so the conversion must
         // honour `info.pixel_format` rather than assume 3 bytes per pixel — a
         // grayscale MJPEG frame would otherwise make the fixed `chunks(3)` read
         // past the last pixel and panic.
-        let mut rgba = Vec::with_capacity(width * height * 4);
+        let mut rgba = Vec::with_capacity(capacity);
         match info.pixel_format {
             jpeg_decoder::PixelFormat::RGB24 => {
                 for chunk in pixels.as_chunks::<3>().0 {
@@ -427,6 +461,24 @@ mod tests {
         let frames = MjpegDecoder::find_jpeg_frames(&data);
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0], (0, 7));
+    }
+
+    /// A stream-declared size must be bounded before it becomes an allocation.
+    ///
+    /// The MJPEG path used to feed the JPEG header's dimensions straight into
+    /// `Vec::with_capacity(width * height * 4)`. A 65535x65535 SOF is ~16 GiB and
+    /// overflows a 32-bit `usize`, so the helper that owns the conversion must
+    /// reject it instead of wrapping.
+    #[test]
+    fn mjpeg_frame_capacity_refuses_hostile_sizes() {
+        assert_eq!(
+            MjpegDecoder::frame_capacity(16_384, 16_384).expect("the cap itself is allowed"),
+            16_384 * 16_384 * 4
+        );
+        assert!(MjpegDecoder::frame_capacity(65_535, 65_535).is_err());
+        assert!(MjpegDecoder::frame_capacity(16_385, 1).is_err());
+        assert!(MjpegDecoder::frame_capacity(0, 1).is_err());
+        assert!(MjpegDecoder::frame_capacity(1, 0).is_err());
     }
 
     #[test]

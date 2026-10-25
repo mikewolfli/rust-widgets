@@ -9,15 +9,25 @@
 use crate::compat::{Box, HashMap, String, Vec};
 use crate::widget::WidgetKind;
 
-/// The narrowing key a rule is stored under.
+use core::cell::RefCell;
+
+use crate::style::theme_state::WidgetState;
+
+/// The narrowing key a rule is filed under in a [`RuleIndex`].
 ///
 /// Matching starts from the element's own tag/class/id and only looks at rules filed under one of
 /// those (or under `Any`), instead of scanning every rule in the sheet (G-22).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum SelectorIndexKey {
-    Kind(WidgetKind),
-    Class(String),
-    Id(String),
+///
+/// The keys borrow their text: a lookup builds no temporary `String`, which is what made the
+/// previous `SelectorIndexKey` enum allocate twice per match even on a miss (G-163).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RuleIndexKey<'a> {
+    /// A widget kind, in any spelling the factory accepts; normalised on insert and on lookup.
+    Kind(&'a str),
+    /// A CSS class name, matched exactly.
+    Class(&'a str),
+    /// A widget id, matched exactly.
+    Id(&'a str),
     /// A selector with no tag/class/id constraint: universal, state-only, or a compound whose
     /// only constraints are those.
     Any,
@@ -29,36 +39,181 @@ enum SelectorIndexKey {
 /// ancestor side never narrows the index. For an `And`, any one constituent is enough: an element
 /// that matches the compound must satisfy every constituent, so filing under one of them cannot
 /// hide the rule from a matching element.
-fn selector_index_key(selector: &Selector) -> SelectorIndexKey {
+fn selector_index_key(selector: &Selector) -> RuleIndexKey<'_> {
     match selector {
-        Selector::Kind(kind) => SelectorIndexKey::Kind(*kind),
-        Selector::Class(class) => SelectorIndexKey::Class(class.clone()),
-        Selector::Id(id) => SelectorIndexKey::Id(id.clone()),
-        Selector::State(_) | Selector::Universal => SelectorIndexKey::Any,
+        Selector::Kind(kind) => RuleIndexKey::Kind(kind.css_name()),
+        Selector::Class(class) => RuleIndexKey::Class(class),
+        Selector::Id(id) => RuleIndexKey::Id(id),
+        Selector::State(_) | Selector::Universal => RuleIndexKey::Any,
         Selector::And(parts) => {
             if let Some(id) = parts.iter().find_map(|part| match part {
-                Selector::Id(id) => Some(id.clone()),
+                Selector::Id(id) => Some(id.as_str()),
                 _ => None,
             }) {
-                return SelectorIndexKey::Id(id);
+                return RuleIndexKey::Id(id);
             }
             if let Some(class) = parts.iter().find_map(|part| match part {
-                Selector::Class(class) => Some(class.clone()),
+                Selector::Class(class) => Some(class.as_str()),
                 _ => None,
             }) {
-                return SelectorIndexKey::Class(class);
+                return RuleIndexKey::Class(class);
             }
             if let Some(kind) = parts.iter().find_map(|part| match part {
-                Selector::Kind(kind) => Some(*kind),
+                Selector::Kind(kind) => Some(kind.css_name()),
                 _ => None,
             }) {
-                return SelectorIndexKey::Kind(kind);
+                return RuleIndexKey::Kind(kind);
             }
-            SelectorIndexKey::Any
+            RuleIndexKey::Any
         }
         Selector::Descendant { subject, .. } | Selector::Child { subject, .. } => {
             selector_index_key(subject)
         }
+    }
+}
+
+/// Writes the normalised form of a kind spelling into `out`.
+///
+/// The normalisation is [`crate::widget::capability::coercion::normalize_key`]'s rule (drop `_`,
+/// `-` and spaces, lowercase) applied into a caller-owned buffer, so a lookup reuses one
+/// allocation instead of making a new `String` per match (G-163).
+fn normalize_kind_key(input: &str, out: &mut String) {
+    out.clear();
+    for ch in input.chars() {
+        if matches!(ch, '_' | '-' | ' ') {
+            continue;
+        }
+        out.extend(ch.to_lowercase());
+    }
+}
+
+/// The reusable buffers one selector match needs.
+///
+/// Both fields are cleared rather than reallocated on each use, so a steady-state match performs
+/// no heap allocation at all; only the result the caller asked for is allocated (G-163).
+#[derive(Default)]
+pub(crate) struct MatchScratch {
+    /// Candidate rule positions, always ascending.
+    pub(crate) positions: Vec<usize>,
+    /// The normalised kind key used to probe the index.
+    kind_key: String,
+}
+
+/// Runs `f` with this thread's match scratch.
+///
+/// The fallback is for a nested match. The current call graph never performs one, but a future
+/// caller must get a correct answer rather than a borrow panic, and a fresh scratch costs one
+/// allocation on a path that is already wrong for a reason worth fixing.
+pub(crate) fn with_match_scratch<R>(f: impl FnOnce(&mut MatchScratch) -> R) -> R {
+    thread_local! {
+        static SCRATCH: RefCell<MatchScratch> = RefCell::new(MatchScratch::default());
+    }
+    SCRATCH.with(|cell| {
+        let mut borrowed = cell.try_borrow_mut().ok();
+        let mut fallback = MatchScratch::default();
+        let scratch: &mut MatchScratch = borrowed.as_deref_mut().unwrap_or(&mut fallback);
+        f(scratch)
+    })
+}
+
+/// An inverted index over one stylesheet's rules, shared by both selector representations.
+///
+/// # Why one index type for two selector enums
+///
+/// [`StyleSheet`] (typed [`Selector`]) and [`crate::style::stylesheet::StyleSheetManager`]
+/// (string [`CssSelector`](crate::style::css::CssSelector)) used to be the same concept with two
+/// implementations, and only one of them was indexed. The index is built by whoever owns the
+/// rules and only reads borrowed text at match time, so both can use it (G-162, principle #101).
+///
+/// Buckets hold positions in ascending order because rules are inserted in rule-list order. The
+/// four buckets a lookup consults are **disjoint** — every rule is filed under exactly one key —
+/// which is what lets [`Self::candidates_into`] merge them without a de-duplication pass.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RuleIndex {
+    by_kind: HashMap<String, Vec<usize>>,
+    by_class: HashMap<String, Vec<usize>>,
+    by_id: HashMap<String, Vec<usize>>,
+    any: Vec<usize>,
+}
+
+impl RuleIndex {
+    /// An index with no rules.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Removes every entry, keeping the allocated buckets.
+    pub(crate) fn clear(&mut self) {
+        self.by_kind.clear();
+        self.by_class.clear();
+        self.by_id.clear();
+        self.any.clear();
+    }
+
+    /// Files `position` under `key`.
+    ///
+    /// Called once per rule per sheet mutation, which is why the owned key is acceptable here:
+    /// the match path is the one that must stay allocation-free.
+    pub(crate) fn insert(&mut self, position: usize, key: RuleIndexKey<'_>) {
+        match key {
+            RuleIndexKey::Kind(kind) => {
+                let mut normalized = String::new();
+                normalize_kind_key(kind, &mut normalized);
+                self.by_kind.entry(normalized).or_default().push(position);
+            }
+            RuleIndexKey::Class(class) => {
+                self.by_class.entry(String::from(class)).or_default().push(position);
+            }
+            RuleIndexKey::Id(id) => {
+                self.by_id.entry(String::from(id)).or_default().push(position);
+            }
+            RuleIndexKey::Any => self.any.push(position),
+        }
+    }
+
+    /// Writes the positions whose narrowing key can match this element, in ascending order.
+    ///
+    /// The lookups borrow `kind`/`class`/`id`, so the only allocation is the one `scratch`
+    /// already owns (G-163).
+    pub(crate) fn candidates_into(
+        &self,
+        kind: &str,
+        class: Option<&str>,
+        id: Option<&str>,
+        scratch: &mut MatchScratch,
+    ) {
+        normalize_kind_key(kind, &mut scratch.kind_key);
+        let kind_bucket =
+            self.by_kind.get(scratch.kind_key.as_str()).map(Vec::as_slice).unwrap_or(&[]);
+        let class_bucket =
+            class.and_then(|class| self.by_class.get(class)).map(Vec::as_slice).unwrap_or(&[]);
+        let id_bucket = id.and_then(|id| self.by_id.get(id)).map(Vec::as_slice).unwrap_or(&[]);
+        merge_buckets([kind_bucket, class_bucket, id_bucket, &self.any], &mut scratch.positions);
+    }
+}
+
+/// Merges four ascending position lists into one ascending list.
+///
+/// The buckets are disjoint by construction, so a plain multi-way merge is enough. This replaces
+/// the `sort_unstable` + `dedup` that ran on every match (G-163).
+fn merge_buckets<const N: usize>(buckets: [&[usize]; N], out: &mut Vec<usize>) {
+    out.clear();
+    let mut cursors = [0usize; N];
+    loop {
+        let mut best: Option<(usize, usize)> = None;
+        for (index, bucket) in buckets.iter().enumerate() {
+            let Some(&position) = bucket.get(cursors[index]) else {
+                continue;
+            };
+            if best.is_none_or(|(current, _)| position < current) {
+                best = Some((position, index));
+            }
+        }
+        let Some((position, index)) = best else {
+            break;
+        };
+        out.push(position);
+        cursors[index] += 1;
     }
 }
 
@@ -103,42 +258,14 @@ pub enum Selector {
 
 /// Widget pseudo-states that can be matched by CSS selectors.
 ///
-/// These represent dynamic widget states that selectors can target
-/// (e.g., `:hover`, `:disabled`). Distinct from `theme_state::WidgetState`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PseudoState {
-    /// The widget's resting state, with no interaction modifiers active.
-    /// Selectors targeting `:normal` match only when no other state is set.
-    Normal,
-    /// The pointer is over the widget.
-    Hover,
-    /// The widget is being held down (or otherwise in an active press).
-    Pressed,
-    /// The widget refuses input.
-    Disabled,
-    /// The widget holds keyboard focus.
-    Focused,
-    /// The widget is checked, in the sense of a toggle, checkbox, or radio
-    /// button.
-    Checked,
-    /// The widget (or one of its items) is selected, as in a list or tab.
-    Selected,
-    /// The widget is displaying a validation error.
-    ///
-    /// # Why the CSS path needs the three validation states
-    ///
-    /// `WidgetState` has carried `Error`/`Warning`/`Success` — and the theme's override keys have
-    /// accepted `"<kind>:error"` — for as long as those states have existed. The **CSS** path could
-    /// not spell them: `parse_pseudo_state` understood six names and none of the three, so a sheet
-    /// targeting `line_edit:error` was not merely unsupported, it was silently parsed as something
-    /// else. Inline validation is the most common state a form has, and it was the one state a
-    /// stylesheet could not reach.
-    Error,
-    /// The widget is displaying a non-fatal warning.
-    Warning,
-    /// The widget is confirming a completed action.
-    Success,
-}
+/// This is a **name for [`WidgetState`]**, not a second enum (G-405). The two used to be separate
+/// 10- and 12-variant enumerations with two string tables beside them, so adding one state meant
+/// editing four places and any missed edit made the CSS path and the theme's
+/// `"<kind>:<state>"` keys disagree about what a word means (principle #54).
+///
+/// Keeping the name means every existing `PseudoState::Hover` call site keeps compiling, and the
+/// canonical suffix table in [`WidgetState`] is now the only spelling source both directions read.
+pub type PseudoState = WidgetState;
 
 /// A complete CSS rule: selector → style overrides.
 #[derive(Debug, Clone)]
@@ -254,16 +381,16 @@ pub struct ElementRef<'a> {
 #[derive(Debug, Clone)]
 pub struct StyleSheet {
     rules: Vec<StyleRule>,
-    /// Rule indices by the narrowing key described on [`SelectorIndexKey`]. Rebuilt whenever the
+    /// Rule positions by the narrowing key described on [`RuleIndexKey`]. Rebuilt whenever the
     /// rule list changes; the list is built once at startup, so an add may pay O(n) to keep both
     /// structures in step (G-22).
-    index: HashMap<SelectorIndexKey, Vec<usize>>,
+    index: RuleIndex,
 }
 
 impl StyleSheet {
     /// Creates a stylesheet with no rules.
     pub fn new() -> Self {
-        Self { rules: Vec::new(), index: HashMap::new() }
+        Self { rules: Vec::new(), index: RuleIndex::new() }
     }
 
     /// Adds a rule and keeps the list sorted by ascending specificity.
@@ -283,34 +410,8 @@ impl StyleSheet {
     fn rebuild_index(&mut self) {
         self.index.clear();
         for (position, rule) in self.rules.iter().enumerate() {
-            self.index.entry(selector_index_key(&rule.selector)).or_default().push(position);
+            self.index.insert(position, selector_index_key(&rule.selector));
         }
-    }
-
-    /// Indices of the rules whose narrowing key can match this element, in cascade order.
-    fn candidate_indices(
-        &self,
-        kind: WidgetKind,
-        class: Option<&str>,
-        id: Option<&str>,
-    ) -> Vec<usize> {
-        let mut candidates = Vec::new();
-        for key in [
-            Some(SelectorIndexKey::Kind(kind)),
-            class.map(|class| SelectorIndexKey::Class(String::from(class))),
-            id.map(|id| SelectorIndexKey::Id(String::from(id))),
-            Some(SelectorIndexKey::Any),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if let Some(indices) = self.index.get(&key) {
-                candidates.extend_from_slice(indices);
-            }
-        }
-        candidates.sort_unstable();
-        candidates.dedup();
-        candidates
     }
 
     /// Find all matching rules for a widget, sorted by specificity.
@@ -321,11 +422,15 @@ impl StyleSheet {
         id: Option<&str>,
         state: Option<PseudoState>,
     ) -> Vec<&StyleRule> {
-        self.candidate_indices(kind, class, id)
-            .into_iter()
-            .filter_map(|position| self.rules.get(position))
-            .filter(|rule| rule.selector.matches(kind, class, id, state))
-            .collect()
+        with_match_scratch(|scratch| {
+            self.index.candidates_into(kind.css_name(), class, id, scratch);
+            scratch
+                .positions
+                .iter()
+                .filter_map(|&position| self.rules.get(position))
+                .filter(|rule| rule.selector.matches(kind, class, id, state))
+                .collect()
+        })
     }
 
     /// Find all matching rules for an element **with its ancestor chain**, sorted by
@@ -339,11 +444,15 @@ impl StyleSheet {
         element: ElementRef<'_>,
         ancestors: &[ElementRef<'_>],
     ) -> Vec<&StyleRule> {
-        self.candidate_indices(element.kind, element.class, element.id)
-            .into_iter()
-            .filter_map(|position| self.rules.get(position))
-            .filter(|rule| rule.selector.matches_in(element, ancestors))
-            .collect()
+        with_match_scratch(|scratch| {
+            self.index.candidates_into(element.kind.css_name(), element.class, element.id, scratch);
+            scratch
+                .positions
+                .iter()
+                .filter_map(|&position| self.rules.get(position))
+                .filter(|rule| rule.selector.matches_in(element, ancestors))
+                .collect()
+        })
     }
 
     /// Returns the stored rules in cascade order (ascending specificity;
@@ -394,6 +503,18 @@ mod tests {
         assert!(!s.matches(WidgetKind::Button, None, None, Some(PseudoState::Normal)));
     }
 
+    /// G-405: the CSS state name **is** the theme's state type, so a state added to
+    /// [`WidgetState`] is selectable from a sheet without a second enum or a second name table.
+    #[test]
+    fn the_css_state_name_is_the_theme_state() {
+        let from_theme: PseudoState = WidgetState::Active;
+        assert_eq!(from_theme.state_suffix(), "active");
+        assert_eq!(PseudoState::from_state_suffix("hover"), Some(WidgetState::Hover));
+        // The two former spellings that described the same thing now resolve through one table.
+        assert_eq!(PseudoState::from_state_suffix("disabled"), Some(WidgetState::Disabled));
+        assert_eq!(PseudoState::from_state_suffix("focus"), Some(WidgetState::Focused));
+    }
+
     #[test]
     fn selector_and_combines() {
         let s = Selector::And(vec![
@@ -437,6 +558,34 @@ mod tests {
         ss.add_rule(StyleRule::new(Selector::Class("primary".to_string()), "primary"));
         let matched = ss.match_rules(WidgetKind::Button, Some("primary"), None, None);
         assert_eq!(matched.len(), 2);
+    }
+
+    /// The four buckets are merged back into one ascending list, so a match still returns rules in
+    /// cascade order without a sort (G-163).
+    #[test]
+    fn candidates_from_several_buckets_come_back_in_rule_order() {
+        let mut ss = StyleSheet::new();
+        ss.add_rule(StyleRule::new(Selector::Kind(WidgetKind::Button), "kind"));
+        ss.add_rule(StyleRule::new(Selector::Universal, "universal"));
+        ss.add_rule(StyleRule::new(
+            Selector::And(vec![
+                Selector::Kind(WidgetKind::Button),
+                Selector::Class("primary".to_string()),
+            ]),
+            "compound",
+        ));
+        ss.add_rule(StyleRule::new(Selector::Class("primary".to_string()), "class"));
+
+        let names: Vec<&str> = ss
+            .match_rules(WidgetKind::Button, Some("primary"), None, None)
+            .iter()
+            .map(|rule| rule.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["universal", "kind", "class", "compound"],
+            "specificity ascending (0, 1, 10, 11) is the cascade order"
+        );
     }
 
     /// The inverted index must find class/id/compound/combinator rules just as the old linear

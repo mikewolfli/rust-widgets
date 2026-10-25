@@ -232,6 +232,11 @@ impl NumberPicker {
         self.special_value
     }
 
+    /// The text shown for [`Self::special_value`] (I-105).
+    pub fn special_value_text(&self) -> Option<&str> {
+        self.special_value_text.as_deref()
+    }
+
     /// Makes `value` display `text` instead of its number.
     ///
     /// This is the "auto" or "mixed" position every platform's picker has: a
@@ -248,15 +253,22 @@ impl NumberPicker {
 
     /// The label shown for one value, including prefix, decimals, suffix and special text.
     pub fn display_text(&self, value: i64) -> String {
+        let mut out = String::new();
+        self.write_display_text(&mut out, value);
+        out
+    }
+
+    /// Renders the display label into `out`, so the paint path reuses one buffer (I-P68).
+    fn write_display_text(&self, out: &mut String, value: i64) {
         if self.special_value == Some(value) {
             if let Some(text) = &self.special_value_text {
-                return text.clone();
+                out.push_str(text);
+                return;
             }
         }
-        let mut out = String::new();
         out.push_str(&self.prefix);
         if self.decimals == 0 {
-            out.push_str(&value.to_string());
+            let _ = write!(out, "{value}");
         } else {
             let negative = value < 0;
             let magnitude = value.unsigned_abs();
@@ -266,8 +278,7 @@ impl NumberPicker {
             if negative {
                 out.push('-');
             }
-            out.push_str(&whole.to_string());
-            out.push('.');
+            let _ = write!(out, "{whole}.");
             let fraction_text = fraction.to_string();
             for _ in fraction_text.len()..self.decimals as usize {
                 out.push('0');
@@ -275,7 +286,6 @@ impl NumberPicker {
             out.push_str(&fraction_text);
         }
         out.push_str(&self.suffix);
-        out
     }
 
     /// Whether a settle animation is still running.
@@ -499,6 +509,13 @@ impl WidgetProperties for NumberPicker {
             "step" => Ok(CapabilityValue::Int(self.step())),
             "wrap" => Ok(CapabilityValue::Bool(self.wrap())),
             "suffix" => Ok(CapabilityValue::String(self.suffix().to_string())),
+            // I-105: the same names `spin_box` publishes.
+            "prefix" => Ok(CapabilityValue::String(self.prefix().to_string())),
+            "decimals" => Ok(CapabilityValue::UInt(self.decimals() as u64)),
+            "special_value_text" => match self.special_value_text() {
+                Some(text) => Ok(CapabilityValue::String(text.to_string())),
+                None => Ok(CapabilityValue::Null),
+            },
             "row_count" => Ok(CapabilityValue::UInt(self.row_count())),
             "selected_row" => Ok(CapabilityValue::UInt(self.selected_row())),
             "row_height" => Ok(CapabilityValue::UInt(self.row_height() as u64)),
@@ -532,6 +549,29 @@ impl WidgetProperties for NumberPicker {
                 self.set_suffix(expect_string(value)?);
                 Ok(())
             }
+            "prefix" => {
+                self.set_prefix(expect_string(value)?);
+                Ok(())
+            }
+            "decimals" => {
+                let decimals = match value {
+                    CapabilityValue::UInt(decimals) => decimals,
+                    CapabilityValue::Int(decimals) if decimals >= 0 => decimals as u64,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                let decimals =
+                    u8::try_from(decimals).map_err(|_| CapabilityAccessError::OutOfRange)?;
+                self.set_decimals(decimals);
+                Ok(())
+            }
+            "special_value_text" => {
+                let text = match value {
+                    CapabilityValue::Null => None,
+                    other => Some(expect_string(other)?),
+                };
+                self.set_special_value(self.special_value, text.filter(|t| !t.is_empty()));
+                Ok(())
+            }
             "row_height" => match value {
                 CapabilityValue::UInt(height) => {
                     let height =
@@ -555,6 +595,9 @@ impl WidgetProperties for NumberPicker {
             "step",
             "wrap",
             "suffix",
+            "prefix",
+            "decimals",
+            "special_value_text",
             "row_count",
             "selected_row",
             "row_height",
@@ -812,7 +855,8 @@ impl Draw for NumberPicker {
                 // the user can see the digits they are building, including a bare sign.
                 label.push_str(&self.entry_buffer);
             } else if !faded {
-                label = self.display_text(value);
+                // I-P68: render into the reused buffer instead of allocating a label.
+                self.write_display_text(&mut label, value);
             } else {
                 let _ = write!(label, "{value}");
             }
@@ -854,17 +898,16 @@ impl NumberPicker {
 }
 
 /// Returns whether `pos` lies inside `rect`.
+///
+/// I-P68: the picker reuses [`Rect::contains_point`] rather than carrying a second
+/// spelling of the same four comparisons.
 trait ContainsPoint {
     fn contains(&self, pos: Point) -> bool;
 }
 
 impl ContainsPoint for NumberPicker {
     fn contains(&self, pos: Point) -> bool {
-        let rect = self.geometry();
-        pos.x >= rect.x
-            && pos.x < rect.x + rect.width as i32
-            && pos.y >= rect.y
-            && pos.y < rect.y + rect.height as i32
+        self.geometry().contains_point(pos)
     }
 }
 

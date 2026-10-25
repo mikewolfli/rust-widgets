@@ -22,7 +22,7 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 use super::data_source::{IncrementalTableDataSource, ListModelDataSource};
-use super::list_view::{SelectionMode, VecListModel};
+use super::list_view::{ScrollHint, SelectionMode, VecListModel};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WindowCache {
@@ -62,6 +62,13 @@ pub struct VirtualList {
     /// with a permutation, so the source is never mutated — the control owns the arrangement.
     /// [`Self::set_data_source`] and a row-count change reset it to identity.
     row_order: Vec<usize>,
+    /// Whether `row_order` is still the identity arrangement (F-P08).
+    ///
+    /// Checking that with an O(n) scan on every window fetch made a scroll step follow the document
+    /// size. The flag is maintained by the two places that change the arrangement and read O(1).
+    order_is_identity: bool,
+    /// Whether a programmatic selection scrolls its row into view (V-18).
+    selection_scrolls_into_view: bool,
     row_height: u32,
     overscan: usize,
     selected_row: Option<usize>,
@@ -118,6 +125,8 @@ impl VirtualList {
             data_source_connection_scope: ConnectionScope::new(),
             scroll_row: 0,
             row_order: Vec::new(),
+            order_is_identity: true,
+            selection_scrolls_into_view: true,
             row_height: 20,
             overscan: 2,
             selected_row: None,
@@ -182,6 +191,7 @@ impl VirtualList {
         self.selected_rows.clear();
         self.selection_anchor = None;
         self.row_order.clear();
+        self.order_is_identity = true;
         self.clear_window_cache();
         self.normalize_projection_state();
         self.emit_visible_window_changed();
@@ -215,6 +225,7 @@ impl VirtualList {
         self.selected_rows.clear();
         self.selection_anchor = None;
         self.row_order.clear();
+        self.order_is_identity = true;
         self.clear_window_cache();
         self.emit_visible_window_changed();
         self.base.request_layout();
@@ -263,6 +274,48 @@ impl VirtualList {
         let current = self.scroll_row as isize;
         let next = (current + delta).max(0) as usize;
         self.set_scroll_row(next);
+    }
+
+    /// Scrolls so `row` is placed according to `hint` (V-18).
+    ///
+    /// Returns `false` for a row the model does not have. `Nearest` moves only when the row is
+    /// outside the viewport, which is what an `ensure_visible` call wants.
+    pub fn scroll_to_row(&mut self, row: usize, hint: ScrollHint) -> bool {
+        if row >= self.row_count() {
+            return false;
+        }
+        let visible = self.visible_capacity().max(1);
+        let target = match hint {
+            ScrollHint::Top => row,
+            ScrollHint::Center => row.saturating_sub(visible / 2),
+            ScrollHint::Bottom => row.saturating_add(1).saturating_sub(visible),
+            ScrollHint::Nearest => {
+                if row < self.scroll_row {
+                    row
+                } else if row >= self.scroll_row.saturating_add(visible) {
+                    row.saturating_add(1).saturating_sub(visible)
+                } else {
+                    self.scroll_row
+                }
+            }
+        };
+        self.set_scroll_row(target);
+        true
+    }
+
+    /// Scrolls the smallest amount that makes `row` visible (V-18).
+    pub fn ensure_visible(&mut self, row: usize) -> bool {
+        self.scroll_to_row(row, ScrollHint::Nearest)
+    }
+
+    /// Whether a programmatic selection scrolls its row into view.
+    pub fn selection_scrolls_into_view(&self) -> bool {
+        self.selection_scrolls_into_view
+    }
+
+    /// Enables or disables the follow-on scroll of a selection (V-18).
+    pub fn set_selection_scrolls_into_view(&mut self, follow: bool) {
+        self.selection_scrolls_into_view = follow;
     }
 
     /// Returns row height in pixels.
@@ -394,6 +447,9 @@ impl VirtualList {
         }
         self.selected_row = Some(row);
         self.emit_selection();
+        if self.selection_scrolls_into_view {
+            let _ = self.ensure_visible(row);
+        }
         self.base.request_redraw();
         true
     }
@@ -419,6 +475,9 @@ impl VirtualList {
             self.selection_anchor = Some(low);
         }
         self.emit_selection();
+        if self.selection_scrolls_into_view {
+            let _ = self.ensure_visible(high);
+        }
         self.base.request_redraw();
         true
     }
@@ -491,6 +550,9 @@ impl VirtualList {
         }
         let row = self.row_order.remove(from);
         self.row_order.insert(to, row);
+        // A move can in principle restore the identity order; marking the flag dirty is the
+        // conservative answer and costs one extra per-row fetch, not a wrong screen.
+        self.order_is_identity = false;
         let before = self.selected_row;
         self.selected_row = self.selected_row.map(|index| index_after_move(index, from, to));
         self.selected_rows =
@@ -599,13 +661,13 @@ impl VirtualList {
         let count = self.row_count();
         if self.row_order.len() != count {
             self.row_order = (0..count).collect();
+            self.order_is_identity = true;
         }
     }
 
-    /// Whether display row `n` is still source row `n`.
+    /// Whether display row `n` is still source row `n` (F-P08: O(1), not an O(n) scan).
     fn row_order_is_identity(&self) -> bool {
-        self.row_order.len() != self.row_count()
-            || self.row_order.iter().enumerate().all(|(display, &source)| display == source)
+        self.order_is_identity || self.row_order.len() != self.row_count()
     }
 
     /// The source row a display row reads its text from.
@@ -640,6 +702,7 @@ impl VirtualList {
         let row_count = self.row_count();
         if self.row_order.len() != row_count {
             self.row_order.clear();
+            self.order_is_identity = true;
         }
         if row_count == 0 {
             self.scroll_row = 0;
@@ -1601,5 +1664,58 @@ mod tests {
         assert!(list.selected_row().unwrap_or(0) > 1);
         list.handle_event(&Event::KeyPress { key: crate::event::key_codes::HOME, modifiers: 0 });
         assert_eq!(list.selected_row(), Some(0));
+    }
+
+    /// F-P08: the identity check is a maintained flag, not a scan, and a reorder clears it.
+    #[test]
+    fn row_order_identity_is_maintained_incrementally() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 400, 200));
+        list.set_rows((0..20).map(|row| format!("row {row}")).collect());
+        assert!(list.row_order_is_identity(), "a fresh projection is the identity");
+
+        assert!(list.move_row(0, 2));
+        assert!(!list.row_order_is_identity(), "a move breaks the identity");
+
+        // Rebinding the source resets the arrangement to identity.
+        list.set_rows((0..20).map(|row| format!("row {row}")).collect());
+        assert!(list.row_order_is_identity());
+    }
+
+    /// V-18: `scroll_to_row` honours the alignment hint and `ensure_visible` moves minimally.
+    #[test]
+    fn scroll_to_row_aligns_and_ensure_visible_moves_minimally() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 400, 200));
+        list.set_rows((0..100).map(|row| format!("row {row}")).collect());
+        let visible = list.visible_capacity().max(1);
+
+        assert!(list.scroll_to_row(50, ScrollHint::Top));
+        assert_eq!(list.scroll_row(), 50);
+        assert!(list.scroll_to_row(50, ScrollHint::Center));
+        assert_eq!(list.scroll_row(), 50usize.saturating_sub(visible / 2));
+        assert!(list.scroll_to_row(50, ScrollHint::Bottom));
+        assert_eq!(list.scroll_row(), 51usize.saturating_sub(visible));
+
+        // Nearest: a row already on screen does not scroll; one past the end scrolls just enough.
+        list.set_scroll_row(10);
+        assert!(list.ensure_visible(12));
+        assert_eq!(list.scroll_row(), 10, "already visible");
+        assert!(list.ensure_visible(10 + visible + 3));
+        assert_eq!(list.scroll_row(), 10 + 4, "moved by exactly the overflow");
+        assert!(!list.scroll_to_row(10_000, ScrollHint::Top), "there is no such row");
+    }
+
+    /// V-18: selecting a row follows it into view unless the follow-on scroll is disabled.
+    #[test]
+    fn selecting_a_row_scrolls_it_into_view() {
+        let mut list = VirtualList::new(Rect::new(0, 0, 400, 200));
+        list.set_rows((0..100).map(|row| format!("row {row}")).collect());
+
+        assert!(list.select_row(60));
+        assert!(list.scroll_row() > 0, "the selected row was brought on screen");
+
+        list.set_scroll_row(0);
+        list.set_selection_scrolls_into_view(false);
+        assert!(list.select_row(60));
+        assert_eq!(list.scroll_row(), 0, "the follow-on scroll is off");
     }
 }

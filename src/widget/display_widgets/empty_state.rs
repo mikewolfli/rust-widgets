@@ -44,14 +44,20 @@ pub struct EmptyState {
     title: String,
     message: String,
     action_text: String,
+    /// The secondary action's label, empty when there is none.
+    secondary_action_text: String,
     /// Whether the action button is currently armed by a left press.
     ///
     /// A press arms the button and paints it pressed; the release decides whether
     /// the action fires. This is the same press/release pair the crate's binary
     /// controls use, so a press alone never commits.
     pressed: bool,
+    /// Whether the secondary action is armed by a left press.
+    secondary_pressed: bool,
     /// Emitted when the action button is clicked.
     pub action_pressed: GenericSignal,
+    /// Emitted when the secondary action is clicked.
+    pub secondary_action_pressed: GenericSignal,
     /// The wrapped message and each line's measured width, rebuilt only when the message,
     /// the face, the available width or the device scale changes.
     message_wrap: Option<MessageWrapCache>,
@@ -64,6 +70,15 @@ struct MessageWrapCache {
     available_width: u32,
     dpi_scale_bits: u32,
     lines: Vec<(String, u32)>,
+}
+
+/// The colours and interaction state shared by both emptiness action buttons.
+struct ActionButtonPaint {
+    fill: Color,
+    pressed: bool,
+    is_enabled: bool,
+    ink: Color,
+    surface: Color,
 }
 
 impl EmptyState {
@@ -81,8 +96,11 @@ impl EmptyState {
             title: DEFAULT_TITLE.to_string(),
             message: DEFAULT_MESSAGE.to_string(),
             action_text: String::new(),
+            secondary_action_text: String::new(),
             pressed: false,
+            secondary_pressed: false,
             action_pressed: GenericSignal::new(),
+            secondary_action_pressed: GenericSignal::new(),
             message_wrap: None,
         }
     }
@@ -185,6 +203,30 @@ impl EmptyState {
         !self.action_text.is_empty()
     }
 
+    /// The secondary action's label.
+    pub fn secondary_action_text(&self) -> &str {
+        &self.secondary_action_text
+    }
+
+    /// Sets the secondary action's label, or clears it with an empty string.
+    ///
+    /// The secondary action is the quieter companion to the primary one ("retry" beside "view
+    /// details"). It is drawn to the primary button's right with a weaker fill, and a control with
+    /// only a primary action keeps exactly the picture it had.
+    pub fn set_secondary_action_text(&mut self, text: &str) {
+        if self.secondary_action_text == text {
+            return;
+        }
+        self.secondary_action_text = text.to_string();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Returns `true` if the secondary action is visible.
+    pub fn has_secondary_action(&self) -> bool {
+        !self.secondary_action_text.is_empty()
+    }
+
     /// Returns the descriptive message shown below the title.
     ///
     /// The `description` property reads this rather than [`EmptyState::message`]
@@ -202,16 +244,79 @@ impl EmptyState {
         self.set_message(description);
     }
 
-    /// Computes the rectangle for the action button, if it is visible.
-    fn action_button_rect(&self) -> Option<Rect> {
+    /// Paints one action button in `fill`, with the shared pressed and disabled treatments.
+    fn paint_action_button(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        text: &str,
+        font: &Font,
+        paint: ActionButtonPaint,
+    ) {
+        let ActionButtonPaint { fill, pressed, is_enabled, ink, surface } = paint;
+        let corner_radius = rect.height / 2;
+        // A pressed action is a step toward the ink, the same direction every other
+        // pressed surface in the crate moves. The resting fill is unchanged, so a
+        // control that is never pressed paints exactly as it did.
+        let btn_bg = if !is_enabled {
+            ink.blend(&surface, 0.8)
+        } else if pressed {
+            fill.blend(&ink, 0.18)
+        } else {
+            fill
+        };
+        context.fill_rounded_rect(rect, corner_radius, btn_bg);
+
+        let btn_text_color = if !is_enabled {
+            // The button's label sits on the button's fill, not on the page.
+            self.base.disabled_ink_on(ink, btn_bg)
+        } else {
+            btn_bg.contrast_color()
+        };
+        // Horizontal centring is measured; vertical centring comes from the shared line
+        // box. The previous `btn_rect.y + btn_rect.height / 2` put the glyph box's top edge
+        // on the button's middle line and drew the label half a line low.
+        let btn_metrics = context.measure_text(text, font);
+        let btn_line = context.text_line(rect, font);
+        let btn_origin =
+            Point::new(rect.x + (rect.width as i32 - btn_metrics.width as i32) / 2, btn_line.y);
+        context.draw_text(btn_origin, text, font, btn_text_color, HorizontalAlignment::Left);
+    }
+
+    /// Computes the action buttons' rectangles: the primary, and the secondary to its right.
+    ///
+    /// With no secondary action the primary keeps the historical centred rectangle, so a
+    /// single-action control paints byte-identical chrome. With one, the pair shares that
+    /// width and the primary is the leading half.
+    fn action_button_rects(&self) -> Option<(Rect, Option<Rect>)> {
         if !self.has_action() {
             return None;
         }
         let rect = self.geometry();
-        let btn_width = rect.width.clamp(80, 200);
-        let btn_x = rect.x + (rect.width as i32 - btn_width as i32) / 2;
         let btn_y = rect.y + rect.height as i32 - ACTION_BUTTON_HEIGHT as i32 - SECTION_GAP;
-        Some(Rect::new(btn_x, btn_y, btn_width, ACTION_BUTTON_HEIGHT))
+        if !self.has_secondary_action() {
+            let btn_width = rect.width.clamp(80, 200);
+            let btn_x = rect.x + (rect.width as i32 - btn_width as i32) / 2;
+            return Some((Rect::new(btn_x, btn_y, btn_width, ACTION_BUTTON_HEIGHT), None));
+        }
+        let pair_width = rect.width.clamp(160, 400);
+        let gap = SECTION_GAP as u32;
+        let btn_width = pair_width.saturating_sub(gap) / 2;
+        let start_x = rect.x + (rect.width as i32 - pair_width as i32) / 2;
+        let primary = Rect::new(start_x, btn_y, btn_width, ACTION_BUTTON_HEIGHT);
+        let secondary = Rect::new(
+            start_x + btn_width as i32 + gap as i32,
+            btn_y,
+            btn_width,
+            ACTION_BUTTON_HEIGHT,
+        );
+        Some((primary, Some(secondary)))
+    }
+
+    /// The primary action's rectangle, for the single-action geometry tests.
+    #[cfg(test)]
+    fn action_button_rect(&self) -> Option<Rect> {
+        self.action_button_rects().map(|(primary, _)| primary)
     }
 }
 
@@ -244,6 +349,10 @@ impl Widget for EmptyState {
         use crate::signal::EventSignalRef;
         match name {
             "action_pressed" => Some(EventSignalRef::unit("action_pressed", &self.action_pressed)),
+            "secondary_action_pressed" => Some(EventSignalRef::unit(
+                "secondary_action_pressed",
+                &self.secondary_action_pressed,
+            )),
             _ => None,
         }
     }
@@ -262,6 +371,9 @@ impl WidgetProperties for EmptyState {
         match name {
             "message" => Ok(CapabilityValue::String(self.title().to_string())),
             "description" => Ok(CapabilityValue::String(self.description().to_string())),
+            "secondary_action_text" => {
+                Ok(CapabilityValue::String(self.secondary_action_text().to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -276,12 +388,16 @@ impl WidgetProperties for EmptyState {
                 self.set_description(&expect_string(value)?);
                 Ok(())
             }
+            "secondary_action_text" => {
+                self.set_secondary_action_text(&expect_string(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["message", "description", BASE_PROPERTY_NAMES]
+        property_names_of!["message", "description", "secondary_action_text", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -450,47 +566,37 @@ impl Draw for EmptyState {
         }
 
         // ── Action Button ──
-        if let Some(btn_rect) = self.action_button_rect() {
-            let corner_radius = btn_rect.height / 2;
-
-            // Button background
-            //
-            // A pressed action is a step toward the ink, the same direction every other
-            // pressed surface in the crate moves. The resting fill is unchanged, so a
-            // control that is never pressed paints exactly as it did.
-            let btn_bg = if !is_enabled {
-                ink.blend(&surface, 0.8)
-            } else if self.pressed {
-                action_fill.blend(&ink, 0.18)
-            } else {
-                action_fill
-            };
-            context.fill_rounded_rect(btn_rect, corner_radius, btn_bg);
-
-            // Button text
-            let btn_text_color = if !is_enabled {
-                // The button's label sits on the button's fill, not on the page.
-                self.base.disabled_ink_on(ink, btn_bg)
-            } else {
-                btn_bg.contrast_color()
-            };
-            let btn_font = action_font.clone();
-            // Horizontal centring is measured; vertical centring comes from the shared line
-            // box. The previous `btn_rect.y + btn_rect.height / 2` put the glyph box's top edge
-            // on the button's middle line and drew the label half a line low.
-            let btn_metrics = context.measure_text(&self.action_text, &btn_font);
-            let btn_line = context.text_line(btn_rect, &btn_font);
-            let btn_origin = Point::new(
-                btn_rect.x + (btn_rect.width as i32 - btn_metrics.width as i32) / 2,
-                btn_line.y,
-            );
-            context.draw_text(
-                btn_origin,
+        if let Some((primary, secondary)) = self.action_button_rects() {
+            self.paint_action_button(
+                context,
+                primary,
                 &self.action_text,
-                &btn_font,
-                btn_text_color,
-                HorizontalAlignment::Left,
+                &action_font,
+                ActionButtonPaint {
+                    fill: action_fill,
+                    pressed: self.pressed,
+                    is_enabled,
+                    ink,
+                    surface,
+                },
             );
+            if let Some(secondary) = secondary {
+                // The secondary action is deliberately weaker: it is the alternative, not the
+                // call to action the control exists for.
+                self.paint_action_button(
+                    context,
+                    secondary,
+                    &self.secondary_action_text,
+                    &action_font,
+                    ActionButtonPaint {
+                        fill: action_fill.blend(&surface, 0.55),
+                        pressed: self.secondary_pressed,
+                        is_enabled,
+                        ink,
+                        surface,
+                    },
+                );
+            }
         }
     }
 }
@@ -509,11 +615,18 @@ impl EventHandler for EmptyState {
         match event {
             Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
-                    // Check if the click is on the action button
-                    if let Some(btn_rect) = self.action_button_rect() {
-                        if btn_rect.contains_point(*pos) {
+                    // Check the primary and secondary action buttons.
+                    if let Some((primary, secondary)) = self.action_button_rects() {
+                        if primary.contains_point(*pos) {
                             if !self.pressed {
                                 self.pressed = true;
+                                self.base.request_redraw();
+                            }
+                            return;
+                        }
+                        if secondary.is_some_and(|rect| rect.contains_point(*pos)) {
+                            if !self.secondary_pressed {
+                                self.secondary_pressed = true;
                                 self.base.request_redraw();
                             }
                             return;
@@ -526,14 +639,26 @@ impl EventHandler for EmptyState {
                 }
             }
             Event::MouseRelease { pos, button } => {
-                if *button == 1 && self.pressed {
-                    self.pressed = false;
-                    // A release inside commits; anywhere else abandons the press, which is
-                    // the platform convention for a button the pointer was dragged off.
-                    if self.action_button_rect().is_some_and(|rect| rect.contains_point(*pos)) {
-                        self.action_pressed.emit();
+                if *button == 1 {
+                    if self.pressed {
+                        self.pressed = false;
+                        // A release inside commits; anywhere else abandons the press, which is
+                        // the platform convention for a button the pointer was dragged off.
+                        if let Some((primary, _)) = self.action_button_rects() {
+                            if primary.contains_point(*pos) {
+                                self.action_pressed.emit();
+                            }
+                        }
+                        self.base.request_redraw();
+                    } else if self.secondary_pressed {
+                        self.secondary_pressed = false;
+                        if let Some((_, Some(secondary))) = self.action_button_rects() {
+                            if secondary.contains_point(*pos) {
+                                self.secondary_action_pressed.emit();
+                            }
+                        }
+                        self.base.request_redraw();
                     }
-                    self.base.request_redraw();
                 }
             }
             _ => {
@@ -981,5 +1106,51 @@ mod tests {
                 "a row spans {left}..{right}, whose midpoint must be near the control's axis"
             );
         }
+    }
+
+    /// A secondary action sits to the primary's right with weaker emphasis, and the
+    /// single-action geometry is untouched.
+    #[test]
+    fn the_secondary_action_joins_the_primary_on_the_same_row() {
+        let mut es = EmptyState::new(Rect::new(0, 0, 300, 200));
+        es.set_action_text("Retry");
+        let (_primary, secondary) = es.action_button_rects().expect("the primary exists");
+        assert!(secondary.is_none(), "no secondary by default");
+
+        es.set_secondary_action_text("Details");
+        let (primary, secondary) = es.action_button_rects().expect("both exist");
+        let secondary = secondary.expect("the secondary exists");
+        assert_eq!(primary.y, secondary.y, "the pair shares a row");
+        assert!(secondary.x > primary.x, "the secondary follows the primary");
+        assert_eq!(primary.height, secondary.height);
+
+        // Both buttons are inert until the release lands inside them.
+        let pressed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sink = std::sync::Arc::clone(&pressed);
+        es.secondary_action_pressed.connect(move || {
+            sink.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let at = Point::new(secondary.x + 4, secondary.y + 4);
+        es.handle_event(&Event::MousePress { pos: at, button: 1, modifiers: 0 });
+        assert_eq!(pressed.load(std::sync::atomic::Ordering::SeqCst), 0, "a press only arms");
+        es.handle_event(&Event::MouseRelease { pos: at, button: 1 });
+        assert_eq!(pressed.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Clearing the secondary restores the single-action picture.
+        es.set_secondary_action_text("");
+        assert!(es.action_button_rects().unwrap().1.is_none());
+    }
+
+    /// The secondary label is a writable property.
+    #[test]
+    fn the_secondary_action_label_round_trips() {
+        let mut es = EmptyState::new(Rect::new(0, 0, 300, 200));
+        es.set("secondary_action_text", CapabilityValue::String("Details".into()))
+            .expect("writable");
+        assert_eq!(es.secondary_action_text(), "Details");
+        assert_eq!(
+            es.get("secondary_action_text").unwrap(),
+            CapabilityValue::String("Details".into())
+        );
     }
 }

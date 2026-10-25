@@ -34,6 +34,17 @@ pub struct MasonryItem {
     /// rectangle into it on every arrangement, so the tree painter draws the control in the cell.
     /// See [`MasonryLayout::set_item_widget`].
     pub widget_id: Option<ObjectId>,
+    /// How many columns this card spans (C-13). `1` — the default — keeps the historical
+    /// single-column card; a larger value is clamped to the layout's column count at
+    /// arrangement time.
+    pub column_span: u32,
+}
+
+impl MasonryItem {
+    /// A single-column card, the shape [`MasonryLayout::add_item`] produces.
+    pub fn new(label: impl Into<String>, height: u32, color: Color) -> Self {
+        Self { label: label.into(), height, color, widget_id: None, column_span: 1 }
+    }
 }
 
 /// The default vertical gap between two stacked cards, in logical pixels.
@@ -69,6 +80,8 @@ pub struct MasonryLayout {
     cache: std::cell::RefCell<CachedArrangement>,
     /// The vertical gap between two stacked cards in one column.
     item_spacing: u32,
+    /// The horizontal gap between two columns (C-12).
+    horizontal_gap: u32,
     /// Emitted with the item index when a card is clicked.
     pub item_clicked: Signal1<usize>,
 }
@@ -83,6 +96,7 @@ impl MasonryLayout {
             layout_version: 0,
             cache: std::cell::RefCell::new(None),
             item_spacing: DEFAULT_ITEM_SPACING,
+            horizontal_gap: DEFAULT_ITEM_SPACING,
             item_clicked: Signal1::new(),
         }
     }
@@ -129,9 +143,55 @@ impl MasonryLayout {
         &self.items
     }
 
+    /// The horizontal gap between two columns, in logical pixels (C-12).
+    pub fn horizontal_gap(&self) -> u32 {
+        self.horizontal_gap
+    }
+
+    /// Sets the horizontal gap between two columns (C-12).
+    ///
+    /// It is independent of [`Self::item_spacing`] because the two are different measures: the
+    /// vertical gap spaces cards inside one column, the horizontal one spaces the columns
+    /// themselves. The default equals the vertical default, so a layout that sets nothing
+    /// keeps a balanced look; zero is legal (columns touch).
+    pub fn set_horizontal_gap(&mut self, gap: u32) {
+        if self.horizontal_gap == gap {
+            return;
+        }
+        self.horizontal_gap = gap;
+        self.layout_version = self.layout_version.wrapping_add(1);
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Sets a card's column span, clamped to at least one column (C-13).
+    ///
+    /// Returns `false` for an out-of-range index. A span wider than the layout has columns is
+    /// clamped when the arrangement is computed rather than rejected here, so a card added
+    /// before the column count is set still lands sensibly.
+    pub fn set_item_column_span(&mut self, index: usize, span: u32) -> bool {
+        let Some(item) = self.items.get_mut(index) else {
+            return false;
+        };
+        let span = span.max(1);
+        if item.column_span == span {
+            return true;
+        }
+        item.column_span = span;
+        self.layout_version = self.layout_version.wrapping_add(1);
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The column span of the card at `index` (C-13).
+    pub fn item_column_span(&self, index: usize) -> Option<u32> {
+        self.items.get(index).map(|item| item.column_span.max(1))
+    }
+
     /// Adds an item to the masonry layout.
     pub fn add_item(&mut self, label: &str, height: u32, color: Color) {
-        self.items.push(MasonryItem { label: label.to_string(), height, color, widget_id: None });
+        self.items.push(MasonryItem::new(label, height, color));
         self.layout_version = self.layout_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
@@ -276,7 +336,13 @@ impl MasonryLayout {
 
         let columns = self.columns.max(1);
         let rect = self.base.geometry();
-        let col_w = rect.width / columns;
+        let gap = self.horizontal_gap;
+        // The gaps are taken out of the usable width before the columns are divided, so the
+        // rightmost column ends exactly on the control's trailing edge (C-12). `saturating_sub`
+        // keeps a control narrower than its gaps from underflowing; the columns then collapse
+        // to zero width rather than wrapping around.
+        let total_gap = gap.saturating_mul(columns.saturating_sub(1));
+        let col_w = rect.width.saturating_sub(total_gap) / columns;
         let spacing = self.item_spacing;
 
         // Track the current y-offset for each column.
@@ -284,24 +350,41 @@ impl MasonryLayout {
         let mut result = Vec::with_capacity(self.items.len());
 
         for (index, item) in self.items.iter().enumerate() {
-            // Find the column with the smallest current height.
-            let min_col = col_heights
-                .iter()
-                .enumerate()
-                .min_by_key(|&(_, h)| *h)
-                .map(|(i, _)| i)
-                .unwrap_or(0);
+            // A span wider than the column count would place a card outside the control, so it
+            // is clamped rather than trusted (C-13).
+            let span = item.column_span.max(1).min(columns);
+            // The start column whose spanned band ends highest; ties go to the leftmost, which
+            // is what makes the single-column case reduce to the original "shortest column"
+            // rule exactly.
+            let mut best_start = 0u32;
+            let mut best_bottom = u32::MAX;
+            for start in 0..=(columns - span) {
+                let bottom = col_heights[start as usize..(start + span) as usize]
+                    .iter()
+                    .copied()
+                    .max()
+                    .unwrap_or(0);
+                if bottom < best_bottom {
+                    best_bottom = bottom;
+                    best_start = start;
+                }
+            }
 
-            let x = rect.x + (min_col as u32 * col_w) as i32;
-            let current_h = col_heights[min_col];
-            let y = rect.y + current_h as i32;
+            let x = rect.x + (best_start * (col_w + gap)) as i32;
+            let width = span.saturating_mul(col_w).saturating_add(gap.saturating_mul(span - 1));
+            let y = rect.y + best_bottom as i32;
 
             let item_height = item.height.max(20);
-            let item_rect = Rect::new(x, y, col_w, item_height);
+            let item_rect = Rect::new(x, y, width, item_height);
 
             result.push((index, item_rect));
 
-            col_heights[min_col] = current_h.saturating_add(item_height.saturating_add(spacing));
+            // Every spanned column advances past this card: the next card may not start above
+            // the tallest of them, or the columns would overlap.
+            let next = best_bottom.saturating_add(item_height.saturating_add(spacing));
+            for height in &mut col_heights[best_start as usize..(best_start + span) as usize] {
+                *height = next;
+            }
         }
 
         result
@@ -658,5 +741,33 @@ mod tests {
             card_ys.iter().all(|y| *y < 120),
             "no card may start below the control's bottom edge: {card_ys:?}"
         );
+    }
+
+    /// C-12: the horizontal gap is its own value and is taken out of the column width.
+    #[test]
+    fn the_horizontal_gap_separates_columns() {
+        let mut ml = MasonryLayout::new(Rect::new(0, 0, 300, 400));
+        ml.set_columns(2);
+        ml.set_horizontal_gap(10);
+        ml.add_item("a", 50, Color::RED);
+        ml.add_item("b", 50, Color::RED);
+        let rects = ml.layout_items_shared();
+        assert_eq!(rects[0].1.width, 145, "(300 - 10) / 2");
+        assert_eq!(rects[1].1.x, 155, "the second column starts after the gap");
+    }
+
+    /// C-13: a spanning card takes the width of every column it covers and advances them all.
+    #[test]
+    fn a_spanning_card_covers_every_column_it_names() {
+        let mut ml = MasonryLayout::new(Rect::new(0, 0, 300, 400));
+        ml.set_columns(2);
+        ml.set_horizontal_gap(10);
+        ml.add_item("wide", 50, Color::RED);
+        ml.add_item("tall", 40, Color::GREEN);
+        assert!(ml.set_item_column_span(0, 2));
+        assert_eq!(ml.item_column_span(0), Some(2));
+        let rects = ml.layout_items_shared();
+        assert_eq!(rects[0].1.width, 300, "both columns plus the gap between them");
+        assert!(rects[1].1.y >= rects[0].1.y + 50, "the next card clears the spanning one");
     }
 }

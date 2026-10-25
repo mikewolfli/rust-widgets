@@ -204,26 +204,37 @@ impl EditableComboBox {
     }
 
     /// Sets the text in the text field and emits `text_changed`.
+    ///
+    /// The new value is moved in rather than cloned for every consumer, and the pre-edit value
+    /// is captured once for the undo record (I-P02).
     pub fn set_text(&mut self, text: impl Into<String>) {
         let t = text.into();
         if self.text != t {
-            let before = self.text.clone();
-            self.text = t.clone();
-            if !self.restoring_history {
-                *self.history_target.borrow_mut() = self.text.clone();
-                self.undo_stack.push(Box::new(ValueCommand::new(
-                    self.history_target.clone(),
-                    before,
-                    self.text.clone(),
-                    "Edit text",
-                    "editable_combo_text",
-                )));
-            }
+            let before = core::mem::replace(&mut self.text, t);
             self.cursor = self.text.len();
             self.selection_anchor = None;
-            self.text_changed.emit(self.text.clone());
-            self.base.request_redraw();
+            self.publish_text_change(before);
         }
+    }
+
+    /// Publishes a value mutation the caller already applied to `self.text`.
+    ///
+    /// `before` is the pre-edit value, moved in so the history record does not need another
+    /// copy of the string (I-P02). The caller owns the caret because each edit path places it
+    /// differently (an append advances by the inserted length, a delete parks at the gap).
+    fn publish_text_change(&mut self, before: String) {
+        if !self.restoring_history {
+            *self.history_target.borrow_mut() = self.text.clone();
+            self.undo_stack.push(Box::new(ValueCommand::new(
+                self.history_target.clone(),
+                before,
+                self.text.clone(),
+                "Edit text",
+                "editable_combo_text",
+            )));
+        }
+        self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
     }
 
     /// The caret's byte offset in the value.
@@ -296,20 +307,32 @@ impl EditableComboBox {
     /// collection. Matching is case-insensitive and prefix-anchored: a substring match would
     /// make typing `ap` list every item whose label merely contains it.
     pub fn filtered_items(&self) -> Vec<String> {
-        let prefix = self.text.trim().to_lowercase();
-        if prefix.is_empty() {
+        if self.text.trim().is_empty() {
             return self.items.clone();
         }
-        self.items.iter().filter(|item| item.to_lowercase().starts_with(&prefix)).cloned().collect()
+        // One fold per call, then a byte-wise prefix test per row (I-P05).
+        let prefix = crate::widget::input_widgets::text_match::fold(self.text.trim());
+        self.items
+            .iter()
+            .filter(|item| crate::widget::input_widgets::text_match::starts_with(item, &prefix))
+            .cloned()
+            .collect()
     }
 
     /// Indices in `items` matching the typed prefix.
+    ///
+    /// The typed prefix is folded **once** per call and compared byte-wise, instead of folding
+    /// every row (I-P05). The draw path, the hit test and the keyboard navigation all read this
+    /// one list, so rows are never cloned to be identified.
     fn filtered_indices(&self) -> Vec<usize> {
-        let prefix = self.text.trim().to_lowercase();
+        let prefix = crate::widget::input_widgets::text_match::fold(self.text.trim());
         self.items
             .iter()
             .enumerate()
-            .filter(|(_, item)| prefix.is_empty() || item.to_lowercase().starts_with(&prefix))
+            .filter(|(_, item)| {
+                prefix.is_empty()
+                    || crate::widget::input_widgets::text_match::starts_with(item, &prefix)
+            })
             .map(|(index, _)| index)
             .collect()
     }
@@ -351,11 +374,11 @@ impl EditableComboBox {
         if start == end {
             return;
         }
-        let mut next = self.text.clone();
-        next.replace_range(start..end, "");
-        self.set_text(next);
+        let before = self.text.clone();
+        self.text.replace_range(start..end, "");
         self.cursor = start;
         self.selection_anchor = None;
+        self.publish_text_change(before);
     }
 
     /// Removes the selection, or the character after the caret when there is none.
@@ -366,11 +389,11 @@ impl EditableComboBox {
         if start == end {
             return;
         }
-        let mut next = self.text.clone();
-        next.replace_range(start..end, "");
-        self.set_text(next);
+        let before = self.text.clone();
+        self.text.replace_range(start..end, "");
         self.cursor = start;
         self.selection_anchor = None;
+        self.publish_text_change(before);
     }
 
     /// Scrolls the list so the selected row is inside the window.
@@ -405,12 +428,12 @@ impl EditableComboBox {
             return;
         }
         let (start, end) = self.selection_range().unwrap_or((self.cursor, self.cursor));
-        let mut next = self.text.clone();
-        next.replace_range(start..end, &filtered);
-        self.set_text(next);
+        // In place, with the pre-edit value captured for the undo record only (I-P02).
+        let before = self.text.clone();
+        self.text.replace_range(start..end, &filtered);
         self.cursor = start + filtered.len();
         self.selection_anchor = None;
-        self.base.request_redraw();
+        self.publish_text_change(before);
     }
 
     /// Adds an item to the dropdown list.
@@ -721,6 +744,10 @@ impl Draw for EditableComboBox {
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
         let style = self.base.style();
+        // One palette read for the whole frame: the highlight used to take the manager lock a
+        // second time, after the resolved style already had (I-P07).
+        let palette_primary =
+            crate::style::theme_manager().current_theme().map(|active| active.colors.primary);
         let theme = crate::style::resolved_theme_style_shared("editable_combo_box");
         let themed_ink = theme.as_ref().and_then(|t| t.text_color);
         let themed_border = theme.as_ref().and_then(|t| t.border_color);
@@ -853,11 +880,10 @@ impl Draw for EditableComboBox {
             return;
         }
 
-        let filtered = self.filtered_items();
-        let page = self.page_size(filtered.len());
-        let offset =
-            self.scroll_offset.min(filtered.len().saturating_sub(page.min(filtered.len())));
-        let visible = &filtered[offset..(offset + page).min(filtered.len())];
+        let indices = self.filtered_indices();
+        let page = self.page_size(indices.len());
+        let offset = self.scroll_offset.min(indices.len().saturating_sub(page.min(indices.len())));
+        let visible = &indices[offset..(offset + page).min(indices.len())];
         let drop_down_y = rect.y + rect.height as i32;
         let item_height = 28u32;
         let drop_down_height = item_height * visible.len().max(1) as u32;
@@ -883,15 +909,16 @@ impl Draw for EditableComboBox {
         }
 
         // The selected-row highlight is the theme's accent, which is the one hue a theme
-        // is expected to vary most.
-        let highlight = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary.with_alpha(40))
+        // is expected to vary most. The palette was read once at the top of the frame.
+        let highlight = palette_primary
+            .map(|primary| primary.with_alpha(40))
             .unwrap_or_else(|| ink.blend(&field, 0.85));
 
-        for (row, item) in visible.iter().enumerate() {
-            let original_index =
-                self.items.iter().position(|candidate| candidate == item).unwrap_or(usize::MAX);
+        // Rows are painted **from their indices**: the list used to clone every matching row and
+        // then linearly search the item list per painted row (O(visible x items) per frame), and
+        // two equal labels resolved to the first one's index (I-P08).
+        for (row, &original_index) in visible.iter().enumerate() {
+            let Some(item) = self.items.get(original_index) else { continue };
             let item_rect = Rect::new(
                 rect.x + 1,
                 drop_down_y + (row as i32) * (item_height as i32),

@@ -23,17 +23,17 @@ impl CodeEditor {
     pub fn trigger_completion(&mut self) -> usize {
         let head = self.cursor.head;
         let prefix_start = self.prefix_start_column();
-        let chars: Vec<char> = self.model.borrow().line(head.line).chars().collect();
-        let prefix: String =
-            chars[prefix_start.min(chars.len())..head.column.min(chars.len())].iter().collect();
+        let prefix = self.prefix_text(head.line, prefix_start, head.column);
         let items = if self.completion_source.document_indexed() {
-            // The built-in provider answers from the revision-keyed word index. The
-            // old path materialised the whole document (`self.text()`) and rescanned
-            // it for every trigger, which made completion O(file) per keystroke.
+            // The built-in provider answers from the revision-keyed word index, which is
+            // maintained incrementally by the edit path (`DocumentWordIndex::apply_edit`).
+            // The index reads the live mirror without cloning it, so even the first trigger
+            // after a wholesale replacement pays one scan rather than a text copy (J-P11).
             if self.completion_index.as_ref().map(DocumentWordIndex::revision)
                 != Some(self.revision)
             {
-                let text = self.text();
+                let model = self.model.borrow();
+                let text = model.text.borrow();
                 self.completion_index = Some(DocumentWordIndex::build(&text, self.revision));
             }
             self.completion_index
@@ -163,20 +163,45 @@ impl CodeEditor {
         true
     }
 
+    /// Returns the caret line's prefix text between two character columns.
+    ///
+    /// Walks the line's characters once and stops at `end`; no `Vec<char>` is built. The
+    /// old form collected the whole line only to slice a few characters out of it, which on
+    /// a generated line was the largest allocation of a completion trigger (J-P11).
+    fn prefix_text(&self, line: usize, start: usize, end: usize) -> String {
+        if end <= start {
+            return String::new();
+        }
+        let model = self.model.borrow();
+        let text = model.line(line);
+        let mut prefix = String::new();
+        for (column, ch) in text.chars().enumerate() {
+            if column >= end {
+                break;
+            }
+            if column >= start {
+                prefix.push(ch);
+            }
+        }
+        prefix
+    }
+
     pub(crate) fn prefix_start_column(&self) -> usize {
         let head = self.cursor.head;
         let model = self.model.borrow();
-        let chars: Vec<char> = model.line(head.line).chars().collect();
-        let mut start = head.column.min(chars.len());
-        while start > 0 {
-            let ch = chars[start - 1];
-            if self.config.language.is_word_char(ch) {
-                start -= 1;
-            } else {
+        let text = model.line(head.line);
+        // Byte-level backward walk: an identifier boundary is a character boundary, so the
+        // scan can read `char_indices` backwards from the caret's byte offset and count the
+        // chars it crossed. The previous form materialised the line as a `Vec<char>`.
+        let byte = model.byte_offset(head.line, head.column);
+        let mut start_byte = byte;
+        while let Some((index, ch)) = text[..start_byte].char_indices().next_back() {
+            if !self.config.language.is_word_char(ch) {
                 break;
             }
+            start_byte = index;
         }
-        start
+        text[..start_byte].chars().count()
     }
 
     // ── Context menu ────────────────────────────────────────────────────────

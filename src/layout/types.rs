@@ -26,7 +26,7 @@ pub enum SizePolicy {
 }
 /// Min/max limits applied during layout calculation.
 ///
-/// # Adapter, not the source of truth (LAY-N03)
+/// # Adapter, not the source of truth (LAY-N03 / G-401)
 ///
 /// The crate grew three answers to "how much room does this child want": this type plus
 /// [`SizePolicy`] (box layout), [`Hints`](crate::layout::Hints) (the hint-aware `arrange`
@@ -34,10 +34,10 @@ pub enum SizePolicy {
 /// axes, and it is what `CompositeWidget` feeds every layout through `ChildInfo`.
 ///
 /// These two remain because a caller that builds a `BoxLayout` directly has no `ChildInfo`
-/// to supply — they are that layout's adapter, and `BoxLayout::arrange` reads the hint's
-/// main-axis bounds when a hint *is* present (see its implementation). Removing them would
-/// break the programmatic API for no behavioural gain; keeping them undocumented as an
-/// adapter is how the three vocabularies drift again.
+/// to supply — they are that layout's adapter. New layouts consume `Hints`/`ChildInfo` only;
+/// this type is retained as a construction alias with a conversion into the converged form
+/// ([`Self::to_axis_hints`]). Removing it would break the programmatic API for no behavioural
+/// gain; keeping it undocumented as an adapter is how the three vocabularies drift again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutConstraints {
     /// Minimum major-axis size.
@@ -49,6 +49,32 @@ impl LayoutConstraints {
     /// Creates new layout constraints.
     pub fn new(min: u32, max: Option<u32>) -> Self {
         Self { min, max }
+    }
+
+    /// This adapter expressed in the single size vocabulary, [`AxisHints`](crate::layout::AxisHints).
+    ///
+    /// `min` is both the floor and the preferred value (the adapter has no separate preferred
+    /// size), and a missing maximum is the unbounded hint. This is the conversion a new layout
+    /// uses when a caller still hands it legacy constraints.
+    pub fn to_axis_hints(self) -> crate::layout::AxisHints {
+        crate::layout::AxisHints::new(self.min, self.min, self.max.unwrap_or(u32::MAX))
+    }
+}
+
+impl SizePolicy {
+    /// This policy expressed as [`LayoutParams`](crate::layout::LayoutParams), the converged
+    /// "how should the parent treat me" side of the hint vocabulary.
+    ///
+    /// Only the policies that ask for leftover room set `fill`; the rest keep the default
+    /// (preferred-or-smaller) treatment. `stretch` stays `1`, matching the box layout's
+    /// default weight, because the policy does not carry a weight.
+    pub fn to_layout_params(self) -> crate::layout::LayoutParams {
+        let fill = matches!(self, Self::Expanding | Self::MinimumExpanding | Self::Ignored);
+        if fill {
+            crate::layout::LayoutParams::stretched(1)
+        } else {
+            crate::layout::LayoutParams::new()
+        }
     }
 }
 /// Layout context carrying device adaptation parameters.
@@ -256,7 +282,10 @@ pub trait Layout {
     ///
     /// A single-point query for a caller that needs one child's geometry: the default runs
     /// [`update`](Self::update) and captures the matching emission, which is the only channel
-    /// the trait has for child rectangles. Returns `None` when the layout does not place `id`.
+    /// the trait has for child rectangles. **This is the full-solve fallback**: a layout that
+    /// can derive one child's rectangle from its own cell/track model (grid, absolute, box)
+    /// overrides this, because a hit test that asks about one child must not pay for every
+    /// child (G-158). Returns `None` when the layout does not place `id`.
     fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
         let mut found = None;
         self.update(rect, &mut |child, child_rect| {

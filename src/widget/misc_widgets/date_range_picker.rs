@@ -86,6 +86,47 @@ pub struct DateRangePicker {
     pub range_changed: Signal1<DateRange>,
     /// Emitted with the preset index when a preset chip is chosen.
     pub preset_selected: Signal1<usize>,
+    /// The earliest selectable day, inclusive; `None` for no lower bound.
+    minimum_date: Option<(i32, u32, u32)>,
+    /// The latest selectable day, inclusive; `None` for no upper bound.
+    maximum_date: Option<(i32, u32, u32)>,
+    /// The day the keyboard is on, for the grid focus the arrow keys move.
+    ///
+    /// `None` until the keyboard or a click establishes it; Enter then applies it through the same
+    /// path a click does, so the two ways of choosing cannot diverge.
+    focus_date: Option<(i32, u32, u32)>,
+    /// Cached numeral widths and header line height (K-P12).
+    digit_metrics: crate::compat::RefCell<DigitMetrics>,
+}
+
+/// A font's identity, as far as text measurement is concerned.
+type FontKey = (u32, u16, u64);
+
+/// The digit and header measurements one font pair produced (K-P12).
+///
+/// `draw_month_panel` measured each of its 42 day numerals with `measure_text`, and re-measured
+/// `"M"` for the weekday header, on every frame. The numerals are the fixed strings `"1"..="31"`
+/// and the height is the font's own line height, so the whole table depends only on the two fonts.
+#[derive(Default)]
+struct DigitMetrics {
+    /// The day font the line height was measured with.
+    day_key: Option<FontKey>,
+    /// The line height of the day font, which every numeral shares.
+    day_height: u32,
+    /// The weekday-header font the height was measured with.
+    header_key: Option<FontKey>,
+    /// The line height of the weekday-header font.
+    header_height: u32,
+}
+
+/// `(size bits, weight, family hash)` for a font.
+fn font_key(font: &crate::core::Font) -> FontKey {
+    let mut family_hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in font.family().as_bytes() {
+        family_hash ^= u64::from(*byte);
+        family_hash = family_hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (font.size().to_bits(), font.weight(), family_hash)
 }
 
 impl DateRangePicker {
@@ -107,6 +148,10 @@ impl DateRangePicker {
             max_nights: None,
             range_changed: Signal1::new(),
             preset_selected: Signal1::new(),
+            minimum_date: None,
+            maximum_date: None,
+            focus_date: None,
+            digit_metrics: crate::compat::RefCell::new(DigitMetrics::default()),
         }
     }
 
@@ -115,6 +160,20 @@ impl DateRangePicker {
         let today = chrono::Local::now().date_naive();
         self.display_year = today.year();
         self.display_month = today.month();
+        self.base.request_redraw();
+    }
+
+    /// Moves the grid to an explicit year/month without changing the selection.
+    ///
+    /// The public peer of the arrow buttons: a host that restores a saved view, or jumps to a
+    /// reservation's month, states the page instead of stepping to it.
+    pub fn set_display_page(&mut self, year: i32, month: u32) {
+        let month = month.clamp(1, 12);
+        if self.display_year == year && self.display_month == month {
+            return;
+        }
+        self.display_year = year;
+        self.display_month = month;
         self.base.request_redraw();
     }
 
@@ -317,6 +376,176 @@ impl DateRangePicker {
             self.end_date = date;
             self.emit_range_changed();
             self.base.request_redraw();
+        }
+    }
+
+    /// The earliest selectable day, inclusive.
+    pub fn minimum_date(&self) -> Option<(i32, u32, u32)> {
+        self.minimum_date
+    }
+
+    /// Sets the earliest selectable day; `None` removes the bound.
+    ///
+    /// The bound is enforced on **both** selection paths (pointer and keyboard) through
+    /// [`Self::accepts_date`], and a cell outside it paints in the disabled ink, so a user can see
+    /// why a day is not selectable instead of clicking an inert cell.
+    pub fn set_minimum_date(&mut self, date: Option<(i32, u32, u32)>) {
+        if self.minimum_date == date {
+            return;
+        }
+        self.minimum_date = date;
+        self.base.request_redraw();
+    }
+
+    /// The latest selectable day, inclusive.
+    pub fn maximum_date(&self) -> Option<(i32, u32, u32)> {
+        self.maximum_date
+    }
+
+    /// Sets the latest selectable day; `None` removes the bound.
+    pub fn set_maximum_date(&mut self, date: Option<(i32, u32, u32)>) {
+        if self.maximum_date == date {
+            return;
+        }
+        self.maximum_date = date;
+        self.base.request_redraw();
+    }
+
+    /// The cached digit widths and line heights for the panel's two fonts (K-P12).
+    ///
+    /// The table costs 31 measurements when a font changes and nothing afterwards; the draw path
+    /// then reads it instead of measuring each numeral.
+    fn digit_metrics(
+        &self,
+        dow_font: &crate::core::Font,
+        day_font: &crate::core::Font,
+        context: &RenderContext,
+    ) -> core::cell::RefMut<'_, DigitMetrics> {
+        let day_key = font_key(day_font);
+        let header_key = font_key(dow_font);
+        let mut cache = self.digit_metrics.borrow_mut();
+        if cache.day_key != Some(day_key) {
+            // Every numeral's line height is the font's own, so the 42 per-cell measurements only
+            // ever answered this one question.
+            cache.day_height = context.measure_text("M", day_font).height;
+            cache.day_key = Some(day_key);
+        }
+        if cache.header_key != Some(header_key) {
+            cache.header_height = context.measure_text("M", dow_font).height;
+            cache.header_key = Some(header_key);
+        }
+        core::cell::RefMut::map(cache, |cache| cache)
+    }
+
+    /// Whether `date` lies inside the configured bounds.
+    pub fn accepts_date(&self, date: (i32, u32, u32)) -> bool {
+        if self.minimum_date.is_some_and(|minimum| date_to_ordinal(date) < date_to_ordinal(minimum))
+        {
+            return false;
+        }
+        if self.maximum_date.is_some_and(|maximum| date_to_ordinal(date) > date_to_ordinal(maximum))
+        {
+            return false;
+        }
+        true
+    }
+
+    /// The day the keyboard grid focus is on, if any.
+    pub fn focus_date(&self) -> Option<(i32, u32, u32)> {
+        self.focus_date
+    }
+
+    /// Moves the keyboard focus by `days` and `weeks`, flipping the page when the new day is in
+    /// another month.
+    fn move_focus(&mut self, days: i64, weeks: i64) {
+        let Some(current) = self.focus_date.or(self.start_date) else {
+            // No focus and no selection: start on the first selectable day of the visible month.
+            if let Some(day) = self.first_selectable_day(self.display_year, self.display_month) {
+                self.focus_date = Some(day);
+                self.base.request_redraw();
+            }
+            return;
+        };
+        let Some(mut naive) = chrono::NaiveDate::from_ymd_opt(current.0, current.1, current.2)
+        else {
+            return;
+        };
+        let delta = days + weeks * 7;
+        if delta > 0 {
+            for _ in 0..delta {
+                naive = naive.succ_opt().unwrap_or(naive);
+            }
+        } else {
+            for _ in 0..(-delta) {
+                naive = naive.pred_opt().unwrap_or(naive);
+            }
+        }
+        let next = (naive.year(), naive.month(), naive.day());
+        if self.focus_date != Some(next) {
+            self.focus_date = Some(next);
+            // Keep the focused day on screen: the grid only shows the displayed month (or two).
+            if next.0 != self.display_year || next.1 != self.display_month {
+                self.display_year = next.0;
+                self.display_month = next.1;
+            }
+            self.base.request_redraw();
+        }
+    }
+
+    /// The first day of `year`/`month` that the bounds accept.
+    fn first_selectable_day(&self, year: i32, month: u32) -> Option<(i32, u32, u32)> {
+        for day in 1..=31 {
+            let date = (year, month, day);
+            if chrono::NaiveDate::from_ymd_opt(year, month, day).is_none() {
+                break;
+            }
+            if self.accepts_date(date) {
+                return Some(date);
+            }
+        }
+        None
+    }
+
+    /// Applies a day through the same three-state path a pointer click uses.
+    ///
+    /// This is the shared commit the keyboard path runs, so Enter cannot mean something the click
+    /// does not: first pick sets the start, second completes (or restarts) the range, third
+    /// restarts it.
+    fn apply_day(&mut self, clicked_date: (i32, u32, u32)) {
+        if !self.accepts_date(clicked_date) {
+            return;
+        }
+        match (self.start_date, self.end_date) {
+            (None, _) => {
+                self.start_date = Some(clicked_date);
+                self.emit_range_changed();
+                self.base.request_redraw();
+            }
+            (Some(start), None) => {
+                let start_ord = date_to_ordinal(start);
+                let click_ord = date_to_ordinal(clicked_date);
+                let (new_start, new_end) = if click_ord > start_ord {
+                    (start, clicked_date)
+                } else if click_ord < start_ord {
+                    (clicked_date, start)
+                } else {
+                    self.clear_selection();
+                    return;
+                };
+                if !self.nights_allowed(new_start, new_end) {
+                    return;
+                }
+                self.start_date = Some(new_start);
+                self.end_date = Some(new_end);
+                self.emit_range_changed();
+                self.base.request_redraw();
+            }
+            (Some(_), Some(_)) => {
+                self.start_date = Some(clicked_date);
+                self.end_date = None;
+                self.emit_range_changed();
+                self.base.request_redraw();
+            }
         }
     }
 
@@ -859,7 +1088,11 @@ fn draw_month_panel(
     let row_pitch = layout.row_pitch;
     let column_pitch = layout.column_pitch;
     let dow_color = surface.blend(&text_color, 0.55);
-    let dow_height = context.measure_text("M", dow_font).height;
+    // Both measurements come from the cached table: the header line height and the widths of
+    // `"1"..="31"` depend only on the fonts (K-P12), and the panel measured them per frame — 42
+    // day numerals plus the header, twice over for a two-month layout.
+    let metrics = picker.digit_metrics(dow_font, day_font, context);
+    let dow_height = metrics.header_height;
     let margin = TEXT_FIT_MARGIN as i32;
     for (i, day_name) in DAY_NAMES.iter().enumerate() {
         let cell_x = grid_left + (i as u32 * column_pitch) as i32;
@@ -874,6 +1107,7 @@ fn draw_month_panel(
     }
 
     let mut day_buf = [0u8; 2];
+    let focus_date = picker.focus_date;
     for cell_idx in 0..layout.total_cells {
         let Some(date) = picker.date_at_panel_cell(panel, cell_idx) else {
             continue;
@@ -898,14 +1132,19 @@ fn draw_month_panel(
         let is_today = is_start || is_end;
         let in_range = picker.is_in_range(date);
         let is_hover = picker.hover_date == Some(date);
+        let is_focused = focus_date == Some(date);
+        // A day outside the configured bounds is not selectable, and it says so in the picture
+        // (MISC-08): the fill is skipped and the ink is the disabled tone, so a user can see why
+        // the click would do nothing.
+        let allowed = picker.accepts_date(date);
 
-        if in_range && is_enabled {
+        if allowed && in_range && is_enabled {
             let range_color =
                 if is_start || is_end { accent.with_alpha(200) } else { accent.with_alpha(60) };
             context.fill_rounded_rect(cell_rect, 4, range_color);
-        } else if is_hover && is_enabled {
+        } else if allowed && is_hover && is_enabled {
             context.fill_rounded_rect(cell_rect, 4, surface.blend(&text_color, 0.16));
-        } else if is_today && is_enabled {
+        } else if allowed && is_today && is_enabled {
             let today_color = if is_start || is_end {
                 accent.with_alpha(200)
             } else {
@@ -914,9 +1153,23 @@ fn draw_month_panel(
             context.fill_rounded_rect(cell_rect, 4, today_color);
         }
 
-        let day_metrics = context.measure_text(day_text, day_font);
-        let day_y = cell_y + (cell_size as i32 - day_metrics.height as i32) / 2;
-        let day_color = if !is_enabled {
+        // The keyboard focus is a ring inside the cell, so it cannot be confused with the range
+        // fill it may sit on top of.
+        if is_focused && is_enabled {
+            context.draw_rect(
+                Rect::new(
+                    cell_x + 1,
+                    cell_y + 1,
+                    cell_width.saturating_sub(2),
+                    cell_size.saturating_sub(2),
+                ),
+                accent,
+            );
+        }
+
+        let day_height = metrics.day_height;
+        let day_y = cell_y + (cell_size as i32 - day_height as i32) / 2;
+        let day_color = if !is_enabled || !allowed {
             text_color.blend(&surface, 0.55)
         } else if is_start || is_end {
             surface
@@ -930,7 +1183,7 @@ fn draw_month_panel(
                 cell_x - TEXT_FIT_MARGIN as i32,
                 day_y,
                 cell_width + 2 * TEXT_FIT_MARGIN,
-                day_metrics.height,
+                day_height,
             ),
             day_text,
             day_font,
@@ -994,6 +1247,40 @@ impl EventHandler for DateRangePicker {
                         self.next_month();
                         return;
                     }
+                    // The grid's own keyboard path (MISC-07): arrows move a focus day (crossing
+                    // a month flips the page), Enter applies it through the click's own commit,
+                    // and Escape cancels an in-progress range.
+                    Some(crate::shortcut::Key::Left) => {
+                        self.move_focus(-1, 0);
+                        return;
+                    }
+                    Some(crate::shortcut::Key::Right) => {
+                        self.move_focus(1, 0);
+                        return;
+                    }
+                    Some(crate::shortcut::Key::Up) => {
+                        self.move_focus(0, -1);
+                        return;
+                    }
+                    Some(crate::shortcut::Key::Down) => {
+                        self.move_focus(0, 1);
+                        return;
+                    }
+                    Some(crate::shortcut::Key::Enter) | Some(crate::shortcut::Key::Space) => {
+                        if let Some(day) = self.focus_date {
+                            self.apply_day(day);
+                        }
+                        return;
+                    }
+                    Some(crate::shortcut::Key::Escape) => {
+                        // An in-progress selection (start with no end) is what Escape cancels;
+                        // a completed range is left alone, because losing a confirmed range to a
+                        // stray key is not what "cancel" means to a user.
+                        if self.start_date.is_some() && self.end_date.is_none() {
+                            self.clear_selection();
+                        }
+                        return;
+                    }
                     _ => {}
                 }
             }
@@ -1041,38 +1328,10 @@ impl EventHandler for DateRangePicker {
                 return;
             };
 
-            match (self.start_date, self.end_date) {
-                (None, _) => {
-                    self.start_date = Some(clicked_date);
-                    self.emit_range_changed();
-                    self.base.request_redraw();
-                }
-                (Some(start), None) => {
-                    let start_ord = date_to_ordinal(start);
-                    let click_ord = date_to_ordinal(clicked_date);
-                    let (new_start, new_end) = if click_ord > start_ord {
-                        (start, clicked_date)
-                    } else if click_ord < start_ord {
-                        (clicked_date, start)
-                    } else {
-                        self.clear_selection();
-                        return;
-                    };
-                    if !self.nights_allowed(new_start, new_end) {
-                        return;
-                    }
-                    self.start_date = Some(new_start);
-                    self.end_date = Some(new_end);
-                    self.emit_range_changed();
-                    self.base.request_redraw();
-                }
-                (Some(_), Some(_)) => {
-                    self.start_date = Some(clicked_date);
-                    self.end_date = None;
-                    self.emit_range_changed();
-                    self.base.request_redraw();
-                }
-            }
+            // The click also becomes the keyboard focus, so Enter after a click repeats it and the
+            // arrows continue from where the pointer left off.
+            self.focus_date = Some(clicked_date);
+            self.apply_day(clicked_date);
         }
     }
 }
@@ -1835,5 +2094,57 @@ mod tests {
         assert_eq!(picker.display_year(), today.year());
         assert_eq!(picker.display_month(), today.month());
         assert_eq!(picker.start_date(), Some((today.year(), today.month(), today.day())));
+    }
+
+    /// A bounded picker refuses a day outside its range on every path (MISC-08).
+    #[test]
+    fn the_date_bounds_block_a_selection() {
+        let mut picker = DateRangePicker::new(Rect::new(0, 0, 240, 260));
+        picker.set_minimum_date(Some((2025, 6, 10)));
+        picker.set_maximum_date(Some((2025, 6, 20)));
+        assert!(!picker.accepts_date((2025, 6, 9)));
+        assert!(picker.accepts_date((2025, 6, 10)));
+        assert!(picker.accepts_date((2025, 6, 20)));
+        assert!(!picker.accepts_date((2025, 6, 21)));
+
+        // The shared commit refuses the out-of-range day without touching the selection.
+        picker.apply_day((2025, 6, 5));
+        assert_eq!(picker.start_date(), None);
+        picker.apply_day((2025, 6, 12));
+        assert_eq!(picker.start_date(), Some((2025, 6, 12)));
+    }
+
+    /// Arrows move a focus day across months; Enter applies it; Escape cancels a partial range
+    /// (MISC-07).
+    #[test]
+    fn the_keyboard_walks_the_grid_and_commits() {
+        let mut picker = DateRangePicker::new(Rect::new(0, 0, 240, 260));
+        picker.set_display_page(2025, 6);
+        picker.set_start_date(Some((2025, 6, 10)));
+
+        picker.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(picker.focus_date(), Some((2025, 6, 11)));
+        picker.handle_event(&Event::key_press(crate::event::key_codes::DOWN, 0));
+        assert_eq!(picker.focus_date(), Some((2025, 6, 18)));
+
+        // Enter completes the range through the click path.
+        picker.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert_eq!(picker.end_date(), Some((2025, 6, 18)));
+
+        // Escape clears an in-progress (start-only) selection.
+        picker.set_end_date(None);
+        picker.handle_event(&Event::key_press(crate::event::key_codes::ESCAPE, 0));
+        assert_eq!(picker.start_date(), None);
+    }
+
+    /// Walking past the end of a month flips the page the grid shows.
+    #[test]
+    fn the_keyboard_flips_the_page_across_a_month_boundary() {
+        let mut picker = DateRangePicker::new(Rect::new(0, 0, 240, 260));
+        picker.set_display_page(2025, 6);
+        picker.set_start_date(Some((2025, 6, 30)));
+        picker.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
+        assert_eq!(picker.focus_date(), Some((2025, 7, 1)));
+        assert_eq!(picker.display_month(), 7);
     }
 }

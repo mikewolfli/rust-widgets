@@ -195,6 +195,24 @@ impl VolumeChart {
         self.hovered_index
     }
 
+    /// The hovered bar's readings, ready for a `ChartTooltip`.
+    ///
+    /// The label (or the bar index when the host supplied none) and the volume, painted in
+    /// the bar's own colour — the same pair the pane draws, so a tooltip cannot disagree
+    /// with the bar under the pointer (COMP-J02).
+    pub fn hovered_summary(&self) -> Vec<crate::widget::companions::TooltipLine> {
+        use crate::widget::companions::TooltipLine;
+        let Some(index) = self.hovered_index else { return Vec::new() };
+        let Some(bar) = self.series.bars().get(index) else { return Vec::new() };
+        alloc::vec![
+            TooltipLine::new(match self.series.label_at(index) {
+                Some(label) => alloc::string::String::from(label),
+                None => alloc::format!("#{index}"),
+            }),
+            TooltipLine::colored(alloc::format!("vol {:.0}", bar.volume), self.bar_color(index)),
+        ]
+    }
+
     /// The plot area for this control's geometry.
     fn plot_area(&self) -> PlotArea {
         // No bottom margin: a volume pane carries no index labels of its own, because
@@ -300,6 +318,22 @@ impl EventHandler for VolumeChart {
             Event::MouseLeave { .. } if self.hovered_index.take().is_some() => {
                 self.base.request_redraw();
             }
+            // Wheel zoom, the same gesture and the same factors the K-line pane uses, so a
+            // host linking the panes sees one behaviour. The pointer's bar — or the middle
+            // of the view when the pointer is not over one — stays in place (FIN-02).
+            Event::Wheel { delta, .. } if delta.y != 0 => {
+                let total = self.series.len();
+                if total > 4 {
+                    let (start, end) = self.view_bounds();
+                    let anchor = self.hovered_index.unwrap_or((start + end) / 2);
+                    let span = (end - start).max(4);
+                    let factor = if delta.y > 0 { 1.25 } else { 0.8 };
+                    let new_span = ((span as f64 * factor).round() as usize).clamp(4, total);
+                    let half = new_span / 2;
+                    let new_start = anchor.saturating_sub(half).min(total - new_span);
+                    self.set_view_range(Some((new_start, new_start + new_span)));
+                }
+            }
             Event::MousePress { pos, .. } | Event::PointerPress { pos, .. } => {
                 let area = self.plot_area();
                 let (start, end) = self.view_bounds();
@@ -394,6 +428,20 @@ impl Draw for VolumeChart {
             );
         }
 
+        // The index axis under the pane, so a bar can be dated from the picture (FIN-01).
+        draw_index_ticks(
+            context,
+            &area,
+            start,
+            end,
+            |index| match self.series.label_at(index) {
+                Some(label) => alloc::string::String::from(label),
+                None => alloc::format!("{index}"),
+            },
+            &axis_font,
+            chrome.ink.with_alpha(190),
+        );
+
         // A crosshair marking the hovered column, matching the price pane's.
         if let Some(index) = self.hovered_index.filter(|index| *index >= start && *index < end) {
             let x = index_axis.center_for(index - start);
@@ -404,6 +452,52 @@ impl Draw for VolumeChart {
                 1,
             );
         }
+    }
+}
+
+/// Draws an index axis under a time-series pane.
+///
+/// The bars are the x axis, and a chart with no labels under it cannot answer "when was
+/// this bar?". The step is chosen from the pane's width (about one tick per 80 px) so a
+/// zoomed-out history does not paint a hundred overlapping labels, and the label itself
+/// comes from the series' own `label_at` — the caller's timestamps, falling back to the bar
+/// index when the host supplied none (FIN-01).
+///
+/// One implementation for the K-line, volume and indicator panes: they share the index
+/// mapping, so a tick drawn by one must be under the same bar as in the others.
+pub(crate) fn draw_index_ticks(
+    context: &mut RenderContext,
+    area: &PlotArea,
+    start: usize,
+    end: usize,
+    label_at: impl Fn(usize) -> alloc::string::String,
+    font: &crate::core::Font,
+    ink: Color,
+) {
+    let visible = end.saturating_sub(start);
+    // A pane that reserved no room for an axis row cannot show one; drawing anyway would
+    // paint the labels onto the pane below it.
+    if visible == 0 || area.bottom_margin < 14 {
+        return;
+    }
+    let axis = area.index_axis(visible);
+    let target = (area.rect.width as i32 / 80).max(1) as usize;
+    let step = visible.div_ceil(target).max(1);
+    let band_width = (axis.slot_width * step as i32).max(28) as u32;
+    let y = area.bottom() + 2;
+    let height = (area.bottom_margin - 2).max(10) as u32;
+    let mut index = start;
+    while index < end {
+        let x = axis.center_for(index - start);
+        let text = label_at(index);
+        context.draw_text_fitted_cow(
+            Rect::new(x - band_width as i32 / 2, y, band_width, height),
+            &text,
+            font,
+            ink,
+            crate::core::HorizontalAlignment::Center,
+        );
+        index += step;
     }
 }
 

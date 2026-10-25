@@ -30,7 +30,7 @@
 
 use super::buffer::{join_lines, normalize_line_endings, split_lines, EditorModel};
 use super::grid::{LineGrid, RowLayout};
-use super::multicursor::{self, MultiCursor, OffsetEdit};
+use super::multicursor::{self, MultiCursor};
 use super::pairs::{self, PairAction};
 use super::range_command::{TextRangeCommand, TypingAccum, TypingCommand};
 use super::syntax::{BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter};
@@ -39,7 +39,7 @@ use super::types::{
     CursorGoal, DiagnosticMarker, DocumentCompletions, DocumentScale, DocumentWordIndex,
     EditRejection, EditorBuffer, ExtraSelection, FindState, FoldRegion, InlineDiagnostic,
     LineEnding, MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch, SearchOptions, SyntaxPalette,
-    TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine, MAX_COMPLETIONS,
+    TextChange, TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine, MAX_COMPLETIONS,
 };
 use crate::compat::MiniVec;
 use crate::core::{Color, Font, Point, Rect, Size};
@@ -219,8 +219,8 @@ pub struct CodeEditor {
     pub(crate) cursor: Cursor,
     /// Secondary carets accumulated by multi-cursor commands; the primary caret
     /// lives in `cursor`.
-    extra_cursors: Vec<Cursor>,
-    goal: CursorGoal,
+    pub(crate) extra_cursors: Vec<Cursor>,
+    pub(crate) goal: CursorGoal,
     /// First visible document line.
     scroll_line: usize,
     /// Horizontal scroll offset in character columns.
@@ -248,6 +248,11 @@ pub struct CodeEditor {
     pub(crate) context_menu: ContextMenuState,
 
     pub(crate) markers: Vec<DiagnosticMarker>,
+    /// Line whose diagnostic message is currently shown as a hover bubble.
+    ///
+    /// Set from pointer motion over a line that carries a marker, so a reader can see the
+    /// full message of any line rather than only the caret's (ED-03).
+    pub(crate) hovered_diagnostic: Option<usize>,
     /// Cached answer to "does the clipboard hold text?", for menu enablement.
     ///
     /// `open_context_menu` used to ask the platform directly. On desktop that read
@@ -335,6 +340,14 @@ pub struct CodeEditor {
     /// `RefCell` because the painters and the public hit-test take `&self` — the same
     /// reason `measured_cell_width` is a `Cell`.
     pub(crate) row_layouts: RefCell<Vec<(usize, RowLayout)>>,
+    /// Measured geometry of each soft-wrapped segment of the rows last painted.
+    ///
+    /// A wrapped row is drawn segment by segment, each measured as its own string. Those
+    /// measurements are keyed the same way [`Self::row_layouts`] is (the cache is dropped
+    /// whenever the layout key moves), so a repaint with no edit reuses them instead of
+    /// re-shaping every visible segment. Keyed by `(line, segment)`, kept sorted so the
+    /// lookup is a binary search and pruning is a retain over the painted lines.
+    pub(crate) segment_layouts: RefCell<Vec<((usize, usize), RowLayout)>>,
     /// Everything the cached [`Self::row_layouts`] were measured against.
     ///
     /// A layout's `xs` are a statement about one line's text, shaped with one font at one
@@ -475,6 +488,13 @@ pub struct CodeEditor {
     pub(crate) gutter_anchor: Option<usize>,
     /// Position of the most recent double-click, used to recognise a triple-click.
     pub(crate) double_click_at: Option<Point>,
+    /// Anchor of an in-progress column (rectangular) selection.
+    ///
+    /// A column selection is expressed as ordinary carets — one per covered line — so
+    /// every editing command and the single undo entry work unchanged (ED-04).
+    pub(crate) column_select_anchor: Option<TextPosition>,
+    /// `true` while a column-selection drag is extending.
+    pub(crate) column_selecting: bool,
     /// `true` when a press landed inside the selection, so a drag moves it.
     pub(crate) dragging_text: bool,
     /// Where a text drag started, in document coordinates.
@@ -517,7 +537,20 @@ pub struct CodeEditor {
     revision: u64,
 
     /// Emitted when text changes.
+    ///
+    /// This carries the whole document and is therefore emitted only for changes that
+    /// already materialised it: a wholesale replacement (`set_text`, a tab switch, an undo
+    /// of a document-wide command). Per-keystroke edits emit [`Self::text_change`] instead
+    /// (see [`TextChange`]); a host that needs the full text after every edit can subscribe
+    /// to `text_change` and call [`Self::text`] when its own contract requires it.
     pub text_changed: Signal1<String>,
+    /// Emitted for **every** committed text change, as a line-range description.
+    ///
+    /// One whole-document clone per keystroke was the single largest constant in the
+    /// typing path; the description costs the size of the edit instead.
+    pub text_change: Signal1<TextChange>,
+    /// Emitted with the marker index when a diagnostic marker is clicked in the gutter.
+    pub marker_clicked: Signal1<usize>,
     /// Emitted when the caret position changes.
     pub cursor_moved: Signal1<(usize, usize)>,
     /// Emitted when the selection changes; `None` means collapsed.
@@ -589,6 +622,7 @@ impl CodeEditor {
             completion: CompletionState::default(),
             context_menu: ContextMenuState::default(),
             markers: Vec::new(),
+            hovered_diagnostic: None,
             clipboard_has_text: None,
             read_only_spans: Vec::new(),
             folded_lines: MiniVec::new(),
@@ -598,6 +632,7 @@ impl CodeEditor {
             occurrence_cache: None,
             bracket_cache: RefCell::new(None),
             row_layouts: RefCell::new(Vec::new()),
+            segment_layouts: RefCell::new(Vec::new()),
             row_layout_key: core::cell::Cell::new((
                 0,
                 0,
@@ -642,6 +677,8 @@ impl CodeEditor {
             gutter_dragging: false,
             gutter_anchor: None,
             double_click_at: None,
+            column_select_anchor: None,
+            column_selecting: false,
             dragging_text: false,
             drag_origin: None,
             completion_index: None,
@@ -655,6 +692,8 @@ impl CodeEditor {
             last_checkpoint_bytes: 0,
             revision: 0,
             text_changed: Signal1::new(),
+            text_change: Signal1::new(),
+            marker_clicked: Signal1::new(),
             cursor_moved: Signal1::new(),
             selection_changed: Signal1::new(),
             tab_changed: Signal1::new(),

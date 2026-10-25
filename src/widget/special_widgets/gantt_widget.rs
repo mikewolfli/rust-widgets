@@ -45,8 +45,12 @@ enum GanttDragKind {
 struct GanttDrag {
     /// The task's index at press time.
     task: usize,
-    /// The pointer position the drag started from.
-    origin: Point,
+    /// The axis value the press landed on.
+    ///
+    /// Keeping the press **date** rather than the press pixel is what makes edge auto-scroll
+    /// work: when the viewport moves, the pointer's date changes and the bar follows it, while a
+    /// stored pixel would keep pointing at the old date.
+    origin_value: i64,
     /// The task's start at press time.
     start: i64,
     /// The task's end at press time.
@@ -172,6 +176,11 @@ pub enum DependencyKind {
     FinishToFinish,
 }
 
+use core::cell::RefCell;
+
+/// The distance from an edge at which a drag starts advancing the viewport.
+const DRAG_EDGE_BAND: i32 = 24;
+
 /// One typed dependency edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GanttDependency {
@@ -208,6 +217,16 @@ pub struct GanttWidget {
     show_today: bool,
     /// Task id to index, so a dependency is resolved in constant time.
     id_index: HashMap<String, usize>,
+    /// The critical-path indices for the current tasks and edges, or `None` when stale.
+    ///
+    /// The path is a topology walk; a still frame ran it again for the same schedule.
+    critical_cache: RefCell<Option<Vec<usize>>>,
+    /// The task row under the pointer, when no drag is in progress.
+    hovered_task: Option<usize>,
+    /// The pointer position that produced [`Self::hovered_task`], for the read-out anchor.
+    hover_position: Point,
+    /// Whether the hover read-out bubble is painted.
+    show_hover_readout: bool,
     /// A drag in progress.
     drag: Option<GanttDrag>,
     /// The date axis painted in the header. Its range always mirrors the viewport.
@@ -232,6 +251,8 @@ pub struct GanttWidget {
     pub dependency_removed: Signal1<Dependency>,
     /// Emitted with the edge a press selected in the mounted editor.
     pub link_selected: Signal1<Dependency>,
+    /// Emitted when the task under the pointer changes, with its index (or `None` on exit).
+    pub task_hovered: Signal1<Option<usize>>,
 }
 
 impl GanttWidget {
@@ -252,6 +273,10 @@ impl GanttWidget {
             show_critical_path: false,
             show_today: true,
             id_index: HashMap::new(),
+            critical_cache: RefCell::new(None),
+            hovered_task: None,
+            hover_position: Point::new(0, 0),
+            show_hover_readout: true,
             drag: None,
             axis: TimelineAxis::new(Rect::new(0, 0, 0, 0)),
             dependency_editor: DependencyEditor::new(Rect::new(0, 0, 0, 0)),
@@ -264,6 +289,7 @@ impl GanttWidget {
             dependency_added: Signal1::new(),
             dependency_removed: Signal1::new(),
             link_selected: Signal1::new(),
+            task_hovered: Signal1::new(),
         }
     }
 
@@ -315,6 +341,7 @@ impl GanttWidget {
         if !self.dependency_editor.add_dependency(dependency.clone()) {
             return false;
         }
+        self.invalidate_critical_path();
         self.dependency_added.emit(dependency);
         self.base.request_redraw();
         true
@@ -330,6 +357,7 @@ impl GanttWidget {
         if !self.dependency_editor.remove_dependency(&dependency) {
             return false;
         }
+        self.invalidate_critical_path();
         self.dependency_removed.emit(dependency);
         self.base.request_redraw();
         true
@@ -338,6 +366,7 @@ impl GanttWidget {
     /// Replaces the editable edge list without re-emitting additions.
     pub fn set_dependencies(&mut self, dependencies: Vec<Dependency>) {
         self.dependency_editor.set_dependencies(dependencies);
+        self.invalidate_critical_path();
         self.base.request_redraw();
     }
 
@@ -352,11 +381,44 @@ impl GanttWidget {
                 edges.push(Dependency::new(predecessor.clone(), task.id.clone()));
             }
             for dependency in &task.dependencies {
-                edges.push(Dependency::new(dependency.id.clone(), task.id.clone()));
+                // The typed edge's relationship kind travels with it: the editor used to receive
+                // the ids only, so a start-to-start link was re-read as finish-to-start.
+                edges.push(Dependency::with_kind(
+                    dependency.id.clone(),
+                    task.id.clone(),
+                    dependency.kind,
+                ));
             }
         }
         self.dependency_editor.set_dependencies(edges);
+        self.invalidate_critical_path();
         self.base.request_redraw();
+    }
+
+    /// Rebuilds each task's typed dependency list from the mounted editor.
+    ///
+    /// This is the other direction of [`Self::sync_dependencies_from_tasks`]. Together they make
+    /// the editor's relationship kinds survive a round trip instead of being lost at one end.
+    pub fn sync_tasks_from_dependencies(&mut self) {
+        for task in &mut self.tasks {
+            task.dependencies.clear();
+        }
+        let edges = self.dependency_editor.dependencies().to_vec();
+        for edge in edges {
+            if let Some(index) = self.id_index.get(&edge.successor).copied() {
+                if let Some(task) = self.tasks.get_mut(index) {
+                    task.dependencies
+                        .push(GanttDependency { id: edge.predecessor, kind: edge.kind });
+                }
+            }
+        }
+        self.invalidate_critical_path();
+        self.base.request_redraw();
+    }
+
+    /// Marks the cached critical path stale.
+    fn invalidate_critical_path(&mut self) {
+        *self.critical_cache.borrow_mut() = None;
     }
 
     /// The dependency row under `pos`, when the mounted editor is showing.
@@ -504,7 +566,20 @@ impl GanttWidget {
     }
 
     /// The task indices on the critical path.
+    ///
+    /// The answer is a pure function of the tasks and their edges, so it is computed once and
+    /// cached until one of those changes; a still frame used to re-run the topology walk.
     fn critical_path_indices(&self) -> Vec<usize> {
+        if let Some(cached) = self.critical_cache.borrow().as_ref() {
+            return cached.clone();
+        }
+        let computed = self.compute_critical_path();
+        *self.critical_cache.borrow_mut() = Some(computed.clone());
+        computed
+    }
+
+    /// Computes the critical path from scratch.
+    fn compute_critical_path(&self) -> Vec<usize> {
         let count = self.tasks.len();
         if count == 0 {
             return Vec::new();
@@ -633,6 +708,48 @@ impl GanttWidget {
         self.base.request_redraw();
     }
 
+    /// Whether the hover read-out bubble is painted.
+    pub fn show_hover_readout(&self) -> bool {
+        self.show_hover_readout
+    }
+
+    /// Shows or hides the hover read-out bubble.
+    pub fn set_show_hover_readout(&mut self, show: bool) {
+        if self.show_hover_readout == show {
+            return;
+        }
+        self.show_hover_readout = show;
+        self.base.request_redraw();
+    }
+
+    /// Advances the viewport while a dragged bar is held near an edge.
+    ///
+    /// The time axis moves by a twentieth of its own span per pointer move, which is slow enough
+    /// to aim and fast enough to cross a long schedule; the row bands move one row. Both go
+    /// through the same clamped entry points the wheel and the keyboard use.
+    fn autoscroll_drag(&mut self, pos: Point) {
+        if self.drag.is_none() {
+            return;
+        }
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let band = DRAG_EDGE_BAND;
+        let step = ((self.viewport_end - self.viewport_start).max(1) / 20).max(1);
+        if pos.x < rect.x + band {
+            let start = (self.viewport_start - step).max(0);
+            self.set_viewport(start, start + step + (self.viewport_end - self.viewport_start));
+        } else if pos.x > rect.x + rect.width as i32 - band {
+            self.set_viewport(self.viewport_start + step, self.viewport_end + step);
+        }
+        if pos.y < rect.y + band {
+            self.scroll_by(-1);
+        } else if pos.y > rect.y + rect.height as i32 - band {
+            self.scroll_by(1);
+        }
+    }
+
     /// Maps a pointer x to an axis position.
     ///
     /// The mounted [`TimelineAxis`] owns the mapping, so a drag cannot disagree with the labels
@@ -685,8 +802,11 @@ impl GanttWidget {
             self.base.request_redraw();
             return;
         };
-        let id = task.id.clone();
-        if task.start != drag.start || task.end != drag.end {
+        // The task's fields are read before the cache is invalidated: holding the borrow across a
+        // `&mut self` call is what a cache write is.
+        let (start, end, id) = (task.start, task.end, task.id.clone());
+        self.invalidate_critical_path();
+        if start != drag.start || end != drag.end {
             self.task_rescheduled.emit(id.clone());
         }
         if drag.kind != GanttDragKind::Move {
@@ -698,6 +818,7 @@ impl GanttWidget {
     /// Sets tasks.
     pub fn set_tasks(&mut self, tasks: Vec<GanttTask>) {
         self.tasks = tasks;
+        self.invalidate_critical_path();
         // The map is rebuilt with the list rather than maintained per lookup: a dependency arrow
         // resolves its predecessor through it, and `tasks.iter().position` per arrow made one paint
         // O(tasks × links). A duplicate id keeps the first row, matching the first-match rule the
@@ -1093,7 +1214,13 @@ impl EventHandler for GanttWidget {
                         GanttDragKind::Move
                     }
                 };
-                self.drag = Some(GanttDrag { task: index, origin: *pos, start, end, kind });
+                self.drag = Some(GanttDrag {
+                    task: index,
+                    origin_value: self.axis_value_at(pos.x),
+                    start,
+                    end,
+                    kind,
+                });
                 if kind == GanttDragKind::Progress {
                     self.set_progress_from_pointer(index, start, end, pos.x);
                 }
@@ -1102,11 +1229,28 @@ impl EventHandler for GanttWidget {
                 }
             }
             Event::MouseMove { pos } => {
+                if self.drag.is_none() {
+                    // Hover is tracked only while nothing is being dragged: during a drag the
+                    // pointer belongs to the bar, not to a read-out target.
+                    let hovered = self.row_at(*pos);
+                    self.hover_position = *pos;
+                    if hovered != self.hovered_task {
+                        self.hovered_task = hovered;
+                        self.task_hovered.emit(hovered);
+                        self.base.request_redraw();
+                    }
+                    return;
+                }
+                // Edge auto-scroll runs first, so the drag's target date is computed against the
+                // viewport the scroll just produced. Without it a bar could only be dropped into
+                // the slice of time already on screen.
+                self.autoscroll_drag(*pos);
+                self.layout_companions();
                 let Some(drag) = self.drag.as_ref() else {
                     return;
                 };
-                let (index, origin, start, end, kind) =
-                    (drag.task, drag.origin, drag.start, drag.end, drag.kind);
+                let (index, origin_value, start, end, kind) =
+                    (drag.task, drag.origin_value, drag.start, drag.end, drag.kind);
                 if index >= self.tasks.len() {
                     return;
                 }
@@ -1114,7 +1258,7 @@ impl EventHandler for GanttWidget {
                 // constant, so the bar tracks the pointer at any zoom level. Both endpoints are
                 // recomputed from the **press** value, so a drag that reverses direction across the
                 // origin lands where the pointer is rather than drifting by the distance travelled.
-                let shift = self.axis_value_at(pos.x) - self.axis_value_at(origin.x);
+                let shift = self.axis_value_at(pos.x) - origin_value;
                 if kind == GanttDragKind::Progress {
                     self.set_progress_from_pointer(index, start, end, pos.x);
                     return;
@@ -1144,12 +1288,18 @@ impl EventHandler for GanttWidget {
                     }
                     GanttDragKind::Progress => unreachable!("progress returned above"),
                 }
+                self.invalidate_critical_path();
                 self.base.request_redraw();
             }
             Event::MouseRelease { button: 1, .. } => self.finish_drag(),
             // A drag that loses the pointer must not leave a bar following a pointer that is no
             // longer there; the gesture is committed at its last position.
-            Event::MouseLeave { .. } => self.finish_drag(),
+            Event::MouseLeave { .. } => {
+                if self.hovered_task.take().is_some() {
+                    self.task_hovered.emit(None);
+                }
+                self.finish_drag();
+            }
             Event::Wheel { delta, modifiers } => {
                 let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 if modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
@@ -1326,7 +1476,9 @@ impl Draw for GanttWidget {
                 let bar_h = self.row_height.saturating_sub(10);
                 let half = (bar_h / 2) as i32;
                 let cy = y + 5 + half;
-                let points = vec![
+                // A fixed-size array on the stack: the diamond always has four corners, so the
+                // per-milestone `vec!` allocated a list whose length could never vary.
+                let points = [
                     Point::new(x0, cy - half),
                     Point::new(x0 + half, cy),
                     Point::new(x0, cy + half),
@@ -1338,7 +1490,7 @@ impl Draw for GanttWidget {
                     bar_color
                 };
                 context.execute_command(crate::render::RenderCommand::DrawPath {
-                    points,
+                    points: points.into(),
                     closed: true,
                     color: fill,
                     filled: true,
@@ -1462,12 +1614,15 @@ impl Draw for GanttWidget {
                 context.draw_line(Point::new(mid_x, to_y), Point::new(to_x, to_y), link_color);
                 // The head: a small solid triangle at the successor's left edge, pointing right.
                 let head = LINK_HEAD;
+                // A stack array: the arrow head's three points are a constant of the drawing, not a
+                // per-arrow list.
+                let arrow_head = [
+                    Point::new(to_x, to_y),
+                    Point::new(to_x - head, to_y - head / 2),
+                    Point::new(to_x - head, to_y + head / 2),
+                ];
                 context.execute_command(crate::render::RenderCommand::DrawPath {
-                    points: vec![
-                        Point::new(to_x, to_y),
-                        Point::new(to_x - head, to_y - head / 2),
-                        Point::new(to_x - head, to_y + head / 2),
-                    ],
+                    points: arrow_head.into(),
                     closed: true,
                     color: link_color,
                     filled: true,
@@ -1501,6 +1656,39 @@ impl Draw for GanttWidget {
         // than beside it: hiding the bars would make the relationship it edits unverifiable.
         if self.show_dependency_editor {
             self.dependency_editor.draw(context);
+        }
+
+        // ── Hover read-out ──
+        //
+        // The label is what the clip at the row's left edge hides when a name is long, and the
+        // dates are what a bar's width only approximates; the bubble states both. It is painted
+        // last so an editor next to it cannot cover it.
+        if self.show_hover_readout {
+            if let Some(index) = self.hovered_task {
+                if let Some(task) = self.tasks.get(index) {
+                    let text = format!("{}  {} \u{2192} {}", task.label, task.start, task.end);
+                    let font = effective_font(style);
+                    let metrics = context.measure_text(&text, font);
+                    let width = metrics.width as i32 + 10;
+                    let height = metrics.height.max(1) as i32 + 8;
+                    let x = (self.hover_position.x + 12)
+                        .min(rect.x + rect.width as i32 - width)
+                        .max(rect.x);
+                    let y = (self.hover_position.y + 12)
+                        .min(rect.y + rect.height as i32 - height)
+                        .max(rect.y);
+                    let bubble = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
+                    context.fill_rect(bubble, background);
+                    context.draw_rect(bubble, border);
+                    context.draw_text_line(
+                        bubble,
+                        &text,
+                        font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
         }
     }
 }
@@ -2263,5 +2451,51 @@ mod tests {
         ]);
         gantt.sync_dependencies_from_tasks();
         assert_eq!(gantt.dependency_editor().dependencies(), &[Dependency::new("t1", "t2")]);
+    }
+}
+
+#[cfg(test)]
+mod issue_2_8_tests {
+    use super::*;
+
+    fn two_tasks() -> Vec<GanttTask> {
+        let mut second = GanttTask::new("b", "Build", 5, 9, 0);
+        second
+            .dependencies
+            .push(GanttDependency { id: "a".to_string(), kind: DependencyKind::StartToStart });
+        vec![GanttTask::new("a", "Design", 0, 5, 0), second]
+    }
+
+    /// SP-15: the typed relationship survives a trip through the editor and back.
+    #[test]
+    fn dependency_kinds_survive_both_sync_directions() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 600, 300));
+        gantt.set_tasks(two_tasks());
+        gantt.sync_dependencies_from_tasks();
+        assert_eq!(gantt.dependency_editor().dependencies()[0].kind, DependencyKind::StartToStart);
+
+        gantt.dependency_editor_mut().set_dependencies(vec![Dependency::with_kind(
+            "a",
+            "b",
+            DependencyKind::FinishToFinish,
+        )]);
+        gantt.sync_tasks_from_dependencies();
+        assert_eq!(gantt.tasks()[1].dependencies[0].kind, DependencyKind::FinishToFinish);
+    }
+
+    /// SP-P21: the critical path is cached but follows a task replacement.
+    #[test]
+    fn the_critical_path_cache_follows_task_replacement() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 600, 300));
+        gantt.set_tasks(two_tasks());
+        assert_eq!(gantt.critical_path(), vec!["a".to_string(), "b".to_string()]);
+        gantt.set_tasks(vec![
+            GanttTask::new("a", "Design", 0, 2, 0),
+            GanttTask::new("b", "Build", 2, 20, 0),
+        ]);
+        // Without the edge, `b` is the longest single chain.
+        assert_eq!(gantt.critical_path(), vec!["b".to_string()]);
+        gantt.set_tasks(vec![GanttTask::new("solo", "Solo", 0, 1, 0)]);
+        assert_eq!(gantt.critical_path(), vec!["solo".to_string()]);
     }
 }

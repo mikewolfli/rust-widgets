@@ -87,6 +87,7 @@ mod grid;
 mod input;
 mod multicursor;
 mod pairs;
+mod palette;
 mod range_command;
 mod render;
 mod syntax;
@@ -107,15 +108,19 @@ mod tests_batch5;
 #[cfg(test)]
 mod tests_batch6;
 
+#[cfg(test)]
+mod tests_batch7;
+
 pub use editor::CodeEditor;
 pub use multicursor::MultiCursor;
+pub use palette::{CommandPalette, PaletteEntry};
 pub use syntax::{BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter};
 pub use types::{
     CaretStyle, CodeEditorConfig, CompletionItem, CompletionSource, CompletionState,
     ContextMenuState, Cursor, DiagnosticMarker, DocumentCompletions, DocumentScale,
-    DocumentWordIndex, EditRejection, EditorBuffer, ExtraSelection, FindState, FoldRegion,
-    LineEnding, MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch, SearchOptions, SyntaxPalette,
-    TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine, DEFAULT_FONT_FAMILY,
-    DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT_RATIO, DEFAULT_TAB_WIDTH, MAX_COMPLETIONS,
-    MIN_TOUCH_TARGET, SCALE_REDUCED_LINES, SCALE_VIEW_ONLY_LINES,
+    DocumentWordIndex, EditRejection, EditorBuffer, ExtraSelection, FindBarAction, FindState,
+    FoldRegion, LineEnding, MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch, SearchOptions,
+    SyntaxPalette, TextChange, TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine,
+    DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT_RATIO, DEFAULT_TAB_WIDTH,
+    MAX_COMPLETIONS, MIN_TOUCH_TARGET, SCALE_REDUCED_LINES, SCALE_VIEW_ONLY_LINES,
 };

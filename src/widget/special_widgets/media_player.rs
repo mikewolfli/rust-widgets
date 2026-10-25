@@ -10,7 +10,9 @@ use crate::core::{Color, HorizontalAlignment, MediaClock, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32, expect_usize};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_string, expect_u8_saturating, expect_usize,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -24,6 +26,13 @@ use alloc::sync::Arc;
 /// One value for the two stacked labels and the transport rule, so all three share a leading
 /// edge and a bottom margin instead of each spelling its own `10`/`6`/`8` offsets.
 const MEDIA_PLAYER_PADDING: i32 = 10;
+
+/// The largest dimension a [`MediaFrame`] accepts on either axis: 16384.
+///
+/// This mirrors the image-decoder cap (`src/image/decoder.rs`): a frame this large is already
+/// far beyond any real surface, and the bound keeps width × height × 4 inside `usize` on
+/// 32-bit targets.
+pub const MAX_MEDIA_FRAME_DIMENSION: u32 = 16_384;
 
 /// Lightweight media player stateful control.
 /// A decoded video frame, ready to paint.
@@ -39,23 +48,43 @@ pub struct MediaFrame {
 }
 
 impl MediaFrame {
-    /// Wraps `pixels` as a `width`×`height` RGBA frame, or `None` when the buffer is too short.
+    /// Wraps `pixels` as a `width`×`height` RGBA frame, or `None` when the buffer is too
+    /// short or the declared size is impossible.
+    ///
+    /// A dimension above [`MAX_MEDIA_FRAME_DIMENSION`] is refused rather than trusted: the
+    /// RGBA length is computed in `u64`, so a hostile header can neither overflow the check
+    /// nor let an under-sized buffer through. This is the same 16384×16384 bound the image
+    /// decoders enforce.
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Option<Self> {
-        let expected = width as usize * height as usize * 4;
-        if width == 0 || height == 0 || pixels.len() < expected {
+        let expected = Self::expected_len(width, height)?;
+        if pixels.len() < expected {
             return None;
         }
         Some(Self { pixels: Arc::new(pixels), width, height })
     }
 
     /// Wraps an already shared buffer.
+    ///
+    /// Uses the same validation as [`MediaFrame::new`].
     pub fn from_shared(width: u32, height: u32, pixels: Arc<Vec<u8>>) -> Option<Self> {
-        let expected = width as usize * height as usize * 4;
-        (width > 0 && height > 0 && pixels.len() >= expected).then_some(Self {
-            pixels,
-            width,
-            height,
-        })
+        let expected = Self::expected_len(width, height)?;
+        (pixels.len() >= expected).then_some(Self { pixels, width, height })
+    }
+
+    /// The RGBA byte length `width`×`height` implies, or `None` for a degenerate or
+    /// oversized frame.
+    ///
+    /// The multiplication is checked in `u64` *before* the buffer is examined, so the guard
+    /// cannot itself overflow on any `u32` input (the defect this pins).
+    fn expected_len(width: u32, height: u32) -> Option<usize> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        if width > MAX_MEDIA_FRAME_DIMENSION || height > MAX_MEDIA_FRAME_DIMENSION {
+            return None;
+        }
+        let bytes = u64::from(width).checked_mul(u64::from(height))?.checked_mul(4)?;
+        usize::try_from(bytes).ok()
     }
 
     /// The frame width in pixels.
@@ -71,6 +100,39 @@ impl MediaFrame {
     /// The shared RGBA bytes.
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
+    }
+}
+
+/// How a media player behaves when the media reaches its end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepeatMode {
+    /// Stop at the end (the default).
+    #[default]
+    Off,
+    /// Replay the current track.
+    One,
+    /// Advance to the next playlist entry, wrapping at the end.
+    All,
+}
+
+impl RepeatMode {
+    /// The token this mode is published under.
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::One => "one",
+            Self::All => "all",
+        }
+    }
+
+    /// Parses a published token; `None` for an unknown spelling.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "off" => Some(Self::Off),
+            "one" => Some(Self::One),
+            "all" => Some(Self::All),
+            _ => None,
+        }
     }
 }
 
@@ -117,6 +179,21 @@ pub struct MediaPlayer {
     playlist_index: Option<usize>,
     /// The chapter markers, as `(position_ms, title)`.
     chapters: Vec<(u64, String)>,
+    /// How the player behaves when the media reaches its end.
+    repeat_mode: RepeatMode,
+    /// Whether the player is waiting for data; painted as a loading state.
+    buffering: bool,
+    /// The title line, derived from the source when the source is set.
+    ///
+    /// The title is `source.rsplit('/')`, which the paint ran on every frame for a string that
+    /// only changes with the source (SP-P66).
+    title_cache: String,
+    /// The status line and the fields it was built from; rebuilt only when one of them moves.
+    status_cache: String,
+    /// `(playing, muted, volume, fullscreen, buffering)` behind `status_cache`.
+    status_key: Option<(bool, bool, u8, bool, bool)>,
+    /// The rate label, built when the rate changes rather than every frame.
+    rate_text: String,
     /// Emitted when the host should change the window's fullscreen state.
     pub fullscreen_requested: Signal1<bool>,
     /// Emitted when playback toggles.
@@ -151,6 +228,12 @@ impl MediaPlayer {
             playlist: Vec::new(),
             playlist_index: None,
             chapters: Vec::new(),
+            repeat_mode: RepeatMode::Off,
+            buffering: false,
+            title_cache: String::from("No media"),
+            status_cache: String::new(),
+            status_key: None,
+            rate_text: String::from("1.00x"),
             fullscreen_requested: Signal1::new(),
             playback_changed: Signal1::new(),
             position_changed: Signal1::new(),
@@ -184,6 +267,7 @@ impl MediaPlayer {
     /// Sets media source and optional known duration.
     pub fn set_source(&mut self, source: impl Into<String>, duration_ms: u64) {
         let source = source.into();
+        self.title_cache = source.rsplit('/').next().unwrap_or(source.as_str()).to_string();
         self.source = Some(source.clone());
         self.duration_ms = duration_ms;
         self.clock.stop();
@@ -197,6 +281,7 @@ impl MediaPlayer {
     /// Clears loaded source.
     pub fn clear_source(&mut self) {
         self.source = None;
+        self.title_cache = String::from("No media");
         self.duration_ms = 0;
         self.clock.stop();
         self.clock.set_duration(0.0);
@@ -340,6 +425,39 @@ impl MediaPlayer {
         }
         self.rate = rate;
         self.clock.set_rate(f64::from(rate));
+        self.rate_text.clear();
+        let _ = write!(self.rate_text, "{rate:.2}x");
+        self.base.request_redraw();
+    }
+
+    /// How the player behaves when the media ends.
+    pub fn repeat_mode(&self) -> RepeatMode {
+        self.repeat_mode
+    }
+
+    /// Sets the end-of-media behaviour.
+    pub fn set_repeat_mode(&mut self, mode: RepeatMode) {
+        if self.repeat_mode == mode {
+            return;
+        }
+        self.repeat_mode = mode;
+        self.base.request_redraw();
+    }
+
+    /// Whether the player is displaying its loading state.
+    ///
+    /// Buffering is a state of the *host's* pipeline, so the player does not guess it: a host that
+    /// started a fetch says so, and the transport rule and status line show it (SP-58).
+    pub fn is_buffering(&self) -> bool {
+        self.buffering
+    }
+
+    /// Shows or clears the loading state.
+    pub fn set_buffering(&mut self, buffering: bool) {
+        if self.buffering == buffering {
+            return;
+        }
+        self.buffering = buffering;
         self.base.request_redraw();
     }
 
@@ -547,8 +665,26 @@ impl MediaPlayer {
             self.playback_changed.emit(false);
             // A distinct end-of-media fact, so a host that wants to advance its playlist does
             // not have to infer "ended" from `playing == false` (a user pause has the same
-            // value). Emitted on the same frame the clock reports `Ended`, once.
+            // value). Emitted on the same frame the clock reports `Ended`, once. It is emitted
+            // for **every** repeat mode, so a host that wants to own the transition keeps
+            // working when a repeat mode is also set (SP-57).
             self.media_ended.emit();
+            match self.repeat_mode {
+                RepeatMode::Off => {}
+                RepeatMode::One => {
+                    self.buffering = false;
+                    self.seek_to(0);
+                    self.play();
+                }
+                RepeatMode::All => {
+                    self.buffering = false;
+                    let next = self.playlist_index().map_or(0, |index| index + 1);
+                    let wrapped = if next < self.playlist.len() { next } else { 0 };
+                    if !self.playlist.is_empty() && self.select_track(wrapped) {
+                        self.play();
+                    }
+                }
+            }
             return true;
         }
         true
@@ -698,7 +834,7 @@ impl WidgetProperties for MediaPlayer {
                 Ok(())
             }
             "volume" => {
-                self.set_volume(expect_u32(value)? as u8);
+                self.set_volume(expect_u8_saturating(value)?);
                 Ok(())
             }
             "muted" => {
@@ -938,15 +1074,29 @@ impl Draw for MediaPlayer {
             }
         }
 
-        let title = self
-            .source
-            .as_deref()
-            .map(|src| src.rsplit('/').next().unwrap_or(src))
-            .unwrap_or("No media");
+        let title = self.title_cache.as_str();
         let state = if self.is_playing_internal() { "Playing" } else { "Paused" };
         let fs = if self.fullscreen { "Fullscreen" } else { "Window" };
-        // Rendered in place: the old `vol` string plus the join allocated two strings
-        // every frame; one buffer takes the three fields directly.
+        // The status line is rebuilt only when one of the fields it names moves. It was rebuilt
+        // every frame — two `write!` calls and a `String` that never changed between them
+        // (SP-P66).
+        let status_key =
+            (self.is_playing_internal(), self.muted, self.volume, self.fullscreen, self.buffering);
+        if self.status_key != Some(status_key) {
+            self.status_key = Some(status_key);
+            self.status_cache.clear();
+            let _ = write!(self.status_cache, "{state} | ");
+            if self.muted {
+                self.status_cache.push_str("Muted");
+            } else {
+                let _ = write!(self.status_cache, "Vol {}", self.volume);
+            }
+            let _ = write!(self.status_cache, " | {fs}");
+            if self.buffering {
+                self.status_cache.push_str(" | Buffering");
+            }
+        }
+        let status = self.status_cache.as_str();
 
         // Both lines are fitted to the control's width. The title comes from a file name,
         // which has no length limit, and the status line is three joined words; neither was
@@ -967,14 +1117,6 @@ impl Draw for MediaPlayer {
             ink,
             HorizontalAlignment::Left,
         );
-        let mut status = String::new();
-        let _ = write!(status, "{state} | ");
-        if self.muted {
-            status.push_str("Muted");
-        } else {
-            let _ = write!(status, "Vol {}", self.volume);
-        }
-        let _ = write!(status, " | {fs}");
         context.draw_text_fitted_cow(
             Rect::new(
                 rect.x + MEDIA_PLAYER_PADDING,
@@ -982,7 +1124,7 @@ impl Draw for MediaPlayer {
                 rect.width.saturating_sub((MEDIA_PLAYER_PADDING * 2) as u32),
                 16,
             ),
-            status.as_str(),
+            status,
             font,
             muted,
             HorizontalAlignment::Left,
@@ -1035,14 +1177,20 @@ impl Draw for MediaPlayer {
         }
         // The rate is shown only when it is not real time, so the ordinary view stays uncluttered.
         if (self.rate - 1.0).abs() > f32::EPSILON {
-            let rate_text = format!("{:.2}x", self.rate);
             context.draw_text(
                 Point::new(volume_rail.x + volume_rail.width as i32 + 6, volume_rail.y - 2),
-                &rate_text,
+                &self.rate_text,
                 font,
                 muted,
                 HorizontalAlignment::Left,
             );
+        }
+
+        // A loading state the host has reported. It is drawn over the picture area and on the
+        // transport rule, so "waiting for data" is distinguishable from "paused" (SP-58).
+        if self.buffering {
+            let area = Rect::new(bar_rect.x, bar_rect.y - 22, bar_rect.width, 16);
+            context.draw_text_fitted_cow(area, "Loading…", font, accent, HorizontalAlignment::Left);
         }
 
         // ── Transport buttons ──
@@ -1078,6 +1226,37 @@ impl Draw for MediaPlayer {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// A hostile frame size must be refused, not overflow the length check.
+    ///
+    /// `MediaFrame::new` used to multiply `width * height * 4` in `usize` *before*
+    /// validating, so `new(1 << 31, 1 << 31, small_buffer)` panicked in debug and
+    /// wrapped to zero in release, admitting a frame whose dimensions no buffer could
+    /// satisfy. The constructor now rejects impossible sizes first.
+    #[test]
+    fn media_frame_rejects_zero_and_oversized_dimensions() {
+        assert!(MediaFrame::new(0, 1, vec![0; 4]).is_none());
+        assert!(MediaFrame::new(1, 0, vec![0; 4]).is_none());
+        assert!(MediaFrame::from_shared(0, 0, Arc::new(vec![0; 4])).is_none());
+
+        // Overflowing products and dimensions above the documented cap are both
+        // refused without a panic or an allocation.
+        assert!(MediaFrame::new(1 << 31, 1 << 31, vec![0; 4]).is_none());
+        assert!(MediaFrame::new(u32::MAX, u32::MAX, vec![0; 4]).is_none());
+        assert!(MediaFrame::new(MAX_MEDIA_FRAME_DIMENSION + 1, 1, vec![0; 4]).is_none());
+        assert!(MediaFrame::from_shared(1 << 31, 1 << 31, Arc::new(vec![0; 4])).is_none());
+    }
+
+    #[test]
+    fn media_frame_accepts_exact_and_larger_buffers() {
+        let frame = MediaFrame::new(2, 2, vec![7; 2 * 2 * 4]).expect("exact buffer is valid");
+        assert_eq!((frame.width(), frame.height()), (2, 2));
+        assert_eq!(frame.pixels().len(), 16);
+
+        let shared = Arc::new(vec![0; 3 * 4 + 8]);
+        assert!(MediaFrame::from_shared(3, 1, shared).is_some());
+        assert!(MediaFrame::new(3, 1, vec![0; 11]).is_none(), "a short buffer is refused");
+    }
 
     /// The panel's surface follows the appearance instead of a fixed dark blue.
     ///

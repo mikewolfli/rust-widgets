@@ -12,7 +12,7 @@
 use super::editor::{decimal_digits, CodeEditor};
 use super::grid::{LineGrid, RowLayout};
 use super::types::{
-    CaretStyle, MarkerSeverity, SearchMatch, SyntaxPalette, TextPosition, TokenKind,
+    CaretStyle, FindBarAction, MarkerSeverity, SearchMatch, SyntaxPalette, TextPosition, TokenKind,
     MIN_TOUCH_TARGET,
 };
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
@@ -95,6 +95,7 @@ impl Draw for CodeEditor {
         );
         if self.row_layout_key.get() != layout_key {
             self.row_layouts.borrow_mut().clear();
+            self.segment_layouts.borrow_mut().clear();
             self.row_layout_key.set(layout_key);
         }
         let rect = self.geometry();

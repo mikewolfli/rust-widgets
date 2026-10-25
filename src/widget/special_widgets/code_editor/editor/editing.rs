@@ -8,7 +8,6 @@
 //! fields; these methods are inherent, so moving them does not change the API.
 
 use super::*;
-use crate::undo::UndoCommand;
 
 impl CodeEditor {
     // ── Multi-caret infrastructure ──────────────────────────────────────────
@@ -24,6 +23,15 @@ impl CodeEditor {
     }
 
     /// Applies one edit per caret in a single pass, then rebuilds the caret set.
+    ///
+    /// # Why this is in-place
+    ///
+    /// The batch used to clone the whole document, split it into lines, splice the edits
+    /// in a projected copy and write the result back through `set_text`. On a large file
+    /// that made every multi-cursor keystroke `O(document)` instead of `O(carets x line)`.
+    /// Each edit is now applied through the model's own splice (the same primitive a single
+    /// caret uses), back-to-front so a splice never moves an edit that has not run yet.
+    /// The cost is proportional to the edited lines (J-P02).
     pub(super) fn apply_caret_edits(&mut self, carets: &[Cursor], edits: Vec<CaretEdit>) -> bool {
         if !self.is_editable() || carets.is_empty() || carets.len() != edits.len() {
             return false;
@@ -35,91 +43,112 @@ impl CodeEditor {
         if edits.iter().any(|edit| !self.is_range_editable(edit.start, edit.end)) {
             return false;
         }
-        let before = self.text();
-        let lines = self.model.borrow().lines.clone();
-        let offset_edits: Vec<OffsetEdit> = edits
-            .iter()
-            .map(|edit| OffsetEdit {
-                start: multicursor::char_offset(&lines, self.clamp_position(edit.start)),
-                end: multicursor::char_offset(&lines, self.clamp_position(edit.end)),
-                insert: edit.insert.clone(),
-            })
-            .collect();
-        let (after, offsets) = multicursor::project(&before, &offset_edits);
-        if after == before {
-            return false;
+        // Every caret produced an empty insertion at a collapsed position: there is nothing
+        // to write, and reporting success keeps the caller from falling through to the
+        // single-caret path, which would apply the edit twice.
+        if edits.iter().all(|edit| edit.insert.is_empty() && edit.start == edit.end) {
+            return true;
         }
-        let new_lines = split_lines(&after);
-        let mut new_carets: Vec<Cursor> = Vec::with_capacity(carets.len());
-        for (index, caret) in carets.iter().enumerate() {
-            let position = match (offsets.get(index).copied().flatten(), edits.get(index)) {
-                (Some(end_offset), Some(edit)) => {
-                    let insert_len = edit.insert.chars().count();
-                    let inside = edit.caret_in_insert.unwrap_or(insert_len).min(insert_len);
-                    let offset = end_offset.saturating_sub(insert_len - inside);
-                    multicursor::position_at_offset(&new_lines, offset)
+        // Back-to-front: the last edit in the document is applied first, so the
+        // coordinates of the remaining (earlier) edits are still valid.
+        let mut order: Vec<usize> = (0..edits.len()).collect();
+        order.sort_by_key(|index| {
+            let edit = &edits[*index];
+            (edit.start.line, edit.start.column, edit.end.line, edit.end.column)
+        });
+        order.reverse();
+        let Some(&lowest) = order.last() else { return false };
+        let Some(&highest) = order.first() else { return false };
+        let span_start = self.clamp_position(edits[lowest].start);
+        let mut span_end = self.clamp_position(edits[highest].end);
+        let before_span = self.model.borrow().extract(span_start, span_end);
+        let span_offset = self.model.borrow_mut().total_byte_offset(span_start);
+
+        let mut positions: Vec<Option<TextPosition>> = vec![None; edits.len()];
+        let original: Vec<TextPosition> = carets.iter().map(|caret| caret.head).collect();
+        // The lowest start already written. An edit that ends past it would rewrite text a
+        // previous edit already replaced, so it is dropped (and its caret left in place),
+        // matching the overlap rule the old projection had.
+        let mut lowest_applied: Option<TextPosition> = None;
+        for &index in &order {
+            let edit = &edits[index];
+            let start = self.clamp_position(edit.start);
+            let end = self.clamp_position(edit.end);
+            if lowest_applied.is_some_and(|lowest| end > lowest) {
+                continue;
+            }
+            lowest_applied = Some(start);
+            let insert = edit.insert.clone();
+            let _ = self.model.borrow_mut().splice_with_range(start, end, &insert);
+            let caret = caret_inside_insert(start, &insert, edit.caret_in_insert);
+            // Shift everything already placed that sits at or after this edit. The
+            // column rule is "distance from the edit's end added to the length of the
+            // inserted text's last line", which is exact for a plain insertion and for a
+            // replacement that spans lines.
+            let line_delta =
+                insert.matches('\n').count() as isize - (end.line - start.line) as isize;
+            let last_line_len = trailing_line_len(&insert);
+            let shift = |position: &mut TextPosition| {
+                if position.line == end.line && position.column >= end.column {
+                    position.column = last_line_len + (position.column - end.column);
                 }
-                // A dropped (overlapping) edit leaves its caret where it was.
-                _ => caret.head,
+                if position.line >= end.line {
+                    position.line = (position.line as isize + line_delta).max(0) as usize;
+                }
             };
-            new_carets.push(Cursor { head: position, anchor: position });
+            for position in positions.iter_mut().flatten() {
+                shift(position);
+            }
+            if span_end.line > end.line
+                || (span_end.line == end.line && span_end.column >= end.column)
+            {
+                shift(&mut span_end);
+            }
+            positions[index] = Some(caret);
         }
-        let primary = new_carets.pop().unwrap_or(self.cursor);
-        // Record exactly one checkpoint. `set_text` below pushes its own entry when
-        // history is live, so pushing here as well would make one multi-caret edit
-        // undo in two steps — the buffer would come back half-edited. The range is
-        // derived from the before/after pair because a multi-caret projection
-        // rewrites several disjoint spans at once and has no single offset to
-        // report.
-        let range = diff_range(&before, &after);
-        let checkpoint = if self.restoring_history {
-            None
-        } else {
-            let target = self.model.borrow().text.clone();
-            Some(match range {
-                Some((start, removed_len, inserted)) => {
-                    let removed =
-                        before.get(start..start + removed_len).unwrap_or_default().to_string();
-                    Box::new(TextRangeCommand::new(
-                        target,
-                        start,
-                        removed,
-                        inserted,
-                        "code_editor_edit",
-                    )) as Box<dyn UndoCommand>
-                }
-                None => Box::new(ValueCommand::new(
-                    target,
-                    before.clone(),
-                    after.clone(),
-                    "Edit text",
-                    "code_editor_edit",
-                )),
-            })
-        };
-        // `set_text` would add a second entry of its own, so suppress it and push
-        // the single checkpoint computed above instead.
-        let was_restoring = self.restoring_history;
-        self.restoring_history = true;
-        self.model.borrow_mut().set_text(after.clone());
-        self.restoring_history = was_restoring;
-        if let Some(command) = checkpoint {
-            self.undo_stack.push(command);
-        }
-        self.cursor = Cursor {
-            head: self.clamp_position(primary.head),
-            anchor: self.clamp_position(primary.anchor),
-        };
-        self.extra_cursors = new_carets
-            .into_iter()
-            .map(|caret| Cursor {
-                head: self.clamp_position(caret.head),
-                anchor: self.clamp_position(caret.anchor),
+
+        let primary_index = positions.len() - 1;
+        let primary =
+            positions.get(primary_index).copied().flatten().unwrap_or(original[primary_index]);
+        positions.pop();
+        let new_carets: Vec<Cursor> = positions
+            .iter()
+            .enumerate()
+            .map(|(index, position)| position.unwrap_or(original[index]))
+            .map(|head| Cursor {
+                head: self.clamp_position(head),
+                anchor: self.clamp_position(head),
             })
             .collect();
+        self.cursor =
+            Cursor { head: self.clamp_position(primary), anchor: self.clamp_position(primary) };
+        self.extra_cursors = new_carets;
         self.goal.active = false;
+        // One checkpoint over the region the batch touched, rather than a whole-document
+        // snapshot: the text above and below the outermost carets is unchanged, so it
+        // cannot be part of the edit. `set_text` is deliberately not used here, since it
+        // would push a second history entry of its own.
+        if !self.restoring_history {
+            let after_span = self.model.borrow().extract(span_start, span_end);
+            let target = self.model.borrow().text.clone();
+            self.undo_stack.push(Box::new(TextRangeCommand::new(
+                target,
+                span_offset,
+                before_span,
+                after_span,
+                "code_editor_edit",
+            )));
+        }
+        self.active_typing = None;
+        self.revision = self.revision.wrapping_add(1);
+        // Several disjoint word changes cannot be applied to the completion index one
+        // range at a time, so it is dropped and rebuilt on the next trigger.
+        self.completion_index = None;
         self.refresh_derived_state();
-        self.text_changed.emit(after);
+        // A multi-caret batch rewrites several disjoint regions, so there is no single
+        // line range to report; it is described conservatively as a whole-document change
+        // (a subscriber re-reads what it needs) rather than pretending to one span.
+        self.text_change.emit(TextChange::document(self.line_count()));
         self.emit_cursor_and_selection();
         self.base.request_layout();
         self.base.request_redraw();
@@ -1254,12 +1283,39 @@ impl CodeEditor {
         self.restoring_history = false;
         self.invalidate_line_states();
         self.minimap_line_count = 0;
+        self.completion_index = None;
         self.scale = DocumentScale::for_lines(self.line_count());
         self.clamp_cursor_to_document();
         self.refresh_derived_state();
         self.text_changed.emit(restored);
+        self.text_change.emit(TextChange::document(self.line_count()));
         self.emit_cursor_and_selection();
         self.base.request_layout();
         self.base.request_redraw();
     }
+}
+
+/// Returns the caret position after writing `insert` at `start`.
+///
+/// `inside` counts characters from the beginning of the inserted text (the position a
+/// newline command wants inside its auto-indent), defaulting to the end. Newlines in the
+/// payload advance the line and reset the column, which is what makes a multi-line
+/// insertion land its caret on the last line it wrote.
+fn caret_inside_insert(start: TextPosition, insert: &str, inside: Option<usize>) -> TextPosition {
+    let total = insert.chars().count();
+    let inside = inside.unwrap_or(total).min(total);
+    let mut line = start.line;
+    let mut column = start.column;
+    for (index, ch) in insert.chars().enumerate() {
+        if index >= inside {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            column = 0;
+        } else {
+            column += 1;
+        }
+    }
+    TextPosition::new(line, column)
 }

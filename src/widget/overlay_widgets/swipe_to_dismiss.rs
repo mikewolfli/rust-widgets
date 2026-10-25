@@ -100,6 +100,12 @@ impl SwipeToDismiss {
     /// Sets the child widget to be wrapped.
     pub fn set_child(&mut self, widget: Box<dyn WidgetDraw>) {
         self.child = Some(widget);
+        // Theme and lay the child once here rather than on every draw: the wrapper owns the
+        // child's presentation, so a settled frame must not rewrite it (G-A12).
+        if let Some(child) = self.child.as_deref_mut().map(|child| child as &mut dyn Widget) {
+            crate::theme::apply_theme_to_widget(child);
+            child.set_geometry(self.base.geometry());
+        }
         self.base.request_redraw();
     }
 
@@ -274,6 +280,37 @@ impl SwipeToDismiss {
         self.base.request_redraw();
     }
 
+    /// Advances an in-flight swipe to pointer `x`, with the shared damping and velocity
+    /// estimate.
+    ///
+    /// Mouse and touch used to have separate bodies: the mouse path damped past the threshold
+    /// and recorded velocity, while the touch path assigned the raw offset and never updated
+    /// `last_x`, so a touch flick could never commit and an over-drag had no resistance (OV-06).
+    /// Both inputs now run this one derivation.
+    fn drag_to(&mut self, x: f32) {
+        let Some(origin) = self.drag_origin_x else {
+            return;
+        };
+        // Velocity is estimated against a nominal 16 ms frame: the platform event carries no
+        // timestamp, and the exact wall-clock rate does not matter for the "was this a flick"
+        // decision.
+        if let Some(last) = self.last_x {
+            self.velocity = (x - last) / 16.0;
+        }
+        self.last_x = Some(x);
+        let raw = x - origin;
+        // Rubber-band damping past the threshold: a swipe may not drag the row arbitrarily far,
+        // and the extra distance past the commit point costs more than the distance before it.
+        let magnitude = raw.abs();
+        self.swipe_offset = if magnitude <= self.dismiss_threshold {
+            raw
+        } else {
+            let sign = raw.signum();
+            sign * (self.dismiss_threshold + (magnitude - self.dismiss_threshold) * 0.35)
+        };
+        self.base.request_redraw();
+    }
+
     fn drawn_offset(&self) -> f32 {
         let gesture = self.swipe_offset + self.settle.value();
         let exit = self.exit.value();
@@ -295,6 +332,12 @@ impl Widget for SwipeToDismiss {
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
+        // The child is a separately owned control, so a theme change has to reach it too. Doing
+        // it here (the theme's own invalidation hook) replaces the per-draw re-application
+        // (G-A12).
+        if let Some(child) = self.child.as_deref_mut().map(|child| child as &mut dyn Widget) {
+            crate::theme::apply_theme_to_widget(child);
+        }
     }
 
     /// Lifts the control's own `tick` onto the trait, so the animation bus can reach the
@@ -312,6 +355,14 @@ impl Widget for SwipeToDismiss {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// Lays the child out with the wrapper, so a draw never has to rewrite its geometry.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        if let Some(child) = self.child.as_deref_mut().map(|child| child as &mut dyn Widget) {
+            child.set_geometry(geometry);
+        }
     }
 
     fn size_hint(&self) -> crate::core::Size {
@@ -389,19 +440,8 @@ impl Draw for SwipeToDismiss {
             return;
         }
 
-        // The child is mounted by this control, so this control is the one that has to
-        // theme it. The census themes the top-level control it creates and nothing
-        // below it (`render_one` draws the tree exactly as `Widget::draw` walks it), and
-        // the factory that builds this wrapper does not call `apply_active_theme`
-        // either — so a bare child label kept its own hardcoded ink and the wrapper's
-        // dominant colour was that literal in both appearances. Ordering it on every
-        // draw rather than only at `set_child` is the stronger guarantee: a child
-        // swapped in by a later `set_child` is themed too, and the stylesheet layer
-        // still wins because `merge_theme` only replaces what the theme itself wrote.
-        if let Some(child) = self.child.as_deref_mut().map(|c| c as &mut dyn Widget) {
-            crate::theme::apply_theme_to_widget(child);
-        }
-
+        // The child is already themed and laid out by `set_child` / `set_state_theme_hook`; a
+        // settled frame must not rewrite either (G-A12).
         let offset = self.drawn_offset();
 
         // ── Action background revealed behind the child as it slides ──
@@ -435,7 +475,8 @@ impl Draw for SwipeToDismiss {
             if !self.action_text.is_empty() {
                 let font = role_font(self.base.style(), 16.0);
                 let label = self.action_label(offset);
-                let metrics = context.measure_text(label, &font);
+                let metrics =
+                    crate::widget::base_widgets::measure_cache::measure_text(context, label, &font);
                 let text_x = bg_rect.x + (bg_rect.width as i32 - metrics.width as i32) / 2;
                 let text_y = bg_rect.y + (bg_rect.height as i32 - metrics.height as i32) / 2;
                 context.draw_text(
@@ -452,13 +493,12 @@ impl Draw for SwipeToDismiss {
 
         // ── Draw the child widget offset by the swipe amount ──
         if let Some(child) = &mut self.child {
-            // Save the original child geometry, offset it, draw, then restore
-            let original_geom = child.geometry();
-            let offset_x = offset as i32;
-            let translated_rect = Rect::new(rect.x + offset_x, rect.y, rect.width, rect.height);
-            child.set_geometry(translated_rect);
+            // The child's own geometry is its resting place, set once at `set_child` and by
+            // `set_geometry`; the swipe is a context offset, so the frame writes no geometry
+            // and needs no restore (G-A12).
+            context.push_offset(offset as i32, 0);
             child.draw(context);
-            child.set_geometry(original_geom);
+            context.pop_offset();
         }
 
         // ── Draw a subtle shadow line at the child edge when swiped ──
@@ -523,37 +563,12 @@ impl EventHandler for SwipeToDismiss {
                 self.settle.jump_to(0.0);
             }
             Event::MouseMove { pos } => {
-                if let Some(origin) = self.drag_origin_x {
-                    let x = pos.x as f32;
-                    // Velocity is estimated against a nominal 16 ms frame: the platform event
-                    // carries no timestamp, and the exact wall-clock rate does not matter for
-                    // the "was this a flick" decision.
-                    if let Some(last) = self.last_x {
-                        self.velocity = (x - last) / 16.0;
-                    }
-                    self.last_x = Some(x);
-                    let raw = x - origin;
-                    // Rubber-band damping past the threshold: a swipe may not drag the row
-                    // arbitrarily far, and the extra distance past the commit point costs
-                    // more than the distance before it.
-                    let magnitude = raw.abs();
-                    let damped = if magnitude <= self.dismiss_threshold {
-                        raw
-                    } else {
-                        let sign = raw.signum();
-                        sign * (self.dismiss_threshold
-                            + (magnitude - self.dismiss_threshold) * 0.35)
-                    };
-                    self.swipe_offset = damped;
-                    self.base.request_redraw();
-                }
+                self.drag_to(pos.x as f32);
             }
             #[cfg(feature = "touch")]
             Event::TouchMove { pos, .. } => {
-                if let Some(origin) = self.drag_origin_x {
-                    self.swipe_offset = pos.x as f32 - origin;
-                    self.base.request_redraw();
-                }
+                // The touch path shares the mouse path's damping and velocity estimate (OV-06).
+                self.drag_to(pos.x as f32);
             }
             Event::MouseRelease { pos: _, button } => {
                 if *button == 1 {
@@ -840,5 +855,21 @@ mod tests {
         assert_eq!(sw.action_label(-10.0), "Archive");
         assert_eq!(sw.action_label(10.0), "Delete");
         assert_eq!(sw.action_text(), "Fallback");
+    }
+
+    #[cfg(feature = "touch")]
+    #[test]
+    fn a_touch_swipe_shares_the_mouse_damping_and_flick_rule() {
+        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
+        sw.set_dismiss_threshold(100.0);
+        sw.handle_event(&Event::TouchBegin { pos: Point::new(180, 25), touch_id: 0 });
+        sw.handle_event(&Event::TouchMove { pos: Point::new(60, 25), touch_id: 0 });
+        assert!(
+            sw.swipe_offset() < -100.0,
+            "a touch past the threshold is damped, not raw: {}",
+            sw.swipe_offset()
+        );
+        sw.handle_event(&Event::TouchEnd { pos: Point::new(60, 25), touch_id: 0 });
+        assert!(sw.is_dismissed(), "the touch path records velocity, so a flick commits");
     }
 }

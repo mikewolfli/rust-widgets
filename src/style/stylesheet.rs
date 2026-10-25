@@ -7,8 +7,9 @@
 //! CSS rules to widget styles. This enables app-wide theming similar to
 //! LVGL's `lv_theme_t` but using Rust's type-safe CSS parser.
 
-use crate::style::css::{CssDeclaration, CssParser, CssSelector};
-use crate::style::selector::ElementRef;
+use crate::style::css::{CssDeclaration, CssParser, ParsedCssRule};
+use crate::style::css_trace::TracedRuleSheet;
+use crate::style::selector::{with_match_scratch, ElementRef, RuleIndex};
 use crate::style::PseudoState;
 use crate::style::WidgetStyle;
 
@@ -16,17 +17,6 @@ use crate::compat::Mutex;
 use crate::compat::MutexGuard;
 use crate::compat::OnceLock;
 use crate::compat::{lock, MiniToString, String, Vec};
-
-/// One rule of a registered sheet, with its selector parsed once at registration time.
-#[derive(Debug)]
-struct ParsedRule {
-    /// The selector, matched against `(kind, class, id, state)` on every apply.
-    selector: CssSelector,
-    /// Cascade weight, captured at registration so `apply_to` does not recompute it per call.
-    specificity: u32,
-    /// The declarations the selector applies.
-    declarations: Vec<CssDeclaration>,
-}
 
 /// A registered stylesheet with its raw CSS text, priority, and parsed rules.
 ///
@@ -36,14 +26,24 @@ struct ParsedRule {
 /// re-parsed every selector for **every control that asked for a style**. A theme registered once
 /// was therefore re-parsed thousands of times a frame. Parsing at `register` makes the apply path
 /// a selector match plus the declarations it already matched.
+///
+/// # Why the index lives here too
+///
+/// The sheet's rules are parsed once, so the narrowing index over them can be built once as well
+/// (G-162). Without it every apply walked every rule of every sheet, which is the same concept
+/// [`StyleSheet`](crate::style::selector::StyleSheet) already solved with an index — one concept,
+/// one implementation (principle #101).
 #[derive(Debug)]
 struct RegisteredSheet {
     /// Name for debugging.
     name: String,
     /// Priority (higher overrides lower).
     priority: u8,
-    /// The sheet's rules, in source order.
-    rules: Vec<ParsedRule>,
+    /// The sheet's rules, in source order; a selector the parser refused was dropped at
+    /// registration so every position this sheet holds is matchable.
+    rules: Vec<ParsedCssRule>,
+    /// Rule positions by narrowing key, built when the sheet is registered.
+    index: RuleIndex,
     /// The parse error, when the sheet was accepted but could not be parsed.
     parse_error: Option<String>,
 }
@@ -69,23 +69,27 @@ impl StyleSheetManager {
     pub fn register(&mut self, name: &str, css: &str, priority: u8) {
         // Remove existing sheet with the same name, then add the new one.
         self.sheets.retain(|s| s.name != name);
-        let (rules, parse_error) = match CssParser::parse_rules(css) {
-            Ok(rules) => (
-                rules
-                    .into_iter()
-                    .filter_map(|rule| {
-                        CssParser::parse_selector(&rule.selector_text).map(|selector| ParsedRule {
-                            specificity: selector.specificity(),
-                            selector,
-                            declarations: rule.declarations,
-                        })
-                    })
-                    .collect(),
-                None,
-            ),
+        let (rules, parse_error) = match CssParser::parse_prepared_rules(css) {
+            // A selector whose kind is unknown contributes no rule: silently substituting another
+            // kind is what made a typo'd selector mis-style an unrelated control. The trace path
+            // reports the same rule instead of dropping it, which is why `parse_prepared_rules`
+            // keeps the `None` rather than filtering.
+            Ok(rules) => (rules.into_iter().filter(|rule| rule.selector.is_some()).collect(), None),
             Err(error) => (Vec::new(), Some(error)),
         };
-        self.sheets.push(RegisteredSheet { name: name.to_string(), priority, rules, parse_error });
+        let mut index = RuleIndex::new();
+        for (position, rule) in rules.iter().enumerate() {
+            if let Some(selector) = &rule.selector {
+                index.insert(position, selector.index_key());
+            }
+        }
+        self.sheets.push(RegisteredSheet {
+            name: name.to_string(),
+            priority,
+            rules,
+            index,
+            parse_error,
+        });
         // Keep the list in apply order, so `apply_to` neither sorts nor allocates per call.
         self.sheets.sort_by_key(|sheet| sheet.priority);
     }
@@ -180,28 +184,38 @@ impl StyleSheetManager {
         style: &mut WidgetStyle,
     ) -> Result<(), String> {
         let mut parse_error: Option<String> = None;
-        // (specificity, source order, declarations). Rule counts are small, and this path runs at
-        // widget construction / stylesheet change, not per frame.
-        let mut matched: Vec<(u32, usize, &[CssDeclaration])> = Vec::new();
-        let mut source_order = 0usize;
+        // (specificity, sheet order, rule position within the sheet, declarations). The rule
+        // counts are small once the index has narrowed them, so a candidate-set sort is the
+        // cascade order itself (G-162).
+        let mut matched: Vec<(u32, usize, usize, &[CssDeclaration])> = Vec::new();
 
-        for sheet in &self.sheets {
+        for (sheet_order, sheet) in self.sheets.iter().enumerate() {
             if let Some(error) = &sheet.parse_error {
                 if parse_error.is_none() {
                     parse_error = Some(error.clone());
                 }
                 continue;
             }
-            for rule in &sheet.rules {
-                if rule.selector.matches_in(kind, class, id, state, ancestors) {
-                    matched.push((rule.specificity, source_order, &rule.declarations));
+            with_match_scratch(|scratch| {
+                sheet.index.candidates_into(kind, class, id, scratch);
+                for &position in scratch.positions.iter() {
+                    let Some(rule) = sheet.rules.get(position) else {
+                        continue;
+                    };
+                    let Some(selector) = &rule.selector else {
+                        continue;
+                    };
+                    if selector.matches_in(kind, class, id, state, ancestors) {
+                        matched.push((rule.specificity, sheet_order, position, &rule.declarations));
+                    }
                 }
-                source_order += 1;
-            }
+            });
         }
 
-        matched.sort_by_key(|(specificity, order, _)| (*specificity, *order));
-        for (_, _, declarations) in matched {
+        matched.sort_by_key(|(specificity, sheet_order, position, _)| {
+            (*specificity, *sheet_order, *position)
+        });
+        for (_, _, _, declarations) in matched {
             CssParser::apply_declarations(declarations, style)?;
         }
 
@@ -214,6 +228,23 @@ impl StyleSheetManager {
     /// Clear all registered stylesheets.
     pub fn clear(&mut self) {
         self.sheets.clear();
+    }
+
+    /// The registered sheets in the form [`crate::style::css_trace`] consumes, without
+    /// re-parsing them (G-164).
+    ///
+    /// A designer tracing an application's actual stylesheets should use this rather than
+    /// [`TracedSheet`](crate::style::css_trace::TracedSheet), which exists for an unsaved editor
+    /// buffer where no registered copy exists yet.
+    pub fn traced_sheets(&self) -> Vec<TracedRuleSheet<'_>> {
+        self.sheets
+            .iter()
+            .map(|sheet| TracedRuleSheet {
+                name: &sheet.name,
+                priority: sheet.priority,
+                rules: &sheet.rules,
+            })
+            .collect()
     }
 
     /// Returns the number of registered sheets.
@@ -551,5 +582,67 @@ mod tests {
             Some(Color::rgb(0, 0, 255)),
             "the element's own declaration is the last layer"
         );
+    }
+
+    /// G-162: the sheet's own index is consulted before matching, and it must never hide a rule
+    /// the linear scan would have found.
+    #[test]
+    fn the_registered_index_never_hides_a_matching_rule() {
+        let mut manager = StyleSheetManager::new();
+        manager.register(
+            "index",
+            "* { opacity: 0.5; } Button.primary { border-width: 3px; } \
+             #go { border-radius: 4px; } Button:hover { border-width: 5px; }",
+            0,
+        );
+
+        let mut style = make_style();
+        manager
+            .apply_to("Button", Some("primary"), Some("go"), None, &mut style)
+            .expect("apply should succeed");
+        assert_eq!(style.opacity, Some(0.5), "the universal rule is filed under `Any`");
+        assert_eq!(style.border_width, Some(3), "the compound is filed under its class");
+        assert_eq!(style.border_radius, Some(4), "the id rule is filed under its id");
+
+        let mut hovered = make_style();
+        manager
+            .apply_to(
+                "Button",
+                Some("primary"),
+                Some("go"),
+                Some(crate::style::PseudoState::Hover),
+                &mut hovered,
+            )
+            .expect("apply should succeed");
+        assert_eq!(
+            hovered.border_width,
+            Some(3),
+            "the state rule is filed where the element can find it; the compound still outranks it"
+        );
+    }
+
+    /// G-164: the registry hands the trace the rules it already parsed, and that trace names the
+    /// same winner the apply produced.
+    #[test]
+    fn traced_sheets_trace_the_rules_the_apply_uses() {
+        use crate::style::css_trace::trace_cascade_prepared;
+
+        let mut manager = StyleSheetManager::new();
+        manager.register("s", ".primary { color: #222222; } Button { color: #111111; }", 0);
+
+        let sheets = manager.traced_sheets();
+        assert_eq!(sheets.len(), 1);
+        let trace = trace_cascade_prepared("Button", Some("primary"), None, None, &sheets);
+        assert_eq!(
+            trace.origin_of("color").map(|origin| origin.value.as_str()),
+            Some("#222222"),
+            "the class rule is more specific, and it is written first"
+        );
+
+        let mut applied = make_style();
+        manager
+            .apply_to("Button", Some("primary"), None, None, &mut applied)
+            .expect("apply should succeed");
+        assert_eq!(applied.text_color, Some(Color::rgba(0x22, 0x22, 0x22, 255)));
     }
 }

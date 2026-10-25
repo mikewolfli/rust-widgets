@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Message box dialog widget.
+use crate::compat::{Rc, RefCell};
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -17,6 +18,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::dialog::alert_dialogs::wrap_words;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 /// Message box icon type.
@@ -219,6 +221,12 @@ pub struct MessageBox {
     icon: MessageBoxIcon,
     buttons: Vec<StandardButton>,
     default_button: Option<StandardButton>,
+    /// Cached translated labels, keyed by the button set (G-P09).
+    ///
+    /// The draw path, `intrinsic_size` and the press hit test all need the same translated
+    /// strings; translating them once per button-set change instead of once per call keeps
+    /// the catalogue lookup off every frame.
+    label_cache: RefCell<Option<(Vec<StandardButton>, Rc<Vec<String>>)>>,
     /// The button Escape activates; `None` keeps the Cancel/No/Close fallback chain.
     escape_button: Option<StandardButton>,
     /// The action button under the pointer, for hover feedback.
@@ -283,6 +291,7 @@ impl MessageBox {
             icon: MessageBoxIcon::NoIcon,
             buttons: vec![StandardButton::Ok],
             default_button: Some(StandardButton::Ok),
+            label_cache: RefCell::new(None),
             escape_button: None,
             hovered: None,
             pressed: None,
@@ -1016,12 +1025,25 @@ impl MessageBox {
     /// `implicitWidth = max(implicitBackgroundWidth + inset, implicitContentWidth + padding)`
     /// spelled with this crate's primitives, where the floor
     /// is the background and the measured row is the content.
+    /// The translated action labels, served from a cache keyed by the button set.
+    fn labels(&self) -> Rc<Vec<String>> {
+        if let Some((buttons, labels)) = self.label_cache.borrow().as_ref() {
+            if *buttons == self.buttons {
+                return Rc::clone(labels);
+            }
+        }
+        let labels = Rc::new(
+            self.buttons.iter().map(|button| button.translated_label()).collect::<Vec<_>>(),
+        );
+        *self.label_cache.borrow_mut() = Some((self.buttons.clone(), Rc::clone(&labels)));
+        labels
+    }
+
     fn intrinsic_size(&self, context: &RenderContext) -> Size {
         // The labels are the *translated* ones, because those are the strings the row draws —
         // measuring the English `label()` while painting `translated_label()` is how a row
         // sized for "OK" ends up eliding "Annuler".
-        let labels: Vec<String> =
-            self.buttons.iter().map(|button| button.translated_label()).collect();
+        let labels = self.labels();
         let row = action_row_geometry(
             context,
             effective_font(self.base.style()),
@@ -1139,8 +1161,7 @@ impl MessageBox {
         // `place` is true exactly when the box has buttons, which is the same condition `draw`
         // passes: a box with no buttons has no row to hit and `hit` on an empty row is `None`
         // anyway, but the flag also keeps the two call sites reading the same way.
-        let labels: Vec<String> =
-            self.buttons.iter().map(|button| button.translated_label()).collect();
+        let labels = self.labels();
         let place = !self.buttons.is_empty();
         action_row_geometry(
             &context,
@@ -1360,8 +1381,7 @@ impl Draw for MessageBox {
         // text side's padding is the sibling column's width — and it is the whole reason
         // [`ActionRowGeometry::leading_inset`] exists: the message must stop where the buttons
         // begin, whatever the buttons' widths and their labels' translations turn out to be.
-        let labels: Vec<String> =
-            self.buttons.iter().map(|button| button.translated_label()).collect();
+        let labels = self.labels();
         let row =
             action_row_geometry(context, font, &labels, button_band, !self.buttons.is_empty());
         let message_area =
@@ -1380,46 +1400,62 @@ impl Draw for MessageBox {
         // Guarded on the text being non-empty: an unguarded draw emits `<text …></text>`,
         // an empty element the rasteriser never produces. The line box is centred on the
         // message band through the shared primitive rather than at a literal `y`.
-        if !self.text.is_empty() {
-            let message_line = context.text_line(message_band, body_font);
+        // The message wraps at the band's own width instead of eliding: a long body is what a
+        // message box exists for, and the baseline toolkit wraps it (DLG-03). The column
+        // budget is derived from one measured glyph, the same rule the notice cards use.
+        let glyph = context.measure_text("M", body_font).width.max(1);
+        let columns = (message_band.width / glyph).max(1) as usize;
+        let text_bottom = message_band.y + message_band.height as i32;
+        // The first line keeps the vertical centre the single-line paint used, so a short
+        // message is byte-identical to the pre-wrap frame; wrapped lines then advance by the
+        // measured line height.
+        let folded = wrap_words(&self.text, columns);
+        let mut text_y = context.text_line(message_band, body_font).y;
+        for line in folded.iter() {
+            if text_y + body_line_h > text_bottom {
+                break;
+            }
+            let band =
+                Rect::new(message_band.x, text_y, message_band.width.max(1), body_line_h as u32);
+            let line_box = context.text_line(band, body_font);
             context.draw_text_fitted_cow(
-                Rect::new(
-                    message_band.x,
-                    message_line.y,
-                    message_band.width.max(1),
-                    message_line.height.max(1),
-                ),
-                &self.text,
+                Rect::new(band.x, line_box.y, band.width.max(1), line_box.height.max(1)),
+                line,
                 body_font,
                 ink,
                 HorizontalAlignment::Left,
             );
+            text_y += body_line_h;
         }
         // The two extra text levels share the message's column and continue below it. Each is
         // painted only when it has ink, so a box that never sets them is byte-identical to the
         // one-row box this control always drew.
-        let mut extra_y = message_band.y + body_line_h;
+        let mut extra_y = if folded.len() <= 1 { message_band.y + body_line_h } else { text_y };
         let detail_text =
             if self.detailed_text_expanded { self.detailed_text.as_str() } else { "" };
         for (text, color) in
             [(self.informative_text.as_str(), ink), (detail_text, ink.with_alpha_f32(0.75))]
         {
-            if text.is_empty()
-                || extra_y + body_line_h > message_band.y + message_band.height as i32
-            {
-                continue;
+            for line in wrap_words(text, columns).iter() {
+                if line.is_empty() || extra_y + body_line_h > text_bottom {
+                    continue;
+                }
+                let band = Rect::new(
+                    message_band.x,
+                    extra_y,
+                    message_band.width.max(1),
+                    body_line_h as u32,
+                );
+                let line_box = context.text_line(band, body_font);
+                context.draw_text_fitted_cow(
+                    Rect::new(band.x, line_box.y, band.width.max(1), line_box.height.max(1)),
+                    line,
+                    body_font,
+                    color,
+                    HorizontalAlignment::Left,
+                );
+                extra_y += body_line_h;
             }
-            let band =
-                Rect::new(message_band.x, extra_y, message_band.width.max(1), body_line_h as u32);
-            let line = context.text_line(band, body_font);
-            context.draw_text_fitted_cow(
-                Rect::new(band.x, line.y, band.width.max(1), line.height.max(1)),
-                text,
-                body_font,
-                color,
-                HorizontalAlignment::Left,
-            );
-            extra_y += body_line_h;
         }
 
         // The check box row sits immediately above the action row, matching the notice cards.

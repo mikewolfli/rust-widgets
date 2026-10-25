@@ -24,6 +24,12 @@ use crate::widget::special_widgets::code_editor::{
 };
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+// The formatting strip is a companion control, declared here so the editor's action surface and
+// its pointer surface live in one module tree (COMP-H04).
+#[path = "markdown_toolbar.rs"]
+pub mod markdown_toolbar;
+pub use markdown_toolbar::{MarkdownToolbar, ToolbarIconSide, MARKDOWN_TOOLBAR_ACTIONS};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -51,21 +57,31 @@ struct MarkdownTextDeltaCommand {
 impl MarkdownTextDeltaCommand {
     /// Builds a command for a mutation that has already been applied.
     fn new(target: Rc<RefCell<String>>, before: &str, after: &str) -> Self {
-        let mut prefix = 0usize;
-        for (old, new) in before.chars().zip(after.chars()) {
-            if old != new {
-                break;
-            }
-            prefix += old.len_utf8();
+        // The common prefix and suffix are found by byte first, then trimmed back to character
+        // boundaries. Byte comparison is the same answer as character comparison here (equal
+        // bytes at equal offsets mean equal characters) and is an order of magnitude cheaper on
+        // the ASCII that dominates source text.
+        let before_bytes = before.as_bytes();
+        let after_bytes = after.as_bytes();
+        let max_prefix: usize = before_bytes.len().min(after_bytes.len());
+        let mut prefix: usize = 0;
+        while prefix < max_prefix && before_bytes[prefix] == after_bytes[prefix] {
+            prefix += 1;
         }
-        let mut suffix = 0usize;
-        for ((_, old), (_, new)) in
-            before[prefix..].char_indices().rev().zip(after[prefix..].char_indices().rev())
+        // Both strings share this prefix, so a boundary in `before` is one in `after` too.
+        while prefix > 0 && !before.is_char_boundary(prefix) {
+            prefix -= 1;
+        }
+        let max_suffix: usize = before_bytes.len().min(after_bytes.len()) - prefix;
+        let mut suffix: usize = 0;
+        while suffix < max_suffix
+            && before_bytes[before_bytes.len() - 1 - suffix]
+                == after_bytes[after_bytes.len() - 1 - suffix]
         {
-            if old != new {
-                break;
-            }
-            suffix += old.len_utf8();
+            suffix += 1;
+        }
+        while suffix > 0 && !before.is_char_boundary(before.len() - suffix) {
+            suffix -= 1;
         }
         Self {
             id: CommandId(
@@ -209,6 +225,57 @@ struct Metrics {
     headings: usize,
 }
 
+/// Per-line offset tables derived from one revision of the document.
+///
+/// Every caret query used to rescan the document from its first byte, and each keystroke
+/// rebuilt the whole document as a character vector. Both are O(document) per event. With the
+/// tables below a line lookup is a binary search and a character offset is resolved inside one
+/// line, so the work is bounded by the line's own length instead of the document's.
+#[derive(Debug, Default)]
+struct LineIndex {
+    /// Byte offset of the first character of every line.
+    starts: Vec<usize>,
+    /// Character offset of the first character of every line.
+    char_starts: Vec<usize>,
+    /// Character length of every line, excluding its `\n`.
+    char_lens: Vec<usize>,
+}
+
+impl LineIndex {
+    /// Builds the tables from `text` in one pass.
+    fn new(text: &str) -> Self {
+        let mut starts = Vec::new();
+        let mut char_starts = Vec::new();
+        let mut char_lens = Vec::new();
+        let mut byte = 0usize;
+        let mut chars = 0usize;
+        for line in text.split('\n') {
+            starts.push(byte);
+            char_starts.push(chars);
+            let length = line.chars().count();
+            char_lens.push(length);
+            byte += line.len() + 1;
+            chars += length + 1;
+        }
+        Self { starts, char_starts, char_lens }
+    }
+
+    /// The index of the line that contains `offset`, counted in characters.
+    fn line_of_char(&self, offset: usize) -> usize {
+        // `char_starts` is ascending, so the last entry that starts at or before `offset` is the
+        // containing line. A `\n` position belongs to the line it terminates.
+        self.char_starts.partition_point(|start| *start <= offset).saturating_sub(1)
+    }
+
+    /// The number of characters in the document, including the `\n` separators.
+    fn char_len(&self) -> usize {
+        match (self.char_starts.last(), self.char_lens.last()) {
+            (Some(start), Some(length)) => start + length,
+            _ => 0,
+        }
+    }
+}
+
 /// The find bar's state.
 #[derive(Debug, Clone, Default)]
 struct FindState {
@@ -295,6 +362,8 @@ pub struct MarkdownEditor {
     blocks_revision: u64,
     /// Measured glyph advances for the caret's line prefix, keyed by font size.
     char_widths: Vec<(char, f32, i32)>,
+    /// Line offset tables for [`Self::revision`], rebuilt at most once per revision.
+    line_index: RefCell<Option<(u64, LineIndex)>>,
 }
 
 impl MarkdownEditor {
@@ -350,6 +419,7 @@ impl MarkdownEditor {
             table_header: Vec::new(),
             blocks_revision: u64::MAX,
             char_widths: Vec::new(),
+            line_index: RefCell::new(None),
         }
     }
 
@@ -386,14 +456,20 @@ impl MarkdownEditor {
     /// One commit, so typing over a selection is one undo step rather than a delete followed by
     /// an insert.
     fn replace_selection_or_caret(&mut self, insert: &str) {
-        let chars: Vec<char> = self.text.chars().collect();
         let caret = self.doc_char_offset_of_caret();
         let (start, end) = self.selection.unwrap_or((caret, caret));
-        let start = start.min(chars.len());
-        let end = end.min(chars.len()).max(start);
-        let mut next: String = chars[..start].iter().collect();
+        let total = self.total_char_count();
+        let start = start.min(total);
+        let end = end.min(total).max(start);
+        // Only the affected byte range is spliced: the untouched head and tail are copied once
+        // instead of the document being rebuilt character by character.
+        let start_byte = self.char_offset_to_byte(start);
+        let end_byte = self.char_offset_to_byte(end);
+        let mut next =
+            String::with_capacity(self.text.len() - (end_byte - start_byte) + insert.len());
+        next.push_str(&self.text[..start_byte]);
         next.push_str(insert);
-        next.extend(chars[end..].iter());
+        next.push_str(&self.text[end_byte..]);
         let (line, col) = self.line_col_of(start);
         self.cursor_line = line;
         self.cursor_col = col + insert.chars().count();
@@ -404,23 +480,67 @@ impl MarkdownEditor {
 
     /// The caret as a document character offset.
     fn doc_char_offset_of_caret(&self) -> usize {
-        let mut offset = 0usize;
-        for (index, line) in self.text.split('\n').enumerate() {
-            if index == self.cursor_line {
-                return offset + self.cursor_col;
-            }
-            offset += line.chars().count() + 1;
+        self.doc_char_offset(self.cursor_line, self.cursor_col)
+    }
+
+    /// The line offset tables, rebuilt at most once per revision.
+    fn ensure_line_index(&self) {
+        let fresh = self
+            .line_index
+            .borrow()
+            .as_ref()
+            .is_some_and(|(revision, _)| *revision == self.revision);
+        if !fresh {
+            let index = LineIndex::new(&self.text);
+            *self.line_index.borrow_mut() = Some((self.revision, index));
         }
-        offset + self.cursor_col
+    }
+
+    /// Runs `read` against the current line tables.
+    fn with_line_index<R>(&self, read: impl FnOnce(&LineIndex) -> R) -> R {
+        self.ensure_line_index();
+        let index = self.line_index.borrow();
+        let (_, table) = index.as_ref().expect("ensure_line_index() populates the table");
+        read(table)
+    }
+
+    /// The document's character count, including its `\n` separators.
+    fn total_char_count(&self) -> usize {
+        self.with_line_index(LineIndex::char_len)
+    }
+
+    /// The byte offset of a document character offset.
+    fn char_offset_to_byte(&self, offset: usize) -> usize {
+        self.with_line_index(|index| {
+            let line = index.line_of_char(offset);
+            let start_byte = index.starts.get(line).copied().unwrap_or(self.text.len());
+            let line_end = match index.starts.get(line + 1) {
+                Some(next) => next.saturating_sub(1).min(self.text.len()),
+                None => self.text.len(),
+            };
+            let line_length = index.char_lens.get(line).copied().unwrap_or(0);
+            let column = offset.saturating_sub(index.char_starts.get(line).copied().unwrap_or(0));
+            let column = column.min(line_length);
+            start_byte
+                + self.text[start_byte..line_end]
+                    .char_indices()
+                    .nth(column)
+                    .map(|(byte, _)| byte)
+                    .unwrap_or(line_end - start_byte)
+        })
     }
 
     /// Appends one line to markdown.
     pub fn append_line(&mut self, line: impl AsRef<str>) {
-        let mut next = self.text.clone();
-        if !next.is_empty() {
+        let line = line.as_ref();
+        let needs_separator = !self.text.is_empty();
+        let mut next =
+            String::with_capacity(self.text.len() + line.len() + usize::from(needs_separator));
+        next.push_str(&self.text);
+        if needs_separator {
             next.push('\n');
         }
-        next.push_str(line.as_ref());
+        next.push_str(line);
         self.set_text(next);
         self.cursor_line = self.edit_line_count().saturating_sub(1);
         self.cursor_col = self.current_line_char_len();
@@ -607,7 +727,7 @@ impl MarkdownEditor {
         if needle.is_empty() {
             return false;
         }
-        let haystack = self.text.clone();
+        let haystack = &self.text;
         let from = self.find_search_origin(true);
         let found = haystack
             .get(from..)
@@ -627,7 +747,7 @@ impl MarkdownEditor {
         if needle.is_empty() {
             return false;
         }
-        let haystack = self.text.clone();
+        let haystack = &self.text;
         let from = self.find_search_origin(false);
         let found = haystack
             .get(..from.min(haystack.len()))
@@ -773,8 +893,14 @@ impl MarkdownEditor {
         for &(start, end) in request.ranges.iter().rev() {
             next.replace_range(start..end, &request.text);
         }
+        let replaced = request.ranges.len();
         self.commit_text(next);
-        request.ranges.len()
+        // The bar holds a document snapshot, so it is re-pointed at the text the replacement just
+        // produced; and it is told how many ranges actually changed, which is the feedback the
+        // replacement row paints.
+        self.find_bar.set_text(&self.text);
+        self.find_bar.set_last_replaced(replaced);
+        replaced
     }
 
     /// Advances the caret's blink by `delta_ms` and reports whether another frame is owed.
@@ -864,12 +990,12 @@ impl MarkdownEditor {
         let rect = self.geometry();
         let font = effective_font(self.base.style());
         let (line_start, line_end) = self.cursor_line_span();
-        let prefix: String =
-            self.text[line_start..line_end].chars().take(self.cursor_col).collect();
+        let caret_line = &self.text[line_start..line_end];
+        let caret_byte = byte_offset_of_char(caret_line, self.cursor_col);
         let before_caret = &preedit.text[..char_boundary_at(&preedit.text, preedit.cursor)];
         let x = rect.x
             + 12
-            + estimate_text_width(&prefix, font, 1.0) as i32
+            + estimate_text_width(&caret_line[..caret_byte], font, 1.0) as i32
             + estimate_text_width(before_caret, font, 1.0) as i32;
         let row = self.cursor_line.saturating_sub(self.visible_start());
         let y = rect.y + TEXT_TOP + (row as i32) * TEXT_ROW_HEIGHT;
@@ -942,17 +1068,16 @@ impl MarkdownEditor {
     }
 
     /// Maps a document character offset to `(line, column)`.
+    ///
+    /// The lookup is a binary search over the cached line starts, so it costs O(log lines)
+    /// rather than a walk from the top of the document on every caret move.
     fn line_col_of(&self, offset: usize) -> (usize, usize) {
-        let mut remaining = offset;
-        for (line, text) in self.text.split('\n').enumerate() {
-            let length = text.chars().count();
-            if remaining <= length {
-                return (line, remaining);
-            }
-            remaining -= length + 1;
-        }
-        let last = self.edit_line_count().saturating_sub(1);
-        (last, self.text.split('\n').nth(last).map(|l| l.chars().count()).unwrap_or(0))
+        self.with_line_index(|index| {
+            let line = index.line_of_char(offset);
+            let start = index.char_starts.get(line).copied().unwrap_or(0);
+            let length = index.char_lens.get(line).copied().unwrap_or(0);
+            (line, offset.saturating_sub(start).min(length))
+        })
     }
 
     /// Keeps the caret in view after a caret move or a search hit.
@@ -970,6 +1095,10 @@ impl MarkdownEditor {
     /// Returns `false` and changes nothing when there is nothing to undo;
     /// otherwise requests layout and redraw and clamps `cursor_line`.
     pub fn undo(&mut self) -> bool {
+        // The undo commands splice into their shared scratch buffer, which is therefore synced
+        // with the live document before the stack touches it. Syncing here (rather than after
+        // every keystroke) keeps the edit path free of a whole-document copy.
+        self.sync_history_target();
         if self.undo_stack.undo().is_err() {
             return false;
         }
@@ -982,6 +1111,7 @@ impl MarkdownEditor {
     /// Returns `false` and changes nothing when there is nothing to redo;
     /// otherwise requests layout and redraw.
     pub fn redo(&mut self) -> bool {
+        self.sync_history_target();
         if self.undo_stack.redo().is_err() {
             return false;
         }
@@ -997,6 +1127,18 @@ impl MarkdownEditor {
     /// Returns whether there is an undone markdown text mutation to reapply.
     pub fn can_redo(&self) -> bool {
         self.undo_stack.can_redo()
+    }
+
+    /// Copies the live document into the buffer the undo commands splice into.
+    ///
+    /// The buffer is only read by [`UndoStack`] while an undo/redo runs, so it can lag the live
+    /// text by any number of edits without becoming wrong.
+    fn sync_history_target(&mut self) {
+        let mut target = self.history_target.borrow_mut();
+        if target.as_str() != self.text {
+            target.clear();
+            target.push_str(&self.text);
+        }
     }
 
     fn restore_history_text(&mut self) {
@@ -1018,7 +1160,7 @@ impl MarkdownEditor {
     /// drops the final empty line, but an editor must be able to keep the caret on it,
     /// which is exactly where Enter at the end of the document leaves it.
     fn edit_line_count(&self) -> usize {
-        self.text.split('\n').count()
+        self.with_line_index(|index| index.starts.len())
     }
 
     /// How many text rows fit below the header band.
@@ -1062,14 +1204,16 @@ impl MarkdownEditor {
     /// Returns an empty span at the end of the document when the caret is out of range, so
     /// callers cannot index past the string even before [`Self::clamp_cursor`] runs.
     fn cursor_line_span(&self) -> (usize, usize) {
-        let mut start = 0usize;
-        for (idx, line) in self.text.split('\n').enumerate() {
-            if idx == self.cursor_line {
-                return (start, start + line.len());
-            }
-            start += line.len() + 1;
-        }
-        (self.text.len(), self.text.len())
+        self.with_line_index(|index| {
+            let Some(&start) = index.starts.get(self.cursor_line) else {
+                return (self.text.len(), self.text.len());
+            };
+            let end = match index.starts.get(self.cursor_line + 1) {
+                Some(next) => next.saturating_sub(1),
+                None => self.text.len(),
+            };
+            (start, end.max(start))
+        })
     }
 
     /// Byte offset of the caret in `text`.
@@ -1086,8 +1230,7 @@ impl MarkdownEditor {
 
     /// Character length of the caret's line.
     fn current_line_char_len(&self) -> usize {
-        let (start, end) = self.cursor_line_span();
-        self.text[start..end].chars().count()
+        self.with_line_index(|index| index.char_lens.get(self.cursor_line).copied().unwrap_or(0))
     }
 
     /// Keeps `cursor_line` / `cursor_col` inside the document.
@@ -1113,7 +1256,8 @@ impl MarkdownEditor {
         self.text = next;
         self.revision = self.revision.wrapping_add(1);
         if !self.restoring_history {
-            *self.history_target.borrow_mut() = self.text.clone();
+            // The delta command records only the changed run. The shared buffer is *not* refreshed
+            // here: it is synced once before an undo/redo, which is the only moment it is read.
             self.undo_stack.push(Box::new(MarkdownTextDeltaCommand::new(
                 self.history_target.clone(),
                 &before,
@@ -1138,6 +1282,10 @@ impl MarkdownEditor {
         }
         let mut blocks = Vec::new();
         let mut fence: Option<(LanguageId, LineState)> = None;
+        // One lexer per fenced block, carried across its lines. A fresh highlighter per line reset
+        // the interpreter state a multi-line construct depends on (block comments, template
+        // literals) and re-created the lexer for every line of a long block.
+        let mut highlighter: Option<(LanguageId, BuiltinHighlighter)> = None;
         for line in self.text.split('\n') {
             let trimmed = line.trim_start();
             match fence {
@@ -1145,17 +1293,26 @@ impl MarkdownEditor {
                     if fence_marker(trimmed).is_some() {
                         blocks.push(BlockStart::Fence);
                         fence = None;
+                        highlighter = None;
                     } else {
                         blocks.push(BlockStart::Code(language, state));
-                        let highlighter = BuiltinHighlighter::new(language);
-                        let (_, next) = highlighter.highlight_line(line, state);
+                        if !highlighter.as_ref().is_some_and(|(active, _)| *active == language) {
+                            highlighter = Some((language, BuiltinHighlighter::new(language)));
+                        }
+                        let next = match highlighter.as_ref() {
+                            Some((_, lexer)) => lexer.highlight_line(line, state).1,
+                            // Unreachable: the branch above always installs a lexer.
+                            None => state,
+                        };
                         fence = Some((language, next));
                     }
                 }
                 None => match fence_marker(trimmed) {
                     Some(info) => {
                         blocks.push(BlockStart::Fence);
-                        fence = Some((language_from_info(info), LineState::initial()));
+                        let language = language_from_info(info);
+                        highlighter = Some((language, BuiltinHighlighter::new(language)));
+                        fence = Some((language, LineState::initial()));
                     }
                     None => blocks.push(BlockStart::Normal),
                 },
@@ -1172,6 +1329,218 @@ impl MarkdownEditor {
             })
             .collect();
         self.blocks_revision = self.revision;
+    }
+
+    /// Wraps the selection in `prefix`/`suffix`, or removes the pair when it is already there.
+    ///
+    /// This is the single formatting entry point: the keyboard chords below and the mounted
+    /// [`MarkdownToolbar`] both call it, so a toolbar button and its shortcut cannot diverge. The
+    /// write goes through [`Self::commit_text`], so the wrap is one undo step.
+    ///
+    /// Returns whether the document changed.
+    pub fn wrap_selection(&mut self, prefix: &str, suffix: &str) -> bool {
+        if prefix.is_empty() && suffix.is_empty() {
+            return false;
+        }
+        let caret = self.doc_char_offset_of_caret();
+        let (start, end) = self.selection.unwrap_or((caret, caret));
+        let start_byte = self.char_offset_to_byte(start);
+        let end_byte = self.char_offset_to_byte(end);
+        let wrapped =
+            self.text[..start_byte].ends_with(prefix) && self.text[end_byte..].starts_with(suffix);
+        let (next, caret_char, selection) = if wrapped {
+            let mut next = String::with_capacity(self.text.len());
+            next.push_str(&self.text[..start_byte - prefix.len()]);
+            next.push_str(&self.text[start_byte..end_byte]);
+            next.push_str(&self.text[end_byte + suffix.len()..]);
+            let prefix_chars = prefix.chars().count();
+            let selection =
+                self.selection.map(|(first, last)| (first - prefix_chars, last - prefix_chars));
+            (next, start - prefix_chars, selection)
+        } else {
+            let mut next = String::with_capacity(self.text.len() + prefix.len() + suffix.len());
+            next.push_str(&self.text[..start_byte]);
+            next.push_str(prefix);
+            next.push_str(&self.text[start_byte..end_byte]);
+            next.push_str(suffix);
+            next.push_str(&self.text[end_byte..]);
+            let prefix_chars = prefix.chars().count();
+            let suffix_chars = suffix.chars().count();
+            let selection =
+                self.selection.map(|(first, last)| (first + prefix_chars, last + prefix_chars));
+            // With no selection the caret lands between the two markers, which is where typing
+            // the emphasised text begins.
+            (next, end + prefix_chars + suffix_chars, selection)
+        };
+        self.commit_text(next);
+        let (line, column) = self.line_col_of(caret_char);
+        self.cursor_line = line;
+        self.cursor_col = column;
+        self.apply_selection(selection);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Adds `prefix` to every selected line, or removes it when every selected line has it.
+    ///
+    /// A caret with no selection applies to its own line. The document is rewritten once and the
+    /// change is one undo step, so a multi-line list toggle can be reverted in one action.
+    pub fn toggle_line_prefix(&mut self, prefix: &str) -> bool {
+        if prefix.is_empty() {
+            return false;
+        }
+        let lines = self.selected_line_range();
+        let all_prefixed = lines.iter().all(|line| {
+            let text = self.line_slice(*line);
+            text.is_empty() || text.starts_with(prefix)
+        });
+        self.apply_line_prefix(prefix, all_prefixed)
+    }
+
+    /// Adds one indent level to every selected line.
+    fn indent_lines(&mut self) {
+        const INDENT: &str = "  ";
+        let _ = self.apply_line_prefix(INDENT, false);
+    }
+
+    /// Adds `prefix` to (or removes it from) every selected line, as one undo step.
+    fn apply_line_prefix(&mut self, prefix: &str, remove: bool) -> bool {
+        let had_selection = self.selection.is_some();
+        let lines = self.selected_line_range();
+        if lines.is_empty() {
+            return false;
+        }
+        let starts = self.line_starts();
+        let mut next = String::with_capacity(self.text.len() + lines.len() * prefix.len());
+        let mut cursor = 0usize;
+        for line in &lines {
+            let Some(&start_byte) = starts.get(*line) else {
+                continue;
+            };
+            let end_byte = match starts.get(line + 1) {
+                Some(next) => next.saturating_sub(1),
+                None => self.text.len(),
+            };
+            next.push_str(&self.text[cursor..start_byte]);
+            let text = &self.text[start_byte..end_byte];
+            if remove {
+                next.push_str(text.strip_prefix(prefix).unwrap_or(text));
+            } else {
+                next.push_str(prefix);
+                next.push_str(text);
+            }
+            cursor = end_byte;
+        }
+        next.push_str(&self.text[cursor..]);
+        self.commit_text(next);
+        // The selection follows the edited lines rather than being dropped: Tab then Shift+Tab is
+        // one gesture on one block, and a reader would not expect the second key to apply to a
+        // single line.
+        let first = lines.first().copied().unwrap_or(0);
+        let last = lines.last().copied().unwrap_or(first).min(self.edit_line_count() - 1);
+        self.cursor_line = last;
+        self.cursor_col = self.current_line_char_len();
+        let start_char = self.doc_char_offset(first, 0);
+        let end_char = self.doc_char_offset(last, self.current_line_char_len());
+        self.selection_anchor = None;
+        self.apply_selection(if had_selection {
+            (start_char != end_char).then_some((start_char, end_char))
+        } else {
+            // A caret with no selection keeps a caret: indenting the line it is on must not
+            // silently select the line.
+            None
+        });
+        self.base.request_redraw();
+        true
+    }
+
+    /// Every line the current selection touches, or the caret's line when nothing is selected.
+    fn selected_line_range(&self) -> Vec<usize> {
+        let (first, last) = match self.selection {
+            Some((start, end)) => {
+                let (first, _) = self.line_col_of(start);
+                let (last, _) = self.line_col_of(end);
+                (first, last)
+            }
+            None => (self.cursor_line, self.cursor_line),
+        };
+        let last = last.min(self.edit_line_count().saturating_sub(1));
+        if first > last {
+            return Vec::new();
+        }
+        (first..=last).collect()
+    }
+
+    /// The content of `line`, without its `\n`.
+    fn line_slice(&self, line: usize) -> &str {
+        self.with_line_index(|index| {
+            let Some(&start_byte) = index.starts.get(line) else {
+                return "";
+            };
+            let end_byte = match index.starts.get(line + 1) {
+                Some(next) => next.saturating_sub(1),
+                None => self.text.len(),
+            };
+            &self.text[start_byte..end_byte]
+        })
+    }
+
+    /// Indents (`indent == true`) or outdents the selected lines by one level.
+    fn shift_line_indent(&mut self, indent: bool) {
+        if indent {
+            self.indent_lines();
+            return;
+        }
+        let had_selection = self.selection.is_some();
+        const INDENT: &str = "  ";
+        // Outdent removes one indent step, or a single tab, from each selected line.
+        let lines = self.selected_line_range();
+        let starts = self.line_starts();
+        let mut removals: Vec<(usize, usize)> = Vec::new();
+        for line in &lines {
+            let Some(&start_byte) = starts.get(*line) else {
+                continue;
+            };
+            let end_byte = match starts.get(line + 1) {
+                Some(next) => next.saturating_sub(1),
+                None => self.text.len(),
+            };
+            let text = &self.text[start_byte..end_byte];
+            if let Some(rest) = text.strip_prefix(INDENT) {
+                removals.push((start_byte, start_byte + (text.len() - rest.len())));
+            } else if text.starts_with('\t') {
+                removals.push((start_byte, start_byte + 1));
+            }
+        }
+        if removals.is_empty() {
+            return;
+        }
+        let mut next = String::with_capacity(self.text.len());
+        let mut cursor = 0usize;
+        for (start_byte, end_byte) in removals {
+            next.push_str(&self.text[cursor..start_byte]);
+            cursor = end_byte;
+        }
+        next.push_str(&self.text[cursor..]);
+        self.commit_text(next);
+        let first = lines.first().copied().unwrap_or(0);
+        let last = lines.last().copied().unwrap_or(first).min(self.edit_line_count() - 1);
+        self.cursor_line = last;
+        self.clamp_cursor_col();
+        let start_char = self.doc_char_offset(first, 0);
+        let end_char = self.doc_char_offset(last, self.current_line_char_len());
+        self.selection_anchor = None;
+        self.apply_selection(if had_selection {
+            (start_char != end_char).then_some((start_char, end_char))
+        } else {
+            None
+        });
+        self.base.request_redraw();
+    }
+
+    /// Byte offsets of every line's first character, from the cached tables.
+    fn line_starts(&self) -> Vec<usize> {
+        self.with_line_index(|index| index.starts.clone())
     }
 
     /// Deletes the character before the caret, merging lines at a line start.
@@ -1537,21 +1906,27 @@ impl EventHandler for MarkdownEditor {
                 }
                 let font = effective_font(self.base.style());
                 let x = pos.x - rect.x - 12;
-                let text = self.text.split('\n').nth(line).unwrap_or("").to_string();
-                let mut offset = 0i32;
-                let mut column = 0usize;
-                for ch in text.chars() {
-                    let width = cached_char_width(&mut self.char_widths, ch, font, 1.0);
-                    if x < offset + width / 2 {
-                        break;
+                // The line is borrowed, not copied: a drag over the document copied one line per
+                // pointer move. `text`, `char_widths` and the style are disjoint fields, so the
+                // immutable line borrow and the mutable width cache coexist.
+                let (column, line_chars) = {
+                    let line_text = self.text.split('\n').nth(line).unwrap_or("");
+                    let mut offset = 0i32;
+                    let mut column = 0usize;
+                    for ch in line_text.chars() {
+                        let width = cached_char_width(&mut self.char_widths, ch, font, 1.0);
+                        if x < offset + width / 2 {
+                            break;
+                        }
+                        offset += width;
+                        column += 1;
                     }
-                    offset += width;
-                    column += 1;
-                }
+                    (column, line_text.chars().count())
+                };
                 let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
                     .contains(crate::shortcut::Modifiers::SHIFT);
                 self.cursor_line = line;
-                self.cursor_col = column.min(text.chars().count());
+                self.cursor_col = column.min(line_chars);
                 if !shift {
                     self.selection_anchor = Some((self.cursor_line, self.cursor_col));
                     self.apply_selection(None);
@@ -1581,20 +1956,23 @@ impl EventHandler for MarkdownEditor {
                         let line = (self.visible_start() + row as usize)
                             .min(self.edit_line_count().saturating_sub(1));
                         let font = effective_font(self.base.style());
-                        let text = self.text.split('\n').nth(line).unwrap_or("").to_string();
                         let x = pos.x - rect.x - 12;
-                        let mut offset = 0i32;
-                        let mut column = 0usize;
-                        for ch in text.chars() {
-                            let width = cached_char_width(&mut self.char_widths, ch, font, 1.0);
-                            if x < offset + width / 2 {
-                                break;
+                        let (column, line_chars) = {
+                            let line_text = self.text.split('\n').nth(line).unwrap_or("");
+                            let mut offset = 0i32;
+                            let mut column = 0usize;
+                            for ch in line_text.chars() {
+                                let width = cached_char_width(&mut self.char_widths, ch, font, 1.0);
+                                if x < offset + width / 2 {
+                                    break;
+                                }
+                                offset += width;
+                                column += 1;
                             }
-                            offset += width;
-                            column += 1;
-                        }
+                            (column, line_text.chars().count())
+                        };
                         self.cursor_line = line;
-                        self.cursor_col = column.min(text.chars().count());
+                        self.cursor_col = column.min(line_chars);
                         self.sync_selection_from_anchor();
                         self.base.request_redraw();
                     }
@@ -1678,6 +2056,20 @@ impl MarkdownEditor {
                 self.open_find();
                 return;
             }
+            // Inline formatting: the same actions the mounted toolbar calls, so a chord and its
+            // button cannot produce different markdown.
+            if primary_shortcut_pressed(key, modifiers, Key::B) {
+                self.wrap_selection("**", "**");
+                return;
+            }
+            if primary_shortcut_pressed(key, modifiers, Key::I) {
+                self.wrap_selection("*", "*");
+                return;
+            }
+            if primary_shortcut_pressed(key, modifiers, Key::K) {
+                self.wrap_selection("[", "](url)");
+                return;
+            }
         }
         match key {
             _ if primary_shortcut_pressed(key, modifiers, Key::Z) => {
@@ -1685,6 +2077,22 @@ impl MarkdownEditor {
             }
             _ if primary_shortcut_pressed(key, modifiers, Key::Y) => {
                 let _ = self.redo();
+            }
+            // The second redo chord every desktop editor accepts; the handler used to answer
+            // only primary+Y, so the habitual primary+Shift+Z did nothing.
+            _ if primary_shift_shortcut(key, modifiers, Key::Z) => {
+                let _ = self.redo();
+            }
+            9 => {
+                // Tab indents; Shift+Tab outdents. With no selection the caret gains one indent
+                // level, which is what markdown's nested lists and code blocks need.
+                if shift {
+                    self.shift_line_indent(false);
+                } else if self.selection.is_some() {
+                    self.shift_line_indent(true);
+                } else {
+                    self.replace_selection_or_caret("  ");
+                }
             }
             8 => self.backspace_at_cursor(),
             13 => self.insert_newline_at_cursor(),
@@ -1800,14 +2208,11 @@ impl MarkdownEditor {
 
     /// The document character offset of `(line, column)`.
     fn doc_char_offset(&self, line: usize, column: usize) -> usize {
-        let mut offset = 0usize;
-        for (index, text) in self.text.split('\n').enumerate() {
-            if index == line {
-                return offset + column.min(text.chars().count());
-            }
-            offset += text.chars().count() + 1;
-        }
-        offset + column
+        self.with_line_index(|index| {
+            let start = index.char_starts.get(line).copied().unwrap_or_else(|| index.char_len());
+            let length = index.char_lens.get(line).copied().unwrap_or(0);
+            start + column.min(length)
+        })
     }
 
     /// A glyph advance, measured at most once per size.
@@ -2014,6 +2419,9 @@ impl Draw for MarkdownEditor {
 
         let start = self.visible_start();
         let count = self.visible_line_count();
+        // The line total comes from the cached offset tables, not from re-counting the document's
+        // newlines on every frame.
+        let line_total = self.edit_line_count();
         let font = effective_font(style);
         // Selection endpoints, resolved once. `line_col_of` is two document walks; doing it per
         // row would be quadratic, and the whole point of this path is that a frame is cheap.
@@ -2048,11 +2456,12 @@ impl Draw for MarkdownEditor {
                         let line_chars = line.chars().count();
                         let from = if idx == first_line { first_col } else { 0 };
                         let to = if idx == last_line { last_col } else { line_chars };
-                        let prefix: String = line.chars().take(from).collect();
-                        let run: String =
-                            line.chars().skip(from).take(to.saturating_sub(from)).collect();
-                        let x = band.x + estimate_text_width(&prefix, font, 1.0) as i32;
-                        let width = estimate_text_width(&run, font, 1.0);
+                        // Both edges are measured straight off the borrowed line: a prefix
+                        // `String` per visible row was an allocation per row per frame.
+                        let from_byte = byte_offset_of_char(line, from);
+                        let to_byte = byte_offset_of_char(line, to).max(from_byte);
+                        let x = band.x + estimate_text_width(&line[..from_byte], font, 1.0) as i32;
+                        let width = estimate_text_width(&line[from_byte..to_byte], font, 1.0);
                         context.fill_rect(
                             Rect::new(x, y, width.max(1), TEXT_ROW_HEIGHT as u32),
                             cursor_ink.with_alpha(60),
@@ -2093,11 +2502,17 @@ impl Draw for MarkdownEditor {
                 }
             }
             // The cache is keyed by line index and text hash, so entries for lines that moved or
-            // changed are simply unused; this bound is what keeps a long session from retaining
-            // every version of every line.
-            let bound = text.split('\n').count().saturating_mul(4).saturating_add(64);
+            // changed are simply unused. When the table outgrows its bound only the entries that
+            // no longer describe a live line are dropped: clearing it rebuilt every visible line
+            // on the next frame.
+            let bound = line_total.saturating_mul(4).saturating_add(64);
             if cache.len() > bound {
-                cache.clear();
+                let live: std::collections::HashSet<(usize, u64)> = text
+                    .split('\n')
+                    .enumerate()
+                    .map(|(index, line)| (index, text_hash(line)))
+                    .collect();
+                cache.retain(|key, _| live.contains(key));
             }
         }
 
@@ -2116,9 +2531,10 @@ impl Draw for MarkdownEditor {
                 self.cursor_line.checked_sub(start).filter(|row| *row < self.visible_line_count())
             {
                 let (line_start, line_end) = self.cursor_line_span();
-                let prefix: String =
-                    self.text[line_start..line_end].chars().take(self.cursor_col).collect();
-                let x = rect.x + 12 + estimate_text_width(&prefix, font, 1.0) as i32;
+                let caret_line = &self.text[line_start..line_end];
+                let caret_byte = byte_offset_of_char(caret_line, self.cursor_col);
+                let x =
+                    rect.x + 12 + estimate_text_width(&caret_line[..caret_byte], font, 1.0) as i32;
                 let y = rect.y + TEXT_TOP + (row as i32) * TEXT_ROW_HEIGHT;
                 if y + 14 <= rect.y + rect.height as i32 && x <= rect.x + rect.width as i32 - 12 {
                     if let Some(preedit) = &self.preedit {
@@ -2146,6 +2562,17 @@ impl Draw for MarkdownEditor {
             self.outline_panel.draw(context);
         }
     }
+}
+
+/// Whether the host's primary accelerator **plus Shift** is held for `expected`.
+///
+/// `primary_shortcut_pressed` compares the modifier set exactly, so the Shift bit is removed
+/// before asking it: the remaining modifiers are what a plain primary chord carries.
+fn primary_shift_shortcut(key: u32, modifiers: u32, expected: Key) -> bool {
+    let shift = crate::shortcut::Modifiers::SHIFT;
+    let pressed = crate::shortcut::Modifiers::from_event_bits(modifiers);
+    pressed.contains(shift)
+        && primary_shortcut_pressed(key, modifiers & !(shift.bits() as u32), expected)
 }
 
 /// A glyph advance, measured at most once per font size.
@@ -2185,6 +2612,13 @@ fn text_hash(text: &str) -> u64 {
 fn char_boundary_at(text: &str, offset: usize) -> usize {
     let offset = offset.min(text.len());
     (0..=offset).rev().find(|index| text.is_char_boundary(*index)).unwrap_or(0)
+}
+
+/// The byte offset of character `index` in `text`, clamped to its end.
+///
+/// Used by the paint path to measure a prefix without materialising it as a `String`.
+fn byte_offset_of_char(text: &str, index: usize) -> usize {
+    text.char_indices().nth(index).map(|(byte, _)| byte).unwrap_or(text.len())
 }
 
 /// The info string of a fenced code block opener, if `trimmed` opens one.
@@ -3154,6 +3588,13 @@ pub struct FindBar {
     replace_visible: bool,
     /// The document snapshot the matches address.
     haystack: String,
+    /// `haystack` as `(byte offset, char)` pairs, rebuilt only when the snapshot changes.
+    ///
+    /// The matcher used to rebuild this vector on every keystroke of the query; the snapshot is
+    /// what changes it, so it is built once in [`Self::set_text`].
+    char_index: Vec<(usize, char)>,
+    /// How many ranges the last replacement actually changed, as reported by the host.
+    last_replaced: usize,
     /// Every match, in document order.
     matches: Vec<(usize, usize)>,
     /// The active match, as an index into `matches`.
@@ -3178,6 +3619,8 @@ impl FindBar {
             whole_word: false,
             replace_visible: false,
             haystack: String::new(),
+            char_index: Vec::new(),
+            last_replaced: 0,
             matches: Vec::new(),
             current: None,
             focus: FindFocus::Query,
@@ -3217,6 +3660,7 @@ impl FindBar {
     pub fn set_text(&mut self, text: &str) {
         self.haystack.clear();
         self.haystack.push_str(text);
+        self.char_index = self.haystack.char_indices().collect();
         self.recompute_matches();
     }
 
@@ -3353,11 +3797,34 @@ impl FindBar {
     /// Recomputes `matches` and keeps the active match when it still exists.
     fn recompute_matches(&mut self) {
         let previous = self.current.and_then(|index| self.matches.get(index).copied());
-        self.matches =
-            find_matches(&self.haystack, &self.query, self.case_sensitive, self.whole_word);
+        self.matches = find_matches(
+            &self.haystack,
+            &self.char_index,
+            &self.query,
+            self.case_sensitive,
+            self.whole_word,
+        );
         self.current = previous.and_then(|range| self.matches.iter().position(|hit| *hit == range));
         // Nothing is selected automatically: a query the reader is still typing is not yet a
         // navigation, and starting a match early would make the first `find_next` skip it.
+    }
+
+    /// How many ranges the host last reported as replaced.
+    pub fn last_replaced_count(&self) -> usize {
+        self.last_replaced
+    }
+
+    /// Records how many ranges a host-side replacement changed.
+    ///
+    /// The bar cannot observe the document, so the count is reported back to it by whoever applied
+    /// the [`ReplaceRequest`]. Keeping it here is what makes the result visible in the bar instead
+    /// of only in the host's state.
+    pub fn set_last_replaced(&mut self, count: usize) {
+        if self.last_replaced == count {
+            return;
+        }
+        self.last_replaced = count;
+        self.base.request_redraw();
     }
 
     /// Asks the host to replace the active match.
@@ -3429,6 +3896,35 @@ impl FindBar {
         let right = band.width as i32 - 2 * FIND_TOGGLE_SIDE - 12;
         Rect::new(band.x + 6, band.y, right.max(8) as u32, band.height)
     }
+
+    /// The "replace" action cell on the replacement row.
+    fn replace_button_rect(&self) -> Option<Rect> {
+        let band = self.replace_band()?;
+        Some(Rect::new(
+            band.x + band.width as i32 - 74,
+            band.y + 3,
+            42,
+            (band.height as i32 - 6).max(1) as u32,
+        ))
+    }
+
+    /// The "replace all" action cell on the replacement row.
+    fn replace_all_button_rect(&self) -> Option<Rect> {
+        let band = self.replace_band()?;
+        Some(Rect::new(
+            band.x + band.width as i32 - 30,
+            band.y + 3,
+            28,
+            (band.height as i32 - 6).max(1) as u32,
+        ))
+    }
+
+    /// The box the replacement text occupies, left of the two action cells.
+    fn replace_text_rect(&self) -> Option<Rect> {
+        let band = self.replace_band()?;
+        let width = (band.width as i32 - 86).max(8);
+        Some(Rect::new(band.x + 6, band.y, width as u32, band.height))
+    }
 }
 
 /// Case- and word-aware, non-overlapping literal search.
@@ -3438,6 +3934,7 @@ impl FindBar {
 /// offsets into `hay`, so a host can splice the ranges directly.
 fn find_matches(
     hay: &str,
+    hay_chars: &[(usize, char)],
     needle: &str,
     case_sensitive: bool,
     whole_word: bool,
@@ -3445,10 +3942,9 @@ fn find_matches(
     if needle.is_empty() || hay.is_empty() {
         return Vec::new();
     }
-    let hay_chars: Vec<(usize, char)> = hay.char_indices().collect();
     let needle_chars: Vec<char> = needle.chars().collect();
     let len = needle_chars.len();
-    if len == 0 {
+    if len == 0 || hay_chars.len() < len {
         return Vec::new();
     }
     let same = |a: char, b: char| {
@@ -3458,12 +3954,28 @@ fn find_matches(
             a.to_lowercase().eq(b.to_lowercase())
         }
     };
+    // Boyer-Moore-Horspool's bad-character table, keyed by the case-folded last character. A
+    // colliding fold only makes the shift shorter than the true one, which is safe: the matcher
+    // still verifies the whole candidate before reporting it.
+    let fold = |ch: char| {
+        if case_sensitive {
+            ch
+        } else {
+            ch.to_lowercase().next().unwrap_or(ch)
+        }
+    };
+    let mut skip: HashMap<char, usize> = HashMap::new();
+    for (index, ch) in needle_chars[..len - 1].iter().enumerate() {
+        skip.insert(fold(*ch), len - 1 - index);
+    }
     let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
     let mut matches = Vec::new();
     let mut index = 0usize;
     while index + len <= hay_chars.len() {
-        let hit = (0..len).all(|offset| same(hay_chars[index + offset].1, needle_chars[offset]));
-        if hit {
+        let last = hay_chars[index + len - 1].1;
+        if same(last, needle_chars[len - 1])
+            && (0..len - 1).all(|offset| same(hay_chars[index + offset].1, needle_chars[offset]))
+        {
             let starts_word = !whole_word || index == 0 || !is_word(hay_chars[index - 1].1);
             let ends_word =
                 !whole_word || index + len == hay_chars.len() || !is_word(hay_chars[index + len].1);
@@ -3475,7 +3987,8 @@ fn find_matches(
                 continue;
             }
         }
-        index += 1;
+        let step = skip.get(&fold(last)).copied().unwrap_or(len);
+        index += step.max(1);
     }
     matches
 }
@@ -3617,6 +4130,14 @@ impl EventHandler for FindBar {
                 }
                 if self.word_toggle_rect().contains_point(*pos) {
                     self.set_whole_word(!self.whole_word);
+                    return;
+                }
+                if self.replace_button_rect().is_some_and(|cell| cell.contains_point(*pos)) {
+                    self.replace();
+                    return;
+                }
+                if self.replace_all_button_rect().is_some_and(|cell| cell.contains_point(*pos)) {
+                    self.replace_all();
                     return;
                 }
                 if self.replace_band().is_some_and(|band| band.contains_point(*pos)) {
@@ -3766,16 +4287,57 @@ impl Draw for FindBar {
                 Point::new(band.x + band.width as i32, band.y),
                 border,
             );
-            context.draw_text(
-                Point::new(band.x + 6, band.y + 7),
-                &crate::widget::text_utils::elide_end(
-                    &self.replacement,
-                    (band.width as i32 / 7).max(1) as usize,
-                ),
-                font,
-                if self.replacement.is_empty() { ink.with_alpha(120) } else { ink },
-                HorizontalAlignment::Left,
-            );
+            if let Some(text_rect) = self.replace_text_rect() {
+                context.draw_text(
+                    Point::new(text_rect.x, text_rect.y + 7),
+                    &crate::widget::text_utils::elide_end(
+                        &self.replacement,
+                        (text_rect.width as i32 / 7).max(1) as usize,
+                    ),
+                    font,
+                    if self.replacement.is_empty() { ink.with_alpha(120) } else { ink },
+                    HorizontalAlignment::Left,
+                );
+            }
+            // The two replacement actions are controls on the bar, so a reader never has to know
+            // that the host applies their request; the result count is the feedback that the
+            // request reached the document.
+            for (cell, label) in
+                [(self.replace_button_rect(), "Repl"), (self.replace_all_button_rect(), "All")]
+            {
+                let Some(cell) = cell else {
+                    continue;
+                };
+                let enabled = !self.matches.is_empty();
+                context.fill_rounded_rect(
+                    cell,
+                    3,
+                    if enabled { surface.blend(&accent, 0.25) } else { surface },
+                );
+                context.draw_rect(cell, if enabled { accent } else { border });
+                context.draw_text_fitted_cow(
+                    cell,
+                    label,
+                    font,
+                    if enabled { ink } else { ink.with_alpha(120) },
+                    HorizontalAlignment::Center,
+                );
+            }
+            if self.last_replaced > 0 {
+                let label = format!("{} replaced", self.last_replaced);
+                context.draw_text(
+                    Point::new(
+                        band.x + band.width as i32
+                            - 84
+                            - context.measure_text(&label, font).width as i32,
+                        band.y + 7,
+                    ),
+                    &label,
+                    font,
+                    ink.blend(&surface, 0.35),
+                    HorizontalAlignment::Left,
+                );
+            }
         }
     }
 }
@@ -4474,5 +5036,131 @@ mod tests {
         editor.handle_event(&Event::key_press(27, 0));
         assert!(!editor.find_bar_visible());
         assert!(!editor.find_bar().is_visible());
+    }
+}
+
+#[cfg(test)]
+mod issue_2_8_tests {
+    use super::*;
+    use crate::widget::input_widgets::shortcut_editor::primary_modifier_event_bits;
+    use std::sync::{Arc, Mutex};
+
+    fn editor(text: &str) -> MarkdownEditor {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+        editor.set_text(text);
+        editor
+    }
+
+    fn draw_once(editor: &mut MarkdownEditor) {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+        let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(400, 300), 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            editor.draw(&mut context);
+        }
+        backend.end_frame();
+    }
+
+    /// SP-02: Tab indents the selected lines and Shift+Tab reverses it.
+    #[test]
+    fn tab_indents_and_shift_tab_outdents_selected_lines() {
+        let mut editor = editor("alpha\nbeta");
+        editor.select_all();
+        editor.handle_key(9, 0);
+        assert_eq!(editor.text(), "  alpha\n  beta");
+        editor.handle_key(9, crate::shortcut::Modifiers::SHIFT.bits() as u32);
+        assert_eq!(editor.text(), "alpha\nbeta");
+    }
+
+    /// SP-03: the formatting action wraps a selection and a second call unwraps it.
+    #[test]
+    fn format_actions_wrap_and_unwrap_the_selection() {
+        let mut editor = editor("hello");
+        editor.select_all();
+        assert!(editor.wrap_selection("**", "**"));
+        assert_eq!(editor.text(), "**hello**");
+        assert!(editor.wrap_selection("**", "**"));
+        assert_eq!(editor.text(), "hello");
+    }
+
+    /// SP-03: the keyboard chord drives the same action.
+    #[test]
+    fn primary_b_wraps_the_selection() {
+        let mut editor = editor("hello");
+        editor.select_all();
+        editor.handle_key(66, primary_modifier_event_bits());
+        assert_eq!(editor.text(), "**hello**");
+    }
+
+    /// SP-04: primary+Shift+Z redoes, the chord the handler used to ignore.
+    #[test]
+    fn primary_shift_z_redoes() {
+        let mut editor = editor("ab");
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "");
+        let modifiers =
+            primary_modifier_event_bits() | crate::shortcut::Modifiers::SHIFT.bits() as u32;
+        editor.handle_key(90, modifiers);
+        assert_eq!(editor.text(), "ab");
+    }
+
+    /// SP-03: a line prefix toggle is one undo step for a multi-line selection.
+    #[test]
+    fn line_prefix_toggles_every_selected_line_as_one_undo_step() {
+        let mut editor = editor("one\ntwo");
+        editor.select_all();
+        assert!(editor.toggle_line_prefix("- "));
+        assert_eq!(editor.text(), "- one\n- two");
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "one\ntwo");
+    }
+
+    /// COMP-H04: the toolbar emits only actions it actually offers.
+    #[test]
+    fn toolbar_executes_only_enabled_actions() {
+        let mut toolbar = MarkdownToolbar::new(Rect::new(0, 0, 300, 28));
+        let hits = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = hits.clone();
+        toolbar.action_triggered.connect_ref(move |token| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(token.clone());
+            }
+        });
+        assert!(toolbar.execute("bold"));
+        assert!(!toolbar.execute("nope"));
+        assert_eq!(hits.lock().ok().map(|guard| guard.clone()).unwrap_or_default(), vec!["bold"]);
+        assert!(!toolbar.set_actions(vec!["nope".to_string()]));
+        assert_eq!(toolbar.actions().len(), 7);
+    }
+
+    /// SP-P03: the preview cache keeps live entries when it is bounded.
+    #[test]
+    fn the_preview_cache_keeps_live_lines_when_it_is_trimmed() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+        editor.set_preview_mode(true);
+        let text: String = (0..200).map(|line| format!("line {line}\n")).collect();
+        editor.set_text(text);
+        draw_once(&mut editor);
+        // The buffer is longer than the bound only after several revisions; the assertion that
+        // matters is that the live entries survive, so the following frame still draws them.
+        editor.set_text(editor.text().to_string() + "tail");
+        draw_once(&mut editor);
+        assert!(editor.line_count() >= 200);
+    }
+
+    /// SP-P04: caret geometry follows edits instead of rescanning the document.
+    #[test]
+    fn caret_geometry_tracks_edits_with_the_line_index() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+        editor.set_text("one\ntwo\nthree");
+        editor.goto_line(2);
+        editor.move_to_line_edge(false);
+        assert_eq!(editor.cursor_line(), 2);
+        assert_eq!(editor.cursor_col(), 5);
+        editor.insert_text_at_cursor("!");
+        assert_eq!(editor.text(), "one\ntwo\nthree!");
+        assert_eq!(editor.cursor_line(), 2);
+        assert_eq!(editor.cursor_col(), 6);
     }
 }

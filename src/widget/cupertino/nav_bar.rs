@@ -63,6 +63,16 @@ impl NavBarItem {
 /// The edge length of an icon inside a bar item.
 const ICON_ITEM_SIZE: u32 = 18;
 
+/// What occupies the bar's centre title area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NavBarTitleMode {
+    /// The title string (the historical behaviour).
+    #[default]
+    Text,
+    /// A caller-supplied widget, e.g. a search field or a segmented control.
+    Widget,
+}
+
 /// iOS-style large title navigation bar.
 ///
 /// Renders a translucent background with an optional large title and a
@@ -101,6 +111,10 @@ pub struct CupertinoNavigationBar {
     pub leading_item_pressed: Signal1<usize>,
     /// Emitted with the index of a custom trailing item that was tapped.
     pub trailing_item_pressed: Signal1<usize>,
+    /// Whether the title area paints the text or a custom widget.
+    title_mode: NavBarTitleMode,
+    /// The custom title-area widget, when [`Self::title_mode`] is `Widget`.
+    title_widget: Option<crate::compat::Box<dyn Widget>>,
 }
 
 impl CupertinoNavigationBar {
@@ -126,6 +140,8 @@ impl CupertinoNavigationBar {
             back_pressed: Signal1::new(),
             leading_item_pressed: Signal1::new(),
             trailing_item_pressed: Signal1::new(),
+            title_mode: NavBarTitleMode::Text,
+            title_widget: None,
         }
     }
 
@@ -147,6 +163,49 @@ impl CupertinoNavigationBar {
     /// Returns the title text.
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// Whether the title area paints text or a widget.
+    pub fn title_mode(&self) -> NavBarTitleMode {
+        self.title_mode
+    }
+
+    /// Chooses between the text title and the custom widget slot.
+    pub fn set_title_mode(&mut self, mode: NavBarTitleMode) {
+        if self.title_mode == mode {
+            return;
+        }
+        self.title_mode = mode;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Installs the widget drawn in the title area.
+    ///
+    /// The slot is how a search field, a segmented control or any other in-library control
+    /// replaces the static title without stacking a second bar on top of this one (MW-17).
+    /// Passing `None` leaves an empty title area; the mode still has to be set to `Widget`
+    /// for the slot to be used.
+    pub fn set_title_widget(&mut self, widget: Option<crate::compat::Box<dyn Widget>>) {
+        self.title_widget = widget;
+        if self.title_mode == NavBarTitleMode::Widget {
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+    }
+
+    /// The region the title slot occupies: the bar's centre, clear of the leading control and
+    /// the trailing items.
+    fn title_slot(&self) -> Rect {
+        let band = self.bar_band();
+        let left = band.x + if self.back_button_visible { BACK_BUTTON_WIDTH as i32 } else { 8 };
+        let right = band.right() - 8;
+        Rect::new(
+            left,
+            band.y + 4,
+            right.saturating_sub(left).max(0) as u32,
+            band.height.saturating_sub(8),
+        )
     }
 
     /// The secondary line above the title.
@@ -559,10 +618,14 @@ impl Draw for CupertinoNavigationBar {
         //
         // At `1.0` this is the old large-title branch and at `0.0` the old compact one, so a bar
         // settled at either end draws exactly what it drew before.
-        if !self.title.is_empty() {
+        if self.title_mode == NavBarTitleMode::Text && !self.title.is_empty() {
             let title_font =
                 role_font(style, lerp_f32(17.0, 34.0, collapse)).with_bold(collapse > 0.5);
-            let metrics = context.measure_text(&self.title, &title_font);
+            let metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                context,
+                &self.title,
+                &title_font,
+            );
             let leading_x = bar_rect.x + 16;
             let centred_x = bar_rect.x + (bar_rect.width as i32 - metrics.width as i32) / 2;
             let title_x = lerp_i32(centred_x, leading_x, collapse);
@@ -576,7 +639,11 @@ impl Draw for CupertinoNavigationBar {
             let mut title_top = line.y;
             if !self.prompt.is_empty() && collapse > 0.5 {
                 let prompt_font = role_font(style, 11.0);
-                let prompt_metrics = context.measure_text(&self.prompt, &prompt_font);
+                let prompt_metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                    context,
+                    &self.prompt,
+                    &prompt_font,
+                );
                 let prompt_y = bar_rect.y + 4;
                 context.draw_text_fitted_cow(
                     Rect::new(
@@ -694,6 +761,23 @@ impl Draw for CupertinoNavigationBar {
                 }
             }
         }
+
+        // ── Custom title slot ──
+        // Painted after the bar's own chrome so a host control (a search field, a segmented
+        // picker) reads as the bar's title. The slot gets its own rectangle and every pointer
+        // event that lands inside it is forwarded to the widget, so it is interactive rather
+        // than decorative (MW-17).
+        if self.title_mode == NavBarTitleMode::Widget {
+            let slot = self.title_slot();
+            context.push_clip(slot.x, slot.y, slot.width, slot.height);
+            if let Some(widget) = self.title_widget.as_mut() {
+                widget.set_geometry(slot);
+                if let Some(drawable) = crate::widget::draw_bridge::draw_of(widget.as_mut()) {
+                    drawable.draw(context);
+                }
+            }
+            context.pop_clip();
+        }
     }
 }
 
@@ -702,6 +786,25 @@ impl EventHandler for CupertinoNavigationBar {
         if !self.base.is_enabled() {
             self.base.handle_event(event);
             return;
+        }
+        // Pointer events inside the custom title slot belong to that widget, not to the bar's
+        // back-area or item tests (MW-17).
+        let pointer = match event {
+            Event::MousePress { pos, .. }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseMove { pos }
+            | Event::Drag { pos, .. } => Some(*pos),
+            _ => None,
+        };
+        if self.title_mode == NavBarTitleMode::Widget {
+            if let Some(pos) = pointer {
+                if self.title_slot().contains_point(pos) {
+                    if let Some(widget) = self.title_widget.as_mut() {
+                        widget.handle_event(event);
+                    }
+                    return;
+                }
+            }
         }
         match event {
             Event::MousePress { pos, button, .. } => {

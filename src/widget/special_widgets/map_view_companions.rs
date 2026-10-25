@@ -251,7 +251,15 @@ impl TileLoader {
         let key = TileKey::new(zoom, x, y);
         let cached = self.cache.contains_key(&key);
         let url = self.tile_url(key);
-        if !cached {
+        if cached {
+            // LRU, not insertion order: a tile the camera keeps asking for is the one to keep when
+            // the cache is full, and a hot level used to be evicted by a colder one registered
+            // later.
+            if let Some(position) = self.order.iter().position(|queued| *queued == key) {
+                self.order.remove(position);
+                self.order.push_back(key);
+            }
+        } else {
             self.cache.insert(key, TileEntry { payload: None });
             self.order.push_back(key);
             self.evict_over_limit();
@@ -343,11 +351,24 @@ impl TileLoader {
         self.cache.get(&key).is_some_and(|entry| entry.payload.is_some())
     }
 
+    /// The pixels the host supplied for `key`, or `None` while the tile is outstanding.
+    ///
+    /// The bytes are the host's own decoded RGBA8 tile, `tile_size`×`tile_size`; the map blits
+    /// them by reference, so rendering a delivered tile copies nothing. Eviction drops the
+    /// payload with the entry, so the memory a delivered tile holds is released with it.
+    pub fn tile_pixels(&self, key: TileKey) -> Option<&[u8]> {
+        self.cache.get(&key).and_then(|entry| entry.payload.as_deref())
+    }
+
     fn cached_count(&self) -> usize {
         self.cache.values().filter(|entry| entry.payload.is_some()).count()
     }
 
-    /// Trims the cache from the front of the insertion order until it fits.
+    /// Trims the cache from the front of the access order until it fits.
+    ///
+    /// The order is least-recently-used first (see `load_tile`), so eviction drops the tile the
+    /// camera has gone longest without asking for — together with its payload, which is what keeps
+    /// a long session's memory bounded (SP-P60).
     fn evict_over_limit(&mut self) {
         while self.cache.len() > self.cache_limit {
             let Some(oldest) = self.order.pop_front() else {

@@ -155,6 +155,20 @@ impl CodeEditor {
 
     /// The cached spans of `line`, borrowed from the cache.
     ///
+    /// The public form of [`Self::cached_tokens_on_line`]: a host walking every line to
+    /// export or count spans would otherwise allocate a `Vec` per line through
+    /// [`Self::tokens_on_line`], which is `O(lines x spans)` allocations for a read-only
+    /// pass (J-P09).
+    ///
+    /// `None` means the line has not been tokenized yet — the cache is filled by the paint
+    /// path, so [`Self::tokens_on_line_resolved`] is the way to force a correct answer for
+    /// an off-screen line.
+    pub fn tokens_on_line_borrowed(&self, line: usize) -> Option<&[TokenSpan]> {
+        self.cached_tokens_on_line(line)
+    }
+
+    /// The cached spans of `line`, borrowed from the cache.
+    ///
     /// [`Self::tokens_on_line`] returns an owned `Vec` (its signature is public API),
     /// and the paint path was paying that clone per painted row: `row_runs` reads the
     /// list once per row per frame, and a second time when the row is measured. The

@@ -14,10 +14,15 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font};
 use crate::widget::save_state::SaveState;
-use crate::widget::{BaseWidget, Draw, IconName, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, IconSource, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+use super::theme_snapshot::ThemeSnapshot;
+
+/// The gap between the header icon and the title that follows it (C-04).
+const HEADER_ICON_GAP: u32 = 4;
 
 /// Version tag of the blob produced by [`CollapsiblePane::save_state`].
 ///
@@ -73,6 +78,10 @@ pub struct CollapsiblePane {
     /// Emitted when the collapsed state changes (parameter: new collapsed state).
     pub toggled: Signal1<bool>,
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
+    /// Optional icon drawn in the header ahead of the title (C-04).
+    icon: Option<IconSource>,
+    /// The motion token that prices the disclosure (C-05).
+    motion_slot: MotionSlot,
 }
 
 impl CollapsiblePane {
@@ -90,7 +99,49 @@ impl CollapsiblePane {
             content_visible: true,
             toggled: Signal1::new(),
             registry: None,
+            icon: None,
+            motion_slot: MotionSlot::Normal,
         }
+    }
+
+    /// The icon drawn in the header ahead of the title, if one was assigned (C-04).
+    pub fn icon(&self) -> Option<IconSource> {
+        self.icon
+    }
+
+    /// Sets the header icon; `None` clears the slot (C-04).
+    ///
+    /// The slot is the same [`IconSource`] the rest of the container family uses (accordion
+    /// sections, tab items), so an icon assignment is one type wherever it happens.
+    pub fn set_icon(&mut self, icon: Option<IconSource>) {
+        if self.icon == icon {
+            return;
+        }
+        self.icon = icon;
+        self.base.request_redraw();
+    }
+
+    /// The motion token that prices the open/close animation (C-05).
+    pub fn motion_slot(&self) -> MotionSlot {
+        self.motion_slot
+    }
+
+    /// Selects the motion token the disclosure is priced by (C-05).
+    ///
+    /// Rebuilding the driver at its **current** value keeps a change of tempo from also
+    /// changing where the pane is: only the remaining travel is re-priced. The previous
+    /// tempo is returned so a scoped override can be restored.
+    pub fn set_motion_slot(&mut self, slot: MotionSlot) -> MotionSlot {
+        let previous = self.motion_slot;
+        if previous == slot {
+            return previous;
+        }
+        self.motion_slot = slot;
+        let current = self.open.value();
+        self.open = PropertyDriver::at(current, slot);
+        self.open.set_target(self.open_target());
+        self.base.request_redraw();
+        previous
     }
 
     /// Returns the title text.
@@ -226,7 +277,7 @@ impl CollapsiblePane {
         let collapsed = state[5] != 0;
         self.header_height = header_height;
         self.collapsed = collapsed;
-        self.open = PropertyDriver::at(self.open_target(), MotionSlot::Normal);
+        self.open = PropertyDriver::at(self.open_target(), self.motion_slot);
         self.content_visible = !collapsed;
         self.sync_content_state();
         self.base.request_redraw();
@@ -263,15 +314,17 @@ impl CollapsiblePane {
     }
 
     fn sync_content_geometry(&mut self) {
+        // One derivation per call (C-P13): the band was computed once to test for zero and
+        // again to place the child, which was two runs of the same arithmetic on every tick.
+        let rect = self.content_rect();
         // A band with no height has nothing to lay a child out in, and a zero-height rectangle
         // is not "a hidden child" — it is a child that gets drawn into a sliver. The child's
         // geometry is left at the last open band instead, which is also the rectangle it will
         // animate back into as the pane reopens.
-        if self.content_rect().height == 0 {
+        if rect.height == 0 {
             return;
         }
         if let Some(content) = self.content_child {
-            let rect = self.content_rect();
             if let Some(ref reg) = self.registry {
                 reg.borrow_mut().set_widget_geometry(content, rect);
             }
@@ -465,20 +518,24 @@ impl EventHandler for CollapsiblePane {
 
         if let Some(content) = self.content_child {
             if let Some(ref reg) = self.registry {
-                reg.borrow_mut().set_widget_geometry(content, content_rect);
+                // C-P13: one borrow serves the geometry write and the forward. The event used
+                // to be dispatched through a second `borrow_mut`, which is a needless
+                // re-entrancy point on a `RefCell` and two lock round-trips per event.
+                let mut registry = reg.borrow_mut();
+                registry.set_widget_geometry(content, content_rect);
                 match event {
                     Event::MousePress { pos, .. }
                     | Event::MouseRelease { pos, .. }
                     | Event::MouseMove { pos }
                     | Event::MouseDoubleClick { pos, .. } => {
                         if content_rect.contains(*pos) {
-                            let _ = reg.borrow_mut().forward_event(content, event);
+                            let _ = registry.forward_event(content, event);
                         }
                     }
                     Event::Wheel { .. } => {
                         let fallback = Point::new(content_rect.x + 1, content_rect.y + 1);
                         if content_rect.contains(fallback) {
-                            let _ = reg.borrow_mut().forward_event(content, event);
+                            let _ = registry.forward_event(content, event);
                         }
                     }
                     #[cfg(feature = "touch")]
@@ -494,11 +551,11 @@ impl EventHandler for CollapsiblePane {
                     | Event::TwoFingerSwipe { centroid_start: _, centroid_end: pos, .. }
                     | Event::Fling { pos, .. } => {
                         if content_rect.contains(*pos) {
-                            let _ = reg.borrow_mut().forward_event(content, event);
+                            let _ = registry.forward_event(content, event);
                         }
                     }
                     _ => {
-                        let _ = reg.borrow_mut().forward_event(content, event);
+                        let _ = registry.forward_event(content, event);
                     }
                 }
             }
@@ -516,29 +573,27 @@ impl Draw for CollapsiblePane {
         // to be hardcoded literals, so light and dark rendered identically.
         //
         // The theme reads take and release the global manager's lock internally, so no guard
-        // is held across the draw (the mutex is not re-entrant).
+        // is held across the draw (the mutex is not re-entrant). `ThemeSnapshot` folds the
+        // resolved style and the palette roles into one manager visit for the frame (C-P01).
+        let theme = ThemeSnapshot::capture("collapsible_pane");
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("collapsible_pane");
         // `collapsible_pane` is absent from `WidgetRole::for_kind_name`'s table, so it
         // classifies as `Surface` and resolves to `theme.colors.background` — the window's
         // own fill. A header painted in that colour would be byte-identical to the frame
         // behind it, so a resolved surface equal to the window fill is re-derived a visible
         // step away from it, the same distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        let window_fill = theme.window_fill();
         let text_color = style
             .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::rgb(0, 0, 0));
         let border_color = style
             .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.border_color))
             .unwrap_or_else(|| window_fill.blend(&text_color, 0.25));
         let header_bg = match style
             .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.background_color))
         {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&text_color, 0.08),
@@ -553,10 +608,8 @@ impl Draw for CollapsiblePane {
         // choice — a theme that wants its nested region flat, or more strongly raised, had no way to
         // say so, and the token was declared for exactly that purpose and read by nothing (BLUE22 ·
         // F-9). The blend survives as the fallback for a theme that predates the role.
-        let content_bg = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.surface_container_high)
-            .unwrap_or_else(|| header_bg.blend(&text_color, 0.03));
+        let content_bg =
+            theme.surface_container_high().unwrap_or_else(|| header_bg.blend(&text_color, 0.03));
 
         // --- Draw header background ---
         //
@@ -613,13 +666,33 @@ impl Draw for CollapsiblePane {
             Rect::new(arrow_x, arrow_y, header_line.height.max(1), header_line.height.max(1));
         crate::widget::draw_icon_at(context, arrow, arrow_color, arrow_icon);
 
-        // --- Draw title text ---
+        // --- Draw title text, after the icon slot (C-04) ---
+        //
+        // The icon reserves a leading tile and the title starts after it, so the glyph and the
+        // caption cannot overlap. The room charged is the same constant the offset is built
+        // from, so what is painted and what is reserved agree (the arithmetic accordion
+        // sections use).
+        let mut title_x = hdr.x + 20;
+        if let Some(source) = self.icon {
+            let side = dimensions::CHECKBOX_BOX.min(header_line.height.max(1));
+            let icon_rect = Rect::new(
+                title_x,
+                header_line.y + (header_line.height.saturating_sub(side) / 2) as i32,
+                side,
+                side,
+            );
+            if let Err(error) =
+                crate::widget::paint_icon(context, source.into(), icon_rect, arrow_color)
+            {
+                log::warn!("collapsible pane header icon could not be painted: {error:?}");
+            }
+            title_x = title_x.saturating_add((side + HEADER_ICON_GAP) as i32);
+        }
         if !self.title.is_empty() {
-            let text_x = hdr.x + 20;
             let text_y = header_line.y;
             let title_color = if self.base.is_enabled() { text_color } else { disabled_ink };
             context.draw_text(
-                Point::from_f32(text_x as f32, text_y as f32),
+                Point::from_f32(title_x as f32, text_y as f32),
                 &self.title,
                 header_font,
                 title_color,
@@ -1116,5 +1189,27 @@ mod tests {
         future[0] = 99;
         assert!(!restored.restore_state(&future), "an unknown version is refused");
         assert!(restored.is_collapsed(), "a refused blob leaves the pane untouched");
+    }
+
+    /// C-05: the disclosure tempo is a caller choice, and changing it keeps the position.
+    #[test]
+    fn the_motion_slot_is_configurable() {
+        let mut pane = make_pane();
+        assert_eq!(pane.motion_slot(), MotionSlot::Normal);
+        let previous = pane.set_motion_slot(MotionSlot::Fast);
+        assert_eq!(previous, MotionSlot::Normal, "the previous slot is returned");
+        assert_eq!(pane.motion_slot(), MotionSlot::Fast);
+        assert_eq!(pane.open_progress(), 1.0, "a tempo change does not move the pane");
+    }
+
+    /// C-04: the header icon slot is stored and cleared.
+    #[test]
+    fn the_header_icon_slot_is_available() {
+        let mut pane = make_pane();
+        assert_eq!(pane.icon(), None);
+        pane.set_icon(Some(crate::widget::IconSource::Builtin(crate::widget::IconName::Info)));
+        assert!(pane.icon().is_some());
+        pane.set_icon(None);
+        assert_eq!(pane.icon(), None);
     }
 }

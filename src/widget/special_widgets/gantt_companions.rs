@@ -17,6 +17,8 @@ use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+use super::DependencyKind;
+
 // `GanttWidget` draws bars against a viewport owned by the host. The two controls
 // below add the parts the chart itself cannot express: an axis that converts between
 // pixels and dates, and an editor for the dependency edges. Both are standalone so a
@@ -102,6 +104,12 @@ pub struct TimelineAxis {
     zoom_level: f32,
     /// The span `zoom_level == 1.0` refers to.
     base_span: f64,
+    /// Tick positions, labels and label widths, with the key they were built for.
+    ///
+    /// Every tick used to be formatted and measured on every frame, which made a scrub or a zoom
+    /// pay for the whole axis per animation step.
+    tick_entries: Vec<(i32, String, i32)>,
+    tick_key: Option<(i64, i64, u32, &'static str, u32, u32)>,
     /// Emitted with the new visible range after a range or zoom change.
     pub scale_changed: Signal1<(i64, i64)>,
 }
@@ -116,6 +124,8 @@ impl TimelineAxis {
             range: (0, 100),
             zoom_level: 1.0,
             base_span: 100.0,
+            tick_entries: Vec::new(),
+            tick_key: None,
             scale_changed: Signal1::new(),
         }
     }
@@ -400,16 +410,39 @@ impl Draw for TimelineAxis {
             border,
         );
         let font = effective_font(style);
-        for (value, x) in self.ticks() {
+        // The labels and their advances are a pure function of the range, the density, the format,
+        // the face and the track width; those form the cache key and nothing else is measured
+        // while they hold.
+        let key = (
+            self.range.0,
+            self.range.1,
+            self.tick_density,
+            self.date_format.token(),
+            font.size().to_bits(),
+            width,
+        );
+        if self.tick_key != Some(key) {
+            let entries = self
+                .ticks()
+                .into_iter()
+                .map(|(value, x)| {
+                    let label = self.format_tick(value);
+                    let label_width = context.measure_text(&label, font).width as i32;
+                    (x, label, label_width)
+                })
+                .collect();
+            self.tick_entries = entries;
+            self.tick_key = Some(key);
+        }
+        for (x, label, label_width) in &self.tick_entries {
+            let x = *x;
             context.draw_line(Point::new(x, baseline - AXIS_TICK), Point::new(x, baseline), border);
-            let label = self.format_tick(value);
             if !label.is_empty() {
-                let label_width = context.measure_text(&label, font).width as i32;
                 let text_x =
-                    (x + 2).clamp(rect.x, (rect.x + rect.width as i32 - label_width).max(rect.x));
+                    (x + 2).clamp(rect.x, (rect.x + rect.width as i32 - *label_width).max(rect.x));
                 context.draw_text(
                     Point::new(text_x, rect.y + 2),
-                    &label,
+                    label,
                     font,
                     ink,
                     HorizontalAlignment::Left,
@@ -426,12 +459,28 @@ pub struct Dependency {
     pub predecessor: String,
     /// Id of the task that waits.
     pub successor: String,
+    /// The relationship kind. [`Dependency::new`] leaves it finish-to-start, which is what the
+    /// untyped `GanttTask::depends_on` spelling means.
+    pub kind: DependencyKind,
 }
 
 impl Dependency {
-    /// Creates an edge from `predecessor` to `successor`.
+    /// Creates a finish-to-start edge from `predecessor` to `successor`.
     pub fn new(predecessor: impl Into<String>, successor: impl Into<String>) -> Self {
-        Self { predecessor: predecessor.into(), successor: successor.into() }
+        Self {
+            predecessor: predecessor.into(),
+            successor: successor.into(),
+            kind: DependencyKind::default(),
+        }
+    }
+
+    /// Creates an edge with an explicit relationship kind.
+    pub fn with_kind(
+        predecessor: impl Into<String>,
+        successor: impl Into<String>,
+        kind: DependencyKind,
+    ) -> Self {
+        Self { predecessor: predecessor.into(), successor: successor.into(), kind }
     }
 }
 
@@ -451,6 +500,11 @@ const DEPENDENCY_HEADER: i32 = 18;
 pub struct DependencyEditor {
     base: BaseWidget,
     dependencies: Vec<Dependency>,
+    /// The row captions, rebuilt with the list.
+    ///
+    /// A caption is a formatting of an edge that cannot change while the edge cannot change, so
+    /// it is built once instead of once per row per frame.
+    labels: Vec<String>,
     editable: bool,
     selected: Option<usize>,
     /// Emitted when an edge is added.
@@ -467,6 +521,7 @@ impl DependencyEditor {
         Self {
             base: BaseWidget::new(WidgetKind::DependencyEditor, geometry, "DependencyEditor"),
             dependencies: Vec::new(),
+            labels: Vec::new(),
             editable: true,
             selected: None,
             dependency_added: Signal1::new(),
@@ -490,13 +545,17 @@ impl DependencyEditor {
             if dependency.predecessor == dependency.successor {
                 continue;
             }
-            if unique.contains(&dependency) {
+            if unique.iter().any(|existing| {
+                existing.predecessor == dependency.predecessor
+                    && existing.successor == dependency.successor
+            }) {
                 continue;
             }
             unique.push(dependency);
         }
         self.dependencies = unique;
         self.selected = None;
+        self.rebuild_labels();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -506,10 +565,13 @@ impl DependencyEditor {
         if dependency.predecessor == dependency.successor {
             return false;
         }
-        if self.dependencies.contains(&dependency) {
+        if self.dependencies.iter().any(|edge| {
+            edge.predecessor == dependency.predecessor && edge.successor == dependency.successor
+        }) {
             return false;
         }
         self.dependencies.push(dependency.clone());
+        self.rebuild_labels();
         self.dependency_added.emit(dependency);
         self.base.request_layout();
         self.base.request_redraw();
@@ -518,10 +580,13 @@ impl DependencyEditor {
 
     /// Removes the first occurrence of `dependency`. Returns whether it existed.
     pub fn remove_dependency(&mut self, dependency: &Dependency) -> bool {
-        let Some(index) = self.dependencies.iter().position(|edge| edge == dependency) else {
+        let Some(index) = self.dependencies.iter().position(|edge| {
+            edge.predecessor == dependency.predecessor && edge.successor == dependency.successor
+        }) else {
             return false;
         };
         let removed = self.dependencies.remove(index);
+        self.rebuild_labels();
         self.selected = match self.selected {
             Some(selected) if selected == index => None,
             Some(selected) if selected > index => Some(selected - 1),
@@ -531,6 +596,17 @@ impl DependencyEditor {
         self.base.request_layout();
         self.base.request_redraw();
         true
+    }
+
+    /// Rebuilds the row captions from the current edge list.
+    fn rebuild_labels(&mut self) {
+        self.labels = self
+            .dependencies
+            .iter()
+            .map(|dependency| {
+                format!("{}  \u{2192}  {}", dependency.predecessor, dependency.successor)
+            })
+            .collect();
     }
 
     /// Whether presses select an edge.
@@ -725,13 +801,10 @@ impl Draw for DependencyEditor {
             if self.selected == Some(index) {
                 context.draw_rect(row, ink);
             }
-            let label = format!(
-                "{}  \u{2192}  {}",
-                self.dependencies[index].predecessor, self.dependencies[index].successor
-            );
+            let label = self.labels.get(index).map(String::as_str).unwrap_or("");
             context.draw_text_fitted_cow(
                 Rect::new(row.x + 4, row.y + 4, row.width.saturating_sub(52), 14),
-                &label,
+                label,
                 font,
                 ink,
                 HorizontalAlignment::Left,

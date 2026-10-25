@@ -20,7 +20,7 @@
 //!
 //! Linux/GTK (an X11/Wayland selection target), Windows (a clipboard format registered by the MIME
 //! name) and macOS (an `NSPasteboard` type named by the MIME string, in both the cocoa and objc2
-//! backends; see `src/platform/clipboard_stubs.rs`).
+//! backends; see `src/platform/clipboard_native.rs`).
 //!
 //! # This replaces your clipboard
 //!

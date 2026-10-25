@@ -4,11 +4,13 @@
 //! Arc widget — circular progress/indicator (BLUE13 R2.1).
 use core::fmt::Write as _;
 
-use crate::compat::String;
+use crate::compat::{String, ToString};
 use crate::core::{deg_to_rad, Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext, TextMetrics};
-use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_u32};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_f64, expect_string, expect_u16_saturating, expect_u32,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -52,6 +54,13 @@ pub struct Arc {
     rounded: bool,
     /// Whether to show the value as text in the center.
     show_value: bool,
+    /// The template the centre reading is rendered from.
+    ///
+    /// `{percent}` expands to the rounded percentage and `{value}` to the normalised value with
+    /// two decimals — the same two placeholders `progress_circle` publishes, so a caller moving
+    /// between the two controls does not have to learn a second vocabulary. The default
+    /// `"{percent}%"` reproduces the historical integer-percentage reading byte for byte.
+    value_format: String,
     /// Whether the arc is in indeterminate (spinning) mode.
     indeterminate: bool,
     /// The indeterminate sweep's rotation, in turns: `0.0` and `1.0` are the same angle.
@@ -79,6 +88,10 @@ pub struct Arc {
     value_text: String,
     /// The percentage [`Self::value_text`] currently holds, or `None` before the first draw.
     cached_value_pct: Option<u32>,
+    /// `f32::to_bits` of the normalised value the cached reading was rendered from.
+    cached_value_bits: u32,
+    /// The template the cached reading was rendered from.
+    cached_value_format: String,
     /// The resolved font the cached measurement was taken in.
     cached_value_font: Option<Font>,
     /// The device scale the cached measurement was taken at.
@@ -104,6 +117,7 @@ impl Arc {
             thickness: 10,
             rounded: false,
             show_value: true,
+            value_format: "{percent}%".to_string(),
             indeterminate: false,
             phase: 0.0,
             true_arc: false,
@@ -112,6 +126,8 @@ impl Arc {
             signed_max: 0,
             value_text: String::new(),
             cached_value_pct: None,
+            cached_value_bits: 0.0f32.to_bits(),
+            cached_value_format: String::new(),
             cached_value_font: None,
             cached_value_scale: 1.0,
             cached_value_metrics: TextMetrics::default(),
@@ -489,8 +505,41 @@ impl Arc {
         if !self.show_value {
             return;
         }
-        let pct = self.normalized_value() * 100.0;
-        let _ = write!(out, "{}%", pct.round() as u32);
+        let value = self.normalized_value();
+        let mut rest = self.value_format.as_str();
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let tail = &rest[open..];
+            if let Some(stripped) = tail.strip_prefix("{percent}") {
+                let _ = write!(out, "{}", (value * 100.0).round() as u32);
+                rest = stripped;
+            } else if let Some(stripped) = tail.strip_prefix("{value}") {
+                let _ = write!(out, "{value:.2}");
+                rest = stripped;
+            } else {
+                // An unknown brace is literal text rather than a reason to drop the rest.
+                out.push('{');
+                rest = &tail[1..];
+            }
+        }
+        out.push_str(rest);
+    }
+
+    /// The centre-reading template. See [`Self::value_format`].
+    pub fn format(&self) -> &str {
+        &self.value_format
+    }
+
+    /// Replaces the centre-reading template.
+    ///
+    /// The two placeholders are `{percent}` and `{value}`; any other text is copied through.
+    pub fn set_format(&mut self, format: impl Into<String>) {
+        let format = format.into();
+        if self.value_format == format {
+            return;
+        }
+        self.value_format = format;
+        self.base.request_redraw();
     }
 }
 
@@ -559,6 +608,7 @@ impl WidgetProperties for Arc {
             "indeterminate" => Ok(CapabilityValue::Bool(self.is_indeterminate())),
             "rounded" => Ok(CapabilityValue::Bool(self.rounded())),
             "show_value" => Ok(CapabilityValue::Bool(self.show_value())),
+            "value_format" => Ok(CapabilityValue::String(self.format().to_string())),
             _ => base_property_get(self, name),
         }
     }
@@ -582,7 +632,7 @@ impl WidgetProperties for Arc {
                 Ok(())
             }
             "sweep_angle" => {
-                self.set_sweep_angle(expect_u32(value)? as u16);
+                self.set_sweep_angle(expect_u16_saturating(value)?);
                 Ok(())
             }
             "start_angle" => {
@@ -601,6 +651,10 @@ impl WidgetProperties for Arc {
                 self.set_show_value(expect_bool(value)?);
                 Ok(())
             }
+            "value_format" => {
+                self.set_format(expect_string(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -616,6 +670,7 @@ impl WidgetProperties for Arc {
             "indeterminate",
             "rounded",
             "show_value",
+            "value_format",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -778,10 +833,13 @@ impl Draw for Arc {
             // font value and the scale are therefore the whole cache key: measured bounds
             // are not a function of the control's rectangle.
             let pct = (self.normalized_value() * 100.0).round() as u32;
+            let value_bits = self.normalized_value().to_bits();
             let scale = context.dpi_scale();
             let stale = {
                 let font = effective_font(self.style());
                 self.cached_value_pct != Some(pct)
+                    || self.cached_value_bits != value_bits
+                    || self.cached_value_format != self.value_format
                     || self.cached_value_scale != scale
                     || self.cached_value_font.as_ref() != Some(font)
             };
@@ -791,6 +849,8 @@ impl Draw for Arc {
                     context.measure_text(&text, font)
                 };
                 self.cached_value_pct = Some(pct);
+                self.cached_value_bits = value_bits;
+                self.cached_value_format = self.value_format.clone();
                 self.cached_value_scale = scale;
                 self.cached_value_font = Some(effective_font(self.style()).clone());
                 self.cached_value_metrics = metrics;
@@ -1152,6 +1212,29 @@ mod tests {
         assert!(
             stroked.contains("fill=\"none\"") && stroked.contains("stroke-width="),
             "the true-arc path must paint a real stroke: {stroked}"
+        );
+    }
+
+    /// The centre reading is a template with the same two placeholders `progress_circle` uses.
+    #[test]
+    fn the_centre_reading_template_supports_percent_and_value() {
+        let mut arc = Arc::new(Rect::new(0, 0, 120, 120));
+        arc.set_range(0, 4);
+        arc.set_value(3);
+        assert_eq!(arc.format(), "{percent}%", "the default keeps the historical reading");
+
+        let mut text = String::new();
+        arc.write_value_text(&mut text);
+        assert_eq!(text, "75%");
+
+        arc.set_format("{value} ({percent}%)");
+        let mut text = String::new();
+        arc.write_value_text(&mut text);
+        assert_eq!(text, "0.75 (75%)");
+
+        assert_eq!(
+            arc.get("value_format").unwrap(),
+            CapabilityValue::String("{value} ({percent}%)".to_string())
         );
     }
 }

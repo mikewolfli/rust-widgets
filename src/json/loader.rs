@@ -53,6 +53,23 @@ use crate::index::WidgetKind;
 /// Maximum nested depth for recursive instantiation (prevents stack overflow).
 const MAX_DEPTH: u32 = 64;
 
+/// The declaration a **published-name** wire was reached from, for its refusal diagnostic.
+///
+/// # Why the message needs to know
+///
+/// Two spellings reach one published signal: `events: { "double_clicked": "h" }` and the
+/// compatibility key `on_double_click`, whose intent only the published name can carry (W-06). A
+/// refusal that always said `events.<name>` was wrong for the second: it named a key the document
+/// never wrote and never said what to do instead. The refusal is where an author learns that the
+/// key they used has a published name, so it has to name that key.
+#[derive(Debug, Clone, Copy)]
+enum DeclaredWire {
+    /// `events: { "<name>": "<handler>" }` — the author wrote the published name.
+    Events,
+    /// An `on_*` key whose published counterpart is the channel; carries the key the author wrote.
+    Marker(&'static str),
+}
+
 /// A loader that parses JSON layout strings and instantiates widget trees.
 pub struct JsonLoader;
 
@@ -197,109 +214,232 @@ impl JsonLoader {
     /// call is not a safe "ensure wired" operation. A host that must be able to release a single
     /// dynamic binding it added (a designer replacing one wire without destroying the control)
     /// should use [`Self::bind_one_releasable`], which returns a token; this convenience form
-    /// discards it and is for the load-time case where the whole layout is torn down together.
+    /// retains it in `LOADED_BINDINGS` for the load-time case where the whole layout is torn down
+    /// together.
+    ///
+    /// # Both routes yield a retained token (W-04)
+    ///
+    /// A published name and an `on_*` marker each produce a [`crate::json::DynamicBinding`], and both
+    /// are retained keyed by the control. The marker route used to bind and report no token, so
+    /// unloading or rebuilding a document released the published half of its wiring and left the
+    /// marker half connected until the control itself was destroyed. The public shape is unchanged
+    /// (`bool` in, `bool` out); the token channel is what got completed.
     pub fn bind_one(
         widget_id: ObjectId,
         binding: crate::json::JsonEventBinding,
         handler_name: String,
     ) -> bool {
-        let published = binding.published_name();
-        if let Some(name) = published {
-            // The binding must outlive this call (it is the load-time wire), so its releasable token is
-            // **retained** keyed by the control rather than dropped or forgotten. Dropping it here would
-            // release the subscription immediately; forgetting it leaked the token's captured signal
-            // reference past the control's own destruction (BLUE-issue E-27). It is released when the
-            // control is torn down. A caller that wants to release the wire itself uses
-            // `bind_one_releasable` and owns the token.
-            match Self::bind_published_dynamic(widget_id, name, binding.marker(), handler_name) {
-                Some(token) => {
-                    crate::json::event_route::retain_binding(widget_id, token);
-                    true
-                }
-                None => false,
+        match Self::bind_wiring(widget_id, binding, handler_name) {
+            Some(token) => {
+                // The binding must outlive this call (it is the load-time wire), so its token is
+                // **retained** keyed by the control rather than dropped or forgotten. Dropping it
+                // here would release the subscription immediately; forgetting it leaked the token's
+                // captured signal reference past the control's own destruction (BLUE-issue E-27). It
+                // is released when the control is torn down or its node detached.
+                crate::json::event_route::retain_binding(widget_id, token);
+                true
             }
-        } else {
-            Self::bind_marker_callback(widget_id, binding, handler_name)
+            None => false,
         }
     }
 
-    /// The marker/`on_*` route: reaches a handle-layer callback and always reports `true` once the
-    /// marker has passed the routability check.
-    fn bind_marker_callback(
+    /// Builds the subscription for `binding` and the token that releases it, without retaining it.
+    ///
+    /// # Why one constructor for both callers
+    ///
+    /// [`Self::bind_one`] retains the token as the document's wire and
+    /// [`Self::bind_one_releasable`] hands the same token to a host that owns its own wire. Having
+    /// the marker route return a bare `bool` from a *different* function is what let the token gap
+    /// (W-04) survive: the published path had a handle to give back and the marker path did not, so
+    /// only one of them was releasable.
+    fn bind_wiring(
         widget_id: ObjectId,
         binding: crate::json::JsonEventBinding,
         handler_name: String,
-    ) -> bool {
-        let marker = binding.marker();
-        let handle: ButtonHandle = ButtonHandle::from_raw(widget_id);
+    ) -> Option<crate::json::DynamicBinding> {
+        match binding.published_name() {
+            Some(name) => Self::bind_published_dynamic(
+                widget_id,
+                name,
+                binding.marker(),
+                handler_name,
+                DeclaredWire::Events,
+            ),
+            None => Self::bind_marker_wiring(widget_id, binding.marker(), handler_name),
+        }
+    }
 
-        // A marker whose *real* trigger has no callback on this handle is refused rather
-        // than bound to a nearby one.
-        //
-        // # The defect this closes
-        //
-        // `on_double_click` reports `WidgetTriggerKind::Clicked` (the routing callback it
-        // arrives through cannot carry a finer distinction), so `uses_value_callback()` was
-        // false and it was bound through `on_click` — i.e. to the **single-click** signal.
-        // The handler therefore ran on the first click, was told it had seen a double click,
-        // and could never be reached by a real one. The same applied to `on_focus` /
-        // `on_blur` (bound to the value callback) and `on_close` (bound to the click
-        // callback): in each case the name was validated, the binding looked wired, and the
-        // signal it named was unreachable — precisely the "subscribed successfully but will
-        // never fire" failure the crate refuses elsewhere.
-        if let Some(reason) = marker.unroutable_reason() {
-            log::warn!(
-                "on_* key for handler '{handler_name}' on id={widget_id} was NOT bound: {reason}"
+    /// Wires one `on_*` marker through the channel its intent names.
+    ///
+    /// # The decision is the marker's, not this function's
+    ///
+    /// Three questions on [`crate::json::JsonTriggerMarker`], asked in this order, are the whole
+    /// routing table — there is no per-key `match` here for a new key to drift away from:
+    ///
+    /// 1. `base_signal` — the widget's own `clicked` / `closed` / `focus_gained` / `focus_lost`.
+    /// 2. `uses_value_callback` — the app layer's value-trigger channel.
+    /// 3. `published_counterpart` — a published name for an intent no widget callback can carry
+    ///    (`on_double_click`), wired through the control's own dynamic signal for that name.
+    ///
+    /// A marker with none of the three is refused with its stated reason rather than attached to a
+    /// callback that fires on a different event (rule #97).
+    fn bind_marker_wiring(
+        widget_id: ObjectId,
+        marker: crate::json::JsonTriggerMarker,
+        handler_name: String,
+    ) -> Option<crate::json::DynamicBinding> {
+        // 1. A base-widget signal: `clicked`, `closed`, and the two focus signals the runtime's
+        //    focus router emits through `BaseWidget::handle_event` (W-05).
+        if let Some(signal) = marker.base_signal() {
+            return Self::bind_base_signal(widget_id, marker, signal, handler_name);
+        }
+
+        // 2. The value-trigger channel: `on_change` / `on_value_changed` / `on_selection_changed`.
+        if marker.uses_value_callback() {
+            return Self::bind_value_trigger(widget_id, marker, handler_name);
+        }
+
+        // 3. An intent no widget callback can carry (W-06). Its published name is the channel, and
+        //    the control has to publish it: the loader must not fall back to the click callback,
+        //    which would run the handler on the first click of a double click. The refusal names the
+        //    key the author wrote, because a document that declared `on_double_click` needs to know
+        //    which published name carries it.
+        if let Some(name) = marker.published_counterpart() {
+            return Self::bind_published_dynamic(
+                widget_id,
+                name,
+                marker,
+                handler_name,
+                crate::json::marker_key_for(marker)
+                    .map_or(DeclaredWire::Events, DeclaredWire::Marker),
             );
-            crate::app::record_unwired_binding(widget_id);
-            return false;
         }
 
-        if binding.uses_value_callback() {
-            handle.on_value_changed(move |_value| {
-                let ctx = crate::json::context_for(widget_id, marker);
-                crate::json::invoke_global_handler(&handler_name, &ctx);
-            });
-        } else if marker.uses_close_callback() {
-            // `Closed` reaches the widget's own `closed` signal (see `WidgetHandle::on_close`),
-            // which is a third callback channel, not the click one. Without this branch a `closed`
-            // handler would be bound to the click signal — the wrong-event defect the earlier
-            // refusal existed to avoid; now the signal exists, so it is bound correctly.
-            use crate::app::WidgetHandle as _;
-            handle.on_close(move || {
-                let ctx = crate::json::context_for(widget_id, marker);
-                crate::json::invoke_global_handler(&handler_name, &ctx);
-            });
-        } else {
-            handle.on_click(move || {
-                let ctx = crate::json::context_for(widget_id, marker);
-                crate::json::invoke_global_handler(&handler_name, &ctx);
-            });
+        let reason = marker.unroutable_reason().unwrap_or(
+            "this `on_*` key has no base signal, no value trigger and no published name to reach",
+        );
+        log::warn!(
+            "on_* key for handler '{handler_name}' on id={widget_id} was NOT bound: {reason}"
+        );
+        crate::app::record_unwired_binding(widget_id);
+        None
+    }
+
+    /// Connects a marker to one of the widget's own base signals.
+    ///
+    /// # Why the JSON layer connects the signal itself (W-04)
+    ///
+    /// `WidgetHandle::on_click` / `on_close` connect these same signals but keep the
+    /// `ConnectionHandle` in a private per-widget table, so a wire made through them cannot be
+    /// removed without removing every callback the control has — which is not a release, it is a
+    /// demolition. A [`crate::json::DynamicBinding`] needs a real disconnect, so the signal is cloned
+    /// out of the live control and subscribed here: the same `base.clicked` / `base.closed` /
+    /// `base.focus_gained` / `base.focus_lost` connection the handle would have made, with the
+    /// handle kept where the token can reach it.
+    ///
+    /// A control's teardown drops its signals, so a binding released here and a binding whose
+    /// control is destroyed both end with nothing running; the difference is that this one can be
+    /// released while the control is still alive.
+    fn bind_base_signal(
+        widget_id: ObjectId,
+        marker: crate::json::JsonTriggerMarker,
+        signal: crate::json::event_route::BaseSignal,
+        handler_name: String,
+    ) -> Option<crate::json::DynamicBinding> {
+        use crate::json::event_route::BaseSignal;
+        let source = crate::widget::runtime::with_widget(widget_id, |widget| {
+            let base = widget.base();
+            match signal {
+                BaseSignal::Clicked => base.clicked.clone(),
+                BaseSignal::Closed => base.closed.clone(),
+                BaseSignal::FocusGained => base.focus_gained.clone(),
+                BaseSignal::FocusLost => base.focus_lost.clone(),
+            }
+        });
+        let Some(source) = source else {
+            Self::report_unwired_marker(widget_id, &handler_name);
+            return None;
+        };
+        let release_source = source.clone();
+        let handle = source.connect(move || {
+            let ctx = crate::json::context_for(widget_id, marker);
+            crate::json::invoke_global_handler(&handler_name, &ctx);
+        });
+        Some(crate::json::DynamicBinding::new(alloc::boxed::Box::new(move || {
+            release_source.disconnect(handle);
+        })))
+    }
+
+    /// Connects a marker to the app layer's value-trigger channel.
+    ///
+    /// # Why this channel's token is a liveness flag (W-04)
+    ///
+    /// `WidgetHandle::on_value_changed` is the only writer of the value-trigger table, and that table
+    /// is keyed by widget rather than by subscription — it exposes no per-callback removal. A
+    /// document-level release therefore flips this binding's own flag, so a released wire cannot run
+    /// its handler; the registration itself is reclaimed when the control is torn down
+    /// (`app::remove_callbacks`). The alternative — reporting a token whose `release` silently did
+    /// nothing — is the fake release the token exists to rule out, so the boundary is stated here
+    /// instead of left for a reader to discover.
+    ///
+    /// The flag is per binding, not per handler name: two nodes that name the same handler are two
+    /// subscriptions, and releasing one must leave the other running.
+    fn bind_value_trigger(
+        widget_id: ObjectId,
+        marker: crate::json::JsonTriggerMarker,
+        handler_name: String,
+    ) -> Option<crate::json::DynamicBinding> {
+        if !crate::widget::runtime::is_mounted(widget_id) {
+            // Ask the same question `on_value_changed` asks, so a token is never handed out for a
+            // wire that was not installed.
+            Self::report_unwired_marker(widget_id, &handler_name);
+            return None;
         }
-        true
+        let live = crate::compat::Arc::new(core::sync::atomic::AtomicBool::new(true));
+        let gate = crate::compat::Arc::clone(&live);
+        let handle: ButtonHandle = ButtonHandle::from_raw(widget_id);
+        handle.on_value_changed(move |_value: &str| {
+            if !gate.load(core::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            let ctx = crate::json::context_for(widget_id, marker);
+            crate::json::invoke_global_handler(&handler_name, &ctx);
+        });
+        Some(crate::json::DynamicBinding::new(alloc::boxed::Box::new(move || {
+            live.store(false, core::sync::atomic::Ordering::Relaxed);
+        })))
+    }
+
+    /// Reports a marker binding that had no live channel, at the level a host can see.
+    ///
+    /// A handler that can never run is the failure a subscriber cannot observe from the outside, so
+    /// it is reported at `warn!` and counted by `app::unwired_binding_count`. Unlike
+    /// [`Self::bind_marker_wiring`]'s refusal this case is about the *control*: it is not there.
+    fn report_unwired_marker(widget_id: ObjectId, handler_name: &str) {
+        log::warn!(
+            "the `on_*` key for handler '{handler_name}' on id={widget_id} was NOT bound: the id \
+             addresses no live widget, so there is no signal for its trigger to arrive on"
+        );
+        crate::app::record_unwired_binding(widget_id);
     }
 
     /// Like [`Self::bind_one`], but returns a token that releases exactly the binding it added.
     ///
+    /// # Both routes return a token (W-04)
+    ///
     /// The published route's subscription is on the control's own dynamic signal, whose handle is
-    /// the only key that can remove it. `bind_one` returned a `bool` and dropped that handle, so a
-    /// host that added a wire at run time had no way to take it back without destroying the control
-    /// \u2014 the token gap E-22 records. Compatibility-key routes (the `on_*` callbacks) connect
-    /// through the handle layer, which exposes no per-callback release, so they bind and return
-    /// `None`; the token is only meaningful where a handle exists.
+    /// the only key that can remove it; the marker route now yields a token too — a real disconnect
+    /// for the base signals it connects, and a liveness flag for the value-trigger table, which has
+    /// no per-callback removal (see [`Self::bind_value_trigger`]). A host that added a wire at run
+    /// time can therefore take it back without destroying the control, whichever spelling the
+    /// document used; returning `None` now means the binding was *refused*, not that it was made
+    /// silently.
     pub fn bind_one_releasable(
         widget_id: ObjectId,
         binding: crate::json::JsonEventBinding,
         handler_name: String,
     ) -> Option<crate::json::DynamicBinding> {
-        if let Some(name) = binding.published_name() {
-            Self::bind_published_dynamic(widget_id, name, binding.marker(), handler_name)
-        } else {
-            // No per-callback release exists on the handle layer; bind and report no token rather
-            // than a token that would silently do nothing.
-            let _ = Self::bind_marker_callback(widget_id, binding, handler_name);
-            None
-        }
+        Self::bind_wiring(widget_id, binding, handler_name)
     }
 
     /// Wires a **published** event name to the control's own dynamic signal.
@@ -330,15 +470,25 @@ impl JsonLoader {
         name: &'static str,
         marker: crate::json::JsonTriggerMarker,
         handler_name: String,
+        declared_as: DeclaredWire,
     ) -> Option<crate::json::DynamicBinding> {
         let reference =
             crate::widget::runtime::with_widget(widget_id, |widget| widget.event_signal_dyn(name));
         let Some(reference) = reference.flatten() else {
-            log::warn!(
-                "`events.{name}` for handler '{handler_name}' on id={widget_id} was NOT bound: the \
-                 control does not resolve this published name to a signal, so the handler would \
-                 never run"
-            );
+            match declared_as {
+                DeclaredWire::Events => log::warn!(
+                    "`events.{name}` for handler '{handler_name}' on id={widget_id} was NOT bound: \
+                     the control does not resolve this published name to a signal, so the handler \
+                     would never run"
+                ),
+                DeclaredWire::Marker(key) => log::warn!(
+                    "`{key}` for handler '{handler_name}' on id={widget_id} was NOT bound: it is \
+                     carried by the published event `{name}`, which this control does not publish \
+                     or cannot resolve — see the document's `events` validation output for the \
+                     names it does publish. The binding is skipped rather than attached to a \
+                     callback that fires on a different event"
+                ),
+            }
             crate::app::record_unwired_binding(widget_id);
             return None;
         };
@@ -356,6 +506,14 @@ impl JsonLoader {
         // The comparison is on the thread's **`ThreadId`**, not its name: names are not unique, so two
         // threads sharing a name compared equal and one's emission was mis-taken for a same-thread
         // delivery (BLUE-issue E-26). The names are still captured for the diagnostic message only.
+        //
+        // # Why the comparison no longer costs a `Thread` handle per emit (W-P07)
+        //
+        // The binding thread's id is captured once, here. The *current* id is read through
+        // `events::current_thread_id`, which caches it per thread: it used to call
+        // `std::thread::current()` on every emission, and that clones the thread's `Arc` handle — an
+        // atomic increment on the hot path whose only use was to read an immutable id. A driver of a
+        // value-carrying signal (a slider drag) pays this per emit.
         let bound_thread_id = crate::json::events::current_thread_id();
         let bound_thread_name = crate::json::events::current_thread_name();
         let handle = reference.subscribe(Box::new(
@@ -366,6 +524,16 @@ impl JsonLoader {
                         &bound_thread_name,
                         &crate::json::events::current_thread_name(),
                     );
+                    return;
+                }
+                // # Why the payload clone is skipped when nobody listens (W-P07)
+                //
+                // The context owns its payload, so building one for a name with no registered
+                // handler clones the value — a `String`/`List` payload allocates — and then drops it
+                // unread. `has_global_handler` reads the same thread-local registry
+                // `invoke_global_handler` would, so skipping here is exactly the state in which the
+                // registry would have reported "not found": delivery semantics are unchanged.
+                if !crate::json::events::has_global_handler(&handler_name) {
                     return;
                 }
                 let ctx = crate::json::context_for_with_payload(widget_id, marker, payload.clone());
@@ -3647,5 +3815,251 @@ mod tests {
             failures.len(),
             names.len()
         );
+    }
+
+    // ── Marker routing (W-04 / W-05 / W-06) ─────────────────────────
+
+    /// Mounts a fresh `Button` and returns its runtime id.
+    fn mount_probe_button() -> ObjectId {
+        crate::widget::runtime::register(Box::new(Button::new(
+            "probe".to_string(),
+            Rect::new(0, 0, 80, 24),
+        )))
+        .expect("a button must mount")
+    }
+
+    /// Counts `name`'s invocations on this thread's handler registry.
+    fn counting_handler(name: &'static str) -> crate::compat::Arc<core::sync::atomic::AtomicUsize> {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        let calls = crate::compat::Arc::new(AtomicUsize::new(0));
+        let counter = crate::compat::Arc::clone(&calls);
+        crate::json::register_global_handler(name, move |_ctx| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        calls
+    }
+
+    /// The `on_*` key for `marker`, read from the one table instead of spelled here.
+    ///
+    /// `tools/check_json_event_route.py` forbids these names as literals in this file — the loader
+    /// must derive its key set from `event_route::MARKER_KEYS`, and a test literal is exactly the
+    /// second spelling that rule exists to prevent.
+    fn marker_key(marker: crate::json::JsonTriggerMarker) -> &'static str {
+        crate::json::marker_key_for(marker)
+            .unwrap_or_else(|| panic!("{marker:?} must have an `on_*` key in MARKER_KEYS"))
+    }
+
+    fn emit_focus_gained(id: ObjectId) {
+        crate::widget::runtime::with_widget_mut(id, |widget| {
+            widget.handle_event(&crate::event::Event::FocusGained {
+                reason: crate::event::FocusReason::Programmatic,
+            });
+        });
+    }
+
+    fn emit_focus_lost(id: ObjectId) {
+        crate::widget::runtime::with_widget_mut(id, |widget| {
+            widget.handle_event(&crate::event::Event::FocusLost);
+        });
+    }
+
+    /// W-05: `on_focus` / `on_blur` reach the widget's own focus signals.
+    ///
+    /// # The defect this pins
+    ///
+    /// Both focus routes were dead: the marker was refused (no handle callback fires on focus) and
+    /// the capability table publishes no per-control focus event, so no `events:` spelling existed
+    /// either. The runtime's focus router emits `BaseWidget::focus_gained` / `focus_lost` through
+    /// `BaseWidget::handle_event`, so the marker is bound there — the same event a real focus move
+    /// produces, not a value change standing in for it.
+    #[test]
+    fn focus_and_blur_reach_the_widgets_focus_signals() {
+        use core::sync::atomic::Ordering;
+        crate::json::clear_global_handlers();
+        let gained = counting_handler("on_focus_probe");
+        let lost = counting_handler("on_blur_probe");
+        let id = mount_probe_button();
+
+        assert!(
+            crate::json::bind_marker_event(
+                id,
+                marker_key(crate::json::JsonTriggerMarker::FocusGained),
+                crate::json::JsonTriggerMarker::FocusGained,
+                "on_focus_probe"
+            ),
+            "`on_focus` must bind, not be refused"
+        );
+        assert!(
+            crate::json::bind_marker_event(
+                id,
+                marker_key(crate::json::JsonTriggerMarker::FocusLost),
+                crate::json::JsonTriggerMarker::FocusLost,
+                "on_blur_probe"
+            ),
+            "`on_blur` must bind, not be refused"
+        );
+
+        emit_focus_gained(id);
+        assert_eq!(gained.load(Ordering::SeqCst), 1, "`on_focus` must run when focus is gained");
+        assert_eq!(lost.load(Ordering::SeqCst), 0, "gaining focus must not run `on_blur`");
+
+        emit_focus_lost(id);
+        assert_eq!(lost.load(Ordering::SeqCst), 1, "`on_blur` must run when focus is lost");
+        assert_eq!(gained.load(Ordering::SeqCst), 1, "losing focus must not run `on_focus`");
+
+        crate::json::clear_global_handlers();
+        crate::widget::runtime::unregister(id);
+    }
+
+    /// W-04: a marker binding yields a token, and releasing it stops delivery.
+    ///
+    /// `bind_one_releasable` returned `None` for every `on_*` key, so a document's marker wiring
+    /// could only be released by destroying the control. Both routes now produce a token; this
+    /// asserts the marker half behaves like the published half — release is real, and it is
+    /// idempotent.
+    #[test]
+    fn a_marker_binding_can_be_released_by_its_token() {
+        use core::sync::atomic::Ordering;
+        crate::json::clear_global_handlers();
+        let calls = counting_handler("on_focus_probe");
+        let id = mount_probe_button();
+
+        let mut token = JsonLoader::bind_one_releasable(
+            id,
+            crate::json::JsonEventBinding::Marker {
+                key: marker_key(crate::json::JsonTriggerMarker::FocusGained),
+                marker: crate::json::JsonTriggerMarker::FocusGained,
+            },
+            "on_focus_probe".to_string(),
+        )
+        .expect("a marker route must yield a releasable token");
+
+        emit_focus_gained(id);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the marker binding must be live");
+
+        token.release();
+        assert!(!token.is_live(), "a released token is no longer live");
+        emit_focus_gained(id);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a released marker binding must not run its handler"
+        );
+        // Releasing twice is a no-op, not a double disconnect or a panic.
+        token.release();
+
+        crate::json::clear_global_handlers();
+        crate::widget::runtime::unregister(id);
+    }
+
+    /// W-04: unloading a document releases its marker wiring along with its published wiring.
+    ///
+    /// `LOADED_BINDINGS` is the per-control registry `Detach`/`forget_node` releases. A marker
+    /// binding used to bypass it entirely, so the registry only ever reclaimed half a document's
+    /// wires and the marker half lived until the control was destroyed.
+    #[test]
+    fn releasing_a_controls_bindings_also_reclaims_its_marker_wiring() {
+        use core::sync::atomic::Ordering;
+        crate::json::clear_global_handlers();
+        let calls = counting_handler("on_focus_probe");
+        let id = mount_probe_button();
+
+        assert!(
+            JsonLoader::bind_one(
+                id,
+                crate::json::JsonEventBinding::Marker {
+                    key: marker_key(crate::json::JsonTriggerMarker::FocusGained),
+                    marker: crate::json::JsonTriggerMarker::FocusGained,
+                },
+                "on_focus_probe".to_string(),
+            ),
+            "`on_focus` must bind"
+        );
+        assert_eq!(
+            crate::json::retained_binding_count(id),
+            1,
+            "the marker wire must be retained for the control, like a published one"
+        );
+
+        emit_focus_gained(id);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        crate::json::release_widget_bindings(id);
+        assert_eq!(crate::json::retained_binding_count(id), 0);
+        emit_focus_gained(id);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "releasing the control's bindings must disconnect its marker wiring too"
+        );
+
+        crate::json::clear_global_handlers();
+        crate::widget::runtime::unregister(id);
+    }
+
+    /// W-06: `on_double_click` is carried by the published `double_clicked` event.
+    ///
+    /// # The defect this pins
+    ///
+    /// `on_double_click` was refused while `double_clicked` was a working published name, so the two
+    /// routes disagreed about one intent and the error message pointed nowhere. The marker now asks
+    /// for the published event: a control that publishes it (the canvas) is wired to its own signal,
+    /// and a control that does not (a button) is refused rather than bound to the single-click
+    /// signal.
+    #[test]
+    fn a_double_click_marker_uses_the_published_event() {
+        use core::sync::atomic::Ordering;
+        crate::json::clear_global_handlers();
+        let calls = counting_handler("on_double_probe");
+
+        // A button does not publish `double_clicked`, so the marker is refused — and, crucially,
+        // not attached to `base.clicked`, which fires on the first click of a double click.
+        let button = mount_probe_button();
+        assert!(
+            !crate::json::bind_marker_event(
+                button,
+                marker_key(crate::json::JsonTriggerMarker::DoubleClicked),
+                crate::json::JsonTriggerMarker::DoubleClicked,
+                "on_double_probe"
+            ),
+            "a control that does not publish `double_clicked` cannot carry `on_double_click`"
+        );
+        crate::widget::runtime::with_widget_mut(button, |widget| widget.base().clicked.emit());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a refused double-click wire must not run on a single click"
+        );
+
+        // The canvas publishes `double_clicked` and resolves it through `event_signal_dyn`, so the
+        // marker is wired to that signal.
+        let canvas =
+            crate::widget::runtime::register(Box::new(crate::Canvas::new(Rect::new(0, 0, 80, 24))))
+                .expect("a canvas must mount");
+        assert!(
+            crate::json::bind_marker_event(
+                canvas,
+                marker_key(crate::json::JsonTriggerMarker::DoubleClicked),
+                crate::json::JsonTriggerMarker::DoubleClicked,
+                "on_double_probe"
+            ),
+            "the canvas publishes `double_clicked`, so `on_double_click` must bind"
+        );
+        crate::widget::runtime::with_widget_mut(canvas, |widget| {
+            let Some(canvas) = (widget as &mut dyn core::any::Any).downcast_mut::<crate::Canvas>()
+            else {
+                panic!("the mounted control must be the canvas that was registered");
+            };
+            canvas.double_clicked_signal().emit((crate::core::Point::new(5, 6), 1));
+        });
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "`on_double_click` must reach the canvas's own double-click signal"
+        );
+
+        crate::json::clear_global_handlers();
+        crate::widget::runtime::unregister(button);
+        crate::widget::runtime::unregister(canvas);
     }
 }

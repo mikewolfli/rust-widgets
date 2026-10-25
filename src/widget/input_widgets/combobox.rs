@@ -19,7 +19,7 @@
 //! stated as "the value takes what the indicator does not", which makes "the value yields to the
 //! indicator" true by construction rather than by two subtractions that happen to agree.
 
-use crate::compat::{Rc, RefCell, String, ToString, Vec};
+use crate::compat::{Instant, Rc, RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
@@ -440,6 +440,14 @@ pub struct ComboBox {
     size_adjust_policy: ComboBoxSizeAdjustPolicy,
     /// Prefix typed since the last navigation, for first-letter selection.
     type_ahead: String,
+    /// When the current type-ahead prefix began, for the shared 800 ms rule (I-P06).
+    type_ahead_started: Option<Instant>,
+    /// The editable value's text model: caret, selection and undo (I-06).
+    ///
+    /// Inert unless [`Self::is_editable`]: a non-editable box's value is the selected row, and
+    /// the field never consults this. When it is editable, this is the source of truth for the
+    /// text the field shows — the same model `EditableComboBox` implements.
+    editor: crate::widget::input_widgets::line_editor::LineEditor,
     /// Optional completion provider: given the typed prefix, returns candidates.
     completer: Option<ComboBoxCompleter>,
     /// The candidates the completer produced for the current text.
@@ -560,6 +568,8 @@ impl ComboBox {
             insert_policy: ComboBoxInsertPolicy::InsertAtBottom,
             size_adjust_policy: ComboBoxSizeAdjustPolicy::AdjustToContents,
             type_ahead: String::new(),
+            type_ahead_started: None,
+            editor: crate::widget::input_widgets::line_editor::LineEditor::new(),
             completer: None,
             completions: Vec::new(),
             reveal_progress: 1.0,
@@ -676,6 +686,10 @@ impl ComboBox {
         self.items.extend(items);
         self.item_meta.resize(self.item_meta.len() + added, ComboBoxItem::new());
         self.invalidate_item_caches();
+        // A bulk write is an item write like any other, so the completer's answer for the current
+        // value is recomputed here too — without this, `add_item` refreshed and `add_items` left
+        // the published candidates stale (I-08).
+        self.refresh_completions();
         self.base.request_redraw();
     }
     /// Replaces all items with the given items. Clears the current selection.
@@ -691,6 +705,7 @@ impl ComboBox {
         self.current_index = None;
         self.current_index_changed.emit(None);
         self.current_text_changed.emit(String::new());
+        self.refresh_completions();
         self.base.request_redraw();
     }
 
@@ -708,6 +723,7 @@ impl ComboBox {
         self.current_index = None;
         self.current_index_changed.emit(None);
         self.current_text_changed.emit(String::new());
+        self.refresh_completions();
         self.base.request_redraw();
     }
 
@@ -811,14 +827,21 @@ impl ComboBox {
     }
 
     /// Selects the first row at or after `start` whose label begins with `prefix`.
+    ///
+    /// The prefix is folded once and each label compared byte-wise, instead of allocating a
+    /// lowercased copy of every row (I-P05).
     fn find_prefix(&self, prefix: &str, start: usize) -> Option<usize> {
-        let needle = prefix.to_lowercase();
+        let needle = crate::widget::input_widgets::text_match::fold(prefix);
         let count = self.items.len();
         if count == 0 {
             return None;
         }
         (0..count).map(|offset| (start + offset) % count).find(|&index| {
-            self.is_item_enabled(index) && self.items[index].to_lowercase().starts_with(&needle)
+            self.is_item_enabled(index)
+                && crate::widget::input_widgets::text_match::starts_with(
+                    &self.items[index],
+                    &needle,
+                )
         })
     }
     /// Inserts an item at specified position.
@@ -890,6 +913,11 @@ impl ComboBox {
         if let Some(idx) = index {
             if idx < self.items.len() && self.is_item_enabled(idx) {
                 self.current_index = Some(idx);
+                if self.editable {
+                    // The field shows the editable value, so a row becoming current writes its
+                    // label there (I-06).
+                    self.editor.set_text(self.items[idx].clone(), false);
+                }
                 self.current_text_changed.emit(self.items[idx].clone());
                 self.current_index_changed.emit(Some(idx));
             } else {
@@ -897,14 +925,155 @@ impl ComboBox {
             }
         } else {
             self.current_index = None;
+            if self.editable {
+                self.editor.set_text(String::new(), false);
+            }
             self.current_text_changed.emit(String::new());
             self.current_index_changed.emit(None);
         }
+        self.refresh_completions();
         self.base.request_redraw();
     }
-    /// Returns current text.
+    /// Returns the current text.
     pub fn current_text(&self) -> String {
+        if self.editable {
+            // The editable value is what the user typed, not a row label (I-06).
+            return self.editor.text().to_string();
+        }
         self.current_index.and_then(|idx| self.items.get(idx)).cloned().unwrap_or_default()
+    }
+
+    /// The editable value's caret, in bytes from the start of the value (I-06).
+    pub fn cursor_position(&self) -> usize {
+        self.editor.cursor()
+    }
+
+    /// The editable value's selected byte range, or `None` when nothing is selected (I-06).
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        self.editor.selection()
+    }
+
+    /// Whether an edit of the editable value can be undone (I-06).
+    pub fn can_undo(&self) -> bool {
+        self.editor.can_undo()
+    }
+
+    /// Whether an undone edit of the editable value can be re-applied (I-06).
+    pub fn can_redo(&self) -> bool {
+        self.editor.can_redo()
+    }
+
+    /// The value the field paints: the live editor's text when editable, otherwise the
+    /// selected row's label.
+    fn displayed_text(&self) -> &str {
+        if self.editable {
+            return self.editor.text();
+        }
+        self.current_index.and_then(|idx| self.items.get(idx)).map(|s| s.as_str()).unwrap_or("")
+    }
+
+    /// Inserts typed text into the editable value and re-derives the current row (I-06).
+    fn edit_insert(&mut self, text: &str) -> bool {
+        if !self.editable || !self.editor.insert(text) {
+            return false;
+        }
+        self.sync_editor_selection();
+        self.text_edited.emit(self.current_text());
+        self.base.request_redraw();
+        true
+    }
+
+    /// Deletes from the editable value; the closure names the deletion (I-06).
+    fn edit_delete(
+        &mut self,
+        delete: impl FnOnce(&mut crate::widget::input_widgets::line_editor::LineEditor) -> bool,
+    ) -> bool {
+        if !self.editable || !delete(&mut self.editor) {
+            return false;
+        }
+        self.sync_editor_selection();
+        self.text_edited.emit(self.current_text());
+        self.base.request_redraw();
+        true
+    }
+
+    /// Re-derives `current_index` from the editable value and reports the change.
+    ///
+    /// An editable box's value is the text the user typed; the selection is the row with that
+    /// **same** label, when there is one. Emitting the index and the text together is what keeps
+    /// a host that mirrors the value from seeing two disagreeing facts.
+    fn sync_editor_selection(&mut self) {
+        let index = self
+            .items
+            .iter()
+            .position(|item| item == self.editor.text())
+            .filter(|index| self.is_item_enabled(*index));
+        if self.current_index != index {
+            self.current_index = index;
+            self.current_index_changed.emit(index);
+        }
+        self.refresh_completions();
+        self.current_text_changed.emit(self.current_text());
+    }
+
+    /// Commits the editable value on Enter or focus loss, honouring the insert policy (I-06).
+    ///
+    /// The value lands as a selection when it matches a row, and otherwise goes through the same
+    /// [`Self::set_current_text`] path that `insert_policy` describes, so typing and the
+    /// programmatic writer cannot disagree about what a custom value does.
+    fn commit_editor(&mut self) {
+        if !self.editable {
+            return;
+        }
+        let text = self.editor.text().to_string();
+        self.set_current_text(text);
+        self.set_open(false);
+        self.base.request_redraw();
+    }
+
+    /// Undoes one edit of the editable value (I-06).
+    fn editor_undo(&mut self) {
+        if self.editor.undo() {
+            self.sync_editor_selection();
+            self.text_edited.emit(self.current_text());
+            self.base.request_redraw();
+        }
+    }
+
+    /// Redoes one edit of the editable value (I-06).
+    fn editor_redo(&mut self) {
+        if self.editor.redo() {
+            self.sync_editor_selection();
+            self.text_edited.emit(self.current_text());
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether the popup is currently listing completer candidates rather than items (I-07).
+    fn showing_completions(&self) -> bool {
+        self.open && self.editable && !self.completions.is_empty()
+    }
+
+    /// The number of rows the popup currently has: completions or items.
+    fn popup_len(&self) -> usize {
+        if self.showing_completions() {
+            self.completions.len()
+        } else {
+            self.items.len()
+        }
+    }
+
+    /// Takes the completion at `index` as the value (I-07).
+    fn accept_completion(&mut self, index: usize) -> bool {
+        let Some(text) = self.completions.get(index).cloned() else {
+            return false;
+        };
+        self.editor.set_text(text, true);
+        self.sync_editor_selection();
+        self.text_edited.emit(self.current_text());
+        self.set_open(false);
+        self.base.request_redraw();
+        true
     }
 
     /// The text shown when the field has no value and the list is empty.
@@ -971,6 +1140,9 @@ impl ComboBox {
         }
         let before = self.current_text();
         self.refresh_completions();
+        // Kept because the insert arm moves the original into the item list, and the value still
+        // has to reach the editor below (I-06).
+        let typed = text.clone();
         let index = self.items.iter().position(|item| item == &text);
         let index = match index {
             Some(idx) => Some(idx),
@@ -984,7 +1156,13 @@ impl ComboBox {
                     ComboBoxInsertPolicy::InsertAlphabetically => self
                         .items
                         .iter()
-                        .position(|item| item.to_lowercase() > text.to_lowercase())
+                        .position(|item| {
+                            // Folding both sides per comparison allocated two strings per row;
+                            // the ASCII path compares bytes (I-P09).
+                            crate::widget::input_widgets::text_match::cmp_ignore_ascii_case(
+                                item, &text,
+                            ) == core::cmp::Ordering::Greater
+                        })
                         .unwrap_or(self.items.len()),
                     ComboBoxInsertPolicy::NoInsert => self.items.len(),
                 };
@@ -1001,6 +1179,11 @@ impl ComboBox {
             None => None,
         };
         self.set_current_index(index);
+        // The editor is an editable box's value, so a programmatic write lands there as well —
+        // including the `NoInsert` case, where the typed value belongs to no row (I-06).
+        let value =
+            self.current_index.and_then(|idx| self.items.get(idx)).cloned().unwrap_or(typed);
+        self.editor.set_text(value, false);
         // The editable value is this control's one editable-text mutation point. Report it through
         // `text_edited` as well as through the selection's `current_text_changed`, so a host can
         // distinguish "the user edited the value" from "the selection moved".
@@ -1014,11 +1197,18 @@ impl ComboBox {
         self.editable
     }
     /// Sets editable state.
+    ///
+    /// Turning editing on gives the field a real value model — caret, selection, IME commit and
+    /// undo (I-06) — seeded from the row that is currently selected, so switching a live control
+    /// into editing does not blank what it was showing.
     pub fn set_editable(&mut self, editable: bool) {
         if self.editable == editable {
             return;
         }
         self.editable = editable;
+        let seed =
+            self.current_index.and_then(|idx| self.items.get(idx)).cloned().unwrap_or_default();
+        self.editor.set_text(seed, false);
         self.base.request_redraw();
     }
     /// Returns maximum number of visible items in dropdown.
@@ -1085,7 +1275,7 @@ impl ComboBox {
     /// Never more than the items there are, so a two-item list does not leave eight rows of empty
     /// space under it, and never zero, so an empty list still has a box to draw its "empty" row in.
     fn visible_item_count(&self) -> usize {
-        self.max_visible_items.max(1).min(self.items.len().max(1))
+        self.max_visible_items.max(1).min(self.popup_len().max(1))
     }
 
     /// The first item the list's window shows, clamped to the rows that exist.
@@ -1094,7 +1284,7 @@ impl ComboBox {
     /// `max_visible_items` cannot leave the window scrolled past its own end -- which would show an
     /// empty list that still claims to be open.
     fn first_visible_item(&self) -> usize {
-        let last_first = self.items.len().saturating_sub(self.visible_item_count());
+        let last_first = self.popup_len().saturating_sub(self.visible_item_count());
         self.first_visible_item.min(last_first)
     }
 
@@ -1153,10 +1343,27 @@ impl ComboBox {
         if !self.open || !self.list_rect().contains_point(point) {
             return None;
         }
-        (self.first_visible_item()..self.items.len()).find(|index| {
-            self.is_item_enabled(*index)
-                && self.item_rect(*index).is_some_and(|row| row.contains_point(point))
-        })
+        // The row index is solved from the pointer's offset: the rows are a fixed height, so one
+        // division answers what the previous row-by-row `item_rect` scan recomputed per row
+        // (I-P09).
+        let offset = point.y - self.list_rect().y;
+        if offset < 0 {
+            return None;
+        }
+        let row = (offset as u32 / dimensions::MENU_ROW_HEIGHT) as usize;
+        if row >= self.visible_item_count() {
+            return None;
+        }
+        let index = self.first_visible_item() + row;
+        if index >= self.popup_len() {
+            return None;
+        }
+        // A completion row is always takeable; an item row must be enabled.
+        if self.showing_completions() || self.is_item_enabled(index) {
+            Some(index)
+        } else {
+            None
+        }
     }
 
     /// Scrolls the window so `index` is shown, moving it as little as it takes.
@@ -1207,10 +1414,12 @@ impl ComboBox {
     ///
     /// Returns whether the highlight moved, so a caller can repaint only when something changed.
     fn move_hover(&mut self, delta: isize) -> bool {
-        if self.items.is_empty() {
+        let rows = self.popup_len();
+        if rows == 0 {
             return false;
         }
-        let last = self.items.len() - 1;
+        let completions = self.showing_completions();
+        let last = rows - 1;
         let mut next = match self.hovered_item {
             Some(index) => (index as isize + delta).clamp(0, last as isize) as usize,
             // No highlight yet: the first move starts from whichever end the caller is heading
@@ -1227,7 +1436,7 @@ impl ComboBox {
         // a row a press would actually take.
         let step: isize = if delta < 0 { -1 } else { 1 };
         let mut guard = 0usize;
-        while !self.is_item_enabled(next) && guard <= self.items.len() {
+        while !completions && !self.is_item_enabled(next) && guard <= rows {
             let candidate = next as isize + step;
             if candidate < 0 || candidate > last as isize {
                 return false;
@@ -1287,6 +1496,62 @@ impl ComboBox {
             return;
         }
         self.toggle_open();
+    }
+    /// Routes a key to the editable value, returning whether it was consumed (I-06).
+    ///
+    /// List gestures are deliberately **not** consumed: Up/Down/Page/Home/End navigate the popup
+    /// while it is open, Enter commits and Escape dismisses. Everything that edits the text —
+    /// Backspace, Delete, the caret keys while the list is shut, Select-all and the undo/redo
+    /// chords — lands here, which is what makes an editable box a real field rather than a
+    /// type-ahead mode.
+    fn handle_editing_key(&mut self, key: u32, modifiers: u32) -> bool {
+        use crate::shortcut::Modifiers;
+        let modifiers = Modifiers::from_event_bits(modifiers);
+        let primary = modifiers.contains(Modifiers::PRIMARY);
+        let shift = modifiers.contains(Modifiers::SHIFT);
+        let caret_keys = !self.open;
+        match key {
+            8 => self.edit_delete(|editor| editor.backspace()),
+            127 => self.edit_delete(|editor| editor.delete_forward()),
+            37 if caret_keys => self.move_editor_caret(-1, shift),
+            39 if caret_keys => self.move_editor_caret(1, shift),
+            36 if caret_keys => self.set_editor_caret(0, shift),
+            35 if caret_keys => self.set_editor_caret(usize::MAX, shift),
+            65 if primary => {
+                let _ = self.editor.select_all();
+                self.base.request_redraw();
+                true
+            }
+            90 if primary && shift => {
+                self.editor_redo();
+                true
+            }
+            90 if primary => {
+                self.editor_undo();
+                true
+            }
+            89 if primary => {
+                self.editor_redo();
+                true
+            }
+            // A printable key is content, handled by the one match arm that already says so.
+            32..=126 => false,
+            _ => false,
+        }
+    }
+
+    /// Moves the editable value's caret; the key is consumed even at an end.
+    fn move_editor_caret(&mut self, delta: i32, extend: bool) -> bool {
+        let _ = self.editor.move_caret(delta, extend);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Places the editable value's caret; the key is consumed even when it cannot move.
+    fn set_editor_caret(&mut self, position: usize, extend: bool) -> bool {
+        let _ = self.editor.set_caret(position, extend);
+        self.base.request_redraw();
+        true
     }
 }
 // Implement Widget trait
@@ -1376,9 +1641,11 @@ impl Widget for ComboBox {
                 } else {
                     let font = effective_font(self.style());
                     // `M` is the widest common Latin glyph, so the measured request is an upper
-                    // bound rather than an average that a wide value could exceed.
-                    let sample = "M".repeat(self.minimum_contents_length);
-                    let content = estimate_text_width(&sample, font, 1.0);
+                    // bound rather than an average that a wide value could exceed. The advance is
+                    // measured **once** and multiplied, instead of building a `n`-character
+                    // sample string on every size-hint call (I-P09).
+                    let per_character = estimate_text_width("M", font, 1.0);
+                    let content = per_character.saturating_mul(self.minimum_contents_length as u32);
                     ControlMetrics::implicit_size(Size::new(content, 0), padding, floor).width
                 };
                 floor.width.max(requested)
@@ -1619,7 +1886,13 @@ impl EventHandler for ComboBox {
                 // inside it belongs to the list even where the two boxes overlap.
                 if let Some(index) = self.item_at_point(*pos) {
                     self.set_hovered(Some(index));
-                    self.commit_hovered();
+                    if self.showing_completions() {
+                        // The open popup is listing candidates, so a press takes the candidate
+                        // (I-07).
+                        self.accept_completion(index);
+                    } else {
+                        self.commit_hovered();
+                    }
                     return;
                 }
                 if self.open {
@@ -1649,7 +1922,11 @@ impl EventHandler for ComboBox {
             Event::Tap { pos } => {
                 if let Some(index) = self.item_at_point(*pos) {
                     self.set_hovered(Some(index));
-                    self.commit_hovered();
+                    if self.showing_completions() {
+                        self.accept_completion(index);
+                    } else {
+                        self.commit_hovered();
+                    }
                 } else if self.open {
                     self.set_open(false);
                 } else if self.field_band().contains_point(*pos) {
@@ -1660,117 +1937,169 @@ impl EventHandler for ComboBox {
             Event::TouchBegin { .. } => {
                 self.activate_combo();
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                // Up/Down move the *highlight* while the list is open, which is what makes the list
-                // navigable without a pointer. With the list closed they keep the old behaviour of
-                // stepping the value, because a closed field has no highlight to move.
-                38 => {
-                    if self.open {
-                        if self.move_hover(-1) {
-                            self.base.request_redraw();
-                        }
-                    } else if let Some(current) = self.current_index {
-                        if current > 0 {
-                            self.set_current_index(Some(current - 1));
-                            self.activated.emit(current - 1);
-                        }
-                    } else if !self.items.is_empty() {
-                        self.set_current_index(Some(self.items.len() - 1));
-                        self.activated.emit(self.items.len() - 1);
-                    }
+            Event::KeyPress { key, modifiers } => {
+                // An editable box is a single-line editor first (I-06): edits win over list
+                // navigation, while Up/Down/Page/Enter/Escape keep their list meaning.
+                if self.editable && self.handle_editing_key(*key, *modifiers) {
+                    return;
                 }
-                40 => {
-                    if self.open {
-                        if self.move_hover(1) {
-                            self.base.request_redraw();
+                match *key {
+                    // Up/Down move the *highlight* while the list is open, which is what makes the list
+                    // navigable without a pointer. With the list closed they keep the old behaviour of
+                    // stepping the value, because a closed field has no highlight to move.
+                    38 => {
+                        if self.open {
+                            if self.move_hover(-1) {
+                                self.base.request_redraw();
+                            }
+                        } else if let Some(current) = self.current_index {
+                            if current > 0 {
+                                self.set_current_index(Some(current - 1));
+                                self.activated.emit(current - 1);
+                            }
+                        } else if !self.items.is_empty() {
+                            self.set_current_index(Some(self.items.len() - 1));
+                            self.activated.emit(self.items.len() - 1);
                         }
-                    } else if let Some(current) = self.current_index {
-                        if let Some(next) = (current + 1..self.items.len())
-                            .find(|&index| self.is_item_enabled(index))
+                    }
+                    40 => {
+                        if self.open {
+                            if self.move_hover(1) {
+                                self.base.request_redraw();
+                            }
+                        } else if let Some(current) = self.current_index {
+                            if let Some(next) = (current + 1..self.items.len())
+                                .find(|&index| self.is_item_enabled(index))
+                            {
+                                self.set_current_index(Some(next));
+                                self.activated.emit(next);
+                            }
+                        } else if let Some(first) =
+                            (0..self.items.len()).find(|&index| self.is_item_enabled(index))
                         {
-                            self.set_current_index(Some(next));
-                            self.activated.emit(next);
+                            self.set_current_index(Some(first));
+                            self.activated.emit(first);
                         }
-                    } else if let Some(first) =
-                        (0..self.items.len()).find(|&index| self.is_item_enabled(index))
-                    {
-                        self.set_current_index(Some(first));
-                        self.activated.emit(first);
                     }
-                }
-                13 => {
-                    // Enter takes the highlighted row when the list is open, and re-activates the
-                    // current one when it is closed -- two different commitments, so the open arm
-                    // does not fall through to the closed one and emit `activated` twice.
-                    if self.open {
-                        if !self.commit_hovered() {
+                    13 => {
+                        // Enter takes the highlighted row when the list is open, and re-activates the
+                        // current one when it is closed -- two different commitments, so the open arm
+                        // does not fall through to the closed one and emit `activated` twice.
+                        if self.open {
+                            if self.showing_completions() {
+                                // The popup is listing candidates: Enter takes the highlighted one
+                                // (I-07).
+                                match self.hovered_item {
+                                    Some(index) => {
+                                        self.accept_completion(index);
+                                    }
+                                    None => self.set_open(false),
+                                }
+                            } else if !self.commit_hovered() {
+                                if self.editable {
+                                    // Nothing is highlighted: Enter commits the typed value through
+                                    // the insert policy (I-06).
+                                    self.commit_editor();
+                                } else {
+                                    self.set_open(false);
+                                }
+                            }
+                        } else if self.editable {
+                            self.commit_editor();
+                            if let Some(index) = self.current_index {
+                                self.activated.emit(index);
+                            }
+                        } else if let Some(current) = self.current_index {
+                            self.activated.emit(current);
+                        }
+                    }
+                    // Escape closes an open list without committing, which is the one way out that does
+                    // not change the value.
+                    27 => {
+                        if self.open {
                             self.set_open(false);
                         }
-                    } else if let Some(current) = self.current_index {
-                        self.activated.emit(current);
                     }
-                }
-                // Escape closes an open list without committing, which is the one way out that does
-                // not change the value.
-                27 => {
-                    if self.open {
-                        self.set_open(false);
+                    // Space and the "open" key both toggle the list, so a keyboard user has a key that
+                    // does what a click on the field does. The empty-list guard is in the match arm's own
+                    // condition rather than nested inside it, which is also what keeps the two spellings
+                    // of "can this list be opened" from drifting.
+                    32 | 113 if !self.items.is_empty() => {
+                        self.toggle_open();
                     }
-                }
-                // Space and the "open" key both toggle the list, so a keyboard user has a key that
-                // does what a click on the field does. The empty-list guard is in the match arm's own
-                // condition rather than nested inside it, which is also what keeps the two spellings
-                // of "can this list be opened" from drifting.
-                32 | 113 if !self.items.is_empty() => {
-                    self.toggle_open();
-                }
-                // Page keys move the highlight by a windowful while open, and jump to the
-                // ends with Home/End.
-                33 if self.open => {
-                    let page = self.visible_item_count() as isize;
-                    if self.move_hover(-page) {
-                        self.base.request_redraw();
-                    }
-                }
-                34 if self.open => {
-                    let page = self.visible_item_count() as isize;
-                    if self.move_hover(page) {
-                        self.base.request_redraw();
-                    }
-                }
-                36 if self.open => {
-                    let first = (0..self.items.len()).find(|&index| self.is_item_enabled(index));
-                    if let Some(index) = first {
-                        self.set_hovered(Some(index));
-                        self.scroll_to_current();
-                        self.base.request_redraw();
-                    }
-                }
-                35 if self.open => {
-                    let last =
-                        (0..self.items.len()).rev().find(|&index| self.is_item_enabled(index));
-                    if let Some(index) = last {
-                        self.set_hovered(Some(index));
-                        self.scroll_to_current();
-                        self.base.request_redraw();
-                    }
-                }
-                // First-letter type-ahead: a printable key picks the next matching row.
-                32..=126 if !self.items.is_empty() => {
-                    if let Some(ch) = char::from_u32(*key) {
-                        self.type_ahead.push(ch);
-                        let start =
-                            self.hovered_item.or(self.current_index).map_or(0, |index| index + 1);
-                        if let Some(index) = self.find_prefix(&self.type_ahead, start) {
-                            self.set_hovered(Some(index));
-                            self.set_current_index(Some(index));
+                    // Page keys move the highlight by a windowful while open, and jump to the
+                    // ends with Home/End.
+                    33 if self.open => {
+                        let page = self.visible_item_count() as isize;
+                        if self.move_hover(-page) {
                             self.base.request_redraw();
                         }
                     }
+                    34 if self.open => {
+                        let page = self.visible_item_count() as isize;
+                        if self.move_hover(page) {
+                            self.base.request_redraw();
+                        }
+                    }
+                    36 if self.open => {
+                        let first =
+                            (0..self.items.len()).find(|&index| self.is_item_enabled(index));
+                        if let Some(index) = first {
+                            self.set_hovered(Some(index));
+                            self.scroll_to_current();
+                            self.base.request_redraw();
+                        }
+                    }
+                    35 if self.open => {
+                        let last =
+                            (0..self.items.len()).rev().find(|&index| self.is_item_enabled(index));
+                        if let Some(index) = last {
+                            self.set_hovered(Some(index));
+                            self.scroll_to_current();
+                            self.base.request_redraw();
+                        }
+                    }
+                    // First-letter type-ahead: a printable key picks the next matching row. In an
+                    // editable box a printable key is **content** instead (I-06), so the two paths
+                    // are one match arm with the editable case first.
+                    32..=126 => {
+                        if let Some(ch) = char::from_u32(*key) {
+                            if self.editable {
+                                self.edit_insert(&ch.to_string());
+                                return;
+                            }
+                            if !self.items.is_empty() {
+                                // A prefix older than the shared timeout no longer describes what
+                                // the user is typing, so it is dropped before this key extends it
+                                // (I-P06). Clearing queues no frame by itself.
+                                let now = Instant::now();
+                                let expired = self.type_ahead_started.is_none_or(|started| {
+                                now.duration_since(started).as_millis()
+                                    > u128::from(
+                                        crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS,
+                                    )
+                            });
+                                if expired {
+                                    self.type_ahead.clear();
+                                }
+                                self.type_ahead_started = Some(now);
+                                self.type_ahead.push(ch);
+                                let start = self
+                                    .hovered_item
+                                    .or(self.current_index)
+                                    .map_or(0, |index| index + 1);
+                                if let Some(index) = self.find_prefix(&self.type_ahead, start) {
+                                    self.set_hovered(Some(index));
+                                    self.set_current_index(Some(index));
+                                    self.base.request_redraw();
+                                }
+                            }
+                        }
+                    }
+                    // Unknown key; ignore
+                    _ => {}
                 }
-                // Unknown key; ignore
-                _ => {}
-            },
+            }
             Event::Wheel { delta, modifiers, .. } => {
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
                 if scroll.lines_y == 0 || self.items.is_empty() {
@@ -1795,6 +2124,20 @@ impl EventHandler for ComboBox {
                     }
                 }
             }
+            // Platform-committed text reaches the widget here, not as a key press; an editable
+            // box inserts it into its value (I-06). The whole build of the field's text used to
+            // be key-press-only, so a desktop backend's `TextInput` never arrived at all.
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                if self.editable {
+                    self.edit_insert(text);
+                }
+            }
+            // Focus loss commits the typed value through the insert policy, so a host that
+            // validates on `text_edited` sees the value the field is showing (I-06).
+            Event::FocusLost
+                if self.editable => {
+                    self.commit_editor();
+                }
             // Other events are not relevant for this widget
             _ => {}
         }
@@ -1871,13 +2214,9 @@ impl Draw for ComboBox {
         // Draw current text, or the placeholder when the list is empty. Bounded to the box the
         // indicator left, so a long value is fitted rather than run under the indicator.
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
-        // The value is borrowed from `items` rather than cloned: `current_text()` returns an owned
-        // string, so the paint path allocated one per frame just to compare it against `""`.
-        let current_text: &str = self
-            .current_index
-            .and_then(|idx| self.items.get(idx))
-            .map(|s| s.as_str())
-            .unwrap_or("");
+        // The value is borrowed rather than cloned: an editable box paints its live editor text,
+        // everything else paints the selected row's label (I-06).
+        let current_text: &str = self.displayed_text();
         let value_line = context.text_line(geometry.text_box, font);
         let text_box = Rect::new(
             geometry.text_box.x,
@@ -1899,6 +2238,45 @@ impl Draw for ComboBox {
                 self.placeholder_text.as_str()
             };
             context.draw_text_fitted_cow(text_box, empty, font, text_color, value_align);
+        }
+
+        // ── Editable value: selection band and caret (I-06) ──
+        //
+        // An editable box owns a caret and a range, so the field says where typing lands and
+        // what a replacement would consume. Both are measured from the same fitted origin the
+        // value was drawn from, so the marker cannot drift from the glyphs.
+        if self.editable && self.base.draws_focus_ring() {
+            let value_advance = context.measure_text(current_text, font).width as i32;
+            let value_origin =
+                crate::render::fitted_origin(geometry.text_box, value_advance, value_align);
+            if let Some((start, end)) = self.editor.selection() {
+                let start = start.min(current_text.len());
+                let end = end.min(current_text.len());
+                let start_x = value_origin.x
+                    + context.measure_text(&current_text[..start], font).width as i32;
+                let end_x =
+                    value_origin.x + context.measure_text(&current_text[..end], font).width as i32;
+                context.fill_rect(
+                    Rect::new(
+                        start_x.min(end_x),
+                        value_line.y,
+                        (end_x - start_x).unsigned_abs(),
+                        value_line.height.max(1),
+                    ),
+                    text_color.with_alpha(70),
+                );
+            }
+            let caret = self.editor.cursor().min(current_text.len());
+            let caret_x =
+                value_origin.x + context.measure_text(&current_text[..caret], font).width as i32;
+            let caret_x = caret_x
+                .min(geometry.text_box.x + geometry.text_box.width as i32 - 1)
+                .max(geometry.text_box.x);
+            context.draw_line(
+                Point::new(caret_x, value_line.y),
+                Point::new(caret_x, value_line.y + value_line.height as i32),
+                text_color,
+            );
         }
 
         // ── Keyboard focus ring ──
@@ -1934,7 +2312,11 @@ impl Draw for ComboBox {
             context.fill_rect(list, bg.with_alpha(reveal_alpha));
             context.draw_rect(list, border_color.with_alpha(reveal_alpha));
 
-            if self.items.is_empty() {
+            // The popup lists the completer's candidates when it has any, and the rows otherwise;
+            // before this an editable box published `completions` that nothing painted, so the
+            // completer was invisible (I-07).
+            let rows = self.popup_len();
+            if rows == 0 {
                 // An open list with nothing in it still has to say so: a bare rectangle reads as a
                 // rendering failure rather than as "there is nothing to choose", and a user cannot
                 // tell it from a list that failed to load.
@@ -1952,7 +2334,8 @@ impl Draw for ComboBox {
                     HorizontalAlignment::Left,
                 );
             } else {
-                for index in self.first_visible_item()..self.items.len() {
+                let completions = self.showing_completions();
+                for index in self.first_visible_item()..rows {
                     let Some(row) = self.item_rect(index) else { break };
                     // The highlight is two facts at two weights: a row the pointer is over is a
                     // pointer position, and the row the field currently holds is a committed value.
@@ -1969,21 +2352,27 @@ impl Draw for ComboBox {
                     let inset = dimensions::TEXT_FIELD_PADDING_H;
                     let line = context.text_line(row, font);
                     let mut label_x = row.x + inset as i32;
-                    let meta = self.item_meta.get(index);
-                    let enabled = meta.is_none_or(|meta| meta.enabled);
-                    if let Some(icon) = meta.and_then(|meta| meta.icon.as_deref()) {
-                        if !icon.is_empty() {
-                            let advance = self.icon_advance(context, index, icon, font);
-                            context.draw_text(
-                                Point::new(label_x, line.y),
-                                icon,
-                                font,
-                                text_color.with_alpha(if enabled { 255 } else { 110 }),
-                                HorizontalAlignment::Left,
-                            );
-                            label_x += advance + 6;
+                    let (label_text, enabled) = if completions {
+                        // A candidate carries no icon or enabled flag: it is an offered string.
+                        (self.completions.get(index).map(String::as_str).unwrap_or(""), true)
+                    } else {
+                        let meta = self.item_meta.get(index);
+                        let enabled = meta.is_none_or(|meta| meta.enabled);
+                        if let Some(icon) = meta.and_then(|meta| meta.icon.as_deref()) {
+                            if !icon.is_empty() {
+                                let advance = self.icon_advance(context, index, icon, font);
+                                context.draw_text(
+                                    Point::new(label_x, line.y),
+                                    icon,
+                                    font,
+                                    text_color.with_alpha(if enabled { 255 } else { 110 }),
+                                    HorizontalAlignment::Left,
+                                );
+                                label_x += advance + 6;
+                            }
                         }
-                    }
+                        (self.items.get(index).map(String::as_str).unwrap_or(""), enabled)
+                    };
                     let label = Rect::new(
                         label_x,
                         line.y,
@@ -1992,7 +2381,7 @@ impl Draw for ComboBox {
                     );
                     context.draw_text_fitted_cow(
                         label,
-                        &self.items[index],
+                        label_text,
                         font,
                         if enabled { text_color } else { text_color.with_alpha(110) },
                         HorizontalAlignment::Left,
@@ -2088,6 +2477,40 @@ mod tests {
         assert!(cb.is_editable());
         cb.set_editable(false);
         assert!(!cb.is_editable());
+    }
+
+    #[test]
+    fn an_editable_box_is_a_real_single_line_editor() {
+        // I-06: typing builds the value with a caret, a selection and undo — before this the
+        // editable flag only switched on type-ahead.
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.add_items(vec!["alpha".into(), "beta".into()]);
+        cb.set_editable(true);
+        cb.handle_event(&Event::key_press(97, 0)); // 'a'
+        assert_eq!(cb.current_text(), "a");
+        assert_eq!(cb.cursor_position(), 1);
+        cb.handle_event(&Event::text_input("lpha"));
+        assert_eq!(cb.current_text(), "alpha");
+        // The typed value selects the row with that label, when one exists.
+        assert_eq!(cb.current_index(), Some(0));
+        // Backspace edits the value rather than navigating the list.
+        cb.handle_event(&Event::key_press(8, 0));
+        assert_eq!(cb.current_text(), "alph");
+        // Undo restores what the key removed.
+        cb.handle_event(&Event::key_press(90, 0b1000));
+        assert_eq!(cb.current_text(), "alpha");
+    }
+
+    #[test]
+    fn an_editable_box_has_a_selection_and_a_caret() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_editable(true);
+        cb.handle_event(&Event::text_input("hello"));
+        cb.handle_event(&Event::key_press(65, 0b1000)); // Primary+A
+        assert_eq!(cb.selection_range(), Some((0, 5)));
+        cb.handle_event(&Event::key_press(36, 0)); // Home collapses the selection
+        assert_eq!(cb.selection_range(), None);
+        assert_eq!(cb.cursor_position(), 0);
     }
 
     #[test]

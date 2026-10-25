@@ -577,7 +577,10 @@ pub enum RenderCommand {
     DrawPath {
         /// Vertices in logical pixels, connected in order. Fewer than two
         /// points draws nothing.
-        points: Vec<Point>,
+        ///
+        /// Shared rather than owned so recording, region bucketing and replay all hand over the
+        /// same vertices by refcount, exactly like [`CompoundPath`] (G-02).
+        points: Arc<[Point]>,
         /// Connects the last point back to the first when stroking. Ignored
         /// when `filled` is true, because a fill is always closed implicitly.
         closed: bool,
@@ -621,8 +624,8 @@ pub enum RenderCommand {
     },
     /// Set a clip path from a list of points (BLUE11 R5.5).
     ClipPath {
-        /// Points defining the clip path.
-        points: Vec<Point>,
+        /// Points defining the clip path, shared so bucketing and replay never copy them (G-02).
+        points: Arc<[Point]>,
     },
     /// Set blend mode for subsequent draw commands (BLUE11 R5.6).
     SetBlendMode {
@@ -662,7 +665,11 @@ pub enum RenderCommand {
         /// Starting angle in radians.
         start_angle: f32,
         /// Color stops as (position \[0,1\], color) pairs.
-        stops: Vec<(f32, Color)>,
+        ///
+        /// Shared rather than owned: a conic ramp is immutable once built, so recording, region
+        /// bucketing and replay hand over one slice by refcount instead of copying its stops
+        /// (G-01).
+        stops: Arc<[(f32, Color)]>,
     },
 }
 

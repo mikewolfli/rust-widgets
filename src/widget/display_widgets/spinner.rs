@@ -78,6 +78,14 @@ pub struct Spinner {
     speed: f32,
     /// The drawn shape: one sweeping arc or a ring of fading spokes.
     style: SpinnerStyle,
+    /// An explicit track colour, or `None` to keep the style-derived one.
+    ///
+    /// The track and the arc are two marks — progress and its well — so they get two fields,
+    /// matching `progress_circle`'s `track_color` / `progress_color` pair rather than forcing a
+    /// caller to express them through `text_color` / `background_color`.
+    track_color: Option<Color>,
+    /// An explicit arc colour, or `None` to keep the style-derived one.
+    arc_color: Option<Color>,
     /// Emitted with the new flag when [`Spinner::set_active`] actually changes it.
     pub active_changed: Signal1<bool>,
 }
@@ -95,6 +103,8 @@ impl Spinner {
             size_ratio: 0.8,
             speed: 1.0,
             style: SpinnerStyle::default(),
+            track_color: None,
+            arc_color: None,
             active_changed: Signal1::new(),
         }
     }
@@ -183,6 +193,34 @@ impl Spinner {
             return;
         }
         self.style = style;
+        self.base.request_redraw();
+    }
+
+    /// Returns the current track colour, or `None` when it follows the style.
+    pub fn track_color(&self) -> Option<Color> {
+        self.track_color
+    }
+
+    /// Sets the track colour, or restores the style-derived one with `None`.
+    pub fn set_track_color(&mut self, color: Option<Color>) {
+        if self.track_color == color {
+            return;
+        }
+        self.track_color = color;
+        self.base.request_redraw();
+    }
+
+    /// Returns the current arc colour, or `None` when it follows the style.
+    pub fn arc_color(&self) -> Option<Color> {
+        self.arc_color
+    }
+
+    /// Sets the arc colour, or restores the style-derived one with `None`.
+    pub fn set_arc_color(&mut self, color: Option<Color>) {
+        if self.arc_color == color {
+            return;
+        }
+        self.arc_color = color;
         self.base.request_redraw();
     }
 
@@ -339,6 +377,12 @@ impl WidgetProperties for Spinner {
             "speed" => Ok(CapabilityValue::Float(self.speed() as f64)),
             "size_ratio" => Ok(CapabilityValue::Float(self.size_ratio() as f64)),
             "style" => Ok(CapabilityValue::String(self.spinner_style().token().into())),
+            "track_color" => {
+                Ok(self.track_color().map_or(CapabilityValue::Null, CapabilityValue::Color))
+            }
+            "arc_color" => {
+                Ok(self.arc_color().map_or(CapabilityValue::Null, CapabilityValue::Color))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -368,6 +412,23 @@ impl WidgetProperties for Spinner {
                 self.set_spinner_style(style);
                 Ok(())
             }
+            "track_color" | "arc_color" => {
+                let color = match value {
+                    CapabilityValue::Null => None,
+                    CapabilityValue::Color(color) => Some(color),
+                    CapabilityValue::String(raw) => match Color::parse_hex(&raw) {
+                        Some(color) => Some(color),
+                        None => return Err(CapabilityAccessError::TypeMismatch),
+                    },
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                if name == "track_color" {
+                    self.set_track_color(color);
+                } else {
+                    self.set_arc_color(color);
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -381,6 +442,8 @@ impl WidgetProperties for Spinner {
             "speed",
             "size_ratio",
             "style",
+            "track_color",
+            "arc_color",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -435,9 +498,11 @@ impl Draw for Spinner {
         // Resolve colors from the widget style or use defaults. The spinner's own shape
         // selector is `self.style`, so the resolved style record is read from the base.
         let widget_style = self.base.style();
-        let track_color =
-            widget_style.text_color.unwrap_or_else(|| Color::rgba(220, 220, 220, 200));
-        let arc_color = widget_style.background_color.unwrap_or(Color::PRIMARY);
+        let track_color = self
+            .track_color
+            .or(widget_style.text_color)
+            .unwrap_or_else(|| Color::rgba(220, 220, 220, 200));
+        let arc_color = self.arc_color.or(widget_style.background_color).unwrap_or(Color::PRIMARY);
 
         // Resolve effective colors based on enabled state.
         let effective_track =
@@ -768,5 +833,24 @@ mod tests {
             radius < dimensions::SPINNER_DIAMETER as f32 / 2.0,
             "a {radius} radius would mean the ring scaled with the cell"
         );
+    }
+
+    /// The track and arc colours have their own accessors and property route, and `None`
+    /// restores the previous style-derived resolution.
+    #[test]
+    fn the_track_and_arc_colours_are_separately_named() {
+        let mut sp = Spinner::new(Rect::new(0, 0, 48, 48));
+        assert_eq!(sp.track_color(), None);
+        assert_eq!(sp.arc_color(), None);
+
+        sp.set_track_color(Some(Color::RED));
+        sp.set_arc_color(Some(Color::GREEN));
+        assert_eq!(sp.track_color(), Some(Color::RED));
+        assert_eq!(sp.arc_color(), Some(Color::GREEN));
+        assert_eq!(sp.get("track_color").unwrap(), CapabilityValue::Color(Color::RED));
+
+        sp.set("arc_color", CapabilityValue::Null).unwrap();
+        assert_eq!(sp.arc_color(), None, "Null restores the style-derived arc");
+        assert!(sp.set("track_color", CapabilityValue::Bool(true)).is_err());
     }
 }

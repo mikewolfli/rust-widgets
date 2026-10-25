@@ -691,6 +691,64 @@ impl ExtraSelection {
     }
 }
 
+/// A committed text change, described without materialising the document.
+///
+/// # Why this is not a `String`
+///
+/// `text_changed` used to carry the whole document. Typing goes through the model's
+/// in-place splice, so producing that payload meant one `O(document)` clone per
+/// keystroke purely so subscribers could read a string most of them ignore. This
+/// description carries the same information in `O(affected lines)` bytes: where the
+/// change landed, how many lines it replaced, how many it produced, and the text it
+/// inserted. A subscriber that genuinely needs the whole document calls
+/// [`CodeEditor::text`](super::CodeEditor::text), which is an explicit `O(document)`
+/// request rather than a cost imposed on every key press.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TextChange {
+    /// Zero-based line where the changed region starts.
+    pub start_line: usize,
+    /// How many lines the edit replaced at `start_line`.
+    pub removed_lines: usize,
+    /// How many lines those were replaced by.
+    pub inserted_lines: usize,
+    /// The text written at `start_line` (the net replacement for the region).
+    pub inserted_text: String,
+    /// `true` when the change is a wholesale replacement rather than an edit.
+    ///
+    /// A document load, a tab switch and a history restore replace every line; the
+    /// region fields then describe the whole document and no line above it survived.
+    pub whole_document: bool,
+}
+
+impl TextChange {
+    /// Describes a wholesale replacement of the document.
+    pub fn document(inserted_lines: usize) -> Self {
+        Self {
+            start_line: 0,
+            removed_lines: 0,
+            inserted_lines,
+            inserted_text: String::new(),
+            whole_document: true,
+        }
+    }
+
+    /// Describes an edit to `[start_line, start_line + removed_lines)`.
+    pub fn lines(
+        start_line: usize,
+        removed_lines: usize,
+        inserted_lines: usize,
+        inserted_text: impl Into<String>,
+    ) -> Self {
+        Self {
+            start_line,
+            removed_lines,
+            inserted_lines,
+            inserted_text: inserted_text.into(),
+            whole_document: false,
+        }
+    }
+}
+
 /// A search hit expressed as a line plus character range.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchMatch {
@@ -719,6 +777,60 @@ pub struct ViewportSnapshot {
     pub scroll_column: usize,
     /// The caret, so a linked pane can show the same position.
     pub caret: TextPosition,
+}
+
+/// One action offered by a find-bar button.
+///
+/// Exposed because the buttons are drawn by the editor but the geometry is also used by
+/// the pointer hit-test; naming the actions keeps the two from drifting (ED-01).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindBarAction {
+    /// Dismiss the bar.
+    Close,
+    /// Show or hide the replacement row.
+    ToggleReplace,
+    /// Toggle case-sensitive matching.
+    ToggleCase,
+    /// Toggle whole-word matching.
+    ToggleWholeWord,
+    /// Toggle regular-expression matching.
+    ToggleRegex,
+    /// Move to the previous hit.
+    Previous,
+    /// Move to the next hit.
+    Next,
+    /// Replace the active hit.
+    Replace,
+    /// Replace every hit.
+    ReplaceAll,
+}
+
+impl FindBarAction {
+    /// The label painted inside the button.
+    pub fn label(self) -> &'static str {
+        match self {
+            FindBarAction::Close => "x",
+            FindBarAction::ToggleReplace => "⇄",
+            FindBarAction::ToggleCase => "Aa",
+            FindBarAction::ToggleWholeWord => "ab",
+            FindBarAction::ToggleRegex => ".*",
+            FindBarAction::Previous => "^",
+            FindBarAction::Next => "v",
+            FindBarAction::Replace => "R",
+            FindBarAction::ReplaceAll => "RA",
+        }
+    }
+
+    /// Whether the action is a boolean toggle that reports its state by being pressed.
+    pub fn is_toggle(self) -> bool {
+        matches!(
+            self,
+            FindBarAction::ToggleReplace
+                | FindBarAction::ToggleCase
+                | FindBarAction::ToggleWholeWord
+                | FindBarAction::ToggleRegex
+        )
+    }
 }
 
 /// State of the in-editor find bar.
@@ -830,41 +942,109 @@ impl CompletionSource for DocumentCompletions {
 /// The built-in completion provider used to walk the whole text on every
 /// trigger, which made completion cost proportional to the file on every
 /// keystroke. The index is built once per revision and queried directly; the
-/// editor owns the cache and rebuilds it when the revision moves.
+/// editor owns the cache and keeps it in step with the document through
+/// [`Self::apply_edit`], which only touches the words the edit could have changed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DocumentWordIndex {
     revision: u64,
-    words: Vec<String>,
+    /// Distinct words with their occurrence counts.
+    ///
+    /// The counts are what makes an incremental update correct: subtracting a word's
+    /// only occurrence must drop it, while subtracting one of several must not. A plain
+    /// set would either keep a deleted word forever or drop a word that still occurs.
+    words: alloc::collections::BTreeMap<String, u32>,
 }
 
 impl DocumentWordIndex {
     /// Builds an index of the distinct identifiers in `text` at `revision`.
     pub fn build(text: &str, revision: u64) -> Self {
-        let mut words: Vec<String> = Vec::new();
+        let mut index = Self { revision, words: alloc::collections::BTreeMap::new() };
         let mut cursor = 0usize;
         while cursor < text.len() {
             let Some(ch) = text[cursor..].chars().next() else { break };
-            if ch.is_alphanumeric() || ch == '_' {
+            if is_index_word_char(ch) {
                 let start = cursor;
                 let mut end = cursor + ch.len_utf8();
                 while end < text.len() {
                     let next = text[end..].chars().next().unwrap_or(' ');
-                    if next.is_alphanumeric() || next == '_' {
+                    if is_index_word_char(next) {
                         end += next.len_utf8();
                     } else {
                         break;
                     }
                 }
-                let word = &text[start..end];
-                if !words.iter().any(|existing| existing == word) {
-                    words.push(word.to_string());
-                }
+                index.increment(&text[start..end]);
                 cursor = end;
             } else {
                 cursor += ch.len_utf8();
             }
         }
-        Self { revision, words }
+        index
+    }
+
+    /// Updates the index in place after replacing `[start, start + removed.len())` with
+    /// `inserted` in `text` (the **post-edit** document).
+    ///
+    /// The touched span is widened to the word boundaries on both sides so editing the
+    /// middle of an identifier removes the whole old identifier and adds the whole new
+    /// one. Cost is the size of the edit plus the surrounding word, not the document
+    /// (J-P11). If the offsets do not describe `text` (a caller applied an edit behind
+    /// the index's back) the index rebuilds rather than lying.
+    pub fn apply_edit(
+        &mut self,
+        revision: u64,
+        text: &str,
+        start: usize,
+        removed: &str,
+        inserted: &str,
+    ) {
+        self.revision = revision;
+        let inserted_end = start + inserted.len();
+        if start > text.len() || inserted_end > text.len() {
+            *self = Self::build(text, revision);
+            return;
+        }
+        let mut left = start;
+        while let Some((index, ch)) = text[..left].char_indices().next_back() {
+            if !is_index_word_char(ch) {
+                break;
+            }
+            left = index;
+        }
+        let mut right = inserted_end;
+        while let Some(ch) = text[right..].chars().next() {
+            if !is_index_word_char(ch) {
+                break;
+            }
+            right += ch.len_utf8();
+        }
+        let prefix = text[left..start].to_string();
+        let suffix = text[inserted_end..right].to_string();
+        self.remove_words(&prefix, removed, &suffix);
+        self.add_words(&prefix, inserted, &suffix);
+    }
+
+    /// Adds every word in `prefix + text + suffix` to the counts.
+    fn add_words(&mut self, prefix: &str, text: &str, suffix: &str) {
+        for word in split_index_words(prefix, text, suffix) {
+            self.increment(&word);
+        }
+    }
+
+    /// Subtracts every word in `prefix + text + suffix` from the counts.
+    fn remove_words(&mut self, prefix: &str, text: &str, suffix: &str) {
+        for word in split_index_words(prefix, text, suffix) {
+            if let Some(count) = self.words.get_mut(&word) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    self.words.remove(&word);
+                }
+            }
+        }
+    }
+
+    fn increment(&mut self, word: &str) {
+        *self.words.entry(word.to_string()).or_insert(0) += 1;
     }
 
     /// Returns the revision this index was built from.
@@ -894,7 +1074,7 @@ impl DocumentWordIndex {
         }
         let lowered = prefix.to_lowercase();
         let mut ranked: Vec<(u8, usize, &String)> = Vec::new();
-        for word in &self.words {
+        for word in self.words.keys() {
             if word == prefix {
                 continue;
             }
@@ -915,6 +1095,35 @@ impl DocumentWordIndex {
             .map(|(_, _, word)| CompletionItem::new(word.clone()))
             .collect()
     }
+}
+
+/// A character that may appear inside an indexed identifier.
+fn is_index_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+/// Splits `prefix + text + suffix` into identifier words.
+///
+/// The three parts are scanned as one virtual string so a word straddling the edit's
+/// boundary is seen whole, without materialising the concatenation for the common case
+/// where only one of the parts holds word characters.
+fn split_index_words(prefix: &str, text: &str, suffix: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let push_char = |ch: char, words: &mut Vec<String>, current: &mut String| {
+        if is_index_word_char(ch) {
+            current.push(ch);
+        } else if !current.is_empty() {
+            words.push(core::mem::take(current));
+        }
+    };
+    for ch in prefix.chars().chain(text.chars()).chain(suffix.chars()) {
+        push_char(ch, &mut words, &mut current);
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
 }
 
 /// Returns `true` when every character of `needle` appears in `haystack` in order.

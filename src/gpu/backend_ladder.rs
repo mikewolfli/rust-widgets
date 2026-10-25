@@ -29,6 +29,15 @@
 //! `WGPU_BACKEND=gl` pins the process to the GL ladder. When the variable is set,
 //! custom ordering is skipped and the requested backends are used verbatim, so a
 //! user debugging a driver issue always gets exactly what they asked for.
+//!
+//! # One selection, two consumers
+//!
+//! [`crate::gpu::GpuManager`] and the wgpu renderer both need to know which
+//! backend the process is on. This module is the only place that answers, and
+//! [`publish_shared_selection`] lets the manager record its answer so other GPU
+//! paths can read it with [`shared_selection`] instead of running a second
+//! selection ladder and reaching a different conclusion (G-211).
+use crate::compat::{lock, Mutex, OnceLock};
 
 /// The graphics API tier a `wgpu` adapter came from.
 ///
@@ -303,12 +312,16 @@ pub async fn select_adapter_with_gl_fallback(
             .collect();
         match best_candidate_index(&meta, power_preference) {
             Some(index) => {
-                let adapter = &candidates[index];
-                let backend = adapter.get_info().backend;
+                let info = candidates[index].get_info();
+                let backend = info.backend;
                 // `Adapter` is not `Clone`; move the chosen one out by draining.
                 let mut candidates = candidates;
                 let adapter = candidates.swap_remove(index);
-                return Some((adapter, GpuBackendTier::from_backend(backend)));
+                // Use the same device-type-aware mapping as the unpinned ladder: a
+                // pinned backend can still be served by a CPU adapter (lavapipe on
+                // Vulkan, llvmpipe on GL), and that must report `Software` rather
+                // than the pinned rung's name (G-211).
+                return Some((adapter, tier_of_adapter(info.device_type, backend)));
             }
             None => {
                 log::error!(
@@ -372,6 +385,35 @@ pub async fn select_adapter_with_gl_fallback(
 
     log::warn!("[gpu] no adapter available on any tier of the degradation ladder");
     None
+}
+
+// ── Shared selection (G-211) ──
+
+/// The adapter selection published by the GPU manager for other GPU paths.
+///
+/// `GpuManager` (through [`AdapterSelector`](crate::gpu::adapter::AdapterSelector))
+/// publishes the adapter it actually selected, including the tier it came from.
+/// The wgpu renderer reads this first and only walks its own ladder when nothing
+/// has been published, so the two paths cannot disagree about the active backend
+/// and a degraded start is visible in one place.
+static SHARED_SELECTION: OnceLock<Mutex<Option<GpuBackendSelection>>> = OnceLock::new();
+
+/// Records the process-wide adapter selection.
+///
+/// Called once by the GPU manager after a successful (or CPU-fallback) selection.
+/// Publishing is last-write-wins; there is deliberately no way to clear it, because
+/// a process runs on one selection for its lifetime.
+pub fn publish_shared_selection(selection: GpuBackendSelection) {
+    let slot = SHARED_SELECTION.get_or_init(|| Mutex::new(None));
+    *lock(slot) = Some(selection);
+}
+
+/// Returns the selection published in this process, if any.
+///
+/// `None` means no GPU manager has selected an adapter yet; callers that need a
+/// backend answer must then run [`select_adapter_with_gl_fallback`] themselves.
+pub fn shared_selection() -> Option<GpuBackendSelection> {
+    SHARED_SELECTION.get().and_then(|slot| *lock(slot))
 }
 
 #[cfg(test)]
@@ -658,9 +700,11 @@ mod tests {
             // this test exists to prevent.
             Some((adapter, tier)) => {
                 let info = adapter.get_info();
+                // A CPU adapter reports the software rung whichever backend name
+                // it advertises; a hardware adapter follows its backend.
                 assert_eq!(
                     tier,
-                    GpuBackendTier::from_backend(info.backend),
+                    tier_of_adapter(info.device_type, info.backend),
                     "reported tier must describe the selected adapter",
                 );
                 assert!(
@@ -676,5 +720,16 @@ mod tests {
                 "missing adapter while {pinned:?} still exposes candidates",
             ),
         }
+    }
+
+    /// G-211: the selection the GPU manager publishes must be readable back by
+    /// the other GPU paths unchanged, including its tier.
+    #[test]
+    fn published_selection_is_readable_back() {
+        let selection =
+            GpuBackendSelection { tier: GpuBackendTier::OpenGlEs, backend: wgpu::Backend::Gl };
+        publish_shared_selection(selection);
+        assert_eq!(shared_selection(), Some(selection));
+        assert!(shared_selection().is_some_and(|s| s.is_degraded()));
     }
 }

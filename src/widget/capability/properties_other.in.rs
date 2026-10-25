@@ -456,6 +456,8 @@ macro_rules! impl_properties_other {
         ];
 
         pub(crate) const ARC_PROPERTIES: &[PropertySchema] = &[
+            // D-01: the centre-reading template.
+            PropertySchema::new("value_format", PropertyValueKind::String, true, true),
             PropertySchema::new("value", PropertyValueKind::UInt, true, true),
             PropertySchema::new("minimum", PropertyValueKind::UInt, true, true),
             PropertySchema::new("maximum", PropertyValueKind::UInt, true, true),
@@ -499,6 +501,8 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const EMOJI_PICKER_PROPERTIES: &[PropertySchema] = &[
+            // D-05: how many recently used glyphs are kept.
+            PropertySchema::new("recent_capacity", PropertyValueKind::UInt, true, true),
             // The glyph table is written through `set_glyphs`; the counts and the
             // two editable scalars are what the property layer reports. Same
             // convention as the other list-valued controls.
@@ -540,6 +544,8 @@ macro_rules! impl_properties_other {
             // and the three scalar display switches. Same convention as `Meter`,
             // `RadarChart` and `KanbanBoard`.
             PropertySchema::new("value", PropertyValueKind::String, true, false),
+            // I-11: the empty-state text the control paints when no path is chosen.
+            PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
             PropertySchema::new("depth", PropertyValueKind::UInt, true, false),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
             PropertySchema::new("separator", PropertyValueKind::String, true, true),
@@ -707,6 +713,8 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const SKELETON_LOADER_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("active", PropertyValueKind::Bool, true, true),
+            // D-15: the row count of the text-line placeholder.
+            PropertySchema::new("text_line_rows", PropertyValueKind::UInt, true, true),
             PropertySchema::enumerated("shape", true, true, &["rect", "circle", "text_line"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -769,6 +777,8 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const DIVIDER_PROPERTIES: &[PropertySchema] = &[
+            // D-04: the shared shaded-line vocabulary.
+            PropertySchema::enumerated("line_style", true, true, &["plain", "sunken", "raised"]),
             PropertySchema::new("orientation", PropertyValueKind::String, true, true),
             PropertySchema::new("thickness", PropertyValueKind::Float, true, true),
             // The line colour. `set_color` was public and painted but absent from the contract,
@@ -783,6 +793,8 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const RATING_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("value", PropertyValueKind::Float, true, true),
+            // D-10: half-star commits.
+            PropertySchema::new("allow_half_step", PropertyValueKind::Bool, true, true),
             PropertySchema::new("max", PropertyValueKind::UInt, true, true),
             // The control's own geometry of the row. `star_size` had a setter that nothing could reach
             // through the contract, and the two derived readings are what a consumer would otherwise
@@ -799,6 +811,9 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const AVATAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("initials", PropertyValueKind::String, true, true),
+            // MISC-02: the shape and the requested diameter.
+            PropertySchema::new("square", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("size", PropertyValueKind::UInt, true, true),
             PropertySchema::new("image_source", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -812,6 +827,8 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const EMPTY_STATE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("message", PropertyValueKind::String, true, true),
+            // D-06: the optional second action.
+            PropertySchema::new("secondary_action_text", PropertyValueKind::String, true, true),
             PropertySchema::new("description", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -1078,6 +1095,9 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const BEZIER_CURVE_EDITOR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("snap_to_grid", PropertyValueKind::Bool, true, true),
+            // MISC-06: the segment count and the curve token.
+            PropertySchema::new("segments", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("curve_points", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -1157,7 +1177,15 @@ macro_rules! impl_properties_other {
                 "sort",
                 true,
                 true,
-                &["none", "symbol", "last_descending", "change_magnitude"],
+                &[
+                    "none",
+                    "symbol_ascending",
+                    "symbol_descending",
+                    "last_ascending",
+                    "last_descending",
+                    "change_magnitude_ascending",
+                    "change_magnitude_descending",
+                ],
             ),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             // Read-only: `QuoteBoard::set` answers `OutOfRange` because the board's
@@ -1188,6 +1216,8 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const TAG_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
+            // D-19: the leading icon token; an empty string clears it.
+            PropertySchema::new("icon", PropertyValueKind::String, true, true),
             PropertySchema::enumerated(
                 "tone",
                 true,

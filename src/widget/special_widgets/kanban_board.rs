@@ -46,6 +46,7 @@
 //! CSS selector (`KanbanBoard`), and through the typed `create_kanban_board` on
 //! `ControlBackend`.
 
+use core::cell::RefCell;
 use core::fmt::Write as _;
 
 use crate::compat::HashMap;
@@ -82,7 +83,9 @@ const COLUMN_GAP: i32 = 12;
 const MIN_COLUMN_WIDTH: u32 = 80;
 
 /// How far one horizontal wheel notch scrolls the board, in pixels.
-const HORIZONTAL_SCROLL_STEP: i32 = 40;
+const HORIZONTAL_SCROLL_STEP: i32 = 48;
+/// Width of the edge band that advances the board while a card is dragged.
+const DRAG_AUTOSCROLL_BAND: i32 = 28;
 
 /// The height of a column's header strip.
 const HEADER_HEIGHT: u32 = 32;
@@ -271,6 +274,15 @@ pub struct KanbanBoard {
     card_lanes: HashMap<String, String>,
     /// Whether cards are grouped into lanes.
     lane_mode: KanbanLaneMode,
+    /// Bumped whenever the board's structure (columns, cards, lanes, lane assignments) changes.
+    /// The lane geometry and the card index are keyed on it.
+    layout_revision: u64,
+    /// Lane band geometry and the lane/ordinal of every card, rebuilt at most once per revision.
+    lane_layout: RefCell<Option<LaneLayout>>,
+    /// Card id to its position, rebuilt lazily after a structural change.
+    card_index: RefCell<Option<HashMap<String, CardPosition>>>,
+    /// Explicitly selected cards, in display order.
+    selected_cards: Vec<String>,
     /// Emitted after a card moves, with the card's id and its new position.
     pub card_moved: Signal1<(String, CardPosition)>,
     /// Emitted when a card is activated (clicked without dragging), with its id.
@@ -280,6 +292,33 @@ pub struct KanbanBoard {
     /// [`KanbanBoard::card_moved`]. That is what makes the board usable for opening a
     /// card, and it is the case the sub-threshold drag test pins.
     pub card_activated: Signal1<String>,
+    /// Emitted when the card under the pointer changes: its id on entry, `None` on exit.
+    pub card_hovered: Signal1<Option<String>>,
+    /// Emitted with every selected card id, in display order, after a selection change.
+    pub selection_changed: Signal1<Vec<String>>,
+    /// Emitted with the ids moved by one drop, when a drop moved more than one card.
+    ///
+    /// [`Self::card_moved`] keeps its published single-card payload; this companion reports the
+    /// batch a multi-selection drop produced without redefining that signal.
+    pub cards_moved: Signal1<Vec<String>>,
+}
+
+/// Cached lane geometry and per-card lane slots.
+///
+/// Lane mode derived each lane's height by walking every column's cards and each card's y by
+/// re-walking its column — and the hover path repeated that work on every pointer move. Both are
+/// pure functions of the card/lane structure, so they are built once per revision.
+struct LaneLayout {
+    /// The revision this snapshot describes.
+    revision: u64,
+    /// Band height per lane.
+    heights: Vec<i32>,
+    /// Band top per lane, relative to the board's own top edge.
+    tops: Vec<i32>,
+    /// For each column, the lane each card is painted in.
+    card_lane: Vec<Vec<usize>>,
+    /// For each column, each card's ordinal inside its lane.
+    card_ordinal: Vec<Vec<usize>>,
 }
 
 impl KanbanBoard {
@@ -299,8 +338,15 @@ impl KanbanBoard {
             lanes: Vec::new(),
             card_lanes: HashMap::new(),
             lane_mode: KanbanLaneMode::None,
+            layout_revision: 0,
+            lane_layout: RefCell::new(None),
+            card_index: RefCell::new(None),
+            selected_cards: Vec::new(),
             card_moved: Signal1::new(),
             card_activated: Signal1::new(),
+            card_hovered: Signal1::new(),
+            selection_changed: Signal1::new(),
+            cards_moved: Signal1::new(),
         }
     }
 
@@ -308,8 +354,15 @@ impl KanbanBoard {
     pub fn add_column(&mut self, column: KanbanColumn) -> usize {
         let index = self.columns.len();
         self.columns.push(column);
+        self.invalidate_layout();
         self.base.request_redraw();
         index
+    }
+
+    /// Marks the lane geometry and the card index stale.
+    fn invalidate_layout(&mut self) {
+        self.layout_revision = self.layout_revision.wrapping_add(1);
+        *self.card_index.borrow_mut() = None;
     }
 
     /// Removes the column at `index`, returning it when the index was valid.
@@ -319,14 +372,23 @@ impl KanbanBoard {
         }
         let removed = self.columns.remove(index);
         // A lane assignment names a card; a card that left the board must not keep one.
+        let mut selection_touched = false;
         for card in &removed.cards {
             self.card_lanes.remove(&card.id);
+            if self.selected_cards.contains(&card.id) {
+                self.selected_cards.retain(|id| *id != card.id);
+                selection_touched = true;
+            }
+        }
+        if selection_touched {
+            self.selection_changed.emit(self.selected_cards.clone());
         }
         // A drag whose origin no longer exists is abandoned, so the release does
         // not try to remove a card from a column that is gone.
         if self.drag_origin.is_some_and(|origin| origin.column >= self.columns.len()) {
             self.cancel_drag();
         }
+        self.invalidate_layout();
         self.clamp_horizontal_scroll();
         self.base.request_redraw();
         Some(removed)
@@ -349,6 +411,9 @@ impl KanbanBoard {
 
     /// Returns a mutable reference to the column at `index`.
     pub fn column_mut(&mut self, index: usize) -> Option<&mut KanbanColumn> {
+        // The caller may add, remove or reorder cards through this handle, which this control
+        // cannot observe; the derived tables are therefore rebuilt on the next read.
+        self.invalidate_layout();
         self.columns.get_mut(index)
     }
 
@@ -358,6 +423,7 @@ impl KanbanBoard {
     pub fn add_lane(&mut self, lane: KanbanLane) -> usize {
         let index = self.lanes.len();
         self.lanes.push(lane);
+        self.invalidate_layout();
         self.base.request_redraw();
         index
     }
@@ -370,6 +436,7 @@ impl KanbanBoard {
         let index = self.lanes.iter().position(|lane| lane.id == id)?;
         let removed = self.lanes.remove(index);
         self.card_lanes.retain(|_, lane| lane != &removed.id);
+        self.invalidate_layout();
         self.base.request_redraw();
         Some(removed)
     }
@@ -400,6 +467,7 @@ impl KanbanBoard {
             return;
         }
         self.lane_mode = mode;
+        self.invalidate_layout();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -417,6 +485,7 @@ impl KanbanBoard {
             return true;
         }
         self.card_lanes.insert(card_id.to_string(), next);
+        self.invalidate_layout();
         self.base.request_redraw();
         true
     }
@@ -460,26 +529,77 @@ impl KanbanBoard {
 
     /// The top of lane `index`'s band in board coordinates.
     fn lane_top(&self, index: usize) -> i32 {
-        let mut y = self.geometry().y + HEADER_HEIGHT as i32;
-        for lane in 0..index.min(self.lanes.len()) {
-            y += self.lane_height(lane) + LANE_GAP;
-        }
-        y
+        let rect = self.geometry();
+        let cache = self.lane_cache();
+        rect.y + cache.tops.get(index).copied().unwrap_or(HEADER_HEIGHT as i32)
     }
 
     /// The height of lane `index`'s band: its caption plus as many card rows as the fullest
     /// column holds in that lane.
     fn lane_height(&self, index: usize) -> i32 {
-        let mut rows = 0usize;
-        for column in &self.columns {
-            let count = column
-                .cards
-                .iter()
-                .filter(|card| self.card_lane_index(&card.id) == Some(index))
-                .count();
-            rows = rows.max(count);
+        self.lane_cache().heights.get(index).copied().unwrap_or(LANE_HEADER_HEIGHT + LANE_GAP)
+    }
+
+    /// The lane geometry snapshot for the current structure.
+    ///
+    /// Built at most once per structural change; the hover path and the paint path both only
+    /// read it, which is what removes the column×card×lane walk from pointer movement.
+    fn lane_cache(&self) -> core::cell::Ref<'_, LaneLayout> {
+        let fresh = self
+            .lane_layout
+            .borrow()
+            .as_ref()
+            .is_some_and(|cache| cache.revision == self.layout_revision);
+        if !fresh {
+            let built = self.build_lane_layout();
+            *self.lane_layout.borrow_mut() = Some(built);
         }
-        LANE_HEADER_HEIGHT + rows as i32 * (CARD_HEIGHT as i32 + CARD_GAP) + LANE_GAP
+        core::cell::Ref::map(self.lane_layout.borrow(), |slot| {
+            slot.as_ref().expect("lane_cache() populates the snapshot")
+        })
+    }
+
+    /// Derives every lane band and every card's lane slot in one pass.
+    fn build_lane_layout(&self) -> LaneLayout {
+        let lane_count = self.lanes.len();
+        let mut card_lane: Vec<Vec<usize>> = vec![Vec::new(); self.columns.len()];
+        let mut card_ordinal: Vec<Vec<usize>> = vec![Vec::new(); self.columns.len()];
+        let mut rows: Vec<usize> = vec![0; lane_count];
+        for (column_index, column) in self.columns.iter().enumerate() {
+            let mut seen: Vec<usize> = vec![0; lane_count];
+            for card in &column.cards {
+                let lane =
+                    self.card_lane_index(&card.id).unwrap_or(0).min(lane_count.saturating_sub(1));
+                card_lane[column_index].push(lane);
+                let ordinal = seen.get(lane).copied().unwrap_or(0);
+                card_ordinal[column_index].push(ordinal);
+                if let Some(slot) = seen.get_mut(lane) {
+                    *slot += 1;
+                    if let Some(row) = rows.get_mut(lane) {
+                        *row = (*row).max(*slot);
+                    }
+                }
+            }
+        }
+        let mut heights = Vec::with_capacity(lane_count);
+        let mut tops = Vec::with_capacity(lane_count);
+        let mut y = HEADER_HEIGHT as i32;
+        for &row in rows.iter().take(lane_count) {
+            tops.push(y);
+            let height =
+                LANE_HEADER_HEIGHT + row as i32 * (CARD_HEIGHT as i32 + CARD_GAP) + LANE_GAP;
+            heights.push(height);
+            y += height + LANE_GAP;
+        }
+        LaneLayout { revision: self.layout_revision, heights, tops, card_lane, card_ordinal }
+    }
+
+    /// The lane and in-lane ordinal a card is painted at.
+    fn lane_slot(&self, position: CardPosition) -> Option<(usize, usize)> {
+        let cache = self.lane_cache();
+        let lane = cache.card_lane.get(position.column)?.get(position.card).copied()?;
+        let ordinal = cache.card_ordinal.get(position.column)?.get(position.card).copied()?;
+        Some((lane, ordinal))
     }
 
     /// The band of lane `index`, spanning every column.
@@ -530,6 +650,7 @@ impl KanbanBoard {
         let column_ref = self.columns.get_mut(column)?;
         let position = CardPosition { column, card: column_ref.cards.len() };
         column_ref.cards.push(card);
+        self.invalidate_layout();
         self.base.request_redraw();
         Some(position)
     }
@@ -548,12 +669,25 @@ impl KanbanBoard {
 
     /// Finds a card by id, returning where it is.
     pub fn position_of(&self, card_id: &str) -> Option<CardPosition> {
-        for (column, entry) in self.columns.iter().enumerate() {
-            if let Some(card) = entry.cards.iter().position(|c| c.id == card_id) {
-                return Some(CardPosition { column, card });
+        self.card_positions().get(card_id).copied()
+    }
+
+    /// The id-keyed card index, rebuilt after a structural change.
+    fn card_positions(&self) -> core::cell::Ref<'_, HashMap<String, CardPosition>> {
+        if self.card_index.borrow().is_none() {
+            let mut map = HashMap::new();
+            for (column_index, column) in self.columns.iter().enumerate() {
+                for (card_index, card) in column.cards.iter().enumerate() {
+                    // First occurrence wins, matching the linear scan this replaces.
+                    map.entry(card.id.clone())
+                        .or_insert(CardPosition { column: column_index, card: card_index });
+                }
             }
+            *self.card_index.borrow_mut() = Some(map);
         }
-        None
+        core::cell::Ref::map(self.card_index.borrow(), |slot| {
+            slot.as_ref().expect("card_positions() populates the index")
+        })
     }
 
     /// Removes a card by id, returning it with the position it occupied.
@@ -562,6 +696,11 @@ impl KanbanBoard {
         let column = self.columns.get_mut(position.column)?;
         let card = column.cards.remove(position.card);
         self.card_lanes.remove(card_id);
+        if self.selected_cards.iter().any(|id| id == card_id) {
+            self.selected_cards.retain(|id| id != card_id);
+            self.selection_changed.emit(self.selected_cards.clone());
+        }
+        self.invalidate_layout();
         self.base.request_redraw();
         Some((card, position))
     }
@@ -583,6 +722,7 @@ impl KanbanBoard {
         let column_ref = self.columns.get_mut(column)?;
         let index = index.min(column_ref.cards.len());
         column_ref.cards.insert(index, card);
+        self.invalidate_layout();
         self.base.request_redraw();
         Some(CardPosition { column, card: index })
     }
@@ -609,6 +749,7 @@ impl KanbanBoard {
         let card = self.columns[from.column].cards.remove(from.card);
         let card_id = card.id.clone();
         let target = self.insert_card(to.column, to.card, card)?;
+        self.invalidate_layout();
         self.base.request_redraw();
         self.card_moved.emit((card_id, target));
         Some(target)
@@ -702,15 +843,10 @@ impl KanbanBoard {
         }
         let column_rect = self.column_rect(position.column)?;
         // In lane mode the band owns the row: the same card index inside a column can sit at a
-        // different y in every lane, so the ordinal is counted among the cards of that lane.
+        // different y in every lane, so the ordinal is the one the cached layout derived.
         if self.lanes_active() {
-            let card_id = column.cards.get(position.card)?.id.as_str();
-            let lane = self.card_lane_index(card_id)?;
+            let (lane, ordinal) = self.lane_slot(position)?;
             let band = self.lane_band_rect(lane)?;
-            let ordinal = column.cards[..position.card]
-                .iter()
-                .filter(|card| self.card_lane_index(&card.id) == Some(lane))
-                .count();
             let y = band.y + LANE_HEADER_HEIGHT + ordinal as i32 * (CARD_HEIGHT as i32 + CARD_GAP);
             return Some(Rect::new(column_rect.x, y, column_rect.width, CARD_HEIGHT));
         }
@@ -767,13 +903,21 @@ impl KanbanBoard {
         };
         if self.lanes_active() {
             let lane = self.lane_at(pos).unwrap_or(0);
-            let lane_indices: Vec<usize> = entries
-                .cards
-                .iter()
-                .enumerate()
-                .filter(|(_, card)| self.card_lane_index(&card.id) == Some(lane))
-                .map(|(index, _)| index)
-                .collect();
+            let lane_indices: Vec<usize> = {
+                let cache = self.lane_cache();
+                cache
+                    .card_lane
+                    .get(column)
+                    .map(|slots| {
+                        slots
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, slot)| **slot == lane)
+                            .map(|(index, _)| index)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
             if lane_indices.is_empty() {
                 // The lane has no card in this column, so appending keeps the other lanes' order
                 // intact and puts the new card at the end of its own band.
@@ -818,6 +962,94 @@ impl KanbanBoard {
     /// The card under the pointer, when no drag is in progress.
     pub fn hovered_card(&self) -> Option<CardPosition> {
         self.hovered_card
+    }
+
+    /// The explicitly selected card ids, in display order.
+    pub fn selected_cards(&self) -> &[String] {
+        &self.selected_cards
+    }
+
+    /// Selects or deselects a card by id, returning whether the id resolved.
+    pub fn set_card_selected(&mut self, card_id: &str, selected: bool) -> bool {
+        if self.position_of(card_id).is_none() {
+            return false;
+        }
+        let present = self.selected_cards.iter().any(|id| id == card_id);
+        if present == selected {
+            return true;
+        }
+        if selected {
+            self.selected_cards.push(card_id.to_string());
+        } else {
+            self.selected_cards.retain(|id| id != card_id);
+        }
+        self.sort_selection();
+        self.selection_changed.emit(self.selected_cards.clone());
+        self.base.request_redraw();
+        true
+    }
+
+    /// Toggles a card's membership in the selection.
+    pub fn toggle_card_selected(&mut self, card_id: &str) -> bool {
+        let present = self.selected_cards.iter().any(|id| id == card_id);
+        self.set_card_selected(card_id, !present)
+    }
+
+    /// Clears the whole selection.
+    pub fn clear_selection(&mut self) {
+        if self.selected_cards.is_empty() {
+            return;
+        }
+        self.selected_cards.clear();
+        self.selection_changed.emit(Vec::new());
+        self.base.request_redraw();
+    }
+
+    /// Re-orders the selection into reading order and drops ids that no longer name a card.
+    fn sort_selection(&mut self) {
+        if self.selected_cards.is_empty() {
+            return;
+        }
+        let mut ordered = Vec::with_capacity(self.selected_cards.len());
+        for column in &self.columns {
+            for card in &column.cards {
+                if self.selected_cards.contains(&card.id) {
+                    ordered.push(card.id.clone());
+                }
+            }
+        }
+        self.selected_cards = ordered;
+    }
+
+    /// Advances the board while a dragged card is held near/over an edge.
+    ///
+    /// Without this a card could only be dropped inside the viewport it was picked up in; a long
+    /// board forced the reader to drop, scroll, and pick the card up again. The step is the same
+    /// clamp-respecting scroll the wheel uses.
+    fn autoscroll_drag(&mut self, pos: Point) {
+        if !self.is_dragging_card() {
+            return;
+        }
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let band = DRAG_AUTOSCROLL_BAND;
+        if pos.x < rect.x + band {
+            self.scroll_horizontally_by(-HORIZONTAL_SCROLL_STEP);
+        } else if pos.x > rect.x + rect.width as i32 - band {
+            self.scroll_horizontally_by(HORIZONTAL_SCROLL_STEP);
+        }
+        let column = self.hovered_column.or(self.drag_origin.map(|origin| origin.column));
+        if let Some(column) = column {
+            let top = rect.y + HEADER_HEIGHT as i32 + band;
+            let bottom = rect.y + rect.height as i32 - band;
+            if pos.y < top {
+                self.scroll_column(column, -1);
+            } else if pos.y > bottom {
+                self.scroll_column(column, 1);
+            }
+        }
     }
 
     /// Moves keyboard focus to `position`, scrolling its column when needed.
@@ -1045,6 +1277,32 @@ impl KanbanBoard {
         let moved = self.move_card(current, target).is_some();
         if let Some(lane) = target_lane {
             self.set_card_lane(&card_id, &lane);
+        }
+        // A drop that carried a selected group moves the rest of the group with it, which is the
+        // batch operation a multi-selection exists for. The batch is reported separately so the
+        // published single-card `card_moved` payload keeps its shape.
+        if moved
+            && self.selected_cards.len() > 1
+            && self.selected_cards.contains(&card_id)
+        {
+            let batch: Vec<String> =
+                self.selected_cards.iter().filter(|id| **id != card_id).cloned().collect();
+            let mut destination = target.card + 1;
+            let mut moved_ids = vec![card_id.clone()];
+            for id in batch {
+                if let Some(position) = self.position_of(&id) {
+                    if self
+                        .move_card(position, CardPosition { column, card: destination })
+                        .is_some()
+                    {
+                        moved_ids.push(id);
+                        destination += 1;
+                    }
+                }
+            }
+            if moved_ids.len() > 1 {
+                self.cards_moved.emit(moved_ids);
+            }
         }
         moved || lane_changed
     }
@@ -1314,23 +1572,62 @@ impl EventHandler for KanbanBoard {
             return;
         }
         match event {
-            Event::MousePress { pos, button, .. } if *button == 1 => {
+            Event::MousePress { pos, button, modifiers } if *button == 1 => {
                 if let Some(position) = self.card_at(*pos) {
+                    let card_id = self
+                        .columns
+                        .get(position.column)
+                        .and_then(|column| column.cards.get(position.card))
+                        .map(|card| card.id.clone());
+                    let pressed = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                    // A modified click extends the selection instead of starting a drag, which is
+                    // how a batch of cards is gathered for one move.
+                    if pressed.contains(crate::shortcut::Modifiers::PRIMARY)
+                        || pressed.contains(crate::shortcut::Modifiers::SHIFT)
+                    {
+                        self.focused_card = Some(position);
+                        if let Some(card_id) = card_id {
+                            self.toggle_card_selected(&card_id);
+                        }
+                        return;
+                    }
                     self.focused_card = Some(position);
+                    if self.selected_cards.len() > 1
+                        && card_id
+                            .as_ref()
+                            .is_some_and(|id| self.selected_cards.iter().any(|s| s == id))
+                    {
+                        // Pressing one member of a group keeps the group: the drop moves all of it.
+                    } else {
+                        self.clear_selection();
+                    }
                     self.begin_card_drag(position, *pos);
                 }
             }
             Event::MouseMove { pos } if self.drag.is_some() => {
+                // Edge auto-scroll first: `update_card_drag` then resolves the column and the drop
+                // index against the viewport the scroll just produced.
+                self.autoscroll_drag(*pos);
                 self.update_card_drag(*pos);
             }
             Event::MouseMove { pos } => {
                 let hovered = self.card_at(*pos);
                 let column = self.column_at(*pos);
                 let changed = hovered != self.hovered_card || column != self.hovered_column;
+                let hover_changed = hovered != self.hovered_card;
                 self.hovered_card = hovered;
                 self.hovered_column = column;
                 if changed {
                     self.base.request_redraw();
+                }
+                if hover_changed {
+                    let id = hovered.and_then(|position| {
+                        self.columns
+                            .get(position.column)
+                            .and_then(|entry| entry.cards.get(position.card))
+                            .map(|card| card.id.clone())
+                    });
+                    self.card_hovered.emit(id);
                 }
             }
             Event::MouseRelease { pos, button } if *button == 1 && self.drag.is_some() => {
@@ -1429,7 +1726,9 @@ impl EventHandler for KanbanBoard {
             // the surface) must not leave a card half-attached to the cursor.
             Event::MouseLeave { .. } => {
                 self.cancel_drag();
-                if self.hovered_card.take().is_some() {
+                let hover_changed = self.hovered_card.take().is_some();
+                if hover_changed {
+                    self.card_hovered.emit(None);
                     self.base.request_redraw();
                 }
             }
@@ -1740,17 +2039,18 @@ impl KanbanBoard {
             }
         }
 
+        // Clipping is a column-level state, not a card-level one: the column rectangle is what
+        // bounds its cards, so one push/pop per column replaces one per card. Before this a screen
+        // of a few hundred cards paid a clip transition for every card in the paint loop.
+        context.push_clip(column_rect.x, column_rect.y, column_rect.width, column_rect.height);
         for (card_index, card) in cards.iter().enumerate() {
             let position = CardPosition { column: index, card: card_index };
             let Some(card_rect) = self.card_rect(position) else {
                 continue;
             };
-            // Clipped to the column so a card taller than the remaining space does
-            // not paint over the column beside it.
-            context.push_clip(column_rect.x, column_rect.y, column_rect.width, column_rect.height);
             self.draw_card(context, card, card_rect, position, chrome, title_font, desc_font);
-            context.pop_clip();
         }
+        context.pop_clip();
     }
 
     /// Draws the lane labels down the left edge and the divider that separates them from the
@@ -1831,6 +2131,11 @@ impl KanbanBoard {
             if focused { chrome.text().with_alpha(alpha) } else { chrome.border.with_alpha(alpha) },
             if focused { 2 } else { 1 },
         );
+        // A selected card is a member of the batch a drop will move, so it reads as its own state
+        // rather than as the keyboard focus ring.
+        if self.selected_cards.contains(&card.id) {
+            context.draw_rounded_rect_stroke(card_rect, 6, chrome.insertion(), 2);
+        }
 
         let title_color = if card.done {
             chrome.done_text().with_alpha(alpha)
@@ -3582,5 +3887,76 @@ mod tests {
             board.set("lane_count", CapabilityValue::UInt(0)),
             Err(CapabilityAccessError::ReadOnlyProperty)
         );
+    }
+}
+
+#[cfg(test)]
+mod issue_2_8_tests {
+    use super::*;
+    use crate::event::Event;
+    use std::sync::{Arc, Mutex};
+
+    fn board() -> KanbanBoard {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 600, 300));
+        board.add_column(KanbanColumn::new("todo", "To do"));
+        board.add_card(0, KanbanCard::new("a", "Alpha"));
+        board.add_card(0, KanbanCard::new("b", "Beta"));
+        board.add_card(0, KanbanCard::new("c", "Gamma"));
+        board
+    }
+
+    /// SP-07: the selection is a set, ordered by the board's own reading order.
+    #[test]
+    fn multi_selection_keeps_display_order_and_drops_removed_cards() {
+        let mut board = board();
+        assert!(board.set_card_selected("c", true));
+        assert!(board.set_card_selected("a", true));
+        assert_eq!(board.selected_cards(), ["a", "c"]);
+        assert!(board.set_card_selected("a", false));
+        assert_eq!(board.selected_cards(), ["c"]);
+        board.remove_card("c");
+        assert!(board.selected_cards().is_empty());
+        assert!(!board.set_card_selected("missing", true));
+    }
+
+    /// SP-07: a modified press toggles a card instead of starting a drag.
+    #[test]
+    fn a_primary_modified_press_toggles_the_selection() {
+        let mut board = board();
+        let rect = board.card_rect(CardPosition { column: 0, card: 0 }).expect("a laid-out card");
+        let primary = crate::widget::input_widgets::shortcut_editor::primary_modifier_event_bits();
+        board.handle_event(&Event::mouse_press_with(rect.x + 4, rect.y + 4, 1, primary));
+        assert_eq!(board.selected_cards(), ["a"]);
+        assert!(!board.is_dragging_card());
+        board.handle_event(&Event::mouse_press_with(rect.x + 4, rect.y + 4, 1, primary));
+        assert!(board.selected_cards().is_empty());
+    }
+
+    /// SP-05: the hover signal carries the card id and a `None` on the way out.
+    #[test]
+    fn hovering_a_card_emits_its_id_and_leaving_emits_none() {
+        let mut board = board();
+        let seen = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+        let sink = seen.clone();
+        board.card_hovered.connect_ref(move |id| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(id.clone());
+            }
+        });
+        let rect = board.card_rect(CardPosition { column: 0, card: 1 }).expect("a laid-out card");
+        board.handle_event(&Event::mouse_move(rect.x + 4, rect.y + 4));
+        board.handle_event(&Event::mouse_leave(rect.x + 4, rect.y + 4));
+        let seen = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(seen, vec![Some("b".to_string()), None]);
+    }
+
+    /// SP-P11: the id index answers the same positions the linear scan used to.
+    #[test]
+    fn the_card_index_matches_every_card_position() {
+        let board = board();
+        for (position, card) in board.cards() {
+            assert_eq!(board.position_of(&card.id), Some(position));
+        }
+        assert!(board.position_of("missing").is_none());
     }
 }

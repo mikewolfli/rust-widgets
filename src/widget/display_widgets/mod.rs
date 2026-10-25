@@ -60,7 +60,12 @@ pub mod switch;
 /// Tag — a single tone-coloured label with an optional close glyph.
 #[cfg(full_widgets)]
 pub mod tag;
+/// TagGroup — the companion container that lays out and aggregates `Tag` children.
+#[cfg(full_widgets)]
+pub mod tag_group;
+#[cfg(full_widgets)]
+pub use tag_group::{TagGroup, TagSelectionMode};
 
 // Re-export shared helpers.
 mod draw_helpers;
-pub(crate) use draw_helpers::draw_line;
+pub(crate) use draw_helpers::{draw_line, draw_shaded_line};

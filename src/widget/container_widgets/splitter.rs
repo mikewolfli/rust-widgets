@@ -19,6 +19,8 @@ use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::theme_snapshot::ThemeSnapshot;
+
 // ── Handle dragging, expressed through `event::dnd` ─────────────────────────
 //
 // The press/move/release machine used to be hand-written here: a `DragState`
@@ -89,6 +91,11 @@ pub struct Splitter {
     handle_width: u32,
     /// Per-pane collapsed state, parallel to the layout's pane list.
     collapsed: Vec<bool>,
+    /// Per-pane maximum extent, parallel to the layout's pane list (C-22).
+    ///
+    /// `None` is "no limit", which is the historical behaviour; the engine has no maximum, so the
+    /// wrapper enforces it where ratios are written and dragged.
+    max_pane_sizes: Vec<Option<u32>>,
     /// The ratio each pane had before it was collapsed, restored on expansion.
     pre_collapse_ratios: Vec<f32>,
     /// The last dragged-pair ratio thousandths emitted as a preview; throttles the
@@ -113,6 +120,7 @@ impl Splitter {
             active_pane: None,
             handle_width: HANDLE_WIDTH,
             collapsed: Vec::new(),
+            max_pane_sizes: Vec::new(),
             pre_collapse_ratios: Vec::new(),
             preview_mark: None,
         }
@@ -156,6 +164,7 @@ impl Splitter {
     pub fn add_pane(&mut self, pane_id: ObjectId, stretch: u32) -> usize {
         let index = self.layout.add_pane(pane_id, stretch);
         self.collapsed.push(false);
+        self.max_pane_sizes.push(None);
         self.pre_collapse_ratios.push((stretch.max(1)) as f32);
         // A pane is an ordinary tree child: the tree painter draws it after the splitter's
         // track and the hit test reaches it directly, so no draw-closure registry is needed.
@@ -177,6 +186,9 @@ impl Splitter {
             if index < self.collapsed.len() {
                 self.collapsed.remove(index);
             }
+            if index < self.max_pane_sizes.len() {
+                self.max_pane_sizes.remove(index);
+            }
             if index < self.pre_collapse_ratios.len() {
                 self.pre_collapse_ratios.remove(index);
             }
@@ -193,6 +205,9 @@ impl Splitter {
     }
     /// Sets ratio for pane index.
     pub fn set_ratio(&mut self, index: usize, ratio: f32) -> bool {
+        // C-22: an explicit write honours the pane's maximum too, so a host cannot put a pane
+        // over a cap the user cannot drag it past.
+        let ratio = self.clamped_ratio(index, ratio);
         if !self.layout.set_ratio(index, ratio) {
             return false;
         }
@@ -206,6 +221,9 @@ impl Splitter {
             self.pane_layout_changed.emit(self.layout.ratios().to_vec());
         }
         self.place_panes();
+        // The engine's normalisation can move the produced extent away from the ratio-space cap, so
+        // the actual rectangle decides whether the pane is inside its maximum.
+        self.converge_pane_to_maximum(index);
         self.base.request_redraw();
         true
     }
@@ -214,7 +232,8 @@ impl Splitter {
     /// A host restores a saved layout by calling this before the splitter is shown, using the
     /// vector [`Self::ratios`] returned in the previous session.
     pub fn set_ratios(&mut self, ratios: &[f32]) -> bool {
-        if !self.layout.set_ratios(ratios.to_vec()) {
+        let clamped = self.clamp_ratios_to_max(ratios);
+        if !self.layout.set_ratios(clamped) {
             return false;
         }
         // A zero weight is the collapsed representation; a positive one is expanded.
@@ -251,6 +270,37 @@ impl Splitter {
     /// The minimum extent of pane `index`.
     pub fn min_pane_size(&self, index: usize) -> u32 {
         self.layout.min_size(index)
+    }
+
+    /// Sets the maximum extent of pane `index` (C-22).
+    ///
+    /// Returns `false` for an out-of-range index. The cap is enforced in pixels at every ratio
+    /// write: a drag stops when the pane reaches it, and an explicit [`Self::set_ratio`] is clamped
+    /// to it. `0` is a legal maximum (a permanently collapsed pane).
+    pub fn set_max_pane_size(&mut self, index: usize, maximum: u32) -> bool {
+        if index >= self.pane_count() {
+            return false;
+        }
+        if self.max_pane_sizes.len() < self.pane_count() {
+            self.max_pane_sizes.resize(self.pane_count(), None);
+        }
+        if self.max_pane_sizes[index] == Some(maximum) {
+            return true;
+        }
+        self.max_pane_sizes[index] = Some(maximum);
+        // Converge the current ratios onto the new cap rather than leaving the pane over it
+        // until the next drag.
+        let ratios = self.layout.ratios().to_vec();
+        let clamped = self.clamp_ratios_to_max(&ratios);
+        self.layout.set_ratios(clamped);
+        self.place_panes();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The maximum extent of pane `index`, or `None` when it is unbounded.
+    pub fn max_pane_size(&self, index: usize) -> Option<u32> {
+        self.max_pane_sizes.get(index).copied().flatten()
     }
 
     /// Sets whether pane `index` may collapse to zero.
@@ -480,6 +530,75 @@ impl Splitter {
         rects
     }
 
+    /// The extent the pane ratios divide: the control's axis extent minus the reserved gaps.
+    fn ratio_extent(&self) -> f32 {
+        let rect = self.base.geometry();
+        let full =
+            if self.orientation() == Orientation::Horizontal { rect.width } else { rect.height }
+                as f32;
+        let gaps = self.pane_count().saturating_sub(1) as f32 * self.handle_width as f32;
+        (full - gaps).max(0.0)
+    }
+
+    /// Clamps a pane's ratio so its pixel extent does not exceed its maximum (C-22).
+    fn clamped_ratio(&self, index: usize, ratio: f32) -> f32 {
+        let Some(max) = self.max_pane_size(index) else {
+            return ratio;
+        };
+        let extent = self.ratio_extent();
+        let total: f32 = self.layout.ratios().iter().copied().sum();
+        if extent <= 0.0 || total <= 0.0 {
+            return ratio;
+        }
+        // `ratio / total * extent` is the pane's pixel width; solving that for `max` gives the
+        // weight cap. Keeping the total unchanged leaves every other pane's share intact.
+        ratio.min((max as f32 / extent) * total)
+    }
+
+    /// Clamps every ratio whose pane exceeds its maximum (C-22).
+    fn clamp_ratios_to_max(&self, ratios: &[f32]) -> Vec<f32> {
+        let extent = self.ratio_extent();
+        let total: f32 = ratios.iter().copied().sum();
+        if extent <= 0.0 || total <= 0.0 {
+            return ratios.to_vec();
+        }
+        ratios
+            .iter()
+            .enumerate()
+            .map(|(index, ratio)| match self.max_pane_size(index) {
+                Some(max) => ratio.min((max as f32 / extent) * total),
+                None => *ratio,
+            })
+            .collect()
+    }
+
+    /// Scales `index`'s weight down until the produced pane rectangle fits its maximum (C-22).
+    ///
+    /// The ratio-space cap above is the first approximation; the engine may normalise the weights
+    /// after a write, so the authoritative answer is the rectangle it actually produced. Scaling by
+    /// `max / produced` is a single-step convergence: a pane's pixel extent is monotonic in its own
+    /// weight, and the scaled result can only undershoot the cap, never overshoot it.
+    fn converge_pane_to_maximum(&mut self, index: usize) {
+        let Some(max) = self.max_pane_size(index) else {
+            return;
+        };
+        let horizontal = self.orientation() == Orientation::Horizontal;
+        let produced = self
+            .pane_rects()
+            .get(index)
+            .map(|(_, rect)| if horizontal { rect.width } else { rect.height })
+            .unwrap_or(0);
+        if produced == 0 || produced <= max {
+            return;
+        }
+        let Some(current) = self.layout.ratio(index) else {
+            return;
+        };
+        let scaled = current * (max as f32 / produced as f32);
+        let _ = self.layout.set_ratio(index, scaled);
+        self.place_panes();
+    }
+
     /// Places every pane in the rectangle the layout gives it.
     ///
     /// The panes are ordinary tree children, so the tree painter draws them and the hit test
@@ -490,52 +609,40 @@ impl Splitter {
     fn place_panes(&self) {
         #[cfg(not(alloc_frugal))]
         for (pane_id, rect) in self.pane_rects() {
+            // C-P07: only the panes whose rectangle actually changed are written. A handle drag
+            // changes the two adjacent panes, while this loop used to rewrite all of them on
+            // every pointer sample — a global registry write per pane per event.
+            if crate::widget_geometry(pane_id) == Some((rect.x, rect.y, rect.width, rect.height)) {
+                continue;
+            }
             crate::set_widget_geometry(pane_id, rect.x, rect.y, rect.width, rect.height);
         }
     }
 
-    /// The centre of the divider that follows pane `index`, in widget coordinates.
-    ///
-    /// # Why this is one derivation
-    ///
-    /// The panes are laid out by [`SplitterLayout::update`](crate::layout::splitter::SplitterLayout),
-    /// which reads the stored ratios as **relative weights** — `weights[i] / sum(weights)`. The
-    /// divider fill, the hit test and the drag all used to accumulate `ratio(i) * extent`
-    /// *without* dividing by the sum, so as soon as the weights did not already sum to `1.0`
-    /// (which is the normal state: `add_pane` stores the raw `stretch` and only a drag release
-    /// normalises) the divider was painted and dragged at a different place than the boundary
-    /// between the panes. With two equal panes on a 300px splitter the handle sat at `x=300` —
-    /// past the right edge — while the boundary was at `x=150`.
-    ///
-    /// The divider belongs at the pane boundary, so this asks the layout for the pane rectangles
-    /// and takes the edge between pane `index` and pane `index + 1`: `pane[index].end() +
-    /// spacing / 2`, i.e. the midpoint of the gap the layout reserves. One derivation feeds all
-    /// three consumers, so they cannot drift again.
-    ///
-    /// Returns `None` when pane `index + 1` does not exist.
-    fn divider_center(&self, index: usize) -> Option<i32> {
-        let rects = self.pane_rects();
-        let left = rects.get(index)?.1;
-        let right = rects.get(index + 1)?.1;
-        Some(match self.orientation() {
-            Orientation::Horizontal => {
-                let left_end = left.x + left.width as i32;
-                left_end + (right.x - left_end) / 2
-            }
-            Orientation::Vertical => {
-                let left_end = left.y + left.height as i32;
-                left_end + (right.y - left_end) / 2
-            }
-        })
-    }
-
     /// The dividers this control paints, one per gap between panes.
     ///
-    /// With fewer than two panes there is no boundary to draw between, so a single
-    /// affordance is placed at the middle of the control. That keeps the divider — which *is*
-    /// the drag handle — discoverable on an empty splitter, while never inventing a position
-    /// that disagrees with the pane layout.
+    /// The divider belongs at the pane boundary, so this takes the edge between pane `index` and
+    /// pane `index + 1`: `pane[index].end() + spacing / 2`, the midpoint of the gap the layout
+    /// reserves. The layout reads a stored ratio as a **relative weight**
+    /// (`weights[i] / sum(weights)`), which is why the boundary is read from the produced
+    /// rectangles rather than accumulated from the weights: the old accumulation only agreed with
+    /// the panes while the weights happened to sum to `1.0`, and two equal panes on a 300 px
+    /// splitter put the painted handle at `x=300` while the real boundary was at `x=150`.
+    ///
+    /// With fewer than two panes there is no boundary to draw between, so a single affordance is
+    /// placed at the middle of the control. That keeps the divider — which *is* the drag handle —
+    /// discoverable on an empty splitter, while never inventing a position that disagrees with the
+    /// pane layout.
     fn divider_centers(&self) -> Vec<i32> {
+        self.divider_centers_from(&self.pane_rects())
+    }
+
+    /// The divider centres for an already-computed pane arrangement (C-P06).
+    ///
+    /// The full derivation asks the layout once and derives every centre by differencing
+    /// adjacent rectangles. The old form asked the layout again for each gap — `(n - 1)` full
+    /// `SplitterLayout::update` runs per draw — which is O(n²) for n panes.
+    fn divider_centers_from(&self, rects: &[(ObjectId, Rect)]) -> Vec<i32> {
         let count = self.pane_count();
         if count < 2 {
             let rect = self.base.geometry();
@@ -544,7 +651,24 @@ impl Splitter {
                 Orientation::Vertical => rect.y + rect.height as i32 / 2,
             }];
         }
-        (0..count - 1).filter_map(|index| self.divider_center(index)).collect()
+        let mut centers = Vec::with_capacity(count.saturating_sub(1));
+        for index in 0..count - 1 {
+            let (Some((_, left)), Some((_, right))) = (rects.get(index), rects.get(index + 1))
+            else {
+                continue;
+            };
+            centers.push(match self.orientation() {
+                Orientation::Horizontal => {
+                    let left_end = left.x + left.width as i32;
+                    left_end + (right.x - left_end) / 2
+                }
+                Orientation::Vertical => {
+                    let left_end = left.y + left.height as i32;
+                    left_end + (right.y - left_end) / 2
+                }
+            });
+        }
+        centers
     }
 }
 impl SaveState for Splitter {
@@ -698,27 +822,23 @@ impl Draw for Splitter {
         //
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global manager's mutex
-        // is not re-entrant.
+        // is not re-entrant. `ThemeSnapshot` folds the resolved style and the palette roles into
+        // one visit for the frame (C-P01).
+        let theme = ThemeSnapshot::capture("splitter");
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("splitter");
         // Read as its own lock acquisition and copied out as values, so the guard is dropped
         // before anything else touches the theme.
-        let (window_fill, foreground, secondary) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => {
-                    (active.colors.background, active.colors.foreground, active.colors.secondary)
-                }
-                None => (
-                    crate::core::Color::rgb(240, 240, 240),
-                    crate::core::Color::BLACK,
-                    crate::core::Color::rgb(158, 158, 158),
-                ),
-            }
+        let (window_fill, foreground, secondary) = match theme.palette {
+            Some(active) => (active.background, active.foreground, active.secondary),
+            None => (
+                crate::core::Color::rgb(240, 240, 240),
+                crate::core::Color::BLACK,
+                crate::core::Color::rgb(158, 158, 158),
+            ),
         };
         let ink = style
             .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.text_color))
             .unwrap_or(foreground);
         // `splitter` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
         // `Surface` and the active theme writes the window fill into `style.background_color`. A
@@ -732,7 +852,7 @@ impl Draw for Splitter {
         let handle_fill = track.blend(&ink, 0.14);
         let handle_border = style
             .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .or_else(|| theme.style.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != handle_fill)
             .unwrap_or_else(|| track.blend(&secondary, 0.45));
 
@@ -747,10 +867,13 @@ impl Draw for Splitter {
             Color::BLACK,
         );
 
+        // C-P06: one layout pass for the pane rectangles, shared by the draw and by the divider
+        // positions derived from the same rectangles.
+        let pane_rects = self.pane_rects();
         if let Some(ref registry) = self.registry {
-            for (pane_id, pane_rect) in self.pane_rects() {
+            for (pane_id, pane_rect) in &pane_rects {
                 context.push_clip(pane_rect.x, pane_rect.y, pane_rect.width, pane_rect.height);
-                registry.borrow_mut().draw_widget(pane_id, context);
+                registry.borrow_mut().draw_widget(*pane_id, context);
                 context.pop_clip();
             }
         }
@@ -768,10 +891,11 @@ impl Draw for Splitter {
         // ratio as a relative weight (`weight / sum`), so two equal panes put the boundary at
         // the middle while the raw-weight accumulation put the handle at the right edge.
         let handle_width = self.handle_width as i32;
+        let centers = self.divider_centers_from(&pane_rects);
         match self.orientation() {
             Orientation::Horizontal => {
                 // Draw vertical splitter handles, one in each gap between panes.
-                for x in self.divider_centers() {
+                for x in centers {
                     let handle_rect =
                         Rect::new(x - handle_width / 2, rect.y, handle_width as u32, rect.height);
                     context.fill_rect(handle_rect, handle_fill);
@@ -780,7 +904,7 @@ impl Draw for Splitter {
             }
             Orientation::Vertical => {
                 // Draw horizontal splitter handles, one in each gap between panes.
-                for y in self.divider_centers() {
+                for y in centers {
                     let handle_rect =
                         Rect::new(rect.x, y - handle_width / 2, rect.width, handle_width as u32);
                     context.fill_rect(handle_rect, handle_fill);
@@ -887,7 +1011,9 @@ impl Splitter {
     /// The hit test uses the same [`Self::divider_centers`] derivation the fill uses, so
     /// the grab area is exactly the handle the user can see.
     fn begin_handle_drag(&mut self, pos: crate::core::Point) {
-        if let Some(index) = self.pane_rects().iter().position(|(_, pane)| {
+        // C-P06: one layout pass serves both the hit test and the divider positions.
+        let rects = self.pane_rects();
+        if let Some(index) = rects.iter().position(|(_, pane)| {
             pos.x >= pane.x
                 && pos.x < pane.x + pane.width as i32
                 && pos.y >= pane.y
@@ -897,7 +1023,7 @@ impl Splitter {
         }
 
         let pos_primary = self.primary_offset(pos);
-        for (index, center) in self.divider_centers().into_iter().enumerate() {
+        for (index, center) in self.divider_centers_from(&rects).into_iter().enumerate() {
             let center = match self.orientation() {
                 Orientation::Horizontal => center as f32 - self.base.geometry().x as f32,
                 Orientation::Vertical => center as f32 - self.base.geometry().y as f32,
@@ -974,12 +1100,31 @@ impl Splitter {
             return;
         }
         let scale = pair_sum / new_pair_sum;
-        self.layout.set_ratio(index, new_left * scale);
-        self.layout.set_ratio(index + 1, new_right * scale);
+        // C-22: a pane at its maximum stops the pair there, so the cap is a real drag limit
+        // rather than a value a later write can silently exceed.
+        let extent = self.ratio_extent();
+        let total: f32 = self.layout.ratios().iter().copied().sum();
+        let mut left_ratio = new_left * scale;
+        let mut right_ratio = new_right * scale;
+        if extent > 0.0 && total > 0.0 {
+            if let Some(max) = self.max_pane_size(index) {
+                left_ratio = left_ratio.min((max as f32 / extent) * total);
+            }
+            if let Some(max) = self.max_pane_size(index + 1) {
+                right_ratio = right_ratio.min((max as f32 / extent) * total);
+            }
+        }
+        self.layout.set_ratio(index, left_ratio);
+        self.layout.set_ratio(index + 1, right_ratio);
+        self.converge_pane_to_maximum(index);
+        self.converge_pane_to_maximum(index + 1);
         // The panes follow the ratios while the handle is moving, not only on release. The
         // committed signal waits for release: a per-move `pane_layout_changed` made one gesture
         // look like hundreds of layout changes and allocated a ratio vector per pointer sample.
         // `pane_layout_preview` is the live channel, throttled to a visible ratio step.
+        // The preview payload is a `Vec<f32>` because that is the published signal's type; the
+        // per-move cost that remains is that payload, and it is only allocated on a visible ratio
+        // step (throttled above) rather than on every pointer sample.
         self.place_panes();
         if self.pane_layout_preview.slot_count() > 0 {
             let mark = ((new_left * 1000.0).round() as i64, (new_right * 1000.0).round() as i64);
@@ -1318,5 +1463,19 @@ mod tests {
             button: 1,
         });
         assert!((sp.ratio(0).expect("ratio") - 0.5).abs() < 1e-6);
+    }
+
+    /// C-22: a pane maximum is a real drag and write limit, not a stored number.
+    #[test]
+    fn a_pane_maximum_caps_a_ratio_write() {
+        let mut sp = Splitter::new(Rect::new(0, 0, 300, 200));
+        sp.add_pane(TEST_PANE_A, 1);
+        sp.add_pane(TEST_PANE_B, 1);
+        assert_eq!(sp.max_pane_size(0), None, "unbounded by default");
+        assert!(sp.set_max_pane_size(0, 50));
+        assert!(sp.set_ratio(0, 0.9));
+        let width = sp.pane_rects()[0].1.width;
+        assert!(width <= 50, "the written ratio is clamped to the cap: {width}");
+        assert!(!sp.set_max_pane_size(9, 10), "an unknown pane is refused");
     }
 }

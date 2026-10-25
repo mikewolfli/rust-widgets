@@ -3,9 +3,9 @@
 
 //! macOS objc2 migration preview backend.
 //!
-//! This backend provides a state-driven implementation behind the `objc2-macos`
-//! feature flag so migration can proceed incrementally without changing default
-//! runtime behavior.
+//! This backend provides a state-driven implementation behind the `macos`
+//! feature flag (`objc2-macos` is only an alias that enables `macos`) so
+//! migration can proceed incrementally without changing default runtime behavior.
 use crate::compat::{HashMap, Mutex, String, Vec, VecDeque};
 use crate::platform::state::BackendState;
 use crate::platform::WidgetTriggerEvent;

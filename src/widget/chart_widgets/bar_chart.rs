@@ -31,7 +31,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::chart_widgets::adapter::ChartContextAdapter;
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::charts::{
-    compute_cartesian_layout_measured, draw_legend_entries, draw_y_ticks, CartesianLayout,
+    compute_cartesian_layout_measured, draw_legend_entries_iter, draw_y_ticks, CartesianLayout,
 };
 use crate::widget::metrics::role_font;
 // The chrome derivation is shared with the engine-backed path deliberately: the
@@ -175,6 +175,23 @@ pub struct BarChart {
     pub bar_unhovered: Signal1<usize>,
     /// Emitted with the category index of a clicked bar.
     pub bar_clicked: Signal1<usize>,
+    /// Emitted with `(series, category)` when hover enters a bar (CH-04).
+    ///
+    /// The single-index signals above keep their historical payload for compatibility; a
+    /// grouped chart needs the series dimension, which this signal carries.
+    pub bar_hovered_with_series: Signal1<(usize, usize)>,
+    /// Emitted with `(series, category)` when the pointer leaves a bar (CH-04).
+    pub bar_unhovered_with_series: Signal1<(usize, usize)>,
+    /// Emitted with `(series, category)` of a clicked bar (CH-04).
+    pub bar_clicked_with_series: Signal1<(usize, usize)>,
+    /// The chart title, painted centred at the top (CH-07).
+    title: Option<String>,
+    /// The x-axis title, painted under the plot (CH-07).
+    x_axis_label: Option<String>,
+    /// The y-axis title, painted above the plot's leading edge (CH-07).
+    y_axis_label: Option<String>,
+    /// An attached reference-line companion (COMP-F01).
+    crosshair: Option<crate::widget::chart_widgets::chart_crosshair::ChartCrosshair>,
 }
 
 /// Cached width of the widest y-axis tick label.
@@ -284,6 +301,13 @@ impl BarChart {
             bar_hovered: Signal1::new(),
             bar_unhovered: Signal1::new(),
             bar_clicked: Signal1::new(),
+            bar_hovered_with_series: Signal1::new(),
+            bar_unhovered_with_series: Signal1::new(),
+            bar_clicked_with_series: Signal1::new(),
+            title: None,
+            x_axis_label: None,
+            y_axis_label: None,
+            crosshair: None,
         }
     }
 
@@ -551,6 +575,8 @@ impl BarChart {
         if self.hovered.is_some_and(|index| index >= categories) {
             if let Some(index) = self.hovered.take() {
                 self.bar_unhovered.emit(index);
+                let series = self.series_at(Point::new(0, 0), Rect::new(0, 0, 1, 1), index);
+                self.bar_unhovered_with_series.emit((series, index));
             }
         }
     }
@@ -567,6 +593,94 @@ impl BarChart {
                 .unwrap_or(0)
                 .max(self.category_labels.len())
         }
+    }
+
+    /// The chart title, when one is set (CH-07).
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    /// Attaches a crosshair companion (COMP-F01).
+    pub fn set_crosshair(
+        &mut self,
+        crosshair: Option<crate::widget::chart_widgets::chart_crosshair::ChartCrosshair>,
+    ) {
+        self.crosshair = crosshair;
+        self.base.request_redraw();
+    }
+
+    /// The attached crosshair, when one is set.
+    pub fn crosshair(
+        &self,
+    ) -> Option<&crate::widget::chart_widgets::chart_crosshair::ChartCrosshair> {
+        self.crosshair.as_ref()
+    }
+
+    /// The attached crosshair mutably, when one is set.
+    pub fn crosshair_mut(
+        &mut self,
+    ) -> Option<&mut crate::widget::chart_widgets::chart_crosshair::ChartCrosshair> {
+        self.crosshair.as_mut()
+    }
+
+    /// Sets the chart title, painted centred at the top.
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        self.title = Some(title.into());
+        self.base.request_redraw();
+    }
+
+    /// Removes the chart title.
+    pub fn clear_title(&mut self) {
+        self.title = None;
+        self.base.request_redraw();
+    }
+
+    /// The x-axis title, when one is set.
+    pub fn x_axis_label(&self) -> Option<&str> {
+        self.x_axis_label.as_deref()
+    }
+
+    /// Sets the x-axis title.
+    pub fn set_x_axis_label(&mut self, label: impl Into<String>) {
+        self.x_axis_label = Some(label.into());
+        self.base.request_redraw();
+    }
+
+    /// The y-axis title, when one is set.
+    pub fn y_axis_label(&self) -> Option<&str> {
+        self.y_axis_label.as_deref()
+    }
+
+    /// Sets the y-axis title.
+    pub fn set_y_axis_label(&mut self, label: impl Into<String>) {
+        self.y_axis_label = Some(label.into());
+        self.base.request_redraw();
+    }
+
+    /// The series a pointer position names inside `category` (CH-04).
+    ///
+    /// Grouped mode divides the category slot into one strip per series; stacked mode cannot
+    /// attribute a height to a series without its stack offset, so it reports series 0, which is
+    /// the same compatibility mapping the single-index signals keep.
+    fn series_at(&self, pos: Point, plot_area: Rect, category: usize) -> usize {
+        let series_count = self.series.len();
+        if series_count <= 1 || self.grouping == BarGrouping::Stacked {
+            return 0;
+        }
+        let categories = self.category_count().max(1);
+        let fraction = match self.orientation {
+            BarOrientation::Vertical => {
+                let slot = (plot_area.width as f32 / categories as f32).max(1.0);
+                let start = plot_area.x as f32 + slot * category as f32;
+                ((pos.x as f32 - start) / slot).clamp(0.0, 0.999)
+            }
+            BarOrientation::Horizontal => {
+                let slot = (plot_area.height as f32 / categories as f32).max(1.0);
+                let start = plot_area.y as f32 + slot * category as f32;
+                ((pos.y as f32 - start) / slot).clamp(0.0, 0.999)
+            }
+        };
+        ((fraction * series_count as f32) as usize).min(series_count - 1)
     }
 
     /// The colour of series `index`.
@@ -972,14 +1086,15 @@ impl Draw for BarChart {
             // tick density is no longer hard-coded in this widget.
             draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, self.show_grid);
             if self.show_legend {
-                let entries: Vec<(&str, Color)> = self
-                    .series
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, series)| !series.name.is_empty())
-                    .map(|(index, series)| (series.name.as_str(), self.series_color(index)))
-                    .collect();
-                draw_legend_entries(&mut adapter, &layout, &entries);
+                draw_legend_entries_iter(
+                    &mut adapter,
+                    &layout,
+                    self.series
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, series)| !series.name.is_empty())
+                        .map(|(index, series)| (series.name.as_str(), self.series_color(index))),
+                );
             }
             plot_area
         };
@@ -988,10 +1103,55 @@ impl Draw for BarChart {
         let plot_area = self.draw_backdrop_without_engine(context, is_enabled, disabled_color);
         self.last_plot_area = Some(plot_area);
 
+        // ── Title and axis titles (CH-07) ──
+        if self.title.is_some() || self.x_axis_label.is_some() || self.y_axis_label.is_some() {
+            let chrome = axis_chrome_color(0.85);
+            let centred = crate::core::HorizontalAlignment::Center;
+            if let Some(title) = self.title.as_deref() {
+                let font = role_font(self.base.style(), 12.0).with_bold(true);
+                context.draw_text_fitted_cow(
+                    Rect::new(rect.x, rect.y, rect.width, 16),
+                    title,
+                    &font,
+                    chrome,
+                    centred,
+                );
+            }
+            if let Some(label) = self.x_axis_label.as_deref() {
+                let font = role_font(self.base.style(), 10.0);
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        plot_area.x,
+                        plot_area.y + plot_area.height as i32 + 14,
+                        plot_area.width,
+                        12,
+                    ),
+                    label,
+                    &font,
+                    chrome,
+                    centred,
+                );
+            }
+            if let Some(label) = self.y_axis_label.as_deref() {
+                let font = role_font(self.base.style(), 10.0);
+                context.draw_text_fitted_cow(
+                    Rect::new(rect.x + 2, rect.y + 16, rect.width.min(120), 12),
+                    label,
+                    &font,
+                    chrome,
+                    crate::core::HorizontalAlignment::Left,
+                );
+            }
+        }
+
         // ── Bars ──
         if !self.series.is_empty() {
             self.draw_series_bars(context, plot_area, y_min, y_max, is_enabled);
             self.draw_hover_overlay(context, plot_area);
+            if let Some(crosshair) = self.crosshair.as_mut() {
+                crosshair.base_mut().set_geometry(plot_area);
+                crosshair.draw(context);
+            }
             return;
         }
         if self.bars.is_empty() {
@@ -1082,6 +1242,10 @@ impl Draw for BarChart {
             }
         }
         self.draw_hover_overlay(context, plot_area);
+        if let Some(crosshair) = self.crosshair.as_mut() {
+            crosshair.base_mut().set_geometry(plot_area);
+            crosshair.draw(context);
+        }
     }
 }
 
@@ -1252,16 +1416,40 @@ impl BarChart {
         if !self.show_tooltip {
             return;
         }
-        let label = self
+        let category_label = self
             .category_labels
             .get(index)
             .cloned()
             .or_else(|| self.bars.get(index).map(|bar| bar.label.clone()))
             .unwrap_or_else(|| index.to_string());
         let font = role_font(self.base.style(), 10.0);
-        let metrics = context.measure_text(&label, &font);
-        let width = metrics.width as i32 + 8;
-        let height = metrics.height.max(1) as i32 + 8;
+        let surface = self.base.style().background_color.unwrap_or_else(|| axis_chrome_color(0.96));
+        let ink = surface.contrast_color();
+        // Multi-series charts show one line per series, each in its series colour (CH-03); a
+        // single-series chart keeps the historical one-line label.
+        let mut lines: Vec<(String, Color)> = Vec::new();
+        if self.series.is_empty() {
+            lines.push((category_label, ink));
+        } else {
+            lines.push((category_label, ink));
+            for (series_index, series) in self.series.iter().enumerate() {
+                let value = series.values.get(index).copied().unwrap_or(0.0);
+                let name = if series.name.is_empty() {
+                    std::format!("Series {}", series_index + 1)
+                } else {
+                    series.name.clone()
+                };
+                lines.push((std::format!("{name}: {value}"), self.series_color(series_index)));
+            }
+        }
+        let line_height = context.measure_text("0", &font).height.max(1) as i32 + 2;
+        let widest = lines
+            .iter()
+            .map(|(line, _)| context.measure_text(line, &font).width as i32)
+            .max()
+            .unwrap_or(0);
+        let width = widest + 8;
+        let height = line_height * lines.len() as i32 + 8;
         let mut x = band.x + 6;
         let mut y = band.y + 6;
         if x + width > plot_area.x + plot_area.width as i32 {
@@ -1270,12 +1458,18 @@ impl BarChart {
         if y + height > plot_area.y + plot_area.height as i32 {
             y = (plot_area.y + plot_area.height as i32 - height).max(plot_area.y);
         }
-        let surface = self.base.style().background_color.unwrap_or_else(|| axis_chrome_color(0.96));
-        let ink = surface.contrast_color();
         let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
         context.fill_rect(box_rect, surface);
         context.draw_rect(box_rect, ink.with_alpha_f32(0.35));
-        context.draw_text_line(box_rect, &label, &font, ink, HorizontalAlignment::Center);
+        for (line_index, (line, color)) in lines.iter().enumerate() {
+            let line_rect = Rect::new(
+                box_rect.x + 4,
+                box_rect.y + 4 + line_index as i32 * line_height,
+                box_rect.width.saturating_sub(8),
+                line_height.max(1) as u32,
+            );
+            context.draw_text_fitted_cow(line_rect, line, &font, *color, HorizontalAlignment::Left);
+        }
     }
 
     /// Maps a pointer position to the category slot under it.
@@ -1382,17 +1576,52 @@ impl EventHandler for BarChart {
                 if next != self.hovered {
                     if let Some(index) = self.hovered {
                         self.bar_unhovered.emit(index);
+                        let series = self.series_at(*pos, plot_area, index);
+                        self.bar_unhovered_with_series.emit((series, index));
                     }
                     self.hovered = next;
                     if let Some(index) = next {
                         self.bar_hovered.emit(index);
+                        let series = self.series_at(*pos, plot_area, index);
+                        self.bar_hovered_with_series.emit((series, index));
                     }
                     self.base.request_redraw();
                 }
+                // Drive the attached crosshair from the hovered category (COMP-F01).
+                let crosshair_point = self.hovered.map(|index| {
+                    let value = if self.series.is_empty() {
+                        self.bars.get(index).map(|bar| bar.value).unwrap_or(0.0)
+                    } else {
+                        self.series
+                            .iter()
+                            .filter_map(|series| series.values.get(index).copied())
+                            .fold(f64::NEG_INFINITY, f64::max)
+                    };
+                    let categories = self.category_count().max(1);
+                    let slot = plot_area.width as f32 / categories as f32;
+                    (
+                        Point::new(
+                            plot_area.x + (slot * (index as f32 + 0.5)) as i32,
+                            plot_area.y + plot_area.height as i32 / 2,
+                        ),
+                        (index as f64, value),
+                    )
+                });
+                if let Some(crosshair) = self.crosshair.as_mut() {
+                    match crosshair_point {
+                        Some((pixel, data)) => crosshair.show_at_data(pixel, data),
+                        None => crosshair.hide(),
+                    }
+                }
             }
             Event::MouseLeave { .. } => {
+                if let Some(crosshair) = self.crosshair.as_mut() {
+                    crosshair.hide();
+                }
                 if let Some(index) = self.hovered.take() {
                     self.bar_unhovered.emit(index);
+                    let series = self.series_at(Point::new(0, 0), plot_area, index);
+                    self.bar_unhovered_with_series.emit((series, index));
                     self.base.request_redraw();
                 }
             }
@@ -1400,6 +1629,8 @@ impl EventHandler for BarChart {
                 self.base.set_mouse_pressed(true);
                 if let Some(index) = self.category_at(*pos, plot_area) {
                     self.bar_clicked.emit(index);
+                    let series = self.series_at(*pos, plot_area, index);
+                    self.bar_clicked_with_series.emit((series, index));
                 }
             }
             Event::MouseRelease { button, .. } if *button == 1 => {
@@ -1952,5 +2183,43 @@ mod tests {
         while chart.tick(16) {}
         assert_eq!(chart.rendered_bar_value(1), Some(-20.0));
         assert!(!chart.is_animating());
+    }
+
+    /// CH-03/CH-04/CH-07: the tooltip lists every series, the signals name the series, and the
+    /// title is painted.
+    #[test]
+    fn series_tooltip_signals_and_title_are_wired() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 400, 300));
+        chart.set_series(
+            vec![BarSeries::new("Revenue", vec![10.0]), BarSeries::new("Cost", vec![5.0])],
+            vec!["Q1".to_string()],
+        );
+        chart.set_show_tooltip(true);
+        chart.set_show_legend(true);
+        chart.set_title("Totals");
+        chart.set_x_axis_label("Quarter");
+        chart.set_y_axis_label("USD");
+        let baseline = crate::widget::svg::render_to_svg(&mut chart);
+        let runs_without_tooltip = crate::widget::svg::text_ink_boxes(&baseline).len();
+        let plot = chart.last_plot_area.expect("plot area");
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        chart.bar_hovered_with_series.connect(move |pair| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*pair);
+            }
+        });
+
+        // The first eighth of the single category is inside the first series' strip.
+        let pos = Point::new(plot.x + plot.width as i32 / 8, plot.y + plot.height as i32 / 2);
+        chart.handle_event(&Event::MouseMove { pos });
+        assert_eq!(*seen.lock().unwrap(), vec![(0, 0)], "the signal names (series, category)");
+
+        let svg = crate::widget::svg::render_to_svg(&mut chart);
+        assert!(
+            crate::widget::svg::text_ink_boxes(&svg).len() > runs_without_tooltip,
+            "the tooltip adds text runs"
+        );
     }
 }

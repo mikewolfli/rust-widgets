@@ -6,27 +6,56 @@ use crate::compat::{format, HashMap, String, Vec};
 use crate::event::Event;
 use crate::signal::Signal1;
 /// Global shortcut manager for registering and dispatching shortcuts.
+///
+/// # Scopes (W-201)
+///
+/// Bindings registered with [`ShortcutManager::register`] live in the **global** scope and behave
+/// exactly as before. [`ShortcutManager::register_in`] attaches a binding to a named context (a
+/// window or modal domain), and [`ShortcutManager::push_scope`] / `push_modal_scope` make contexts
+/// active. Resolution walks the active stack from the top down and falls back to the global scope,
+/// so the same chord can mean different commands in different windows and a modal scope can shield
+/// the layers below it.
 pub struct ShortcutManager {
-    /// Map from shortcut to action ID.
+    /// Map from shortcut to action ID for the **global** scope.
+    ///
+    /// Kept as its own map because it is the historical public view
+    /// ([`Self::all_shortcuts`]); scoped bindings live in `scoped_shortcuts` so the two cannot
+    /// collide by accident.
     shortcuts: HashMap<Shortcut, String>,
+    /// Map from `(scope id, shortcut)` to action ID for scoped bindings.
+    scoped_shortcuts: HashMap<(String, Shortcut), String>,
     /// Map from action ID to entry.
     entries: HashMap<String, ShortcutEntry>,
+    /// Active scope stack, bottom first. Resolution walks it in reverse (top first).
+    scopes: Vec<ActiveScope>,
     /// Emitted when a shortcut is triggered.
     pub shortcut_triggered: Signal1<String>,
     /// Emitted when a shortcut conflict is detected.
     pub conflict_detected: Signal1<(Shortcut, String, String)>,
 }
+
+/// One active context on the scope stack.
+#[derive(Debug, Clone)]
+struct ActiveScope {
+    /// Host-chosen context name (a window id, a modal dialog id, …).
+    id: String,
+    /// Whether this scope shields every scope below it, modal-dialog style.
+    modal: bool,
+}
+
 impl ShortcutManager {
     /// Creates a new shortcut manager.
     pub fn new() -> Self {
         Self {
             shortcuts: HashMap::new(),
+            scoped_shortcuts: HashMap::new(),
             entries: HashMap::new(),
+            scopes: Vec::new(),
             shortcut_triggered: Signal1::new(),
             conflict_detected: Signal1::new(),
         }
     }
-    /// Registers a new shortcut.
+    /// Registers a new shortcut in the global scope.
     /// Returns true if registration succeeded, false if there was a conflict.
     pub fn register(
         &mut self,
@@ -34,35 +63,89 @@ impl ShortcutManager {
         shortcut: Shortcut,
         description: impl Into<String>,
     ) -> bool {
+        self.register_scoped(None, action_id, shortcut, description)
+    }
+
+    /// Registers a shortcut in `scope` instead of the global scope.
+    ///
+    /// The binding only fires while `scope` is on the active stack (see [`Self::push_scope`]), and
+    /// it shadows a global binding on the same chord. The same chord may be bound in two different
+    /// scopes — that is the point of scopes — so conflicts are judged **within** a scope only.
+    pub fn register_in(
+        &mut self,
+        scope: impl Into<String>,
+        action_id: impl Into<String>,
+        shortcut: Shortcut,
+        description: impl Into<String>,
+    ) -> bool {
+        self.register_scoped(Some(scope.into()), action_id, shortcut, description)
+    }
+
+    /// Shared body of [`Self::register`] and [`Self::register_in`].
+    fn register_scoped(
+        &mut self,
+        scope: Option<String>,
+        action_id: impl Into<String>,
+        shortcut: Shortcut,
+        description: impl Into<String>,
+    ) -> bool {
         let action_id = action_id.into();
         let description = description.into();
-        if let Some(existing_action) = self.shortcuts.get(&shortcut) {
-            if existing_action != &action_id {
-                self.conflict_detected.emit((
-                    shortcut.clone(),
-                    action_id.clone(),
-                    existing_action.clone(),
-                ));
-                return false;
+        // Conflict is judged inside the binding's own scope: a global chord and a scoped chord may
+        // share a key, which is how a modal dialog rebinds Enter without fighting the main window.
+        let conflict = match &scope {
+            None => {
+                self.shortcuts.get(&shortcut).filter(|existing| **existing != action_id).cloned()
             }
+            Some(scope) => self
+                .scoped_shortcuts
+                .get(&(scope.clone(), shortcut.clone()))
+                .filter(|existing| **existing != action_id)
+                .cloned(),
+        };
+        if let Some(existing_action) = conflict {
+            self.conflict_detected.emit((shortcut.clone(), action_id.clone(), existing_action));
+            return false;
         }
-        if let Some(entry) = self.entries.get(&action_id) {
-            self.shortcuts.remove(&entry.shortcut);
+        // One chord per action: re-registering an id moves its binding rather than adding one.
+        if let Some(entry) = self.entries.remove(&action_id) {
+            self.remove_binding(&entry);
         }
         let entry = ShortcutEntry {
             action_id: action_id.clone(),
             description,
             shortcut: shortcut.clone(),
             enabled: true,
+            scope: scope.clone(),
         };
-        self.shortcuts.insert(shortcut, action_id.clone());
+        match scope {
+            Some(scope) => {
+                self.scoped_shortcuts.insert((scope, shortcut), action_id.clone());
+            }
+            None => {
+                self.shortcuts.insert(shortcut, action_id.clone());
+            }
+        }
         self.entries.insert(action_id, entry);
         true
     }
+
+    /// Removes `entry`'s chord from the table its scope belongs to.
+    fn remove_binding(&mut self, entry: &ShortcutEntry) {
+        match &entry.scope {
+            Some(scope) => {
+                self.scoped_shortcuts.remove(&(scope.clone(), entry.shortcut.clone()));
+            }
+            None => {
+                self.shortcuts.remove(&entry.shortcut);
+            }
+        }
+    }
+
     /// Unregisters a shortcut by action ID.
     pub fn unregister(&mut self, action_id: &str) -> bool {
         if let Some(entry) = self.entries.remove(action_id) {
-            self.shortcuts.remove(&entry.shortcut);
+            self.remove_binding(&entry);
             true
         } else {
             false
@@ -154,15 +237,79 @@ impl ShortcutManager {
     /// Resolves the action registered for a key press, applying the matching
     /// rule documented on [`ShortcutManager::matches_binding`].
     ///
-    /// The lookup is a linear scan over the entries **on purpose**: the hash map is still the
-    /// reverse index (`get_action`), but a second matching path would be a second rule. Every
-    /// entry is judged by the one function, so registry dispatch and an unregistered widget
+    /// # Resolution order (W-201)
+    ///
+    /// The active scope stack is walked from the top down. A matching binding in a scope wins over
+    /// every lower scope and over the global scope. A **modal** scope terminates the walk whether
+    /// or not it matched, which is what shields the layers below a modal dialog. After the stack is
+    /// exhausted, global bindings are consulted exactly as before scopes existed.
+    ///
+    /// The global fallback is still a linear scan over the entries **on purpose**: the hash map is
+    /// the reverse index ([`Self::get_action`]), but a second matching path would be a second rule.
+    /// Every entry is judged by the one function, so registry dispatch and an unregistered widget
     /// action cannot disagree about a chord.
     fn lookup(&self, key: Key, modifiers: Modifiers) -> Option<String> {
+        for active in self.scopes.iter().rev() {
+            let matched = self
+                .scoped_shortcuts
+                .iter()
+                .find(|((scope, shortcut), _)| {
+                    scope == &active.id && Self::matches_binding(shortcut, key, modifiers)
+                })
+                .map(|(_, action_id)| action_id.clone());
+            if matched.is_some() {
+                return matched;
+            }
+            if active.modal {
+                return None;
+            }
+        }
         self.entries
             .values()
-            .find(|entry| Self::matches_binding(&entry.shortcut, key, modifiers))
+            .find(|entry| {
+                entry.scope.is_none() && Self::matches_binding(&entry.shortcut, key, modifiers)
+            })
             .map(|entry| entry.action_id.clone())
+    }
+
+    /// Pushes a non-modal scope onto the active stack.
+    ///
+    /// Bindings registered in this scope now win over global ones on the same chord. A scope id may
+    /// be pushed more than once; the stack then contains it more than once, which is harmless but
+    /// rarely useful.
+    pub fn push_scope(&mut self, scope: impl Into<String>) {
+        self.scopes.push(ActiveScope { id: scope.into(), modal: false });
+    }
+
+    /// Pushes a **modal** scope: it wins like any other scope and also stops the lookup from
+    /// reaching the scopes and global bindings beneath it.
+    pub fn push_modal_scope(&mut self, scope: impl Into<String>) {
+        self.scopes.push(ActiveScope { id: scope.into(), modal: true });
+    }
+
+    /// Pops the top scope, returning its id.
+    pub fn pop_scope(&mut self) -> Option<String> {
+        self.scopes.pop().map(|scope| scope.id)
+    }
+
+    /// The innermost active scope, or `None` when only the global scope is active.
+    pub fn active_scope(&self) -> Option<&str> {
+        self.scopes.last().map(|scope| scope.id.as_str())
+    }
+
+    /// Whether `scope` is currently on the stack.
+    pub fn is_scope_active(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|active| active.id == scope)
+    }
+
+    /// The active scope ids in activation order (bottom first).
+    pub fn active_scopes(&self) -> Vec<String> {
+        self.scopes.iter().map(|scope| scope.id.clone()).collect()
+    }
+
+    /// Removes every active scope, returning to the global-only behaviour.
+    pub fn clear_scopes(&mut self) {
+        self.scopes.clear();
     }
 
     /// Removes the Control bit that macOS reports alongside Command.
@@ -214,30 +361,41 @@ impl ShortcutManager {
             false
         }
     }
-    /// Returns the shortcut for an action ID.
+    /// Returns the shortcut for an action ID, in any scope.
     pub fn get_shortcut(&self, action_id: &str) -> Option<&Shortcut> {
         self.entries.get(action_id).map(|e| &e.shortcut)
     }
-    /// Returns the action ID for a shortcut.
+    /// Returns the action ID for a **global** shortcut.
+    ///
+    /// Scoped bindings are not part of this view: the same chord may map to a different action in
+    /// each scope, so a scope-free key cannot name one answer.
     pub fn get_action(&self, shortcut: &Shortcut) -> Option<&String> {
         self.shortcuts.get(shortcut)
     }
-    /// Returns all registered shortcuts.
+    /// Returns all registered **global** shortcuts.
+    ///
+    /// See [`Self::get_action`] for why scoped bindings are excluded.
     pub fn all_shortcuts(&self) -> &HashMap<Shortcut, String> {
         &self.shortcuts
     }
-    /// Returns all entries.
+    /// Returns all entries, global and scoped.
     pub fn all_entries(&self) -> &HashMap<String, ShortcutEntry> {
         &self.entries
     }
-    /// Clears all shortcuts.
+    /// Clears all shortcuts, scoped or global, and every active scope.
     pub fn clear(&mut self) {
         self.shortcuts.clear();
+        self.scoped_shortcuts.clear();
         self.entries.clear();
+        self.scopes.clear();
     }
-    /// Returns true if a shortcut is registered.
+    /// Returns true if a **global** shortcut is registered.
     pub fn has_shortcut(&self, shortcut: &Shortcut) -> bool {
         self.shortcuts.contains_key(shortcut)
+    }
+    /// Returns true if `scope` has `shortcut` registered.
+    pub fn has_scoped_shortcut(&self, scope: &str, shortcut: &Shortcut) -> bool {
+        self.scoped_shortcuts.contains_key(&(String::from(scope), shortcut.clone()))
     }
     /// Returns true if an action has a shortcut registered.
     pub fn has_action(&self, action_id: &str) -> bool {

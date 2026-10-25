@@ -8,7 +8,7 @@
 //! item selection, and emits signals for opened, closed, and item_selected events.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::DrawerSectionHeader;
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -51,6 +52,21 @@ pub struct DrawerItem {
     pub label: String,
 }
 
+/// One painted row of the drawer's list (N-06).
+///
+/// Sections are a row *type* rather than an item with a special flag: an item participates in
+/// selection and hit testing, a section participates in neither. The section owns the shared
+/// companion control, so the drawer and a host's own list paint one heading implementation.
+enum DrawerRow {
+    /// A selectable item, addressed in the flat `items` list.
+    Item(usize),
+    /// A non-selectable heading.
+    Section(Box<DrawerSectionHeader>),
+}
+
+/// Height of a section heading row, in pixels.
+const DRAWER_SECTION_HEIGHT: u32 = 32;
+
 /// Navigation Drawer widget — an Android-style slide-out side navigation drawer.
 ///
 /// The drawer can be opened and closed programmatically or by user interaction.
@@ -63,6 +79,10 @@ pub struct NavigationDrawer {
     open: bool,
     /// List of drawer items to display.
     items: Vec<DrawerItem>,
+    /// The painted row order, including section headings (N-06).
+    rows: Vec<DrawerRow>,
+    /// The header title drawn when no header widget is installed (N-05).
+    title: String,
     item_icon_sources: Vec<Option<IconSource>>,
     /// Index of the currently selected item.
     selected_index: usize,
@@ -124,6 +144,8 @@ impl NavigationDrawer {
             base: BaseWidget::new(WidgetKind::NavigationDrawer, geometry, "NavigationDrawer"),
             open: false,
             items: Vec::new(),
+            rows: Vec::new(),
+            title: String::from("Navigation"),
             item_icon_sources: Vec::new(),
             selected_index: 0,
             panel_width: 280,
@@ -207,9 +229,34 @@ impl NavigationDrawer {
     ///
     /// `icon` is a text/emoji character displayed to the left of the label.
     pub fn add_item(&mut self, icon: &str, label: &str) {
+        let index = self.items.len();
         self.items.push(DrawerItem { icon: icon.to_string(), label: label.to_string() });
+        self.rows.push(DrawerRow::Item(index));
         self.item_icon_sources.push(None);
         self.item_badges.push(None);
+        self.base.request_redraw();
+    }
+
+    /// Adds a non-selectable section heading to the list (N-06).
+    pub fn add_section_header(&mut self, label: &str) {
+        let mut header = DrawerSectionHeader::new(Rect::new(0, 0, 0, 0));
+        header.set_label(label);
+        self.rows.push(DrawerRow::Section(Box::new(header)));
+        self.base.request_redraw();
+    }
+
+    /// Returns the drawer's header title.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// Sets the header title drawn when no header widget is installed (N-05).
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        let title = title.into();
+        if self.title == title {
+            return;
+        }
+        self.title = title;
         self.base.request_redraw();
     }
 
@@ -541,20 +588,17 @@ impl Draw for NavigationDrawer {
         // own fill. A panel painted in that colour would be byte-identical to the frame
         // behind it, so a resolved surface equal to the window fill is re-derived a visible
         // step away from it, the same distinction `Colors::input_background` draws for a field.
-        let window_fill = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .unwrap_or(Color::WHITE);
+        let palette = crate::style::palette_shared();
+        let window_fill = palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE);
         let ink = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::rgb(30, 30, 30));
         // The selected item and the scrim are the accent: the hue a theme is expected to vary
-        // most, so selection follows the appearance rather than a literal blue.
-        let accent = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.primary)
-            .unwrap_or(Color::rgb(30, 100, 200));
+        // most, so selection follows the appearance rather than a literal blue. One palette read
+        // serves both this and the window fill above (G-A01).
+        let accent =
+            palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::rgb(30, 100, 200));
         let panel = match style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
@@ -669,7 +713,7 @@ impl Draw for NavigationDrawer {
                 drawable.draw(context);
             }
         } else {
-            let header_text = "Navigation";
+            let header_text = self.title.as_str();
             let header_text_x = rect.x + 16;
             // The origin is the glyph box's top edge, so centring on the header is half the line
             // box; the old `+ ascent/2` sat the title half a line below the header's middle.
@@ -688,49 +732,72 @@ impl Draw for NavigationDrawer {
             );
         }
 
-        // Draw items vertically
+        // Draw items vertically. Rows include section headings, which are painted with the
+        // drawer's own small face and divider tone and participate in neither selection nor hit
+        // testing (N-06).
         let item_height: u32 = 48;
         let item_font = role_font(style, 14.0);
         let icon_font = role_font(style, 16.0);
-        let item_metrics = context.measure_text("A", &item_font);
+        let item_metrics =
+            crate::widget::base_widgets::measure_cache::measure_text(context, "A", &item_font);
         let start_y = rect.y + header_height as i32;
         let items_bottom = rect.y + rect.height as i32 - self.footer_height() as i32;
-
-        for (i, item) in self.items.iter().enumerate() {
-            let y_offset = start_y + (i as i32 * item_height as i32);
+        let mut y_offset = start_y;
+        for (row_index, row) in self.rows.iter_mut().enumerate() {
+            let row_height = match row {
+                DrawerRow::Item(_) => item_height,
+                DrawerRow::Section(_) => DRAWER_SECTION_HEIGHT,
+            };
             // Rows beginning below the items area are skipped outright: the footer must not be
             // covered by a row that happens to be next in the list.
-            if y_offset + item_height as i32 > items_bottom {
+            if y_offset + row_height as i32 > items_bottom {
                 break;
             }
-            let item_rect = Rect::new(rect.x, y_offset, panel_width, item_height);
+            let row_rect = Rect::new(rect.x, y_offset, panel_width, row_height);
+
+            let DrawerRow::Item(item_index) = row else {
+                if let DrawerRow::Section(header) = row {
+                    // The drawer and a host's own list share this one heading control; only the
+                    // band and the resolved chrome are supplied here (COMP-A04).
+                    header.set_geometry(row_rect);
+                    header.set_inset(16);
+                    {
+                        let header_style = header.base_mut().style_mut();
+                        header_style.background_color = Some(panel);
+                        header_style.text_color = Some(ink);
+                        header_style.font = style.font.clone();
+                    }
+                    header.draw(context);
+                }
+                y_offset += row_height as i32;
+                continue;
+            };
 
             // Highlight selected item
-            if i == self.selected_index {
-                context.fill_rect(item_rect, highlight_color);
+            if *item_index == self.selected_index {
+                context.fill_rect(row_rect, highlight_color);
             } else {
                 // Resting rows keep the panel's own surface, so the selected row is the only
                 // one that reads as raised in either appearance.
-                context.fill_rect(item_rect, panel);
+                context.fill_rect(row_rect, panel);
             }
 
             // Vertical center position for text: the origin is the glyph box's top edge, so
-            // the centre of the 48px row is `y_offset + (row - line box)/2`. The old
-            // `row/2 + ascent/2` sat the icon and label half a line below the row's middle.
+            // the centre of the row is `y + (row - line box)/2`.
             let text_center_y = y_offset + (item_height as i32 - item_metrics.height as i32) / 2;
 
             // Draw icon
             let icon_x = rect.x + 16;
-            let icon_color = if i == self.selected_index { accent } else { ink };
-            if let Some(source) = self.item_icon_sources.get(i).copied().flatten() {
+            let icon_color = if *item_index == self.selected_index { accent } else { ink };
+            if let Some(source) = self.item_icon_sources.get(*item_index).copied().flatten() {
                 let side = item_metrics.height.clamp(1, 20);
                 let icon_rect = Rect::new(icon_x, text_center_y, side, side);
                 if let Err(error) =
                     crate::widget::paint_icon(context, source.into(), icon_rect, icon_color)
                 {
-                    log::warn!("navigation drawer item {i} icon failed: {error:?}");
+                    log::warn!("navigation drawer item {item_index} icon failed: {error:?}");
                 }
-            } else {
+            } else if let Some(item) = self.items.get(*item_index) {
                 context.draw_text(
                     Point::new(icon_x, text_center_y),
                     &item.icon,
@@ -745,36 +812,45 @@ impl Draw for NavigationDrawer {
             // right border once it is fully open.
             let icon_width: u32 = 24;
             let label_x = rect.x + 16 + icon_width as i32 + 8;
-            let label_color = if i == self.selected_index { accent } else { ink };
-            let label_line = context.text_line(item_rect, &item_font);
+            let label_color = if *item_index == self.selected_index { accent } else { ink };
+            let label_line = context.text_line(row_rect, &item_font);
             let label_band_width = ((rect.x + panel_width as i32 - 8) - label_x).max(0) as u32;
             if label_band_width > 0 {
-                context.draw_text_fitted_cow(
-                    Rect::new(label_x, label_line.y, label_band_width, label_line.height.max(1)),
-                    &item.label,
-                    &item_font,
-                    label_color,
-                    HorizontalAlignment::Left,
-                );
+                if let Some(item) = self.items.get(*item_index) {
+                    context.draw_text_fitted_cow(
+                        Rect::new(
+                            label_x,
+                            label_line.y,
+                            label_band_width,
+                            label_line.height.max(1),
+                        ),
+                        &item.label,
+                        &item_font,
+                        label_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
 
-            // Draw divider line between items
-            if i > 0 && self.section_separator_visible {
-                let divider_y = y_offset;
+            // Draw divider line between rows
+            if row_index > 0 && self.section_separator_visible {
                 context.fill_rect(
-                    Rect::new(rect.x + 16, divider_y, panel_width.saturating_sub(32), 1),
+                    Rect::new(rect.x + 16, y_offset, panel_width.saturating_sub(32), 1),
                     divider_color,
                 );
             }
 
-            // Badge: a small capsule at the row's trailing edge. Drawer items had no badge
-            // channel at all, so a count could not be surfaced on the drawer's own list.
-            if let Some(badge) = self.item_badges.get(i).and_then(|badge| badge.as_deref()) {
+            // Badge: a small capsule at the row's trailing edge.
+            if let Some(badge) =
+                self.item_badges.get(*item_index).and_then(|badge| badge.as_deref())
+            {
                 if !badge.is_empty() {
                     let badge_fill =
                         crate::style::semantic_color(crate::style::SemanticColor::Error)
                             .unwrap_or(accent);
-                    let metrics = context.measure_text(badge, &item_font);
+                    let metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                        context, badge, &item_font,
+                    );
                     let height = item_font.size().max(10.0) as u32 + 4;
                     let width = (metrics.width + 8).max(height);
                     let badge_rect = Rect::new(
@@ -793,6 +869,8 @@ impl Draw for NavigationDrawer {
                     );
                 }
             }
+
+            y_offset += row_height as i32;
         }
 
         // Footer band: a host-supplied widget pinned to the panel's foot, so an account row or
@@ -825,6 +903,16 @@ impl EventHandler for NavigationDrawer {
 
         let rect = self.geometry();
         let panel_band = self.panel_rect();
+
+        // Escape closes an open modal drawer, matching the splash screen and pagination
+        // conventions (N-11). A persistent drawer (`auto_close_on_select == false`) keeps its
+        // position, which is the same switch that governs item-selection dismissal.
+        if let Event::KeyPress { key, .. } = event {
+            if *key == key_codes::ESCAPE && self.open && self.auto_close_on_select {
+                self.close();
+                return;
+            }
+        }
 
         // A closed drawer is reachable: the edge strip starts an opening drag, and a plain
         // click on it opens the panel. Before this the handle was painted but could not be
@@ -950,7 +1038,8 @@ impl EventHandler for NavigationDrawer {
                 }
 
                 // Item selection uses the panel's own band, so a right-side drawer selects at
-                // the coordinates it paints at rather than at the left edge.
+                // the coordinates it paints at rather than at the left edge. The rows include
+                // section headings, which have their own height and own no selection (N-06).
                 let header_height = DRAWER_HEADER_HEIGHT;
                 let item_height: u32 = 48;
                 let start_y = panel_band.y + header_height as i32;
@@ -964,11 +1053,32 @@ impl EventHandler for NavigationDrawer {
                         self.header_clicked.emit();
                     }
                     if relative_y >= 0 && pos.y < items_bottom {
-                        let item_index = (relative_y as u32) / item_height;
-                        if (item_index as usize) < self.items.len() {
-                            self.set_selected_index(item_index as usize);
-                            if self.auto_close_on_select {
-                                self.close();
+                        let mut row_top = start_y;
+                        let mut hit: Option<usize> = None;
+                        for row in &self.rows {
+                            let row_height = match row {
+                                DrawerRow::Item(_) => item_height,
+                                DrawerRow::Section(_) => DRAWER_SECTION_HEIGHT,
+                            };
+                            if row_top + row_height as i32 > items_bottom {
+                                break;
+                            }
+                            if pos.y >= row_top && pos.y < row_top + row_height as i32 {
+                                if let DrawerRow::Item(item_index) = row {
+                                    hit = Some(*item_index);
+                                }
+                                break;
+                            }
+                            row_top += row_height as i32;
+                        }
+                        // The row walk borrows the rows, so the selection is applied after it
+                        // ends.
+                        if let Some(item_index) = hit {
+                            if item_index < self.items.len() {
+                                self.set_selected_index(item_index);
+                                if self.auto_close_on_select {
+                                    self.close();
+                                }
                             }
                         }
                     }
@@ -1389,5 +1499,38 @@ mod tests {
         let svg = render_to_svg(&mut drawer);
         assert!(svg.starts_with("<svg"));
         assert!(drawer.panel_rect().x > 0, "the end drawer is not at the leading edge");
+    }
+
+    #[test]
+    fn the_header_title_is_configurable() {
+        let mut drawer = make_drawer();
+        assert_eq!(drawer.title(), "Navigation");
+        drawer.set_title("Workspace");
+        assert_eq!(drawer.title(), "Workspace");
+    }
+
+    #[test]
+    fn a_section_header_is_not_selectable() {
+        let mut drawer = NavigationDrawer::new(Rect::new(0, 0, 400, 600));
+        drawer.add_section_header("Library");
+        drawer.add_item("🏠", "Home");
+        drawer.open();
+        while drawer.tick(16) {}
+        // Header 0..60, section 60..92, first item 92..140.
+        drawer.handle_event(&Event::MousePress {
+            pos: Point::new(20, 76),
+            button: 1,
+            modifiers: 0,
+        });
+        drawer.handle_event(&Event::MouseRelease { pos: Point::new(20, 76), button: 1 });
+        assert!(drawer.is_open(), "a section heading does not select or close");
+        drawer.handle_event(&Event::MousePress {
+            pos: Point::new(20, 116),
+            button: 1,
+            modifiers: 0,
+        });
+        drawer.handle_event(&Event::MouseRelease { pos: Point::new(20, 116), button: 1 });
+        assert_eq!(drawer.selected_index(), Some(0));
+        assert!(!drawer.is_open(), "the item below the section is still reachable");
     }
 }

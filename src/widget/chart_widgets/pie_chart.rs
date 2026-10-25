@@ -60,6 +60,16 @@ pub struct PieChart {
     hovered_slice: Option<usize>,
     /// Whether hovering a slice pulls it out of the ring.
     explode_on_hover: bool,
+    /// Whether the hovered slice's label/value/percentage is shown (CH-01).
+    show_tooltip: bool,
+    /// Whether a colour-to-name legend column is reserved and drawn (CH-02).
+    show_legend: bool,
+    /// The chart title, painted centred at the top (CH-07).
+    title: Option<String>,
+    /// The x-axis title (CH-07).
+    x_axis_label: Option<String>,
+    /// The y-axis title (CH-07).
+    y_axis_label: Option<String>,
     /// Per-slice explosion progress, in `0.0..=1.0`, advanced by [`Widget::tick`].
     explode_progress: Vec<f32>,
     /// Per-slice `(start_angle, sweep)` for the current data, or `None` for a slice that
@@ -91,6 +101,11 @@ impl PieChart {
             donut_ratio: 0.0,
             hovered_slice: None,
             explode_on_hover: false,
+            show_tooltip: false,
+            show_legend: false,
+            title: None,
+            x_axis_label: None,
+            y_axis_label: None,
             explode_progress: Vec::new(),
             angle_cache: Vec::new(),
             cached_total: 0.0,
@@ -244,6 +259,73 @@ impl PieChart {
         self.show_labels
     }
 
+    /// Whether the hovered slice's tooltip is shown (CH-01).
+    pub fn show_tooltip(&self) -> bool {
+        self.show_tooltip
+    }
+
+    /// Enables or disables the hovered slice's tooltip.
+    pub fn set_show_tooltip(&mut self, show: bool) {
+        if self.show_tooltip == show {
+            return;
+        }
+        self.show_tooltip = show;
+        self.base.request_redraw();
+    }
+
+    /// Whether the legend column is reserved and drawn (CH-02).
+    pub fn show_legend(&self) -> bool {
+        self.show_legend
+    }
+
+    /// Enables or disables the legend column.
+    pub fn set_show_legend(&mut self, show: bool) {
+        if self.show_legend == show {
+            return;
+        }
+        self.show_legend = show;
+        self.base.request_redraw();
+    }
+
+    /// The chart title, when one is set (CH-07).
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    /// Sets the chart title, painted centred at the top.
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        self.title = Some(title.into());
+        self.base.request_redraw();
+    }
+
+    /// Removes the chart title.
+    pub fn clear_title(&mut self) {
+        self.title = None;
+        self.base.request_redraw();
+    }
+
+    /// The x-axis title.
+    pub fn x_axis_label(&self) -> Option<&str> {
+        self.x_axis_label.as_deref()
+    }
+
+    /// Sets the x-axis title.
+    pub fn set_x_axis_label(&mut self, label: impl Into<String>) {
+        self.x_axis_label = Some(label.into());
+        self.base.request_redraw();
+    }
+
+    /// The y-axis title.
+    pub fn y_axis_label(&self) -> Option<&str> {
+        self.y_axis_label.as_deref()
+    }
+
+    /// Sets the y-axis title.
+    pub fn set_y_axis_label(&mut self, label: impl Into<String>) {
+        self.y_axis_label = Some(label.into());
+        self.base.request_redraw();
+    }
+
     /// Enables or disables showing percentage values on each slice.
     pub fn set_show_percentages(&mut self, show: bool) {
         if self.show_percentages == show {
@@ -326,8 +408,18 @@ impl PieChart {
     }
 
     /// Returns the center point of the chart.
-    fn center(&self) -> Option<Point> {
+    /// The circle's box: the control minus the legend column, when one is shown (CH-02).
+    fn plot_geometry(&self) -> Rect {
         let rect = self.base.geometry();
+        if !self.show_legend {
+            return rect;
+        }
+        let legend_width = (rect.width / 3).min(140);
+        Rect::new(rect.x, rect.y, rect.width.saturating_sub(legend_width), rect.height)
+    }
+
+    fn center(&self) -> Option<Point> {
+        let rect = self.plot_geometry();
         if rect.width == 0 || rect.height == 0 {
             return None;
         }
@@ -336,7 +428,7 @@ impl PieChart {
 
     /// Returns the outer radius of the chart.
     fn outer_radius(&self) -> f32 {
-        let rect = self.base.geometry();
+        let rect = self.plot_geometry();
         rect.width.min(rect.height) as f32 / 2.0 - 4.0
     }
 
@@ -876,6 +968,103 @@ impl Draw for PieChart {
         if self.donut && inner_radius > 0.0 {
             context.draw_circle_stroke(center, inner_radius as u32, border_color, 1);
         }
+
+        // ── Hovered-slice tooltip (CH-01) ──
+        if self.show_tooltip {
+            if let Some(index) = self.hovered_slice {
+                if let (Some(slice), Some((start_angle, sweep))) =
+                    (self.slices.get(index), self.angle_cache.get(index).copied().flatten())
+                {
+                    let mid = start_angle + sweep * 0.5;
+                    let anchor = Self::point_on_circle(center, outer_radius * 0.65, mid);
+                    let pct = if total > 0.0 { slice.value / total * 100.0 } else { 0.0 };
+                    let text = std::format!("{}  {:.1} ({:.0}%)", slice.label, slice.value, pct);
+                    let font = role_font(self.base.style(), 10.0);
+                    let metrics = context.measure_text(&text, &font);
+                    let width = metrics.width as i32 + 8;
+                    let height = metrics.height.max(1) as i32 + 8;
+                    let mut x = anchor.x + 8;
+                    let mut y = anchor.y - height / 2;
+                    if x + width > rect.x + rect.width as i32 {
+                        x = anchor.x - width - 8;
+                    }
+                    x = x.max(rect.x);
+                    y = y.max(rect.y).min(rect.y + rect.height as i32 - height);
+                    let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
+                    let surface = crate::widget::chart_widgets::charts::axis_chrome_color(0.96);
+                    let tooltip_ink = surface.contrast_color();
+                    context.fill_rect(box_rect, surface);
+                    context.draw_rect(box_rect, tooltip_ink.with_alpha_f32(0.35));
+                    context.draw_text_line(
+                        box_rect,
+                        &text,
+                        &font,
+                        tooltip_ink,
+                        HorizontalAlignment::Center,
+                    );
+                }
+            }
+        }
+
+        // ── Legend column (CH-02) ──
+        if self.show_legend {
+            let geometry = self.plot_geometry();
+            let legend_x = geometry.x + geometry.width as i32 + 8;
+            let font = role_font(self.base.style(), 10.0);
+            let legend_ink = crate::widget::chart_widgets::charts::axis_chrome_color(0.75);
+            let row = 16i32;
+            let max_rows = ((rect.height as i32 - 16) / row).max(1) as usize;
+            let mut y = rect.y + 8;
+            for slice in self.slices.iter().take(max_rows) {
+                context.fill_rect(Rect::new(legend_x, y + 3, 10, 10), slice.color);
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        legend_x + 14,
+                        y,
+                        (rect.right() - legend_x - 14).max(0) as u32,
+                        row as u32,
+                    ),
+                    &slice.label,
+                    &font,
+                    legend_ink,
+                    HorizontalAlignment::Left,
+                );
+                y += row;
+            }
+        }
+
+        // ── Title and axis titles (CH-07) ──
+        let chrome = crate::widget::chart_widgets::charts::axis_chrome_color(0.85);
+        if let Some(title) = self.title.as_deref() {
+            let font = role_font(self.base.style(), 12.0).with_bold(true);
+            context.draw_text_fitted_cow(
+                Rect::new(rect.x, rect.y, rect.width, 16),
+                title,
+                &font,
+                chrome,
+                HorizontalAlignment::Center,
+            );
+        }
+        if let Some(label) = self.x_axis_label.as_deref() {
+            let font = role_font(self.base.style(), 10.0);
+            context.draw_text_fitted_cow(
+                Rect::new(rect.x, rect.y + rect.height as i32 - 14, rect.width, 12),
+                label,
+                &font,
+                chrome,
+                HorizontalAlignment::Center,
+            );
+        }
+        if let Some(label) = self.y_axis_label.as_deref() {
+            let font = role_font(self.base.style(), 10.0);
+            context.draw_text_fitted_cow(
+                Rect::new(rect.x + 2, rect.y + 16, rect.width.min(120), 12),
+                label,
+                &font,
+                chrome,
+                HorizontalAlignment::Left,
+            );
+        }
     }
 }
 
@@ -1138,5 +1327,35 @@ mod tests {
         assert_eq!(*clicked.lock().unwrap(), vec![1]);
         pc.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
         assert_eq!(pc.hovered_slice(), None);
+    }
+
+    /// CH-01/CH-02/CH-07: a hovered slice names itself and its value, the legend lists the
+    /// slices, and the title/axis titles are painted.
+    #[test]
+    fn tooltip_legend_and_titles_are_drawn() {
+        let mut pc = PieChart::new(Rect::new(0, 0, 400, 300));
+        pc.set_slices(vec![
+            PieSlice::new("Alpha", 1.0, Color::PRIMARY),
+            PieSlice::new("Beta", 3.0, Color::rgb(0, 180, 90)),
+        ]);
+        pc.set_show_tooltip(true);
+        pc.set_show_legend(true);
+        pc.set_title("Share");
+        pc.set_x_axis_label("x");
+        pc.set_y_axis_label("y");
+        let baseline = render_to_svg(&mut pc);
+        let runs_without_tooltip = crate::widget::svg::text_ink_boxes(&baseline).len();
+
+        // The top of the circle is the first slice's start (12 o'clock).
+        let center = pc.center().expect("a sized chart has a centre");
+        let radius = pc.outer_radius() * 0.6;
+        pc.handle_event(&Event::MouseMove { pos: Point::new(center.x, center.y - radius as i32) });
+        assert_eq!(pc.hovered_slice(), Some(0));
+
+        let svg = render_to_svg(&mut pc);
+        assert!(
+            crate::widget::svg::text_ink_boxes(&svg).len() > runs_without_tooltip,
+            "the tooltip adds a text run"
+        );
     }
 }

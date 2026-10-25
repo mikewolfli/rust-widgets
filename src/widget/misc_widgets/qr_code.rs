@@ -30,7 +30,7 @@ use std::fmt;
 use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::widget::capability::coercion::{expect_string, expect_usize};
+use crate::widget::capability::coercion::{expect_string, expect_u32_saturating, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -238,10 +238,18 @@ fn build_codewords(data: &[u8], version: u8, spec: BlockSpec) -> Result<Vec<u8>,
     for &byte in data {
         push_bits(&mut bits, u32::from(byte), 8);
     }
+    assemble_codewords(bits, spec)
+}
 
+/// Terminates, pads, blocks, Reed–Solomon-encodes and interleaves a data bit stream.
+///
+/// Shared by the byte-mode and the auto-segmented encoders so the two cannot disagree about the
+/// padding or the block layout.
+fn assemble_codewords(mut bits: Vec<bool>, spec: BlockSpec) -> Result<Vec<u8>, QrEncodeError> {
+    let capacity_bits = spec.data_codewords * 8;
     if bits.len() > capacity_bits {
         return Err(QrEncodeError(format!(
-            "byte-mode bit stream is {} bits but the selected QR version only holds {}",
+            "bit stream is {} bits but the selected QR version only holds {}",
             bits.len(),
             capacity_bits
         )));
@@ -250,7 +258,7 @@ fn build_codewords(data: &[u8], version: u8, spec: BlockSpec) -> Result<Vec<u8>,
     // Terminator: up to four zero bits, then zero-fill to a codeword boundary.
     let terminator = (capacity_bits - bits.len()).min(4);
     bits.resize(bits.len() + terminator, false);
-    if bits.len() % 8 != 0 {
+    if !bits.len().is_multiple_of(8) {
         bits.resize(bits.len().div_ceil(8) * 8, false);
     }
 
@@ -862,6 +870,222 @@ fn encode_byte_mode_in(
     Ok(matrix)
 }
 
+/// A QR segment mode.
+///
+/// The byte-mode-only encoder forced every payload into 8 bits per character, so a numeric string
+/// cost more than three times what it needed (10 bits per *three* digits in numeric mode) and a
+/// mixed payload always chose a larger version than the data required (MISC-13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QrMode {
+    /// `0001`: three digits per 10 bits.
+    Numeric,
+    /// `0010`: two characters from the 45-symbol alphanumeric set per 11 bits.
+    AlphaNumeric,
+    /// `0100`: eight bits per byte, the historical mode and the universal fallback.
+    Byte,
+}
+
+/// The 45 characters alphanumeric mode can encode, in their QR index order.
+const ALNUM_CHARSET: &[u8; 45] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
+
+impl QrMode {
+    /// The four-bit mode indicator.
+    fn indicator(self) -> u32 {
+        match self {
+            QrMode::Numeric => 0b0001,
+            QrMode::AlphaNumeric => 0b0010,
+            QrMode::Byte => 0b0100,
+        }
+    }
+
+    /// The width of this mode's character-count indicator at `version`.
+    fn count_bits(self, version: u8) -> usize {
+        match (self, version <= 9) {
+            (QrMode::Numeric, true) => 10,
+            (QrMode::Numeric, false) => 12,
+            (QrMode::AlphaNumeric, true) => 9,
+            (QrMode::AlphaNumeric, false) => 11,
+            (QrMode::Byte, true) => 8,
+            (QrMode::Byte, false) => 16,
+        }
+    }
+
+    /// The payload bits `len` characters occupy in this mode.
+    fn payload_bits(self, len: usize) -> usize {
+        match self {
+            QrMode::Numeric => 10 * (len / 3) + [0, 4, 7][len % 3],
+            QrMode::AlphaNumeric => 11 * (len / 2) + 6 * (len % 2),
+            QrMode::Byte => 8 * len,
+        }
+    }
+}
+
+/// The alphanumeric-mode value of `byte`, or `None` when it is outside the charset.
+fn alnum_value(byte: u8) -> Option<u8> {
+    ALNUM_CHARSET.iter().position(|candidate| *candidate == byte).map(|index| index as u8)
+}
+
+/// One planned segment: a mode plus the byte range it covers.
+type QrSegment = (QrMode, usize, usize);
+
+/// Plans the segment list for `data` at `version`.
+///
+/// Consecutive digits become a numeric run and consecutive charset characters an alphanumeric run;
+/// everything else is a byte run. The plan is then compared with a single byte-mode segment and the
+/// byte form wins ties, so this can only ever make a payload more compact — a short numeric run
+/// whose extra mode header costs more than it saves stays in byte mode.
+fn plan_segments(data: &[u8], version: u8) -> Vec<QrSegment> {
+    let byte_total = 4 + QrMode::Byte.count_bits(version) + QrMode::Byte.payload_bits(data.len());
+    let mut segments: Vec<QrSegment> = Vec::new();
+    let mut index = 0usize;
+    while index < data.len() {
+        let byte = data[index];
+        let mode = if byte.is_ascii_digit() {
+            QrMode::Numeric
+        } else if alnum_value(byte).is_some() {
+            QrMode::AlphaNumeric
+        } else {
+            QrMode::Byte
+        };
+        let start = index;
+        match mode {
+            QrMode::Numeric => {
+                while index < data.len() && data[index].is_ascii_digit() {
+                    index += 1;
+                }
+            }
+            QrMode::AlphaNumeric => {
+                while index < data.len()
+                    && !data[index].is_ascii_digit()
+                    && alnum_value(data[index]).is_some()
+                {
+                    index += 1;
+                }
+            }
+            QrMode::Byte => {
+                while index < data.len()
+                    && !data[index].is_ascii_digit()
+                    && alnum_value(data[index]).is_none()
+                {
+                    index += 1;
+                }
+            }
+        }
+        segments.push((mode, start, index - start));
+    }
+
+    let segmented_total: usize = segments
+        .iter()
+        .map(|(mode, _, len)| 4 + mode.count_bits(version) + mode.payload_bits(*len))
+        .sum();
+    if segmented_total >= byte_total {
+        return vec![(QrMode::Byte, 0, data.len())];
+    }
+    segments
+}
+
+/// Encodes `data`, auto-segmenting into numeric / alphanumeric / byte runs, smallest version first.
+fn encode_segmented_in(
+    data: &[u8],
+    ec: QrEcLevel,
+    min_version: u8,
+    max_version: u8,
+) -> Result<QrMatrix, QrEncodeError> {
+    let min_version = min_version.clamp(1, 10);
+    let max_version = max_version.clamp(min_version, 10);
+    let mut chosen = None;
+    for version in min_version..=max_version {
+        let Some(spec) = block_spec(version, ec) else {
+            continue;
+        };
+        let plan = plan_segments(data, version);
+        let needed_bits: usize = plan
+            .iter()
+            .map(|(mode, _, len)| 4 + mode.count_bits(version) + mode.payload_bits(*len))
+            .sum();
+        // A count indicator can only describe as many characters as it has bits for.
+        let counts_fit =
+            plan.iter().all(|(mode, _, len)| *len < (1usize << mode.count_bits(version)));
+        if counts_fit && needed_bits.div_ceil(8) <= spec.data_codewords {
+            chosen = Some((version, spec, plan));
+            break;
+        }
+    }
+    let Some((version, spec, plan)) = chosen else {
+        return Err(QrEncodeError(format!(
+            "payload of {} bytes does not fit any supported QR version ({}..={}) at EC level \
+             {ec:?}",
+            data.len(),
+            min_version,
+            max_version
+        )));
+    };
+    // A payload with nothing to compress plans as one byte segment, so it takes the plain byte-mode
+    // encoder — the same code path, and therefore the same symbol, the control had before the
+    // segmented encoder existed. That also keeps one symbol shape per payload rather than two
+    // equivalent ones.
+    if plan.len() == 1 && plan[0].0 == QrMode::Byte {
+        return encode_byte_mode_in(data, ec, min_version, max_version);
+    }
+
+    let capacity_bits = spec.data_codewords * 8;
+    let mut bits = Vec::with_capacity(capacity_bits);
+    for (mode, start, len) in &plan {
+        push_bits(&mut bits, mode.indicator(), 4);
+        push_bits(&mut bits, *len as u32, mode.count_bits(version));
+        let run = &data[*start..*start + *len];
+        match mode {
+            QrMode::Numeric => {
+                for chunk in run.chunks(3) {
+                    let mut value = 0u32;
+                    for byte in chunk {
+                        value = value * 10 + u32::from(byte - b'0');
+                    }
+                    let width = match chunk.len() {
+                        3 => 10,
+                        2 => 7,
+                        _ => 4,
+                    };
+                    push_bits(&mut bits, value, width);
+                }
+            }
+            QrMode::AlphaNumeric => {
+                for pair in run.chunks(2) {
+                    let high = u32::from(alnum_value(pair[0]).unwrap_or(0));
+                    let value = if pair.len() == 2 {
+                        high * 45 + u32::from(alnum_value(pair[1]).unwrap_or(0))
+                    } else {
+                        high
+                    };
+                    push_bits(&mut bits, value, if pair.len() == 2 { 11 } else { 6 });
+                }
+            }
+            QrMode::Byte => {
+                for byte in run {
+                    push_bits(&mut bits, u32::from(*byte), 8);
+                }
+            }
+        }
+    }
+
+    if bits.len() > capacity_bits {
+        return Err(QrEncodeError(format!(
+            "segmented bit stream is {} bits but the selected QR version only holds {}",
+            bits.len(),
+            capacity_bits
+        )));
+    }
+    let codewords = assemble_codewords(bits, spec)?;
+
+    let (mut matrix, function) = build_base_matrix(version);
+    place_data(&mut matrix, &function, &codewords);
+    draw_format_info(&mut matrix, ec, 0);
+    let mask = best_mask(&matrix);
+    apply_mask(&mut matrix, &function, mask);
+    draw_format_info(&mut matrix, ec, mask);
+    Ok(matrix)
+}
+
 /// Galois-field multiplication in GF(256) with primitive polynomial `0x11D`.
 fn gf_mul(left: u8, right: u8) -> u8 {
     if left == 0 || right == 0 {
@@ -1011,8 +1235,12 @@ impl QRCode {
     }
 
     /// Re-encodes `data`, recording an error instead of keeping a stale or fabricated matrix.
+    ///
+    /// The encoder picks numeric / alphanumeric / byte segments per run (MISC-13), so a numeric or
+    /// uppercase payload occupies the version its own content needs rather than the byte-mode
+    /// worst case. Ties go to byte mode, so nothing that used to fit stops fitting.
     fn reencode(&mut self) {
-        match encode_byte_mode_in(
+        match encode_segmented_in(
             self.data.as_bytes(),
             self.ec_level,
             self.min_version,
@@ -1195,13 +1423,13 @@ impl WidgetProperties for QRCode {
                 Ok(())
             }
             "size" => {
-                let requested = expect_usize(value)? as u32;
+                let requested = expect_u32_saturating(value)?;
                 let module = (requested / (self.matrix.size + self.quiet_zone * 2)).max(1);
                 self.set_module_size(module);
                 Ok(())
             }
             "quiet_zone" => {
-                self.set_quiet_zone(expect_usize(value)? as u32);
+                self.set_quiet_zone(expect_u32_saturating(value)?);
                 Ok(())
             }
             "ec_level" => {
@@ -1329,29 +1557,38 @@ impl Draw for QRCode {
         context.fill_rect(Rect::new(symbol_x, symbol_y, symbol_side, symbol_side), surface);
 
         for row in 0..size {
-            for col in 0..size {
-                let x = symbol_x + (self.quiet_zone + col) as i32 * module as i32;
+            // Horizontal run merging (K-P14): consecutive dark modules in one row become one
+            // rectangle. A version-10 symbol is 57x57, so the per-module loop issued up to 3 249
+            // fill commands a frame; a real payload is far closer to one run per row.
+            let mut col = 0u32;
+            while col < size {
+                if !self.matrix.get(row, col) {
+                    col += 1;
+                    continue;
+                }
+                let run_start = col;
+                while col < size && self.matrix.get(row, col) {
+                    col += 1;
+                }
+                let run_len = col - run_start;
+                let x = symbol_x + (self.quiet_zone + run_start) as i32 * module as i32;
                 let y = symbol_y + (self.quiet_zone + row) as i32 * module as i32;
 
                 // Clamp to widget bounds.
-                if x + module as i32 <= rect.x
-                    || x >= rect.x + rect.width as i32
-                    || y + module as i32 <= rect.y
-                    || y >= rect.y + rect.height as i32
-                {
+                if y + module as i32 <= rect.y || y >= rect.y + rect.height as i32 {
+                    continue;
+                }
+                if x + module as i32 <= rect.x || x >= rect.x + rect.width as i32 {
                     continue;
                 }
 
-                let cell_w = module.min((rect.x + rect.width as i32 - x).max(0) as u32);
+                let run_px = run_len * module;
+                let cell_w = run_px.min((rect.x + rect.width as i32 - x).max(0) as u32);
                 let cell_h = module.min((rect.y + rect.height as i32 - y).max(0) as u32);
                 if cell_w == 0 || cell_h == 0 {
                     continue;
                 }
-
-                if self.matrix.get(row, col) {
-                    let cell_rect = Rect::new(x, y, cell_w, cell_h);
-                    context.fill_rect(cell_rect, module_color);
-                }
+                context.fill_rect(Rect::new(x, y, cell_w, cell_h), module_color);
             }
         }
     }
@@ -1719,5 +1956,42 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut qr);
         assert!(svg.starts_with("<svg"));
         assert_eq!(qr.get("ec_level"), Ok(CapabilityValue::String("H".to_string())));
+    }
+
+    /// A numeric payload uses the numeric segment and so picks a smaller version than the same
+    /// number of bytes would (MISC-13).
+    #[test]
+    fn a_numeric_payload_takes_the_numeric_mode() {
+        let digits = b"0123456789012345678901234567890123456789";
+        let numeric =
+            encode_segmented_in(digits, QrEcLevel::L, 1, 10).expect("40 digits must encode");
+        let byte = encode_byte_mode_in(digits, QrEcLevel::L, 1, 10).expect("40 bytes must encode");
+        assert!(
+            numeric.size <= byte.size,
+            "numeric mode cannot need a larger symbol (numeric {} vs byte {})",
+            numeric.size,
+            byte.size
+        );
+        assert!(numeric.size < byte.size, "40 digits are 2 versions smaller than 40 bytes");
+    }
+
+    /// An uppercase alphanumeric payload also takes the compact segment.
+    #[test]
+    fn an_alphanumeric_payload_takes_the_alnum_mode() {
+        let text = b"HELLO WORLD 123";
+        let alnum = encode_segmented_in(text, QrEcLevel::M, 1, 10).expect("alnum encodes");
+        let byte = encode_byte_mode_in(text, QrEcLevel::M, 1, 10).expect("bytes encode");
+        assert!(alnum.size <= byte.size);
+    }
+
+    /// A payload with nothing to compress takes the byte path, so its symbol is the one the
+    /// byte-mode encoder has always produced.
+    #[test]
+    fn a_binary_payload_matches_the_byte_mode_encoder() {
+        let data = b"lower case and \x01\x02 punctuation!";
+        let segmented = encode_segmented_in(data, QrEcLevel::Q, 1, 10).expect("encodes");
+        let byte = encode_byte_mode_in(data, QrEcLevel::Q, 1, 10).expect("encodes");
+        assert_eq!(segmented.size, byte.size);
+        assert_eq!(segmented.modules, byte.modules);
     }
 }

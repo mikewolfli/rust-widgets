@@ -12,7 +12,7 @@ use crate::core::RuntimeProfile;
 #[cfg(not(alloc_frugal))]
 use crate::platform::runtime::get_platform;
 use crate::platform::types::{
-    default_capabilities_for, CapabilityContract, NativeCapabilityContract,
+    default_capabilities_for, CapabilityContract, HostedCapabilityContract,
 };
 // Only the embedded fallback reads this, and that fallback does not exist under
 // `alloc_frugal`; importing it unconditionally warned in the `mini` build.
@@ -29,7 +29,7 @@ pub use crate::platform::types::MobilePlatformExtension;
 ///
 /// # Why this is derived rather than hardcoded
 ///
-/// It used to be a literal with all four flags `true`. `native_capability_contract()`
+/// It used to be a literal with all four flags `true`. `hosted_capability_contract()`
 /// returns `None` for every non-`Desktop` family, so the only way to reach this
 /// function was from a **non-desktop** backend — and the answer it gave that backend
 /// was "you have DPI scaling, IME, accessibility and a native menu". In other words
@@ -42,7 +42,7 @@ pub use crate::platform::types::MobilePlatformExtension;
 /// backend's default, which is the only defensible answer for "this backend told us
 /// nothing".
 #[cfg(not(alloc_frugal))]
-fn fallback_native_capability_contract() -> NativeCapabilityContract {
+fn fallback_hosted_capability_contract() -> HostedCapabilityContract {
     default_capabilities_for(get_platform().family())
 }
 
@@ -52,7 +52,7 @@ fn fallback_native_capability_contract() -> NativeCapabilityContract {
 /// is [`PlatformFamily::Embedded`] by construction (see `platform/portable`). Deriving
 /// rather than hardcoding keeps this consistent with the runtime path above.
 #[cfg(alloc_frugal)]
-fn fallback_native_capability_contract() -> NativeCapabilityContract {
+fn fallback_hosted_capability_contract() -> HostedCapabilityContract {
     default_capabilities_for(crate::core::PlatformFamily::Embedded)
 }
 /// Fallback contract for embedded profiles without a published backend contract.
@@ -82,9 +82,9 @@ fn fallback_embedded_capability_contract() -> EmbeddedCapabilityContract {
 pub fn negotiate_capability_contract(profile: RuntimeProfile) -> CapabilityContract {
     match profile {
         RuntimeProfile::Full => get_platform()
-            .native_capability_contract()
-            .map(CapabilityContract::Native)
-            .unwrap_or(CapabilityContract::Native(fallback_native_capability_contract())),
+            .hosted_capability_contract()
+            .map(CapabilityContract::Hosted)
+            .unwrap_or(CapabilityContract::Hosted(fallback_hosted_capability_contract())),
         RuntimeProfile::Embedded => get_platform()
             .embedded_capability_contract()
             .map(CapabilityContract::Embedded)
@@ -94,5 +94,5 @@ pub fn negotiate_capability_contract(profile: RuntimeProfile) -> CapabilityContr
 /// Capability negotiation not available in mini mode.
 #[cfg(alloc_frugal)]
 pub fn negotiate_capability_contract(_profile: RuntimeProfile) -> CapabilityContract {
-    CapabilityContract::Native(fallback_native_capability_contract())
+    CapabilityContract::Hosted(fallback_hosted_capability_contract())
 }

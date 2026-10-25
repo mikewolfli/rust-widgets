@@ -100,6 +100,16 @@ struct TooltipWrapCache {
     width: u32,
 }
 
+/// Cached advances of the rich-text runs.
+///
+/// A rich tooltip measured every span twice per frame — once for the bubble width and once
+/// while painting — and repeated both on every frame that changed no text. The advances are a
+/// function of the runs and the resolved font, so they are derived once per revision (G-P10).
+struct TooltipSpanCache {
+    key: u64,
+    widths: Rc<Vec<u32>>,
+}
+
 /// Tooltip widget — a popup label attached to a target widget.
 ///
 /// The tooltip appears when the pointer hovers over the target widget and
@@ -146,6 +156,8 @@ pub struct Tooltip {
     hide_pending: bool,
     /// Wrapped label cache keyed by text, font identity and available width (M-11).
     wrap_cache: RefCell<Option<TooltipWrapCache>>,
+    /// Rich-run advance cache keyed by the runs and the resolved font (G-P10).
+    span_cache: RefCell<Option<TooltipSpanCache>>,
 }
 
 impl Tooltip {
@@ -177,6 +189,7 @@ impl Tooltip {
             show_pending: false,
             hide_pending: false,
             wrap_cache: RefCell::new(None),
+            span_cache: RefCell::new(None),
         }
     }
 
@@ -556,6 +569,40 @@ impl Tooltip {
         lines
     }
 
+    /// The advance of every rich run, served from a keyed cache.
+    ///
+    /// The width of one run is a function of its text, its bold flag and the resolved font, so
+    /// the vector is rebuilt only when one of those facts changes (G-P10).
+    fn span_widths(&self, context: &RenderContext, font: &Font) -> Rc<Vec<u32>> {
+        let mut hasher = DefaultHasher::new();
+        font.family().hash(&mut hasher);
+        font.size().to_bits().hash(&mut hasher);
+        font.weight().hash(&mut hasher);
+        font.is_bold().hash(&mut hasher);
+        font.is_italic().hash(&mut hasher);
+        for span in &self.spans {
+            span.text.hash(&mut hasher);
+            span.bold.hash(&mut hasher);
+        }
+        let key = hasher.finish();
+        if let Some(cache) = self.span_cache.borrow().as_ref() {
+            if cache.key == key {
+                return Rc::clone(&cache.widths);
+            }
+        }
+        let widths: Vec<u32> = self
+            .spans
+            .iter()
+            .map(|span| {
+                let span_font = font.with_bold(span.bold);
+                context.measure_text(&span.text, &span_font).width
+            })
+            .collect();
+        let widths = Rc::new(widths);
+        *self.span_cache.borrow_mut() = Some(TooltipSpanCache { key, widths: Rc::clone(&widths) });
+        widths
+    }
+
     /// The bubble rectangle for a bubble of `size`.
     ///
     /// Centred in the control unless an anchor was supplied, in which case it sits below
@@ -761,20 +808,17 @@ impl Draw for Tooltip {
         // The theme reads take and release the global manager's lock internally, so no
         // guard is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("tooltip");
-        // `tooltip` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
-        // `Surface` and resolves to `theme.colors.background` — the window's own fill. A
-        // bubble painted in that colour would be byte-identical to the frame behind it, so a
-        // resolved surface equal to the window fill is re-derived a visible step away from
-        // it, the same distinction `Colors::input_background` draws for a field.
-        let window_fill = {
+        // One theme-manager read supplies both the window fill and the fallback ink; the
+        // previous path resolved a separate widget style and then took the manager lock again
+        // for the same frame (G-P13).
+        let (window_fill, theme_ink) = {
             let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+            match manager.current_theme() {
+                Some(active) => (active.colors.background, Some(active.colors.foreground)),
+                None => (Color::WHITE, None),
+            }
         };
-        let ink = style
-            .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
-            .unwrap_or(self.text_color);
+        let ink = style.text_color.or(theme_ink).unwrap_or(self.text_color);
         // # Why the inverse surface leads
         //
         // A tooltip is the canonical *inverted* bubble: in a light appearance it is dark, in a
@@ -838,7 +882,6 @@ impl Draw for Tooltip {
                 }
             },
         };
-        let _ = theme;
         // The bubble is blended toward the window by however far the fade has run, so the
         // control still has a rendered body in every state instead of vanishing at rest — and a
         // mid-fade bubble is genuinely between the two, which is what a fade *means*. The old
@@ -868,12 +911,8 @@ impl Draw for Tooltip {
             // widest one instead of measuring the whole label again (M-11).
             self.wrap_cache.borrow().as_ref().map(|cache| cache.width).unwrap_or(0)
         } else {
-            let mut total = 0u32;
-            for span in &self.spans {
-                let span_font = font.with_bold(span.bold);
-                total = total.saturating_add(context.measure_text(&span.text, &span_font).width);
-            }
-            total
+            let widths = self.span_widths(context, &font);
+            widths.iter().fold(0u32, |total, width| total.saturating_add(*width))
         };
 
         // ── The bubble actually painted ──
@@ -925,12 +964,13 @@ impl Draw for Tooltip {
             // is left of the bubble, so a long run elides rather than painting outside it.
             let mut x = bubble.x + dimensions::TOOLTIP_PADDING_H as i32;
             let right = bubble.x + bubble.width as i32 - dimensions::TOOLTIP_PADDING_H as i32;
-            for span in &self.spans {
+            let widths = self.span_widths(context, &font);
+            for (index, span) in self.spans.iter().enumerate() {
                 if x >= right {
                     break;
                 }
                 let span_font = font.with_bold(span.bold);
-                let advance = context.measure_text(&span.text, &span_font).width as i32;
+                let advance = widths.get(index).copied().unwrap_or(0) as i32;
                 let remaining = (right - x).max(1) as u32;
                 let band = Rect::new(
                     x - fit_inset,

@@ -12,7 +12,7 @@
 //! the 2026-10-21 scan. The items all share one fixed advance, so the same boxes are now computed
 //! directly: `item_bands` is one pass of integer additions, and nothing is mounted to measure it.
 
-use crate::compat::{lock, Arc, Mutex, String, ToString, Vec};
+use crate::compat::{lock, Arc, Mutex, Rc, RefCell, String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -25,7 +25,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::companions::TooltipManager;
 use crate::widget::menu_toolbar::action::Action;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The width of the drag grip at the strip's trailing end: 12 px.
@@ -118,6 +118,8 @@ pub struct ToolBarItem {
     separator: bool,
     /// Optional icon stand-in text, painted according to the bar's button style.
     icon: Option<String>,
+    /// Typed icon source; when set it takes precedence over the text glyph (M-07).
+    icon_source: Option<IconSource>,
     /// Per-item square size override, in logical pixels.
     icon_size: Option<u32>,
     /// Whether this item starts a new row (horizontal bar) or column (vertical bar).
@@ -141,6 +143,7 @@ impl ToolBarItem {
             enabled: true,
             separator: false,
             icon: None,
+            icon_source: None,
             icon_size: None,
             line_break: false,
         }
@@ -258,6 +261,17 @@ impl ToolBarItem {
     /// character run the painter draws, not image data.
     pub fn set_icon(&mut self, icon: Option<String>) {
         self.icon = icon;
+    }
+
+    /// The typed icon source painted in the item's icon slot, if one is set.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
+    }
+
+    /// Assigns a typed icon source. It takes precedence over [`Self::icon`]'s text glyph while
+    /// set; passing `None` restores that glyph as the fallback (M-07).
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        self.icon_source = source;
     }
 
     /// Sets the icon and returns `self`, for chaining onto [`ToolBarItem::new`].
@@ -429,6 +443,12 @@ pub struct ToolBar {
     tooltip_source: Option<ObjectId>,
     /// Monotonic clock fed to the tooltip pipeline from [`Widget::tick`].
     tooltip_now_ms: u64,
+    /// The cached item boxes, keyed by [`Self::layout_signature`].
+    ///
+    /// `item_bands` is read by the painter and by every hit test, and used to allocate and
+    /// refill a `Vec` for each call. The signature is a cheap fold over the facts the layout
+    /// reads, so a frame that changed none of them reuses the previous run (G-P03).
+    bands_cache: RefCell<Option<(u64, Rc<Vec<Rect>>)>>,
 }
 impl ToolBar {
     /// Creates a horizontal toolbar with a default icon size of 24 pixels, and
@@ -463,6 +483,7 @@ impl ToolBar {
             tooltips: TooltipManager::new(geometry),
             tooltip_source: None,
             tooltip_now_ms: 0,
+            bands_cache: RefCell::new(None),
         }
     }
     /// The direction items are laid out in.
@@ -545,6 +566,18 @@ impl ToolBar {
         }
         self.base.request_redraw();
     }
+    /// Assigns a typed icon source to the item at `index` and requests a redraw.
+    ///
+    /// A typed source paints through `paint_icon` and takes precedence over the item's legacy
+    /// text glyph (M-07); an out-of-range index is ignored.
+    pub fn set_item_icon_source(&mut self, index: usize, source: Option<IconSource>) {
+        let Some(item) = self.items.get_mut(index) else {
+            return;
+        };
+        item.set_icon_source(source);
+        self.base.request_redraw();
+    }
+
     /// Sets the icon size in **pixels** and repaints.
     ///
     /// Values below 8 are raised to 8, which is the smallest size at which an
@@ -1206,14 +1239,6 @@ impl ToolBar {
         }
     }
 
-    /// The visible item indices in draw order.
-    #[allow(dead_code)]
-    fn visible_range(&self) -> core::ops::Range<usize> {
-        let capacity = self.effective_capacity();
-        let start = self.overflow_offset.min(self.items.len());
-        start..start.saturating_add(capacity).min(self.items.len())
-    }
-
     /// Keeps the overflow offset inside the list after a mutation.
     fn clamp_overflow(&mut self) {
         let capacity = self.effective_capacity();
@@ -1329,7 +1354,46 @@ impl ToolBar {
     /// The callers read this list once per pass: `draw` and `hit_item` each walk it in place
     /// rather than asking a per-index helper, which used to rebuild the whole list per index and
     /// made both paths O(N²) in the item count (REND-01).
-    fn item_bands(&self) -> Vec<Rect> {
+    fn item_bands(&self) -> Rc<Vec<Rect>> {
+        let key = self.layout_signature();
+        if let Some((cached_key, bands)) = self.bands_cache.borrow().as_ref() {
+            if *cached_key == key {
+                return Rc::clone(bands);
+            }
+        }
+        let bands = Rc::new(self.compute_item_bands());
+        *self.bands_cache.borrow_mut() = Some((key, Rc::clone(&bands)));
+        bands
+    }
+
+    /// A fold over every fact [`Self::compute_item_bands`] reads.
+    ///
+    /// The signature is O(n) integer arithmetic and allocates nothing, so it is cheaper than
+    /// rebuilding the box list — which is what the old per-call `Vec` did for both the painter
+    /// and every hit test.
+    fn layout_signature(&self) -> u64 {
+        let geometry = self.geometry();
+        let mut signature = (geometry.x as u32 as u64).rotate_left(8)
+            ^ (geometry.y as u32 as u64)
+            ^ (geometry.width as u64).rotate_left(24)
+            ^ (geometry.height as u64).rotate_left(40);
+        signature = signature.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (self.orientation as u8 as u64)
+            ^ (self.icon_size.to_bits() as u64).rotate_left(16)
+            ^ (self.overflow_offset as u64).rotate_left(32)
+            ^ (self.items.len() as u64 > 0) as u64;
+        for item in &self.items {
+            let step = item.icon_size().unwrap_or(0) as u64;
+            let flags = (item.is_separator() as u64)
+                | ((item.is_line_break() as u64) << 1)
+                | ((item.icon_source().is_some() as u64) << 2);
+            signature = signature.rotate_left(5) ^ step ^ (flags << 24);
+        }
+        signature
+    }
+
+    /// Rebuilds the item boxes; [`Self::item_bands`] is the cached entry point.
+    fn compute_item_bands(&self) -> Vec<Rect> {
         let band = self.band_rect();
         if self.items.is_empty() {
             return Vec::new();
@@ -1720,6 +1784,9 @@ impl Draw for ToolBar {
         // painting an N-item toolbar O(N²) (REND-01). The boxes are a pure function of the band,
         // the item count and `icon_size`, so computing them once is the same picture at one pass.
         let bands = self.item_bands();
+        // The **effective font** is resolved once for the whole strip, not rebuilt per item
+        // (G-P03).
+        let font = effective_font(style);
         for (i, &item_r) in bands.iter().enumerate() {
             let item = &self.items[i];
             if item_r.width == 0 || item_r.height == 0 {
@@ -1769,7 +1836,6 @@ impl Draw for ToolBar {
             let fg = if item.is_enabled() { bg.contrast_color() } else { ink.with_alpha(130) };
             // The **effective font** — the resolved theme/caller font — so toolbar item labels
             // honour the theme body font and the user's text scale (D09-STYLE-01).
-            let font = effective_font(style);
             let line = context.text_line(item_band, font);
             let icon = item.icon();
             match self.button_style {
@@ -1784,7 +1850,22 @@ impl Draw for ToolBar {
                     );
                 }
                 ToolBarButtonStyle::IconOnly => {
-                    if let Some(icon) = icon {
+                    if let Some(source) = item.icon_source() {
+                        // A typed source paints the icon outline; the text glyph is the
+                        // fallback for items that only carry one (M-07).
+                        let side = line.height.max(1).min(item_band.width).min(item_band.height);
+                        let icon_rect = Rect::new(
+                            item_band.x + (item_band.width as i32 - side as i32) / 2,
+                            line.y + (line.height as i32 - side as i32) / 2,
+                            side,
+                            side,
+                        );
+                        if let Err(error) =
+                            crate::widget::paint_icon(context, source.into(), icon_rect, fg)
+                        {
+                            log::warn!("toolbar item icon could not be painted: {error:?}");
+                        }
+                    } else if let Some(icon) = icon {
                         context.draw_text(
                             Point::new(item_band.x, line.y),
                             icon,
@@ -1797,9 +1878,23 @@ impl Draw for ToolBar {
                 ToolBarButtonStyle::TextBesideIcon => {
                     let icon_width =
                         item.icon_size().unwrap_or(self.icon_size as u32).min(item_band.width);
-                    if let Some(icon) = icon {
+                    let icon_box = Rect::new(item_band.x, line.y, icon_width, line.height.max(1));
+                    if let Some(source) = item.icon_source() {
+                        let side = line.height.max(1).min(icon_width);
+                        let icon_rect = Rect::new(
+                            icon_box.x + (icon_box.width as i32 - side as i32) / 2,
+                            line.y + (line.height as i32 - side as i32) / 2,
+                            side,
+                            side,
+                        );
+                        if let Err(error) =
+                            crate::widget::paint_icon(context, source.into(), icon_rect, fg)
+                        {
+                            log::warn!("toolbar item icon could not be painted: {error:?}");
+                        }
+                    } else if let Some(icon) = icon {
                         context.draw_text_fitted_cow(
-                            Rect::new(item_band.x, line.y, icon_width, line.height.max(1)),
+                            icon_box,
                             icon,
                             font,
                             fg,
@@ -1823,9 +1918,24 @@ impl Draw for ToolBar {
                         .unwrap_or(self.icon_size as u32)
                         .min(item_band.height / 2)
                         .min(item_band.width);
-                    if let Some(icon) = icon {
+                    let icon_box =
+                        Rect::new(item_band.x, item_band.y, item_band.width, icon_side.max(1));
+                    if let Some(source) = item.icon_source() {
+                        let side = icon_side.max(1).min(item_band.width);
+                        let icon_rect = Rect::new(
+                            icon_box.x + (icon_box.width as i32 - side as i32) / 2,
+                            icon_box.y,
+                            side,
+                            side,
+                        );
+                        if let Err(error) =
+                            crate::widget::paint_icon(context, source.into(), icon_rect, fg)
+                        {
+                            log::warn!("toolbar item icon could not be painted: {error:?}");
+                        }
+                    } else if let Some(icon) = icon {
                         context.draw_text_fitted_cow(
-                            Rect::new(item_band.x, item_band.y, item_band.width, icon_side.max(1)),
+                            icon_box,
                             icon,
                             font,
                             fg,
@@ -1880,7 +1990,7 @@ impl Draw for ToolBar {
                 ],
             };
             context.execute_command(crate::render::RenderCommand::DrawPath {
-                points,
+                points: points.into(),
                 closed: false,
                 color: affordance_ink,
                 filled: false,
@@ -1927,6 +2037,20 @@ impl Draw for ToolBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl ToolBar {
+        /// The visible item indices in draw order.
+        ///
+        /// Test-only: neither the draw path nor the hit-test path consults it today,
+        /// so it lives with its only consumers rather than being a dead
+        /// `#[allow(dead_code)]` method on the type. If a production path ever needs
+        /// the window, move it back and call it from there.
+        fn visible_range(&self) -> core::ops::Range<usize> {
+            let capacity = self.effective_capacity();
+            let start = self.overflow_offset.min(self.items.len());
+            start..start.saturating_add(capacity).min(self.items.len())
+        }
+    }
 
     #[test]
     fn toolbar_item_state_accessors_handle_valid_and_oob_indices() {
@@ -1990,7 +2114,7 @@ mod tests {
         let strip = tool_bar.band_rect();
         let expected_height =
             dimensions::TOOLBAR_HEIGHT.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2);
-        for band in &bands {
+        for band in bands.iter() {
             assert_eq!(band.y, strip.y + dimensions::TOOLBAR_ITEM_INSET as i32);
             assert_eq!(band.height, expected_height);
         }

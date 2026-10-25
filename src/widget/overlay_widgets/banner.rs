@@ -21,7 +21,7 @@
 //! publishes a property contract, and has interaction tests.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
@@ -30,7 +30,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Side of the square dismiss hit area, in logical pixels.
@@ -119,10 +119,9 @@ impl BannerSeverity {
     /// Both reads are separate manager locks, taken and released in turn — never
     /// held across each other or across the draw — so a `Draw` that resolves a
     /// token cannot deadlock the non-reentrant global manager.
-    fn background(self) -> Color {
-        let surface = crate::style::resolved_theme_style_shared("banner")
-            .and_then(|style| style.background_color)
-            .unwrap_or(Color::WHITE);
+    /// The background resolved against an already-read role style (G-A01).
+    fn background_in(self, theme: Option<&crate::style::WidgetStyle>) -> Color {
+        let surface = theme.and_then(|style| style.background_color).unwrap_or(Color::WHITE);
         match self.token_color() {
             // 15% token over the surface: enough to read as the severity, light
             // enough that foreground text stays legible on top of it.
@@ -149,10 +148,19 @@ impl BannerSeverity {
     /// legible when the appearance flips. The severity token would be wrong here:
     /// it is the *accent*, and text drawn in the accent on an accent-tinted fill
     /// would be nearly invisible.
-    fn default_text(self) -> Color {
-        crate::style::resolved_theme_style_shared("banner")
-            .and_then(|style| style.text_color)
-            .unwrap_or(Color::BLACK)
+    /// The default text colour resolved against an already-read role style (G-A01).
+    fn default_text_in(self, theme: Option<&crate::style::WidgetStyle>) -> Color {
+        theme.and_then(|style| style.text_color).unwrap_or(Color::BLACK)
+    }
+
+    /// The built-in icon that stands in when the caller sets no icon (OV-01).
+    fn default_icon(self) -> IconName {
+        match self {
+            BannerSeverity::Info => IconName::Info,
+            BannerSeverity::Success => IconName::Success,
+            BannerSeverity::Warning => IconName::Warning,
+            BannerSeverity::Error => IconName::Error,
+        }
     }
 }
 
@@ -171,6 +179,8 @@ pub struct Banner {
     /// `dismissed` signal so the two do not collide on the struct.
     is_dismissed: bool,
     actions: Vec<String>,
+    /// An optional leading icon; when unset the severity's built-in icon is drawn (OV-01).
+    icon_source: Option<IconSource>,
     /// Index of the action under the pointer, tracked so a hover can be
     /// highlighted without re-deriving the hit test in the drawing code.
     hovered_action: Option<usize>,
@@ -198,6 +208,7 @@ impl Banner {
             dismissible: true,
             is_dismissed: false,
             actions: Vec::new(),
+            icon_source: None,
             hovered_action: None,
             action_clicked: Signal1::new(),
             dismissed: GenericSignal::new(),
@@ -296,6 +307,20 @@ impl Banner {
     /// Whether the reveal is between two values.
     pub fn is_animating(&self) -> bool {
         self.reveal.is_moving()
+    }
+
+    /// Returns the leading icon source, when one was set.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
+    }
+
+    /// Sets a leading icon. `None` restores the severity's built-in icon (OV-01).
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        if self.icon_source == source {
+            return;
+        }
+        self.icon_source = source;
+        self.base.request_redraw();
     }
 
     /// Returns the action labels.
@@ -531,7 +556,19 @@ impl WidgetProperties for Banner {
                     Err(CapabilityAccessError::OutOfRange)
                 }
             }
-            "set_actions" | "activate_action" => Err(CapabilityAccessError::OutOfRange),
+            "set_actions" => Err(CapabilityAccessError::OutOfRange),
+            // `activate_action` is published as a payload-free verb by the command schema, so it
+            // acts on the hovered action (or the first when nothing is hovered) rather than naming
+            // an index. This makes the command real instead of a constant refusal while leaving
+            // the payload-bearing `set_actions` on the property/route path (OV-02).
+            "activate_action" => {
+                let target =
+                    self.hovered_action.or(if self.actions.is_empty() { None } else { Some(0) });
+                match target {
+                    Some(index) if self.activate_action(index) => Ok(()),
+                    _ => Err(CapabilityAccessError::OutOfRange),
+                }
+            }
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }
@@ -555,13 +592,39 @@ impl EventHandler for Banner {
                 }
             }
             Event::MouseMove { pos } => {
-                self.hovered_action = self.action_index_at(*pos);
+                let hovered = self.action_index_at(*pos);
+                if hovered != self.hovered_action {
+                    self.hovered_action = hovered;
+                    // Hover is a visible state, so entering or leaving an action must repaint;
+                    // writing the field alone only showed the tint if something else redrew (G-A07).
+                    self.base.request_redraw();
+                }
             }
             // The pointer is no longer over any action, so nothing should stay
             // highlighted.
             Event::MouseLeave { .. } => {
-                self.hovered_action = None;
+                if self.hovered_action.take().is_some() {
+                    self.base.request_redraw();
+                }
             }
+            // Keyboard access for a focused banner (N-11): Enter/Space activates the hovered
+            // action, falling back to the first; Escape is the keyboard spelling of dismiss.
+            Event::KeyPress { key, .. } if self.base.focus_reason().is_some() => match *key {
+                key_codes::ENTER | key_codes::LINE_FEED | key_codes::SPACE => {
+                    let target = self.hovered_action.or(if self.actions.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    });
+                    if let Some(index) = target {
+                        let _ = self.activate_action(index);
+                    }
+                }
+                key_codes::ESCAPE => {
+                    let _ = self.dismiss();
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -586,22 +649,14 @@ impl Draw for Banner {
         let rect = Rect::new(rect.x, rect.y - slide, rect.width, rect.height);
 
         let style = self.base.style();
-        // The fill layers two facts, in this order:
-        //
-        // 1. **a caller's explicit `background_color`** — if the caller styled the
-        //    banner, that wins, full stop;
-        // 2. otherwise the **severity tinted from its theme token** over the
-        //    surface the role resolved to.
-        //
-        // The tint is applied even when a theme resolved a `background_color`,
-        // because that colour is the *role's* surface, not the *severity's* state:
-        // taking it verbatim would make every severity look identical and would
-        // hide the theme's `error`/`warning`/`success`/`info` tokens. Only a colour
-        // the caller authored takes precedence — the theme's own contribution is
-        // the surface the tint is mixed over.
+        // One role-style read for the whole frame (G-A01); the severity palette helpers take it
+        // rather than each taking the manager lock again.
+        let theme = crate::style::resolved_theme_style_shared("banner");
         let caller_background = if style.theme_derived { None } else { style.background_color };
-        let background = caller_background.unwrap_or_else(|| self.severity.background());
-        let text_color = style.text_color.unwrap_or_else(|| self.severity.default_text());
+        let background =
+            caller_background.unwrap_or_else(|| self.severity.background_in(theme.as_deref()));
+        let text_color =
+            style.text_color.unwrap_or_else(|| self.severity.default_text_in(theme.as_deref()));
         let border_color = style.border_color.unwrap_or_else(|| self.severity.border());
 
         context.face_with_gradient(
@@ -617,7 +672,36 @@ impl Draw for Banner {
         // of it and of any actions, otherwise a long message would run under the
         // controls the user is meant to click.
         let controls_left = self.controls_left_edge();
-        let text_width = (controls_left - (rect.x + EDGE_PADDING as i32)).max(0) as u32;
+        // A leading icon is always present: the caller's when one is set, otherwise the
+        // severity's own (OV-01). The text band starts after it, so category is carried by a
+        // shape as well as by the fill (which a monochrome or high-contrast theme may flatten).
+        let icon_side = (rect.height as f32 * 0.4).clamp(14.0, 24.0) as u32;
+        let icon_gap: u32 = 8;
+        let icon_rect = Rect::new(
+            rect.x + EDGE_PADDING as i32,
+            rect.y + (rect.height as i32 - icon_side as i32) / 2,
+            icon_side,
+            icon_side,
+        );
+        match self.icon_source {
+            Some(source) => {
+                if let Err(error) =
+                    crate::widget::paint_icon(context, source.into(), icon_rect, text_color)
+                {
+                    log::warn!("banner icon could not be painted: {error:?}");
+                }
+            }
+            None => {
+                crate::widget::draw_icon_at(
+                    context,
+                    icon_rect,
+                    text_color,
+                    self.severity.default_icon(),
+                );
+            }
+        }
+        let text_left = rect.x + EDGE_PADDING as i32 + icon_side as i32 + icon_gap as i32;
+        let text_width = (controls_left - text_left).max(0) as u32;
         if text_width > 0 {
             // The message face is the **effective font** at its role size — 0.3 of the banner height,
             // so the theme family and the user's text scale reach it (D09-STYLE-01).
@@ -628,12 +712,7 @@ impl Draw for Banner {
             // 120 px band instead of at 52.
             let line = context.text_line(rect, &font);
             context.draw_text_fitted_cow(
-                Rect {
-                    x: rect.x + EDGE_PADDING as i32,
-                    y: line.y,
-                    width: text_width,
-                    height: line.height,
-                },
+                Rect { x: text_left, y: line.y, width: text_width, height: line.height },
                 &self.text,
                 &font,
                 text_color,
@@ -1048,5 +1127,47 @@ mod tests {
         assert!(banner.is_animating());
         while banner.tick(1000) {}
         assert_eq!(banner.reveal_progress(), 1.0);
+    }
+
+    #[test]
+    fn a_banner_offers_a_custom_icon_slot() {
+        let mut banner = banner();
+        assert_eq!(banner.icon_source(), None, "the severity icon is the default");
+        banner.set_icon_source(Some(IconSource::Builtin(IconName::Bell)));
+        assert_eq!(banner.icon_source(), Some(IconSource::Builtin(IconName::Bell)));
+        banner.set_icon_source(None);
+        assert_eq!(banner.icon_source(), None);
+    }
+
+    #[test]
+    fn escape_dismisses_a_focused_banner() {
+        let mut banner = banner();
+        banner.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        banner.handle_event(&Event::KeyPress { key: key_codes::ESCAPE, modifiers: 0 });
+        assert!(banner.is_dismissed(), "Escape is the keyboard spelling of dismiss");
+    }
+
+    #[test]
+    fn enter_activates_the_first_action_for_a_focused_banner() {
+        let mut banner = banner();
+        banner.set_actions(vec!["Retry".to_string()]);
+        let seen = action_sink(&mut banner);
+        banner.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        banner.handle_event(&Event::KeyPress { key: key_codes::ENTER, modifiers: 0 });
+        assert_eq!(*seen.lock().unwrap(), vec!["Retry".to_string()]);
+    }
+
+    #[test]
+    fn the_activate_action_command_acts_on_the_hovered_or_first_action() {
+        let mut banner = banner();
+        banner.set_actions(vec!["Retry".to_string(), "Dismiss".to_string()]);
+        let seen = action_sink(&mut banner);
+        assert_eq!(banner.command("activate_action"), Ok(()));
+        assert_eq!(*seen.lock().unwrap(), vec!["Retry".to_string()]);
+        assert_eq!(
+            banner.command("set_actions"),
+            Err(CapabilityAccessError::OutOfRange),
+            "a payload-bearing setter still needs its list"
+        );
     }
 }

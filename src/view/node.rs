@@ -119,6 +119,19 @@ pub struct Node {
     /// Order is load-bearing: it is the last resort a diff uses to match siblings, and
     /// it is what determines where an [`Insert`](crate::view::Patch::Insert) lands.
     pub children: Vec<Node>,
+    /// The version of this **subtree**, or `None` when it has not declared one (VW-01).
+    ///
+    /// A revision is a producer's assertion that every node beneath this one would describe
+    /// identically while the number is unchanged. The engine then lets
+    /// [`Self::children_keyed`] skip describing those rows again and hand back the retained
+    /// children, which is what makes a model-backed list rebuild O(changed rows) rather than
+    /// O(rows). See [`Node::revision`] for the contract.
+    ///
+    /// Deliberately **not** part of [`Node`]'s equality: a revision is a cache hint, not a
+    /// declaration. Two subtrees that differ only in their revision are the same declaration
+    /// rendered again, which is exactly what lets the reused subtree pass the diff's equality
+    /// probe and produce no patches.
+    pub subtree_revision: Option<u64>,
 }
 
 /// Equality over the **declaration**: `widget`, `key`, `props` and `children`.
@@ -128,6 +141,8 @@ pub struct Node {
 /// `host` is where the control is mounted, not what the declaration says, so it must not
 /// enter the comparison: a node whose host changed is the same node rendered elsewhere, and
 /// a diff that saw a difference would tear down and rebuild a subtree that did not change.
+/// `subtree_revision` is a cache hint rather than a declaration for the same reason, and
+/// excluding it is what lets a reused subtree compare equal to a freshly described one.
 /// Writing the impl by hand — rather than deriving and hoping no one compares whole nodes —
 /// is what makes that a property of the type instead of a convention (BLUE23 §5A.4
 /// judgement 9).
@@ -149,6 +164,7 @@ impl core::fmt::Debug for Node {
             .field("host", &self.host)
             .field("on_mount", &self.on_mount.is_some())
             .field("on_unmount", &self.on_unmount.is_some())
+            .field("revision", &self.subtree_revision)
             .field("children", &self.children)
             .finish()
     }
@@ -165,6 +181,7 @@ impl Node {
             on_mount: None,
             on_unmount: None,
             children: Vec::new(),
+            subtree_revision: None,
         }
     }
 
@@ -320,6 +337,36 @@ impl Node {
         self.child_if(crate::view::is_current(at), child)
     }
 
+    /// Declare the version of this subtree (VW-01).
+    ///
+    /// Combine with [`Self::children_keyed`] on a **keyed** container: while the keyed
+    /// container's widget type and revision both match the previous build, its children are
+    /// taken from the retained tree instead of being described again. Call this **before**
+    /// `children_keyed`, which is the call that consults the retained subtree. A node that
+    /// declares a revision but does not build through `children_keyed` still contributes the
+    /// marker, but there is no description to skip.
+    ///
+    /// # What the caller promises
+    ///
+    /// The number changes whenever **any** descendant would describe differently. This is the
+    /// container-level counterpart of
+    /// [`View::state_revision`](crate::view::View::state_revision) and carries the same
+    /// contract: a producer that reports an unchanged revision for a changed subtree sees a
+    /// stale tree, which is why the marker is named for the assertion rather than for the
+    /// optimisation.
+    ///
+    /// ```
+    /// use rust_widgets::view::Node;
+    /// let list = Node::new("list").key("rows").revision(7)
+    ///     .children_keyed(&["a", "b"], |n| (*n).to_string(), |n| Node::new("label").key(*n));
+    /// assert_eq!(list.subtree_revision, Some(7));
+    /// assert_eq!(list.children.len(), 2);
+    /// ```
+    pub fn revision(mut self, revision: u64) -> Self {
+        self.subtree_revision = Some(revision);
+        self
+    }
+
     /// Append one child per element of `items`, matched across rebuilds by `key_of`.
     ///
     /// # Why this is not just `children_of(items.map(..))`
@@ -343,12 +390,37 @@ impl Node {
     /// assert_eq!(list.children.len(), 2);
     /// assert_eq!(list.children[0].key_str(), Some("a"));
     /// ```
+    ///
+    /// # Container revisions (VW-01)
+    ///
+    /// When this node also declared a revision with [`Self::revision`], the loop below is
+    /// skipped while that revision is unchanged: the retained children are handed back instead.
+    /// The result is the tree a full description would have produced — that is what the revision
+    /// asserts — so the diff still short-circuits on equality and no identity changes.
     pub fn children_keyed<T>(
         mut self,
         items: &[T],
         key_of: impl Fn(&T) -> String,
         make: impl Fn(&T) -> Node,
     ) -> Self {
+        // VW-01: a keyed container that declared a revision reuses the retained subtree while
+        // that revision is unchanged, so this loop — the O(rows) half of a large list rebuild —
+        // is skipped entirely. Without a scope (a direct `build` call, the first mount) or
+        // with any mismatch, `retained_children` answers `None` and the loop runs as before.
+        //
+        // Only an otherwise-empty child list may be replaced: this method appends, so a caller
+        // that already pushed a child here has escaped the revision's scope and is described
+        // normally rather than having that child silently dropped.
+        if self.children.is_empty() {
+            if let (Some(revision), Some(key)) = (self.subtree_revision, self.key.as_deref()) {
+                if let Some(retained) =
+                    super::revision::retained_children(&self.widget, key, revision)
+                {
+                    self.children = retained;
+                    return self;
+                }
+            }
+        }
         for item in items {
             self.children.push(make(item).key(key_of(item)));
         }

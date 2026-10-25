@@ -7,7 +7,7 @@
 //! displays a dropdown list of suggestions as the user types. The user can
 //! select a suggestion with the keyboard (Enter) or by clicking.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -47,6 +47,14 @@ pub enum CompletionMatchMode {
     FixedString,
     /// The typed text is a pattern, using the same grammar as
     /// [`PatternValidator`](super::input_validator::PatternValidator).
+    ///
+    /// # Supported syntax
+    ///
+    /// The engine is the crate's own subset (there is no regex dependency): literals and `\`
+    /// escapes, `.`, classes `[abc]` / ranges `[a-z]` / negation `[^abc]`, groups `(...)`,
+    /// alternation `a|b`, the quantifiers `*`, `+`, `?`, and the top-level anchors `^` and `$`.
+    /// Back-references and look-around are not supported. Grouping and alternation are what
+    /// make the commonest candidate filter — `"png|jpg|webp"` — expressible at all (I-05).
     RegExp,
 }
 
@@ -141,6 +149,20 @@ pub struct AutoCompleteEdit {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
+    /// The hint painted while the field is empty, or `""` for no hint (I-04).
+    ///
+    /// Defaults to empty: the field used to hardcode "Type to search...", which a host could
+    /// neither replace nor switch off.
+    placeholder: String,
+    /// Bumped whenever the value's bytes change, so the memoised measurement below is keyed on
+    /// something that cannot go stale (I-P03).
+    text_revision: u64,
+    /// `(revision, font, advance, characters)` for the current value.
+    ///
+    /// The pointer hit test used to construct a zero-sized paint backend and shape the whole
+    /// value on every press (I-P03). It only needs the total advance and the character count —
+    /// pure functions of the text and the font — so they are measured once per revision here.
+    measure_cache: RefCell<(u64, Option<Font>, i32, usize)>,
 }
 
 impl AutoCompleteEdit {
@@ -167,6 +189,9 @@ impl AutoCompleteEdit {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
+            placeholder: String::new(),
+            text_revision: 0,
+            measure_cache: RefCell::new((0, None, 0, 0)),
         }
     }
 
@@ -195,12 +220,26 @@ impl AutoCompleteEdit {
     }
 
     /// Sets the text content, updates the filtered suggestions list,
-    /// and emits the `text_changed` signal.
+    /// and emits the `text_changed` signal when the value actually moved.
+    ///
+    /// The new value is moved in rather than cloned three times, and the signal is a single
+    /// clone emitted only on a real change (I-P02).
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();
-        let cloned = text.clone();
-        let before = self.text.clone();
-        self.text = text;
+        let before = core::mem::replace(&mut self.text, text);
+        self.publish_text_change(before);
+        self.cursor = self.text.len();
+        self.selection_anchor = None;
+    }
+
+    /// Publishes a mutation the caller already applied to `self.text`.
+    ///
+    /// `before` is the pre-edit value, moved in so the undo record does not need another copy
+    /// of the string (I-P02). Re-filtering and redrawing happen here because every edit path
+    /// owes them.
+    fn publish_text_change(&mut self, before: String) {
+        let changed = before != self.text;
+        self.text_revision = self.text_revision.wrapping_add(1);
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.text.clone();
             self.undo_stack.push(Box::new(ValueCommand::new(
@@ -211,10 +250,28 @@ impl AutoCompleteEdit {
                 "auto_complete_text",
             )));
         }
-        self.cursor = self.text.len();
-        self.selection_anchor = None;
         self.filter_suggestions();
-        self.text_changed.emit(cloned);
+        if changed {
+            self.text_changed.emit(self.text.clone());
+        }
+        self.base.request_redraw();
+    }
+
+    /// The hint painted while the field is empty, or `""` for none (I-04).
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
+    /// Sets the hint painted while the field is empty.
+    ///
+    /// An empty string paints nothing, which is what makes the hint optional rather than a
+    /// hardcoded sentence (I-04).
+    pub fn set_placeholder(&mut self, placeholder: &str) {
+        if self.placeholder == placeholder {
+            return;
+        }
+        self.placeholder.clear();
+        self.placeholder.push_str(placeholder);
         self.base.request_redraw();
     }
 
@@ -318,12 +375,12 @@ impl AutoCompleteEdit {
                 (self.cursor, anchor)
             }
         });
-        let mut next = self.text.clone();
-        next.replace_range(start..end, &filtered);
-        self.set_text(next);
+        // Edited in place: the value is not cloned into a scratch buffer for every key (I-P02).
+        let before = self.text.clone();
+        self.text.replace_range(start..end, &filtered);
         self.cursor = start + filtered.len();
         self.selection_anchor = None;
-        self.base.request_redraw();
+        self.publish_text_change(before);
     }
 
     /// Adds a single suggestion to the suggestion list.
@@ -404,6 +461,7 @@ impl AutoCompleteEdit {
         self.restoring_history = true;
         self.text = self.history_target.borrow().clone();
         self.restoring_history = false;
+        self.text_revision = self.text_revision.wrapping_add(1);
         self.filter_suggestions();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
@@ -448,6 +506,13 @@ impl AutoCompleteEdit {
     }
 
     /// Filters the suggestion list based on the current text.
+    ///
+    /// # Cost
+    ///
+    /// The query is folded **once** per keystroke and every candidate is compared byte-wise
+    /// (`text_match`), so a pass allocates no per-candidate string (I-P05). The pattern mode
+    /// compiles its pattern once and reuses it for the whole pass, instead of re-parsing it per
+    /// candidate.
     fn filter_suggestions(&mut self) {
         self.inline_suffix.clear();
         if self.text.is_empty() {
@@ -459,35 +524,51 @@ impl AutoCompleteEdit {
         // Completion works on the word at the caret: a sentence's earlier words are context,
         // not part of what is being completed.
         let prefix = completion_prefix(&self.text);
-        let needle = if self.case_sensitive { prefix.to_string() } else { prefix.to_lowercase() };
-        self.filtered_suggestions = self
-            .suggestions
-            .iter()
-            .filter(|suggestion| {
-                let candidate = if self.case_sensitive {
-                    suggestion.as_str().to_string()
-                } else {
-                    suggestion.to_lowercase()
-                };
+        let needle = if self.case_sensitive {
+            crate::compat::String::from(prefix)
+        } else {
+            crate::widget::input_widgets::text_match::fold(prefix)
+        };
+        // One compile for the whole pass; a malformed pattern matches nothing, exactly as the
+        // per-candidate call it replaces did.
+        let compiled = match self.match_mode {
+            CompletionMatchMode::RegExp => {
+                crate::widget::input_widgets::input_validator::CompiledPattern::compile(&needle)
+            }
+            _ => None,
+        };
+        self.filtered_suggestions.clear();
+        for suggestion in &self.suggestions {
+            let candidate: &str = suggestion;
+            let matched = if self.case_sensitive {
                 match self.match_mode {
-                    CompletionMatchMode::Contains => candidate.contains(&needle),
-                    CompletionMatchMode::StartsWith => candidate.starts_with(&needle),
-                    CompletionMatchMode::EndsWith => candidate.ends_with(&needle),
+                    CompletionMatchMode::Contains => candidate.contains(prefix),
+                    CompletionMatchMode::StartsWith => candidate.starts_with(prefix),
+                    CompletionMatchMode::EndsWith => candidate.ends_with(prefix),
                     CompletionMatchMode::FixedString => {
-                        candidate.split(|ch: char| !ch.is_alphanumeric()).any(|word| word == needle)
+                        candidate.split(|ch: char| !ch.is_alphanumeric()).any(|word| word == prefix)
                     }
                     // The suggestion is the subject and the typed prefix is the pattern.
-                    // Case sensitivity has already been applied to both sides above, so the
-                    // pattern engine sees the same text the other modes compare.
                     CompletionMatchMode::RegExp => {
-                        crate::widget::input_widgets::input_validator::pattern_matches(
-                            &needle, &candidate,
-                        )
+                        compiled.as_ref().is_some_and(|pattern| pattern.is_match(candidate))
                     }
                 }
-            })
-            .cloned()
-            .collect();
+            } else {
+                use crate::widget::input_widgets::text_match as fold;
+                match self.match_mode {
+                    CompletionMatchMode::Contains => fold::contains(candidate, &needle),
+                    CompletionMatchMode::StartsWith => fold::starts_with(candidate, &needle),
+                    CompletionMatchMode::EndsWith => fold::ends_with(candidate, &needle),
+                    CompletionMatchMode::FixedString => fold::contains_word(candidate, &needle),
+                    CompletionMatchMode::RegExp => {
+                        compiled.as_ref().is_some_and(|pattern| pattern.is_match(candidate))
+                    }
+                }
+            };
+            if matched {
+                self.filtered_suggestions.push(suggestion.clone());
+            }
+        }
         if let (true, Some(first)) = (self.inline_completion, self.filtered_suggestions.first()) {
             // The inline hint is only the part the user has not typed, and only when the
             // suggestion actually extends the prefix at the caret.
@@ -522,22 +603,42 @@ impl AutoCompleteEdit {
     }
 
     /// The byte offset a horizontal pixel points at.
+    ///
+    /// Reads the memoised advance and character count for the current value instead of building
+    /// a zero-sized paint backend and shaping the whole string on every press (I-P03).
     fn byte_index_at_x(&self, x: i32) -> usize {
         if self.text.is_empty() {
             return 0;
         }
         let rect = self.geometry();
         let font = effective_font(self.style());
-        let mut measurement =
-            crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
-        let context = RenderContext::new(&mut measurement);
-        let advance = context.measure_text(&self.text, font).width as i32;
+        let (advance, chars) = self.measured_value(font);
         let origin = rect.x + 6;
         let dx = (x - origin).clamp(0, advance.max(1));
-        let chars = self.text.chars().count().max(1) as f32;
+        let chars = chars.max(1) as f32;
         let boundary =
             ((dx as f32 * chars / advance.max(1) as f32).round() as usize).min(chars as usize);
         self.text.char_indices().nth(boundary).map(|(index, _)| index).unwrap_or(self.text.len())
+    }
+
+    /// The value's total advance and character count, memoised per revision and font.
+    fn measured_value(&self, font: &Font) -> (i32, usize) {
+        if let Ok(mut cache) = self.measure_cache.try_borrow_mut() {
+            if cache.0 == self.text_revision && cache.1.as_ref() == Some(font) {
+                return (cache.2, cache.3);
+            }
+            let advance = crate::widget::metrics::estimate_text_width(&self.text, font, 1.0) as i32;
+            let chars = self.text.chars().count();
+            cache.0 = self.text_revision;
+            cache.1 = Some(font.clone());
+            cache.2 = advance;
+            cache.3 = chars;
+            return (advance, chars);
+        }
+        (
+            crate::widget::metrics::estimate_text_width(&self.text, font, 1.0) as i32,
+            self.text.chars().count(),
+        )
     }
 
     /// Moves the caret by `delta` characters, extending the selection when asked.
@@ -717,6 +818,7 @@ impl WidgetProperties for AutoCompleteEdit {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
+            "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
             "suggestion_count" => Ok(CapabilityValue::UInt(self.suggestion_count() as u64)),
             // `Null` for "nothing highlighted", the same encoding `hovered_index`-style properties
             // use elsewhere in the crate: index 0 is a real selection and must not stand in for
@@ -765,6 +867,11 @@ impl WidgetProperties for AutoCompleteEdit {
         match name {
             "text" => {
                 self.set_text(expect_string(value)?);
+                Ok(())
+            }
+            "placeholder" => {
+                let text = expect_string(value)?;
+                self.set_placeholder(&text);
                 Ok(())
             }
             // Selecting an index is a real write the control already supported through
@@ -824,6 +931,7 @@ impl WidgetProperties for AutoCompleteEdit {
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
             "text",
+            "placeholder",
             "suggestion_count",
             "selected_index",
             "selected_suggestion",
@@ -913,7 +1021,10 @@ impl Draw for AutoCompleteEdit {
         let input_line = context.text_line(rect, font);
         let text_y = input_line.y;
 
-        let display_text = if self.text.is_empty() { "Type to search..." } else { &self.text };
+        // The hint is the host's string and may be empty, in which case an empty field paints
+        // nothing beyond its chrome (I-04).
+        let display_text =
+            if self.text.is_empty() { self.placeholder.as_str() } else { &self.text };
         // Empty field = placeholder: the resolved ink damped toward the fill, so the
         // hint stays legible on either appearance.
         let input_text_color = if self.text.is_empty() {
@@ -1046,9 +1157,6 @@ impl EventHandler for AutoCompleteEdit {
                 }
             }
             Event::KeyPress { key, modifiers } => {
-                // Undo and redo are the platform primary chord: Control+Z/Y on
-                // Windows and Linux, Command+Z/Y on macOS. A shifted chord is a
-                // different binding and stays unbound here.
                 if *key == key_codes::ENTER {
                     if self.show_dropdown {
                         self.select_highlighted();
@@ -1088,10 +1196,13 @@ impl EventHandler for AutoCompleteEdit {
                         )
                     });
                     if start != end {
-                        let mut next = self.text.clone();
-                        next.replace_range(start..end, "");
-                        self.set_text(next);
+                        // In place, with the pre-edit value captured for the undo record only
+                        // (I-P02).
+                        let before = self.text.clone();
+                        self.text.replace_range(start..end, "");
                         self.cursor = start;
+                        self.selection_anchor = None;
+                        self.publish_text_change(before);
                     }
                 } else if primary_shortcut_pressed(*key, *modifiers, Key::Z) {
                     let _ = self.undo();
@@ -1115,10 +1226,11 @@ impl EventHandler for AutoCompleteEdit {
                         )
                     });
                     if start != end {
-                        let mut next = self.text.clone();
-                        next.replace_range(start..end, "");
-                        self.set_text(next);
+                        let before = self.text.clone();
+                        self.text.replace_range(start..end, "");
                         self.cursor = start;
+                        self.selection_anchor = None;
+                        self.publish_text_change(before);
                     }
                 }
             }

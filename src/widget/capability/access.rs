@@ -294,6 +294,77 @@ pub fn default_widget_property_default_value(
         _ => {}
     }
 
+    // Properties published by the 2.9.2 contract round (issue-20261025). Each names exactly one
+    // control (or two sharing one schema, for `thumb_color`), so they live here as one auditable
+    // table instead of being spread across the per-kind arms below.
+    let contract_default = match (kind, property_name) {
+        (WidgetKind::ScrollBar, "idle_delay_ms") => Some(CapabilityValue::UInt(600)),
+        (WidgetKind::ScrollBar, "idle_opacity") => Some(CapabilityValue::Float(0.35)),
+        (WidgetKind::Spinner, "track_color" | "arc_color") => Some(CapabilityValue::Null),
+        (WidgetKind::Switch | WidgetKind::CupertinoSwitch, "thumb_color") => {
+            Some(CapabilityValue::Null)
+        }
+        (WidgetKind::Arc, "value_format") => {
+            Some(CapabilityValue::String("{percent}%".to_string()))
+        }
+        (WidgetKind::EmojiPicker, "recent_capacity") => Some(CapabilityValue::UInt(20)),
+        (WidgetKind::ImageView, "rotation") => Some(CapabilityValue::String("0".to_string())),
+        (WidgetKind::ImageView, "flip_horizontal" | "flip_vertical") => {
+            Some(CapabilityValue::Bool(false))
+        }
+        (WidgetKind::ImageView, "zoom_level") => Some(CapabilityValue::Float(1.0)),
+        (WidgetKind::ImageView, "pan_offset") => Some(CapabilityValue::String("0,0".to_string())),
+        (WidgetKind::SkeletonLoader, "text_line_rows") => Some(CapabilityValue::UInt(3)),
+        (WidgetKind::Divider, "line_style") => Some(CapabilityValue::String("plain".to_string())),
+        (WidgetKind::Rating, "allow_half_step") => Some(CapabilityValue::Bool(false)),
+        (WidgetKind::Avatar, "square") => Some(CapabilityValue::Bool(false)),
+        (WidgetKind::Avatar, "size") => Some(CapabilityValue::UInt(40)),
+        (WidgetKind::EmptyState, "secondary_action_text") => {
+            Some(CapabilityValue::String(String::new()))
+        }
+        // `Tag` reports the cleared state as the token `none`, so the schema default says the same.
+        (WidgetKind::Tag, "icon") => Some(CapabilityValue::String("none".to_string())),
+        // `key_sequence_editor` publishes `LineEdit`'s kind; its own schema adds these four names.
+        (WidgetKind::LineEdit, "key_sequence") => Some(CapabilityValue::String(String::new())),
+        (WidgetKind::LineEdit, "recording" | "can_undo" | "can_redo") => {
+            Some(CapabilityValue::Bool(false))
+        }
+        (WidgetKind::BezierCurveEditor, "segments") => Some(CapabilityValue::UInt(1)),
+        (WidgetKind::BezierCurveEditor, "curve_points") => Some(CapabilityValue::String(
+            "0.0000,0.0000;0.2500,0.1000;0.7500,0.9000;1.0000,1.0000".to_string(),
+        )),
+        (WidgetKind::Dropdown, "placeholder") => {
+            Some(CapabilityValue::String("(Select)".to_string()))
+        }
+        (WidgetKind::Cascader, "placeholder") => {
+            Some(CapabilityValue::String("Select…".to_string()))
+        }
+        (WidgetKind::AutoCompleteEdit, "placeholder") => {
+            Some(CapabilityValue::String(String::new()))
+        }
+        (WidgetKind::MultiSelectComboBox, "selected_items" | "placeholder") => {
+            Some(CapabilityValue::String(String::new()))
+        }
+        (WidgetKind::RangeSlider, "step") => Some(CapabilityValue::Float(1.0)),
+        (WidgetKind::RangeSlider, "min_range") => Some(CapabilityValue::Float(0.0)),
+        (WidgetKind::RangeSlider, "tick_interval") => Some(CapabilityValue::Null),
+        (WidgetKind::RangeSlider, "tick_labels" | "value_hint_enabled") => {
+            Some(CapabilityValue::Bool(false))
+        }
+        (WidgetKind::OtpInput, "read_only") => Some(CapabilityValue::Bool(false)),
+        (WidgetKind::OtpInput, "digits_only") => Some(CapabilityValue::Bool(true)),
+        (WidgetKind::TagInput, "multiline") => Some(CapabilityValue::Bool(false)),
+        (WidgetKind::NumberPicker, "prefix") => Some(CapabilityValue::String(String::new())),
+        // `special_value_text` is an `Option<String>`: a fresh picker has no special value, so the
+        // property route reports `Null` and writes an empty string back as `Null` too.
+        (WidgetKind::NumberPicker, "special_value_text") => Some(CapabilityValue::Null),
+        (WidgetKind::NumberPicker, "decimals") => Some(CapabilityValue::UInt(0)),
+        _ => None,
+    };
+    if let Some(value) = contract_default {
+        return Some(value);
+    }
+
     let value = match kind {
         WidgetKind::Button => match property_name {
             "text" => CapabilityValue::String(String::new()),

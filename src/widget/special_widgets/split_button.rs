@@ -46,6 +46,8 @@ pub struct SplitAction {
     pub enabled: bool,
     /// Whether the action shows a check mark, for a menu that toggles a mode.
     pub checked: bool,
+    /// The keyboard shortcut shown at the row's trailing edge (SP-66).
+    pub shortcut: Option<String>,
 }
 
 impl SplitAction {
@@ -58,6 +60,7 @@ impl SplitAction {
             separator_above: false,
             enabled: true,
             checked: false,
+            shortcut: None,
         }
     }
 
@@ -82,6 +85,16 @@ impl SplitAction {
     /// Marks the action checked or unchecked.
     pub fn with_checked(mut self, checked: bool) -> Self {
         self.checked = checked;
+        self
+    }
+
+    /// Shows a keyboard shortcut at the row's trailing edge.
+    ///
+    /// The field follows `CommandEntry::with_shortcut` in the sibling palette control, so a
+    /// command's key binding is described the same way wherever this library lists commands
+    /// (SP-66).
+    pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.shortcut = Some(shortcut.into());
         self
     }
 }
@@ -1140,11 +1153,23 @@ impl Draw for SplitButton {
                     // `SPLIT_BUTTON_PADDING_H` the trigger uses, so a menu row and the trigger
                     // it hangs from share their leading space rather than each naming it.
                     let row_box = self.primary_label_box(action_rect);
+                    // A shortcut occupies the row's trailing 64 px, exactly as the command
+                    // palette reserves its own, so a key hint never sits on the label.
+                    let shortcut_gap = 64i32.min(row_box.width as i32);
+                    let has_shortcut = action.shortcut.is_some();
                     let label_box = if action.icon.is_some() {
                         Rect::new(
                             row_box.x + 16,
                             row_box.y,
-                            row_box.width.saturating_sub(16),
+                            row_box.width
+                                .saturating_sub(16 + if has_shortcut { shortcut_gap as u32 } else { 0 }),
+                            row_box.height,
+                        )
+                    } else if has_shortcut {
+                        Rect::new(
+                            row_box.x,
+                            row_box.y,
+                            row_box.width.saturating_sub(shortcut_gap as u32),
                             row_box.height,
                         )
                     } else {
@@ -1176,6 +1201,21 @@ impl Draw for SplitButton {
                             side,
                         );
                         crate::widget::draw_icon_at(context, check, row_ink, IconName::Check);
+                    }
+                    if let Some(shortcut) = action.shortcut.as_deref() {
+                        let key_box = Rect::new(
+                            row_box.x + row_box.width as i32 - shortcut_gap,
+                            row_box.y,
+                            (shortcut_gap - 4).max(0) as u32,
+                            row_box.height,
+                        );
+                        context.draw_text_line_cow(
+                            key_box,
+                            shortcut,
+                            font,
+                            row_ink.blend(&face, 0.25),
+                            HorizontalAlignment::Right,
+                        );
                     }
                 }
                 if action_rect.y > menu.y

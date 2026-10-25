@@ -258,6 +258,7 @@ mod tsf {
         }
 
         // The body drives a raw COM pointer; every call below is an FFI transition.
+// SAFETY: the body drives a COM interface created on this thread; every pointer is checked before use.
         unsafe {
             // ── Step 1: create the thread manager ──
             let mut thread_mgr: *mut c_void = core::ptr::null_mut();
@@ -292,6 +293,7 @@ mod tsf {
     ///
     /// Called from `Drop`; never runs twice because the connection is consumed.
     pub fn destroy_thread_mgr(conn: TsfConnection) {
+// SAFETY: `conn` owns the COM pointer, is consumed here, and cannot be released twice.
         unsafe {
             let mgr = conn.thread_mgr as *mut ITfThreadMgr;
             if mgr.is_null() {
@@ -304,6 +306,9 @@ mod tsf {
     }
 
     /// `IUnknown::Release` on any interface pointer.
+    ///
+    /// # Safety
+    /// `iface` must be a live COM interface owned by the caller, and this call consumes it.
     unsafe fn release(iface: *mut IUnknown) {
         if iface.is_null() {
             return;

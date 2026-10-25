@@ -222,6 +222,15 @@ pub struct DateTimeEdit {
     pub calendar_opened: GenericSignal,
     /// Emitted after the embedded calendar is dismissed.
     pub calendar_closed: GenericSignal,
+    /// Whether the embedded calendar's geometry and accepted range must be pushed again (K-P02).
+    ///
+    /// The open popup's event paths used to call `sync_calendar_page` on every pointer move and
+    /// key press, re-setting geometry and bounds (each a repaint request) for facts that had not
+    /// changed. Only opening the popup, a range change, a first-day change or a field move can
+    /// change them, so those mark this flag and the event paths just read it.
+    calendar_sync_dirty: bool,
+    /// The popup rectangle last pushed into the embedded calendar.
+    calendar_sync_rect: Rect,
 }
 impl DateTimeEdit {
     /// Creates a date-time editor occupying `geometry`.
@@ -264,6 +273,8 @@ impl DateTimeEdit {
             calendar_first_day: Weekday::Sun,
             calendar_opened: GenericSignal::new(),
             calendar_closed: GenericSignal::new(),
+            calendar_sync_dirty: true,
+            calendar_sync_rect: Rect::new(0, 0, 0, 0),
         }
     }
     /// Returns the current combined value.
@@ -390,6 +401,7 @@ impl DateTimeEdit {
             return;
         }
         self.minimum = dt;
+        self.calendar_sync_dirty = true;
         self.clamp_to_range();
         self.base.request_redraw();
     }
@@ -402,6 +414,7 @@ impl DateTimeEdit {
             return;
         }
         self.maximum = dt;
+        self.calendar_sync_dirty = true;
         self.clamp_to_range();
         self.base.request_redraw();
     }
@@ -495,6 +508,7 @@ impl DateTimeEdit {
     pub fn set_calendar(&mut self, mut calendar: Calendar) {
         calendar.set_first_day_of_week(self.calendar_first_day);
         self.calendar = calendar;
+        self.calendar_sync_dirty = true;
         if self.calendar_open {
             self.sync_calendar_open_state();
         }
@@ -513,6 +527,7 @@ impl DateTimeEdit {
         }
         self.calendar_first_day = weekday;
         self.calendar.set_first_day_of_week(weekday);
+        self.calendar_sync_dirty = true;
         self.base.request_redraw();
     }
 
@@ -544,6 +559,11 @@ impl DateTimeEdit {
     /// Keeps the embedded calendar's geometry and range in step without moving its page.
     fn sync_calendar_page(&mut self) {
         let popup = super::date_edit::calendar_popup_rect(self.geometry());
+        // Nothing that sync writes can have changed since the last push, so the event paths can
+        // call this on every pointer move and key press for free (K-P02).
+        if !self.calendar_sync_dirty && self.calendar_sync_rect == popup {
+            return;
+        }
         self.calendar.set_geometry(popup);
         if let Some(minimum) = super::date_edit::date_to_naive(self.minimum.date) {
             self.calendar.set_minimum_date(minimum);
@@ -551,6 +571,8 @@ impl DateTimeEdit {
         if let Some(maximum) = super::date_edit::date_to_naive(self.maximum.date) {
             self.calendar.set_maximum_date(maximum);
         }
+        self.calendar_sync_rect = popup;
+        self.calendar_sync_dirty = false;
     }
 
     /// Takes the calendar's selected date as this field's date part and dismisses the popup.
@@ -1162,22 +1184,17 @@ impl Draw for DateTimeEdit {
         // a light/dark switch changed nothing on screen: the field, its border and its
         // text were all hardcoded, which the rendering census reported as theme-blind.
         //
-        // The theme read is a separate manager lock, taken and released inside
-        // `resolved_theme_style`, so it is not held across the draw — the global
-        // manager's mutex is not re-entrant. `date_time_edit` classifies as `Input`, whose
-        // resolved style supplies `text_color` and `border_color` but no
-        // `background_color` (ThemeRole::Input resolves that to `None`), so the interior
-        // is derived below from the theme's own background rather than left unset.
+        // The style lookups are the cached, revision-validated forms: `resolved_theme_style_shared`
+        // is a refcount bump on a hit and `palette_shared` answers both colours this draw needs in
+        // one read, so neither takes the manager lock (K-P03/K-P17). `date_time_edit` classifies as
+        // `Input`, whose resolved style supplies `text_color` and `border_color` but no
+        // `background_color` (ThemeRole::Input resolves that to `None`), so the interior is derived
+        // below from the theme's own background rather than left unset.
         let style = self.base.style();
         let theme = crate::style::resolved_theme_style_shared("date_time_edit");
-        // Read as its own lock acquisition and copied out as values, so the guard is
-        // dropped before anything else touches the theme.
-        let (window_fill, foreground) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (active.colors.background, active.colors.foreground),
-                None => (Color::rgb(240, 240, 240), Color::BLACK),
-            }
+        let (window_fill, foreground) = match crate::style::palette_shared() {
+            Some(colors) => (colors.background, colors.foreground),
+            None => (Color::rgb(240, 240, 240), Color::BLACK),
         };
 
         let ink = style

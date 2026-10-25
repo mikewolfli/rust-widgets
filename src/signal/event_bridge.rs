@@ -559,6 +559,88 @@ impl EventSignalBinder {
     }
 }
 
+/// The unified runtime wiring query: is `event_name` wired on the control at `widget_id`?
+///
+/// # Why this entry point exists (W-03, principle #97)
+///
+/// Three narrower answers existed and none of them answered this question:
+///
+/// * [`EventSignalBinder::unwired_events_for`] needs a live `&widget` and is scoped to **one
+///   binder's** subscriptions;
+/// * [`crate::app::unwired_binding_count`] is a process counter of refusals — it says *how many*
+///   bindings were left unwired, never *which*;
+/// * [`EventSignalRef::slot_count`](crate::signal::EventSignalRef::slot_count) answers for one
+///   resolved signal, but there was no id-and-name lookup that resolved it.
+///
+/// This function is that lookup. Its fact source is the control's own
+/// [`EventSignalRef`](crate::signal::EventSignalRef): the reference reports the live subscriber
+/// count of the signal it was built over, so "wired" here means "at least one subscriber
+/// currently reaches this control's event". It is deliberately the *widget-level* view — a host
+/// that needs "is **my binder's** wire live?" keeps using
+/// [`EventSignalBinder::event_is_wired`], and a host asking "what did my program leave unwired?"
+/// keeps using the refusal counter. All three now agree on the same underlying storage instead of
+/// each maintaining a ledger.
+///
+/// # Stripped profiles
+///
+/// `event_signal_dyn` resolves nothing when the capability table is compiled out, so the answer
+/// is the single honest value `false` — documented here rather than silently reporting a wire.
+pub fn is_wired(widget_id: crate::core::ObjectId, event_name: &str) -> bool {
+    #[cfg(full_widgets)]
+    {
+        crate::widget::runtime::read_widget(widget_id, |widget| {
+            reference_is_wired(widget, event_name)
+        })
+        .unwrap_or(false)
+    }
+    #[cfg(not(full_widgets))]
+    {
+        let _ = (widget_id, event_name);
+        false
+    }
+}
+
+/// The companion query: every published event of `widget_id` with no live subscriber.
+///
+/// `None` when the id is not a mounted control (or the capability table is compiled out), which
+/// is a different answer from `Some(empty)` — "there is nothing to ask about" versus "everything
+/// is wired". The names come from the control's capability, so the list is the published set and
+/// not the set some host happened to subscribe to.
+#[cfg(full_widgets)]
+pub fn unwired_events(widget_id: crate::core::ObjectId) -> Option<alloc::vec::Vec<&'static str>> {
+    crate::widget::runtime::read_widget(widget_id, |widget| {
+        let factory = crate::widget::capability::WidgetFactory::shared();
+        let capability = factory.capability_for_kind_instance(widget)?;
+        let mut unwired = alloc::vec::Vec::new();
+        for schema in capability.events {
+            if !reference_is_wired(widget, schema.name) {
+                unwired.push(schema.name);
+            }
+        }
+        Some(unwired)
+    })
+    .flatten()
+}
+
+/// The stripped-profile form of [`unwired_events`]: there is no published set to walk.
+#[cfg(not(full_widgets))]
+pub fn unwired_events(widget_id: crate::core::ObjectId) -> Option<alloc::vec::Vec<&'static str>> {
+    let _ = widget_id;
+    None
+}
+
+/// Resolves `event_name` on `widget` and requires that the reference declares that name.
+///
+/// The declared-name check is the same one `wire_one` makes: a reference that answers to another
+/// name is not a wire to *this* name.
+#[cfg(full_widgets)]
+fn reference_is_wired(widget: &dyn crate::widget::Widget, event_name: &str) -> bool {
+    widget
+        .event_signal_dyn(event_name)
+        .filter(|reference| reference.name() == event_name)
+        .is_some_and(|reference| reference.slot_count() > 0)
+}
+
 /// How to remove a forwarded slot, captured beside the handle it removes.
 ///
 /// Two variants because `GenericSignal` is a concrete type while `Signal1<T>` is generic:
@@ -635,6 +717,41 @@ impl Drop for EventSignalBinder {
 mod tests {
     use super::EventSignalBinder;
     use crate::core::Rect;
+
+    /// W-03: the unified query answers by `(widget id, event name)` and agrees with the live
+    /// subscription, unlike the three narrower views it replaces.
+    #[test]
+    fn the_unified_wiring_query_answers_by_widget_id_and_event_name() {
+        use crate::signal::{is_wired, unwired_events};
+
+        let id = crate::widget::runtime::register(alloc::boxed::Box::new(
+            crate::widget::base_widgets::button::Button::new(
+                "probe".to_string(),
+                Rect::new(0, 0, 80, 24),
+            ),
+        ))
+        .expect("a button mounts");
+
+        assert!(!is_wired(id, "clicked"), "nothing is subscribed yet");
+        assert!(
+            unwired_events(id).expect("a mounted button has a published set").contains(&"clicked"),
+            "the companion query lists the unwired name"
+        );
+
+        let reference =
+            crate::widget::runtime::read_widget(id, |widget| widget.event_signal_dyn("clicked"))
+                .flatten()
+                .expect("a button publishes `clicked`");
+        let handle = reference.subscribe(alloc::boxed::Box::new(|_| {}));
+
+        assert!(is_wired(id, "clicked"));
+        assert!(!unwired_events(id).expect("mounted").contains(&"clicked"));
+        assert!(!is_wired(id, "not_a_published_event"), "an unknown name is not a wire");
+
+        reference.disconnect(handle);
+        assert!(!is_wired(id, "clicked"), "a removed subscriber unwires the event again");
+        crate::widget::runtime::unregister(id);
+    }
 
     /// Every control whose `event_signal_dyn` is implemented must wire **all** its published names.
     ///

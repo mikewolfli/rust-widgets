@@ -186,7 +186,7 @@ impl CodeEditor {
         self.model.borrow().clamp_position(position)
     }
 
-    pub(super) fn emit_cursor_and_selection(&self) {
+    pub(crate) fn emit_cursor_and_selection(&self) {
         self.cursor_moved.emit((self.cursor.head.line, self.cursor.head.column));
         if self.cursor.is_collapsed() {
             self.selection_changed.emit(None);
@@ -245,7 +245,8 @@ impl CodeEditor {
         self.refresh_visible_rows();
         // The document shape changed (lines, folds, or the wrap geometry the callers
         // above may have moved), so the row-prefix table is rebuilt here rather than
-        // in the lookup, which only has `&self`.
-        self.rebuild_visual_row_prefix();
+        // in the lookup, which only has `&self`. The edit's line range is passed on so
+        // a keystroke only repairs the rows the edit could have moved (J-P05).
+        self.rebuild_visual_row_prefix_after(dirty);
     }
 }

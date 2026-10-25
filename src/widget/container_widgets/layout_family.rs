@@ -41,7 +41,7 @@
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::layout::LayoutParams;
-use crate::layout::{AspectRatioLayout, AxisHints, CenterLayout, Hints, Layout};
+use crate::layout::{AxisHints, Hints};
 use crate::render::RenderContext;
 use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -192,9 +192,48 @@ fn mount_content_child(
 /// This is the placement half of the contract, not a drawing path: the tree painter already draws
 /// mounted children, and it draws each one at its own geometry. Writing through the public
 /// geometry entry is what keeps that geometry equal to the box the wrapper's rule produced.
+///
+/// C-P15: the write is skipped when the rectangle did not change. Every wrapper's `draw` calls
+/// this, so an unchanged frame used to perform one global registry write per mounted child for
+/// no new information; a read that finds the same rectangle now costs less and invalidates
+/// nothing.
 fn place_mounted_child(slot: Option<ObjectId>, rect: Rect) {
-    if let Some(widget_id) = slot {
-        crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+    let Some(widget_id) = slot else {
+        return;
+    };
+    if crate::widget_geometry(widget_id) == Some((rect.x, rect.y, rect.width, rect.height)) {
+        return;
+    }
+    crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+}
+
+/// A parent extent scaled by a `Center` factor, matching `layout::center` exactly.
+///
+/// Mirrors the engine's `normalise_factor` + `visible_extent`: non-finite factors fall back to
+/// `1.0`, the factor is clamped to `0.0..=1.0`, the product is rounded, a positive result keeps
+/// at least one visible pixel, and `0` stays `0`. Kept here so `Center::content_rect` is a closed
+/// formula rather than an engine instantiation per call (C-P15).
+fn center_factor_extent(parent: u32, factor: f32) -> u32 {
+    let factor = if factor.is_finite() { factor.clamp(0.0, 1.0) } else { 1.0 };
+    if factor == 0.0 || parent == 0 {
+        return 0;
+    }
+    ((parent as f32 * factor).round() as u32).min(parent).max(1)
+}
+
+/// Rounds a non-negative extent to pixels, keeping a positive sub-pixel extent visible.
+///
+/// Mirrors `layout::aspect_ratio`'s `to_px`, so the direct formula and the engine agree at the
+/// sub-pixel edge.
+fn aspect_to_px(extent: f32) -> u32 {
+    if extent <= 0.0 {
+        return 0;
+    }
+    let rounded = extent.round();
+    if rounded >= 1.0 {
+        rounded as u32
+    } else {
+        1
     }
 }
 
@@ -638,17 +677,20 @@ impl Center {
     }
 
     /// The rectangle the content occupies inside this control.
+    ///
+    /// C-P15: solved directly from the control's own geometry and the two factors. The previous
+    /// form instantiated a `CenterLayout` and drove an `update` callback to read back one
+    /// rectangle — an engine whose only input was this control's box.
     pub fn content_rect(&self) -> Rect {
-        let mut layout = CenterLayout::with_factors(self.width_factor, self.height_factor);
-        let child = self.base.id();
-        layout.add_widget(child, 0);
-        let mut produced = None;
-        layout.update(self.geometry(), &mut |id, rect| {
-            if id == child {
-                produced = Some(rect);
-            }
-        });
-        produced.unwrap_or_else(|| self.geometry())
+        let rect = self.geometry();
+        let width = center_factor_extent(rect.width, self.width_factor);
+        let height = center_factor_extent(rect.height, self.height_factor);
+        Rect::new(
+            rect.x + (rect.width.saturating_sub(width) / 2) as i32,
+            rect.y + (rect.height.saturating_sub(height) / 2) as i32,
+            width,
+            height,
+        )
     }
 }
 
@@ -2077,17 +2119,28 @@ impl AspectRatio {
     }
 
     /// The rectangle the content occupies inside this control.
+    ///
+    /// C-P15: solved directly from the control's own geometry and the ratio, mirroring
+    /// `AspectRatioLayout::compute_child_rect` for the two-argument constructor this control
+    /// uses (no `AspectMode::Cover`, so containment follows `respect_parent`).
     pub fn content_rect(&self) -> Rect {
-        let mut layout = AspectRatioLayout::new(self.ratio, self.respect_parent);
-        let child = self.base.id();
-        layout.add_widget(child, 0);
-        let mut produced = None;
-        layout.update(self.geometry(), &mut |id, rect| {
-            if id == child {
-                produced = Some(rect);
-            }
-        });
-        produced.unwrap_or_else(|| self.geometry())
+        let parent = self.geometry();
+        let parent_w = parent.width as f32;
+        let parent_h = parent.height as f32;
+        let ratio = self.ratio;
+        let (child_w, child_h) = if !self.respect_parent {
+            let width = parent_w;
+            (aspect_to_px(width), aspect_to_px(width / ratio))
+        } else if parent_w / ratio <= parent_h {
+            (aspect_to_px(parent_w), aspect_to_px(parent_w / ratio))
+        } else {
+            (aspect_to_px(parent_h * ratio), aspect_to_px(parent_h))
+        };
+        // The centring offsets are rounded symmetrically so an odd leftover is split evenly
+        // rather than truncating toward one edge (the engine's own rule).
+        let x_offset = (((parent.width as i32) - (child_w as i32)) as f32 / 2.0).round() as i32;
+        let y_offset = (((parent.height as i32) - (child_h as i32)) as f32 / 2.0).round() as i32;
+        Rect::new(parent.x + x_offset, parent.y + y_offset, child_w, child_h)
     }
 
     /// The size this control asks its parent for: the content's height at the configured

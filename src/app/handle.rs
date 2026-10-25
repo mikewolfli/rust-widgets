@@ -616,6 +616,19 @@ pub trait WidgetHandle: Sized {
     /// [`WidgetTriggerKind::Clicked`] event.
     fn on_click<F: FnMut() + Send + 'static>(&self, f: F);
 
+    /// Register a click callback that may be invoked from another thread.
+    ///
+    /// # Why the convenience form is not this
+    ///
+    /// [`Self::on_click`] stores the closure beside the thread-local widget runtime (W-P08), which
+    /// is where a control's own signal is emitted. That is lock-free but the closure is not visible
+    /// to another thread. A host that genuinely emits a widget's `clicked` signal off the UI thread
+    /// asks for this variant instead; it keeps the `FnMut` behind a `Mutex` and captures it in the
+    /// slot, so the lock is paid only by the code that needs it.
+    fn on_click_cross_thread<F: FnMut() + Send + 'static>(&self, f: F) {
+        register_click_callback_cross_thread(self.raw_id(), f);
+    }
+
     /// Register a callback for the "value changed" trigger.
     ///
     /// The closure receives the widget's current text at the time of
@@ -668,13 +681,25 @@ pub trait WidgetHandle: Sized {
     fn on_close<F: FnMut() + Send + 'static>(&self, f: F) {
         register_close_callback(self.raw_id(), f);
     }
+
+    /// Register a close callback that may be invoked from another thread.
+    ///
+    /// The [`Self::on_close`] counterpart of [`Self::on_click_cross_thread`]: the default form is
+    /// thread-local and lock-free, this one keeps the `Mutex` so a cross-thread emission can run it.
+    fn on_close_cross_thread<F: FnMut() + Send + 'static>(&self, f: F) {
+        register_close_callback_cross_thread(self.raw_id(), f);
+    }
 }
 
 // ── Global callback registry ──────────────────────────────────
 
 use crate::signal::ConnectionHandle;
+use core::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+/// The per-widget lock-free callback table, keyed by widget id and callback token.
+type LocalCallbackMap = RefCell<HashMap<(ObjectId, u64), Box<dyn FnMut()>>>;
 
 /// Which of a widget's own signals a stored [`ConnectionHandle`] belongs to.
 ///
@@ -732,6 +757,26 @@ thread_local! {
     /// also releases the captured callback, which plain table-clearing did not.
     #[allow(clippy::missing_const_for_thread_local)]
     static SIGNAL_CONNECTIONS: RefCell<HashMap<ObjectId, Vec<SignalConnection>>> =
+        RefCell::new(HashMap::new());
+
+    /// Callbacks registered by the lock-free convenience path (`on_click` / `on_close`).
+    ///
+    /// # Why a thread-local table instead of `Arc<Mutex<F>>` (W-P08)
+    ///
+    /// The widget runtime is thread-local (`with_widget`/`with_widget_mut` operate on the calling
+    /// thread's registry), so a control's own signal is emitted on the thread that mounted it. The
+    /// old convenience path wrapped every user closure in `Arc<Mutex<F>>` and locked it on every
+    /// click: a heap allocation per binding and a lock on every dispatch, for a cross-thread
+    /// guarantee this path never used. Keeping the closure here — beside the runtime registry that
+    /// owns the widget — makes the signal slot capture only the id and its token, both `Copy`, so
+    /// the slot stays `Send + Sync` without a lock.
+    ///
+    /// This is safe rather than an `unsafe impl`: a cross-thread emit looks up *that* thread's
+    /// table, finds nothing, warns and skips. It cannot tear the closure. A host that really does
+    /// need a callback reachable from another thread asks for it explicitly with
+    /// `on_click_cross_thread` / `on_close_cross_thread`, which keep the `Arc<Mutex<F>>` shape.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static LOCAL_CALLBACKS: LocalCallbackMap =
         RefCell::new(HashMap::new());
 
     /// A per-widget removal generation, bumped every time `remove_callbacks` runs.
@@ -810,28 +855,23 @@ fn bump_callback_generation(id: ObjectId) -> u64 {
 /// emitter produced it — mouse release, touch end, or a tap — and the callback runs from
 /// there. The alternative, having the widget's emission call into `CLICK_CALLBACKS`,
 /// would leave two sources of truth for "what runs when this is clicked".
+///
+/// # Why the closure no longer lives behind a lock (W-P08)
+///
+/// See [`LOCAL_CALLBACKS`]: the slot captures only `(widget_id, token)` and the closure is stored
+/// in the thread-local table the widget runtime already lives in. The old `Arc<Mutex<F>>` wrapper
+/// allocated once per binding and locked on every click.
 fn register_click_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: F) {
-    // The user's callback is held behind `Arc<Mutex<_>>` and the slot that calls it
-    // borrows that.
-    //
-    // # Why the slot is a `&`-capturing closure rather than a `move`
-    //
-    // A `GenericSignal` slot must be `FnMut() + Send + Sync`. `Arc<Mutex<F>>` is all three
-    // when `F: Send`, but a closure that **moves** it in is only `FnOnce`-friendly for
-    // what it owns — so the slot borrows the handle instead, which keeps it `Send + Sync`
-    // and lets it run any number of times.
-    let held: Arc<Mutex<F>> = Arc::new(Mutex::new(f));
+    let token = store_local_callback(widget_id, f);
+    let binding = LocalCallbackBinding { widget_id, token };
     let connected = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
-        let held = Arc::clone(&held);
         widget.base().clicked.connect(move || {
-            if let Ok(mut callback) = held.lock() {
-                callback();
-            } else {
-                log::warn!(
-                    "the click callback for widget {widget_id} could not be locked; \
-                     skipping this click rather than panicking"
-                );
-            }
+            // Keeps the binding alive inside the slot, so the closure is removed from the table
+            // when the widget (and therefore this slot) is dropped even if the host never calls
+            // `remove_callbacks`. `let _ = &binding` is what makes the capture explicit: an
+            // unused `move` capture would otherwise not be captured at all.
+            let _ = &binding;
+            run_local_callback(widget_id, token, "click")
         })
     });
     if let Some(handle) = connected {
@@ -840,6 +880,8 @@ fn register_click_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: 
         // signal holding the callback after an explicit removal (D08-A-01).
         record_signal_connection(widget_id, SignalKind::Clicked, handle);
     } else {
+        // No widget, so the stored closure can never run: drop it rather than leaking it.
+        remove_local_callback(widget_id, token);
         // `warn!`, not `debug!`. The condition is not routine: it means the caller asked for a
         // callback that will never run, because there is no widget at this id. It happens for
         // real — a handle built from an id the runtime never mounted (a declarative document
@@ -855,6 +897,119 @@ fn register_click_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: 
     }
 }
 
+/// The cross-thread form of [`register_click_callback`], keeping the `Arc<Mutex<F>>` shape.
+fn register_click_callback_cross_thread<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: F) {
+    let held: Arc<Mutex<F>> = Arc::new(Mutex::new(f));
+    let connected = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+        widget.base().clicked.connect(move || match held.lock() {
+            Ok(mut callback) => callback(),
+            Err(_) => log::warn!(
+                "the click callback for widget {widget_id} could not be locked; \
+                 skipping this click rather than panicking"
+            ),
+        })
+    });
+    if let Some(handle) = connected {
+        record_signal_connection(widget_id, SignalKind::Clicked, handle);
+    } else {
+        log::warn!(
+            "on_click ignored for id={widget_id}: it is not a live widget, so there is no \
+             signal for a click to arrive on. The callback will never run."
+        );
+        record_unwired_binding(widget_id);
+    }
+}
+
+/// Stores `f` in the local callback table and returns its token.
+fn store_local_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: F) -> u64 {
+    static NEXT_CALLBACK_TOKEN: AtomicU64 = AtomicU64::new(1);
+    let token = NEXT_CALLBACK_TOKEN.fetch_add(1, AtomicOrdering::Relaxed);
+    LOCAL_CALLBACKS.with(|map| {
+        map.borrow_mut().insert((widget_id, token), Box::new(f));
+    });
+    token
+}
+
+/// Drops a stored local callback, used when the connection could not be made.
+fn remove_local_callback(widget_id: ObjectId, token: u64) {
+    LOCAL_CALLBACKS.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.remove(&(widget_id, token));
+        }
+    });
+}
+
+/// Releases the table entry when the signal slot that owns it is dropped.
+///
+/// The slot is owned by the widget's signal, so dropping the widget, disconnecting the slot, or
+/// `remove_callbacks` all end here. That keeps the local table's lifetime tied to the connection
+/// rather than to the thread: the old `Arc<Mutex<F>>` was freed by the same slot drop, and this
+/// guard restores that property without putting a lock back in the dispatch path.
+struct LocalCallbackBinding {
+    widget_id: ObjectId,
+    token: u64,
+}
+
+impl Drop for LocalCallbackBinding {
+    fn drop(&mut self) {
+        remove_local_callback(self.widget_id, self.token);
+    }
+}
+
+/// Runs the local callback `(widget_id, token)`.
+///
+/// # Why it is taken out and restored
+///
+/// A user callback may register another handler on the same widget; holding the `RefCell` borrow
+/// across the call would make that a borrow panic. The entry is therefore removed, run, and
+/// restored by a `Drop` guard — which also restores it when the callback panics. The guard checks
+/// the widget's removal generation first, so a `remove_callbacks` performed *inside* the callback
+/// wins over the restore (the same rule D08-A-02 applies to the click/value guard).
+fn run_local_callback(widget_id: ObjectId, token: u64, signal: &'static str) {
+    let key = (widget_id, token);
+    let generation = callback_generation(widget_id);
+    let taken =
+        LOCAL_CALLBACKS.with(|map| map.try_borrow_mut().ok().and_then(|mut map| map.remove(&key)));
+    let Some(callback) = taken else {
+        // Most often: the signal was emitted from another thread. The table is per-thread, so the
+        // closure registered beside the widget is not visible there. The thread-safe variant
+        // (`on_click_cross_thread`) is the supported way to wire that case.
+        log::warn!(
+            "the {signal} callback for widget {widget_id} is not registered on this thread; \
+             skipping it. Cross-thread wiring must use the explicit cross-thread variant."
+        );
+        return;
+    };
+
+    struct Restore {
+        key: (ObjectId, u64),
+        generation: u64,
+        callback: Option<Box<dyn FnMut()>>,
+    }
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let Some(callback) = self.callback.take() else {
+                return;
+            };
+            // A removal during dispatch wins over this restore.
+            if callback_generation(self.key.0) != self.generation {
+                return;
+            }
+            LOCAL_CALLBACKS.with(|map| {
+                if let Ok(mut map) = map.try_borrow_mut() {
+                    map.insert(self.key, callback);
+                }
+            });
+        }
+    }
+
+    let mut restore = Restore { key, generation, callback: Some(callback) };
+    if let Some(callback) = restore.callback.as_mut() {
+        callback();
+    }
+}
+
 /// Registers `f` as the close callback for `widget_id`.
 ///
 /// The close counterpart of [`register_click_callback`], and for the same reason: a callback must
@@ -866,18 +1021,12 @@ fn register_click_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: 
 /// `dismiss` path — so the callback fires whenever the control announces that lifecycle fact,
 /// whichever code path produced it.
 fn register_close_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: F) {
-    let held: Arc<Mutex<F>> = Arc::new(Mutex::new(f));
+    let token = store_local_callback(widget_id, f);
+    let binding = LocalCallbackBinding { widget_id, token };
     let connected = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
-        let held = Arc::clone(&held);
         widget.base().closed.connect(move || {
-            if let Ok(mut callback) = held.lock() {
-                callback();
-            } else {
-                log::warn!(
-                    "the close callback for widget {widget_id} could not be locked; skipping this \
-                     close rather than panicking"
-                );
-            }
+            let _ = &binding;
+            run_local_callback(widget_id, token, "close")
         })
     });
     if let Some(handle) = connected {
@@ -885,8 +1034,32 @@ fn register_close_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: 
         // be removable, not just dropped on the floor (D08-A-01).
         record_signal_connection(widget_id, SignalKind::Closed, handle);
     } else {
+        remove_local_callback(widget_id, token);
         // Same reasoning as `register_click_callback`: a close handler that can never run is the
         // failure a caller cannot see from the outside.
+        log::warn!(
+            "on_close ignored for id={widget_id}: it is not a live widget, so there is no signal \
+             for a close to arrive on. The callback will never run."
+        );
+        record_unwired_binding(widget_id);
+    }
+}
+
+/// The cross-thread form of [`register_close_callback`], keeping the `Arc<Mutex<F>>` shape.
+fn register_close_callback_cross_thread<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: F) {
+    let held: Arc<Mutex<F>> = Arc::new(Mutex::new(f));
+    let connected = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+        widget.base().closed.connect(move || match held.lock() {
+            Ok(mut callback) => callback(),
+            Err(_) => log::warn!(
+                "the close callback for widget {widget_id} could not be locked; skipping this \
+                 close rather than panicking"
+            ),
+        })
+    });
+    if let Some(handle) = connected {
+        record_signal_connection(widget_id, SignalKind::Closed, handle);
+    } else {
         log::warn!(
             "on_close ignored for id={widget_id}: it is not a live widget, so there is no signal \
              for a close to arrive on. The callback will never run."
@@ -1054,6 +1227,14 @@ pub fn remove_callbacks(id: ObjectId) {
     CLICK_CALLBACKS.with(|map| {
         if let Ok(mut map) = map.try_borrow_mut() {
             map.remove(&id);
+        }
+    });
+    // The lock-free convenience path stores the closure itself beside the runtime registry, so an
+    // explicit removal must drop it too; otherwise every removed handler stayed alive until the
+    // thread exited (W-P08).
+    LOCAL_CALLBACKS.with(|map| {
+        if let Ok(mut map) = map.try_borrow_mut() {
+            map.retain(|(widget_id, _), _| *widget_id != id);
         }
     });
     VALUE_CALLBACKS.with(|map| {
@@ -1945,7 +2126,7 @@ impl WindowHandle {
     /// (c) silently dropped. (c) is the one blue27 §19.11 forbids, because the item then looks exactly
     /// like one whose icon failed to resolve — §19.13 case I15 requires those two to be
     /// distinguishable. So this method asks
-    /// [`native_menu_item_icons_supported`](crate::native_menu_item_icons_supported) and, when the
+    /// [`menu_item_icons_supported`](crate::menu_item_icons_supported) and, when the
     /// answer is `false`, creates the item with its **text** and names the unsupported presentation in
     /// the log. The item is always created: losing a menu entry because of a decoration would be far
     /// worse than losing the decoration.
@@ -1958,7 +2139,7 @@ impl WindowHandle {
         shortcut: Option<&str>,
         icon: Option<crate::widget::IconSource>,
     ) -> MenuItemHandle {
-        if icon.is_some() && !crate::native_menu_item_icons_supported() {
+        if icon.is_some() && !crate::menu_item_icons_supported() {
             log::warn!(
                 "native menu item {text:?} was given an icon, but this platform's menu bar has no \
                  icon surface; the item was created with its text only (this is an unsupported \

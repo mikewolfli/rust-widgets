@@ -44,6 +44,17 @@ pub struct AtlasEntry {
 /// are reused before advancing the row packer. Adjacent free rectangles are coalesced;
 /// live entries never move, so already uploaded texels and UV coordinates remain valid.
 ///
+/// # Complexity (G-56 / G-57)
+///
+/// * `free_rects` is kept ordered by area, so [`Self::allocate`] binary-searches
+///   past every rectangle too small to hold the request instead of scanning the
+///   whole list.
+/// * `remove` coalesces in a single forward pass. A merge removes an element from
+///   the free list, so the pass is O(n) rather than the O(n²) repeated-restart
+///   scan it used to be.
+/// * `used_area` is maintained incrementally, so [`Self::utilization`] is O(1)
+///   instead of walking every live entry.
+///
 pub struct TextureAtlas {
     max_size: Size,
     entries: HashMap<u64, AtlasEntry>,
@@ -51,7 +62,43 @@ pub struct TextureAtlas {
     cursor_x: u32,
     cursor_y: u32,
     row_height: u32,
+    /// Reusable rectangles ordered by area, ascending. The order is the index
+    /// [`Self::first_fitting_free_rect`] binary-searches; it is *not* insertion
+    /// order, so "first fit" here means "the first fitting rectangle in area
+    /// order", which is deterministic across runs.
     free_rects: Vec<AtlasRect>,
+    /// Sum of the areas of all live entries, in texels. Maintained on every
+    /// allocate/remove so `utilization` never walks `entries`.
+    used_area: u64,
+}
+
+/// Area of `rect` in texels, computed in `u64` so a full-size atlas cannot
+/// overflow the multiplication.
+fn rect_area(rect: &AtlasRect) -> u64 {
+    rect.width as u64 * rect.height as u64
+}
+
+/// Whether two free rectangles share a full edge and can therefore be merged.
+fn rectangles_are_adjacent(a: &AtlasRect, b: &AtlasRect) -> bool {
+    let horizontal = a.y == b.y
+        && a.height == b.height
+        && (a.x.saturating_add(a.width) == b.x || b.x.saturating_add(b.width) == a.x);
+    let vertical = a.x == b.x
+        && a.width == b.width
+        && (a.y.saturating_add(a.height) == b.y || b.y.saturating_add(b.height) == a.y);
+    horizontal || vertical
+}
+
+/// Bounding rectangle of two adjacent free rectangles.
+fn merge_adjacent(a: &AtlasRect, b: &AtlasRect) -> AtlasRect {
+    let horizontal = a.y == b.y && a.height == b.height;
+    let vertical = a.x == b.x && a.width == b.width;
+    AtlasRect {
+        x: a.x.min(b.x),
+        y: a.y.min(b.y),
+        width: if horizontal { a.width + b.width } else { a.width },
+        height: if vertical { a.height + b.height } else { a.height },
+    }
 }
 
 impl TextureAtlas {
@@ -68,7 +115,32 @@ impl TextureAtlas {
             cursor_y: 0,
             row_height: 0,
             free_rects: Vec::new(),
+            used_area: 0,
         }
+    }
+
+    /// Index of the first free rectangle (in area order) that can hold
+    /// `width` × `height`, or `None` when none can.
+    ///
+    /// The binary search skips every rectangle whose area is smaller than the
+    /// request, which is the size index G-57 asks for; the remaining suffix is
+    /// still scanned for an exact width/height fit because a rectangle with
+    /// enough area is not necessarily wide *and* tall enough.
+    fn first_fitting_free_rect(&self, width: u32, height: u32) -> Option<usize> {
+        let required_area = width as u64 * height as u64;
+        let start = self.free_rects.partition_point(|rect| rect_area(rect) < required_area);
+        self.free_rects[start..]
+            .iter()
+            .position(|rect| width <= rect.width && height <= rect.height)
+            .map(|offset| start + offset)
+    }
+
+    /// Inserts a free rectangle while preserving the area ordering the binary
+    /// search depends on.
+    fn insert_free_rect(&mut self, rect: AtlasRect) {
+        let area = rect_area(&rect);
+        let index = self.free_rects.partition_point(|other| rect_area(other) <= area);
+        self.free_rects.insert(index, rect);
     }
 
     /// Allocate a slot in the atlas. Returns the texture ID and rect.
@@ -90,13 +162,13 @@ impl TextureAtlas {
         let id = self.next_id;
         let next_id = id.checked_add(1)?;
         if width > 0 && height > 0 {
-            if let Some(index) =
-                self.free_rects.iter().position(|rect| width <= rect.width && height <= rect.height)
-            {
-                let free = self.free_rects.swap_remove(index);
+            if let Some(index) = self.first_fitting_free_rect(width, height) {
+                // `remove` rather than `swap_remove`: the free list is kept
+                // ordered, and a scan must not be able to observe it scrambled.
+                let free = self.free_rects.remove(index);
                 let rect = AtlasRect { x: free.x, y: free.y, width, height };
                 if free.width > width {
-                    self.free_rects.push(AtlasRect {
+                    self.insert_free_rect(AtlasRect {
                         x: free.x + width,
                         y: free.y,
                         width: free.width - width,
@@ -104,7 +176,7 @@ impl TextureAtlas {
                     });
                 }
                 if free.height > height {
-                    self.free_rects.push(AtlasRect {
+                    self.insert_free_rect(AtlasRect {
                         x: free.x,
                         y: free.y + height,
                         width: free.width,
@@ -112,6 +184,7 @@ impl TextureAtlas {
                     });
                 }
                 self.next_id = next_id;
+                self.used_area += rect_area(&rect);
                 self.entries.insert(id, AtlasEntry { rect, texture_id: id });
                 return Some((id, rect));
             }
@@ -128,6 +201,7 @@ impl TextureAtlas {
         }
         self.next_id = next_id;
         let rect = AtlasRect { x, y, width, height };
+        self.used_area += rect_area(&rect);
         self.entries.insert(id, AtlasEntry { rect, texture_id: id });
         self.cursor_x = x.checked_add(width)?;
         self.cursor_y = y;
@@ -145,42 +219,41 @@ impl TextureAtlas {
     ///
     /// A removed rectangle may be overwritten by the next allocation. Live entries
     /// retain their coordinates, and removed identifiers are never reused.
+    ///
+    /// Coalescing runs as one forward pass over the free list: every merge removes
+    /// a rectangle, so the pass is O(n) in total. The pass does not restart after a
+    /// merge (G-56), which means it does not follow a chain back to rectangles it
+    /// already visited; a coalesced rectangle can therefore stay adjacent to an
+    /// earlier free rectangle. Reuse is unaffected — the next allocation can still
+    /// take either rectangle — and the saving is the O(n²) rescan this used to do.
     pub fn remove(&mut self, id: u64) {
         let Some(entry) = self.entries.remove(&id) else { return };
+        self.used_area = self.used_area.saturating_sub(rect_area(&entry.rect));
         if self.entries.is_empty() {
             self.cursor_x = 0;
             self.cursor_y = 0;
             self.row_height = 0;
             self.free_rects.clear();
+            self.used_area = 0;
             return;
         }
         let mut rect = entry.rect;
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        let mut index = 0;
-        while index < self.free_rects.len() {
-            let other = self.free_rects[index];
-            let horizontal = rect.y == other.y
-                && rect.height == other.height
-                && (rect.x + rect.width == other.x || other.x + other.width == rect.x);
-            let vertical = rect.x == other.x
-                && rect.width == other.width
-                && (rect.y + rect.height == other.y || other.y + other.height == rect.y);
-            if horizontal || vertical {
-                self.free_rects.swap_remove(index);
-                rect = AtlasRect {
-                    x: rect.x.min(other.x),
-                    y: rect.y.min(other.y),
-                    width: if horizontal { rect.width + other.width } else { rect.width },
-                    height: if vertical { rect.height + other.height } else { rect.height },
-                };
-                index = 0;
+        // Drain in place so the merged rectangle cannot be visited twice, and so
+        // the survivors keep the area ordering `first_fitting_free_rect` relies on.
+        let pending = core::mem::take(&mut self.free_rects);
+        let mut kept = Vec::with_capacity(pending.len());
+        for other in pending {
+            if rectangles_are_adjacent(&rect, &other) {
+                rect = merge_adjacent(&rect, &other);
             } else {
-                index += 1;
+                kept.push(other);
             }
         }
-        self.free_rects.push(rect);
+        self.free_rects = kept;
+        self.insert_free_rect(rect);
     }
 
     /// Forgets every entry and resets the packer, making the whole atlas
@@ -192,6 +265,7 @@ impl TextureAtlas {
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.row_height = 0;
+        self.used_area = 0;
     }
 
     /// Returns the number of live entries — not the number of allocated slots,
@@ -211,14 +285,15 @@ impl TextureAtlas {
     /// exceed a realistic packing efficiency only if rectangles overlap; it
     /// does not include padding. A zero-area atlas reports `0.0` rather than
     /// dividing by zero.
+    ///
+    /// The numerator is maintained on every allocate/remove, so this is an O(1)
+    /// lookup rather than a walk over every entry (G-57).
     pub fn utilization(&self) -> f32 {
         if self.max_size.width == 0 || self.max_size.height == 0 {
             return 0.0;
         }
         let total_pixels = self.max_size.width as u64 * self.max_size.height as u64;
-        let used_pixels: u64 =
-            self.entries.values().map(|e| e.rect.width as u64 * e.rect.height as u64).sum();
-        used_pixels as f32 / total_pixels as f32
+        self.used_area as f32 / total_pixels as f32
     }
 }
 
@@ -313,5 +388,40 @@ mod tests {
         let (_, rect) = atlas.allocate(50, 50).expect("fits");
         assert_eq!(rect.width, 50);
         assert!((atlas.utilization() - 0.25).abs() < 1e-6);
+    }
+
+    /// G-57: `utilization` must follow removals without re-walking the entries.
+    #[test]
+    fn utilization_tracks_removals_incrementally() {
+        let mut atlas = TextureAtlas::new(Size::new(100, 100));
+        let (first, _) = atlas.allocate(40, 50).expect("fits"); // 2000 texels
+        let (second, _) = atlas.allocate(20, 25).expect("fits"); // 500 texels
+        assert!((atlas.utilization() - 0.25).abs() < 1e-6);
+
+        atlas.remove(first);
+        assert!((atlas.utilization() - 0.05).abs() < 1e-6, "2000 texels released");
+
+        atlas.remove(second);
+        assert_eq!(atlas.utilization(), 0.0);
+    }
+
+    /// G-57: the area-ordered free list must skip rectangles that are too small
+    /// even when they sit earlier in the list, so a large request still finds the
+    /// large hole.
+    #[test]
+    fn free_rect_size_index_skips_undersized_holes() {
+        let mut atlas = TextureAtlas::new(Size::new(32, 32));
+        let (small, _) = atlas.allocate(8, 8).expect("fits");
+        let (large, _) = atlas.allocate(24, 24).expect("fits");
+        // Keep one live entry: removing every entry resets the atlas instead of
+        // building a free list, which is a different code path.
+        let (_keep, _) = atlas.allocate(4, 4).expect("fits on the next row");
+        atlas.remove(small);
+        atlas.remove(large);
+
+        // The 8×8 hole has less area than the 16×16 request, so the size index
+        // must land on the 24×24 hole instead.
+        let (_, rect) = atlas.allocate(16, 16).expect("the large hole fits");
+        assert_eq!((rect.x, rect.y), (8, 0));
     }
 }

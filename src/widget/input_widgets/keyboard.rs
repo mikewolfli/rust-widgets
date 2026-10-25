@@ -35,10 +35,6 @@ const SHIFT_CODE: u32 = 16;
 /// that they emit nothing, and they are drawn as special keys for that reason.
 const NO_KEY: u32 = 0;
 
-/// The Caps Lock key's code, used when a layout carries a Caps key.
-#[allow(dead_code)]
-const CAPS_LOCK_CODE: u32 = 20;
-
 /// Height of the suggestion bar painted over the first key row.
 const SUGGESTION_BAR_HEIGHT: u32 = 28;
 
@@ -159,6 +155,30 @@ pub struct Keyboard {
     suggestions: Vec<String>,
     /// Keys crossed while the pointer is held, for swipe input.
     swipe_text: String,
+    /// The repeat and long-press rhythm, configurable per host (I-21).
+    timing: KeyboardTiming,
+}
+
+/// The repeat and long-press rhythm of the on-screen keyboard (I-21).
+///
+/// `tick` carried the three numbers as literals, so a host could not tune the board for its own
+/// device — a touch panel and a desktop window want very different repeat rates, and a
+/// large-screen kiosk wants a longer long-press than a phone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyboardTiming {
+    /// How long a key must be held before it starts repeating, in milliseconds.
+    pub repeat_initial_ms: u32,
+    /// The gap between repeats once repeating has started, in milliseconds.
+    pub repeat_interval_ms: u32,
+    /// How long a hold must last before the accent popup opens, in milliseconds.
+    pub long_press_ms: u32,
+}
+
+impl Default for KeyboardTiming {
+    /// The values the board has always used.
+    fn default() -> Self {
+        Self { repeat_initial_ms: 450, repeat_interval_ms: 90, long_press_ms: 500 }
+    }
 }
 
 impl Keyboard {
@@ -188,6 +208,7 @@ impl Keyboard {
             press_animation: false,
             suggestions: Vec::new(),
             swipe_text: String::new(),
+            timing: KeyboardTiming::default(),
         };
         kbd.build_qwerty_layout();
         kbd
@@ -208,6 +229,41 @@ impl Keyboard {
     /// Return the current layout variant.
     pub fn layout(&self) -> KeyboardLayout {
         self.layout
+    }
+
+    /// Installs a caller-defined key grid (I-20).
+    ///
+    /// [`KeyDefinition`] was a public type that could not be installed: `keys` is private and
+    /// [`Self::set_layout`] accepts only the four presets, so a host that wanted a functional row,
+    /// a regional layout or a keypad of its own had a type with no entry point. This takes the
+    /// same invalidation path the presets do — a held key, its repeat and any open accent popup
+    /// describe the *old* grid and are cleared before the new one is painted.
+    ///
+    /// [`KeyboardLayout`] stays the preset convenience: [`Self::layout`] keeps reporting the last
+    /// preset that was applied, because a caller-defined grid is not one of them.
+    pub fn set_keys(&mut self, rows: Vec<Vec<KeyDefinition>>) {
+        self.keys = rows;
+        self.held_key = None;
+        self.repeat_elapsed = 0;
+        self.accent_popup = None;
+        self.pressed_key = None;
+        self.base.request_redraw();
+    }
+
+    /// The repeat and long-press rhythm (I-21).
+    pub fn timing(&self) -> KeyboardTiming {
+        self.timing
+    }
+
+    /// Replaces the repeat and long-press rhythm (I-21).
+    ///
+    /// A zero interval is accepted but read as one millisecond, because a repeat every zero
+    /// milliseconds would spin `tick` forever on a single hold.
+    pub fn set_timing(&mut self, timing: KeyboardTiming) {
+        if self.timing == timing {
+            return;
+        }
+        self.timing = timing;
     }
 
     /// Get the key at the given position (in widget-local coordinates).
@@ -469,19 +525,22 @@ impl Keyboard {
         if let Some((row, col)) = self.held_key {
             self.repeat_elapsed = self.repeat_elapsed.saturating_add(delta_ms);
             due = true;
-            if self.accent_popup.is_none() && self.repeat_elapsed >= 500 {
+            // The three thresholds are the host's, not literals (I-21).
+            let initial = self.timing.repeat_initial_ms;
+            let interval = self.timing.repeat_interval_ms.max(1);
+            if self.accent_popup.is_none() && self.repeat_elapsed >= self.timing.long_press_ms {
                 self.show_accents(row, col);
             }
-            if self.repeat_elapsed >= 450 {
-                let mut remaining = self.repeat_elapsed - 450;
-                while remaining >= 90 {
-                    remaining -= 90;
+            if self.repeat_elapsed >= initial {
+                let mut remaining = self.repeat_elapsed - initial;
+                while remaining >= interval {
+                    remaining -= interval;
                     if let Some(key) = self.keys.get(row).and_then(|keys| keys.get(col)) {
                         let key_code = key.key_code;
                         self.emit_key_signals(key_code);
                     }
                 }
-                self.repeat_elapsed = 450 + remaining;
+                self.repeat_elapsed = initial + remaining;
             }
         }
         due
@@ -1374,6 +1433,38 @@ mod tests {
 
         kbd.set_lowercase(false);
         assert!(!kbd.lowercase());
+    }
+
+    #[test]
+    fn a_host_can_install_its_own_key_grid() {
+        // I-20: `KeyDefinition` was public while the grid was private and only the presets could
+        // be installed, so a custom board had no entry point at all.
+        let mut kbd = Keyboard::new(Rect::new(0, 0, 320, 160));
+        let rows = vec![
+            vec![KeyDefinition { label: "1".into(), key_code: 49, width_ratio: 1.0 }],
+            vec![KeyDefinition { label: "2".into(), key_code: 50, width_ratio: 2.0 }],
+        ];
+        kbd.set_keys(rows);
+        let hit = kbd.key_at_position(Point::new(5, 5)).expect("first row, first key");
+        assert_eq!(hit, (0, 0));
+        assert_eq!(kbd.keys[hit.0][hit.1].key_code, 49);
+    }
+
+    #[test]
+    fn the_repeat_rhythm_is_configurable() {
+        // I-21: the 450/90/500 ms values were literals inside `tick`.
+        let mut kbd = Keyboard::new(Rect::new(0, 0, 320, 160));
+        assert_eq!(kbd.timing(), KeyboardTiming::default());
+        kbd.set_timing(KeyboardTiming {
+            repeat_initial_ms: 100,
+            repeat_interval_ms: 50,
+            long_press_ms: 200,
+        });
+        assert_eq!(kbd.timing().repeat_initial_ms, 100);
+        // The long-press threshold is read from the field, so a shorter hold reacts sooner.
+        kbd.held_key = Some((0, 0));
+        kbd.tick(60);
+        assert!(kbd.accent_popup.is_none());
     }
 
     #[test]

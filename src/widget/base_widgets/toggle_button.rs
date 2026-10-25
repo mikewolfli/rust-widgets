@@ -4,10 +4,8 @@
 //! Toggle button widget.
 #[cfg(full_widgets)]
 use crate::compat::Vec;
-use crate::compat::{RefCell, String, ToString};
+use crate::compat::{Rc, RefCell, String, ToString};
 use crate::core::{Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
-#[cfg(full_widgets)]
-use crate::render::RenderCommand;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
@@ -84,7 +82,7 @@ pub struct ToggleButton {
     text: String,
     checked: bool,
     auto_exclusive: bool,
-    group_id: Option<String>,
+    group_id: Option<Rc<str>>,
     /// Whether the tool button hides its chrome until it is pointed at, held or checked.
     auto_raise: bool,
     /// A typed icon painted before the caption.
@@ -238,7 +236,7 @@ impl ToggleButton {
             return None;
         }
         if let Some(id) = self.group_id.as_ref() {
-            return Some(GroupKey::Name(id.clone()));
+            return Some(GroupKey::Name(Rc::clone(id)));
         }
         self.parent().map(GroupKey::Parent)
     }
@@ -351,11 +349,11 @@ impl ToggleButton {
     /// Sets (or clears, with `None`) the group id. See
     /// [`ToggleButton::group_id`].
     pub fn set_group_id(&mut self, group_id: Option<String>) {
-        if self.group_id == group_id {
+        if self.group_id.as_deref() == group_id.as_deref() {
             return;
         }
         let previous_key = self.exclusive_key();
-        self.group_id = group_id;
+        self.group_id = group_id.map(|id| Rc::from(id.as_str()));
         if let Some(key) = previous_key {
             button_group::unregister(&key, self.id());
         }
@@ -1329,35 +1327,18 @@ impl Draw for ToggleButton {
             trailing += 12;
             let arrow_x = rect.x + rect.width as i32 - trailing;
             let arrow_y = rect.y + rect.height as i32 / 2 - 2;
-            let points = match self.arrow_type {
-                MenuArrowType::Up => vec![
-                    crate::core::Point::new(arrow_x, arrow_y + 6),
-                    crate::core::Point::new(arrow_x + 8, arrow_y + 6),
-                    crate::core::Point::new(arrow_x + 4, arrow_y),
-                ],
-                MenuArrowType::Left => vec![
-                    crate::core::Point::new(arrow_x + 6, arrow_y),
-                    crate::core::Point::new(arrow_x + 6, arrow_y + 6),
-                    crate::core::Point::new(arrow_x, arrow_y + 3),
-                ],
-                MenuArrowType::Right => vec![
-                    crate::core::Point::new(arrow_x, arrow_y),
-                    crate::core::Point::new(arrow_x, arrow_y + 6),
-                    crate::core::Point::new(arrow_x + 6, arrow_y + 3),
-                ],
-                _ => vec![
-                    crate::core::Point::new(arrow_x, arrow_y),
-                    crate::core::Point::new(arrow_x + 8, arrow_y),
-                    crate::core::Point::new(arrow_x + 4, arrow_y + 6),
-                ],
+            // Constant vertex offsets rather than a freshly built `Vec` per frame. The
+            // arrow's shape never varies, so the vertices are a stack array the draw path
+            // borrows (G-A08).
+            let offsets: [(i32, i32); 3] = match self.arrow_type {
+                MenuArrowType::Up => [(0, 6), (8, 6), (4, 0)],
+                MenuArrowType::Left => [(6, 0), (6, 6), (0, 3)],
+                MenuArrowType::Right => [(0, 0), (0, 6), (6, 3)],
+                _ => [(0, 0), (8, 0), (4, 6)],
             };
-            context.execute_command(RenderCommand::DrawPath {
-                points,
-                closed: true,
-                color: text_color,
-                filled: true,
-                width: 1,
-            });
+            let points: [crate::core::Point; 3] =
+                offsets.map(|(dx, dy)| crate::core::Point::new(arrow_x + dx, arrow_y + dy));
+            context.draw_path(&points, true, text_color, true, 1);
         }
         if !self.text.is_empty() {
             let band_x = rect.x + leading;
@@ -1376,9 +1357,9 @@ impl Draw for ToggleButton {
         #[cfg(full_widgets)]
         if self.menu_open {
             let panel = self.menu_rect();
-            let accent = crate::style::theme_manager()
-                .current_theme()
-                .map(|theme| theme.colors.accent)
+            let accent = crate::style::palette_shared()
+                .as_ref()
+                .map(|theme| theme.accent)
                 .unwrap_or_else(|| bg_color.contrast_color());
             draw_menu_panel(context, panel, &self.menu_items, &[], style, accent);
             if let Some(index) = self.active_menu_index {
@@ -1517,9 +1498,8 @@ impl crate::event::EventHandler for ToggleButton {
                 }
                 self.set_pressed(false);
             }
-            crate::event::Event::MouseRelease { button: 1, .. } => {
-                self.set_pressed(false);
-            }
+            // (The former blanket `MouseRelease { button: 1, .. }` arm here was unreachable: it
+            // matched a strict subset of the arm above, so it could never run — G-A08.)
             crate::event::Event::MouseLeave { .. } => {
                 // Abandon a held press; without arms this control had no leave handling at all.
                 #[cfg(full_widgets)]

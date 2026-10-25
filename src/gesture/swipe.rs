@@ -13,6 +13,15 @@ use super::{distance, point_delta, tuning, GestureKind, GestureRecognizer};
 // ────────────────────────────────────────────
 
 /// Recognises a rapid directional swipe gesture.
+///
+/// # Mid-gesture direction lock (W-205)
+///
+/// The recogniser used to decide everything on `TouchEnd`, so a finger that travelled far and
+/// then reversed still had its earlier travel counted. The move path now locks the dominant axis
+/// once the accumulated travel crosses [`GestureTuning::swipe_min_distance`], and a move whose
+/// component along that axis points back the other way **cancels** the attempt (the finger drew
+/// one direction and then undid it). `partial` exposes the locked direction and current speed so
+/// a host can preview the swipe before the release confirms it.
 #[derive(Debug, Clone)]
 pub struct SwipeGesture {
     start_pos: Option<Point>,
@@ -20,12 +29,36 @@ pub struct SwipeGesture {
     last_pos: Option<Point>,
     last_time: Option<u64>,
     touch_id: Option<TouchId>,
+    /// The locked (axis, sign) once the travel crossed the minimum distance.
+    ///
+    /// `sign` is the direction along the axis: `1` for right/down, `-1` for left/up. A move that
+    /// reverses it cancels the attempt rather than letting the two directions average out.
+    locked: Option<(SwipeAxis, i32)>,
+}
+
+/// The dominant axis of a swipe once the direction is locked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SwipeAxis {
+    Horizontal,
+    Vertical,
 }
 
 impl SwipeGesture {
     /// Creates a recognizer with no touch in flight.
     pub fn new() -> Self {
-        Self { start_pos: None, start_time: None, last_pos: None, last_time: None, touch_id: None }
+        Self {
+            start_pos: None,
+            start_time: None,
+            last_pos: None,
+            last_time: None,
+            touch_id: None,
+            locked: None,
+        }
+    }
+
+    /// The `(axis, sign)` locked by the current move, if the direction is already known.
+    fn locked_direction(&self) -> Option<(SwipeAxis, i32)> {
+        self.locked
     }
 }
 
@@ -42,12 +75,14 @@ impl GestureRecognizer for SwipeGesture {
                 self.last_pos = Some(*pos);
                 self.last_time = Some(now_ms);
                 self.touch_id = Some(*touch_id);
+                self.locked = None;
                 None
             }
             Event::TouchMove { pos, touch_id } => {
                 if self.touch_id == Some(*touch_id) {
                     self.last_pos = Some(*pos);
                     self.last_time = Some(now_ms);
+                    self.update_lock(*pos);
                 }
                 None
             }
@@ -63,6 +98,20 @@ impl GestureRecognizer for SwipeGesture {
                 if total_dist < tuning().swipe_min_distance {
                     self.reset();
                     return None;
+                }
+
+                // Final confirmation must not contradict the locked direction: a release that
+                // ends behind the start point along the locked axis is the same cancellation the
+                // move path applies, in the case where no move reported it.
+                if let Some((axis, sign)) = self.locked_direction() {
+                    let main = match axis {
+                        SwipeAxis::Horizontal => pos.x as i64 - start.x as i64,
+                        SwipeAxis::Vertical => pos.y as i64 - start.y as i64,
+                    };
+                    if main != 0 && main.signum() as i32 != sign {
+                        self.reset();
+                        return None;
+                    }
                 }
 
                 let dt = now_ms.saturating_sub(start_time);
@@ -84,12 +133,68 @@ impl GestureRecognizer for SwipeGesture {
         }
     }
 
+    /// The in-progress swipe, once the direction has locked (W-205).
+    ///
+    /// Returning `Event::Swipe` rather than a bespoke preview type keeps the public event
+    /// vocabulary unchanged: the start, current point and current speed are exactly the fields a
+    /// previewing host reads. A sub-threshold drag reports nothing because it has no direction
+    /// yet; that is the honest answer, not a zero-velocity swipe.
+    fn partial(&self) -> Option<Event> {
+        let _ = self.locked_direction()?;
+        let start = self.start_pos?;
+        let end = self.last_pos?;
+        let started_at = self.start_time?;
+        let last_at = self.last_time?;
+        let dt = last_at.saturating_sub(started_at);
+        let velocity = if dt > 0 { distance(start, end) / dt as f32 * 1000.0 } else { 0.0 };
+        Some(Event::Swipe { start, end, velocity })
+    }
+
     fn reset(&mut self) {
         self.start_pos = None;
         self.start_time = None;
         self.last_pos = None;
         self.last_time = None;
         self.touch_id = None;
+        self.locked = None;
+    }
+}
+
+impl SwipeGesture {
+    /// Locks the dominant axis once the travel crosses the threshold, or cancels on a reversal.
+    fn update_lock(&mut self, pos: Point) {
+        let Some(start) = self.start_pos else {
+            return;
+        };
+        let dx = pos.x as i64 - start.x as i64;
+        let dy = pos.y as i64 - start.y as i64;
+        match self.locked {
+            None => {
+                if distance(start, pos) < tuning().swipe_min_distance {
+                    return;
+                }
+                let axis =
+                    if dx.abs() >= dy.abs() { SwipeAxis::Horizontal } else { SwipeAxis::Vertical };
+                let main = match axis {
+                    SwipeAxis::Horizontal => dx,
+                    SwipeAxis::Vertical => dy,
+                };
+                if main != 0 {
+                    self.locked = Some((axis, main.signum() as i32));
+                }
+            }
+            Some((axis, sign)) => {
+                let main = match axis {
+                    SwipeAxis::Horizontal => dx,
+                    SwipeAxis::Vertical => dy,
+                };
+                if main != 0 && main.signum() as i32 != sign {
+                    // The finger reversed along the axis it had committed to. Undo the attempt
+                    // rather than letting the two opposite travels average into a bogus swipe.
+                    self.reset();
+                }
+            }
+        }
     }
 }
 
@@ -154,9 +259,25 @@ impl TwoFingerSwipeGesture {
         self.fingers
     }
 
+    /// The mean of the tracked contacts, accumulated in `i64` so no intermediate sum can
+    /// overflow.
+    ///
+    /// The implementation used to collect the coordinates into a temporary `Vec<Point>` and then
+    /// call [`Self::centroid_of_points`], which allocated on every multi-touch event even though
+    /// the two-finger case needs no container at all (W-P04). One pass over the contacts produces
+    /// the same answer with no allocation.
     fn compute_centroid(touches: &[(Point, TouchId)]) -> Option<Point> {
-        let points: Vec<Point> = touches.iter().map(|(p, _)| *p).collect();
-        Self::centroid_of_points(&points)
+        if touches.is_empty() {
+            return None;
+        }
+        let mut sum_x: i64 = 0;
+        let mut sum_y: i64 = 0;
+        for (pos, _) in touches {
+            sum_x += pos.x as i64;
+            sum_y += pos.y as i64;
+        }
+        let count = touches.len() as i64;
+        Some(Point::new((sum_x / count) as i32, (sum_y / count) as i32))
     }
 
     /// Average of `points`, computed in `i64` so large coordinates cannot
@@ -273,6 +394,62 @@ crate::impl_default_via_new!(TwoFingerSwipeGesture);
 
 /// Length of the trailing sample window (ms) used to estimate fling velocity.
 const VELOCITY_WINDOW_MS: u64 = 100;
+/// How many recent samples the fling estimator retains.
+///
+/// # Why a fixed capacity (W-P03)
+///
+/// The estimator used to rebuild a `Vec` of the samples inside the trailing window on every
+/// `TouchEnd`, and push+`retain` on every `TouchMove`. A fast scroll therefore allocated and freed
+/// a vector per event. The window is bounded by time, and pointer samples arrive far slower than
+/// one per millisecond on every platform this crate supports, so 64 slots hold many windows' worth
+/// of motion; the oldest is overwritten when a pathological producer exceeds that.
+const FLING_SAMPLE_CAPACITY: usize = 64;
+
+/// A fixed-capacity ring of `(position, time_ms)` pointer samples.
+///
+/// Writes are in place, trimming advances the head, and iteration walks oldest to newest — the
+/// order the velocity estimator needs. No operation allocates.
+#[derive(Debug, Clone)]
+struct SampleRing {
+    samples: [(Point, u64); FLING_SAMPLE_CAPACITY],
+    head: usize,
+    len: usize,
+}
+
+impl SampleRing {
+    fn new() -> Self {
+        Self { samples: [(Point::new(0, 0), 0); FLING_SAMPLE_CAPACITY], head: 0, len: 0 }
+    }
+
+    fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+    }
+
+    fn push(&mut self, pos: Point, time_ms: u64) {
+        if self.len < FLING_SAMPLE_CAPACITY {
+            let index = (self.head + self.len) % FLING_SAMPLE_CAPACITY;
+            self.samples[index] = (pos, time_ms);
+            self.len += 1;
+        } else {
+            // Full: overwrite the oldest slot and advance the head to it.
+            self.samples[self.head] = (pos, time_ms);
+            self.head = (self.head + 1) % FLING_SAMPLE_CAPACITY;
+        }
+    }
+
+    fn get(&self, index: usize) -> (Point, u64) {
+        self.samples[(self.head + index) % FLING_SAMPLE_CAPACITY]
+    }
+
+    /// Drops samples older than `cutoff`, oldest first.
+    fn retain_since(&mut self, cutoff: u64) {
+        while self.len > 0 && self.get(0).1 < cutoff {
+            self.head = (self.head + 1) % FLING_SAMPLE_CAPACITY;
+            self.len -= 1;
+        }
+    }
+}
 
 /// Velocity-based fling/flick recognizer.
 ///
@@ -292,25 +469,29 @@ pub struct FlingGesture {
     start_pos: Option<Point>,
     start_time: Option<u64>,
     touch_id: Option<TouchId>,
-    samples: Vec<(Point, u64)>, // (pos, time_ms) ring buffer
+    /// Recent `(pos, time_ms)` samples in a fixed ring (W-P03): no per-event allocation.
+    samples: SampleRing,
 }
 
 impl FlingGesture {
     /// Creates a recognizer with no touch in flight and an empty sample window.
     pub fn new() -> Self {
-        Self { start_pos: None, start_time: None, touch_id: None, samples: Vec::new() }
+        Self { start_pos: None, start_time: None, touch_id: None, samples: SampleRing::new() }
     }
 
     fn compute_velocity(&self) -> Option<Point> {
-        let now = self.samples.last()?.1;
+        let (_, now) = self.samples.get(self.samples.len.checked_sub(1)?);
         let cutoff = now.saturating_sub(VELOCITY_WINDOW_MS);
-        // Find samples within the window
-        let recent: Vec<_> = self.samples.iter().filter(|(_, t)| *t >= cutoff).collect();
-        if recent.len() < 2 {
+        // Find the oldest sample still inside the window, then measure from it to the newest.
+        let mut first_index = 0;
+        while first_index < self.samples.len && self.samples.get(first_index).1 < cutoff {
+            first_index += 1;
+        }
+        if self.samples.len - first_index < 2 {
             return None;
         }
-        let first = recent.first()?;
-        let last = recent.last()?;
+        let first = self.samples.get(first_index);
+        let last = self.samples.get(self.samples.len - 1);
         let dt = last.1.saturating_sub(first.1).max(1) as f32;
         // The displacement is widened like `total_distance` below, so a fling between coordinates
         // near the `i32` extremes reports the true displacement rather than a wrapped one. The
@@ -340,18 +521,18 @@ impl GestureRecognizer for FlingGesture {
                 self.start_time = Some(now_ms);
                 self.touch_id = Some(*touch_id);
                 self.samples.clear();
-                self.samples.push((*pos, now_ms));
+                self.samples.push(*pos, now_ms);
                 None
             }
             Event::TouchMove { pos, touch_id } if self.touch_id == Some(*touch_id) => {
-                self.samples.push((*pos, now_ms));
+                self.samples.push(*pos, now_ms);
                 // Trim old samples
                 let cutoff = now_ms.saturating_sub(VELOCITY_WINDOW_MS * 2);
-                self.samples.retain(|(_, t)| *t >= cutoff);
+                self.samples.retain_since(cutoff);
                 None
             }
             Event::TouchEnd { pos, touch_id } if self.touch_id == Some(*touch_id) => {
-                self.samples.push((*pos, now_ms));
+                self.samples.push(*pos, now_ms);
                 let velocity = self.compute_velocity();
                 // Compute magnitudes in `f64` so that ordinary-but-fast gestures
                 // (e.g. 50 px in 1 ms -> 50000 px/s) cannot overflow `i32` when the
@@ -640,6 +821,94 @@ mod tests {
             }
             other => panic!("reversed release order must still produce a swipe, got {other:?}"),
         }
+    }
+
+    /// W-205: the axis locks mid-gesture and the in-progress swipe is previewable.
+    #[test]
+    fn a_swipe_locks_its_axis_and_previews_before_release() {
+        let mut gesture = SwipeGesture::new();
+        let id = 1;
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: id }, 0)
+            .is_none());
+        // Below the minimum travel there is no direction to report yet.
+        assert!(gesture.partial().is_none());
+        assert!(gesture
+            .process(&Event::TouchMove { pos: Point::new(10, 1), touch_id: id }, 10)
+            .is_none());
+        assert!(gesture.partial().is_none(), "a sub-threshold drag has no direction");
+        // Crossing the threshold locks horizontal.
+        assert!(gesture
+            .process(&Event::TouchMove { pos: Point::new(80, 3), touch_id: id }, 20)
+            .is_none());
+        match gesture.partial() {
+            Some(Event::Swipe { start, end, velocity }) => {
+                assert_eq!(start, Point::new(0, 0));
+                assert_eq!(end, Point::new(80, 3));
+                assert!(velocity > 0.0, "the preview must carry the current speed, got {velocity}");
+            }
+            other => panic!("a locked swipe must preview as a Swipe, got {other:?}"),
+        }
+        match gesture.process(&Event::TouchEnd { pos: Point::new(160, 4), touch_id: id }, 30) {
+            Some(Event::Swipe { start, end, .. }) => {
+                assert_eq!(start, Point::new(0, 0));
+                assert_eq!(end, Point::new(160, 4));
+            }
+            other => panic!("the release is still the final confirmation, got {other:?}"),
+        }
+    }
+
+    /// W-205: a reverse move along the locked axis cancels the attempt instead of averaging out.
+    #[test]
+    fn a_swipe_that_reverses_is_cancelled() {
+        let mut gesture = SwipeGesture::new();
+        let id = 1;
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: id }, 0)
+            .is_none());
+        // Lock horizontal to the right.
+        assert!(gesture
+            .process(&Event::TouchMove { pos: Point::new(100, 0), touch_id: id }, 10)
+            .is_none());
+        assert!(gesture.partial().is_some());
+        // Draw back past the origin: the locked direction was right, so a negative component
+        // along that axis is the reversal the recogniser must cancel on.
+        assert!(gesture
+            .process(&Event::TouchMove { pos: Point::new(-10, 0), touch_id: id }, 20)
+            .is_none());
+        assert!(gesture.partial().is_none(), "a cancelled attempt has no preview");
+        // The release cannot resurrect it, even though the total travel looks large enough.
+        assert!(gesture
+            .process(&Event::TouchEnd { pos: Point::new(-10, 0), touch_id: id }, 30)
+            .is_none());
+    }
+
+    /// W-P03: the fling sample window is a fixed ring, newest-last, with time-based trimming.
+    #[test]
+    fn the_fling_sample_ring_keeps_the_newest_window_in_order() {
+        let mut ring = SampleRing::new();
+        for i in 0..5u64 {
+            ring.push(Point::new(i as i32, 0), i * 10);
+        }
+        assert_eq!(ring.len, 5);
+        assert_eq!(ring.get(0), (Point::new(0, 0), 0));
+        assert_eq!(ring.get(4), (Point::new(4, 0), 40));
+
+        // Trimming advances the head, so the oldest surviving sample becomes index 0.
+        ring.retain_since(20);
+        assert_eq!(ring.len, 3);
+        assert_eq!(ring.get(0), (Point::new(2, 0), 20));
+        assert_eq!(ring.get(2), (Point::new(4, 0), 40));
+
+        // Filling past capacity overwrites the oldest slot instead of allocating.
+        for i in 5..(FLING_SAMPLE_CAPACITY as u64 + 5) {
+            ring.push(Point::new(i as i32, 0), i * 10);
+        }
+        assert_eq!(ring.len, FLING_SAMPLE_CAPACITY);
+        let oldest = ring.get(0);
+        let newest = ring.get(FLING_SAMPLE_CAPACITY - 1);
+        assert!(oldest.1 <= newest.1, "the ring must stay oldest-to-newest");
+        assert_eq!(newest.1, (FLING_SAMPLE_CAPACITY as u64 + 4) * 10);
     }
 }
 

@@ -138,6 +138,22 @@ pub struct MiniChart {
     hover_caption: String,
     /// The `(index, value)` [`Self::hover_caption`] was rendered from.
     hover_caption_key: Option<(usize, u32)>,
+    /// The label the cached hover caption appended, kept so a label-only change rebuilds it.
+    hover_caption_label: String,
+    /// The chart's one label face, constructed once instead of twice per frame.
+    label_font: Option<Font>,
+    /// The axis label strings, reused until the data or the range changes.
+    axis_labels: Option<AxisLabelCache>,
+}
+
+/// The axis label text for one `(range, data)` key.
+struct AxisLabelCache {
+    minimum: u32,
+    maximum: u32,
+    point_count: usize,
+    first: String,
+    last: String,
+    values: [String; 3],
 }
 
 impl MiniChart {
@@ -158,6 +174,9 @@ impl MiniChart {
             entrance: crate::style::PropertyDriver::at(1.0, crate::style::MotionSlot::Normal),
             hover_caption: String::new(),
             hover_caption_key: None,
+            hover_caption_label: String::new(),
+            label_font: None,
+            axis_labels: None,
         }
     }
 
@@ -264,6 +283,57 @@ impl MiniChart {
     /// The value at [`MiniChart::hovered_index`], if that index still names a point.
     pub fn hovered_value(&self) -> Option<u32> {
         self.data.get(self.hovered_index?).map(|point| point.value)
+    }
+
+    /// The chart's label face, constructed once.
+    fn label_font(&mut self) -> Font {
+        if self.label_font.is_none() {
+            self.label_font = Some(Font::simple("sans-serif", 10.0));
+        }
+        self.label_font.clone().unwrap_or_default()
+    }
+
+    /// Rebuilds the axis label text when the range or the data identity changed.
+    ///
+    /// The value labels are three numbers derived from the range; the category labels are the
+    /// first and last point's own `label`, falling back to their index when the caller supplied
+    /// none. Both are reused across frames that do not move either input.
+    fn ensure_axis_labels(&mut self, minimum: u32, maximum: u32) {
+        let first = self
+            .data
+            .first()
+            .map(|point| if point.label.is_empty() { "0".to_string() } else { point.label.clone() })
+            .unwrap_or_else(|| "0".to_string());
+        let last = self
+            .data
+            .last()
+            .map(|point| {
+                if point.label.is_empty() {
+                    self.data.len().saturating_sub(1).to_string()
+                } else {
+                    point.label.clone()
+                }
+            })
+            .unwrap_or_default();
+        let fresh = self.axis_labels.as_ref().is_some_and(|cache| {
+            cache.minimum == minimum
+                && cache.maximum == maximum
+                && cache.point_count == self.data.len()
+                && cache.first == first
+                && cache.last == last
+        });
+        if fresh {
+            return;
+        }
+        let mid = ((u64::from(minimum) + u64::from(maximum)) / 2) as u32;
+        self.axis_labels = Some(AxisLabelCache {
+            minimum,
+            maximum,
+            point_count: self.data.len(),
+            first,
+            last,
+            values: [maximum.to_string(), mid.to_string(), minimum.to_string()],
+        });
     }
 
     /// Restarts the entrance at the baseline, settling immediately under reduced motion.
@@ -499,7 +569,10 @@ impl EventHandler for MiniChart {
 impl Draw for MiniChart {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let style = self.style();
+        // Copy the two resolved fields this draw reads: the label cache below mutates the control,
+        // so a borrowed `WidgetStyle` could not span that call.
+        let style_background = self.style().background_color;
+        let style_text = self.style().text_color;
 
         // The backdrop behind the plot, which is also the surface every piece of chrome below
         // has to be legible *on*. `mini_chart` is absent from the role table, so it classifies
@@ -516,8 +589,7 @@ impl Draw for MiniChart {
         // snapshots came out identical. Reading the resolved theme is what makes an appearance
         // switch visible on a control nobody has styled.
         let theme = crate::style::resolved_theme_style_shared("mini_chart");
-        let bg_color = style
-            .background_color
+        let bg_color = style_background
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::rgb(255, 255, 255));
         // The series stroke is the control's ink: `text_color` where resolved, and a colour
@@ -525,8 +597,7 @@ impl Draw for MiniChart {
         // unreachable whenever a theme is active (the theme always writes a text colour), but a
         // colour chosen against `bg_color` is the only choice that stays correct if one is not:
         // a fixed black line is invisible on a dark surface.
-        let line_color = style
-            .text_color
+        let line_color = style_text
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or_else(|| bg_color.contrast_color());
         // Grid and axis are chrome around the data. The grid is deliberately the faint end of
@@ -600,34 +671,42 @@ impl Draw for MiniChart {
         let range = (effective_max - effective_min) as f32;
 
         if self.show_axis_labels {
-            let font = Font::simple("sans-serif", 10.0);
-            let mid = ((u64::from(effective_min) + u64::from(effective_max)) / 2) as u32;
-            let value_labels = [
-                (effective_max, chart_origin_y),
-                (mid, chart_origin_y + chart_area_h as i32 / 2),
-                (effective_min, chart_origin_y + chart_area_h as i32),
+            let font = self.label_font();
+            self.ensure_axis_labels(effective_min, effective_max);
+            let (value_labels, first_label, last_label) = match self.axis_labels.as_ref() {
+                Some(cache) => (cache.values.clone(), cache.first.clone(), cache.last.clone()),
+                None => return,
+            };
+            let value_ys = [
+                chart_origin_y,
+                chart_origin_y + chart_area_h as i32 / 2,
+                chart_origin_y + chart_area_h as i32,
             ];
-            for (value, y) in value_labels {
+            for (label, y) in value_labels.into_iter().zip(value_ys) {
                 context.draw_text(
                     Point::new(chart_origin_x - 4, y + 4),
-                    &value.to_string(),
+                    &label,
                     &font,
                     axis_color,
                     HorizontalAlignment::Right,
                 );
             }
-            if let Some(last) = self.data.len().checked_sub(1) {
+            if !self.data.is_empty() {
                 let label_y = chart_origin_y + chart_area_h as i32 + 14;
-                context.draw_text(
-                    Point::new(chart_origin_x, label_y),
-                    "0",
+                // The category axis prefers the points' own labels and falls back to an index
+                // spelling; each half of the plot is a bounded band so a long label is fitted
+                // with an ellipsis instead of bleeding into its neighbour.
+                let half = (chart_area_w / 2).max(1);
+                context.draw_text_line(
+                    Rect::new(chart_origin_x, label_y, half, 12),
+                    &first_label,
                     &font,
                     axis_color,
                     HorizontalAlignment::Left,
                 );
-                context.draw_text(
-                    Point::new(chart_origin_x + chart_area_w as i32 - 1, label_y),
-                    &last.to_string(),
+                context.draw_text_line(
+                    Rect::new(chart_origin_x + half as i32, label_y, half, 12),
+                    &last_label,
                     &font,
                     axis_color,
                     HorizontalAlignment::Right,
@@ -751,24 +830,34 @@ impl Draw for MiniChart {
         if let Some(index) = self.hovered_index {
             if let Some(point) = self.data.get(index) {
                 let x = self.point_center_x(index, plot);
+                let value = point.value;
+                let label = point.label.clone();
                 context.draw_line_stroke(
                     Point::new(x, chart_origin_y),
                     Point::new(x, chart_origin_y + chart_area_h as i32),
                     axis_color,
                     1,
                 );
-                // The caption is written only when the point it names changes; a pointer resting
-                // on one point reuses the buffer instead of building the same string per frame.
-                let key = (index, point.value);
-                if self.hover_caption_key != Some(key) {
+                // The caption is written only when the point — or its label — changes; a pointer
+                // resting on one point reuses the buffer instead of building the same string per
+                // frame. A non-empty `DataPoint.label` is appended so the caller's vocabulary
+                // reaches the hover readout.
+                let key = (index, value);
+                if self.hover_caption_key != Some(key) || self.hover_caption_label != label {
                     self.hover_caption.clear();
-                    let _ = write!(self.hover_caption, "{}", point.value);
+                    if label.is_empty() {
+                        let _ = write!(self.hover_caption, "{}", value);
+                    } else {
+                        let _ = write!(self.hover_caption, "{}: {}", label, value);
+                    }
                     self.hover_caption_key = Some(key);
+                    self.hover_caption_label = label;
                 }
+                let font = self.label_font();
                 context.draw_text(
                     Point::new(x + 4, chart_origin_y + 12),
                     self.hover_caption.as_str(),
-                    &Font::simple("sans-serif", 10.0),
+                    &font,
                     line_color,
                     HorizontalAlignment::Left,
                 );
@@ -1036,5 +1125,66 @@ mod tests {
         assert!(!Widget::is_animating(&chart));
         let settled = render_pixels(&mut chart);
         assert_ne!(baseline, settled, "the series must grow from zero to its full height");
+    }
+
+    /// The category axis prefers the points' own labels and falls back to the index spelling.
+    #[test]
+    fn the_category_axis_uses_the_data_point_labels() {
+        let mut chart = MiniChart::new(Rect::new(0, 0, 200, 150));
+        chart.set_data(vec![
+            DataPoint::new("Jan", 10),
+            DataPoint::new("Feb", 50),
+            DataPoint::new("Mar", 30),
+        ]);
+        chart.ensure_axis_labels(0, 100);
+        let cache = chart.axis_labels.as_ref().expect("labels are built");
+        assert_eq!(cache.first, "Jan");
+        assert_eq!(cache.last, "Mar");
+        assert_eq!(cache.values, ["100", "50", "0"]);
+
+        // Unlabelled points fall back to their index, exactly as before.
+        chart.set_data(vec![DataPoint::new("", 1), DataPoint::new("", 2)]);
+        chart.ensure_axis_labels(0, 10);
+        let cache = chart.axis_labels.as_ref().unwrap();
+        assert_eq!(cache.first, "0");
+        assert_eq!(cache.last, "1");
+    }
+
+    /// The axis label strings and the label face are reused until their inputs change.
+    #[test]
+    fn the_axis_labels_and_face_are_cached() {
+        let mut chart = MiniChart::new(Rect::new(0, 0, 200, 150));
+        chart.set_data(vec![DataPoint::new("A", 10), DataPoint::new("B", 20)]);
+        chart.ensure_axis_labels(0, 100);
+        let ptr = chart.axis_labels.as_ref().unwrap().values.as_ptr();
+        chart.ensure_axis_labels(0, 100);
+        assert_eq!(
+            chart.axis_labels.as_ref().unwrap().values.as_ptr(),
+            ptr,
+            "an unchanged range and series reuse the labels"
+        );
+
+        chart.ensure_axis_labels(0, 200);
+        assert_eq!(chart.axis_labels.as_ref().unwrap().values, ["200", "100", "0"]);
+
+        let first_font = chart.label_font();
+        let second_font = chart.label_font();
+        assert_eq!(first_font, second_font, "the face is constructed once");
+    }
+
+    /// The hover readout appends a point's label when it has one.
+    #[test]
+    fn the_hover_caption_includes_the_point_label() {
+        let mut chart = MiniChart::new(Rect::new(0, 0, 200, 150));
+        chart.set_data(vec![DataPoint::new("A", 10), DataPoint::new("B", 50)]);
+        chart.set_hovered_index(Some(1));
+        let _ = render_pixels(&mut chart);
+        assert_eq!(chart.hover_caption, "B: 50");
+
+        // A label-only change rebuilds the caption.
+        chart.set_data(vec![DataPoint::new("A", 10), DataPoint::new("Bee", 50)]);
+        chart.set_hovered_index(Some(1));
+        let _ = render_pixels(&mut chart);
+        assert_eq!(chart.hover_caption, "Bee: 50");
     }
 }

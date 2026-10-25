@@ -584,10 +584,10 @@ pub enum RuntimeGuiMode {
 
 /// Resolve GUI mode for a specific platform backend.
 ///
-/// # The mapping is keyed on [`Platform::backend_name`], and that is the hazard
+/// # The evidence for "can open a window", and why it used to be a name
 ///
-/// There is no `Platform::gui_mode()` method, so this function matches on the backend's
-/// own name string. Strings do not fail to compile when they go stale, which is exactly
+/// There is no `Platform::gui_mode()` method, and the string this used to match on is a *label*
+/// the backend chooses for itself. Strings do not fail to compile when they go stale, which is
 /// what happened here:
 ///
 /// * `"harmony-desktop"` was still matched after the Harmony backend renamed itself to
@@ -599,6 +599,9 @@ pub enum RuntimeGuiMode {
 ///   through the `_` arm, which happens to answer `PreviewOrStub` — the *right* answer for
 ///   the wrong reason, and one that would break silently the day a backend's honest mode
 ///   becomes `NativeInteractive`.
+/// * `"WindowsPlatform"` was listed instead of the lower-case capability-style name every
+///   other backend reports, because that backend's `backend_name` returns its type name.
+///   One table therefore encoded two naming conventions (P-204).
 ///
 /// # What the evidence for "can open a window" actually is
 ///
@@ -622,36 +625,58 @@ pub enum RuntimeGuiMode {
 ///
 /// `dpi_scaling` answers "can this backend *ask the display* its scale factor". That is not
 /// the question. The question is "is a native window path compiled in", and that is a
-/// **compile-time** fact about the build, which is what `cfg!` is for — it is not a runtime
-/// capability and cannot be read off `capabilities()`.
+/// **compile-time** fact about the build.
 ///
 /// # The rule
 ///
-/// A backend is interactive when **both** hold:
+/// A backend is interactive when the native window path it is running is compiled into
+/// **this** build. Two kinds of evidence express that, and neither is a name:
 ///
-/// * its name is one whose native window path exists in the crate (`cocoa`,
-///   `WindowsPlatform`, `gtk`, `wayland`), and
-/// * that path is compiled into **this build** (`cfg!(...)`), because `gtk` and `wayland`
-///   answer the same `backend_name()` from a build with no toolkit behind them.
+/// * **The backend's type.** [`create_native_platform`] constructs `SelectedMacOSPlatform` and
+///   `WindowsPlatform`; those types only exist when their target and feature are both active, so
+///   a successful downcast *is* the compile-time proof. This replaces the `"cocoa"` and
+///   `"WindowsPlatform"` string arms, and it also covers the objc2 backend the `macos` feature
+///   selects through the same constructor — a backend that bootstraps `NSApplication` and pumps
+///   its run loop, so calling it a preview was the wrong answer for the right selector.
+/// * **`cfg!` for the two Unix backends.** GTK and Wayland answer the same `backend_name()` from
+///   a build with no toolkit behind them, so their name carries no evidence; the feature flag
+///   does. They are the only two left, and they are compile-time constants rather than a runtime
+///   table, so a new backend cannot be silently omitted from them.
 ///
 /// Everything else is a preview. The fallback is the honest direction: telling a user "no
 /// window will appear" about a backend that turns out to work costs a moment of confusion;
 /// telling them a window will appear and having none costs the whole session.
 #[cfg(not(alloc_frugal))]
 pub fn runtime_gui_mode_for(platform: &dyn Platform) -> RuntimeGuiMode {
+    // Type evidence. The gates mirror the imports and `create_native_platform` arms above exactly:
+    // a build that cannot construct the type cannot downcast to it either.
+    #[cfg(all(
+        not(alloc_frugal),
+        target_os = "macos",
+        not(embedded_surface),
+        any(feature = "macos", feature = "cocoa-legacy"),
+        not(feature = "harmony")
+    ))]
+    if platform.as_any().downcast_ref::<SelectedMacOSPlatform>().is_some() {
+        return RuntimeGuiMode::NativeInteractive;
+    }
+    #[cfg(all(
+        not(alloc_frugal),
+        target_os = "windows",
+        not(embedded_surface),
+        not(feature = "harmony")
+    ))]
+    if platform.as_any().downcast_ref::<WindowsPlatform>().is_some() {
+        return RuntimeGuiMode::NativeInteractive;
+    }
+
     // `gtk` and `wayland` are conditional on the target *and* on their native feature: the
     // same `backend_name()` is returned by a toolkit-less build (see
-    // `linux/platform_impl.rs`), so the name alone is not enough for them. The other two
-    // need no `cfg!`: their modules are only compiled on their own target with their own
-    // feature, so a `cocoa`/`WindowsPlatform` instance existing *is* the compile-time proof.
-    //
-    // `macos-objc2-preview` is deliberately absent. It reports the name it does because it is
-    // a preview, and the name is the honest statement of that.
+    // `linux/platform_impl.rs`), so the name alone is not enough for them.
     // `matches!` cannot express two arms whose value is `cfg!`-dependent; the macro suggestion
     // would report true for a wayland/gtk build without the corresponding native feature.
     #[allow(clippy::match_like_matches_macro)]
     let native_capable = match platform.backend_name() {
-        "cocoa" | "WindowsPlatform" => true,
         "wayland" => cfg!(all(unix_desktop, feature = "wayland-native")),
         "gtk" => cfg!(all(unix_desktop, feature = "gtk-native")),
         _ => false,

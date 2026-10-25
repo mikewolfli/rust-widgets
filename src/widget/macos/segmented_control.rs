@@ -31,6 +31,36 @@ use super::{
 /// The vertical inset of the selected segment's fill from the track, in points.
 const SELECTED_SEGMENT_INSET: i32 = 2;
 
+/// One segment's content for [`MacSegmentedControl::set_segment_items`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacSegment {
+    /// The caption shown in the segment.
+    pub label: String,
+    /// An optional icon name resolved through the bundled icon table.
+    pub icon: Option<String>,
+    /// Whether the segment can be selected.
+    pub enabled: bool,
+}
+
+impl MacSegment {
+    /// A segment with a caption, enabled.
+    pub fn new(label: impl Into<String>) -> Self {
+        Self { label: label.into(), icon: None, enabled: true }
+    }
+
+    /// The same segment with an icon.
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// The same segment, disabled.
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+}
+
 /// A desktop segmented picker.
 ///
 /// The control owns an ordered list of captions and one selected index. Clicking a segment, or
@@ -40,6 +70,10 @@ const SELECTED_SEGMENT_INSET: i32 = 2;
 pub struct MacSegmentedControl {
     base: BaseWidget,
     segments: Vec<String>,
+    /// Per-segment icon names, parallel to `segments`.
+    segment_icons: Vec<Option<String>>,
+    /// Per-segment enabled flags, parallel to `segments`.
+    segment_enabled: Vec<bool>,
     selected_index: usize,
     hovered_index: Option<usize>,
     /// Emitted when the selected segment changes, with the new index.
@@ -52,6 +86,8 @@ impl MacSegmentedControl {
         Self {
             base: BaseWidget::new(WidgetKind::SegmentedControl, geometry, "MacSegmentedControl"),
             segments: Vec::new(),
+            segment_icons: Vec::new(),
+            segment_enabled: Vec::new(),
             selected_index: 0,
             hovered_index: None,
             value_changed: Signal1::new(),
@@ -66,6 +102,10 @@ impl MacSegmentedControl {
         if self.segments == segments {
             return;
         }
+        self.segment_icons.clear();
+        self.segment_icons.resize(segments.len(), None);
+        self.segment_enabled.clear();
+        self.segment_enabled.resize(segments.len(), true);
         self.segments = segments;
         if self.segments.is_empty() {
             self.selected_index = 0;
@@ -76,6 +116,40 @@ impl MacSegmentedControl {
         }
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Replaces the segments with caption + optional icon + enabled items.
+    pub fn set_segment_items(&mut self, segments: Vec<MacSegment>) {
+        self.segments = segments.iter().map(|segment| segment.label.clone()).collect();
+        self.segment_icons = segments.iter().map(|segment| segment.icon.clone()).collect();
+        self.segment_enabled = segments.iter().map(|segment| segment.enabled).collect();
+        if self.segments.is_empty() {
+            self.selected_index = 0;
+            self.hovered_index = None;
+        } else {
+            self.selected_index = self.selected_index.min(self.segments.len() - 1);
+            self.hovered_index = self.hovered_index.filter(|index| *index < self.segments.len());
+        }
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Whether segment `index` can be selected; an out-of-range index is treated as disabled.
+    pub fn is_segment_enabled(&self, index: usize) -> bool {
+        self.segment_enabled.get(index).copied().unwrap_or(false)
+    }
+
+    /// Enables or disables one segment, returning whether the index exists.
+    pub fn set_segment_enabled(&mut self, index: usize, enabled: bool) -> bool {
+        let Some(slot) = self.segment_enabled.get_mut(index) else {
+            return false;
+        };
+        if *slot == enabled {
+            return true;
+        }
+        *slot = enabled;
+        self.base.request_redraw();
+        true
     }
 
     /// The segment captions, in display order.
@@ -165,6 +239,11 @@ impl MacSegmentedControl {
         }
         (0..self.segments.len())
             .find(|index| self.segment_rect(*index).is_some_and(|rect| rect.contains_point(pos)))
+    }
+
+    /// The first enabled segment under `pos`, if any.
+    fn enabled_segment_at(&self, pos: Point) -> Option<usize> {
+        self.segment_at(pos).filter(|index| self.is_segment_enabled(*index))
     }
 }
 
@@ -290,23 +369,43 @@ impl Draw for MacSegmentedControl {
             let Some(label) = self.segments.get(index) else {
                 continue;
             };
-            let inset = MAC_SEGMENT_LABEL_INSET;
-            let available = segment.width.saturating_sub((2 * inset) as u32);
-            if available == 0 {
-                continue;
-            }
-            let mut measure = |text: &str| context.measure_text(text, &font).width;
-            let shown: Cow<'_, str> = elide_to_width(label, available, &mut measure);
-            let ink = if index == self.selected_index() {
+            let disabled = !self.base.is_enabled() || !self.is_segment_enabled(index);
+            let ink = if disabled {
+                colors.muted
+            } else if index == self.selected_index() {
                 colors.accent.contrast_color()
             } else if self.hovered_index == Some(index) {
                 colors.ink
             } else {
                 colors.ink.blend(&colors.muted, 0.25)
             };
+            let mut text_x = segment.x;
+            let mut text_width = segment.width;
+            // An optional icon takes the leading space of its own segment; the caption is
+            // elided against what remains (MW-19).
+            if let Some(icon) = self.segment_icons.get(index).and_then(|icon| icon.as_deref()) {
+                let side = 14.min(segment.height.saturating_sub(6)).max(1);
+                let icon_rect = Rect::new(
+                    segment.x + MAC_SEGMENT_LABEL_INSET,
+                    segment.y + (segment.height as i32 - side as i32) / 2,
+                    side,
+                    side,
+                );
+                if crate::widget::draw_icon_named(context, icon_rect, ink, icon) {
+                    text_x += MAC_SEGMENT_LABEL_INSET + side as i32 + 2;
+                    text_width =
+                        text_width.saturating_sub((side + 2 * MAC_SEGMENT_LABEL_INSET as u32) + 2);
+                }
+            }
+            let available = text_width.saturating_sub((2 * MAC_SEGMENT_LABEL_INSET) as u32);
+            if available == 0 {
+                continue;
+            }
+            let mut measure = |text: &str| context.measure_text(text, &font).width;
+            let shown: Cow<'_, str> = elide_to_width(label, available, &mut measure);
             let line = context.text_line(segment, &font);
             context.draw_text(
-                Point::new(segment.center().x, line.y),
+                Point::new(text_x + text_width as i32 / 2, line.y),
                 shown.as_ref(),
                 &font,
                 ink,
@@ -339,7 +438,7 @@ impl EventHandler for MacSegmentedControl {
                 }
             }
             Event::MousePress { pos, button: 1, .. } => {
-                if let Some(index) = self.segment_at(*pos) {
+                if let Some(index) = self.enabled_segment_at(*pos) {
                     self.set_selected_index(index);
                 }
             }

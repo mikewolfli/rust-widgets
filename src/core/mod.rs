@@ -61,6 +61,6 @@ pub use mutex_ext::MutexExt;
 pub use scroll_physics::ScrollPhysics;
 pub use text_direction::TextDirection;
 pub use types::{
-    CoreConfig, CoreError, CoreObject, CoreResult, DeviceClass, ObjectId, PlatformCapabilities,
+    CoreConfig, CoreError, CoreObject, CoreResult, ObjectId, PlatformCapabilities,
     PlatformFamily, RuntimeProfile, Version,
 };

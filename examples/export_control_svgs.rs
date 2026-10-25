@@ -50,10 +50,12 @@
 
 #![cfg(all(not(feature = "mini"), not(target_arch = "wasm32")))]
 
+use rust_widgets::core::{Color, Point, Rect, Size};
+use rust_widgets::render::{PaintBackend, RenderContext, SvgPaintBackend};
 use rust_widgets::theme::{theme_test_guard, AppearanceMode};
 use rust_widgets::widget::census::{install_preset_appearances, CENSUS_RECT, CENSUS_TEXT};
 use rust_widgets::widget::svg::render_widget_to_svg_on;
-use rust_widgets::widget::{draw_bridge::draw_of, WidgetFactory};
+use rust_widgets::widget::{draw_bridge::draw_of, Draw, Widget, WidgetFactory};
 use std::fs;
 use std::path::Path;
 
@@ -156,6 +158,44 @@ const EXTRA_APPEARANCES: &[(&str, &str, &str)] = &[
     // as extra appearances rather than as `sample_fill` arms.
     ("skeleton_loader", "_circle", "circle"),
     ("skeleton_loader", "_textline", "textline"),
+];
+
+/// The primary/companion pairings this gallery exports.
+///
+/// Each entry is `(stem, primary, companion)`:
+///
+/// * `stem` is the primary's registry name, so the files are `pair_<stem>.svg` (dark) and
+///   `pair_<stem>.light.svg` (light);
+/// * `primary` is the registry name the exporter constructs through the factory;
+/// * `companion` is the type name the scene builder constructs directly. It is documentation
+///   for a reader — the builder below is the single place the real constructor is chosen.
+///
+/// The table is data rather than a hand-written list of file names so the two facts a reader
+/// cares about — which pairs exist, and which primary each depicts — cannot disagree, and so
+/// `tools/check_svg_snapshots.sh` and `tools/generate_control_index.py` can derive their own
+/// pair counts from the same source.
+const PAIRS: &[(&str, &str, &str)] = &[
+    ("combo_box", "combo_box", "SuggestionPopup"),
+    ("line_edit", "line_edit", "ValidationBubble"),
+    ("auto_complete_edit", "auto_complete_edit", "RecentValuesPopup"),
+    ("fab", "fab", "SpeedDial"),
+    ("swipe_to_dismiss", "swipe_to_dismiss", "SwipeActions"),
+    ("navigation_drawer", "navigation_drawer", "DrawerSectionHeader"),
+    ("line_chart", "line_chart", "ChartCrosshair"),
+    ("data_grid", "data_grid", "GridFindBar"),
+    ("menu_button", "menu_button", "MenuPanel"),
+    ("canvas", "canvas", "LayerPanel"),
+    ("media_player", "media_player", "MediaTransportBar"),
+    ("video_player", "video_player", "SubtitleBar"),
+    ("list_box", "list_box", "Scrollbar"),
+    ("number_picker", "number_picker", "StepButtons"),
+    ("date_range_picker", "date_range_picker", "PresetChipBar"),
+    ("mobile_date_picker", "mobile_date_picker", "DrumColumn"),
+    ("ribbon_bar", "ribbon_bar", "KeyTipBadge"),
+    ("tag_input", "tag_input", "Chip"),
+    ("dialog", "dialog", "ModalHost"),
+    ("tag", "tag", "TagGroup"),
+    ("image_gallery", "image_gallery", "ColumnChooser"),
 ];
 
 /// Applies the state an extra appearance depicts. Returns `false` when the control does not have
@@ -269,6 +309,352 @@ fn apply_extra_state(
         }
         _ => false,
     }
+}
+
+/// One companion in a pair scene.
+///
+/// Most companions are full `Widget`s, so the scene advances and themes them the way the
+/// runtime does. The four model-only input companions (`Chip`, `StepButtons`, `Scrollbar`,
+/// `FormatToolbar`) paint through their own `Draw` impl and own no `BaseWidget`, so they carry
+/// only that paint entry.
+enum Companion {
+    Widget(Box<dyn Widget>),
+    Painted(Box<dyn Draw>),
+}
+
+impl Companion {
+    /// Applies the active theme and settles a companion that owns animation state.
+    fn prepare(&mut self) {
+        if let Companion::Widget(widget) = self {
+            rust_widgets::theme::apply_theme_to_widget(widget.as_mut());
+            for _ in 0..MAX_SETTLE_TICKS {
+                if !widget.is_animating() {
+                    break;
+                }
+                let _ = widget.tick(SETTLE_TICK_MS);
+            }
+        }
+    }
+
+    /// Paints the companion into the scene's shared context.
+    fn draw(&mut self, context: &mut RenderContext) {
+        match self {
+            Companion::Widget(widget) => {
+                if let Some(drawable) = draw_of(widget.as_mut()) {
+                    drawable.draw(context);
+                }
+            }
+            Companion::Painted(drawable) => drawable.draw(context),
+        }
+    }
+}
+
+/// A primary control and the companion that belongs beside it, plus the paint order.
+struct PairScene {
+    primary: Box<dyn Widget>,
+    companion: Companion,
+    /// Whether the companion paints *behind* the primary. A modal scrim and a swipe-action
+    /// background are the two cases: both are chrome the primary sits on top of.
+    companion_behind: bool,
+}
+
+impl PairScene {
+    fn new(primary: Box<dyn Widget>, companion: Companion, companion_behind: bool) -> Self {
+        Self { primary, companion, companion_behind }
+    }
+}
+
+/// Builds the scene one pair entry describes.
+///
+/// Every arm uses the companion's own public constructor and the geometry it documents (an
+/// anchor for a popup, a track for a scrollbar, a bounds for a stepper pair), so the picture
+/// and the control's real hit geometry are one thing rather than two.
+fn build_pair_scene(factory: &WidgetFactory, stem: &str) -> Option<PairScene> {
+    let create = |rect: Rect| factory.create(stem, rect, CENSUS_TEXT);
+    match stem {
+        "combo_box" => {
+            use rust_widgets::widget::input_widgets::suggestion_popup::SuggestionPopup;
+            let field = Rect::new(8, 8, 224, 28);
+            let primary = create(field)?;
+            let mut popup = SuggestionPopup::new(Rect::new(8, 36, 224, 80));
+            popup.set_anchor(field);
+            popup.set_viewport(Some(CENSUS_RECT));
+            popup.set_metrics(4, 20);
+            popup.set_items(vec![
+                "Apple".to_string(),
+                "Apricot".to_string(),
+                "Avocado".to_string(),
+                "Banana".to_string(),
+            ]);
+            popup.set_selected_index(Some(0));
+            popup.show();
+            Some(PairScene::new(primary, Companion::Widget(Box::new(popup)), false))
+        }
+        "line_edit" => {
+            use rust_widgets::widget::input_widgets::validation_bubble::{
+                ValidationBubble, ValidationSeverity,
+            };
+            let field = Rect::new(8, 8, 224, 28);
+            let primary = create(field)?;
+            let mut bubble = ValidationBubble::new(Rect::new(8, 44, 224, 24));
+            bubble.set_anchor(field);
+            bubble.show_message("This field is required.", ValidationSeverity::Error);
+            Some(PairScene::new(primary, Companion::Widget(Box::new(bubble)), false))
+        }
+        "auto_complete_edit" => {
+            use rust_widgets::widget::input_widgets::recent_values_popup::RecentValuesPopup;
+            let field = Rect::new(8, 8, 224, 28);
+            let primary = create(field)?;
+            let mut popup = RecentValuesPopup::new(Rect::new(8, 36, 224, 60));
+            popup.set_anchor(field);
+            popup.remember("Montreal");
+            popup.remember("Manchester");
+            popup.remember("Marseille");
+            popup.show();
+            Some(PairScene::new(primary, Companion::Widget(Box::new(popup)), false))
+        }
+        "fab" => {
+            use rust_widgets::widget::companions::{
+                SpeedDial, SpeedDialAction, SpeedDialDirection,
+            };
+            let main = Rect::new(192, 72, 40, 40);
+            let primary = create(main)?;
+            let mut dial = SpeedDial::new(Rect::new(8, 72, 224, 40));
+            dial.set_direction(SpeedDialDirection::Left);
+            dial.set_actions(vec![
+                SpeedDialAction::new("New file", "+"),
+                SpeedDialAction::new("Upload", "^"),
+                SpeedDialAction::new("Share", ">"),
+            ]);
+            // The open state is the one a user can put the dial into; `prepare` settles the
+            // expansion driver before the frame is drawn.
+            dial.open();
+            Some(PairScene::new(primary, Companion::Widget(Box::new(dial)), false))
+        }
+        "swipe_to_dismiss" => {
+            use rust_widgets::widget::companions::{SwipeAction, SwipeActions};
+            // The row is narrower than the action background on purpose: the companion paints
+            // the revealed trailing band, which is the part a partial swipe uncovers.
+            let row = Rect::new(8, 36, 160, 48);
+            let primary = create(row)?;
+            let mut actions = SwipeActions::new();
+            actions.set_geometry(Rect::new(8, 36, 224, 48));
+            actions.set_max_reveal_width(160);
+            actions.set_trailing_actions(vec![
+                SwipeAction::new("Archive"),
+                SwipeAction::new("Delete"),
+            ]);
+            actions.set_offset(-64.0);
+            Some(PairScene::new(primary, Companion::Widget(Box::new(actions)), true))
+        }
+        "navigation_drawer" => {
+            use rust_widgets::widget::companions::DrawerSectionHeader;
+            let primary = create(Rect::new(8, 8, 224, 104))?;
+            let mut header = DrawerSectionHeader::new(Rect::new(12, 36, 216, 28));
+            header.set_label("Library");
+            header.set_uppercase(true);
+            Some(PairScene::new(primary, Companion::Widget(Box::new(header)), false))
+        }
+        "line_chart" => {
+            use rust_widgets::widget::chart_widgets::chart_crosshair::{
+                ChartCrosshair, CrosshairMode,
+            };
+            let chart = Rect::new(8, 8, 224, 80);
+            let primary = create(chart)?;
+            let mut crosshair = ChartCrosshair::new(chart);
+            crosshair.set_mode(CrosshairMode::Both);
+            crosshair.set_show_axis_values(true);
+            crosshair.show_at_data(Point::new(120, 48), (3.5, 12.0));
+            Some(PairScene::new(primary, Companion::Widget(Box::new(crosshair)), false))
+        }
+        "data_grid" => {
+            use rust_widgets::widget::view_widgets::grid_find_bar::GridFindBar;
+            let primary = create(Rect::new(8, 36, 224, 76))?;
+            let mut find = GridFindBar::new(Rect::new(8, 4, 224, 28));
+            find.open();
+            find.set_query("alp");
+            Some(PairScene::new(primary, Companion::Widget(Box::new(find)), false))
+        }
+        "menu_button" => {
+            use rust_widgets::widget::companions::{MenuPanel, MenuPanelItem};
+            let primary = create(Rect::new(96, 8, 128, 28))?;
+            let mut menu = MenuPanel::new(Rect::new(96, 40, 128, 72));
+            menu.set_items(vec![
+                MenuPanelItem::new("New"),
+                MenuPanelItem::new("Open"),
+                MenuPanelItem::new("Save"),
+            ]);
+            menu.set_max_visible_rows(3);
+            menu.set_highlighted_index(Some(0));
+            menu.open();
+            Some(PairScene::new(primary, Companion::Widget(Box::new(menu)), false))
+        }
+        "canvas" => {
+            use rust_widgets::widget::companions::{LayerEntry, LayerPanel};
+            let primary = create(Rect::new(8, 8, 224, 104))?;
+            let mut layers = LayerPanel::new(Rect::new(130, 8, 102, 104));
+            layers.set_entries(vec![
+                LayerEntry::new(1, "Foreground"),
+                LayerEntry::new(2, "Sketch"),
+                LayerEntry::new(3, "Background"),
+            ]);
+            layers.select_layer(1);
+            Some(PairScene::new(primary, Companion::Widget(Box::new(layers)), false))
+        }
+        "media_player" => {
+            use rust_widgets::widget::media_widgets::media_transport::MediaTransportBar;
+            let primary = create(Rect::new(8, 8, 224, 104))?;
+            let mut transport = MediaTransportBar::new(Rect::new(8, 76, 224, 36));
+            transport.set_position(42_000, 180_000);
+            transport.set_playing(true);
+            transport.set_show_timecode(true);
+            Some(PairScene::new(primary, Companion::Widget(Box::new(transport)), false))
+        }
+        "video_player" => {
+            use rust_widgets::widget::media_widgets::subtitle_bar::SubtitleBar;
+            let primary = create(Rect::new(8, 8, 224, 104))?;
+            let mut subtitle = SubtitleBar::new(Rect::new(8, 80, 224, 32));
+            subtitle.set_text("The quick brown fox jumps over the lazy dog.");
+            subtitle.set_max_lines(2);
+            Some(PairScene::new(primary, Companion::Widget(Box::new(subtitle)), false))
+        }
+        "list_box" => {
+            use rust_widgets::widget::input_widgets::input_companions::{
+                ScrollOrientation, Scrollbar,
+            };
+            let primary = create(Rect::new(8, 8, 224, 104))?;
+            let mut bar = Scrollbar::new();
+            bar.set_orientation(ScrollOrientation::Vertical, 6);
+            bar.set_track(Rect::new(228, 10, 6, 100));
+            bar.set_metrics(320, 100, 96);
+            bar.set_auto_hide(false);
+            Some(PairScene::new(primary, Companion::Painted(Box::new(bar)), false))
+        }
+        "number_picker" => {
+            use rust_widgets::widget::input_widgets::input_companions::{
+                StepButtons, StepOrientation,
+            };
+            let primary = create(Rect::new(8, 40, 120, 28))?;
+            let mut steps = StepButtons::new(Rect::new(132, 40, 24, 28));
+            steps.set_orientation(StepOrientation::Vertical);
+            Some(PairScene::new(primary, Companion::Painted(Box::new(steps)), false))
+        }
+        "date_range_picker" => {
+            use rust_widgets::widget::misc_widgets::preset_chip_bar::PresetChipBar;
+            let primary = create(Rect::new(8, 8, 224, 76))?;
+            let mut presets = PresetChipBar::new(Rect::new(8, 88, 224, 24));
+            let today = presets.add_preset("Today");
+            presets.add_preset("7 days");
+            presets.add_preset("30 days");
+            presets.add_preset("YTD");
+            presets.set_selected(today);
+            Some(PairScene::new(primary, Companion::Widget(Box::new(presets)), false))
+        }
+        "mobile_date_picker" => {
+            use rust_widgets::widget::misc_widgets::drum_column::DrumColumn;
+            let primary = create(Rect::new(8, 8, 140, 104))?;
+            let mut drum = DrumColumn::new(Rect::new(156, 16, 64, 88));
+            drum.set_items(vec![
+                "Jan".to_string(),
+                "Feb".to_string(),
+                "Mar".to_string(),
+                "Apr".to_string(),
+                "May".to_string(),
+                "Jun".to_string(),
+            ]);
+            drum.set_visible_rows(5);
+            drum.set_selected_index(2);
+            Some(PairScene::new(primary, Companion::Widget(Box::new(drum)), false))
+        }
+        "ribbon_bar" => {
+            use rust_widgets::widget::advanced_widgets::key_tip_badge::KeyTipBadge;
+            let primary = create(Rect::new(8, 8, 224, 56))?;
+            let mut badge = KeyTipBadge::new("F");
+            let badge_rect = badge.rect_for(Rect::new(18, 18, 44, 28));
+            badge.set_geometry(badge_rect);
+            Some(PairScene::new(primary, Companion::Widget(Box::new(badge)), false))
+        }
+        "tag_input" => {
+            use rust_widgets::widget::input_widgets::input_companions::Chip;
+            let primary = create(Rect::new(8, 8, 224, 40))?;
+            let mut chip = Chip::new("urgent");
+            chip.set_bounds(Rect::new(8, 56, 80, 24));
+            chip.set_selected(true);
+            Some(PairScene::new(primary, Companion::Painted(Box::new(chip)), false))
+        }
+        "dialog" => {
+            use rust_widgets::widget::dialog::modal_host::ModalHost;
+            let primary = create(Rect::new(20, 20, 200, 80))?;
+            let mut host = ModalHost::new(CENSUS_RECT);
+            host.push(primary.id());
+            Some(PairScene::new(primary, Companion::Widget(Box::new(host)), true))
+        }
+        "tag" => {
+            use rust_widgets::widget::display_widgets::tag_group::{TagGroup, TagSelectionMode};
+            let primary = create(Rect::new(8, 8, 80, 28))?;
+            let mut group = TagGroup::new(Rect::new(8, 44, 224, 64));
+            group.set_selection_mode(TagSelectionMode::Multiple);
+            group.set_tags(vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]);
+            Some(PairScene::new(primary, Companion::Widget(Box::new(group)), false))
+        }
+        "image_gallery" => {
+            use rust_widgets::widget::view_widgets::column_chooser::ColumnChooser;
+            use rust_widgets::widget::view_widgets::data_grid::ColumnSpec;
+            let primary = create(Rect::new(8, 8, 224, 104))?;
+            let mut chooser = ColumnChooser::new(Rect::new(126, 8, 106, 104));
+            let columns = vec![
+                ColumnSpec::new("Name", 90),
+                ColumnSpec::new("Camera", 70),
+                ColumnSpec::new("Email", 120),
+                ColumnSpec::new("Status", 80),
+            ];
+            let hidden = columns[2].to_token();
+            chooser.set_columns(columns);
+            chooser.set_column_visible(&hidden, false);
+            Some(PairScene::new(primary, Companion::Widget(Box::new(chooser)), false))
+        }
+        _ => None,
+    }
+}
+
+/// Draws a pair scene through the same SVG backend the single-control snapshots use.
+///
+/// One backend for both controls is what makes the pair a *picture* rather than two documents
+/// stacked: the primary and its companion share one canvas, one clip and one palette state.
+fn render_pair_scene(scene: &mut PairScene, backdrop: Color) -> String {
+    let mut backend = SvgPaintBackend::new(Size::new(CENSUS_RECT.width, CENSUS_RECT.height));
+    backend.begin_frame(backdrop);
+    {
+        let mut context = RenderContext::new(&mut backend);
+        if scene.companion_behind {
+            scene.companion.draw(&mut context);
+        }
+        if let Some(drawable) = draw_of(scene.primary.as_mut()) {
+            drawable.draw(&mut context);
+        }
+        if !scene.companion_behind {
+            scene.companion.draw(&mut context);
+        }
+    }
+    backend.end_frame();
+    backend.finish()
+}
+
+/// Wraps a pair rendering with its provenance comment.
+fn decorate_pair(
+    body: &str,
+    stem: &str,
+    primary: &str,
+    companion: &str,
+    appearance: AppearanceMode,
+) -> String {
+    let label = match appearance {
+        AppearanceMode::Light => "light",
+        AppearanceMode::Dark => "dark",
+    };
+    format!(
+        "{GENERATED_MARKER}\n<!-- pair: pair_{stem} | primary: {primary} | companion: {companion} | appearance: {label} -->\n{body}\n"
+    )
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -428,10 +814,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Companion pairings: a primary control together with the companion that belongs beside
+    // it, drawn into one scene rather than two separate pictures. Each pair gets the same two
+    // appearances as a control, for the same reason: a pair whose files are byte-identical is
+    // a pair that does not respond to the theme.
+    let mut pairs_written = 0usize;
+    for (stem, primary_name, companion_name) in PAIRS {
+        for (appearance, suffix) in [(AppearanceMode::Dark, ""), (AppearanceMode::Light, ".light")]
+        {
+            rust_widgets::theme::global_theme_manager().set_appearance(appearance);
+            let Some(mut scene) = build_pair_scene(&factory, stem) else {
+                failed.push(format!("pair_{stem}: the factory could not create `{primary_name}`"));
+                continue;
+            };
+            // The primary is filled and themed exactly as its single-control snapshot is; the
+            // companion is themed and settled by `Companion::prepare`.
+            rust_widgets::widget::sample_fill::apply(primary_name, scene.primary.as_mut());
+            rust_widgets::theme::apply_theme_to_widget(scene.primary.as_mut());
+            settle(scene.primary.as_mut());
+            scene.companion.prepare();
+
+            let backdrop = rust_widgets::theme::global_theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .unwrap_or(Color::WHITE);
+            let body = render_pair_scene(&mut scene, backdrop);
+            let document = decorate_pair(&body, stem, primary_name, companion_name, appearance);
+            fs::write(dir.join(format!("pair_{stem}{suffix}.svg")), document)?;
+            pairs_written += 1;
+        }
+    }
+
     // The index is generated too, so the list of controls cannot drift from the files.
     fs::write(dir.join("README.md"), index(&names))?;
 
     println!("wrote {written} SVG snapshots for {} controls into {OUTPUT_DIR}/", names.len());
+    println!("wrote {pairs_written} companion pair snapshots for {} pairs", PAIRS.len());
     println!(
         "checked={} skipped=0 failed={} sample-filled={}",
         names.len(),
@@ -599,6 +1017,23 @@ fn index(names: &[&'static str]) -> String {
             generated automatically — this list is derived from the registry, never typed.\n\
          3. Run `bash tools/check_svg_snapshots.sh`.\n\n",
     );
+    // The pair pictures are a second kind of artifact with the same provenance: one scene,
+    // two controls, two appearances. Listing them here keeps the README a complete index of
+    // the exported set instead of a control-only view that silently omits them.
+    out.push_str(&format!("## Companion pairings ({})\n\n", PAIRS.len()));
+    out.push_str(
+        "Each `pair_<name>.svg` (dark) and `pair_<name>.light.svg` (light) depicts a primary\n\
+         control together with the companion that belongs beside it. `<name>` is the primary's\n\
+         registry name, so the pair can be found from the control it extends.\n\n",
+    );
+    out.push_str("| # | Pair | Primary | Companion | Dark | Light |\n|---|---|---|---|---|---|\n");
+    for (index, (stem, primary, companion)) in PAIRS.iter().enumerate() {
+        out.push_str(&format!(
+            "| {} | `pair_{stem}` | `{primary}` | `{companion}` | `pair_{stem}.svg` | `pair_{stem}.light.svg` |\n",
+            index + 1
+        ));
+    }
+    out.push('\n');
     out.push_str(&format!("## Controls ({})\n\n", names.len()));
     out.push_str("| # | Control | Dark | Light |\n|---|---|---|---|\n");
     for (index, name) in names.iter().enumerate() {

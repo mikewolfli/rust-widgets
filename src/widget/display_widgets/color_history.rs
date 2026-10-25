@@ -7,6 +7,7 @@
 //! removing them, clearing the history, and selecting a color via click.
 //! Hovering over a swatch emits a preview signal.
 
+use crate::compat::{OnceLock, VecDeque};
 use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -55,7 +56,19 @@ struct CheckerboardCache {
 /// A color history picker that displays recently used colors in a grid.
 pub struct ColorHistory {
     base: BaseWidget,
-    colors: Vec<Color>,
+    /// The stored colours, oldest first.
+    ///
+    /// A deque, not a `Vec`: capacity eviction removes the oldest entry and appends the newest
+    /// one, which `Vec` expressed as `remove(0)` — a shift of every remaining element on every
+    /// add once the history was full. The deque makes both operations O(1).
+    colors: VecDeque<Color>,
+    /// A contiguous view of [`Self::colors`], rebuilt on demand and invalidated on mutation.
+    ///
+    /// The public reader is `colors() -> &[Color]`, and a deque's logical order is not one
+    /// slice when it wraps. The mirror keeps that API intact while the hot path stays O(1);
+    /// it is only materialised when a caller actually reads the list, and painting reads it
+    /// once per frame through the same cached slice.
+    colors_slice: OnceLock<Vec<Color>>,
     max_colors: usize,
     selected_index: Option<usize>,
     hovered_index: Option<usize>,
@@ -90,7 +103,8 @@ impl ColorHistory {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::ColorHistory, geometry, "ColorHistory"),
-            colors: Vec::new(),
+            colors: VecDeque::new(),
+            colors_slice: OnceLock::new(),
             max_colors: 20,
             selected_index: None,
             hovered_index: None,
@@ -107,7 +121,7 @@ impl ColorHistory {
     /// Prevents duplicate consecutive entries.
     pub fn add_color(&mut self, color: Color) {
         // Avoid adding the same color as the most recent entry
-        if self.colors.last() == Some(&color) {
+        if self.colors.back() == Some(&color) {
             return;
         }
         // A zero capacity means "keep nothing": `set_max_colors(0)` then `add_color`
@@ -117,9 +131,10 @@ impl ColorHistory {
             return;
         }
         if self.colors.len() >= self.max_colors {
-            self.colors.remove(0);
+            self.colors.pop_front();
         }
-        self.colors.push(color);
+        self.colors.push_back(color);
+        self.invalidate_colors_slice();
         self.base.request_redraw();
         self.color_added.emit(color);
     }
@@ -131,6 +146,7 @@ impl ColorHistory {
     pub fn remove_color(&mut self, index: usize) -> bool {
         if index < self.colors.len() {
             self.colors.remove(index);
+            self.invalidate_colors_slice();
             // Adjust selected index
             if let Some(sel) = self.selected_index {
                 if sel == index {
@@ -149,6 +165,7 @@ impl ColorHistory {
     /// Clears all colors in the history.
     pub fn clear_history(&mut self) {
         self.colors.clear();
+        self.invalidate_colors_slice();
         self.selected_index = None;
         self.hovered_index = None;
         self.base.request_redraw();
@@ -156,7 +173,14 @@ impl ColorHistory {
 
     /// Returns a slice of all stored colors.
     pub fn colors(&self) -> &[Color] {
-        &self.colors
+        self.colors_slice
+            .get_or_init(|| self.colors.iter().copied().collect::<Vec<Color>>())
+            .as_slice()
+    }
+
+    /// Invalidates the contiguous mirror after any mutation of [`Self::colors`].
+    fn invalidate_colors_slice(&mut self) {
+        self.colors_slice = OnceLock::new();
     }
 
     /// Returns the currently selected index, if any.
@@ -189,8 +213,9 @@ impl ColorHistory {
         }
         self.max_colors = max;
         while self.colors.len() > max {
-            self.colors.remove(0);
+            self.colors.pop_front();
         }
+        self.invalidate_colors_slice();
         if self.selected_index.is_some_and(|i| i >= self.colors.len()) {
             self.selected_index = None;
         }
@@ -269,17 +294,47 @@ impl ColorHistory {
         self.checkerboard = Some(CheckerboardCache { even, odd, pixels });
     }
 
+    /// The number of grid rows the current history occupies.
+    ///
+    /// The count, the hint and the hit test all derive from this one function, so the three
+    /// cannot disagree about how tall the content is. An empty history paints the placeholder
+    /// row, which is still one row.
+    fn grid_rows(&self) -> u32 {
+        Self::rows_for(self.colors.len())
+    }
+
+    /// The row count for `count` stored colours, at [`SWATCHES_PER_ROW`] per row.
+    fn rows_for(count: usize) -> u32 {
+        let count = count.max(1) as u32;
+        count.div_ceil(SWATCHES_PER_ROW)
+    }
+
+    /// The pixel height the grid occupies for `count` colours.
+    fn grid_height_for(count: usize) -> u32 {
+        Self::rows_for(count) * (SWATCH_SIZE + SWATCH_PADDING)
+    }
+
     /// Returns the index of the swatch at the given position, if any.
+    ///
+    /// The hit test is bounded by the **same layout derivation** the hint and the painter use:
+    /// a column beyond the row's fixed width and a row beyond the content's height are both
+    /// outside the grid. Without those bounds a click to the right of the last column was
+    /// rewritten as the first cell of the following row, so empty space selected a swatch that
+    /// was never drawn there.
     fn swatch_at(&self, x: i32, y: i32) -> Option<usize> {
         let rect = self.geometry();
-        let x = x - rect.x;
-        let y = y - rect.y;
-        if x < 0 || y < 0 {
+        let lx = x - rect.x;
+        let ly = y - rect.y;
+        if lx < 0 || ly < 0 {
             return None;
         }
-        let col = x as u32 / (SWATCH_SIZE + SWATCH_PADDING);
-        let row = y as u32 / (SWATCH_SIZE + SWATCH_PADDING);
-        let index = (row * SWATCHES_PER_ROW + col) as usize;
+        let pitch = (SWATCH_SIZE + SWATCH_PADDING) as i32;
+        let col = lx / pitch;
+        let row = ly / pitch;
+        if col >= SWATCHES_PER_ROW as i32 || row >= self.grid_rows() as i32 {
+            return None;
+        }
+        let index = (row as u32 * SWATCHES_PER_ROW + col as u32) as usize;
         if index < self.colors.len() {
             Some(index)
         } else {
@@ -300,7 +355,10 @@ impl Widget for ColorHistory {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 40)
+        // The height is the grid's own extent, not a fixed 40 px: a history with two or more
+        // rows used to paint below the box the hint reserved, and the hit test accepted clicks
+        // in that undrawn area.
+        crate::core::Size::new(200, Self::grid_height_for(self.colors.len()).max(40))
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -462,8 +520,7 @@ impl Draw for ColorHistory {
         } else {
             None
         };
-        let swatches: &[Color] =
-            if self.colors.is_empty() { &PLACEHOLDER } else { self.colors.as_slice() };
+        let swatches: &[Color] = if self.colors.is_empty() { &PLACEHOLDER } else { self.colors() };
 
         for (i, color) in swatches.iter().enumerate() {
             let row = i as u32 / SWATCHES_PER_ROW;
@@ -835,5 +892,56 @@ mod tests {
         history.handle_event(&Event::ContextMenu { pos: Point::new(0, 0) });
 
         assert_eq!(*requested.lock().unwrap(), vec![1, 0]);
+    }
+
+    /// Capacity eviction drops the oldest entry and keeps the visible order.
+    ///
+    /// Regression: both add paths used `Vec::remove(0)`, shifting every remaining element. The
+    /// deque makes eviction and append O(1); the public reader still reports newest-last order.
+    #[test]
+    fn capacity_eviction_keeps_the_oldest_first_order() {
+        let mut history = ColorHistory::new(Rect::new(0, 0, 200, 40));
+        history.set_max_colors(3);
+        for value in 0..5u8 {
+            history.add_color(Color::rgba(value, value, value, 255));
+        }
+        assert_eq!(
+            history.colors(),
+            &[Color::rgba(2, 2, 2, 255), Color::rgba(3, 3, 3, 255), Color::rgba(4, 4, 4, 255)],
+            "the two oldest entries are evicted and the order is preserved"
+        );
+
+        // Shrinking the capacity also evicts from the front, and the mirror follows.
+        history.set_max_colors(1);
+        assert_eq!(history.colors(), &[Color::rgba(4, 4, 4, 255)]);
+    }
+
+    /// The hint, the grid and the hit test share one row derivation.
+    ///
+    /// Regression: the hint was a fixed 200x40 while a sixth colour started a second row, and a
+    /// click to the right of the fifth column was rewritten as the first cell of the next row.
+    #[test]
+    fn the_grid_wraps_at_the_declared_row_width_in_the_hint_and_the_hit_test() {
+        let mut history = ColorHistory::new(Rect::new(0, 0, 200, 100));
+        for value in 0..10u8 {
+            history.add_color(Color::rgba(value, value, value, 255));
+        }
+        assert_eq!(history.grid_rows(), 2);
+        assert_eq!(
+            history.size_hint().height,
+            ColorHistory::grid_height_for(10),
+            "two rows are taller than the one-row floor"
+        );
+
+        let pitch = (SWATCH_SIZE + SWATCH_PADDING) as i32;
+        let inset = SWATCH_PADDING as i32 / 2;
+        // The first cell of each row is where its swatch actually is.
+        assert_eq!(history.swatch_at(inset, inset), Some(0));
+        assert_eq!(history.swatch_at(inset, pitch + inset), Some(5));
+
+        // The column past the row's fixed width is empty space, not the next row's first cell.
+        assert_eq!(history.swatch_at(pitch * SWATCHES_PER_ROW as i32 + inset, inset), None);
+        // A row below the content is empty space too.
+        assert_eq!(history.swatch_at(inset, pitch * 2 + inset), None);
     }
 }

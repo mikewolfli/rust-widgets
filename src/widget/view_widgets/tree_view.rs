@@ -14,6 +14,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{effective_font, ControlMetrics};
+use crate::widget::view_widgets::list_view::SelectionMode;
 use crate::widget::view_widgets::table_widget::ItemDelegate;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -292,6 +293,19 @@ pub struct TreeView {
     model_connection_scope: ConnectionScope,
     /// Selected node, as a **model** index.
     selected_node: Option<usize>,
+    /// Every selected node, in **model** indices (V-10).
+    ///
+    /// `selected_node` stays the current node; the set makes `Multi`/`Extended` expressible
+    /// without changing the single-value accessor or the published `selection_changed` payload.
+    selected_nodes: std::collections::BTreeSet<usize>,
+    /// How clicks and keyboard selection combine (V-10).
+    selection_mode: SelectionMode,
+    /// The node a `Shift`-extend grows from, in model indices.
+    selection_anchor: Option<usize>,
+    /// Emitted with every selected node whenever the set changes (V-10).
+    pub selection_set_changed: Signal1<Vec<usize>>,
+    /// Whether expanding a branch scrolls the expanded row into view (V-11).
+    auto_scroll_to_expanded: bool,
     /// Focused node, as a **model** index.
     focused_node: Option<usize>,
     /// The row the pointer is currently over, as a **model** index; `None` when the pointer is
@@ -350,6 +364,11 @@ pub struct TreeView {
     projection_valid: bool,
     /// The data generation `projection_cache` was built from.
     projection_generation: u64,
+    /// The inverse of `projection_cache`: model index -> visible row (F-P10).
+    ///
+    /// Built alongside the projection (same O(nodes) pass) so keyboard navigation can locate the
+    /// focused node in O(1) instead of materialising and scanning the whole projection per key.
+    projection_positions: HashMap<usize, usize>,
     /// Advanced by the model's `data_changed` signal, which a `&self` projection reader cannot
     /// observe by rebuilding. A mismatch makes the reader fall back to a bounded walk.
     data_generation: Arc<AtomicU64>,
@@ -374,6 +393,11 @@ impl TreeView {
             model: None,
             model_connection_scope: ConnectionScope::new(),
             selected_node: None,
+            selected_nodes: std::collections::BTreeSet::new(),
+            selection_mode: SelectionMode::Single,
+            selection_anchor: None,
+            selection_set_changed: Signal1::new(),
+            auto_scroll_to_expanded: true,
             focused_node: None,
             hovered_node: None,
             expanded_override: HashMap::new(),
@@ -393,6 +417,7 @@ impl TreeView {
             animation_len: 0,
             show_scrollbar: false,
             projection_cache: Vec::new(),
+            projection_positions: HashMap::new(),
             projection_valid: false,
             projection_generation: 0,
             data_generation: Arc::new(AtomicU64::new(0)),
@@ -481,6 +506,10 @@ impl TreeView {
     fn rebuild_projection(&mut self) {
         self.projection_generation = self.data_generation.load(Ordering::Relaxed);
         self.projection_cache = self.walk_visible_indices(usize::MAX);
+        self.projection_positions.clear();
+        for (row, model_index) in self.projection_cache.iter().enumerate() {
+            self.projection_positions.insert(*model_index, row);
+        }
         self.projection_valid = true;
     }
 
@@ -517,6 +546,11 @@ impl TreeView {
         rows
     }
 
+    /// The **model** index of visible row `target`, or `None` when the projection is shorter.
+    ///
+    /// Single-row lookup that stops as soon as the row is found; the pointer paths used to
+    /// materialise the whole projection to read one entry from it. A current cache makes it an
+    /// index.
     /// The **model** index of visible row `target`, or `None` when the projection is shorter.
     ///
     /// Single-row lookup that stops as soon as the row is found; the pointer paths used to
@@ -671,6 +705,9 @@ impl TreeView {
         // same way it follows a model swap.
         self.normalize_projection_state();
         self.rebuild_projection();
+        if expanded && self.auto_scroll_to_expanded {
+            let _ = self.ensure_visible(model_index);
+        }
         if self.animated {
             let after = self.projection_cache.len();
             if expanded && after > before {
@@ -900,6 +937,42 @@ impl TreeView {
         self.base.request_redraw();
     }
 
+    /// Scrolls so `model_index` is the first visible row (V-11).
+    ///
+    /// Returns `false` when the node is hidden under a collapsed ancestor, because there is no
+    /// row to scroll to.
+    pub fn scroll_to_node(&mut self, model_index: usize) -> bool {
+        let Some(position) = self.visible_position_of(model_index) else {
+            return false;
+        };
+        self.set_scroll_row(position);
+        true
+    }
+
+    /// Scrolls the smallest amount that makes `model_index` visible (V-11).
+    pub fn ensure_visible(&mut self, model_index: usize) -> bool {
+        let Some(position) = self.visible_position_of(model_index) else {
+            return false;
+        };
+        let page = (self.base.geometry().height / TREE_ROW_HEIGHT.max(1) as u32).max(1) as usize;
+        if position < self.scroll_row {
+            self.set_scroll_row(position);
+        } else if position >= self.scroll_row.saturating_add(page) {
+            self.set_scroll_row(position.saturating_add(1).saturating_sub(page));
+        }
+        true
+    }
+
+    /// Whether expanding a branch scrolls the expanded row into view.
+    pub fn auto_scroll_to_expanded(&self) -> bool {
+        self.auto_scroll_to_expanded
+    }
+
+    /// Enables or disables the follow-on scroll of an expansion (V-11).
+    pub fn set_auto_scroll_to_expanded(&mut self, follow: bool) {
+        self.auto_scroll_to_expanded = follow;
+    }
+
     /// Whether the source-list (sidebar) presentation is used.
     pub fn source_list(&self) -> bool {
         self.source_list
@@ -979,36 +1052,179 @@ impl TreeView {
         self.visible_index_at(index)
     }
 
+    /// The visible row `model_index` occupies, or `None` when it is hidden (F-P10).
+    ///
+    /// Reads the inverse map built with the projection, so keyboard navigation and the selection
+    /// accessors are O(1) on a current cache rather than materialising and scanning every row.
+    fn visible_position_of(&self, model_index: usize) -> Option<usize> {
+        if self.projection_is_current() {
+            return self.projection_positions.get(&model_index).copied();
+        }
+        self.walk_visible_indices(usize::MAX).iter().position(|index| *index == model_index)
+    }
+
+    /// The visible row of `model_index` as `Some`, or `None` when it is hidden.
+    pub fn visible_row_of(&self, model_index: usize) -> Option<usize> {
+        self.visible_position_of(model_index)
+    }
+
     /// Selects a node by **visible** index.
     ///
     /// Repaints: the selected row's highlight is painted, so without the request the
     /// selection would only appear once some unrelated event repainted the control.
     pub fn select_node(&mut self, index: usize) -> bool {
+        self.select_node_with_modifiers(index, crate::shortcut::Modifiers::empty())
+    }
+
+    /// Selects a node honoring keyboard modifiers (V-10).
+    ///
+    /// `Shift` extends the contiguous visible range from the anchor, `Ctrl`/`Meta` toggles the
+    /// node, and an unmodified call replaces the selection — the model `ListView` uses. Selection
+    /// is kept in **model** indices, so collapsing a branch cannot re-point it at another node.
+    pub fn select_node_with_modifiers(
+        &mut self,
+        index: usize,
+        modifiers: crate::shortcut::Modifiers,
+    ) -> bool {
         let Some(model_index) = self.visible_index_at(index) else {
             return false;
         };
-        self.selected_node = Some(model_index);
-        self.selection_changed.emit(index);
-        self.set_focused_node(index);
-        self.base.request_redraw();
+        self.apply_node_selection(index, model_index, modifiers);
         true
     }
+
+    /// Applies one selection gesture to the node set.
+    fn apply_node_selection(
+        &mut self,
+        visible_index: usize,
+        model_index: usize,
+        modifiers: crate::shortcut::Modifiers,
+    ) {
+        use crate::shortcut::Modifiers;
+        if self.selection_mode == SelectionMode::None {
+            return;
+        }
+        let shift = modifiers.contains(Modifiers::SHIFT);
+        let toggle = modifiers.contains(Modifiers::CTRL) || modifiers.contains(Modifiers::PRIMARY);
+        match self.selection_mode {
+            SelectionMode::None => return,
+            SelectionMode::Single => {
+                self.selected_nodes.clear();
+                self.selected_nodes.insert(model_index);
+                self.selection_anchor = Some(model_index);
+            }
+            SelectionMode::Multi => {
+                if !self.selected_nodes.insert(model_index) {
+                    self.selected_nodes.remove(&model_index);
+                }
+                self.selection_anchor = Some(model_index);
+            }
+            SelectionMode::Extended => {
+                if shift {
+                    let anchor = self.selection_anchor.unwrap_or(model_index);
+                    let (Some(anchor_row), Some(target_row)) =
+                        (self.visible_position_of(anchor), self.visible_position_of(model_index))
+                    else {
+                        self.selected_nodes.clear();
+                        self.selected_nodes.insert(model_index);
+                        self.selection_anchor = Some(model_index);
+                        self.finish_node_selection(visible_index, model_index);
+                        return;
+                    };
+                    let (low, high) = if anchor_row <= target_row {
+                        (anchor_row, target_row)
+                    } else {
+                        (target_row, anchor_row)
+                    };
+                    self.ensure_projection();
+                    let range: std::collections::BTreeSet<usize> = self
+                        .projection_cache
+                        .get(low..=high)
+                        .map(|rows| rows.iter().copied().collect())
+                        .unwrap_or_default();
+                    self.selected_nodes = range;
+                } else if toggle {
+                    if !self.selected_nodes.remove(&model_index) {
+                        self.selected_nodes.insert(model_index);
+                    }
+                    self.selection_anchor = Some(model_index);
+                } else {
+                    self.selected_nodes.clear();
+                    self.selected_nodes.insert(model_index);
+                    self.selection_anchor = Some(model_index);
+                }
+            }
+        }
+        self.finish_node_selection(visible_index, model_index);
+    }
+
+    /// Publishes a completed selection gesture and moves focus to it.
+    fn finish_node_selection(&mut self, visible_index: usize, model_index: usize) {
+        self.selected_node = Some(model_index);
+        self.selection_changed.emit(visible_index);
+        self.selection_set_changed.emit(self.selected_nodes());
+        self.set_focused_node(visible_index);
+        self.base.request_redraw();
+    }
+
+    /// Every selected node, in visual order (V-10).
+    pub fn selected_nodes(&self) -> Vec<usize> {
+        if self.projection_is_current() {
+            self.projection_cache
+                .iter()
+                .copied()
+                .filter(|model_index| self.selected_nodes.contains(model_index))
+                .collect()
+        } else {
+            self.selected_nodes.iter().copied().collect()
+        }
+    }
+
+    /// The selection mode (V-10).
+    pub fn selection_mode(&self) -> SelectionMode {
+        self.selection_mode
+    }
+
+    /// Sets how many nodes one gesture may select (V-10).
+    pub fn set_selection_mode(&mut self, mode: SelectionMode) {
+        if self.selection_mode == mode {
+            return;
+        }
+        self.selection_mode = mode;
+        if mode != SelectionMode::Extended {
+            self.selection_anchor = None;
+        }
+        if mode == SelectionMode::Single || mode == SelectionMode::None {
+            let current = self.selected_node;
+            self.selected_nodes.clear();
+            if let Some(node) = current {
+                self.selected_nodes.insert(node);
+                self.selection_anchor = Some(node);
+            }
+        }
+        self.selection_set_changed.emit(self.selected_nodes());
+        self.base.request_redraw();
+    }
+
     /// Clears node selection.
     ///
     /// Repaints: the highlight for the previously selected row is painted from this
     /// field, so clearing it has to mark damage.
     pub fn clear_selection(&mut self) {
-        if self.selected_node.is_none() {
+        if self.selected_node.is_none() && self.selected_nodes.is_empty() {
             return;
         }
         self.selected_node = None;
+        self.selected_nodes.clear();
+        self.selection_anchor = None;
+        self.selection_set_changed.emit(Vec::new());
         self.base.request_redraw();
     }
     /// Sets focused node by **visible** index.
     ///
     /// Repaints: the focus ring is painted from this field.
     pub fn set_focused_node(&mut self, index: usize) -> bool {
-        let Some(model_index) = self.visible_indices().get(index).copied() else {
+        let Some(model_index) = self.visible_index_at(index) else {
             return false;
         };
         if self.focused_node == Some(model_index) {
@@ -1036,7 +1252,7 @@ impl TreeView {
     /// ancestor — the focus is kept, but there is no row to point at.
     pub fn focused_node(&self) -> Option<usize> {
         let focused = self.focused_node?;
-        self.visible_indices().iter().position(|index| *index == focused)
+        self.visible_position_of(focused)
     }
 
     /// The rectangle a node's own row occupies, or `None` when the index is not shown.
@@ -1123,7 +1339,7 @@ impl TreeView {
     /// Returns the selected node's **visible** index when it is on screen.
     pub fn selected_node(&self) -> Option<usize> {
         let selected = self.selected_node?;
-        self.visible_indices().iter().position(|index| *index == selected)
+        self.visible_position_of(selected)
     }
 
     fn normalize_projection_state(&mut self) {
@@ -1132,6 +1348,7 @@ impl TreeView {
         // the model's size — not against the visible row count, which a collapse can shrink without
         // the node having gone away.
         self.selected_node = self.selected_node.filter(|index| *index < model_count);
+        self.selected_nodes.retain(|index| *index < model_count);
         self.focused_node = self.focused_node.filter(|index| *index < model_count);
         self.editing = self.editing.filter(|index| *index < model_count);
         self.expanded_override.retain(|index, _| *index < model_count);
@@ -1535,6 +1752,7 @@ impl Draw for TreeView {
             .map(|active| active.colors.primary)
             .unwrap_or(Color::PRIMARY);
         let focused_bg = surface.blend(&accent, 0.30);
+        let selected_bg = surface.blend(&accent, 0.30);
 
         // Draw background
         context.face_with_gradient(
@@ -1594,6 +1812,10 @@ impl Draw for TreeView {
                 // expansion change, so the wash follows the node and not the row number.
                 if Some(model_index) == self.focused_node {
                     context.fill_rect(row, focused_bg);
+                } else if self.selected_nodes.contains(&model_index) {
+                    // A selected non-focused node keeps the selection wash (V-10); before the set
+                    // existed, only the focused node was ever painted.
+                    context.fill_rect(row, selected_bg);
                 } else if Some(model_index) == self.hovered_node {
                     // A weaker wash than the focus, from the same accent: a row the pointer is over
                     // is a *preview* of the row a click would focus.
@@ -1720,7 +1942,7 @@ impl crate::event::EventHandler for TreeView {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos, button, .. } if *button == 1 => {
+            crate::event::Event::MousePress { pos, button, modifiers } if *button == 1 => {
                 // The same index derivation the draw uses, so the row a click selects is the row
                 // the user pointed at.
                 if let Some(index) = self.node_at(*pos) {
@@ -1729,7 +1951,8 @@ impl crate::event::EventHandler for TreeView {
                     // here (rather than in the label band) keeps the two hit areas from overlapping.
                     let on_glyph =
                         self.disclosure_rect(index).is_some_and(|glyph| point_in_rect(*pos, glyph));
-                    self.select_node(index);
+                    let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                    self.select_node_with_modifiers(index, modifiers);
                     if on_glyph {
                         self.toggle_expanded(index);
                     }
@@ -1766,12 +1989,13 @@ impl crate::event::EventHandler for TreeView {
                         if visible == 0 {
                             false
                         } else {
+                            // O(1): the inverse map built with the projection, rather than
+                            // materialising and scanning every visible row per key (F-P10).
+                            self.ensure_projection();
                             let current = self
                                 .focused_node
                                 .and_then(|model_index| {
-                                    self.visible_indices()
-                                        .iter()
-                                        .position(|index| *index == model_index)
+                                    self.projection_positions.get(&model_index).copied()
                                 })
                                 .unwrap_or(0);
                             let page = (self.base.geometry().height / TREE_ROW_HEIGHT.max(1) as u32)
@@ -2472,5 +2696,62 @@ mod tests {
         assert_eq!(view.fetch_timeout_ms(), 5000);
         view.set("fetch_timeout_ms", CapabilityValue::UInt(2500)).expect("writable");
         assert_eq!(view.fetch_timeout_ms(), 2500);
+    }
+
+    /// F-P10: the inverse projection maps every node to its row without a scan.
+    #[test]
+    fn projection_positions_are_maintained_with_the_projection() {
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 200));
+        view.set_model(Arc::new(VecTreeModel::new(
+            (0..120).map(|n| format!("node {n}")).collect(),
+        )));
+        assert_eq!(view.projection_positions.len(), 120);
+        assert_eq!(view.visible_row_of(50), Some(50));
+        assert_eq!(view.visible_position_of(119), Some(119));
+
+        // A row that exists but is hidden has no position.
+        assert_eq!(view.visible_row_of(500), None);
+    }
+
+    /// V-10: extended selection walks the visible range and ctrl toggles one node.
+    #[test]
+    fn multi_select_ranges_and_toggles_nodes() {
+        use crate::shortcut::Modifiers;
+
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 200));
+        view.set_model(Arc::new(VecTreeModel::new((0..6).map(|n| format!("node {n}")).collect())));
+        view.set_selection_mode(SelectionMode::Extended);
+        assert_eq!(view.selection_mode(), SelectionMode::Extended);
+
+        assert!(view.select_node(1));
+        assert!(view.select_node_with_modifiers(3, Modifiers::SHIFT));
+        assert_eq!(view.selected_nodes(), vec![1, 2, 3]);
+
+        assert!(view.select_node_with_modifiers(2, Modifiers::CTRL));
+        assert_eq!(view.selected_nodes(), vec![1, 3]);
+    }
+
+    /// V-11: `scroll_to_node` and `ensure_visible` move the viewport to a node.
+    #[test]
+    fn scroll_to_node_and_ensure_visible_locate_rows() {
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 200));
+        view.set_model(Arc::new(VecTreeModel::new(
+            (0..100).map(|n| format!("node {n}")).collect(),
+        )));
+
+        assert!(view.scroll_to_node(60));
+        assert_eq!(view.scroll_row(), 60);
+
+        assert!(view.ensure_visible(0));
+        assert_eq!(view.scroll_row(), 0, "scrolling up to the node");
+
+        let page = (view.base.geometry().height / TREE_ROW_HEIGHT as u32) as usize;
+        assert!(view.ensure_visible(page + 5));
+        assert_eq!(view.scroll_row(), 6, "moved by exactly the overflow");
+        assert!(!view.scroll_to_node(10_000), "there is no such node");
+
+        assert!(view.auto_scroll_to_expanded());
+        view.set_auto_scroll_to_expanded(false);
+        assert!(!view.auto_scroll_to_expanded());
     }
 }

@@ -4,10 +4,14 @@
 //! View widgets module.
 //!
 //! Contains list, tree, table, and property view widgets.
+/// COMP-F03: show/hide and reorder table columns.
+pub mod column_chooser;
 pub mod data_grid;
 pub mod data_source;
 /// Recursive filter trees shared by `DataGrid` and any query-builder UI.
 pub mod filter_expr;
+/// COMP-F02: incremental find bar for the table family.
+pub mod grid_find_bar;
 /// GridTable — feature-rich virtualized table with grid lines, headers, sorting, and selection.
 pub mod grid_table;
 pub mod image_gallery;
@@ -17,16 +21,20 @@ pub mod property_grid;
 /// Renders a recursive filter as editable condition rows.
 pub mod query_builder;
 pub mod table_widget;
+/// COMP-F04: bounded LRU cache of down-sampled bitmaps.
+pub mod thumbnail_cache;
 pub mod tree_table;
 pub mod tree_view;
 pub mod virtual_list;
 pub mod virtual_table;
 // Re-export view widgets
+pub use column_chooser::ColumnChooser;
 pub use data_grid::{ColumnFilter, ColumnWidthMode, DataGrid, EditTriggers, SortSpec};
 pub use data_source::{
     IncrementalTableDataSource, ListModelDataSource, TableModelDataSource, TreeModelDataSource,
 };
 pub use filter_expr::{FilterCondition, FilterExpr, FilterOperator};
+pub use grid_find_bar::GridFindBar;
 pub use grid_table::{
     GridSectionResizeMode, GridTableSelectionMode, GridTableSortSpec, GridTableWidget,
 };
@@ -38,6 +46,7 @@ pub use query_builder::{
     FilterConjunction, FilterField, QueryBuilder, QueryBuilderGroup, QueryBuilderRow,
 };
 pub use table_widget::{TableEditTriggers, TableWidget};
+pub use thumbnail_cache::ThumbnailCache;
 pub use tree_table::{TreeTable, TreeTableModel};
 pub use tree_view::TreeView;
 pub use virtual_list::VirtualList;

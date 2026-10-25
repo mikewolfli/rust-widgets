@@ -69,6 +69,9 @@ pub use types::{Bar, BookLevel, OrderBook, PriceLevelKind, PriceLine, PriceSerie
 #[cfg(widgets_unstripped)]
 pub use volume_chart::{VolumeChart, VolumeColorMode};
 
+#[cfg(all(test, widgets_unstripped))]
+mod tests_section210;
+
 #[cfg(widgets_unstripped)]
 /// Copies the K-line pane's horizontal view into its stacked siblings.
 ///

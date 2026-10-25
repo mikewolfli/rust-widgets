@@ -41,6 +41,8 @@ __pycache__/
 .env
 .env.local
 .ruff_cache/
+.pair_preview/
+.tmp_shots/
 
 # Build outputs
 **/*.exp

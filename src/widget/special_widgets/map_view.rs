@@ -16,6 +16,8 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use alloc::rc::Rc;
+use core::cell::{Ref, RefCell};
 
 /// A map marker's pin size: a 6x6 square centred on the marker's screen position.
 ///
@@ -101,6 +103,24 @@ impl MapProjection {
 /// The latitude Web Mercator truncates at, so the projection stays finite.
 const MERCATOR_MAX_LATITUDE: f32 = 85.051_13;
 
+/// Hands out the identities the render layer cache uses to recognise an unchanged map grid.
+///
+/// Globally unique because the cache belongs to the surface: two maps that both started at `1`
+/// would reuse each other's cached pixels.
+fn next_map_key() -> u64 {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Packs a colour into the low bits of a layer-cache key, so a theme change moves the key.
+fn color_key(color: Color) -> u64 {
+    (u64::from(color.r) << 24)
+        | (u64::from(color.g) << 16)
+        | (u64::from(color.b) << 8)
+        | u64::from(color.a)
+}
+
 /// One map marker with logical world coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapMarker {
@@ -131,6 +151,7 @@ impl MapMarker {
 }
 
 /// One painted cluster: the marker indices it groups and the point it is drawn at.
+#[derive(Clone)]
 struct MapCluster {
     /// The members' indices into [`MapView::markers`].
     indices: Vec<usize>,
@@ -200,9 +221,44 @@ pub struct MapView {
     /// Whether the three overlay controls are painted and hit-tested.
     show_map_controls: bool,
     /// Whether a paint asks the host for the tiles the viewport touches.
+    ///
+    /// The sweep itself runs from the camera writers ([`Self::set_center`], [`Self::set_zoom`]),
+    /// not from the paint: a paint-time prefetch ran inside the frame it was painting and could
+    /// re-enter the tile loader for a camera that had not moved (SP-P60). The accessor name is kept
+    /// because that is the published property, and the behaviour it names — "ask for the visible
+    /// tiles automatically" — is unchanged.
     prefetch_on_paint: bool,
-    /// The viewport the last automatic prefetch was computed for.
-    last_tile_viewport: Option<TileViewport>,
+    /// Bumped whenever the marker list changes; keys the cluster cache.
+    markers_revision: u64,
+    /// The projected clusters, shared by the paint and the hit test (SP-P58).
+    cluster_cache: RefCell<Option<(ClusterKey, Rc<Vec<MapCluster>>)>>,
+    /// The status line and the camera it was rendered for (SP-P59).
+    ///
+    /// `RefCell` because the paint refreshes it while it still holds the layout's shared style
+    /// borrow.
+    status_cache: RefCell<Option<StatusCache>>,
+    /// The geometry the overlay controls were last laid out for.
+    controls_layout: Option<Rect>,
+    /// Identity of the painted grid; a fresh key rebuilds its cached pixels (SP-P59).
+    grid_cache_key: u64,
+}
+
+/// The last rendered status line and the camera it names.
+struct StatusCache {
+    /// The camera the text was built for.
+    key: ((f32, f32), f32),
+    /// The rendered line.
+    text: String,
+}
+
+/// The inputs the cluster cache depends on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ClusterKey {
+    painted_zoom: f32,
+    center: (f32, f32),
+    rect: Rect,
+    markers_revision: u64,
+    projection: MapProjection,
 }
 
 impl MapView {
@@ -233,8 +289,17 @@ impl MapView {
             compass: Compass::new(Rect::new(0, 0, 0, 0)),
             show_map_controls: true,
             prefetch_on_paint: true,
-            last_tile_viewport: None,
+            markers_revision: 1,
+            cluster_cache: RefCell::new(None),
+            status_cache: RefCell::new(None),
+            controls_layout: None,
+            grid_cache_key: next_map_key(),
         }
+    }
+
+    /// Drops the cached status line so the next paint rebuilds it.
+    fn invalidate_status(&mut self) {
+        *self.status_cache.get_mut() = None;
     }
 
     /// The tile source: its template, zoom range and delivered-tile cache.
@@ -345,7 +410,6 @@ impl MapView {
     /// re-emitted through [`Self::tile_requested`], so a host can fetch exactly once per address.
     pub fn prefetch_tiles(&mut self) -> Vec<TileRequest> {
         let viewport = self.tile_viewport();
-        self.last_tile_viewport = Some(viewport);
         let requests = self.tile_loader.prefetch(viewport);
         for request in &requests {
             if !request.cached {
@@ -356,8 +420,16 @@ impl MapView {
     }
 
     /// Places the three overlay controls inside the map's rectangle and syncs their state.
+    ///
+    /// The geometry is recomputed only when the map's rectangle changes: both the event path and
+    /// the paint path call this, and a still frame used to re-derive all three boxes twice per
+    /// frame (SP-P59).
     fn layout_map_controls(&mut self) {
         let rect = self.geometry();
+        if self.controls_layout == Some(rect) {
+            return;
+        }
+        self.controls_layout = Some(rect);
         let zoom_size = self.zoom_control.size_hint();
         let compass_size = self.compass.size_hint();
         let scale_size = self.scale_bar.size_hint();
@@ -388,6 +460,10 @@ impl MapView {
         if self.scale_bar.base().geometry() != scale_rect {
             self.scale_bar.base_mut().set_geometry(scale_rect);
         }
+    }
+
+    /// Mirrors the map's camera into the overlay controls, once per paint.
+    fn sync_map_controls(&mut self) {
         // The strip is a view of the map's zoom, not a second source of truth: a wheel or a key
         // that changed the map is reflected here, and a press here changes the map.
         if (self.zoom_control.zoom_level() - self.zoom).abs() > f32::EPSILON {
@@ -412,8 +488,20 @@ impl MapView {
         }
         self.center_x = x;
         self.center_y = y;
+        self.invalidate_status();
         self.center_changed.emit((x, y));
+        self.refresh_tiles();
         self.base.request_redraw();
+    }
+
+    /// Asks the tile source for the viewport the camera now covers.
+    ///
+    /// Called from the camera writers rather than from `draw`, so the paint never performs the
+    /// sweep and a still map issues no requests at all (SP-P60).
+    fn refresh_tiles(&mut self) {
+        if self.prefetch_on_paint {
+            let _ = self.prefetch_tiles();
+        }
     }
 
     /// Pans map center by world delta.
@@ -497,6 +585,7 @@ impl MapView {
     pub fn add_marker(&mut self, marker: MapMarker) -> usize {
         let index = self.markers.len();
         self.markers.push(marker);
+        self.markers_revision = self.markers_revision.wrapping_add(1);
         self.base.request_redraw();
         index
     }
@@ -509,6 +598,7 @@ impl MapView {
     pub fn remove_marker(&mut self, id: &str) -> Option<MapMarker> {
         let index = self.markers.iter().position(|marker| marker.id == id)?;
         let removed = self.markers.remove(index);
+        self.markers_revision = self.markers_revision.wrapping_add(1);
         self.selected_marker = match self.selected_marker {
             Some(selected) if selected == index => None,
             Some(selected) if selected > index => Some(selected - 1),
@@ -524,6 +614,7 @@ impl MapView {
             return false;
         };
         marker.style = style;
+        self.markers_revision = self.markers_revision.wrapping_add(1);
         self.base.request_redraw();
         true
     }
@@ -553,7 +644,11 @@ impl MapView {
         self.center_x = world_x - (anchor.x as f32 - center_px) / zoom_after;
         self.center_y =
             self.unproject_world_y(world_y - (anchor.y as f32 - center_py) / zoom_after);
+        self.invalidate_status();
         self.center_changed.emit((self.center_x, self.center_y));
+        // The centre moved after `set_zoom` already asked for tiles, so the viewport the host is
+        // asked for is refreshed once more at the final camera (SP-P60).
+        self.refresh_tiles();
         self.base.request_redraw();
     }
 
@@ -580,7 +675,9 @@ impl MapView {
         // snap back to the previous target — the continuity rule `segmented_control` follows.
         self.zoom_t.jump_to(0.0);
         self.zoom_t.set_target(1.0);
+        self.invalidate_status();
         self.zoom_changed.emit(next);
+        self.refresh_tiles();
         self.base.request_redraw();
     }
 
@@ -595,6 +692,7 @@ impl MapView {
     /// Replaces map markers.
     pub fn set_markers(&mut self, markers: Vec<MapMarker>) {
         self.markers = markers;
+        self.markers_revision = self.markers_revision.wrapping_add(1);
         if let Some(index) = self.selected_marker {
             if index >= self.markers.len() {
                 self.selected_marker = None;
@@ -612,6 +710,103 @@ impl MapView {
     pub fn selected_marker_id(&self) -> Option<&str> {
         let index = self.selected_marker?;
         self.markers.get(index).map(|marker| marker.id.as_str())
+    }
+
+    /// The status line, rebuilt only when the camera it names changes (SP-P59).
+    fn status_line(&self) -> Ref<'_, str> {
+        let key = ((self.center_x, self.center_y), self.zoom);
+        let stale = !matches!(self.status_cache.borrow().as_ref(), Some(cache) if cache.key == key);
+        if stale {
+            let text = format!(
+                "Center ({:.1}, {:.1})  Zoom {:.2}x",
+                self.center_x, self.center_y, self.zoom
+            );
+            *self.status_cache.borrow_mut() = Some(StatusCache { key, text });
+        }
+        Ref::map(self.status_cache.borrow(), |cache| match cache.as_ref() {
+            Some(cache) => cache.text.as_str(),
+            // Unreachable: the block above always stores an entry.
+            None => "",
+        })
+    }
+
+    /// Paints every delivered tile the viewport covers, with a parent-level fallback.
+    ///
+    /// A missing tile falls back to the tile one zoom level out, scaled up: that is the same
+    /// low-resolution stand-in a slippy map uses while a level loads, and it fills the place the
+    /// current level has not arrived for (SP-52). A miss at every level leaves the placeholder grid
+    /// showing.
+    fn draw_tiles(&self, context: &mut RenderContext, rect: Rect) {
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let viewport = self.tile_viewport();
+        let zoom = viewport.zoom;
+        let per_axis = TileKey::tiles_per_axis(zoom) as i64;
+        if per_axis <= 0 {
+            return;
+        }
+        let tile_size = self.tile_loader.tile_size().max(1) as f64;
+        let tile_world = tile_size / 2f64.powi(i32::from(zoom));
+        let painted = self.painted_zoom().max(0.0001) as f64;
+        let center_proj_y = self.project_world_y(self.center_y) as f64;
+        let center_screen_x = rect.x as f64 + rect.width as f64 / 2.0;
+        let center_screen_y = rect.y as f64 + rect.height as f64 / 2.0;
+        let tile_px = (tile_world * painted).round().max(1.0) as u32;
+
+        let first_col = viewport.x.floor() as i64;
+        let first_row = viewport.y.floor() as i64;
+        let cols = (viewport.width as f64 / tile_size).ceil() as i64 + 2;
+        let rows = (viewport.height as f64 / tile_size).ceil() as i64 + 2;
+        // Parents already painted this frame, so a fallback tile is blitted once rather than once
+        // per child that needs it.
+        let mut painted_parents: Vec<TileKey> = Vec::new();
+
+        for row in 0..rows {
+            for col in 0..cols {
+                let x = first_col + col;
+                let y = first_row + row;
+                if x < 0 || y < 0 || x >= per_axis || y >= per_axis {
+                    continue;
+                }
+                let screen_x =
+                    center_screen_x + (x as f64 * tile_world - f64::from(self.center_x)) * painted;
+                let screen_y = center_screen_y + (y as f64 * tile_world - center_proj_y) * painted;
+                let screen_x = screen_x.round() as i32;
+                let screen_y = screen_y.round() as i32;
+                let key = TileKey::new(zoom, x as u32, y as u32);
+                if let Some(pixels) = self.tile_loader.tile_pixels(key) {
+                    context.draw_image(screen_x, screen_y, tile_px, tile_px, pixels);
+                    continue;
+                }
+                if zoom == 0 {
+                    continue;
+                }
+                let parent = TileKey::new(zoom - 1, (x / 2) as u32, (y / 2) as u32);
+                if painted_parents.contains(&parent) {
+                    continue;
+                }
+                let Some(pixels) = self.tile_loader.tile_pixels(parent) else {
+                    continue;
+                };
+                painted_parents.push(parent);
+                // The parent covers a 2×2 block of the child level, so it is drawn at twice the
+                // size, anchored at the parent's own origin.
+                let parent_world = tile_world * 2.0;
+                let parent_x = center_screen_x
+                    + (f64::from(parent.x) * parent_world - f64::from(self.center_x)) * painted;
+                let parent_y = center_screen_y
+                    + (f64::from(parent.y) * parent_world - center_proj_y) * painted;
+                let size = (tile_px as f64 * 2.0).round().max(1.0) as u32;
+                context.draw_image(
+                    parent_x.round() as i32,
+                    parent_y.round() as i32,
+                    size,
+                    size,
+                    pixels,
+                );
+            }
+        }
     }
 
     /// The zoom the projection is actually painted at.
@@ -699,7 +894,27 @@ impl MapView {
     /// cell is derived from the painted zoom, so zooming in separates markers naturally. Markers
     /// are not re-grouped incrementally: the projection changes every frame of a zoom animation, so
     /// a cache keyed on the camera would be invalidated as often as it was used.
-    fn clusters(&self) -> Vec<MapCluster> {
+    fn clusters(&self) -> Rc<Vec<MapCluster>> {
+        let key = ClusterKey {
+            painted_zoom: self.painted_zoom(),
+            center: (self.center_x, self.center_y),
+            rect: self.geometry(),
+            markers_revision: self.markers_revision,
+            projection: self.projection,
+        };
+        if let Some((cached, clusters)) = self.cluster_cache.borrow().as_ref() {
+            if *cached == key {
+                // The paint and the hit test share one projection pass (SP-P58).
+                return Rc::clone(clusters);
+            }
+        }
+        let clusters = Rc::new(self.compute_clusters());
+        *self.cluster_cache.borrow_mut() = Some((key, Rc::clone(&clusters)));
+        clusters
+    }
+
+    /// Projects the markers into screen-space buckets, without consulting the cache.
+    fn compute_clusters(&self) -> Vec<MapCluster> {
         const CELL: f32 = 36.0;
         let mut order: Vec<Vec<usize>> = Vec::new();
         let mut cells: HashMap<(i32, i32), usize> = HashMap::new();
@@ -750,14 +965,14 @@ impl MapView {
         }
         let px = pos.x as f32;
         let py = pos.y as f32;
-        self.clusters().into_iter().find(|cluster| {
+        self.clusters().iter().find_map(|cluster| {
             if cluster.indices.len() < 2 {
-                return false;
+                return None;
             }
             let dx = cluster.screen.0 - px;
             let dy = cluster.screen.1 - py;
             // The badge is drawn with a 9 px radius; the hit box adds the pointer's own reach.
-            dx * dx + dy * dy <= 12.0 * 12.0
+            (dx * dx + dy * dy <= 12.0 * 12.0).then(|| cluster.clone())
         })
     }
 
@@ -822,20 +1037,16 @@ impl MapView {
             }
         } else {
             // A pin, not a square: a circle over a tapering tip points at the place the marker
-            // names, which a square centred on the coordinate does not.
+            // names, which a square centred on the coordinate does not. The tip is a three-point path
+            // from a stack array, so a marker does not allocate its own vector per frame (SP-P59).
             let head = Point::new(sx as i32, sy as i32 - half);
             context.fill_circle(head, half.max(2) as u32, color);
-            context.execute_command(crate::render::RenderCommand::DrawPath {
-                points: vec![
-                    Point::new(sx as i32 - half / 2, sy as i32 - 1),
-                    Point::new(sx as i32 + half / 2, sy as i32 - 1),
-                    Point::new(sx as i32, sy as i32 + half),
-                ],
-                closed: true,
-                color,
-                filled: true,
-                width: 0,
-            });
+            let tip = [
+                Point::new(sx as i32 - half / 2, sy as i32 - 1),
+                Point::new(sx as i32 + half / 2, sy as i32 - 1),
+                Point::new(sx as i32, sy as i32 + half),
+            ];
+            context.draw_path(&tip, true, color, true, 0);
         }
         // A marker label is bounded by the pane: it is placed beside a point that may sit
         // anywhere, so unbounded it could start inside and end past the edge.
@@ -1034,7 +1245,8 @@ impl EventHandler for MapView {
         }
 
         // The overlay controls sit on top of the map: their own boxes are resolved before the map
-        // considers a pan, a cluster or a marker, so a press on `+` never also starts a drag.
+        // considers a pan, a cluster or a marker, so a press on `+` never also starts a drag. Only
+        // the geometry is ensured here; the camera mirror runs once per paint (SP-P59).
         self.layout_map_controls();
 
         match event {
@@ -1181,6 +1393,12 @@ impl Draw for MapView {
         // frames: a measurement that named the right quantity and then threw it away on a clamp.
         let step = (40.0 * self.painted_zoom().clamp(0.5, 8.0)) as i32;
         if step > 8 {
+            // The grid is a fixed background: it changes only with the geometry, the step or the
+            // resolved colours, so it is painted inside a render-cached layer and reused while
+            // none of those move (SP-P59).
+            let key =
+                self.grid_cache_key ^ color_key(grid) ^ color_key(surface) ^ ((step as u64) << 44);
+            context.push_layer_group(rect, None, 1.0, Some(key));
             let mut x = rect.x;
             while x < rect.x + rect.width as i32 {
                 context.draw_line(
@@ -1200,14 +1418,22 @@ impl Draw for MapView {
                 );
                 y += step;
             }
+            context.pop_layer();
         }
+
+        // Tiles the host has delivered are painted over the placeholder grid. They were cached and
+        // never drawn at all — the map was a plain grid with pins regardless of how many tiles the
+        // host had supplied (SP-52).
+        self.draw_tiles(context, rect);
 
         if self.cluster_markers {
             // Grid-bucket grouping in screen space: each marker belongs to one 36 px cell and a
-            // cell's members are its badge. See `clusters` for why this replaced pair-wise greedy
-            // grouping. A one-member cluster is drawn as an ordinary pin, so clustering never hides
-            // a marker that is nowhere near another.
-            for cluster in self.clusters() {
+            // cell's members are its badge. See `compute_clusters` for why this replaced pair-wise
+            // greedy grouping. A one-member cluster is drawn as an ordinary pin, so clustering
+            // never hides a marker that is nowhere near another. The list is the shared cache the
+            // hit test reads (SP-P58).
+            let clusters = self.clusters();
+            for cluster in clusters.iter() {
                 let (sx, sy) = cluster.screen;
                 if cluster.indices.len() > 1 {
                     context.fill_circle(Point::new(sx as i32, sy as i32), 9, MAP_MARKER_COLOR);
@@ -1230,32 +1456,26 @@ impl Draw for MapView {
             }
         }
 
-        context.draw_text_fitted_cow(
-            Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14),
-            &format!("Center ({:.1}, {:.1})  Zoom {:.2}x", self.center_x, self.center_y, self.zoom),
-            effective_font(style),
-            ink,
-            HorizontalAlignment::Left,
-        );
+        // Scoped so the cache borrow is released before the overlay controls take `&mut self`.
+        {
+            let status = self.status_line();
+            context.draw_text_fitted_cow(
+                Rect::new(rect.x + 8, rect.y + 4, rect.width.saturating_sub(16), 14),
+                &status,
+                effective_font(style),
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
 
         // The controls are chrome over the geographic content, so they are painted last and read
         // the same resolved appearance the pane does.
         self.layout_map_controls();
+        self.sync_map_controls();
         if self.show_map_controls {
             self.zoom_control.draw(context);
             self.compass.draw(context);
             self.scale_bar.draw(context);
-        }
-
-        // Ask the host for the tiles the viewport now covers. Only a changed viewport re-runs the
-        // sweep; `TileLoader` remembers every address it has already requested, so the signal fires
-        // once per tile rather than once per frame.
-        if self.prefetch_on_paint {
-            let viewport = self.tile_viewport();
-            if self.last_tile_viewport != Some(viewport) {
-                self.last_tile_viewport = Some(viewport);
-                let _ = self.prefetch_tiles();
-            }
         }
     }
 }
@@ -1269,6 +1489,12 @@ pub use companions::{
     Compass, ScaleBar, ScaleBarStyle, ScaleUnits, TileKey, TileLoadError, TileLoader, TileRequest,
     TileViewport, ZoomButton, ZoomControl, MAX_TILE_ZOOM,
 };
+
+// The anchored information window lives in a sibling file for the same size reason as the four
+// companions above; re-exporting keeps its public path stable.
+#[path = "map_marker_detail.rs"]
+mod marker_detail;
+pub use marker_detail::{DetailLine, MapMarkerDetail};
 
 #[cfg(test)]
 mod tests {
@@ -1681,18 +1907,25 @@ mod tests {
     }
 
     #[test]
-    fn tile_loader_evicts_oldest_beyond_the_limit() {
+    fn tile_loader_evicts_least_recently_used_beyond_the_limit() {
         let mut loader = TileLoader::new(Rect::new(0, 0, 160, 24));
         loader.set_cache_limit(2);
         assert!(!loader.load_tile(2, 0, 0).expect("in range").cached);
         assert!(!loader.load_tile(2, 1, 0).expect("in range").cached);
+        // Re-asking for `0` makes `1` the least recently used tile.
+        assert!(loader.load_tile(2, 0, 0).expect("in range").cached);
+        // The third address has to evict something, and LRU eviction keeps the tile the camera
+        // has just asked for.
         assert!(!loader.load_tile(2, 2, 0).expect("in range").cached);
         assert_eq!(loader.cache_len(), 2);
-        // Asking again reveals which tiles survived: a cached answer means the
-        // address is still remembered, a fresh one means it was evicted.
-        assert!(loader.load_tile(2, 1, 0).expect("in range").cached);
-        assert!(!loader.load_tile(2, 0, 0).expect("in range").cached, "oldest evicted");
-        assert!(loader.load_tile(2, 2, 0).expect("in range").cached);
+        assert!(
+            loader.load_tile(2, 0, 0).expect("in range").cached,
+            "the most recently used tile survived"
+        );
+        assert!(
+            !loader.load_tile(2, 1, 0).expect("in range").cached,
+            "the least recently used tile was evicted"
+        );
     }
 
     #[test]

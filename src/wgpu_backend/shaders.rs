@@ -100,7 +100,6 @@ fn vs_main(input: RectInput) -> @builtin(position) vec4f {
 /// an orthographic pixel-to-clip matrix, and control-level occlusion stays with the scene
 /// layers' stable z ordering. Because instances are drawn in buffer order within one draw, the
 /// painter order of the recorded run is preserved.
-#[cfg(feature = "3d")]
 pub(crate) const FILL_RECT_VS_TRANSFORMED: &str = r#"
 struct InstanceInput {
     @location(0) corners_lo: vec4f,
@@ -137,12 +136,11 @@ fn vs_main(instance: InstanceInput, @builtin(vertex_index) vertex_index: u32) ->
     return output;
 }"#;
 
-/// Fragment shader for the instanced `3d` pipeline.
+/// Fragment shader for the instanced quad pipeline.
 ///
 /// The colour is a per-instance vertex output ([`FILL_RECT_VS_TRANSFORMED`], location 0). Every
 /// vertex of a quad repeats the same value, so interpolation returns that colour unchanged and
 /// the fragment needs no uniform and no bind group.
-#[cfg(feature = "3d")]
 pub(crate) const FILL_RECT_INSTANCED_FS: &str = r#"
 @fragment
 fn fs_main(@location(0) color: vec4f) -> @location(0) vec4f {
@@ -490,6 +488,15 @@ fn fs_main(@location(0) pos: vec2f) -> @location(0) vec4f {
 /// backend: `WgpuRenderer::shader_modules` enumerates these variants, while the
 /// pipelines it actually builds use the raw constants, so a variant can be
 /// reachable here without any pipeline consuming it.
+///
+/// # Current pipeline coverage (G-213)
+///
+/// Only [`ShaderModule::FillRect`] is consumed by a pipeline today: the single-rectangle path
+/// builds `rect_fs` from [`FILL_RECT_FS`]. The image, text, rounded-rect and circle programs are
+/// reserved — their WGSL and bind-group tables are complete, but this backend's CPU rasteriser
+/// draws those commands, so no pipeline is created for them. `ShaderModule::pipeline_cache_key`
+/// records exactly that split and the `shader_module_registry_matches_pipelines` test fails if a
+/// `Some(key)` entry does not correspond to a shader the renderer actually registers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShaderModule {
     /// `FILL_RECT_FS`: a solid rectangle's colour from a uniform.
@@ -530,6 +537,25 @@ impl ShaderModule {
             ShaderModule::DrawText => TEXT_FRAG,
             ShaderModule::FillRoundedRect => ROUNDED_RECT_FRAG,
             ShaderModule::FillCircle => CIRCLE_FRAG,
+        }
+    }
+
+    /// The `WgpuRenderer::shader_cache` key of the pipeline that consumes this module, or `None`
+    /// when the module is reserved and no pipeline is built from it (G-213).
+    ///
+    /// The match is exhaustive on purpose: adding a variant forces a decision about whether the
+    /// new shader is wired into a pipeline instead of silently advertising an unused module.
+    ///
+    /// Only the `shader_module_registry_matches_pipelines` test reads this today; it lives beside
+    /// the enum so the mapping is part of the enum's contract rather than the test's copy.
+    #[allow(dead_code)]
+    pub(crate) const fn pipeline_cache_key(self) -> Option<&'static str> {
+        match self {
+            ShaderModule::FillRect => Some("rect_fs"),
+            ShaderModule::DrawImage
+            | ShaderModule::DrawText
+            | ShaderModule::FillRoundedRect
+            | ShaderModule::FillCircle => None,
         }
     }
 }

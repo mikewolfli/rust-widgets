@@ -10,7 +10,7 @@
 
 use core::fmt::Write as _;
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -95,6 +95,26 @@ pub struct ProgressCircle {
     /// `{percent}` is replaced with the value as a rounded percentage and `{value}` with
     /// the value in `0.0..=1.0` to two decimals; every other character is copied through.
     center_text_format: String,
+    /// The rendered centre reading and its measurement, reused while its inputs are unchanged.
+    center_text_cache: Option<CenterTextCache>,
+}
+
+/// The centre reading and the exact inputs that produced it.
+///
+/// During a value tween the reading is recomputed and re-measured on every frame even though the
+/// rounded percentage — the only thing the default template prints — usually did not move. The key
+/// is the same one `arc` uses: the driving value, the template, the resolved face and the device
+/// scale.
+struct CenterTextCache {
+    value_bits: u32,
+    format: String,
+    font: Font,
+    dpi_scale_bits: u32,
+    show_center_text: bool,
+    indeterminate: bool,
+    text: String,
+    width: u32,
+    height: u32,
 }
 
 impl ProgressCircle {
@@ -128,6 +148,7 @@ impl ProgressCircle {
             indeterminate_changed: Signal1::new(),
             show_center_text: false,
             center_text_format: "{percent}%".to_string(),
+            center_text_cache: None,
         }
     }
 
@@ -405,6 +426,39 @@ impl ProgressCircle {
             }
         }
         out.push_str(rest);
+    }
+
+    /// Rebuilds [`Self::center_text_cache`] only when the reading or its presentation changed.
+    fn ensure_center_text(&mut self, context: &RenderContext) {
+        let value = self.value_animation.value();
+        let value_bits = value.to_bits();
+        let dpi_scale_bits = context.dpi_scale().to_bits();
+        let font = effective_font(self.base.style()).clone();
+        let fresh = self.center_text_cache.as_ref().is_some_and(|cache| {
+            cache.value_bits == value_bits
+                && cache.format == self.center_text_format
+                && cache.font == font
+                && cache.dpi_scale_bits == dpi_scale_bits
+                && cache.show_center_text == self.show_center_text
+                && cache.indeterminate == self.indeterminate
+        });
+        if fresh {
+            return;
+        }
+        let mut text = String::new();
+        self.write_center_text(&mut text);
+        let metrics = context.measure_text(&text, &font);
+        self.center_text_cache = Some(CenterTextCache {
+            value_bits,
+            format: self.center_text_format.clone(),
+            font,
+            dpi_scale_bits,
+            show_center_text: self.show_center_text,
+            indeterminate: self.indeterminate,
+            text,
+            width: metrics.width,
+            height: metrics.height,
+        });
     }
 
     /// Computes the center point and radius of the progress circle.
@@ -697,24 +751,23 @@ impl Draw for ProgressCircle {
         // indeterminate ring has no reading to print. The text is dropped when it cannot fit in
         // the hole, for the same reason `Arc` drops its own: a reading that covers the progress it
         // reports is worse than no reading.
-        let mut text = String::new();
-        self.write_center_text(&mut text);
-        if !text.is_empty() {
-            let hole = (radius - self.stroke_width / 2.0).max(0.0);
-            let font = effective_font(self.base.style());
-            let metrics = context.measure_text(&text, font);
-            if (metrics.width as f32) <= hole * 2.0 && (metrics.height as f32) <= hole * 2.0 {
-                let ink = self.base.style().text_color.unwrap_or(self.progress_color);
-                context.draw_text(
-                    Point::new(
-                        center.x - (metrics.width as i32 / 2),
-                        center.y - (metrics.height as i32 / 2),
-                    ),
-                    text.as_str(),
-                    font,
-                    ink,
-                    HorizontalAlignment::Left,
-                );
+        self.ensure_center_text(context);
+        if let Some(cache) = self.center_text_cache.as_ref() {
+            if !cache.text.is_empty() {
+                let hole = (radius - self.stroke_width / 2.0).max(0.0);
+                if (cache.width as f32) <= hole * 2.0 && (cache.height as f32) <= hole * 2.0 {
+                    let ink = self.base.style().text_color.unwrap_or(self.progress_color);
+                    context.draw_text(
+                        Point::new(
+                            center.x - (cache.width as i32 / 2),
+                            center.y - (cache.height as i32 / 2),
+                        ),
+                        cache.text.as_str(),
+                        &cache.font,
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
         }
     }
@@ -729,6 +782,7 @@ impl EventHandler for ProgressCircle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::PaintBackend;
 
     #[test]
     fn progress_circle_default_creation() {
@@ -1077,5 +1131,32 @@ mod tests {
             "Full mode records no damage, so the control repaints whole"
         );
         runtime::unregister(id);
+    }
+
+    /// The centre reading is built and measured once per `(value, template, face, scale)` key.
+    #[test]
+    fn the_centre_reading_is_cached_across_frames() {
+        let mut pc = ProgressCircle::new(Rect::new(0, 0, 80, 80));
+        pc.set_show_center_text(true);
+        pc.set_value(0.5);
+        let mut backend = crate::render::SoftwarePaintBackend::new(Size::new(80, 80), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let context = RenderContext::new(&mut backend);
+        // The driver starts at rest; aim it at the value so the reading is the one written.
+        pc.value_animation.jump_to(0.5);
+        pc.ensure_center_text(&context);
+        let first = pc.center_text_cache.as_ref().expect("the reading is cached");
+        assert_eq!(first.text, "50%");
+        let ptr = first.text.as_ptr();
+        pc.ensure_center_text(&context);
+        assert_eq!(
+            pc.center_text_cache.as_ref().unwrap().text.as_ptr(),
+            ptr,
+            "an unchanged reading reuses the buffer"
+        );
+
+        pc.set_center_text_format("{value}");
+        pc.ensure_center_text(&context);
+        assert_eq!(pc.center_text_cache.as_ref().unwrap().text, "0.50");
     }
 }

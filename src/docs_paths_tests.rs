@@ -567,9 +567,9 @@ fn documented_capability_fields_exist() {
     assert!(!caps.native_menu);
     assert!(caps.clipboard && caps.open_external && caps.file_dialog && caps.system_fonts);
 
-    // `NativeCapabilityContract` is documented as a type alias, so the two must be
+    // `HostedCapabilityContract` is documented as a type alias, so the two must be
     // interchangeable with no conversion.
-    let alias: crate::platform::NativeCapabilityContract = caps;
+    let alias: crate::platform::HostedCapabilityContract = caps;
     assert_eq!(alias, caps, "the alias and the source must be the same type");
 }
 

@@ -27,6 +27,8 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
+use super::pixels::nearest_scale;
+
 /// A single frame of animation data.
 pub struct AnimatedFrame {
     /// Raw RGBA pixel data for this frame (width * height * 4 bytes).
@@ -137,6 +139,14 @@ pub struct AnimatedImage {
     frame_cache_limit: usize,
     /// Cached result of the nearest-neighbour resample used by the fit modes.
     scale_cache: Option<ScaledFrame>,
+    /// Per-frame delay overrides, `(frame index, delay in milliseconds)`.
+    frame_delays: Vec<(usize, u64)>,
+    /// The frame-counter caption, rebuilt only when the frame or the count changes.
+    counter_text: String,
+    /// The `(current, total)` pair `counter_text` was built from.
+    counter_key: (usize, usize),
+    /// Emitted with the new frame index after the animation advanced.
+    pub frame_advanced: Signal1<u32>,
 }
 
 impl AnimatedImage {
@@ -161,6 +171,10 @@ impl AnimatedImage {
             provider_cache: Vec::new(),
             frame_cache_limit: 0,
             scale_cache: None,
+            frame_delays: Vec::new(),
+            counter_text: String::new(),
+            counter_key: (usize::MAX, usize::MAX),
+            frame_advanced: Signal1::new(),
         }
     }
 
@@ -184,6 +198,7 @@ impl AnimatedImage {
         self.loops_completed = 0;
         self.playing = false;
         self.scale_cache = None;
+        self.frame_delays.clear();
         self.base.request_redraw();
         Ok(())
     }
@@ -204,6 +219,7 @@ impl AnimatedImage {
         self.loops_completed = 0;
         self.playing = false;
         self.scale_cache = None;
+        self.frame_delays.clear();
         self.base.request_redraw();
     }
 
@@ -472,6 +488,7 @@ impl AnimatedImage {
 
         self.frame_timer = 0;
         self.frame_changed.emit(self.current_frame as u32);
+        self.frame_advanced.emit(self.current_frame as u32);
         self.base.request_redraw();
     }
 
@@ -482,10 +499,10 @@ impl AnimatedImage {
             return false;
         }
 
-        let delay = self
-            .ensure_frame(self.current_frame)
-            .map(|frame| frame.delay_ms)
-            .unwrap_or(self.frame_delay);
+        // The current frame must be resident before its own delay is read: a provider-backed
+        // sequence carries the duration on the frame it fetches.
+        self.ensure_frame(self.current_frame);
+        let delay = self.frame_delay_of(self.current_frame);
 
         // `saturating_add`: `frame_timer` is a `u64` fed by a public `tick(delta_ms)`, so a large
         // `delta_ms` (or many small ones between advances) could overflow it. A wrapped timer is
@@ -510,6 +527,55 @@ impl AnimatedImage {
         self.loops_completed = 0;
         self.frame_changed.emit(0);
         self.base.request_redraw();
+    }
+
+    /// Overrides the display duration of frame `index` in milliseconds.
+    ///
+    /// A variable-frame-rate asset (a GIF whose frames have different delays) can state each
+    /// frame's own duration here; the override wins over the frame's own `delay_ms` and over
+    /// [`Self::frame_delay`]. An index outside the sequence is ignored rather than stored, so a
+    /// later reload cannot inherit a delay for a frame that no longer exists.
+    pub fn set_frame_delay(&mut self, index: usize, delay_ms: u32) {
+        if index >= self.frame_count() {
+            return;
+        }
+        let delay = u64::from(delay_ms);
+        match self.frame_delays.iter_mut().find(|(slot, _)| *slot == index) {
+            Some(entry) => entry.1 = delay,
+            None => self.frame_delays.push((index, delay)),
+        }
+        if index == self.current_frame {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The display duration of frame `index`, in milliseconds.
+    ///
+    /// Resolution order: an explicit [`Self::set_frame_delay`] override, then the frame's own
+    /// `delay_ms` when it declares one, then the control-wide default.
+    pub fn frame_delay(&self, index: usize) -> u32 {
+        self.frame_delay_of(index).min(u64::from(u32::MAX)) as u32
+    }
+
+    /// The delay the clock uses for `index`.
+    fn frame_delay_of(&self, index: usize) -> u64 {
+        if let Some((_, delay)) = self.frame_delays.iter().find(|(slot, _)| *slot == index) {
+            return *delay;
+        }
+        self.cached_frame(index)
+            .map(|frame| frame.delay_ms)
+            .filter(|delay| *delay > 0)
+            .unwrap_or(self.frame_delay)
+    }
+
+    /// The frame-counter caption, rebuilt only when its inputs changed.
+    fn refresh_counter(&mut self, frame_index: usize, frame_count: usize) {
+        if self.counter_key != (frame_index, frame_count) {
+            self.counter_key = (frame_index, frame_count);
+            self.counter_text.clear();
+            use core::fmt::Write as _;
+            let _ = write!(self.counter_text, "{}/{}", frame_index + 1, frame_count);
+        }
     }
 }
 
@@ -648,40 +714,22 @@ impl Draw for AnimatedImage {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
-        // Chrome colours resolve explicit style first, then the theme's resolved style for
-        // this control, and only then fall back to the original literal. The literal step is
-        // kept deliberately: an inactive theme must still give the widget a defined
-        // appearance, and the value is the one this widget painted before, so an existing
-        // pixel baseline cannot move. Resolved once per draw, because the empty state, the
-        // background, the status chips and the counter all read from it and re-resolving
-        // would take the theme lock several times inside one draw.
-        let style = self.style().clone();
-        let themed = crate::style::resolved_theme_style_shared("animated_image");
-        let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
-        let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
-        let themed_text = themed.as_ref().and_then(|resolved| resolved.text_color);
-        let base_bg =
-            style.background_color.or(themed_bg).unwrap_or(Color::rgba(230, 230, 230, 200));
-        // The page this shell sits in, read once. A disabled **fill** recedes toward the page it
-        // sits on; it cannot recede toward its own contrast colour the way ink does, because that
-        // would make it stand out *more* against the page -- the opposite of disabled.
-        let window_fill = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
-        };
-        let border_color =
-            style.border_color.or(themed_border).unwrap_or(Color::rgba(160, 160, 160, 200));
-        // The placeholder ink follows the theme's foreground so it stays legible on whichever
-        // surface the theme painted; the literal is only the last resort.
-        let placeholder_text =
-            style.text_color.or(themed_text).unwrap_or(Color::rgba(160, 160, 160, 220));
-
         if self.frame_count() == 0 {
             // Empty state: a neutral placeholder panel. The panel and the label are this
-            // widget's chrome — there is no frame data here at all — so both now follow the
+            // widget's chrome — there is no frame data here at all — so both follow the
             // theme instead of pinning the control to one appearance.
+            let style = self.style();
+            let themed = crate::style::resolved_theme_style_shared("animated_image");
+            let base_bg = style
+                .background_color
+                .or_else(|| themed.as_ref().and_then(|resolved| resolved.background_color))
+                .unwrap_or(Color::rgba(230, 230, 230, 200));
+            let placeholder_text = style
+                .text_color
+                .or_else(|| themed.as_ref().and_then(|resolved| resolved.text_color))
+                .unwrap_or(Color::rgba(160, 160, 160, 220));
             context.fill_rounded_rect(rect, 4, base_bg);
-            let font = effective_font(&style);
+            let font = effective_font(style);
             let text = "No frames loaded";
             // Centred on the vertical midline and **fitted** to the control's width. The
             // label is 16 characters at 14 px, so it is wider than a control narrower than
@@ -703,12 +751,61 @@ impl Draw for AnimatedImage {
 
         let frame_count = self.frame_count();
         let frame_index = self.current_frame.min(frame_count - 1);
-        // A provider-backed sequence is fetched here; an eager one answers from its own list.
-        // The guarantee is only that the frame about to be drawn is resident, so the paint path
-        // below never has to fetch in the middle of a draw.
+        // Everything that needs `&mut self` happens before the paint pass takes its style
+        // borrow: fetching the frame, refreshing the cached caption and refreshing the
+        // resample cache. The paint pass below only reads.
         self.ensure_frame(frame_index);
+        self.refresh_counter(frame_index, frame_count);
         let frame_size = self.cached_frame(frame_index).map(|frame| (frame.width, frame.height));
         if let Some((fw, fh)) = frame_size {
+            if let Some(fit) = self.fit_for_scaling() {
+                let dest = fit_destination(rect, fw, fh, fit);
+                let cached = matches!(
+                    &self.scale_cache,
+                    Some(cache)
+                        if cache.frame_index == frame_index
+                            && cache.width == dest.width
+                            && cache.height == dest.height
+                            && cache.fit == fit
+                );
+                if !cached {
+                    let scaled = self
+                        .cached_frame(frame_index)
+                        .map(|frame| nearest_scale(&frame.data, fw, fh, dest.width, dest.height));
+                    self.scale_cache = scaled.map(|data| ScaledFrame {
+                        frame_index,
+                        width: dest.width,
+                        height: dest.height,
+                        fit,
+                        data,
+                    });
+                }
+            }
+
+            // Chrome colours resolve explicit style first, then the theme's resolved style for
+            // this control, and only then fall back to the original literal. The literal step is
+            // kept deliberately: an inactive theme must still give the widget a defined
+            // appearance, and the value is the one this widget painted before, so an existing
+            // pixel baseline cannot move. Borrowed once per draw.
+            let style = self.style();
+            let themed = crate::style::resolved_theme_style_shared("animated_image");
+            let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
+            let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
+            let base_bg =
+                style.background_color.or(themed_bg).unwrap_or(Color::rgba(230, 230, 230, 200));
+            // The page this shell sits in, read once. A disabled **fill** recedes toward the page
+            // it sits on; it cannot recede toward its own contrast colour the way ink does,
+            // because that would make it stand out *more* against the page.
+            let window_fill = {
+                let manager = crate::style::theme_manager();
+                manager
+                    .current_theme()
+                    .map(|active| active.colors.background)
+                    .unwrap_or(Color::WHITE)
+            };
+            let border_color =
+                style.border_color.or(themed_border).unwrap_or(Color::rgba(160, 160, 160, 200));
+            let font = effective_font(style);
             // Background — the surface the frame is matted onto, i.e. chrome. Disabled steps the
             // resolved fill toward its own contrast colour rather than toward a fixed white,
             // which on a dark surface made the disabled state *more* prominent than the enabled
@@ -721,9 +818,9 @@ impl Draw for AnimatedImage {
             context.face_with_gradient(
                 rect,
                 bg,
-                self.style().background_gradient.as_ref(),
-                self.style().surface.unwrap_or_default(),
-                self.style().border_radius.unwrap_or(0),
+                style.background_gradient.as_ref(),
+                style.surface.unwrap_or_default(),
+                style.border_radius.unwrap_or(0),
                 Color::BLACK,
             );
 
@@ -745,39 +842,8 @@ impl Draw for AnimatedImage {
                         if let Some(frame) = self.cached_frame(frame_index) {
                             context.draw_image(dest.x.max(0), dest.y.max(0), fw, fh, &frame.data);
                         }
-                    } else {
-                        // The resample is cached by frame index, destination size and fit mode:
-                        // without the cache a playing animation allocated and resampled the
-                        // whole picture on every frame.
-                        let cached = matches!(
-                            &self.scale_cache,
-                            Some(cache)
-                                if cache.frame_index == frame_index
-                                    && cache.width == dest.width
-                                    && cache.height == dest.height
-                                    && cache.fit == fit
-                        );
-                        if !cached {
-                            let scaled = self.cached_frame(frame_index).map(|frame| {
-                                nearest_scale(&frame.data, fw, fh, dest.width, dest.height)
-                            });
-                            self.scale_cache = scaled.map(|data| ScaledFrame {
-                                frame_index,
-                                width: dest.width,
-                                height: dest.height,
-                                fit,
-                                data,
-                            });
-                        }
-                        if let Some(cache) = self.scale_cache.as_ref() {
-                            context.draw_image(
-                                dest.x,
-                                dest.y,
-                                dest.width,
-                                dest.height,
-                                &cache.data,
-                            );
-                        }
+                    } else if let Some(cache) = self.scale_cache.as_ref() {
+                        context.draw_image(dest.x, dest.y, dest.width, dest.height, &cache.data);
                     }
                 }
             }
@@ -817,29 +883,33 @@ impl Draw for AnimatedImage {
                 }
             }
 
-            // Frame counter overlay at top-right.
-            let counter_text = format!("{}/{}", frame_index + 1, frame_count);
-            let font = effective_font(&style);
-            let metrics = context.measure_text(&counter_text, font);
+            // Frame counter overlay at top-right. The caption is cached by
+            // `refresh_counter`; this path only borrows it.
+            let counter_text = self.counter_text.as_str();
+            let metrics = context.measure_text(counter_text, font);
             let cx = rect.x + rect.width as i32 - metrics.width as i32 - 4;
             let cy = rect.y + 2;
-            // Background pill for counter.
-            let pill_w = metrics.width as u32 + 8;
-            let pill_h = metrics.height as u32 + 2;
+            let pill_w = metrics.width + 8;
+            let pill_h = metrics.height + 2;
             let pill_rect = Rect::new(cx - 4, cy - 1, pill_w, pill_h);
-            // Same rule as the play chip: the counter's backdrop belongs to the widget's
-            // chrome, but the white counter ink and the chip's own alpha are kept as they
-            // were, because they are the badge's legibility contract over the frame.
             context.fill_rounded_rect(pill_rect, 3, border_color);
-            // Glyph origin is the box's top edge, so it is already `cy`; the old
-            // `+ ascent` pushed the counter half a line down, out through the pill.
             context.draw_text(
                 Point::new(cx, cy),
-                &counter_text,
+                counter_text,
                 font,
                 Color::WHITE,
                 HorizontalAlignment::Left,
             );
+        }
+    }
+}
+
+impl AnimatedImage {
+    /// The fit mode that needs a resample, or `None` for the original-size fast path.
+    fn fit_for_scaling(&self) -> Option<AnimatedImageFit> {
+        match self.fit {
+            AnimatedImageFit::Original => None,
+            fit => Some(fit),
         }
     }
 }
@@ -883,38 +953,17 @@ fn fit_destination(rect: Rect, width: u32, height: u32, fit: AnimatedImageFit) -
     }
 }
 
-/// Nearest-neighbour resample of an RGBA frame, used by the fit modes.
-fn nearest_scale(
-    data: &[u8],
-    source_width: u32,
-    source_height: u32,
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
-    let mut out = vec![0u8; (width as usize) * (height as usize) * 4];
-    if source_width == 0 || source_height == 0 || width == 0 || height == 0 {
-        return out;
-    }
-    for y in 0..height {
-        let source_y = (y as u64 * source_height as u64 / height as u64) as u32;
-        for x in 0..width {
-            let source_x = (x as u64 * source_width as u64 / width as u64) as u32;
-            let source = ((source_y as usize * source_width as usize + source_x as usize) * 4)
-                .min(data.len().saturating_sub(4));
-            let destination = (y as usize * width as usize + x as usize) * 4;
-            out[destination..destination + 4].copy_from_slice(&data[source..source + 4]);
-        }
-    }
-    out
-}
-
+/// The destination rectangle a frame occupies under `fit`.
 impl EventHandler for AnimatedImage {
     fn handle_event(&mut self, event: &Event) {
         if !self.base.is_enabled() {
             return;
         }
         match event {
-            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
+            // Playback is toggled on **release**: a press/release pair used to flip the state
+            // twice (playing -> paused -> playing), so a complete click looked like it did
+            // nothing while still emitting two signals and two repaint requests.
+            Event::MouseRelease { pos, button } => {
                 if *button == 1 && self.geometry().contains_point(*pos) {
                     if self.playing {
                         self.pause();

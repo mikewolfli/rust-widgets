@@ -9,7 +9,7 @@
 
 use crate::compat::Vec;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::widget::capability::coercion::{expect_string, expect_u32};
@@ -19,6 +19,13 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The inset on each side that bounds an avatar's initials.
+///
+/// Fixed rather than proportional: the budget is "the disc less a margin", and a proportional
+/// margin on a 96 px avatar would take a fifth of the disc away from two letters. The inset is
+/// capped at a quarter of the disc in `draw` so a tiny avatar still has a non-empty budget.
+const INITIALS_INSET: u32 = 4;
 
 /// A status badge painted on an avatar's lower-right corner.
 #[derive(Clone, Debug, PartialEq)]
@@ -267,6 +274,13 @@ impl Widget for Avatar {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(dimensions::AVATAR_SIZE, dimensions::AVATAR_SIZE)
     }
+
+    /// An avatar that emits `avatar_clicked` is an affordance, so it must be reachable without a
+    /// pointer. The kind's default answer is `false` for non-interaction kinds, which left the
+    /// control out of the tab order and therefore unable to receive the Enter/Space it handles.
+    fn is_focusable(&self) -> bool {
+        true
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 
@@ -303,6 +317,8 @@ impl WidgetProperties for Avatar {
                 None => CapabilityValue::Null,
             }),
             "ring_width" => Ok(CapabilityValue::UInt(u64::from(self.ring_width()))),
+            "square" => Ok(CapabilityValue::Bool(self.is_square())),
+            "size" => Ok(CapabilityValue::UInt(u64::from(self.size()))),
             _ => base_property_get(self, name),
         }
     }
@@ -355,6 +371,15 @@ impl WidgetProperties for Avatar {
                 self.set_ring_width(expect_u32(value)?);
                 Ok(())
             }
+            "square" => {
+                let square = crate::widget::capability::coercion::expect_bool(value)?;
+                self.set_square(square);
+                Ok(())
+            }
+            "size" => {
+                self.set_size(expect_u32(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -366,6 +391,8 @@ impl WidgetProperties for Avatar {
             "badge",
             "ring_color",
             "ring_width",
+            "square",
+            "size",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -431,7 +458,7 @@ impl Draw for Avatar {
         // through a picture with transparency -- and so a source that fails to load still leaves a
         // shaped, coloured avatar rather than a hole. The initials are skipped when a picture is
         // actually painted, because two identities on one disc read as neither.
-        let painted = self.paint_image_source(context, rect, center, size);
+        let painted = self.paint_image_source(context, rect, center, size, disc_color);
 
         // Draw centered initials text
         if !painted && !self.text.is_empty() {
@@ -439,21 +466,27 @@ impl Draw for Avatar {
             let font_size = (size as f32 * 0.45).max(8.0);
             let font = Font::bold("Arial", font_size);
 
-            let metrics = context.measure_text(&self.text, &font);
-            let text_width = metrics.width as i32;
-
-            // The origin is the glyph box's *top* edge, so centring is half the line box:
-            // the old `(size - ascent - descent)/2 + ascent` started the box half a line below
-            // the disc's middle and clipped the initials against the bottom edge.
-            let text_x = rect.x + (rect.width as i32 - text_width) / 2;
-            let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
-
-            context.draw_text(
-                Point::new(text_x.max(rect.x), text_y.max(rect.y)),
+            // The initials are bounded to the disc less a fixed inset on each side, so a long
+            // "placeholder" (a file name, a mis-set property) is ellipsised inside the shape
+            // instead of running out of the circle. `draw_text_fitted_cow` is the shared
+            // fitting primitive: it measures, truncates by cluster and centres inside the box,
+            // which is why this is one call rather than a measure-and-place pair. For a
+            // two-letter initial the text fits, so the pixels are the previous centred draw.
+            let inset = INITIALS_INSET.min(size / 4);
+            let budget = size.saturating_sub(inset * 2);
+            let line = context.text_line(rect, &font);
+            let bounds = Rect::new(
+                rect.x + ((rect.width as i32 - budget as i32) / 2).max(0),
+                line.y,
+                budget,
+                line.height,
+            );
+            context.draw_text_fitted_cow(
+                bounds,
                 &self.text,
                 &font,
                 disc_color.contrast_color(),
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
 
@@ -485,6 +518,39 @@ impl Draw for Avatar {
                     badge.color.contrast_color(),
                     HorizontalAlignment::Center,
                 );
+            }
+        }
+
+        // ── Focus ring ──
+        //
+        // The keyboard path is only discoverable if focus is visible. Same predicate and same
+        // geometry helper as the crate's other controls (`BaseWidget::draws_focus_ring` records
+        // the *reason* focus arrived, so a pointer press focuses without painting a ring), and
+        // shaped like the disc itself so the ring reads as belonging to this control.
+        if self.base.draws_focus_ring() {
+            let radius = if self.square { size / 4 } else { size / 2 };
+            let ring = crate::widget::metrics::FocusRing::for_control(rect, radius);
+            if ring.is_drawable() {
+                let color = crate::widget::metrics::focus_ring_color(disc_color);
+                if self.square {
+                    context.draw_rounded_rect_stroke(
+                        ring.rect,
+                        ring.radius,
+                        color,
+                        crate::widget::metrics::FOCUS_RING_WIDTH,
+                    );
+                } else {
+                    let ring_size = ring.rect.width.min(ring.rect.height);
+                    context.draw_circle_stroke(
+                        Point::new(
+                            ring.rect.x + ring_size as i32 / 2,
+                            ring.rect.y + ring_size as i32 / 2,
+                        ),
+                        ring_size / 2,
+                        color,
+                        crate::widget::metrics::FOCUS_RING_WIDTH,
+                    );
+                }
             }
         }
     }
@@ -520,6 +586,7 @@ impl Avatar {
         rect: Rect,
         center: Point,
         size: u32,
+        disc_color: Color,
     ) -> bool {
         if self.image_source.is_empty() || size == 0 {
             return false;
@@ -540,7 +607,9 @@ impl Avatar {
         if !self.square {
             let radius = (size / 2) as i32;
             let corner = (size as f32 * 0.1464).ceil() as u32;
-            let disc_color = self.disc_fill();
+            // The disc colour is the caller's snapshot of `disc_fill`, not a second resolution:
+            // resolving it here re-ran the whole theme lookup chain for a value `draw` already
+            // had, and the two could only ever differ if the theme changed mid-frame.
             for (dx, dy) in [(0i32, 0i32), (1, 0), (0, 1), (1, 1)] {
                 let x = center.x - radius + dx * (size as i32 - corner as i32);
                 let y = center.y - radius + dy * (size as i32 - corner as i32);
@@ -622,16 +691,27 @@ impl EventHandler for Avatar {
         if !self.base.is_enabled() {
             return;
         }
-        if let Event::MousePress { pos, button: 1, .. } = event {
-            let disc = self.disc_rect();
-            let center =
-                Point::new(disc.x + disc.width as i32 / 2, disc.y + disc.height as i32 / 2);
-            let dx = (pos.x - center.x) as i64;
-            let dy = (pos.y - center.y) as i64;
-            let radius = (disc.width.min(disc.height) / 2) as i64;
-            if dx * dx + dy * dy <= radius * radius {
+        match event {
+            Event::MousePress { pos, button: 1, .. } => {
+                let disc = self.disc_rect();
+                let center =
+                    Point::new(disc.x + disc.width as i32 / 2, disc.y + disc.height as i32 / 2);
+                let dx = (pos.x - center.x) as i64;
+                let dy = (pos.y - center.y) as i64;
+                let radius = (disc.width.min(disc.height) / 2) as i64;
+                if dx * dx + dy * dy <= radius * radius {
+                    self.avatar_clicked.emit();
+                }
+            }
+            // The keyboard peer of the disc click: Enter and Space are what a button responds to,
+            // and an avatar is a button-shaped affordance (it emits `avatar_clicked`). Without
+            // this arm the control was pointer-only even though the base routed keys to it.
+            Event::KeyPress { key, .. }
+                if matches!(*key, key_codes::ENTER | key_codes::LINE_FEED | key_codes::SPACE) =>
+            {
                 self.avatar_clicked.emit();
             }
+            _ => {}
         }
     }
 }
@@ -682,6 +762,41 @@ mod tests {
         assert_eq!(avatar.size(), 40);
         assert_eq!(avatar.geometry().width, 40);
         assert_eq!(avatar.geometry().height, 40);
+    }
+
+    /// Enter and Space are the keyboard peer of the disc click (MISC-03).
+    #[test]
+    fn the_keyboard_emits_the_click() {
+        use std::sync::{Arc, Mutex};
+        let mut avatar = Avatar::new(Rect::new(0, 0, 40, 40));
+        let hits = Arc::new(Mutex::new(0u32));
+        let sink = Arc::clone(&hits);
+        avatar.avatar_clicked.connect(move || *sink.lock().unwrap() += 1);
+
+        avatar.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        avatar.handle_event(&Event::key_press(crate::event::key_codes::SPACE, 0));
+        assert_eq!(*hits.lock().unwrap(), 2);
+        // An unrelated key is not a click.
+        avatar.handle_event(&Event::key_press(crate::event::key_codes::LEFT, 0));
+        assert_eq!(*hits.lock().unwrap(), 2);
+        assert!(
+            crate::widget::Widget::is_focusable(&avatar),
+            "the keyboard path needs reachability"
+        );
+    }
+
+    /// The shape and the size are part of the published contract (MISC-02).
+    #[test]
+    fn the_shape_and_size_round_trip_through_the_property_contract() {
+        use crate::widget::capability::types::CapabilityValue;
+        use crate::widget::capability::WidgetProperties;
+        let mut avatar = Avatar::new(Rect::new(0, 0, 40, 40));
+        assert_eq!(avatar.get("square").unwrap(), CapabilityValue::Bool(false));
+        avatar.set("square", CapabilityValue::Bool(true)).unwrap();
+        assert!(avatar.is_square());
+        avatar.set("size", CapabilityValue::UInt(64)).unwrap();
+        assert_eq!(avatar.size(), 64);
+        assert_eq!(avatar.geometry().width, 64);
     }
 
     #[test]

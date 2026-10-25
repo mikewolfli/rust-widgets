@@ -45,6 +45,8 @@
 #[cfg(widgets_unstripped)]
 pub mod adapter;
 pub mod bar_chart;
+/// COMP-F01: vertical/horizontal chart reference lines with axis value chips.
+pub mod chart_crosshair;
 #[cfg(widgets_unstripped)]
 pub mod charts;
 /// Gauge — a radial dial showing one value against a range.
@@ -62,6 +64,7 @@ pub mod types;
 
 // ── Control layer re-exports (the bare names mean the widgets) ──
 pub use bar_chart::{BarChart, BarEntry};
+pub use chart_crosshair::{ChartCrosshair, CrosshairMode};
 pub use line_chart::LineChart;
 pub use pie_chart::{PieChart, PieSlice};
 pub use sparkline::Sparkline;

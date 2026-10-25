@@ -31,6 +31,10 @@ impl CodeEditor {
                 }
                 None => model.folds.push(FoldRegion::new(start, end, true)),
             }
+            // `is_hidden` binary-searches the fold list, so its sort order is an invariant of
+            // the model rather than something the callers happen to preserve. Folding line 10
+            // and then line 3 would otherwise leave the list unsorted.
+            model.normalize_folds();
         }
         self.after_fold_change();
     }
@@ -203,6 +207,9 @@ impl CodeEditor {
     }
 
     pub(super) fn after_fold_change(&mut self) {
+        // Every fold mutation lands here, so the model's merged visibility ranges are
+        // refreshed in one place rather than at each of the five call sites (J-P04).
+        self.model.borrow_mut().normalize_folds();
         if self.config.animate_folds {
             self.fold_reveal = 0.0;
         }

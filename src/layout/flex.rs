@@ -177,6 +177,12 @@ pub struct FlexLayout {
     items: Vec<FlexItem>,
     /// Size hints indexed by position within items (set before update).
     child_sizes: Vec<Size>,
+    /// The solver inputs prepared by the last `arrange` call.
+    ///
+    /// `arrange_body` used to build a whole temporary `FlexLayout` (cloning every item and
+    /// the size vector) on every call that missed the arrangement cache. The prepared copy is
+    /// kept here instead and rebuilt only when its inputs change (G-153).
+    prepared: RefCell<Option<Rc<PreparedFlex>>>,
     /// The last arrangement this layout produced, keyed by every input that produced it.
     ///
     /// # Why the key, rather than a dirty flag (REND-01)
@@ -193,6 +199,16 @@ pub struct FlexLayout {
     /// arrange, then paint), and alternating between two modes only costs a recompute, never a
     /// wrong answer.
     cache: RefCell<Option<FlexCache>>,
+}
+
+/// The solver inputs an `arrange` call needs: the items with their hint floors applied, and
+/// the outer sizes (preferred extent plus margins) for each of them.
+#[derive(Debug, Clone)]
+struct PreparedFlex {
+    /// A hash of the inputs that produced this copy; see `FlexLayout::solver_input_key`.
+    key: u64,
+    items: Vec<FlexItem>,
+    sizes: Vec<Size>,
 }
 
 /// One cached arrangement: the key it was produced under and the boxes it produced.
@@ -217,6 +233,7 @@ impl FlexLayout {
             padding: 0,
             items: Vec::new(),
             child_sizes: Vec::new(),
+            prepared: RefCell::new(None),
             cache: RefCell::new(None),
         }
     }
@@ -244,6 +261,7 @@ impl FlexLayout {
             padding: padding.max(0),
             items: Vec::new(),
             child_sizes: Vec::new(),
+            prepared: RefCell::new(None),
             cache: RefCell::new(None),
         }
     }
@@ -299,10 +317,8 @@ impl FlexLayout {
         matches!(self.direction, FlexDirection::Row | FlexDirection::RowReverse)
     }
 
-    /// The cross extent an item currently asks for, clamped to the band.
-    fn cross_extent_of(&self, index: usize, cross_size: i32) -> u32 {
-        let size = self.child_sizes.get(index).copied().unwrap_or(Size::new(0, 0));
-        let item = &self.items[index];
+    /// The cross extent an item asks for, clamped to the band.
+    fn cross_extent_of(&self, item: &FlexItem, size: Size, cross_size: i32) -> u32 {
         let requested = if self.is_row() { size.height } else { size.width };
         let minimum = if self.is_row() { item.min_size.height } else { item.min_size.width };
         let maximum = if self.is_row() { item.max_size.height } else { item.max_size.width };
@@ -427,6 +443,87 @@ impl FlexLayout {
         *self.cache.borrow_mut() = Some(FlexCache { key, rects: Rc::new(rects.to_vec()) });
     }
 
+    /// A stable hash of just the solver inputs: the items, the outer sizes, and the hint
+    /// floors derived from `described`.
+    ///
+    /// This is deliberately narrower than [`Self::flex_cache_key`], which also covers the
+    /// rectangle and the device scale. The prepared copy does not depend on those, so a
+    /// resize must not force it to be rebuilt (G-153).
+    fn solver_input_key(&self, sizes: &[Size], described: &[Option<ChildInfo>]) -> u64 {
+        let mut hash = 0xf1e2_d3c4_b596_a778u64;
+        let mut mix = |value: u64| {
+            hash ^= value;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        };
+        mix(self.items.len() as u64);
+        for item in &self.items {
+            mix(item.widget_id.unwrap_or(u64::MAX));
+            mix(item.flex_grow.to_bits() as u64);
+            mix(item.flex_shrink.to_bits() as u64);
+            mix(item.align_self.map(|align| align as u64 + 1).unwrap_or(0));
+            mix(item.min_size.width as u64);
+            mix(item.min_size.height as u64);
+            mix(item.max_size.width as u64);
+            mix(item.max_size.height as u64);
+            mix(item.basis.map(|basis| basis as u64 + 1).unwrap_or(0));
+            mix(item.order as u64);
+            mix(item.baseline.map(|baseline| baseline as u64 + 1).unwrap_or(0));
+        }
+        mix(sizes.len() as u64);
+        for size in sizes {
+            mix(size.width as u64);
+            mix(size.height as u64);
+        }
+        for info in described.iter().flatten() {
+            mix(info.hints.width.min as u64);
+            mix(info.hints.height.min as u64);
+            mix(info.params.margins.horizontal_total() as u64);
+            mix(info.params.margins.vertical_total() as u64);
+        }
+        hash
+    }
+
+    /// Returns the solver inputs for this call, rebuilding them only when their key changes.
+    ///
+    /// Each child's *own floor* is what it may be squeezed to, and the hints channel is the
+    /// only place that number arrives — `add_widget(id, stretch)` carries no size at all, so
+    /// `FlexItem::min_size` defaults to zero and the solver's `flex_shrink` step would
+    /// happily compress a child below the minimum it stated. That is the defect the floor
+    /// assignment fixes: two 100 px buttons in a 120 px row came back 57 px each, i.e.
+    /// narrower than their own labels, and a button narrower than its label is a button
+    /// whose label elides (BLUE22 §B.10).
+    ///
+    /// The solver works in **outer** sizes (a child's box plus its margins — see the caller),
+    /// while `hints.width.min` describes the child's *box*, so the floor carries the margins
+    /// too. `hints.*.max` is deliberately **not** copied into `item.max_size`: a flex item's
+    /// `min == pref == max` is how a caller says "this is the size", and applying the ceiling
+    /// made every growing item stop at its nominal width. `flex-grow` and `max-width` are two
+    /// different declarations in CSS, and this solver only owns the first.
+    fn prepared_inputs(
+        &self,
+        key: u64,
+        sizes: &[Size],
+        described: &[Option<ChildInfo>],
+    ) -> Rc<PreparedFlex> {
+        if let Some(prepared) = self.prepared.borrow().as_ref() {
+            if prepared.key == key {
+                return Rc::clone(prepared);
+            }
+        }
+        let mut items = self.items.clone();
+        for (index, info) in described.iter().enumerate() {
+            if let (Some(item), Some(info)) = (items.get_mut(index), info) {
+                item.min_size = Size::new(
+                    info.hints.width.min.saturating_add(info.params.margins.horizontal_total()),
+                    info.hints.height.min.saturating_add(info.params.margins.vertical_total()),
+                );
+            }
+        }
+        let prepared = Rc::new(PreparedFlex { key, items, sizes: sizes.to_vec() });
+        *self.prepared.borrow_mut() = Some(Rc::clone(&prepared));
+        prepared
+    }
+
     /// The key of the cached arrangement, for tests that pin the invalidation contract.
     #[cfg(test)]
     fn cached_key(&self) -> Option<u64> {
@@ -438,8 +535,14 @@ impl FlexLayout {
     }
 
     /// Compute resolved sizes for items and return (main_sizes, total_flex_grow, total_main).
-    fn compute_main_sizes(&self, available_main: i32, gap: i32) -> (Vec<i32>, f32, i32) {
-        let count = self.items.len();
+    fn compute_main_sizes(
+        &self,
+        items: &[FlexItem],
+        sizes: &[Size],
+        available_main: i32,
+        gap: i32,
+    ) -> (Vec<i32>, f32, i32) {
+        let count = items.len();
         if count == 0 {
             return (Vec::new(), 0.0, 0);
         }
@@ -469,8 +572,8 @@ impl FlexLayout {
         let mut intrinsic_main: Vec<i32> = Vec::with_capacity(count);
         let mut total_flex_grow: f32 = 0.0;
 
-        for (i, item) in self.items.iter().enumerate() {
-            let sz = self.child_sizes.get(i).copied().unwrap_or(Size::new(0, 0));
+        for (i, item) in items.iter().enumerate() {
+            let sz = sizes.get(i).copied().unwrap_or(Size::new(0, 0));
             let hinted = if self.is_row() { sz.width as i32 } else { sz.height as i32 };
             let main = item.basis.map(|basis| basis as i32).unwrap_or(hinted);
             intrinsic_main.push(main.max(main_min(item)).min(main_max(item)));
@@ -493,8 +596,7 @@ impl FlexLayout {
             let mut progress = true;
             while leftover > 0 && progress {
                 progress = false;
-                let room_grow: f32 = self
-                    .items
+                let room_grow: f32 = items
                     .iter()
                     .enumerate()
                     .filter(|(i, item)| item.flex_grow > 0.0 && main_sizes[*i] < main_max(item))
@@ -509,7 +611,7 @@ impl FlexLayout {
                 // shares proportional and only the integer remainder is shared out at the end.
                 let pass_leftover = leftover;
                 let mut allocated = 0i32;
-                for (i, item) in self.items.iter().enumerate() {
+                for (i, item) in items.iter().enumerate() {
                     if item.flex_grow <= 0.0 {
                         continue;
                     }
@@ -530,10 +632,10 @@ impl FlexLayout {
                 // Integer rounding can leave a remainder smaller than the number of givers; hand
                 // it to the first growable item that still has room so the loop cannot spin.
                 if leftover > 0 && progress {
-                    if let Some(i) = (0..count).find(|&i| {
-                        self.items[i].flex_grow > 0.0 && main_sizes[i] < main_max(&self.items[i])
-                    }) {
-                        let take = leftover.min(main_max(&self.items[i]) - main_sizes[i]);
+                    if let Some(i) = (0..count)
+                        .find(|&i| items[i].flex_grow > 0.0 && main_sizes[i] < main_max(&items[i]))
+                    {
+                        let take = leftover.min(main_max(&items[i]) - main_sizes[i]);
                         main_sizes[i] += take;
                         leftover -= take;
                     }
@@ -563,9 +665,9 @@ impl FlexLayout {
             // so "the smallest the children may be" is a reachable layout rather than an
             // aspiration the packing pass never consults.
             let deficit = -remaining;
-            let total_flex_shrink: f32 = self.items.iter().map(|i| i.flex_shrink).sum();
+            let total_flex_shrink: f32 = items.iter().map(|i| i.flex_shrink).sum();
             let mut floors: Vec<i32> = Vec::with_capacity(count);
-            for (i, item) in self.items.iter().enumerate() {
+            for (i, item) in items.iter().enumerate() {
                 let shrink = if total_flex_shrink > 0.0 {
                     ((deficit as f32) * (item.flex_shrink / total_flex_shrink)).round() as i32
                 } else {
@@ -767,7 +869,13 @@ impl FlexLayout {
     }
 
     /// Compute cross-axis sizes and positions for each item.
-    fn compute_cross_positions(&self, main_sizes: &[i32], cross_size: i32) -> Vec<(i32, i32)> {
+    fn compute_cross_positions(
+        &self,
+        items: &[FlexItem],
+        sizes: &[Size],
+        main_sizes: &[i32],
+        cross_size: i32,
+    ) -> Vec<(i32, i32)> {
         let count = main_sizes.len();
         if count == 0 {
             return Vec::new();
@@ -779,7 +887,7 @@ impl FlexLayout {
         // is pushed down by exactly the difference. Only the row direction has baselines;
         // a column treats `Baseline` as the start, which is what it did before.
         let shared_baseline = if self.is_row() {
-            self.items
+            items
                 .iter()
                 .enumerate()
                 .filter(|(index, item)| {
@@ -787,14 +895,15 @@ impl FlexLayout {
                         && *index < count
                 })
                 .map(|(index, item)| {
-                    item.baseline.unwrap_or_else(|| self.cross_extent_of(index, cross_size))
+                    let size = sizes.get(index).copied().unwrap_or(Size::new(0, 0));
+                    item.baseline.unwrap_or_else(|| self.cross_extent_of(item, size, cross_size))
                 })
                 .max()
         } else {
             None
         };
-        for (i, item) in self.items.iter().enumerate() {
-            let sz = self.child_sizes.get(i).copied().unwrap_or(Size::new(0, 0));
+        for (i, item) in items.iter().enumerate() {
+            let sz = sizes.get(i).copied().unwrap_or(Size::new(0, 0));
             let child_cross = if self.is_row() { sz.height as i32 } else { sz.width as i32 };
 
             // S-53: the cross-axis bounds of the `FlexItem` were never applied. Every branch
@@ -845,14 +954,34 @@ impl FlexLayout {
     /// The gaps come from [`main_gap`](Self::main_gap) / [`cross_gap`](Self::cross_gap), which
     /// fall back to [`gap`](Self::gap) when no per-axis override is set.
     fn compute_rects(&self, content_rect: Rect) -> Vec<(Option<ObjectId>, Rect)> {
-        if self.items.is_empty() {
+        self.compute_rects_with(
+            &self.items,
+            &self.child_sizes,
+            content_rect,
+            self.main_gap(),
+            self.cross_gap(),
+        )
+    }
+
+    /// [`Self::compute_rects`] with borrowed solver inputs and explicit gaps.
+    ///
+    /// `arrange_body` has already applied the hint floors to its prepared item list and the
+    /// device scale to the gaps, so passing them in removes the temporary `FlexLayout` clone
+    /// that used to carry those two facts (G-153).
+    fn compute_rects_with(
+        &self,
+        items: &[FlexItem],
+        sizes: &[Size],
+        content_rect: Rect,
+        gap: i32,
+        cross_gap: i32,
+    ) -> Vec<(Option<ObjectId>, Rect)> {
+        if items.is_empty() {
             return Vec::new();
         }
 
-        let gap = self.main_gap();
-
         if !matches!(self.wrap, FlexWrap::NoWrap) {
-            return self.compute_wrapped_rects(content_rect, gap, self.cross_gap());
+            return self.compute_wrapped_rects(items, sizes, content_rect, gap, cross_gap);
         }
 
         let (available_main, start_main, available_cross, cross_origin) = if self.is_row() {
@@ -866,15 +995,16 @@ impl FlexLayout {
         }
 
         let (main_sizes, _total_flex_grow, total_used) =
-            self.compute_main_sizes(available_main, gap);
+            self.compute_main_sizes(items, sizes, available_main, gap);
 
         let main_positions =
             self.justify_positions(&main_sizes, total_used, available_main, start_main, gap);
-        let cross_positions = self.compute_cross_positions(&main_sizes, available_cross);
+        let cross_positions =
+            self.compute_cross_positions(items, sizes, &main_sizes, available_cross);
 
-        let mut results = Vec::with_capacity(self.items.len());
+        let mut results = Vec::with_capacity(items.len());
 
-        for (i, item) in self.items.iter().enumerate() {
+        for (i, item) in items.iter().enumerate() {
             let main_pos = *main_positions.get(i).unwrap_or(&0);
             let (cross_pos, cross_len) =
                 cross_positions.get(i).copied().unwrap_or((0, available_cross));
@@ -895,6 +1025,8 @@ impl FlexLayout {
 
     fn compute_wrapped_rects(
         &self,
+        items: &[FlexItem],
+        sizes: &[Size],
         content_rect: Rect,
         gap: i32,
         cross_gap: i32,
@@ -909,18 +1041,12 @@ impl FlexLayout {
         }
 
         let item_main = |index: usize| {
-            let size = self.child_sizes.get(index).copied().unwrap_or(Size::new(0, 0));
+            let size = sizes.get(index).copied().unwrap_or(Size::new(0, 0));
             let intrinsic = if is_row { size.width } else { size.height };
-            let minimum = if is_row {
-                self.items[index].min_size.width
-            } else {
-                self.items[index].min_size.height
-            };
-            let maximum = if is_row {
-                self.items[index].max_size.width
-            } else {
-                self.items[index].max_size.height
-            };
+            let minimum =
+                if is_row { items[index].min_size.width } else { items[index].min_size.height };
+            let maximum =
+                if is_row { items[index].max_size.width } else { items[index].max_size.height };
             // S-50: the wrap path applied only the minimum to the intrinsic main size, so an item
             // whose intrinsic size already exceeded its own maximum stayed above it — the grow pass
             // below only limited *added* space, never the starting size. The maximum is honoured
@@ -932,18 +1058,14 @@ impl FlexLayout {
             main as i32
         };
         let item_cross = |index: usize| {
-            let size = self.child_sizes.get(index).copied().unwrap_or(Size::new(0, 0));
+            let size = sizes.get(index).copied().unwrap_or(Size::new(0, 0));
             let intrinsic = if is_row { size.height } else { size.width } as i32;
-            let minimum = if is_row {
-                self.items[index].min_size.height
-            } else {
-                self.items[index].min_size.width
-            } as i32;
-            let maximum = if is_row {
-                self.items[index].max_size.height
-            } else {
-                self.items[index].max_size.width
-            } as i32;
+            let minimum =
+                if is_row { items[index].min_size.height } else { items[index].min_size.width }
+                    as i32;
+            let maximum =
+                if is_row { items[index].max_size.height } else { items[index].max_size.width }
+                    as i32;
             // S-53: the wrap path applied only the minimum; the maximum is now honoured too.
             let mut cross = intrinsic.max(minimum);
             if maximum > 0 {
@@ -954,7 +1076,7 @@ impl FlexLayout {
 
         // One pass over the items: `item_main` was re-summed over the current line for
         // every candidate (O(n²) on a single long line) and again per line below.
-        let main_sizes: Vec<i32> = (0..self.items.len()).map(item_main).collect();
+        let main_sizes: Vec<i32> = (0..items.len()).map(item_main).collect();
         let mut lines: Vec<Vec<usize>> = Vec::new();
         // Running `used` of the current line: sum of its items' main sizes plus the gaps
         // between them.
@@ -983,7 +1105,7 @@ impl FlexLayout {
             line_cross_sizes.push(line.iter().map(|&index| item_cross(index)).max().unwrap_or(0));
         }
         let cross_origin = if is_row { content_rect.y } else { content_rect.x };
-        let mut results = Vec::with_capacity(self.items.len());
+        let mut results = Vec::with_capacity(items.len());
 
         // `align-content` distributes the lines themselves, not the items inside them.
         //
@@ -1031,8 +1153,7 @@ impl FlexLayout {
             let intrinsic_total: i32 = line.iter().map(|&index| main_sizes[index]).sum();
             let gaps = gap * line.len().saturating_sub(1) as i32;
             let remaining = available_main - intrinsic_total - gaps;
-            let total_grow =
-                line.iter().map(|&index| self.items[index].flex_grow.max(0.0)).sum::<f32>();
+            let total_grow = line.iter().map(|&index| items[index].flex_grow.max(0.0)).sum::<f32>();
             let mut sizes: Vec<i32> = line.iter().map(|&index| main_sizes[index]).collect();
             if remaining > 0 && total_grow > 0.0 {
                 // Shares come out of a **shrinking** budget, not out of the same unpinned
@@ -1044,16 +1165,16 @@ impl FlexLayout {
                 // allocated against a shrinking budget; this is the same rule.
                 let max_main = |index: usize| -> i32 {
                     let max = if is_row {
-                        self.items[index].max_size.width
+                        items[index].max_size.width
                     } else {
-                        self.items[index].max_size.height
+                        items[index].max_size.height
                     };
                     max as i32
                 };
                 let mut left = remaining;
                 for (slot, &index) in line.iter().enumerate() {
-                    let want = (remaining as f32 * self.items[index].flex_grow / total_grow).floor()
-                        as i32;
+                    let want =
+                        (remaining as f32 * items[index].flex_grow / total_grow).floor() as i32;
                     if want <= 0 || left <= 0 {
                         continue;
                     }
@@ -1091,13 +1212,11 @@ impl FlexLayout {
             let line_baseline = if is_row {
                 line.iter()
                     .filter(|index| {
-                        self.items[**index].align_self.unwrap_or(self.align_items)
+                        items[**index].align_self.unwrap_or(self.align_items)
                             == AlignItems::Baseline
                     })
                     .map(|index| {
-                        self.items[*index]
-                            .baseline
-                            .unwrap_or_else(|| item_cross(*index).max(0) as u32)
+                        items[*index].baseline.unwrap_or_else(|| item_cross(*index).max(0) as u32)
                     })
                     .max()
             } else {
@@ -1112,20 +1231,16 @@ impl FlexLayout {
                 cross_origin + line_offsets[line_index]
             };
             for (slot, &index) in line.iter().enumerate() {
-                let align = self.items[index].align_self.unwrap_or(self.align_items);
+                let align = items[index].align_self.unwrap_or(self.align_items);
                 let child_cross = item_cross(index);
                 // S-53: `Stretch` must respect the item's cross maximum too; the other branches
                 // already use the clamped `child_cross`.
-                let min_cross = if is_row {
-                    self.items[index].min_size.height
-                } else {
-                    self.items[index].min_size.width
-                } as i32;
-                let max_cross = if is_row {
-                    self.items[index].max_size.height
-                } else {
-                    self.items[index].max_size.width
-                } as i32;
+                let min_cross =
+                    if is_row { items[index].min_size.height } else { items[index].min_size.width }
+                        as i32;
+                let max_cross =
+                    if is_row { items[index].max_size.height } else { items[index].max_size.width }
+                        as i32;
                 let clamp_cross = |v: i32| -> i32 {
                     let v = v.max(min_cross);
                     if max_cross > 0 {
@@ -1142,8 +1257,7 @@ impl FlexLayout {
                     AlignItems::Baseline => {
                         if is_row {
                             let baseline =
-                                self.items[index].baseline.unwrap_or(child_cross.max(0) as u32)
-                                    as i32;
+                                items[index].baseline.unwrap_or(child_cross.max(0) as u32) as i32;
                             let shared = line_baseline.unwrap_or(baseline as u32) as i32;
                             ((shared - baseline).max(0), child_cross)
                         } else {
@@ -1168,7 +1282,7 @@ impl FlexLayout {
                         sizes[slot].max(0) as u32,
                     )
                 };
-                results.push((self.items[index].widget_id, child_rect));
+                results.push((items[index].widget_id, child_rect));
             }
         }
         results
@@ -1189,6 +1303,7 @@ impl Layout for FlexLayout {
     /// Discards the cached arrangement.
     fn invalidate(&mut self) {
         *self.cache.borrow_mut() = None;
+        self.prepared.get_mut().take();
     }
 
     /// The cross extent of the row is the largest child; the main extent is the sum of
@@ -1292,6 +1407,39 @@ impl Layout for FlexLayout {
                 widgets(wid, child_rect);
             }
         }
+    }
+
+    /// One child's rectangle, reusing the cached solve when possible.
+    ///
+    /// Flexbox sizing (grow/shrink/min/max/justify) cannot be reduced to a single-cell
+    /// formula the way a grid's cell can, so this still runs the solver once — but it runs
+    /// one solve and reuses the cache, instead of the trait default's full `update` followed
+    /// by a scan of every emission (G-158).
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        if !self.has_child(id) {
+            return None;
+        }
+        let key = self.flex_cache_key(0, rect, 1.0, None, None);
+        if let Some(results) = self.cached_arrangement(key) {
+            return results
+                .iter()
+                .find(|(widget_id, _)| *widget_id == Some(id))
+                .map(|(_, child_rect)| *child_rect);
+        }
+        let padding = self.padding.max(0);
+        let content_rect = Rect::new(
+            rect.x.saturating_add(padding),
+            rect.y.saturating_add(padding),
+            rect.width.saturating_sub(2 * padding as u32),
+            rect.height.saturating_sub(2 * padding as u32),
+        );
+        let results = self.compute_rects(content_rect);
+        let found = results
+            .iter()
+            .find(|(widget_id, _)| *widget_id == Some(id))
+            .map(|(_, child_rect)| *child_rect);
+        self.store_arrangement(key, &results);
+        found
     }
 
     /// Lays the items out from the children's own hints.
@@ -1509,63 +1657,14 @@ impl FlexLayout {
         // room the child's box never takes: it is the declaration that the box sits a gap away
         // from its neighbour, not that the box is wider.
         //
-        // The interior gaps are the caller's margins, and the solver's own `gap` is `self.gap`,
-        // so a caller that also sets the layout's `gap` gets both — the same double spacing the
-        // crate has always allowed, and the reason the assembly rules put inter-element space on
-        // one of the two and not both.
-        // Build the solver by hand rather than `..self.clone()`: the clone would copy the cache
-        // (up to one rectangle per child) on every arrangement, which is exactly the allocation
-        // this cache exists to avoid (REND-01).
-        let mut solver = FlexLayout {
-            direction: self.direction,
-            wrap: self.wrap,
-            justify_content: self.justify_content,
-            align_items: self.align_items,
-            align_content: self.align_content,
-            gap: self.gap,
-            row_gap: self.row_gap,
-            column_gap: self.column_gap,
-            padding: self.padding,
-            items: self.items.clone(),
-            child_sizes: sizes.clone(),
-            cache: RefCell::new(None),
-        };
-        // Each child's *own floor* is what it may be squeezed to, and the hints channel is the
-        // only place that number arrives — `add_widget(id, stretch)` carries no size at all, so
-        // `FlexItem::min_size` defaults to zero and the solver's `flex_shrink` step would
-        // happily compress a child below the minimum it stated. That is the defect this line
-        // fixes: two 100 px buttons in a 120 px row came back 57 px each, i.e. narrower than
-        // their own labels, and a button narrower than its label is a button whose label elides
-        // (BLUE22 §B.10, the "shrink rather than shrink to nothing" risk).
-        //
-        // The floor is written into the solver's own items rather than passed alongside them
-        // because the solver reads `item.min_size` — and doing it here keeps `add_widget`'s
-        // signature unchanged, so the fifteen layouts that never call `arrange` are unaffected
-        // (principle #21).
-        for (index, info) in described.iter().enumerate() {
-            if let (Some(item), Some(info)) = (solver.items.get_mut(index), info) {
-                // The solver works in **outer** sizes (a child's box plus its margins — see
-                // `sizes` above), while `hints.width.min` describes the child's *box*. The floor
-                // therefore has to carry the margins too, or the drawn extent would come out
-                // `min - margins`: a button whose floor is 64 px with a 6 px leading margin was
-                // laid out at an outer 64 and drawn 58 wide, i.e. below the minimum it stated,
-                // which is the very thing the floor was added to prevent. Adding the margins back
-                // is what makes the two units agree.
-                item.min_size = Size::new(
-                    info.hints.width.min.saturating_add(info.params.margins.horizontal_total()),
-                    info.hints.height.min.saturating_add(info.params.margins.vertical_total()),
-                );
-                // `hints.*.max` is deliberately **not** copied into `item.max_size`.
-                //
-                // The ceiling looks symmetric with the floor, and `BoxLayout` does honour it —
-                // but a flex item's `min == pref == max` is how a caller says "this is the size,
-                // the weight decides the rest" (`Flex` describes every item with
-                // `Hints::fixed`). Applying the ceiling made every growing item stop at its
-                // nominal width, which is the framework's own `Flex` control silently losing its
-                // distribution. `flex-grow` and `max-width` are two different declarations in CSS
-                // for the same reason, and this solver only owns the first.
-            }
-        }
+        // Borrow the prepared solver inputs instead of cloning the item list and the size
+        // vector into a temporary layout on every call (G-153). The prepared copy carries the
+        // per-child hint floors as well, so it is rebuilt only when one of those inputs
+        // changes — a different rectangle reuses it.
+        let solver_key = self.solver_input_key(&sizes, &described);
+        let prepared = self.prepared_inputs(solver_key, &sizes, &described);
+        let items = prepared.items.as_slice();
+        let sizes = prepared.sizes.as_slice();
 
         // ── Wrapping goes through the wrapped solver ──
         //
@@ -1575,17 +1674,17 @@ impl FlexLayout {
         // here (so a window layout gets the device context), which made a wrapping window layout
         // stop wrapping on every device-aware pass.
         //
-        // The solver is the same one `update` uses (`compute_rects` → the wrap path), given the
-        // hint-derived outer sizes and the device-scaled gaps. Its boxes are *outer* boxes, so
+        // The solver is the same one `update` uses (`compute_rects_with` → the wrap path), given
+        // the hint-derived outer sizes and the device-scaled gaps. Its boxes are *outer* boxes, so
         // each child's own margins are removed before the box is handed out — the same unit
         // conversion the single-line path performs.
         if !matches!(self.wrap, FlexWrap::NoWrap) {
-            solver.gap = scaled_gap;
-            solver.row_gap = self.row_gap.map(|gap| (gap as f32 * scale).round() as i32);
-            solver.column_gap = self.column_gap.map(|gap| (gap as f32 * scale).round() as i32);
+            let scaled_cross_gap = (self.cross_gap() as f32 * scale).round() as i32;
             let mut placed: Vec<(Option<ObjectId>, Rect)> = Vec::with_capacity(sizes.len());
-            for (index, (widget_id, outer)) in
-                solver.compute_rects(content_rect).into_iter().enumerate()
+            for (index, (widget_id, outer)) in self
+                .compute_rects_with(items, sizes, content_rect, scaled_gap, scaled_cross_gap)
+                .into_iter()
+                .enumerate()
             {
                 let (left, top, right, bottom) = inset(index);
                 let child_rect = Rect::new(
@@ -1615,7 +1714,7 @@ impl FlexLayout {
             return;
         }
         let (solved_main, _total_grow, _total_main) =
-            solver.compute_main_sizes(available_main, scaled_gap);
+            self.compute_main_sizes(items, sizes, available_main, scaled_gap);
         // # A known defect this pass does **not** repair (BLUE22 · logged as G-1)
         //
         // The solver may return a box that exceeds the room, and the positions below are packed
@@ -1703,7 +1802,7 @@ impl FlexLayout {
             origin_main + first_offset
         };
         let mut placed: Vec<(Option<ObjectId>, Rect)> = Vec::with_capacity(sizes.len());
-        for index in 0..sizes.len() {
+        for (index, item) in items.iter().enumerate().take(sizes.len()) {
             let (left, top, right, bottom) = inset(index);
             // The solver reports the *whole* box, margins included, so the child's drawn extent
             // is that minus its own margins. Nothing grows here: a child that should absorb room
@@ -1733,14 +1832,14 @@ impl FlexLayout {
             // exceeded the band was emitted taller than the row it sat in under
             // `FlexStart`/`FlexEnd`/`Center`/`Baseline` while `Stretch` honoured the band —
             // the comment above states the rule, and the arms now follow it.
-            let (cross_start, cross_len) =
-                match self.items[index].align_self.unwrap_or(self.align_items) {
-                    AlignItems::Stretch => (0, stretch_cross),
-                    AlignItems::FlexStart => (0, cross_len),
-                    AlignItems::FlexEnd => (available_cross - cross_len, cross_len),
-                    AlignItems::Center => ((available_cross - cross_len) / 2, cross_len),
-                    AlignItems::Baseline => (0, cross_len),
-                };
+            let (cross_start, cross_len) = match item.align_self.unwrap_or(self.align_items)
+            {
+                AlignItems::Stretch => (0, stretch_cross),
+                AlignItems::FlexStart => (0, cross_len),
+                AlignItems::FlexEnd => (available_cross - cross_len, cross_len),
+                AlignItems::Center => ((available_cross - cross_len) / 2, cross_len),
+                AlignItems::Baseline => (0, cross_len),
+            };
             let cross_start = cross_start.max(0);
 
             // The child's box sits at its cursor plus its own leading margin, so a margin is
@@ -1766,7 +1865,7 @@ impl FlexLayout {
                     main_len.max(0) as u32,
                 )
             };
-            if let Some(widget_id) = self.items[index].widget_id {
+            if let Some(widget_id) = item.widget_id {
                 // Every child gets at least the device class's minimum touch area, exactly as
                 // `update_with_context` does. A flex row of small controls is the case this matters
                 // most for: the layout would otherwise place a 20 px control in a 20 px slot on a
@@ -1968,6 +2067,13 @@ impl FlexLayout {
     /// The two tests that call it directly (`flex_layout_update_with_context_scales_gap_and_padding`,
     /// `wrap_layout_update_with_context_scales_spacing`) live in `#[cfg(test)]` modules, which are a
     /// separate compilation unit and so do not count as production callers for the lint either.
+    ///
+    /// # G-403 status
+    ///
+    /// Removing this allow needs the trait's four execution entries to be required (no default),
+    /// plus a generated forwarder, so the override becomes reachable through a statically visible
+    /// call. That edit also has to touch `src/widget/chart_widgets/layout.rs`, which is outside
+    /// this module's write scope; the suppression therefore stays until that change lands.
     #[allow(dead_code)]
     fn update_with_context(
         &self,

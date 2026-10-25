@@ -21,6 +21,7 @@
 //!
 //! A host that mounts the dialog and then only reads it has a box that can never be filled — which
 //! is why the selection has a reachable write path from an `ObjectId`.
+use crate::compat::{Rc, RefCell};
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
@@ -35,7 +36,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, IconRef, IconSource, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, IconRef, IconSource, Widget, WidgetKind};
 /// File dialog mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileDialogMode {
@@ -295,6 +296,16 @@ const SEL_H: i32 = 22;
 /// The gap between the list and the selected-file strip below it.
 const SELECTED_STRIP_GAP: i32 = 10;
 
+/// The facts [`FileDialog::visible_rows`] is a pure function of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VisibleRowsKey {
+    list: Rect,
+    row_height: u32,
+    header_height: u32,
+    scroll: usize,
+    entries: usize,
+}
+
 /// File dialog widget.
 pub struct FileDialog {
     base: BaseWidget,
@@ -367,7 +378,27 @@ pub struct FileDialog {
     overwrite_confirmation: bool,
     /// A save waiting on the overwrite answer.
     pending_overwrite: Option<String>,
+    /// The file-name field's edit buffer (DLG-05). Empty until the user types or a selection
+    /// seeds it; [`Self::name_editing`] says which of the two the paint should read.
+    name_edit: String,
+    /// Whether the file-name field is in edit mode.
+    name_editing: bool,
+    /// Whether the current sort column runs descending (DLG-07).
+    sort_descending: bool,
+    /// The column the current order was produced by, for the header's indicator (DLG-08).
+    sort_column: Option<SortColumn>,
+    /// Cached visible-row rectangles, keyed by [`VisibleRowsKey`] (G-P08).
+    visible_cache: VisibleRowsCache,
+    /// Cached measured line height, keyed by the resolved font size's bits (G-P07).
+    ///
+    /// `list_rect` and `list_row_height` are read by every event and frame. The measurement
+    /// needs a paint backend, so it is taken once per font size and reused rather than built
+    /// again per call.
+    list_line_cache: core::cell::Cell<Option<(u32, u32)>>,
 }
+
+/// The cached visible-row rectangles and the key they were built for.
+type VisibleRowsCache = RefCell<Option<(VisibleRowsKey, Rc<Vec<(usize, Rect)>>)>>;
 impl FileDialog {
     /// Creates an open-file dialog in `geometry`.
     ///
@@ -409,6 +440,12 @@ impl FileDialog {
             favorites: Vec::new(),
             overwrite_confirmation: false,
             pending_overwrite: None,
+            name_edit: String::new(),
+            name_editing: false,
+            sort_descending: false,
+            sort_column: None,
+            visible_cache: RefCell::new(None),
+            list_line_cache: core::cell::Cell::new(None),
         }
     }
     /// Whether the dialog blocks interaction with its owner while open.
@@ -568,6 +605,16 @@ impl FileDialog {
         self.base.request_redraw();
     }
 
+    /// The file-name field's current text: the edit buffer while typing, otherwise the
+    /// selected file's name (DLG-05).
+    fn display_name(&self) -> &str {
+        if self.name_editing {
+            &self.name_edit
+        } else {
+            self.selected_file().unwrap_or("")
+        }
+    }
+
     /// The modifier the next host-driven press applies. The event path derives it from the
     /// press itself; this setter exists for a host that synthesises a row selection.
     pub fn set_selection_modifier(&mut self, modifier: SelectionModifier) {
@@ -587,12 +634,14 @@ impl FileDialog {
         // Row indices address the pre-sort vector, so the selected paths are the stable
         // identity to re-resolve after the order changes.
         let selected_paths = self.selected_files.clone();
+        self.sort_column = Some(column);
+        let descending = self.sort_descending;
         self.entries.sort_by(|a, b| {
             let by_directory = b.is_directory.cmp(&a.is_directory);
             if by_directory != core::cmp::Ordering::Equal {
                 return by_directory;
             }
-            match column {
+            let order = match column {
                 SortColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
                 // `None` sorts after every reported value rather than comparing equal to 0.
                 SortColumn::Size => a.size.unwrap_or(u64::MAX).cmp(&b.size.unwrap_or(u64::MAX)),
@@ -604,12 +653,39 @@ impl FileDialog {
                     .sort_rank()
                     .cmp(&b.kind.sort_rank())
                     .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+            };
+            if descending {
+                order.reverse()
+            } else {
+                order
             }
         });
         self.selected_rows =
             selected_paths.iter().filter_map(|path| self.row_for_path(path)).collect();
-        self.sort_changed.emit((column, false));
+        self.sort_changed.emit((column, self.sort_descending));
+        *self.visible_cache.borrow_mut() = None;
         self.base.request_redraw();
+    }
+
+    /// Whether the listing orders the current column descending (DLG-07).
+    pub fn sort_direction_descending(&self) -> bool {
+        self.sort_descending
+    }
+
+    /// Sets the sort direction and re-applies the current column (DLG-07).
+    ///
+    /// Directories still sort before files; only the within-group order reverses. With no
+    /// column sorted yet this records the direction for the next [`Self::sort_by`].
+    pub fn set_sort_direction(&mut self, descending: bool) {
+        if self.sort_descending == descending {
+            return;
+        }
+        self.sort_descending = descending;
+        if let Some(column) = self.sort_column {
+            self.sort_by(column);
+        } else {
+            self.base.request_redraw();
+        }
     }
 
     /// Re-reads the listing and resets the selection and scroll.
@@ -756,6 +832,27 @@ impl FileDialog {
         self.base.request_redraw();
     }
 
+    /// Moves to the parent of the current directory through the normal history path (DLG-06).
+    ///
+    /// Returns whether the dialog moved. The root has no parent, so it reports `false` rather
+    /// than navigating to itself or inventing an empty path.
+    pub fn go_to_parent(&mut self) -> bool {
+        let trimmed = self.directory.trim_end_matches(['/', '\\']);
+        if trimmed.is_empty() {
+            return false;
+        }
+        let Some(position) = trimmed.rfind(['/', '\\']) else {
+            return false;
+        };
+        let parent =
+            if position == 0 { trimmed[..1].to_string() } else { trimmed[..position].to_string() };
+        if parent == self.directory {
+            return false;
+        }
+        self.navigate_to(parent);
+        true
+    }
+
     /// Replaces the selection with `paths` and announces it once.
     ///
     /// This is the multi-selection counterpart of [`FileDialog::select_file`]: rows are
@@ -891,6 +988,12 @@ impl FileDialog {
 
     /// The shared accept path; `check_overwrite` is false only for the confirmed retry.
     fn accept_impl(&mut self, check_overwrite: bool) {
+        // A typed name is the save destination: the field is the control the user just used,
+        // so it wins over a stale row selection (DLG-05).
+        if self.mode == FileDialogMode::SaveFile && !self.name_edit.is_empty() {
+            self.selected_files = vec![self.name_edit.clone()];
+            self.selected_rows = self.row_for_path(&self.name_edit).into_iter().collect();
+        }
         if self.mode == FileDialogMode::SaveFile && !self.default_suffix.is_empty() {
             if let Some(path) = self.selected_files.first_mut() {
                 let last = path.rsplit(['/', '\\']).next().unwrap_or(path.as_str());
@@ -1242,6 +1345,37 @@ impl EventHandler for FileDialog {
                     }
                     return;
                 }
+                // A Details header is a sort control: pressing a column sorts by it, and
+                // pressing the active column flips the direction (DLG-08).
+                if self.view_mode == ViewMode::Details {
+                    let list_rect = self.list_rect();
+                    let header_h = self.list_header_height();
+                    let header = Rect::new(list_rect.x, list_rect.y, list_rect.width, header_h);
+                    if header_h > 0 && header.contains_point(*pos) {
+                        if let Some((name, size, modified, kind)) = Self::detail_columns(header) {
+                            let column = if name.contains_point(*pos) {
+                                Some(SortColumn::Name)
+                            } else if size.contains_point(*pos) {
+                                Some(SortColumn::Size)
+                            } else if modified.contains_point(*pos) {
+                                Some(SortColumn::Modified)
+                            } else if kind.contains_point(*pos) {
+                                Some(SortColumn::Type)
+                            } else {
+                                None
+                            };
+                            if let Some(column) = column {
+                                if self.sort_column == Some(column) {
+                                    self.set_sort_direction(!self.sort_descending);
+                                } else {
+                                    self.sort_descending = false;
+                                    self.sort_by(column);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
                 if self.list_rect().contains_point(*pos) {
                     self.press_list_row(*pos, false);
                 }
@@ -1256,7 +1390,8 @@ impl EventHandler for FileDialog {
                     return;
                 }
                 let row_h = self.list_row_height().max(1);
-                let visible = (self.list_rect().height / row_h) as usize;
+                let header = self.list_header_height();
+                let visible = (self.list_rect().height.saturating_sub(header) / row_h) as usize;
                 let max_scroll = self.entries.len().saturating_sub(visible.max(1));
                 let step = delta.y.unsigned_abs() as usize * 2;
                 let next = if delta.y > 0 {
@@ -1269,6 +1404,16 @@ impl EventHandler for FileDialog {
                     self.base.request_redraw();
                 }
             }
+            Event::TextInput { text } | Event::ImeCommit { text } => {
+                // The file-name field accepts committed text; the desktop backends deliver
+                // printable characters and IME commits here, not as key codes (DLG-05).
+                if !self.name_editing {
+                    self.name_editing = true;
+                    self.name_edit = self.selected_file().unwrap_or("").to_string();
+                }
+                self.name_edit.extend(text.chars().filter(|ch| !ch.is_control()));
+                self.base.request_redraw();
+            }
             Event::KeyPress { key, .. } => {
                 if *key == key_codes::ENTER {
                     self.accept();
@@ -1276,27 +1421,42 @@ impl EventHandler for FileDialog {
                     self.reject();
                 } else if *key == key_codes::TAB {
                     self.move_focus();
-                } else if *key == key_codes::UP && self.selected_row().is_some() {
-                    let next = self.selected_row().unwrap_or(0).saturating_sub(1);
-                    self.selected_rows = vec![next];
-                    self.selected_files = self.row_name(next).into_iter().collect();
-                    self.selection_changed.emit(self.selected_files.clone());
-                    if next < self.scroll {
-                        self.scroll = next;
+                } else if *key == key_codes::BACKSPACE || *key == key_codes::DELETE {
+                    // Backspace removes the last character of the field; Delete does the same
+                    // (there is no caret in this single-line field yet).
+                    if !self.name_editing {
+                        self.name_editing = true;
+                        self.name_edit = self.selected_file().unwrap_or("").to_string();
                     }
+                    self.name_edit.pop();
                     self.base.request_redraw();
-                } else if *key == key_codes::DOWN && self.selected_row().is_some() {
-                    let next = (self.selected_row().unwrap_or(0) + 1)
-                        .min(self.entries.len().saturating_sub(1));
-                    self.selected_rows = vec![next];
-                    self.selected_files = self.row_name(next).into_iter().collect();
-                    self.selection_changed.emit(self.selected_files.clone());
-                    let row_h = self.list_row_height().max(1);
-                    let visible = (self.list_rect().height / row_h) as usize;
-                    if next >= self.scroll + visible.max(1) {
-                        self.scroll = next + 1 - visible.max(1);
-                    }
-                    self.base.request_redraw();
+                } else if *key == key_codes::UP {
+                    // With no selection the first Up lands on the last row, so keyboard
+                    // navigation works on a freshly opened dialog (DLG-09).
+                    let target = self
+                        .selected_row()
+                        .map(|row| row.saturating_sub(1))
+                        .unwrap_or_else(|| self.entries.len().saturating_sub(1));
+                    self.keyboard_select(target);
+                } else if *key == key_codes::DOWN {
+                    let target = self
+                        .selected_row()
+                        .map(|row| (row + 1).min(self.entries.len().saturating_sub(1)))
+                        .unwrap_or(0);
+                    self.keyboard_select(target);
+                } else if *key == key_codes::HOME {
+                    self.keyboard_select(0);
+                } else if *key == key_codes::END {
+                    self.keyboard_select(self.entries.len().saturating_sub(1));
+                } else if *key == key_codes::PAGE_UP || *key == key_codes::PAGE_DOWN {
+                    let page = self.visible_row_count().max(1);
+                    let current = self.selected_row().unwrap_or(0);
+                    let target = if *key == key_codes::PAGE_UP {
+                        current.saturating_sub(page)
+                    } else {
+                        (current + page).min(self.entries.len().saturating_sub(1))
+                    };
+                    self.keyboard_select(target);
                 }
             }
             _ => { /* Other events are not relevant */ }
@@ -1381,11 +1541,7 @@ impl FileDialog {
         let sidebar = self.sidebar_width();
         let x = rect.x + 10 + sidebar as i32;
         let width = rect.width.saturating_sub(20 + sidebar);
-        let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
-        let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
-        let context = RenderContext::new(&mut backend);
-        let line_h =
-            context.measure_text("M", effective_font(self.base.style())).height.max(1) as i32;
+        let line_h = self.list_line_height() as i32;
         let list_min_h = line_h + 4;
         let reserved_below = SEL_H + SELECTED_STRIP_GAP;
         let list_h = if button_top - list_y >= list_min_h {
@@ -1398,21 +1554,62 @@ impl FileDialog {
 
     /// The height of one listing row.
     fn list_row_height(&self) -> u32 {
+        (self.list_line_height() + 6).max(18)
+    }
+
+    /// The measured line height, taken once per resolved font size (G-P07).
+    fn list_line_height(&self) -> u32 {
+        let font = effective_font(self.base.style());
+        let key = font.size().to_bits();
+        if let Some((cached_key, height)) = self.list_line_cache.get() {
+            if cached_key == key {
+                return height;
+            }
+        }
         let size = Size::new(self.base.geometry().width.max(1), self.base.geometry().height.max(1));
         let mut backend = crate::render::SoftwarePaintBackend::new(size, 1.0);
         let context = RenderContext::new(&mut backend);
-        let line_h = context.measure_text("M", effective_font(self.base.style())).height.max(1);
-        (line_h + 6).max(18)
+        let height = context.measure_text("M", font).height.max(1);
+        self.list_line_cache.set(Some((key, height)));
+        height
     }
 
-    /// The visible rows and their indices into `entries`.
-    fn visible_rows(&self) -> Vec<(usize, Rect)> {
-        let list = self.list_rect();
-        if list.height == 0 || self.entries.is_empty() {
+    /// The column-header row's height: one row in Details mode, zero otherwise (DLG-08).
+    fn list_header_height(&self) -> u32 {
+        if self.view_mode == ViewMode::Details {
+            self.list_row_height()
+        } else {
+            0
+        }
+    }
+
+    /// The visible rows and their indices into `entries`, served from a keyed cache (G-P08).
+    fn visible_rows(&self) -> Rc<Vec<(usize, Rect)>> {
+        let key = VisibleRowsKey {
+            list: self.list_rect(),
+            row_height: self.list_row_height(),
+            header_height: self.list_header_height(),
+            scroll: self.scroll,
+            entries: self.entries.len(),
+        };
+        if let Some((cached_key, rows)) = self.visible_cache.borrow().as_ref() {
+            if *cached_key == key {
+                return Rc::clone(rows);
+            }
+        }
+        let rows = Rc::new(self.compute_visible_rows(&key));
+        *self.visible_cache.borrow_mut() = Some((key, Rc::clone(&rows)));
+        rows
+    }
+
+    /// Rebuilds the visible-row list; [`Self::visible_rows`] is the cached entry point.
+    fn compute_visible_rows(&self, key: &VisibleRowsKey) -> Vec<(usize, Rect)> {
+        let list = key.list;
+        if list.height <= key.header_height || self.entries.is_empty() {
             return Vec::new();
         }
-        let row_h = self.list_row_height();
-        let count = (list.height / row_h) as usize;
+        let row_h = key.row_height.max(1);
+        let count = ((list.height - key.header_height) / row_h) as usize;
         let start = self.scroll.min(self.entries.len().saturating_sub(1));
         (0..count)
             .filter_map(|row| {
@@ -1420,11 +1617,59 @@ impl FileDialog {
                 self.entries.get(index).map(|_| {
                     (
                         index,
-                        Rect::new(list.x, list.y + row as i32 * row_h as i32, list.width, row_h),
+                        Rect::new(
+                            list.x,
+                            list.y + key.header_height as i32 + row as i32 * row_h as i32,
+                            list.width,
+                            row_h,
+                        ),
                     )
                 })
             })
             .collect()
+    }
+
+    /// How many rows the list well can show (the header row is excluded).
+    fn visible_row_count(&self) -> usize {
+        let list = self.list_rect();
+        let header = self.list_header_height();
+        if list.height <= header {
+            return 0;
+        }
+        ((list.height - header) / self.list_row_height().max(1)) as usize
+    }
+
+    /// Selects `target` from the keyboard and keeps it inside the scrolled window (DLG-09).
+    fn keyboard_select(&mut self, target: usize) {
+        let Some(last) = self.entries.len().checked_sub(1) else {
+            return;
+        };
+        let target = target.min(last);
+        self.selected_rows = vec![target];
+        self.selected_files = self.row_name(target).into_iter().collect();
+        self.selection_changed.emit(self.selected_files.clone());
+        let visible = self.visible_row_count().max(1);
+        if target < self.scroll {
+            self.scroll = target;
+        } else if target >= self.scroll + visible {
+            self.scroll = target + 1 - visible;
+        }
+        self.base.request_redraw();
+    }
+
+    /// The row index under `pos`, computed arithmetically with the same bands
+    /// [`Self::visible_rows`] uses (G-P08).
+    fn row_index_at(&self, pos: Point) -> Option<usize> {
+        let list = self.list_rect();
+        let header = self.list_header_height();
+        if list.height <= header || !list.contains_point(pos) {
+            return None;
+        }
+        let row_h = self.list_row_height().max(1);
+        let row = ((pos.y - list.y - header as i32) / row_h as i32).max(0) as usize;
+        let visible = ((list.height - header) / row_h) as usize;
+        let index = self.scroll + row;
+        (row < visible && index < self.entries.len()).then_some(index)
     }
 
     /// The sidebar row that contains `pos`.
@@ -1449,9 +1694,7 @@ impl FileDialog {
 
     /// Applies a press on the listing: select a row, enter a directory, or report a preview.
     fn press_list_row(&mut self, pos: Point, double_click: bool) {
-        let Some((index, _)) =
-            self.visible_rows().into_iter().find(|(_, rect)| rect.contains_point(pos))
-        else {
+        let Some(index) = self.row_index_at(pos) else {
             return;
         };
         let Some(entry) = self.entries.get(index).cloned() else { return };
@@ -1620,15 +1863,16 @@ impl Draw for FileDialog {
         // The theme read is a separate manager lock, taken and released inside
         // `resolved_theme_style`, so it is not held across the draw — the global
         // manager's mutex is not re-entrant.
-        let theme = crate::style::resolved_theme_style_shared("file_dialog");
-        // The window fill and the accent are read as their own lock acquisition and copied
-        // out as values, so the guard is dropped before anything else touches the theme —
-        // the global manager's mutex is not re-entrant.
-        let (window_fill, accent) = {
+        let (window_fill, accent, theme_ink, theme_border) = {
             let manager = crate::style::theme_manager();
             match manager.current_theme() {
-                Some(active) => (active.colors.background, active.colors.primary),
-                None => (Color::WHITE, Color::rgb(0, 120, 215)),
+                Some(active) => (
+                    active.colors.background,
+                    active.colors.primary,
+                    Some(active.colors.foreground),
+                    Some(active.colors.outline),
+                ),
+                None => (Color::WHITE, Color::rgb(0, 120, 215), None, None),
             }
         };
         let accent_ink = accent.contrast_color();
@@ -1637,21 +1881,12 @@ impl Draw for FileDialog {
         // fill, which would leave the frame invisible against the window. A resolved
         // surface equal to the window fill is therefore re-derived one step toward the
         // ink, the same distinction `Colors::input_background` draws for a field.
-        let ink = style
-            .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
-            .unwrap_or(Color::BLACK);
-        let surface = match style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-        {
+        let ink = style.text_color.or(theme_ink).unwrap_or(Color::BLACK);
+        let surface = match style.background_color {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.06),
         };
-        let border = style
-            .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .unwrap_or(Color::rgb(160, 160, 160));
+        let border = style.border_color.or(theme_border).unwrap_or(Color::rgb(160, 160, 160));
         // The field interiors are one step *away* from the dialog surface, so they read as
         // editable regions. On a light surface that means darker and on a dark one lighter —
         // the old code forced white, which on a dark theme was a glaring rectangle.
@@ -1746,7 +1981,67 @@ impl Draw for FileDialog {
             // Only the visible rows are painted: a directory with thousands of entries costs
             // the rows on screen, not the rows in the model.
             context.push_clip(list_rect.x, list_rect.y, list_rect.width, list_rect.height);
-            for (index, row) in self.visible_rows() {
+            // The Details header is the first row of the list well, and the data rows begin
+            // below it (DLG-08). It is clickable so the header drives the sort.
+            let header_h = self.list_header_height();
+            if header_h > 0 {
+                let header = Rect::new(list_rect.x, list_rect.y, list_rect.width, header_h);
+                context.fill_rect(header, surface.blend(&ink, 0.10));
+                if let Some((name, size, modified, kind)) = Self::detail_columns(header) {
+                    let header_line = context.text_line(header, font);
+                    for (column, band) in [
+                        (Some(SortColumn::Name), name),
+                        (Some(SortColumn::Size), size),
+                        (Some(SortColumn::Modified), modified),
+                        (Some(SortColumn::Type), kind),
+                    ] {
+                        let Some(column) = column else { continue };
+                        let label = match column {
+                            SortColumn::Name => {
+                                super::localized_label("dialog.file_dialog.column_name", "Name")
+                            }
+                            SortColumn::Size => {
+                                super::localized_label("dialog.file_dialog.column_size", "Size")
+                            }
+                            SortColumn::Modified => super::localized_label(
+                                "dialog.file_dialog.column_modified",
+                                "Modified",
+                            ),
+                            SortColumn::Type => {
+                                super::localized_label("dialog.file_dialog.column_type", "Type")
+                            }
+                        };
+                        let active = self.sort_column == Some(column);
+                        let label_ink = if active { accent } else { ink };
+                        let text_band = Rect::new(
+                            band.x,
+                            header_line.y,
+                            band.width.saturating_sub(if active { 12 } else { 0 }).max(1),
+                            header_line.height.max(1),
+                        );
+                        context.draw_text_fitted_cow(
+                            text_band,
+                            &label,
+                            font,
+                            label_ink,
+                            HorizontalAlignment::Left,
+                        );
+                        if active {
+                            // The direction mark is an icon outline rather than a text glyph,
+                            // so both backends draw the same shape.
+                            let mark =
+                                Rect::new(band.x + band.width as i32 - 10, band.y, 10, header_h);
+                            let icon = if self.sort_descending {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronUp
+                            };
+                            crate::widget::draw_icon_centered(context, mark, 8, accent, icon);
+                        }
+                    }
+                }
+            }
+            for (index, row) in self.visible_rows().iter().copied() {
                 if self.selected_rows.contains(&index) {
                     context.fill_rect(row, accent.with_alpha_f32(0.18));
                 }
@@ -1868,6 +2163,25 @@ impl Draw for FileDialog {
                     }
                 }
             }
+            // A scroll indicator on the list's trailing edge: the thumb is sized by the visible /
+            // total ratio and positioned by the scroll offset (DLG-19).
+            let visible_count = self.visible_rows().len();
+            if self.entries.len() > visible_count && visible_count > 0 && list_rect.height > 0 {
+                let track = Rect::new(
+                    list_rect.x + list_rect.width as i32 - 3,
+                    list_rect.y + header_h as i32,
+                    3,
+                    list_rect.height - header_h,
+                );
+                context.fill_rect(track, border.with_alpha_f32(0.35));
+                let thumb_h =
+                    ((track.height as usize * visible_count) / self.entries.len()).max(8) as u32;
+                let max_scroll = self.entries.len().saturating_sub(visible_count);
+                let travel = track.height.saturating_sub(thumb_h) as usize;
+                let thumb_y =
+                    track.y + (travel * self.scroll).checked_div(max_scroll).unwrap_or(0) as i32;
+                context.fill_rect(Rect::new(track.x, thumb_y, 3, thumb_h), accent);
+            }
             context.pop_clip();
         } else if self.entries.is_empty() {
             // The placeholder lives inside the list it describes, so it truncates at the
@@ -1930,7 +2244,7 @@ impl Draw for FileDialog {
                 ink,
                 HorizontalAlignment::Left,
             );
-            let fname = self.selected_file().unwrap_or("");
+            let fname = self.display_name();
             let fname_rect =
                 Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), sel_h as u32);
             context.fill_rect(fname_rect, field);
@@ -1952,12 +2266,27 @@ impl Draw for FileDialog {
                     ink,
                     HorizontalAlignment::Left,
                 );
+                if self.name_editing {
+                    // A typing caret after the committed text, so the field reads as editable.
+                    let caret_x = fname_line.x
+                        + crate::widget::metrics::estimate_text_width(fname, fname_font, 1.0)
+                            as i32;
+                    context.fill_rect(
+                        Rect::new(
+                            caret_x.min(fname_band.x + fname_band.width as i32 - 1),
+                            fname_line.y,
+                            1,
+                            fname_line.height.max(1),
+                        ),
+                        ink,
+                    );
+                }
             }
         } else {
             // The file name still needs a home; it moves into the list's own band, which
             // is what the list is for. This keeps the control's content reachable at a
             // size where the strip has no room, rather than silently dropping it.
-            let fname = self.selected_file().unwrap_or("");
+            let fname = self.display_name();
             let fname_font = font;
             let band = Rect::new(
                 list_rect.x + 6,

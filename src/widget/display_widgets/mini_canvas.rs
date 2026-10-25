@@ -460,17 +460,13 @@ impl Draw for MiniCanvas {
         let theme = crate::style::resolved_theme_style_shared("mini_canvas");
         #[cfg(not(full_widgets))]
         let theme: Option<crate::style::WidgetStyle> = None;
-        // Read as its own lock acquisition and copied out as values, so the guard is dropped
-        // before anything else touches the theme.
+        // One shared palette read for the three colours, copied out as values so no guard
+        // survives the rest of the draw. This is the same single-snapshot form `progress_bar`
+        // uses, rather than a second manager-lock acquisition on the frame path.
         #[cfg(full_widgets)]
-        let (window_fill, foreground, secondary) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => {
-                    (active.colors.background, active.colors.foreground, active.colors.secondary)
-                }
-                None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
-            }
+        let (window_fill, foreground, secondary) = match crate::style::palette_shared() {
+            Some(colors) => (colors.background, colors.foreground, colors.secondary),
+            None => (Color::rgb(240, 240, 240), Color::BLACK, Color::rgb(158, 158, 158)),
         };
         // No theme module: the literals are the only rung available, and they are the same
         // ones the `None` arm above uses so the two profiles render alike.

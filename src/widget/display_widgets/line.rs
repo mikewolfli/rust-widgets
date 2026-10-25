@@ -15,7 +15,7 @@ use crate::widget::capability::coercion::{expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::display_widgets::draw_line;
+use crate::widget::display_widgets::{draw_line, draw_shaded_line};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -29,39 +29,11 @@ pub enum LineOrientation {
 }
 
 /// The shading style of a divider line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LineStyle {
-    /// A single solid line, the historical rendering and the default.
-    #[default]
-    Plain,
-    /// Two adjacent 1 px lines: a dark leading edge over a light trailing one, so the
-    /// region reads as pressed in.
-    Sunken,
-    /// Two adjacent 1 px lines: a light leading edge over a dark trailing one, so the
-    /// region reads as raised.
-    Raised,
-}
-
-impl LineStyle {
-    /// The token this style is published as.
-    pub const fn token(self) -> &'static str {
-        match self {
-            Self::Plain => "plain",
-            Self::Sunken => "sunken",
-            Self::Raised => "raised",
-        }
-    }
-
-    /// Parses a published token. `None` for a spelling this control does not publish.
-    pub fn from_token(token: &str) -> Option<Self> {
-        match token {
-            "plain" => Some(Self::Plain),
-            "sunken" => Some(Self::Sunken),
-            "raised" => Some(Self::Raised),
-            _ => None,
-        }
-    }
-}
+///
+/// This is the frame family's [`FrameShadow`](crate::widget::base_widgets::frame::FrameShadow),
+/// re-exported under the divider's spelling: the three-state relief vocabulary is one
+/// definition (principle #54), and the token mapping lives on that definition.
+pub use crate::widget::base_widgets::frame::FrameShadow as LineStyle;
 
 /// A simple horizontal or vertical divider line widget.
 pub struct Line {
@@ -153,34 +125,10 @@ impl Line {
 
     /// Paints the two-line [`LineStyle::Sunken`] / [`LineStyle::Raised`] treatment.
     ///
-    /// The two 1 px bands are centred in the control's rectangle. `sunken` decides which
-    /// edge is dark and which is light; the two styles are the same pair in the other order.
+    /// Delegates to the shared [`draw_shaded_line`] helper: `Divider` publishes the same style
+    /// vocabulary, and one implementation is what keeps the two separators identical.
     fn draw_shaded(&self, context: &mut RenderContext, rect: Rect, vertical: bool, sunken: bool) {
-        if rect.width == 0 || rect.height == 0 {
-            return;
-        }
-        let base = self.line_color();
-        let highlight = base.blend(&Color::WHITE, 0.45);
-        let shadow = base.blend(&Color::BLACK, 0.35);
-        let (first, second) = if sunken { (shadow, highlight) } else { (highlight, shadow) };
-
-        let extent = if vertical { rect.width } else { rect.height };
-        if extent < 2 {
-            // A one-pixel-thick control has no room for two rows; paint the leading edge so
-            // the style still has visible ink rather than silently drawing nothing twice.
-            draw_line(context, rect, vertical, 1, first);
-            return;
-        }
-
-        if vertical {
-            let middle = rect.x + rect.width as i32 / 2;
-            draw_line(context, Rect::new(middle - 1, rect.y, 1, rect.height), true, 1, first);
-            draw_line(context, Rect::new(middle, rect.y, 1, rect.height), true, 1, second);
-        } else {
-            let middle = rect.y + rect.height as i32 / 2;
-            draw_line(context, Rect::new(rect.x, middle - 1, rect.width, 1), false, 1, first);
-            draw_line(context, Rect::new(rect.x, middle, rect.width, 1), false, 1, second);
-        }
+        draw_shaded_line(context, rect, vertical, self.line_color(), sunken);
     }
 }
 

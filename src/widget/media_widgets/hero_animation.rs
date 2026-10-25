@@ -22,12 +22,25 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
+use super::pixels::nearest_scale;
+
 /// A rendered endpoint, captured once so the transition never mutates child geometry.
 ///
 /// The old draw path called `set_geometry(interp_rect)` on the endpoint, painted it, then restored
 /// the old rectangle: a draw function with a side effect. The snapshot is the endpoint's own
 /// picture at its own rectangle; the transition scales and fades that image instead.
 struct EndpointSnapshot {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+/// A cached resample of one endpoint at a destination size.
+///
+/// The destination changes on every frame of a transition only when the endpoints differ in
+/// size; a settled or paused transition reuses the entry, which is what removes the per-frame
+/// full-image allocation (L-P04).
+struct ScaledSnapshot {
     width: u32,
     height: u32,
     data: Vec<u8>,
@@ -68,6 +81,14 @@ pub struct HeroAnimation {
     source_snapshot: Option<EndpointSnapshot>,
     /// Cached picture of the target endpoint, at its own geometry.
     target_snapshot: Option<EndpointSnapshot>,
+    /// Cached resample of the source snapshot for the current destination size.
+    scaled_source: Option<ScaledSnapshot>,
+    /// Cached resample of the target snapshot for the current destination size.
+    scaled_target: Option<ScaledSnapshot>,
+    /// Whether the current run is travelling back toward progress 0.
+    playing_reverse: bool,
+    /// The progress a reverse run started from, i.e. the distance it has to travel.
+    reverse_start: f32,
 }
 
 impl HeroAnimation {
@@ -90,6 +111,10 @@ impl HeroAnimation {
             progress_label: "Progress: 0%".to_string(),
             source_snapshot: None,
             target_snapshot: None,
+            scaled_source: None,
+            scaled_target: None,
+            playing_reverse: false,
+            reverse_start: 0.0,
         }
     }
 
@@ -101,8 +126,44 @@ impl HeroAnimation {
         self.animation_progress = 0.0;
         self.elapsed_ms = 0;
         self.is_animating = true;
+        self.playing_reverse = false;
         self.progress_label = "Progress: 0%".to_string();
         self.refresh_snapshots();
+        self.base.request_redraw();
+    }
+
+    /// Plays the transition backwards from the current progress to the start.
+    ///
+    /// This is what an interrupted enter transition needs: the element retreats along the same
+    /// path instead of finishing a movement the user has already cancelled. The existing
+    /// completion signal fires when progress reaches `0.0`.
+    pub fn play_reverse(&mut self) {
+        if self.source_widget.is_none() || self.target_widget.is_none() {
+            return;
+        }
+        if self.animation_progress <= 0.0 {
+            return;
+        }
+        self.reverse_start = self.animation_progress;
+        self.elapsed_ms = 0;
+        self.playing_reverse = true;
+        self.is_animating = true;
+        self.base.request_redraw();
+    }
+
+    /// Stops the animation where it is and keeps the current progress.
+    pub fn cancel(&mut self) {
+        self.playing_reverse = false;
+        self.stop_animation();
+    }
+
+    /// Returns immediately to the starting geometry, without emitting `animation_completed`.
+    pub fn reset(&mut self) {
+        self.is_animating = false;
+        self.playing_reverse = false;
+        self.elapsed_ms = 0;
+        self.animation_progress = 0.0;
+        self.progress_label = "Progress: 0%".to_string();
         self.base.request_redraw();
     }
 
@@ -113,6 +174,8 @@ impl HeroAnimation {
     pub fn refresh_snapshots(&mut self) {
         self.source_snapshot = self.source_widget.as_mut().and_then(capture_endpoint);
         self.target_snapshot = self.target_widget.as_mut().and_then(capture_endpoint);
+        self.scaled_source = None;
+        self.scaled_target = None;
     }
 
     /// The colour interpolated at progress 0.
@@ -170,6 +233,7 @@ impl HeroAnimation {
     pub fn set_source(&mut self, widget: Box<dyn Widget>) {
         self.source_widget = Some(widget);
         self.source_snapshot = None;
+        self.scaled_source = None;
         self.base.request_redraw();
     }
 
@@ -177,6 +241,7 @@ impl HeroAnimation {
     pub fn set_target(&mut self, widget: Box<dyn Widget>) {
         self.target_widget = Some(widget);
         self.target_snapshot = None;
+        self.scaled_target = None;
         self.base.request_redraw();
     }
 
@@ -219,6 +284,8 @@ impl HeroAnimation {
         self.target_rect = target;
         self.source_snapshot = None;
         self.target_snapshot = None;
+        self.scaled_source = None;
+        self.scaled_target = None;
         self.base.request_redraw();
     }
 
@@ -243,13 +310,28 @@ impl HeroAnimation {
         if !self.is_animating {
             return false;
         }
-        self.elapsed_ms += delta_ms;
+        self.elapsed_ms = self.elapsed_ms.saturating_add(delta_ms);
         let fraction = (self.elapsed_ms as f32 / self.duration_ms as f32).min(1.0);
-        let progress = match self.easing {
+        let eased = match self.easing {
             Some(curve) => curve.apply(fraction),
             None => fraction,
         };
-        self.set_progress(progress);
+        if self.playing_reverse {
+            let progress = self.reverse_start * (1.0 - eased);
+            self.set_progress(progress);
+            if fraction >= 1.0 {
+                // `set_progress` only emits the completion at 1.0, so the reverse end is
+                // reported explicitly here rather than being silently missed.
+                self.animation_progress = 0.0;
+                self.progress_label = "Progress: 0%".to_string();
+                self.is_animating = false;
+                self.playing_reverse = false;
+                self.animation_completed.emit();
+                self.base.request_redraw();
+            }
+        } else {
+            self.set_progress(eased);
+        }
         self.is_animating
     }
 
@@ -357,7 +439,7 @@ impl Draw for HeroAnimation {
         // pixel baseline cannot move. Resolved once per draw, because the shell, the label,
         // the badge and the outline all read from it and re-resolving would take the theme
         // lock several times inside one draw.
-        let style = self.style().clone();
+        let style = self.style();
         let themed = crate::style::resolved_theme_style_shared("hero_animation");
         let themed_bg = themed.as_ref().and_then(|resolved| resolved.background_color);
         let themed_border = themed.as_ref().and_then(|resolved| resolved.border_color);
@@ -392,11 +474,17 @@ impl Draw for HeroAnimation {
         context.face_with_gradient(
             rect,
             bg,
-            self.style().background_gradient.as_ref(),
-            self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            style.background_gradient.as_ref(),
+            style.surface.unwrap_or_default(),
+            style.border_radius.unwrap_or(0),
             Color::BLACK,
         );
+
+        // The text face is read before the snapshot caches below are refreshed, because
+        // `effective_font` borrows the style. It is cloned once per draw, which is cheaper than
+        // the full `Style` clone this paint path used to perform (L-P02).
+        let font = effective_font(self.style()).clone();
+        let font = &font;
 
         let src = self.source_widget.as_ref();
         let tgt = self.target_widget.as_ref();
@@ -406,7 +494,7 @@ impl Draw for HeroAnimation {
         if !has_src && !has_tgt {
             // No widgets configured: draw placeholder. The message is this widget's own
             // chrome — a hint about missing configuration — so it follows the theme.
-            let font = effective_font(&style);
+            let font = effective_font(style);
             // Two lines, each fitted to the control's width, and each centred on the vertical
             // midline as a pair. The previous single call passed a two-line string with one
             // origin: the renderer draws **one** row per call, so the origin was computed
@@ -484,17 +572,16 @@ impl Draw for HeroAnimation {
             self.target_snapshot = self.target_widget.as_mut().and_then(capture_endpoint);
         }
         if let Some(snapshot) = self.source_snapshot.as_ref() {
-            draw_snapshot(context, snapshot, interp_rect, 1.0 - t);
+            draw_snapshot(context, snapshot, &mut self.scaled_source, interp_rect, 1.0 - t);
         }
         if let Some(snapshot) = self.target_snapshot.as_ref() {
-            draw_snapshot(context, snapshot, interp_rect, t);
+            draw_snapshot(context, snapshot, &mut self.scaled_target, interp_rect, t);
         }
 
         // Draw the progress indicator label. The label is chrome, so it uses the resolved
         // foreground instead of the fixed mid-grey that made it unreadable on a dark shell. The
         // text is rebuilt when progress changes, not in this paint path.
         let progress_text = &self.progress_label;
-        let font = effective_font(&style);
         let metrics = context.measure_text(progress_text, font);
         let text_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
         let text_y = rect.y + rect.height as i32 - 10;
@@ -555,52 +642,48 @@ fn capture_endpoint(endpoint: &mut Box<dyn Widget>) -> Option<EndpointSnapshot> 
     })
 }
 
-/// Paints a captured endpoint, scaled to `dest`, through a composited layer at `opacity`.
+/// Paints a captured endpoint, scaled to `dest` through a composited layer at `opacity`.
+///
+/// The resample is cached in `cache` and keyed by the destination size only; the opacity is
+/// applied by the layer group, so a fade at a fixed size costs no pixel work.
 fn draw_snapshot(
     context: &mut RenderContext,
     snapshot: &EndpointSnapshot,
+    cache: &mut Option<ScaledSnapshot>,
     dest: Rect,
     opacity: f32,
 ) {
     if dest.width == 0 || dest.height == 0 || opacity <= 0.0 {
         return;
     }
-    let scaled;
     let data: &[u8] = if dest.width == snapshot.width && dest.height == snapshot.height {
         &snapshot.data
     } else {
-        scaled =
-            scale_rgba(&snapshot.data, snapshot.width, snapshot.height, dest.width, dest.height);
-        &scaled
+        let reusable = matches!(
+            cache.as_ref(),
+            Some(entry) if entry.width == dest.width && entry.height == dest.height
+        );
+        if !reusable {
+            *cache = Some(ScaledSnapshot {
+                width: dest.width,
+                height: dest.height,
+                data: nearest_scale(
+                    &snapshot.data,
+                    snapshot.width,
+                    snapshot.height,
+                    dest.width,
+                    dest.height,
+                ),
+            });
+        }
+        match cache.as_ref() {
+            Some(entry) => &entry.data,
+            None => return,
+        }
     };
     context.push_layer_group(dest, None, opacity.clamp(0.0, 1.0), None);
     context.draw_image(dest.x, dest.y, dest.width, dest.height, data);
     context.pop_layer();
-}
-
-/// Nearest-neighbour resample of an RGBA buffer into `width` x `height`.
-fn scale_rgba(
-    data: &[u8],
-    source_width: u32,
-    source_height: u32,
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
-    let mut out = vec![0u8; (width as usize) * (height as usize) * 4];
-    if source_width == 0 || source_height == 0 || width == 0 || height == 0 {
-        return out;
-    }
-    for y in 0..height {
-        let source_y = (y as u64 * source_height as u64 / height as u64) as u32;
-        for x in 0..width {
-            let source_x = (x as u64 * source_width as u64 / width as u64) as u32;
-            let source = ((source_y as usize * source_width as usize + source_x as usize) * 4)
-                .min(data.len().saturating_sub(4));
-            let destination = (y as usize * width as usize + x as usize) * 4;
-            out[destination..destination + 4].copy_from_slice(&data[source..source + 4]);
-        }
-    }
-    out
 }
 
 impl EventHandler for HeroAnimation {
@@ -609,7 +692,9 @@ impl EventHandler for HeroAnimation {
             return;
         }
         match event {
-            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
+            // Starting or stopping on **release** keeps a press/release pair from toggling the
+            // transition twice, which is what the paired arm did.
+            Event::MouseRelease { pos, button } => {
                 if *button == 1 && self.geometry().contains_point(*pos) {
                     if self.is_animating {
                         self.stop_animation();

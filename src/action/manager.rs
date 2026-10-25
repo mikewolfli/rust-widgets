@@ -39,6 +39,28 @@ pub struct ActionManager {
     /// of going through `ActionRouter` (which asks `ShortcutManager` first).
     pub shortcut_conflict: Signal1<(String, String)>,
 }
+/// One disagreement between the action registry's reverse index and `ShortcutManager`.
+///
+/// # Why a structured report (W-08)
+///
+/// `ActionRouter::connect` writes the same binding to two tables in one call. Two writes in one
+/// function body stay in step only as long as nobody adds a third write point, and there is no
+/// event-side reconciliation gate for these tables. This report is the runtime check that closes
+/// that gap: [`ActionManager::shortcut_reconciliation`] compares the tables and
+/// [`crate::action::ActionRouter`] asserts it is empty after every registration it performs, so a
+/// future bypass is caught at the call that broke the invariant rather than at the next dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortcutDisagreement {
+    /// The action id one or both tables claim the chord routes to.
+    pub action_id: String,
+    /// The chord in canonical form ([`canonicalize_shortcut_type`]).
+    pub chord: String,
+    /// Whether the action registry's reverse index holds this chord.
+    pub action_manager_has: bool,
+    /// Whether the shortcut registry's global table holds this chord.
+    pub shortcut_manager_has: bool,
+}
+
 impl fmt::Debug for ActionManager {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActionManager")
@@ -296,6 +318,57 @@ impl ActionManager {
             added.push(definition.id.clone());
         }
         Ok(())
+    }
+
+    /// Compares the reverse index against [`crate::shortcut::ShortcutManager`]'s global table.
+    ///
+    /// An empty result is the invariant `ActionRouter::connect` maintains: every chord it registers
+    /// is present in both tables and routes to the same action id. A non-empty result names each
+    /// disagreement, so the reconciliation can be asserted (debug builds) and reported (release
+    /// builds) instead of silently drifting.
+    ///
+    /// Scoped shortcut registrations are excluded on purpose: this registry has no scope dimension,
+    /// so a chord bound in a window scope is not a disagreement with the global table.
+    pub fn shortcut_reconciliation(
+        &self,
+        shortcuts: &crate::shortcut::ShortcutManager,
+    ) -> Vec<ShortcutDisagreement> {
+        let mut reported: Vec<String> = Vec::new();
+        let mut disagreements = Vec::new();
+
+        // Registry -> action index: the registry is authoritative for *which* chords exist.
+        for (shortcut, action_id) in shortcuts.all_shortcuts() {
+            let chord = canonicalize_shortcut_type(shortcut);
+            if reported.contains(&chord) {
+                continue;
+            }
+            reported.push(chord.clone());
+            let indexed = self.shortcut_to_action.get(&chord);
+            if indexed != Some(action_id) {
+                disagreements.push(ShortcutDisagreement {
+                    action_id: action_id.clone(),
+                    chord,
+                    action_manager_has: indexed.is_some(),
+                    shortcut_manager_has: true,
+                });
+            }
+        }
+
+        // Action index -> registry: catches a chord the reverse index holds that the registry
+        // never accepted (the shape a bypassed `connect` produces).
+        for (chord, action_id) in &self.shortcut_to_action {
+            if reported.contains(chord) {
+                continue;
+            }
+            disagreements.push(ShortcutDisagreement {
+                action_id: action_id.clone(),
+                chord: chord.clone(),
+                action_manager_has: true,
+                shortcut_manager_has: false,
+            });
+        }
+
+        disagreements
     }
 
     /// The canonical chord currently bound to `action_id`, if any.

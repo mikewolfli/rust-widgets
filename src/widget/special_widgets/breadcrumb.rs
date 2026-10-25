@@ -89,6 +89,8 @@ pub struct Breadcrumb {
     editing: bool,
     /// The text being edited while [`Self::editing`] is set.
     edit_buffer: String,
+    /// The editor's insertion point, as a character index into `edit_buffer` (SP-70).
+    caret_pos: usize,
     /// Emitted when a segment is activated. Payload is segment id.
     pub segment_activated: Signal1<String>,
     /// Emitted with the segment id when a context menu is requested over one.
@@ -114,6 +116,11 @@ struct BreadcrumbLayout {
     slots: Vec<(Option<usize>, i32)>,
 }
 
+/// The byte offset of character `index` in `text`, or the text's length when it is past the end.
+fn char_to_byte(text: &str, index: usize) -> usize {
+    text.char_indices().nth(index).map(|(byte, _)| byte).unwrap_or(text.len())
+}
+
 impl Breadcrumb {
     /// Creates an empty breadcrumb.
     pub fn new(geometry: Rect) -> Self {
@@ -128,6 +135,7 @@ impl Breadcrumb {
             layout_cache: None,
             editing: false,
             edit_buffer: String::new(),
+            caret_pos: 0,
             segment_activated: Signal1::new(),
             context_menu_requested: Signal1::new(),
             path_edited: Signal1::new(),
@@ -152,6 +160,9 @@ impl Breadcrumb {
                 .map(|segment| segment.label.as_str())
                 .collect::<Vec<_>>()
                 .join(&self.separator);
+            // Entering edit mode puts the caret after the existing path, which is where a user
+            // who opened an address bar expects to start typing (SP-70).
+            self.caret_pos = self.edit_buffer.chars().count();
         }
         self.base.request_redraw();
     }
@@ -166,6 +177,54 @@ impl Breadcrumb {
         &self.edit_buffer
     }
 
+    /// The editor's insertion point, as a character index into [`Self::editing_text`] (SP-70).
+    pub fn caret_pos(&self) -> usize {
+        self.caret_pos
+    }
+
+    /// Moves the editor's caret, clamped to the text.
+    pub fn set_caret_pos(&mut self, position: usize) {
+        let length = self.edit_buffer.chars().count();
+        let position = position.min(length);
+        if self.caret_pos == position {
+            return;
+        }
+        self.caret_pos = position;
+        self.base.request_redraw();
+    }
+
+    /// Inserts `text` at the caret and leaves the caret after it.
+    pub fn insert_at_caret(&mut self, text: &str) {
+        let byte = char_to_byte(&self.edit_buffer, self.caret_pos);
+        self.edit_buffer.insert_str(byte, text);
+        self.caret_pos += text.chars().count();
+        self.base.request_redraw();
+    }
+
+    /// Deletes the character before the caret, if any.
+    pub fn backspace_at_caret(&mut self) {
+        if self.caret_pos == 0 {
+            return;
+        }
+        let start = char_to_byte(&self.edit_buffer, self.caret_pos - 1);
+        let end = char_to_byte(&self.edit_buffer, self.caret_pos);
+        self.edit_buffer.replace_range(start..end, "");
+        self.caret_pos -= 1;
+        self.base.request_redraw();
+    }
+
+    /// Deletes the character after the caret, if any.
+    pub fn delete_at_caret(&mut self) {
+        let length = self.edit_buffer.chars().count();
+        if self.caret_pos >= length {
+            return;
+        }
+        let start = char_to_byte(&self.edit_buffer, self.caret_pos);
+        let end = char_to_byte(&self.edit_buffer, self.caret_pos + 1);
+        self.edit_buffer.replace_range(start..end, "");
+        self.base.request_redraw();
+    }
+
     /// Commits the edited path, publishing it and leaving edit mode.
     pub fn commit_path_edit(&mut self) {
         if !self.editing {
@@ -177,13 +236,21 @@ impl Breadcrumb {
         self.base.request_redraw();
     }
 
-    /// Cancels the edit, discarding the typed text.
+    /// Moves the editor's caret by a signed character count, clamped.
+    pub fn move_caret_by(&mut self, delta: isize) {
+        let next = (self.caret_pos as isize + delta)
+            .clamp(0, self.edit_buffer.chars().count() as isize) as usize;
+        self.set_caret_pos(next);
+    }
+
+    /// Ends an edit without publishing it, restoring the pre-edit caret.
     pub fn cancel_path_edit(&mut self) {
         if !self.editing {
             return;
         }
         self.editing = false;
         self.edit_buffer.clear();
+        self.caret_pos = 0;
         self.base.request_redraw();
     }
 
@@ -195,6 +262,10 @@ impl Breadcrumb {
     /// the convention a file browser uses, and the only way to keep both the root and the
     /// current location visible. The previous layout dropped every segment past the right
     /// edge instead, so the *current* segment — the one that matters — disappeared first.
+    ///
+    /// The paint and the hit test read [`Self::cached_slots`] directly; this owned form exists for
+    /// the layout assertions in this file's tests.
+    #[cfg(test)]
     fn display_slots(&mut self) -> Vec<(Option<usize>, i32)> {
         self.ensure_layout();
         self.cached_slots().to_vec()
@@ -670,19 +741,23 @@ impl EventHandler for Breadcrumb {
 
         if self.editing {
             match event {
-                Event::TextInput { text } | Event::ImeCommit { text } => {
-                    self.edit_buffer.push_str(text);
-                    self.base.request_redraw();
-                }
                 Event::KeyPress { key, .. } => match *key {
-                    8 => {
-                        self.edit_buffer.pop();
-                        self.base.request_redraw();
-                    }
+                    8 => self.backspace_at_caret(),
+                    46 => self.delete_at_caret(),
                     13 => self.commit_path_edit(),
                     27 => self.cancel_path_edit(),
+                    37 => self.move_caret_by(-1),
+                    39 => self.move_caret_by(1),
+                    36 => self.set_caret_pos(0),
+                    35 => self.set_caret_pos(self.edit_buffer.chars().count()),
                     _ => {}
                 },
+                // Text arrives after the key arm so Enter/Escape are not also inserted. The
+                // editor inserts at the caret instead of appending, which is what makes editing a
+                // path in the middle possible (SP-70).
+                Event::TextInput { text } | Event::ImeCommit { text } => {
+                    self.insert_at_caret(text);
+                }
                 _ => {}
             }
             return;
@@ -739,7 +814,12 @@ impl Draw for Breadcrumb {
         // `resolved_theme_style` (or the scoped block below), so none is held across
         // the draw or across another accessor — the global manager's mutex is not
         // re-entrant.
-        let style = self.base.style().clone();
+        // The layout is resolved before the style borrow because `ensure_layout` writes the
+        // cache; everything after this line only reads, so the style can be borrowed rather than
+        // cloned, and one font serves every label (SP-P75).
+        self.ensure_layout();
+        let style = self.base.style();
+        let font = effective_font(style);
         let theme = crate::style::resolved_theme_style_shared("breadcrumb");
         // `breadcrumb` resolves to the `Text` role, which carries a foreground but no
         // surface — a text control sits on whatever it was placed on. So the surface
@@ -780,10 +860,9 @@ impl Draw for Breadcrumb {
         context.draw_rect(band, border);
 
         if self.editing {
-            // The editor replaces the trail while it is open. The text is shown with the same
-            // fitted primitive the segments use, so a long path elides instead of escaping the
-            // control, and a caret marks the insertion point.
-            let font = effective_font(&style);
+            // The editor replaces the trail while it is open. The text is drawn from a scrolled
+            // origin so the caret stays visible, and the caret is placed by measuring the text
+            // before it rather than by assuming the caret is at the end (SP-70).
             let line = context.text_line(band, font);
             let inner = Rect::new(
                 band.x + self.segment_padding,
@@ -791,14 +870,25 @@ impl Draw for Breadcrumb {
                 band.width.saturating_sub(self.segment_padding as u32 + 2),
                 line.height,
             );
-            let fitted = context.draw_text_fitted_cow(
-                inner,
+            let caret_chars = self.caret_pos.min(self.edit_buffer.chars().count());
+            let prefix: String = self.edit_buffer.chars().take(caret_chars).collect();
+            let prefix_width = context.measure_text(&prefix, font).width as i32;
+            // Keep the caret at least one glyph inside the field: the text is shifted left by
+            // whatever the prefix overflows, which is the minimal scroll a line editor needs.
+            let overflow = (prefix_width - (inner.width as i32 - 2)).max(0);
+            context.draw_text_fitted_cow(
+                Rect::new(
+                    inner.x - overflow,
+                    inner.y,
+                    inner.width.saturating_add(overflow as u32),
+                    inner.height,
+                ),
                 &self.edit_buffer,
                 font,
                 text_color,
                 HorizontalAlignment::Left,
             );
-            let caret_x = inner.x + context.measure_text(fitted.as_ref(), font).width as i32 + 1;
+            let caret_x = inner.x + prefix_width - overflow;
             context.draw_line_stroke(
                 Point::new(caret_x, inner.y),
                 Point::new(caret_x, inner.y + inner.height as i32),
@@ -808,17 +898,17 @@ impl Draw for Breadcrumb {
             return;
         }
 
-        let slots = self.display_slots();
+        let slots = self.cached_slots();
         let mut slot_x = band.x;
         for (position, (slot, width)) in slots.iter().enumerate() {
             let Some(index) = *slot else {
                 // Collapsed middle: one marker standing in for the hidden segments.
                 let rect = Rect::new(slot_x, band.y, *width as u32, band.height);
-                let line = context.text_line(rect, effective_font(&style));
+                let line = context.text_line(rect, font);
                 context.draw_text_fitted_cow(
                     Rect::new(rect.x, line.y, rect.width, line.height),
                     "…",
-                    effective_font(&style),
+                    font,
                     separator_color,
                     HorizontalAlignment::Center,
                 );
@@ -855,7 +945,7 @@ impl Draw for Breadcrumb {
             // separator: the box is also the click target, and D09-CTRL-02 is exactly the case where
             // ink and target disagreed. `estimate_text_width` sizes the box, so this only bites for a
             // caller font larger than the measured one — where eliding is still the correct answer.
-            let line = context.text_line(segment_rect, effective_font(&style));
+            let line = context.text_line(segment_rect, font);
             let label_box = Rect::new(
                 segment_rect.x + self.segment_padding,
                 line.y,
@@ -865,7 +955,7 @@ impl Draw for Breadcrumb {
             context.draw_text_fitted_cow(
                 label_box,
                 &segment.label,
-                effective_font(&style),
+                font,
                 text_color,
                 HorizontalAlignment::Left,
             );

@@ -159,6 +159,16 @@ pub struct KeySequenceEdit {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<KeySequence>>,
     restoring_history: bool,
+    /// The text [`Draw`] paints, kept between frames.
+    ///
+    /// The draw path used to `collect` + `join` the chord list and format the modifier prefix on
+    /// every frame, so an idle field allocated two or three strings per paint for a value that had
+    /// not changed. Every write that can change the text marks this cache dirty through
+    /// [`KeySequenceEdit::invalidate_display`], and `draw` rebuilds only when it is. The rendered
+    /// string is byte-identical to what the per-frame form produced.
+    display_text: String,
+    /// Whether [`KeySequenceEdit::display_text`] still describes the current state.
+    display_dirty: bool,
 }
 impl KeySequenceEdit {
     /// Creates an editor with no sequence set and recording stopped.
@@ -180,6 +190,8 @@ impl KeySequenceEdit {
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(KeySequence::empty())),
             restoring_history: false,
+            display_text: String::new(),
+            display_dirty: true,
         }
     }
     /// Returns the current sequence; compare with [`KeySequence::is_empty`] to
@@ -238,6 +250,7 @@ impl KeySequenceEdit {
         if !seq.is_empty() && self.conflicting_sequences.contains(&seq) {
             self.conflict_detected.emit(seq);
         }
+        self.invalidate_display();
         self.base.request_redraw();
     }
 
@@ -289,6 +302,7 @@ impl KeySequenceEdit {
         if let Some(last) = self.chords.last().cloned() {
             self.key_sequence = last;
         }
+        self.invalidate_display();
         self.base.request_redraw();
     }
 
@@ -352,7 +366,10 @@ impl KeySequenceEdit {
     /// anything. If no `Event::FocusLost` or key press follows, recording
     /// stays on indefinitely.
     pub fn start_recording(&mut self) {
-        self.recording = true;
+        if !self.recording {
+            self.recording = true;
+            self.invalidate_display();
+        }
     }
     /// Ends recording.
     ///
@@ -362,6 +379,7 @@ impl KeySequenceEdit {
     pub fn stop_recording(&mut self) {
         if self.recording {
             self.recording = false;
+            self.invalidate_display();
             self.editing_finished.emit();
         }
     }
@@ -401,8 +419,55 @@ impl KeySequenceEdit {
         let seq = self.history_target.borrow().clone();
         self.key_sequence = seq.clone();
         self.restoring_history = false;
+        self.invalidate_display();
         self.key_sequence_changed.emit(seq);
         self.base.request_redraw();
+    }
+
+    /// Marks the cached render text stale; the next `draw` rebuilds it.
+    ///
+    /// Every path that writes `key_sequence`, `chords` or `recording` calls this. The cache exists
+    /// for the *idle* frame, which is the overwhelming majority, so correctness is worth one call
+    /// per write and those write paths are all in this file.
+    fn invalidate_display(&mut self) {
+        self.display_dirty = true;
+    }
+
+    /// Rebuilds [`Self::display_text`] when an input changed.
+    ///
+    /// The three shapes are the ones the draw path used to build inline: the recording prompt with
+    /// the chords captured so far, the placeholder for an unset shortcut, and the set value (a
+    /// multi-chord list joined with `, `). The strings are identical, including the space after
+    /// `Recording...`.
+    fn refresh_display_text(&mut self) {
+        if !self.display_dirty {
+            return;
+        }
+        self.display_text.clear();
+        if self.recording {
+            self.display_text.push_str("Recording...");
+            if !self.chords.is_empty() {
+                self.display_text.push(' ');
+                for (index, chord) in self.chords.iter().enumerate() {
+                    if index > 0 {
+                        self.display_text.push_str(", ");
+                    }
+                    self.display_text.push_str(&chord.to_display_string());
+                }
+            }
+        } else if self.key_sequence.is_empty() {
+            self.display_text.push_str("Click to set shortcut...");
+        } else if self.chords.len() > 1 {
+            for (index, chord) in self.chords.iter().enumerate() {
+                if index > 0 {
+                    self.display_text.push_str(", ");
+                }
+                self.display_text.push_str(&chord.to_display_string());
+            }
+        } else {
+            self.display_text.push_str(&self.key_sequence.to_display_string());
+        }
+        self.display_dirty = false;
     }
 }
 impl Widget for KeySequenceEdit {
@@ -466,13 +531,18 @@ impl EventHandler for KeySequenceEdit {
             Event::KeyPress { key, modifiers } if self.recording => {
                 // Escape clears recording without saving
                 if *key == key_codes::ESCAPE {
-                    self.recording = false;
+                    if self.recording {
+                        self.recording = false;
+                        self.invalidate_display();
+                    }
                     return;
                 }
-                // Ignore modifier-only keys
-                if *key == 16 || *key == 17 || *key == 18 {
+                // Ignore modifier-only keys. The set matches the modifier bits
+                // `modifiers_from_event` maps (including Meta/Super), so a lone modifier press is
+                // not recorded as a shortcut key while a modified chord still is.
+                if is_modifier_key(*key) {
                     return;
-                } // Shift/Ctrl/Alt
+                }
                 let key_name = key_code_to_name(*key);
                 let modifiers = Self::modifiers_from_event(*modifiers);
                 let chord = KeySequence::new(modifiers, *key, key_name);
@@ -484,6 +554,7 @@ impl EventHandler for KeySequenceEdit {
                         self.chords.push(chord.clone());
                     }
                     self.key_sequence = chord;
+                    self.invalidate_display();
                     self.base.request_redraw();
                     if self.chords.len() >= self.max_chords {
                         self.stop_recording();
@@ -543,9 +614,92 @@ fn key_code_to_name(key: u32) -> String {
         k => format!("Key{k}"),
     }
 }
+
+/// Whether `key` is one of the modifier keys themselves.
+///
+/// The five coded modifiers are the ones [`KeySequenceEdit::modifiers_from_event`] translates:
+/// Shift (16), Control (17), Alt (18) and Meta/Super (91 left, 92 right, and 224, which some hosts
+/// send for either). Recording ignores every one of them so a bare modifier press cannot become a
+/// shortcut; a chord that *includes* one still records it through the event's modifier bits.
+fn is_modifier_key(key: u32) -> bool {
+    matches!(key, 16 | 17 | 18 | 91 | 92 | 224)
+}
+
+/// The virtual-key code for a display name this widget can produce.
+///
+/// The exact inverse of [`key_code_to_name`] over the names that function emits, plus the spellings
+/// [`crate::shortcut::Key::from_string`] accepts. `None` for a name no key produces; the
+/// `key_sequence` property treats that as an unset key (code `0`) rather than storing a sequence
+/// whose display text and code disagree.
+fn key_code_from_name(name: &str) -> Option<u32> {
+    let upper = name.trim().to_ascii_uppercase();
+    let code = match upper.as_str() {
+        "BACKSPACE" | "BACK" => 8,
+        "TAB" => 9,
+        "RETURN" | "ENTER" => 13,
+        "ESCAPE" | "ESC" => 27,
+        "SPACE" => 32,
+        "PAGEUP" | "PAGE_UP" => 33,
+        "PAGEDOWN" | "PAGE_DOWN" => 34,
+        "END" => 35,
+        "HOME" => 36,
+        "LEFT" => 37,
+        "UP" => 38,
+        "RIGHT" => 39,
+        "DOWN" => 40,
+        "DELETE" | "DEL" | "INSERT" | "INS" => 46,
+        other => {
+            if other.len() == 1 {
+                let ch = other.as_bytes()[0];
+                if ch.is_ascii_uppercase() || ch.is_ascii_digit() {
+                    return Some(u32::from(ch));
+                }
+                return None;
+            }
+            let number: u32 = other.strip_prefix('F')?.parse().ok()?;
+            if (1..=12).contains(&number) {
+                return Some(111 + number);
+            }
+            return None;
+        }
+    };
+    Some(code)
+}
+
+/// Parses a `Ctrl+Shift+S` style token into a sequence.
+///
+/// Modifier names are case-insensitive and may appear in any order; the last segment is the key.
+/// An empty token yields the empty sequence, which is how the property expresses "unset".
+fn sequence_from_token(token: &str) -> KeySequence {
+    let token = token.trim();
+    if token.is_empty() {
+        return KeySequence::empty();
+    }
+    let mut modifiers = 0u32;
+    let mut key_part = None;
+    for segment in token.split('+').map(str::trim).filter(|part| !part.is_empty()) {
+        match segment.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => modifiers |= 0x01,
+            "alt" | "option" => modifiers |= 0x02,
+            "shift" => modifiers |= 0x04,
+            "meta" | "cmd" | "command" | "super" | "win" => modifiers |= 0x08,
+            _ => key_part = Some(segment),
+        }
+    }
+    let Some(name) = key_part else {
+        return KeySequence::empty();
+    };
+    let key_code = key_code_from_name(name).unwrap_or(0);
+    KeySequence::new(modifiers, key_code, name)
+}
 impl Draw for KeySequenceEdit {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        // Rebuild the cached render text before anything borrows `self`, so an idle frame reuses the
+        // string instead of collecting and joining the chords again (K-P06).
+        self.refresh_display_text();
+        let is_empty = self.key_sequence.is_empty();
+        let recording = self.recording;
         // # Why every colour here is resolved rather than literal
         //
         // The field was painted from four literals and read the theme nowhere: a
@@ -554,18 +708,15 @@ impl Draw for KeySequenceEdit {
         // that is a **white field with black ink**, and the recording state is a fixed wash rather
         // than the semantic colour the appearance defines. All of them now come from the active
         // theme, with the literals kept only as the rung for a build that has no theme.
-        let themed = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme().map(|active| {
-                (
-                    active.colors.surface_container,
-                    active.colors.outline_variant,
-                    active.colors.foreground,
-                    active.colors.secondary,
-                    active.colors.error,
-                )
-            })
-        };
+        let themed = crate::style::palette_shared().map(|active| {
+            (
+                active.surface_container,
+                active.outline_variant,
+                active.foreground,
+                active.secondary,
+                active.error,
+            )
+        });
         let (surface, divider, ink, muted, error) = themed.unwrap_or((
             Color::rgb(255, 255, 255),
             Color::rgb(150, 150, 150),
@@ -581,7 +732,7 @@ impl Draw for KeySequenceEdit {
         // Recording is a *state*, so it is expressed as a tint of the surface toward the semantic
         // error colour rather than as a second literal — the same derivation the preset theme's
         // state overlays use, and what keeps the two appearances in step when the palette moves.
-        let bg = if self.recording { surface.blend(&error, 0.12) } else { surface };
+        let bg = if recording { surface.blend(&error, 0.12) } else { surface };
         context.face_with_gradient(
             rect,
             bg,
@@ -590,27 +741,9 @@ impl Draw for KeySequenceEdit {
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        context.draw_rect(rect, if self.recording { error } else { divider });
-        let display = if self.recording {
-            let mut out = String::from("Recording...");
-            if !self.chords.is_empty() {
-                out.push(' ');
-                let captured: Vec<String> =
-                    self.chords.iter().map(KeySequence::to_display_string).collect();
-                out.push_str(&captured.join(", "));
-            }
-            out
-        } else if self.key_sequence.is_empty() {
-            "Click to set shortcut...".to_string()
-        } else if self.chords.len() > 1 {
-            let captured: Vec<String> =
-                self.chords.iter().map(KeySequence::to_display_string).collect();
-            captured.join(", ")
-        } else {
-            self.key_sequence.to_display_string()
-        };
+        context.draw_rect(rect, if recording { error } else { divider });
         // The hint is the weak ink; a recorded value is the field's own ink.
-        let text_color = if self.key_sequence.is_empty() && !self.recording { muted } else { ink };
+        let text_color = if is_empty && !recording { muted } else { ink };
         // Vertically centred through the shared primitive, and bounded to the field's own
         // width: the recorded sequence grows without limit (`Ctrl+Shift+Alt+Meta+K`), and the
         // SVG backend emits absolute coordinates, so an unbounded one ran past the field.
@@ -618,6 +751,7 @@ impl Draw for KeySequenceEdit {
         // honours the theme body font and the user's text scale (D09-STYLE-01).
         let font = effective_font(style);
         let line = context.text_line(rect, font);
+        let display = self.display_text.as_str();
         context.draw_text_fitted_cow(
             Rect {
                 x: rect.x + 6,
@@ -625,7 +759,7 @@ impl Draw for KeySequenceEdit {
                 width: rect.width.saturating_sub(12),
                 height: line.height,
             },
-            &display,
+            display,
             font,
             text_color,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
@@ -634,17 +768,46 @@ impl Draw for KeySequenceEdit {
 }
 
 /// `KeySequenceEdit`'s property contract.
+///
+/// The four keys below are the control's own state, not just the shared base set: without them a
+/// designer or a document could not read or set the shortcut it exists for, could not start
+/// recording, and could not see whether history had an entry to step to. Each delegates to the
+/// existing method so the capability path and the Rust path cannot disagree.
 impl WidgetProperties for KeySequenceEdit {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
-        base_property_get(self, name)
+        match name {
+            "key_sequence" => Ok(CapabilityValue::String(self.key_sequence.to_display_string())),
+            "recording" => Ok(CapabilityValue::Bool(self.recording)),
+            "can_undo" => Ok(CapabilityValue::Bool(self.can_undo())),
+            "can_redo" => Ok(CapabilityValue::Bool(self.can_redo())),
+            _ => base_property_get(self, name),
+        }
     }
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        base_property_set(self, name, value)
+        match name {
+            "key_sequence" => {
+                let token = crate::widget::capability::coercion::expect_string(value)?;
+                self.set_key_sequence(sequence_from_token(&token));
+                Ok(())
+            }
+            "recording" => {
+                let recording = crate::widget::capability::coercion::expect_bool(value)?;
+                if recording {
+                    self.start_recording();
+                } else {
+                    self.stop_recording();
+                }
+                self.base.request_redraw();
+                Ok(())
+            }
+            "can_undo" | "can_redo" => Err(CapabilityAccessError::ReadOnlyProperty),
+            _ => base_property_set(self, name, value),
+        }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of![BASE_PROPERTY_NAMES]
+        property_names_of!["key_sequence", "recording", "can_undo", "can_redo", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -1129,5 +1292,43 @@ mod tests {
         assert!(editor.event_signal_dyn("sequence_changed").is_some());
         assert!(editor.event_signal_dyn("conflict_detected").is_some());
         assert!(editor.event_signal_dyn("nope").is_none());
+    }
+
+    /// A lone Meta/Super press is a modifier, not a shortcut key (ADV-06).
+    #[test]
+    fn a_bare_meta_press_is_not_recorded_as_a_key() {
+        let mut editor = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+        editor.start_recording();
+        for key in [91u32, 92, 224, 16, 17, 18] {
+            editor.handle_event(&Event::key_press(key, 0));
+        }
+        assert!(editor.key_sequence().is_empty(), "a modifier press must not become a chord");
+        assert!(editor.is_recording(), "the capture is still waiting for a real key");
+
+        editor.handle_event(&Event::key_press(83, 0b1000)); // Meta+S
+        assert_eq!(editor.key_sequence().key_name(), "S");
+        assert_eq!(editor.key_sequence().modifiers(), 0x08, "the meta bit travels with the chord");
+    }
+
+    /// The capability contract carries the shortcut, the recording flag and the history flags.
+    #[test]
+    fn the_property_contract_covers_the_shortcut_state() {
+        let mut editor = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+        assert_eq!(editor.get("key_sequence").unwrap(), CapabilityValue::String(String::new()));
+        editor.set("key_sequence", CapabilityValue::String("Ctrl+Shift+S".to_string())).unwrap();
+        assert_eq!(editor.key_sequence().modifiers(), 0x01 | 0x04);
+        assert_eq!(editor.key_sequence().key_name(), "S");
+        assert_eq!(
+            editor.get("key_sequence").unwrap(),
+            CapabilityValue::String("Ctrl+Shift+S".to_string())
+        );
+        assert_eq!(editor.get("recording").unwrap(), CapabilityValue::Bool(false));
+        editor.set("recording", CapabilityValue::Bool(true)).unwrap();
+        assert!(editor.is_recording());
+        assert_eq!(editor.get("can_undo").unwrap(), CapabilityValue::Bool(true));
+        assert_eq!(
+            editor.set("can_redo", CapabilityValue::Bool(true)),
+            Err(CapabilityAccessError::ReadOnlyProperty)
+        );
     }
 }

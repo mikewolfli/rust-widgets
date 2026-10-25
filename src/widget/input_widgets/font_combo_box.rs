@@ -18,13 +18,14 @@ use crate::event::{Event, EventHandler};
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_horizontal_alignment, expect_i64, expect_string,
+    expect_bool, expect_horizontal_alignment, expect_i32_saturating, expect_string,
     horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
+use crate::widget::text_utils::{floor_char_boundary, next_char_boundary, previous_char_boundary};
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -173,6 +174,14 @@ impl FontFilters {
     }
 }
 
+/// The ordered selection range of an editable value, in bytes (I-16).
+fn edit_selection(anchor: Option<usize>, cursor: usize) -> (usize, usize) {
+    match anchor {
+        Some(anchor) if anchor != cursor => (anchor.min(cursor), anchor.max(cursor)),
+        _ => (cursor, cursor),
+    }
+}
+
 /// A combo box whose entries are font family names.
 pub struct FontComboBox {
     base: BaseWidget,
@@ -188,6 +197,21 @@ pub struct FontComboBox {
     scroll_offset: usize,
     /// Prefix typed since the last navigation, for first-letter selection.
     type_ahead: String,
+    /// When the current type-ahead prefix began, for the shared 800 ms rule (I-P06).
+    type_ahead_started: Option<crate::compat::Instant>,
+    /// Original indices of the rows in [`Self::visible_fonts`], parallel to it.
+    ///
+    /// The paint and the hit test need the row's index in the *unfiltered* list, and searching
+    /// for it per painted row made a menu of n fonts cost O(visible x n) per frame (I-P08).
+    /// Rebuilt with the filtered list, which is the only time the mapping can change.
+    visible_indices: Vec<usize>,
+    /// Bumped whenever the filtered list is rebuilt, so the row-font cache cannot outlive it.
+    visible_revision: u64,
+    /// One preview font per visible row, rebuilt when the list or the row size changes (I-P08).
+    ///
+    /// Every painted row used to build `Font::simple(name.clone(), 14.0)` per frame — one
+    /// family string allocation and one face lookup per row per frame while the list was open.
+    popup_fonts: core::cell::RefCell<Option<(u64, u32, Vec<Font>)>>,
     /// Optional sample text painted beside each family name in the popup.
     sample_text: Option<String>,
     current_index: i32,
@@ -199,6 +223,10 @@ pub struct FontComboBox {
     /// the user has erased — the two render differently, and collapsing them would
     /// make a cleared field look like an idle one.
     edit_buffer: Option<String>,
+    /// The edit's caret, in bytes from the start of the buffer (I-16).
+    edit_cursor: usize,
+    /// The other end of the edit's selection, in bytes. `None` means no selection (I-16).
+    edit_anchor: Option<usize>,
     max_visible_items: i32,
     expanded: bool,
     /// How the field's value is aligned within its own box.
@@ -266,10 +294,16 @@ impl FontComboBox {
             writing_system_filter: None,
             scroll_offset: 0,
             type_ahead: String::new(),
+            type_ahead_started: None,
+            visible_indices: Vec::new(),
+            visible_revision: 0,
+            popup_fonts: core::cell::RefCell::new(None),
             sample_text: None,
             current_index: -1,
             editable: false,
             edit_buffer: None,
+            edit_cursor: 0,
+            edit_anchor: None,
             max_visible_items: 10,
             expanded: false,
             alignment: crate::core::Alignment::Left,
@@ -394,6 +428,8 @@ impl FontComboBox {
             // Turning the feature off abandons any in-progress edit, so the field
             // cannot keep showing text a non-editable box would not accept.
             self.edit_buffer = None;
+            self.edit_cursor = 0;
+            self.edit_anchor = None;
         }
         self.base.request_redraw();
     }
@@ -413,6 +449,9 @@ impl FontComboBox {
         let Some(text) = self.edit_buffer.take() else {
             return false;
         };
+        // The edit is over, so the caret and the range it described go with it (I-16).
+        self.edit_cursor = 0;
+        self.edit_anchor = None;
         self.base.request_redraw();
         if text.trim().is_empty() {
             return false;
@@ -424,6 +463,148 @@ impl FontComboBox {
             self.set_current_index(index as i32);
         }
         true
+    }
+
+    /// The edit's caret, in bytes from the start of the buffer (I-16).
+    pub fn edit_cursor_position(&self) -> usize {
+        self.edit_cursor
+    }
+
+    /// The edit's selected byte range, or `None` when nothing is selected (I-16).
+    pub fn edit_selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.edit_anchor?;
+        let (start, end) = edit_selection(Some(anchor), self.edit_cursor);
+        (start != end).then_some((start, end))
+    }
+
+    /// Starts an edit at the end of the current value when none is under way (I-16).
+    fn begin_edit(&mut self) {
+        if self.edit_buffer.is_none() {
+            let seed = self.current_font.family().to_string();
+            self.edit_cursor = seed.len();
+            self.edit_anchor = None;
+            self.edit_buffer = Some(seed);
+        }
+    }
+
+    /// Replaces the edit's selection with `text`, or inserts at the caret (I-16).
+    fn edit_insert(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.begin_edit();
+        let (start, end) = edit_selection(self.edit_anchor, self.edit_cursor);
+        let (start, end) = match self.edit_buffer.as_ref() {
+            Some(buffer) => (
+                floor_char_boundary(buffer, start.min(buffer.len())),
+                floor_char_boundary(buffer, end.min(buffer.len())),
+            ),
+            None => return,
+        };
+        if let Some(buffer) = self.edit_buffer.as_mut() {
+            buffer.replace_range(start..end, text);
+        }
+        self.edit_cursor = start + text.len();
+        self.edit_anchor = None;
+        self.base.request_redraw();
+    }
+
+    /// Deletes the edit's selection, or the character before the caret (I-16).
+    fn edit_backspace(&mut self) {
+        self.begin_edit();
+        let (start, end) = match self.edit_buffer.as_ref() {
+            Some(buffer) => {
+                let (start, end) = edit_selection(self.edit_anchor, self.edit_cursor);
+                if start != end {
+                    (
+                        floor_char_boundary(buffer, start.min(buffer.len())),
+                        floor_char_boundary(buffer, end.min(buffer.len())),
+                    )
+                } else {
+                    let caret = floor_char_boundary(buffer, self.edit_cursor.min(buffer.len()));
+                    (previous_char_boundary(buffer, caret), caret)
+                }
+            }
+            None => return,
+        };
+        if start == end {
+            return;
+        }
+        if let Some(buffer) = self.edit_buffer.as_mut() {
+            buffer.replace_range(start..end, "");
+        }
+        self.edit_cursor = start;
+        self.edit_anchor = None;
+        self.base.request_redraw();
+    }
+
+    /// Deletes the edit's selection, or the character after the caret (I-16).
+    fn edit_delete_forward(&mut self) {
+        self.begin_edit();
+        let (start, end) = match self.edit_buffer.as_ref() {
+            Some(buffer) => {
+                let (start, end) = edit_selection(self.edit_anchor, self.edit_cursor);
+                if start != end {
+                    (
+                        floor_char_boundary(buffer, start.min(buffer.len())),
+                        floor_char_boundary(buffer, end.min(buffer.len())),
+                    )
+                } else {
+                    let caret = floor_char_boundary(buffer, self.edit_cursor.min(buffer.len()));
+                    (caret, next_char_boundary(buffer, caret))
+                }
+            }
+            None => return,
+        };
+        if start == end {
+            return;
+        }
+        if let Some(buffer) = self.edit_buffer.as_mut() {
+            buffer.replace_range(start..end, "");
+        }
+        self.edit_cursor = start;
+        self.edit_anchor = None;
+        self.base.request_redraw();
+    }
+
+    /// Moves the edit's caret by `delta` characters, extending the range when asked (I-16).
+    fn edit_move_caret(&mut self, delta: i32, extend: bool) {
+        self.begin_edit();
+        let target = match self.edit_buffer.as_ref() {
+            Some(buffer) => {
+                let mut target = self.edit_cursor.min(buffer.len());
+                if delta < 0 {
+                    for _ in 0..delta.unsigned_abs() {
+                        target = previous_char_boundary(buffer, target);
+                    }
+                } else {
+                    for _ in 0..delta.unsigned_abs() {
+                        target = next_char_boundary(buffer, target);
+                    }
+                }
+                floor_char_boundary(buffer, target)
+            }
+            None => return,
+        };
+        self.edit_set_caret(target, extend);
+    }
+
+    /// Places the edit's caret, extending the range when asked (I-16).
+    fn edit_set_caret(&mut self, position: usize, extend: bool) {
+        self.begin_edit();
+        let target = match self.edit_buffer.as_ref() {
+            Some(buffer) => floor_char_boundary(buffer, position.min(buffer.len())),
+            None => return,
+        };
+        if extend {
+            if self.edit_anchor.is_none() {
+                self.edit_anchor = Some(self.edit_cursor);
+            }
+        } else {
+            self.edit_anchor = None;
+        }
+        self.edit_cursor = target;
+        self.base.request_redraw();
     }
     /// Sets how many popup entries are shown, floored at `1` so the popup is
     /// never zero-height. Does not request a redraw (unlike the other setters),
@@ -517,24 +698,75 @@ impl FontComboBox {
 
     /// Recomputes the filtered list from the filters and the source families.
     fn refresh_visible_fonts(&mut self) {
-        let writing = self.writing_system_filter.as_ref().map(|filter| filter.to_lowercase());
-        self.visible_fonts = self
-            .fonts
-            .iter()
-            .filter(|name| self.font_filters.matches(name))
-            .filter(|name| {
-                writing
-                    .as_ref()
-                    .is_none_or(|filter| filter.is_empty() || name.to_lowercase().contains(filter))
-            })
-            .cloned()
-            .collect();
+        // The writing-system filter is folded **once** per rebuild and every family compared
+        // byte-wise, instead of folding every family (I-P05).
+        let writing = self
+            .writing_system_filter
+            .as_ref()
+            .map(|filter| crate::widget::input_widgets::text_match::fold(filter));
+        self.visible_fonts.clear();
+        self.visible_indices.clear();
+        for (index, name) in self.fonts.iter().enumerate() {
+            let matches_filter = self.font_filters.matches(name)
+                && writing.as_ref().is_none_or(|filter| {
+                    filter.is_empty()
+                        || crate::widget::input_widgets::text_match::contains(name, filter)
+                });
+            if matches_filter {
+                self.visible_fonts.push(name.clone());
+                self.visible_indices.push(index);
+            }
+        }
+        self.visible_revision = self.visible_revision.wrapping_add(1);
         self.scroll_offset = 0;
     }
 
     /// The original index of a family name, if it is listed.
     fn original_index_of(&self, name: &str) -> Option<usize> {
         self.fonts.iter().position(|family| family == name)
+    }
+
+    /// The original index of the row at `row` in the filtered list.
+    fn original_index_at(&self, row: usize) -> Option<usize> {
+        self.visible_indices.get(row).copied()
+    }
+
+    /// The size the popup rows are drawn at: the field's **effective** font size (I-15).
+    fn popup_row_font_size(&self) -> f32 {
+        effective_font(self.base.style()).size().max(1.0)
+    }
+
+    /// The height of one popup row: the row font's size plus eight pixels of leading (I-15).
+    ///
+    /// One derivation, read by both the paint and [`Self::popup_row_at`], so a larger text
+    /// preference grows the rows *and* moves the hit test with them.
+    fn popup_row_height(&self) -> i32 {
+        (self.popup_row_font_size() + 8.0) as i32
+    }
+
+    /// Runs `f` with one preview font per visible row, rebuilding the cache when it is stale.
+    fn with_popup_fonts<R>(&self, size: f32, f: impl FnOnce(&[Font]) -> R) -> R {
+        if let Ok(mut cache) = self.popup_fonts.try_borrow_mut() {
+            let stale = cache.as_ref().is_none_or(|(revision, cached_size, fonts)| {
+                *revision != self.visible_revision
+                    || *cached_size != size.to_bits()
+                    || fonts.len() != self.visible_fonts.len()
+            });
+            if stale {
+                let fonts: Vec<Font> = self
+                    .visible_fonts
+                    .iter()
+                    .map(|name| Font::simple(name.clone(), size))
+                    .collect();
+                *cache = Some((self.visible_revision, size.to_bits(), fonts));
+            }
+            if let Some((_, _, fonts)) = cache.as_ref() {
+                return f(fonts.as_slice());
+            }
+        }
+        let fonts: Vec<Font> =
+            self.visible_fonts.iter().map(|name| Font::simple(name.clone(), size)).collect();
+        f(&fonts)
     }
 
     /// The popup row a point falls on.
@@ -547,7 +779,8 @@ impl FontComboBox {
         if pos.x < band.x || pos.x >= band.x + band.width as i32 || pos.y < popup_top {
             return None;
         }
-        let row = ((pos.y - popup_top) / 22) as usize + self.scroll_offset;
+        let row =
+            ((pos.y - popup_top) / self.popup_row_height().max(1)) as usize + self.scroll_offset;
         (row < self.visible_fonts.len()).then_some(row)
     }
     /// Appends a family name to the end of the list and requests a redraw.
@@ -746,7 +979,7 @@ impl WidgetProperties for FontComboBox {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "current_index" => {
-                self.set_current_index(expect_i64(value)? as i32);
+                self.set_current_index(expect_i32_saturating(value)?);
                 Ok(())
             }
             "editable" => {
@@ -754,7 +987,7 @@ impl WidgetProperties for FontComboBox {
                 Ok(())
             }
             "max_visible_items" => {
-                self.set_max_visible_items(expect_i64(value)? as i32);
+                self.set_max_visible_items(expect_i32_saturating(value)?);
                 Ok(())
             }
             "alignment" => {
@@ -846,19 +1079,19 @@ impl EventHandler for FontComboBox {
         // The gesture is resolved before the base records the event: the base clears
         // `pressed` on the release, so the commit guard must read the value the press set.
         match event {
-            Event::KeyPress { key, modifiers: _ } if self.editable => {
-                // Mirrors `EditableComboBox`'s key convention: 8 is backspace, 13 is
-                // Enter, 27 is Escape, and any other printable code is a character.
+            Event::KeyPress { key, modifiers } if self.editable => {
+                // Mirrors `EditableComboBox`'s key convention: 8 is backspace, 127 forward
+                // delete, 13 Enter, 27 Escape, the caret keys move the insertion point (Shift
+                // extends), and any other printable code is a character (I-16).
+                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let shift = modifiers.contains(crate::shortcut::Modifiers::SHIFT);
                 match *key {
-                    8 => {
-                        let mut buffer = self
-                            .edit_buffer
-                            .take()
-                            .unwrap_or_else(|| self.current_font().family().to_string());
-                        buffer.pop();
-                        self.edit_buffer = Some(buffer);
-                        self.base.request_redraw();
-                    }
+                    8 => self.edit_backspace(),
+                    127 => self.edit_delete_forward(),
+                    37 => self.edit_move_caret(-1, shift),
+                    39 => self.edit_move_caret(1, shift),
+                    36 => self.edit_set_caret(0, shift),
+                    35 => self.edit_set_caret(usize::MAX, shift),
                     13 => {
                         self.commit_edit();
                     }
@@ -867,15 +1100,14 @@ impl EventHandler for FontComboBox {
                         // the only difference between the two exit paths and therefore
                         // the whole reason both exist.
                         self.edit_buffer = None;
+                        self.edit_cursor = 0;
+                        self.edit_anchor = None;
                         self.base.request_redraw();
                     }
                     _ => {
                         if let Some(ch) = char::from_u32(*key) {
                             if ch.is_ascii_graphic() || ch == ' ' {
-                                let mut buffer = self.edit_buffer.take().unwrap_or_default();
-                                buffer.push(ch);
-                                self.edit_buffer = Some(buffer);
-                                self.base.request_redraw();
+                                self.edit_insert(&ch.to_string());
                             }
                         }
                     }
@@ -909,19 +1141,35 @@ impl EventHandler for FontComboBox {
                     27 => self.hide_popup(),
                     32..=126 => {
                         if let Some(ch) = char::from_u32(*key) {
+                            // A prefix older than the shared timeout no longer describes what
+                            // the user is typing, so it is dropped before this key extends it
+                            // (I-P06). Clearing queues no frame by itself.
+                            let now = crate::compat::Instant::now();
+                            let expired = self.type_ahead_started.is_none_or(|started| {
+                                now.duration_since(started).as_millis()
+                                    > u128::from(
+                                        crate::widget::input_widgets::text_match::TYPE_AHEAD_TIMEOUT_MS,
+                                    )
+                            });
+                            if expired {
+                                self.type_ahead.clear();
+                            }
+                            self.type_ahead_started = Some(now);
                             self.type_ahead.push(ch);
-                            let prefix = self.type_ahead.to_lowercase();
+                            // Folded once per key and compared byte-wise per row (I-P05).
+                            let prefix =
+                                crate::widget::input_widgets::text_match::fold(&self.type_ahead);
                             let start = self.current_index.max(-1) as usize + 1;
-                            if let Some((offset, _)) = self
-                                .visible_fonts
-                                .iter()
-                                .enumerate()
-                                .skip(start)
-                                .find(|(_, name)| name.to_lowercase().starts_with(&prefix))
+                            if let Some((offset, _)) =
+                                self.visible_fonts.iter().enumerate().skip(start).find(
+                                    |(_, name)| {
+                                        crate::widget::input_widgets::text_match::starts_with(
+                                            name, &prefix,
+                                        )
+                                    },
+                                )
                             {
-                                if let Some(original) =
-                                    self.original_index_of(&self.visible_fonts[offset])
-                                {
+                                if let Some(original) = self.original_index_at(offset) {
                                     self.set_current_index(original as i32);
                                 }
                             }
@@ -990,8 +1238,16 @@ impl EventHandler for FontComboBox {
                 self.base.set_pressed(false);
             }
             // Losing focus abandons a held press, so the latch cannot survive a window switch.
+            // It also **discards** a half-typed family: the buffer used to survive a blur, so the
+            // field kept text that neither Enter had committed nor Escape had cancelled (I-17).
             Event::FocusLost => {
                 self.base.set_pressed(false);
+                if self.edit_buffer.is_some() {
+                    self.edit_buffer = None;
+                    self.edit_cursor = 0;
+                    self.edit_anchor = None;
+                    self.base.request_redraw();
+                }
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -1091,8 +1347,12 @@ impl Draw for FontComboBox {
             arrow_color,
         );
         // Borrowed, not copied: this is one draw per frame and the family name already lives
-        // in the control's own `Font`.
-        let font_name = self.current_font().family();
+        // in the control's own `Font`. An edit under way shows its own buffer instead (I-16).
+        let edit_text = self.edit_buffer.as_deref();
+        let font_name = match edit_text {
+            Some(buffer) => buffer,
+            None => self.current_font().family(),
+        };
         // The field's own line box. A glyph origin is the box's top-left edge, so the old
         // `g.y + g.height / 2 + 5` put that edge on the field's middle line and drew the
         // selected family half a line low.
@@ -1111,9 +1371,56 @@ impl Draw for FontComboBox {
             ink,
             self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
+        // The edit's range and caret, drawn on the value's own line box so the marker rides
+        // with the glyphs (I-16). Before this an editable box could only append and pop from the
+        // tail, so the field never said where in the family name typing would land.
+        if edit_text.is_some() {
+            let align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+            let value_advance = ctx.measure_text(font_name, &value_font).width as i32;
+            let origin = crate::render::fitted_origin(
+                Rect::new(
+                    geometry.value_box.x,
+                    value_line.y,
+                    geometry.value_box.width,
+                    value_line.height,
+                ),
+                value_advance,
+                align,
+            );
+            if let Some((start, end)) = self.edit_selection_range() {
+                let start = start.min(font_name.len());
+                let end = end.min(font_name.len());
+                let start_x =
+                    origin.x + ctx.measure_text(&font_name[..start], &value_font).width as i32;
+                let end_x =
+                    origin.x + ctx.measure_text(&font_name[..end], &value_font).width as i32;
+                ctx.fill_rect(
+                    Rect::new(
+                        start_x.min(end_x),
+                        value_line.y,
+                        (end_x - start_x).unsigned_abs(),
+                        value_line.height.max(1),
+                    ),
+                    ink.with_alpha(70),
+                );
+            }
+            let caret = self.edit_cursor.min(font_name.len());
+            let caret_x =
+                origin.x + ctx.measure_text(&font_name[..caret], &value_font).width as i32;
+            let caret_x = caret_x
+                .min(geometry.value_box.x + geometry.value_box.width as i32 - 1)
+                .max(geometry.value_box.x);
+            ctx.draw_line(
+                Point::new(caret_x, value_line.y),
+                Point::new(caret_x, value_line.y + value_line.height as i32),
+                ink,
+            );
+        }
         // Draw popup list when expanded
         if self.expanded && !self.visible_fonts.is_empty() {
-            let popup_item_height = 22i32;
+            // One row height for the paint and the hit test, derived from the effective font
+            // rather than the two fixed numerals that used to disagree (I-15).
+            let popup_item_height = self.popup_row_height().max(1);
             let page = self.page_size(self.visible_fonts.len());
             let offset = self
                 .scroll_offset
@@ -1130,59 +1437,72 @@ impl Draw for FontComboBox {
             // The highlighted item is the control's selection, so it carries the theme's primary
             // rather than a fixed blue.
             let highlight = primary.blend(&field, 0.15);
-            let display_font_size = 14.0f32;
-            for (row, name) in visible.iter().enumerate() {
-                let item_y = popup_rect.y + (row as i32) * popup_item_height;
-                let item_rect =
-                    Rect::new(popup_rect.x, item_y, popup_rect.width, popup_item_height as u32);
-                // Each row is drawn in its own family, which is the point of a font list:
-                // previewing every family in one default face told the user nothing.
-                let display_font = Font::simple(name.clone(), display_font_size);
-                let item_line = ctx.text_line(item_rect, &display_font);
-                let name_x = g.x + 4;
-                let name_width =
-                    ((item_rect.x + item_rect.width as i32 - 4) - name_x).max(0) as u32;
-                let original = self.original_index_of(name);
-                if original == Some(self.current_index as usize) {
-                    ctx.fill_rect(item_rect, highlight);
-                    ctx.draw_text_fitted_cow(
-                        Rect::new(name_x, item_line.y, name_width.max(1), item_line.height.max(1)),
-                        name,
-                        &display_font,
-                        highlight.contrast_color(),
-                        HorizontalAlignment::Left,
-                    );
-                } else {
-                    ctx.draw_text_fitted_cow(
-                        Rect::new(name_x, item_line.y, name_width.max(1), item_line.height.max(1)),
-                        name,
-                        &display_font,
-                        ink,
-                        HorizontalAlignment::Left,
-                    );
+            let display_font_size = self.popup_row_font_size();
+            // One preview font per visible row, cached until the list or the size changes: each
+            // row used to build `Font::simple(name.clone(), ..)` every frame (I-P08).
+            self.with_popup_fonts(display_font_size, |row_fonts| {
+                for (row, name) in visible.iter().enumerate() {
+                    let item_y = popup_rect.y + (row as i32) * popup_item_height;
+                    let item_rect =
+                        Rect::new(popup_rect.x, item_y, popup_rect.width, popup_item_height as u32);
+                    // Each row is drawn in its own family, which is the point of a font list:
+                    // previewing every family in one default face told the user nothing.
+                    let Some(display_font) = row_fonts.get(offset + row) else { continue };
+                    let item_line = ctx.text_line(item_rect, display_font);
+                    let name_x = g.x + 4;
+                    let name_width =
+                        ((item_rect.x + item_rect.width as i32 - 4) - name_x).max(0) as u32;
+                    // The row's index in the unfiltered list comes from the parallel index table
+                    // rather than a linear search per painted row (I-P08).
+                    let original = self.original_index_at(offset + row);
+                    if original == Some(self.current_index as usize) {
+                        ctx.fill_rect(item_rect, highlight);
+                        ctx.draw_text_fitted_cow(
+                            Rect::new(
+                                name_x,
+                                item_line.y,
+                                name_width.max(1),
+                                item_line.height.max(1),
+                            ),
+                            name,
+                            display_font,
+                            highlight.contrast_color(),
+                            HorizontalAlignment::Left,
+                        );
+                    } else {
+                        ctx.draw_text_fitted_cow(
+                            Rect::new(
+                                name_x,
+                                item_line.y,
+                                name_width.max(1),
+                                item_line.height.max(1),
+                            ),
+                            name,
+                            display_font,
+                            ink,
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                    if let Some(sample) = &self.sample_text {
+                        // The preview column uses the row's own family too, so a family that
+                        // shapes text differently from the default face is visible as such.
+                        let sample_box = Rect::new(
+                            name_x + (name_width as i32 / 2),
+                            item_line.y,
+                            (name_width as i32 / 2).max(1) as u32,
+                            item_line.height.max(1),
+                        );
+                        ctx.draw_text_fitted_cow(
+                            sample_box,
+                            sample,
+                            display_font,
+                            ink.blend(&field, 0.35),
+                            HorizontalAlignment::Right,
+                        );
+                    }
                 }
-                if let Some(sample) = &self.sample_text {
-                    // The preview column uses the row's own family too, so a family that
-                    // shapes text differently from the default face is visible as such.
-                    let sample_box = Rect::new(
-                        name_x + (name_width as i32 / 2),
-                        item_line.y,
-                        (name_width as i32 / 2).max(1) as u32,
-                        item_line.height.max(1),
-                    );
-                    ctx.draw_text_fitted_cow(
-                        sample_box,
-                        sample,
-                        &display_font,
-                        ink.blend(&field, 0.35),
-                        HorizontalAlignment::Right,
-                    );
-                }
-            }
+            });
         }
-    }
-    fn uses_custom_drawing(&self) -> bool {
-        true
     }
 }
 

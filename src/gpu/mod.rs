@@ -35,6 +35,24 @@
 //! # Reachability
 //!
 //! **State:** Production callers: `src/render/gpu/mod.rs:1` (the software renderer reads the GPU capability report).
+//!
+//! # Relationship to `crate::performance` (G-214)
+//!
+//! This module owns hardware adaptation and per-stage attribution: adapter
+//! selection, hardware-adaptive buffer profiles, and
+//! [`performance::PerformanceStats`] (frame classification, pressure, traps) used
+//! to adjust quality. `crate::performance::profiler` owns per-section frame
+//! timing (`FrameProfiler`/`Profiler`). The boundary is deliberate — the two
+//! answer different questions — and each metric has exactly one statistics
+//! endpoint: adaptive decisions read [`performance::PerformanceStats`], never a
+//! second frame table built here.
+//!
+//! # One backend answer (G-211)
+//!
+//! Adapter selection lives in [`backend_ladder`]; [`GpuManager`] publishes its
+//! result (including [`GpuBackendTier`]) through
+//! [`publish_shared_selection`], so other GPU paths read the same answer with
+//! [`shared_selection`] instead of running a second ladder.
 pub mod adapter;
 /// Backend degradation ladder (`Primary` → OpenGL ES → software).
 ///
@@ -53,8 +71,9 @@ pub use adapter::{
 };
 #[cfg(feature = "gpu")]
 pub use backend_ladder::{
-    backends_from_env, instance_backends, ladder_for_target, select_adapter_with_gl_fallback,
-    GpuBackendSelection, GpuBackendTier, BACKEND_LADDER,
+    backends_from_env, instance_backends, ladder_for_target, publish_shared_selection,
+    select_adapter_with_gl_fallback, shared_selection, GpuBackendSelection, GpuBackendTier,
+    BACKEND_LADDER,
 };
 pub use buffer_pool::{
     GpuBufferAllocation, GpuBufferPoolStats, GpuMemoryProfile, GpuStagingBufferPool,

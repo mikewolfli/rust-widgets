@@ -1309,6 +1309,20 @@ pub struct RiveWidget {
     animation_data: Option<RiveAnimationData>,
     /// Names and durations decoded from a `.riv` file, when the current animation came from one.
     file_info: Option<RiveFileInfo>,
+    /// Composition extent (half-size in document units), cached until the animation changes.
+    comp_extent: Option<f64>,
+    /// The `Rive: <name>` caption, rebuilt when the animation changes.
+    name_text: String,
+    /// The animation name `name_text` was built from.
+    name_source: String,
+    /// The progress caption, rebuilt when the integer percentage changes.
+    progress_text: String,
+    /// The integer percentage `progress_text` was built from.
+    progress_key: u32,
+    /// The state-input count caption.
+    input_text: String,
+    /// The input count `input_text` was built from.
+    input_text_key: usize,
 }
 
 impl RiveWidget {
@@ -1329,6 +1343,13 @@ impl RiveWidget {
             loops_completed: 0,
             animation_data: None,
             file_info: None,
+            comp_extent: None,
+            name_text: String::new(),
+            name_source: String::new(),
+            progress_text: "0%".to_string(),
+            progress_key: u32::MAX,
+            input_text: String::new(),
+            input_text_key: usize::MAX,
         }
     }
 
@@ -1386,6 +1407,7 @@ impl RiveWidget {
             frame_rate: animation.map(|a| a.frame_rate).unwrap_or(60.0),
             shapes: Vec::new(),
         });
+        self.comp_extent = None;
         self.file_info = Some(info);
         self.set_state(RiveState::Paused);
         self.base.request_redraw();
@@ -1416,6 +1438,99 @@ impl RiveWidget {
         }
     }
 
+    /// Selects one of the animations decoded from the current `.riv` file by name.
+    ///
+    /// Returns `false` when the name is not in the file (including when no file is loaded), so a
+    /// caller can tell an accepted switch from a silent no-op. A successful switch restarts the
+    /// playhead at 0 and pauses, which is what a host switching clips expects.
+    pub fn set_animation(&mut self, name: &str) -> bool {
+        let Some(animation) = self
+            .file_info
+            .as_ref()
+            .and_then(|info| info.animations.iter().find(|animation| animation.name == name))
+            .cloned()
+        else {
+            return false;
+        };
+        self.animation_name = animation.name.clone();
+        self.animation_progress = 0.0;
+        self.frame_timer = 0;
+        self.is_playing = false;
+        self.loops_completed = 0;
+        self.comp_extent = None;
+        self.animation_data = Some(RiveAnimationData {
+            _name: self.animation_name.clone(),
+            duration_frames: animation.duration_frames.max(1),
+            frame_rate: animation.frame_rate,
+            shapes: Vec::new(),
+        });
+        self.set_state(RiveState::Paused);
+        self.base.request_redraw();
+        true
+    }
+
+    /// The current animation's duration in milliseconds, from its frame count and rate.
+    pub fn duration_ms(&self) -> u64 {
+        let (frames, rate) = match self.animation_data.as_ref() {
+            Some(data) => (data.duration_frames.max(1), data.frame_rate),
+            None => return 0,
+        };
+        let rate = if rate.is_finite() && rate > 0.0 { rate as f64 } else { 60.0 };
+        ((frames as f64 / rate) * 1000.0).round().max(0.0) as u64
+    }
+
+    /// The composition's half-extent in document units, cached until the shapes change.
+    ///
+    /// A default composition (or one with no shapes) is 100x100, so its half-extent is 50.
+    /// The cache is invalidated by every loader and by [`Self::set_animation`].
+    fn composition_extent(&mut self) -> f64 {
+        if let Some(extent) = self.comp_extent {
+            return extent;
+        }
+        let extent = match self.animation_data.as_ref() {
+            Some(data) if !data.shapes.is_empty() => data
+                .shapes
+                .iter()
+                .map(|shape| {
+                    let mx = (shape.x + shape.motion_x).abs().max((shape.x - shape.motion_x).abs())
+                        + shape.width.abs()
+                        + 20.0;
+                    let my = (shape.y + shape.motion_y).abs().max((shape.y - shape.motion_y).abs())
+                        + shape.height.abs()
+                        + 20.0;
+                    mx.max(my)
+                })
+                .fold(100.0_f64, |a, b| a.max(b)),
+            _ => 50.0,
+        };
+        self.comp_extent = Some(extent);
+        extent
+    }
+
+    /// Refreshes the static captions when their inputs changed (L-P03).
+    fn refresh_labels(&mut self) {
+        if self.name_source != self.animation_name {
+            self.name_source = self.animation_name.clone();
+            self.name_text.clear();
+            use core::fmt::Write as _;
+            let _ = write!(self.name_text, "Rive: {}", self.animation_name);
+        }
+        let percent = (self.animation_progress * 100.0).round() as u32;
+        if self.progress_key != percent {
+            self.progress_key = percent;
+            self.progress_text.clear();
+            use core::fmt::Write as _;
+            let _ = write!(self.progress_text, "{percent}%");
+        }
+        let inputs = self.state_machine_inputs.len();
+        if self.input_text_key != inputs {
+            self.input_text_key = inputs;
+            self.input_text.clear();
+            use core::fmt::Write as _;
+            let _ = write!(self.input_text, "Inputs: {inputs}");
+        }
+    }
+
     /// The artboard names in the current `.riv` file.
     pub fn artboard_names(&self) -> Vec<String> {
         self.file_info.as_ref().map(|info| info.artboards.clone()).unwrap_or_default()
@@ -1439,6 +1554,7 @@ impl RiveWidget {
         self.frame_timer = 0;
         self.is_playing = false;
         self.animation_data = Some(RiveAnimationData::from_json(name, &parsed));
+        self.comp_extent = None;
         self.file_info = None;
         self.loops_completed = 0;
         self.set_state(RiveState::Paused);
@@ -1665,18 +1781,23 @@ impl RiveWidget {
         } else {
             60.0
         };
-        let frame_delay = (1000.0 / fps).floor().max(1.0) as u64;
+        // Microsecond period, like the sibling Lottie control. `(1000 / fps).floor()` lost the
+        // fractional millisecond on every frame, so a 24 fps clip ran measurably slow; the
+        // remainder is carried in `frame_timer` instead (L-P08). The period is floored rather
+        // than rounded: rounding up made an exact one-second tick at 24 fps consume only 23
+        // frames, which is the same under-advance in a different sign.
+        let frame_delay_us = (1_000_000.0 / fps).floor().max(1.0) as u64;
         let step = 1.0 / duration_frames.max(1) as f32;
         // `saturating_add`: `frame_timer` is a `u64` fed by a public `tick(delta_ms)`. A plain `+=`
         // could overflow and wrap to a *small* value, and the `while` below would then run for the
         // wrapped remainder — potentially billions of iterations.
-        self.frame_timer = self.frame_timer.saturating_add(delta_ms);
+        self.frame_timer = self.frame_timer.saturating_add(delta_ms.saturating_mul(1000));
 
         // How many whole frames elapsed. Computed once rather than by decrementing in the loop, so
         // the work is proportional to the frames actually consumed (bounded below) instead of to
         // whatever magnitude the timer reached.
-        let elapsed_frames = self.frame_timer / frame_delay;
-        self.frame_timer %= frame_delay;
+        let elapsed_frames = self.frame_timer / frame_delay_us;
+        self.frame_timer %= frame_delay_us;
 
         let mut completed = false;
         // A single `tick` cannot meaningfully advance more than this many frames; a huge `delta_ms`
@@ -1687,7 +1808,10 @@ impl RiveWidget {
         for _ in 0..frames_to_advance {
             self.animation_progress += step;
 
-            if self.animation_progress >= 1.0 {
+            // The tolerance absorbs the rounding of repeated `1 / duration_frames` additions:
+            // after exactly `duration_frames` steps the f32 sum can sit a few ulps below 1.0,
+            // which made a one-second tick at 60 fps stop one frame short.
+            if self.animation_progress >= 1.0 - 1.0e-4 {
                 if self.loop_count == 0 {
                     // Infinite looping: wrap around.
                     self.animation_progress = 0.0;
@@ -1895,6 +2019,8 @@ impl Draw for RiveWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
+        self.refresh_labels();
+        let comp_extent = self.composition_extent();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then fall back to the original literal. The literal step is
@@ -1969,9 +2095,9 @@ impl Draw for RiveWidget {
         context.face_with_gradient(
             rect,
             bg,
-            self.style().background_gradient.as_ref(),
-            self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            style.background_gradient.as_ref(),
+            style.surface.unwrap_or_default(),
+            style.border_radius.unwrap_or(0),
             Color::BLACK,
         );
 
@@ -1979,31 +2105,8 @@ impl Draw for RiveWidget {
         // border token rather than a fixed violet.
         context.draw_rect_stroke(rect, border_color, 1);
 
-        // Calculate scale from composition (default 100x100) to widget rect.
-        let (comp_w, comp_h) = match self.animation_data {
-            Some(ref data) => {
-                if data.shapes.is_empty() {
-                    (100.0, 100.0)
-                } else {
-                    // Compute bounds from shapes.
-                    let max_extent = data
-                        .shapes
-                        .iter()
-                        .map(|s| {
-                            let mx = (s.x + s.motion_x).abs().max((s.x - s.motion_x).abs())
-                                + s.width.abs()
-                                + 20.0;
-                            let my = (s.y + s.motion_y).abs().max((s.y - s.motion_y).abs())
-                                + s.height.abs()
-                                + 20.0;
-                            mx.max(my)
-                        })
-                        .fold(100.0_f64, |a, b| a.max(b));
-                    (max_extent * 2.0, max_extent * 2.0)
-                }
-            }
-            None => (100.0, 100.0),
-        };
+        // The composition's extent is cached by `composition_extent`; this pass only reads it.
+        let (comp_w, comp_h) = (comp_extent * 2.0, comp_extent * 2.0);
 
         let scale_x = rect.width as f64 / comp_w.max(1.0);
         let scale_y = rect.height as f64 / comp_h.max(1.0);
@@ -2030,10 +2133,10 @@ impl Draw for RiveWidget {
             }
         }
 
-        // Draw animation name label at top.
+        // Draw animation name label at top. The text is cached by `refresh_labels`.
         let font = effective_font(style);
-        let name_text = format!("Rive: {}", self.animation_name);
-        let name_metrics = context.measure_text(&name_text, font);
+        let name_text = self.name_text.as_str();
+        let name_metrics = context.measure_text(name_text, font);
         let name_x = rect.x + 4;
         // Origin is the glyph box's top edge, so it is the same `+ 2` the backdrop uses;
         // the removed `+ ascent` had pushed the label half a line down inside its own pill.
@@ -2041,31 +2144,32 @@ impl Draw for RiveWidget {
         let name_bg = Rect::new(
             name_x - 2,
             rect.y + 1,
-            name_metrics.width as u32 + 8,
-            name_metrics.height as u32 + 4,
+            name_metrics.width + 8,
+            name_metrics.height + 4,
         );
         context.fill_rounded_rect(name_bg, 3, trough_color);
         context.draw_text(
             Point::new(name_x, name_y),
-            &name_text,
+            name_text,
             font,
             Color::WHITE,
             HorizontalAlignment::Left,
         );
 
-        // Draw progress percentage at top-right.
-        let progress_text = format!("{:.0}%", self.animation_progress * 100.0);
-        let p_metrics = context.measure_text(&progress_text, font);
+        // Draw progress percentage at top-right. Rebuilt only when the integer percentage
+        // changes, not on every frame.
+        let progress_text = self.progress_text.as_str();
+        let p_metrics = context.measure_text(progress_text, font);
         let px = rect.x + rect.width as i32 - p_metrics.width as i32 - 6;
         // Same top-edge origin as the name label: no ascent term, or the percentage sits
         // half a line low in its pill.
         let py = rect.y + 2;
         let p_bg =
-            Rect::new(px - 2, rect.y + 1, p_metrics.width as u32 + 8, p_metrics.height as u32 + 4);
+            Rect::new(px - 2, rect.y + 1, p_metrics.width + 8, p_metrics.height + 4);
         context.fill_rounded_rect(p_bg, 3, trough_color);
         context.draw_text(
             Point::new(px, py),
-            &progress_text,
+            progress_text,
             font,
             Color::WHITE,
             HorizontalAlignment::Left,
@@ -2090,15 +2194,15 @@ impl Draw for RiveWidget {
 
         // State machine inputs count.
         if !self.state_machine_inputs.is_empty() {
-            let input_text = format!("Inputs: {}", self.state_machine_inputs.len());
-            let input_metrics = context.measure_text(&input_text, font);
+            let input_text = self.input_text.as_str();
+            let input_metrics = context.measure_text(input_text, font);
             let input_x = rect.x + rect.width as i32 - input_metrics.width as i32 - 6;
             // `input_y` is the intended *top* edge, not a baseline, so the ascent term is
             // dropped; subtracting it had pulled the label half a line up off that edge.
             let input_y = rect.y + rect.height as i32 - 6;
             context.draw_text(
                 Point::new(input_x, input_y),
-                &input_text,
+                input_text,
                 font,
                 Color::rgba(120, 80, 160, 180),
                 HorizontalAlignment::Left,
@@ -2140,7 +2244,8 @@ impl EventHandler for RiveWidget {
             return;
         }
         match event {
-            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
+            // Playback toggles on **release** only (L-P01).
+            Event::MouseRelease { pos, button } => {
                 if *button == 1 && self.geometry().contains_point(*pos) {
                     if self.is_playing {
                         self.pause();
@@ -2243,8 +2348,9 @@ mod tests {
 
         assert_eq!(rive.animation_progress(), 0.0);
 
-        // Tick 16ms (one frame at 60fps).
-        rive.tick(16);
+        // Tick 17ms: a 60 fps frame is 16.667 ms, so 16 ms is *less* than one frame now that the
+        // fractional period is carried instead of truncated to 16 ms.
+        rive.tick(17);
         assert!(rive.animation_progress() > 0.0);
         assert!(rive.animation_progress() < 0.1);
     }

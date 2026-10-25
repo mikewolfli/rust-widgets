@@ -9,10 +9,12 @@
 //! carets, selections and fold toggles. It owns no document state of its own.
 
 use super::editor::CodeEditor;
-use super::types::TextPosition;
+use super::grid::LineGrid;
+use super::types::{Cursor, FindBarAction, TextPosition, MIN_TOUCH_TARGET};
 use crate::core::Point;
 use crate::widget::Widget;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 /// CONTROL modifier bit used by this platform layer.
 const MODIFIER_CONTROL: u32 = 2;
@@ -196,6 +198,13 @@ impl CodeEditor {
                     self.dismiss_completion();
                 } else if self.find.visible {
                     self.close_find();
+                } else if self.column_select_anchor.is_some() {
+                    // Escape leaves the rectangular gesture and keeps the primary caret's
+                    // line as an ordinary selection, so the block editing can still be
+                    // continued one line at a time (ED-04).
+                    self.column_select_anchor = None;
+                    self.column_selecting = false;
+                    self.collapse_cursors();
                 } else {
                     // Escape collapses the caret set, as in Zed/VS Code.
                     self.collapse_cursors();
@@ -380,6 +389,27 @@ impl CodeEditor {
         self.mouse_selecting = true;
         self.last_pointer_position = Some(pos);
         let shift = modifiers & MODIFIER_SHIFT != 0;
+        // The find bar is chrome above the buffer: its buttons are commands, never a
+        // caret placement, and its two text rows take focus on a press so the keyboard
+        // path follows what the reader clicked (ED-01).
+        if self.find.visible {
+            if let Some(action) = self.find_bar_action_at(pos) {
+                self.mouse_selecting = false;
+                self.apply_find_bar_action(action);
+                return;
+            }
+            if self.find_bar_rect().is_some_and(|bar| bar.contains(pos)) {
+                self.mouse_selecting = false;
+                let row =
+                    (pos.y - (self.geometry().y + self.tab_strip_height())) / MIN_TOUCH_TARGET + 1;
+                let focus_replace = self.find.replace_visible && row > 1;
+                if self.find.focus_replace != focus_replace {
+                    self.find.focus_replace = focus_replace;
+                    self.base.request_redraw();
+                }
+                return;
+            }
+        }
         if self.context_menu.visible {
             self.dismiss_completion();
             match self.hit_menu_row(pos) {
@@ -438,6 +468,12 @@ impl CodeEditor {
             if self.is_breakpoint(line) || self.markers.iter().any(|marker| marker.line == line) {
                 self.marker_activated.emit(line);
             }
+            // And the marker itself is reported by index, which is what "jump to the
+            // problem I clicked" needs — the line alone does not say *which* of several
+            // markers on it was meant (ED-02).
+            if let Some(index) = self.markers.iter().position(|marker| marker.line == line) {
+                self.marker_clicked.emit(index);
+            }
             self.select_line(line);
             return;
         }
@@ -467,10 +503,14 @@ impl CodeEditor {
                 (anchor.x - pos.x).abs() <= 2 && (anchor.y - pos.y).abs() <= 2
             });
             if triple {
+                self.column_select_anchor = None;
                 self.select_line(position.line);
             } else if shift {
                 // Shift+click extends the selection from the existing anchor.
                 self.move_caret_to(position, true);
+            } else if modifiers & MODIFIER_ALT != 0 {
+                // Alt+drag is the rectangular-selection gesture (ED-04).
+                self.begin_column_selection(position);
             } else if modifiers & MODIFIER_CONTROL != 0 {
                 self.add_cursor_at(position);
             } else if self.selection_contains(position) {
@@ -479,6 +519,7 @@ impl CodeEditor {
                 self.dragging_text = true;
                 self.drag_origin = Some(position);
             } else {
+                self.column_select_anchor = None;
                 self.move_caret_to(position, false);
             }
         }
@@ -486,8 +527,10 @@ impl CodeEditor {
 
     pub(crate) fn pointer_drag(&mut self, pos: Point) {
         // Hover is tracked even when no button is down: it is what reveals the close
-        // affordance on a tab and washes it as the pointer passes over.
+        // affordance on a tab, washes it as the pointer passes over, and shows a
+        // diagnostic's full message beside the line that carries it (ED-03).
         self.update_hovered_tab(pos);
+        self.update_hovered_diagnostic(pos);
         if self.gutter_dragging {
             self.last_pointer_position = Some(pos);
             if let Some(line) = self.hit_gutter_line(pos) {
@@ -517,6 +560,10 @@ impl CodeEditor {
             self.last_pointer_position = Some(pos);
             return;
         }
+        if self.column_selecting {
+            self.update_column_selection(pos);
+            return;
+        }
         if !self.mouse_selecting {
             return;
         }
@@ -539,6 +586,7 @@ impl CodeEditor {
                 }
             }
         }
+        self.column_selecting = false;
         self.mouse_selecting = false;
         self.minimap_dragging = false;
         self.scrollbar_dragging = false;
@@ -550,9 +598,141 @@ impl CodeEditor {
         self.base.set_mouse_pressed(false);
     }
 
+    /// Tracks which line's diagnostic message is under the pointer.
+    ///
+    /// The caret line already shows its message inline; every other line showed only a
+    /// coloured rule, which left the message unreachable without host code walking
+    /// `markers()`. Hovering that line now reveals it in place.
+    pub(crate) fn update_hovered_diagnostic(&mut self, pos: Point) {
+        let next = if self.markers.is_empty() {
+            None
+        } else {
+            self.position_at_point(pos)
+                .map(|position| position.line)
+                .filter(|line| self.markers.iter().any(|marker| marker.line == *line))
+        };
+        if next != self.hovered_diagnostic {
+            self.hovered_diagnostic = next;
+            self.base.request_redraw();
+        }
+    }
+
     fn hit_menu_row(&self, pos: Point) -> Option<usize> {
         let rect = self.context_menu_rect()?;
         index_in_rows(pos, rect, self.context_menu.items.len())
+    }
+
+    /// Starts a rectangular selection anchored at `position`.
+    fn begin_column_selection(&mut self, position: TextPosition) {
+        self.column_select_anchor = Some(position);
+        self.column_selecting = true;
+        self.mouse_selecting = false;
+        self.cursor = Cursor { head: position, anchor: position };
+        self.extra_cursors.clear();
+        self.emit_cursor_and_selection();
+        self.base.request_redraw();
+    }
+
+    /// Extends the rectangular selection to the line and column under the pointer.
+    ///
+    /// The rectangle is expressed in **grid columns**, so a tab or a CJK glyph widens the
+    /// band exactly as it is drawn; each covered line then converts those columns back to
+    /// its own character indices. Every covered line becomes a caret whose anchor and head
+    /// are the rectangle's two edges, which is what lets every editing command (insert,
+    /// delete, indent) and the single undo entry work on the block unchanged (ED-04).
+    fn update_column_selection(&mut self, pos: Point) {
+        let Some(anchor) = self.column_select_anchor else { return };
+        let Some(focus) = self.position_at_point(pos) else { return };
+        let anchor_column = self.visual_column_at(anchor);
+        let focus_column = self.visual_column_at(focus);
+        let from_column = anchor_column.min(focus_column);
+        let to_column = anchor_column.max(focus_column);
+        let (start_line, end_line) = if anchor.line <= focus.line {
+            (anchor.line, focus.line)
+        } else {
+            (focus.line, anchor.line)
+        };
+        let mut carets: Vec<Cursor> = Vec::new();
+        for line in start_line..=end_line {
+            if self.model.borrow().is_hidden(line) {
+                continue;
+            }
+            let text = self.line_text(line).unwrap_or_default();
+            let grid = LineGrid::new(&text, self.config.tab_width);
+            let start = grid.char_at_or_after_column(from_column);
+            let end = grid.char_at_or_after_column(to_column);
+            carets.push(Cursor {
+                head: TextPosition::new(line, end),
+                anchor: TextPosition::new(line, start),
+            });
+        }
+        if carets.is_empty() {
+            return;
+        }
+        // The focus line's caret is the primary one, matching where the pointer is.
+        let primary = carets.pop().unwrap_or(self.cursor);
+        self.cursor = primary;
+        self.extra_cursors = carets;
+        self.goal.active = false;
+        self.emit_cursor_and_selection();
+        self.base.request_redraw();
+    }
+
+    /// The grid column of a document position.
+    fn visual_column_at(&self, position: TextPosition) -> usize {
+        let text = self.line_text(position.line).unwrap_or_default();
+        LineGrid::new(&text, self.config.tab_width).column_of_char(position.column)
+    }
+
+    /// The find-bar action whose button contains `pos`.
+    fn find_bar_action_at(&self, pos: Point) -> Option<FindBarAction> {
+        self.find_bar_buttons()
+            .into_iter()
+            .find(|(_, button)| button.contains(pos))
+            .map(|(action, _)| action)
+    }
+
+    /// Runs one find-bar action.
+    ///
+    /// Every arm defers to the existing command rather than re-implementing it, so the
+    /// button and the keyboard shortcut cannot diverge: a toggle writes the same
+    /// [`SearchOptions`] the shortcut writes, and the four actions call the same
+    /// find/replace entry points (ED-01).
+    fn apply_find_bar_action(&mut self, action: FindBarAction) {
+        match action {
+            FindBarAction::Close => self.close_find(),
+            FindBarAction::ToggleReplace => {
+                self.find.replace_visible = !self.find.replace_visible;
+                if !self.find.replace_visible {
+                    self.find.focus_replace = false;
+                }
+                self.base.request_layout();
+                self.base.request_redraw();
+            }
+            FindBarAction::ToggleCase
+            | FindBarAction::ToggleWholeWord
+            | FindBarAction::ToggleRegex => {
+                let mut options = self.find.options;
+                match action {
+                    FindBarAction::ToggleCase => options.case_sensitive = !options.case_sensitive,
+                    FindBarAction::ToggleWholeWord => options.whole_word = !options.whole_word,
+                    _ => options.use_regex = !options.use_regex,
+                }
+                self.set_search_options(options);
+            }
+            FindBarAction::Previous => {
+                self.find_next(true);
+            }
+            FindBarAction::Next => {
+                self.find_next(false);
+            }
+            FindBarAction::Replace => {
+                self.replace_current();
+            }
+            FindBarAction::ReplaceAll => {
+                self.replace_all();
+            }
+        }
     }
 
     /// Which tab is under `pos`, and whether the point is on its close box.

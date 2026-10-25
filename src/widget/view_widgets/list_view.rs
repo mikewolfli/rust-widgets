@@ -27,6 +27,7 @@ use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// The margin a list leaves between its own frame and its rows: 2 px on every edge.
 ///
@@ -537,6 +538,23 @@ pub struct ListView {
     icon_visible_in_list_mode: bool,
     /// Optional per-row presentation hook.
     item_delegate: Option<Box<dyn ItemDelegate>>,
+    /// Measured widths of trailing delegate text, bounded and keyed by the text (F-P09).
+    trailing_width_cache: std::cell::RefCell<TrailingWidthCache>,
+    /// Characters typed for type-ahead navigation (V-09).
+    type_ahead_buffer: String,
+    /// When the last type-ahead character arrived; a gap over 800 ms starts a new search.
+    type_ahead_last: Option<Instant>,
+}
+
+/// Bounded cache of measured trailing-text widths (F-P09).
+///
+/// A delegate's trailing label is usually static per row, yet the paint loop measured it on every
+/// frame and every hover redraw. The key is the text itself (the font size is held beside the map
+/// and clears it when it changes), and the cache stops growing at a fixed capacity.
+#[derive(Default)]
+struct TrailingWidthCache {
+    font_size_bits: u32,
+    widths: std::collections::HashMap<String, u32>,
 }
 impl ListView {
     /// Creates an empty list view.
@@ -559,6 +577,9 @@ impl ListView {
             row_reordered: Signal1::new(),
             icon_visible_in_list_mode: false,
             item_delegate: None,
+            trailing_width_cache: std::cell::RefCell::new(TrailingWidthCache::default()),
+            type_ahead_buffer: String::new(),
+            type_ahead_last: None,
         }
     }
     /// Binds an external list model.
@@ -698,6 +719,94 @@ impl ListView {
     /// Returns current selection mode.
     pub fn selection_mode(&self) -> SelectionMode {
         self.selection.mode()
+    }
+
+    /// The measured width of `text`, cached for the next paint (F-P09).
+    ///
+    /// The cache stops growing at 64 entries: a delegate whose trailing text is unique per row
+    /// would otherwise turn the cache into a slower copy of the model, and measuring directly is
+    /// still correct.
+    fn trailing_text_width(
+        &self,
+        context: &RenderContext,
+        text: &str,
+        font: &crate::core::Font,
+    ) -> u32 {
+        const CAPACITY: usize = 64;
+        let size_bits = font.size().to_bits();
+        let mut cache = self.trailing_width_cache.borrow_mut();
+        if cache.font_size_bits != size_bits {
+            cache.widths.clear();
+            cache.font_size_bits = size_bits;
+        }
+        if let Some(width) = cache.widths.get(text) {
+            return *width;
+        }
+        let width = context.measure_text(text, font).width;
+        if cache.widths.len() < CAPACITY {
+            cache.widths.insert(text.to_string(), width);
+        }
+        width
+    }
+
+    /// The wash painted behind `row`, in the weight order focused > selected > hovered (V-08).
+    ///
+    /// Selection is drawn independently of the delegate: before this, a selected row only looked
+    /// selected when the delegate happened to consume `ListItemState::selected`, so a multi-select
+    /// with no delegate was invisible.
+    fn row_background(&self, row: usize, focused_bg: Color, hovered_bg: Color) -> Option<Color> {
+        if Some(row) == self.focused_row || self.selection.is_selected(row) {
+            Some(focused_bg)
+        } else if Some(row) == self.hovered_row {
+            Some(hovered_bg)
+        } else {
+            None
+        }
+    }
+
+    /// Type-ahead: an 800 ms character buffer jumps to the next matching label (V-09).
+    ///
+    /// The search starts after the focused row and wraps once, matching the semantics
+    /// `GridTable` already offers. The buffer resets after 800 ms of inactivity, which is the
+    /// interval the platform lists use to decide that two keystrokes are one query.
+    fn type_ahead(&mut self, character: char) {
+        const WINDOW: Duration = Duration::from_millis(800);
+        let now = Instant::now();
+        let stale = self.type_ahead_last.is_none_or(|last| now.duration_since(last) > WINDOW);
+        if stale {
+            self.type_ahead_buffer.clear();
+        }
+        self.type_ahead_last = Some(now);
+        self.type_ahead_buffer.push(character.to_ascii_lowercase());
+        let needle = self.type_ahead_buffer.clone();
+        let rows = self.row_count();
+        let Some(model) = self.model.clone() else {
+            return;
+        };
+        if rows == 0 {
+            return;
+        }
+        let start = self.focused_row.map_or(0, |row| (row + 1) % rows);
+        let mut text = String::new();
+        for step in 0..rows {
+            let row = (start + step) % rows;
+            text.clear();
+            if model.fill_data(row, &mut text) && text.to_lowercase().starts_with(&needle) {
+                self.select_row(row);
+                self.set_focused_row(row);
+                let layout = self.list_layout();
+                let columns = layout.columns.max(1) as usize;
+                let rows_per_page =
+                    (layout.content.height / layout.row_height.max(1)).max(1) as usize;
+                let line = row / columns;
+                if line < self.scroll_row {
+                    self.set_scroll_row(line);
+                } else if line >= self.scroll_row.saturating_add(rows_per_page) {
+                    self.set_scroll_row(line.saturating_add(1).saturating_sub(rows_per_page));
+                }
+                return;
+            }
+        }
     }
 
     /// Returns the current view mode.
@@ -1283,10 +1392,8 @@ impl Draw for ListView {
                 // Hover is painted *under* focus: a row that is both hovered and focused keeps the
                 // focused weight, so the persistent fact is not visually displaced by the pointer
                 // merely passing over it.
-                if Some(i) == current_row {
-                    context.fill_rect(cell, focused_bg);
-                } else if Some(i) == self.hovered_row {
-                    context.fill_rect(cell, hovered_bg);
+                if let Some(fill) = self.row_background(i, focused_bg, hovered_bg) {
+                    context.fill_rect(cell, fill);
                 }
                 cell_text.clear();
                 // The delegate may override the icon; with no delegate the model's own icon is
@@ -1379,9 +1486,10 @@ impl Draw for ListView {
                     if let Some(model) = self.model.as_ref() {
                         if let Some(trailing) = delegate.trailing_text(i, model.as_ref()) {
                             if !trailing.is_empty() {
-                                let metrics = context.measure_text(&trailing, font);
+                                let metrics_width =
+                                    self.trailing_text_width(context, &trailing, font);
                                 let inset = 6;
-                                let width = (metrics.width + inset as u32 * 2)
+                                let width = (metrics_width + inset as u32 * 2)
                                     .min(cell.width.saturating_sub(layout.text_inset as u32));
                                 let band = Rect::new(
                                     cell.x + cell.width as i32 - width as i32,
@@ -1475,6 +1583,21 @@ impl crate::event::EventHandler for ListView {
             crate::event::Event::KeyPress { key, modifiers }
                 if self.base.focus_reason().is_some() =>
             {
+                // Type-ahead first: a printable character is a query, not a navigation key (V-09).
+                // The navigation keys share the ASCII range (END is 35, HOME 36, the arrows
+                // 37..=40), so they are excluded explicitly; a modifier chord is a command, not
+                // a character.
+                let key_modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let navigation_key = matches!(*key, 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 46);
+                let command_chord = key_modifiers.contains(crate::shortcut::Modifiers::CTRL)
+                    || key_modifiers.contains(crate::shortcut::Modifiers::META)
+                    || key_modifiers.contains(crate::shortcut::Modifiers::ALT);
+                if (32..=126).contains(key) && !navigation_key && !command_chord {
+                    if let Some(character) = char::from_u32(*key) {
+                        self.type_ahead(character);
+                    }
+                    return;
+                }
                 let layout = self.list_layout();
                 let columns = layout.columns.max(1) as usize;
                 let rows_per_page =
@@ -1997,5 +2120,86 @@ mod tests {
             button: 1,
         });
         assert_eq!(moved.lock().map(|slot| *slot).unwrap_or(None), Some((0, 1)));
+    }
+
+    struct NamedModel;
+
+    impl ListModel for NamedModel {
+        fn row_count(&self) -> usize {
+            5
+        }
+        fn data(&self, row: usize) -> Option<String> {
+            const NAMES: [&str; 5] = ["alpha", "beta", "bravo", "charlie", "delta"];
+            NAMES.get(row).map(|name| (*name).to_string())
+        }
+    }
+
+    struct TrailingDelegate;
+
+    impl ItemDelegate for TrailingDelegate {
+        fn trailing_text(&self, _row: usize, _model: &dyn ListModel) -> Option<String> {
+            Some("12 KB".to_string())
+        }
+    }
+
+    /// F-P09: trailing-text measurements are cached, not repeated per frame.
+    #[test]
+    fn trailing_text_width_is_measured_once() {
+        let mut view = ListView::new(Rect::new(0, 0, 320, 240));
+        view.set_model(Arc::new(NamedModel));
+        view.set_item_delegate(Some(Box::new(TrailingDelegate)));
+        let _ = crate::widget::svg::render_to_svg(&mut view);
+        let cached = view.trailing_width_cache.borrow();
+        assert!(cached.widths.contains_key("12 KB"), "the trailing label was measured and cached");
+        assert_eq!(cached.widths.len(), 1, "one label, one measurement");
+        let width = cached.widths["12 KB"];
+        drop(cached);
+
+        let _ = crate::widget::svg::render_to_svg(&mut view);
+        assert_eq!(
+            view.trailing_width_cache.borrow().widths.get("12 KB").copied(),
+            Some(width),
+            "a second frame reuses the cached width"
+        );
+    }
+
+    /// V-08: a selected non-focused row keeps the selection wash, and hover never overrides it.
+    #[test]
+    fn selected_rows_are_painted_without_a_delegate() {
+        use crate::core::Color;
+        use crate::shortcut::Modifiers;
+
+        let mut view = ListView::new(Rect::new(0, 0, 320, 240));
+        view.set_model(Arc::new(NamedModel));
+        view.set_selection_mode(SelectionMode::Extended);
+        assert!(view.select_row_with_modifiers(1, Modifiers::empty()));
+        assert!(view.select_row_with_modifiers(3, Modifiers::CTRL));
+
+        let focused = Color::BLACK;
+        let hovered = Color::WHITE;
+        assert_eq!(view.row_background(1, focused, hovered), Some(focused), "selected row paints");
+        assert_eq!(view.row_background(3, focused, hovered), Some(focused), "focused row paints");
+        assert_eq!(view.row_background(0, focused, hovered), None, "unselected, unhovered");
+
+        view.hovered_row = Some(3);
+        assert_eq!(view.row_background(3, focused, hovered), Some(focused), "focus outranks hover");
+        view.hovered_row = Some(0);
+        assert_eq!(view.row_background(0, focused, hovered), Some(hovered));
+    }
+
+    /// V-09: type-ahead accumulates characters inside its window and selects the match.
+    #[test]
+    fn typing_jumps_to_the_matching_row() {
+        let mut view = ListView::new(Rect::new(0, 0, 320, 240));
+        view.set_model(Arc::new(NamedModel));
+        view.handle_event(&crate::event::Event::FocusGained {
+            reason: crate::event::FocusReason::Tab,
+        });
+
+        view.handle_event(&crate::event::Event::KeyPress { key: b'b' as u32, modifiers: 0 });
+        assert_eq!(view.focused_row(), Some(1), "'b' jumps to beta");
+
+        view.handle_event(&crate::event::Event::KeyPress { key: b'r' as u32, modifiers: 0 });
+        assert_eq!(view.focused_row(), Some(2), "'br' continues to bravo");
     }
 }

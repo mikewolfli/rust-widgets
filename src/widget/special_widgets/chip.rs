@@ -15,6 +15,13 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::collections::HashMap;
+
+// The text-entry partner of this control is declared here so the two share one item contract and
+// one pill renderer (COMP-H02).
+#[path = "chip_input.rs"]
+pub mod chip_input;
+pub use chip_input::ChipInput;
 
 /// A chip's leading avatar content.
 ///
@@ -66,18 +73,49 @@ pub struct ChipItem {
     pub selected: bool,
     /// Optional leading avatar, shown in the same slot as the typed icon.
     pub avatar: Option<ChipAvatar>,
+    /// Whether the item accepts toggling, closing and dragging.
+    ///
+    /// A mixed list is the normal case for a token input: an address that was already billed is
+    /// read-only beside one the reader is still choosing.
+    pub enabled: bool,
+    /// Per-item close override. `None` follows the control's `show_close`.
+    pub closable: Option<bool>,
 }
 
 impl ChipItem {
     /// Creates a new chip item.
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into(), selected: false, avatar: None }
+        Self {
+            id: id.into(),
+            label: label.into(),
+            selected: false,
+            avatar: None,
+            enabled: true,
+            closable: None,
+        }
     }
 
     /// Sets the item's leading avatar.
     pub fn with_avatar(mut self, avatar: ChipAvatar) -> Self {
         self.avatar = Some(avatar);
         self
+    }
+
+    /// Marks the item read-only (`false`) or interactive (`true`).
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Overrides whether the item paints and honours a close affordance.
+    pub fn with_closable(mut self, closable: bool) -> Self {
+        self.closable = Some(closable);
+        self
+    }
+
+    /// Whether the item's close affordance is offered.
+    fn close_allowed(&self, show_close: bool) -> bool {
+        self.closable.unwrap_or(show_close) && self.enabled
     }
 }
 
@@ -123,6 +161,17 @@ pub const CHIP_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
                 "avatar",
                 crate::widget::capability::PropertyValueKind::String,
             ),
+            // Whether the item is interactive. Optional, because a document that does not mention
+            // it describes the ordinary case: an enabled chip.
+            crate::widget::capability::RecordField::optional(
+                "enabled",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            // A per-item close override, for a list that mixes removable and read-only tokens.
+            crate::widget::capability::RecordField::optional(
+                "closable",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
         ],
         id_field: "id",
         ids_unique: true,
@@ -141,7 +190,11 @@ fn chip_item_record(
     let mut record = crate::widget::capability::RecordValue::new()
         .with("id", CapabilityValue::String(item.id.clone()))
         .with("label", CapabilityValue::String(item.label.clone()))
-        .with("selected", CapabilityValue::Bool(item.selected));
+        .with("selected", CapabilityValue::Bool(item.selected))
+        .with("enabled", CapabilityValue::Bool(item.enabled));
+    if let Some(closable) = item.closable {
+        record = record.with("closable", CapabilityValue::Bool(closable));
+    }
     if let Some(avatar) = item.avatar.as_ref() {
         record = record.with("avatar", CapabilityValue::String(avatar.as_token()));
     }
@@ -202,7 +255,20 @@ fn chip_item_from_record(
         }
         Some(_) => return Err(CapabilityAccessError::TypeMismatch),
     };
-    Ok((ChipItem { id: text("id")?, label: text("label")?, selected, avatar }, icon_source))
+    let enabled = match record.get("enabled") {
+        None | Some(CapabilityValue::Null) => true,
+        Some(CapabilityValue::Bool(flag)) => *flag,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let closable = match record.get("closable") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::Bool(flag)) => Some(*flag),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok((
+        ChipItem { id: text("id")?, label: text("label")?, selected, avatar, enabled, closable },
+        icon_source,
+    ))
 }
 
 /// Square side of a chip item's leading icon slot, in logical pixels.
@@ -228,6 +294,8 @@ struct ChipLayout {
     spacing: i32,
     chips: Vec<(usize, Rect)>,
     overflow: Option<(Rect, usize)>,
+    /// The `+N` caption, built with the layout because the hidden count is a layout product.
+    overflow_label: String,
 }
 
 impl ChipLayout {
@@ -261,8 +329,10 @@ pub struct Chip {
     /// `ChipItem`'s fields are public, so a caller may construct and mutate items without this
     /// control observing it; the override is therefore keyed by identity rather than by position,
     /// and [`Chip`] prunes it whenever the item list changes so an id can never name an item that
-    /// no longer exists (blue27 §19.6).
-    item_icon_sources: Vec<(String, IconSource)>,
+    /// no longer exists (blue27 §19.6). A hash map rather than a vector of pairs: the paint path
+    /// looked each of N chips up by scanning M overrides, which made a long list with several
+    /// overrides quadratic per frame.
+    item_icon_sources: HashMap<String, IconSource>,
     /// Emitted when chip selection changes. Payload is chip id.
     pub chip_toggled: Signal1<String>,
     /// Emitted with the id of a chip removed through its close affordance.
@@ -271,6 +341,12 @@ pub struct Chip {
     pub chip_reordered: Signal1<String>,
     /// Emitted with the number of chips folded into the `+N` summary cell when it is pressed.
     pub overflow_activated: Signal1<usize>,
+    /// Emitted when the chip under the pointer changes: its id on entry, `None` on exit.
+    pub chip_hovered: Signal1<Option<String>>,
+    /// The chip that started a shift-selection run.
+    selection_anchor: Option<usize>,
+    /// Whether the row flows onto further rows instead of folding the tail into `+N`.
+    wrap: bool,
     /// The chip under the pointer.
     hovered_index: Option<usize>,
     /// Whether each chip paints a close affordance.
@@ -299,11 +375,14 @@ impl Chip {
             focused_index: None,
             chip_padding: dimensions::CHIP_PADDING_H as i32,
             chip_spacing: 6,
-            item_icon_sources: Vec::new(),
+            item_icon_sources: HashMap::new(),
             chip_toggled: Signal1::new(),
             chip_removed: Signal1::new(),
             chip_reordered: Signal1::new(),
             overflow_activated: Signal1::new(),
+            chip_hovered: Signal1::new(),
+            selection_anchor: None,
+            wrap: false,
             hovered_index: None,
             show_close: false,
             reorder_enabled: false,
@@ -376,7 +455,7 @@ impl Chip {
             return false;
         }
         let removed = self.items.remove(index);
-        self.item_icon_sources.retain(|(id, _)| id != &removed.id);
+        self.item_icon_sources.remove(&removed.id);
         self.focused_index =
             if self.items.is_empty() { None } else { Some(index.min(self.items.len() - 1)) };
         self.hovered_index = None;
@@ -416,7 +495,7 @@ impl Chip {
         // is what stops a later item that happens to reuse an id from inheriting the removed one's
         // icon (blue27 §19.6: an explicit removal must not resurrect old presentation).
         let live: Vec<String> = self.items.iter().map(|item| item.id.clone()).collect();
-        self.item_icon_sources.retain(|(id, _)| live.contains(id));
+        self.item_icon_sources.retain(|id, _| live.contains(id));
         self.focused_index = if self.items.is_empty() { None } else { Some(0) };
         if !self.multi_select {
             // Keep only first selected chip in single-select mode.
@@ -464,9 +543,9 @@ impl Chip {
                 return Err(crate::widget::IconItemError::DuplicateItemId { id: String::from(id) })
             }
         }
-        self.item_icon_sources.retain(|(existing, _)| existing != id);
+        self.item_icon_sources.retain(|existing, _| existing != id);
         if let Some(source) = source {
-            self.item_icon_sources.push((String::from(id), source));
+            self.item_icon_sources.insert(String::from(id), source);
         }
         // An icon is part of the chip's box, so the row has to be measured again, not just redrawn.
         self.layout_cache = None;
@@ -477,10 +556,7 @@ impl Chip {
 
     /// Returns the typed icon source assigned to the item owning `id`.
     pub fn item_icon_source(&self, id: &str) -> Option<IconSource> {
-        self.item_icon_sources
-            .iter()
-            .find(|(existing, _)| existing == id)
-            .map(|(_, source)| *source)
+        self.item_icon_sources.get(id).copied()
     }
 
     /// Returns the typed icon source for `item`, if one is assigned.
@@ -490,9 +566,9 @@ impl Chip {
 
     /// Replaces the whole id-keyed override map, dropping any entry the new list does not name.
     fn adopt_icon_sources(&mut self, sources: Vec<(String, IconSource)>) {
-        self.item_icon_sources = sources;
+        self.item_icon_sources = sources.into_iter().collect();
         let live: Vec<String> = self.items.iter().map(|item| item.id.clone()).collect();
-        self.item_icon_sources.retain(|(id, _)| live.contains(id));
+        self.item_icon_sources.retain(|id, _| live.contains(id));
         self.layout_cache = None;
     }
 
@@ -552,6 +628,10 @@ impl Chip {
         if index >= self.items.len() {
             return false;
         }
+        // A read-only item reports the refusal rather than toggling silently.
+        if !self.items[index].enabled {
+            return false;
+        }
 
         // Captured before the mutation: the pill slides *from* the chip that was selected,
         // and asking afterwards would always answer with the chip just chosen.
@@ -583,16 +663,62 @@ impl Chip {
     }
 
     /// Moves focus by signed delta.
+    ///
+    /// Disabled items are skipped: a focus stop that cannot be activated is a dead end for a
+    /// keyboard user.
     pub fn move_focus(&mut self, delta: isize) {
         if self.items.is_empty() {
             self.focused_index = None;
             return;
         }
-        let current = self.focused_index.unwrap_or(0) as isize;
         let max = self.items.len().saturating_sub(1) as isize;
-        let next = (current + delta).clamp(0, max) as usize;
-        self.focused_index = Some(next);
+        let mut next = (self.focused_index.unwrap_or(0) as isize + delta).clamp(0, max);
+        while self.items.get(next as usize).is_some_and(|item| !item.enabled) {
+            let stepped = next + delta.signum();
+            if stepped < 0 || stepped > max || stepped == next {
+                break;
+            }
+            next = stepped;
+        }
+        self.focused_index = Some(next as usize);
         self.base.request_redraw();
+    }
+
+    /// Moves focus to the first or the last enabled item.
+    fn move_focus_edge(&mut self, last: bool) {
+        let target = if last {
+            self.items.iter().rposition(|item| item.enabled)
+        } else {
+            self.items.iter().position(|item| item.enabled)
+        };
+        if let Some(index) = target {
+            self.focused_index = Some(index);
+            self.base.request_redraw();
+        }
+    }
+
+    /// Extends the selection from the shift anchor to the focused item.
+    fn extend_selection_to_focus(&mut self) {
+        let Some(focus) = self.focused_index.filter(|index| *index < self.items.len()) else {
+            return;
+        };
+        let anchor = *self.selection_anchor.get_or_insert(focus);
+        let (first, last) = if anchor <= focus { (anchor, focus) } else { (focus, anchor) };
+        let mut changed = false;
+        for index in first..=last {
+            if self.items.get(index).is_some_and(|item| item.enabled) && !self.items[index].selected
+            {
+                self.items[index].selected = true;
+                changed = true;
+            }
+        }
+        if changed {
+            crate::style::reapply_active_theme_state(self);
+            if let Some(id) = self.items.get(focus).map(|item| item.id.clone()) {
+                self.chip_toggled.emit(id);
+            }
+            self.base.request_redraw();
+        }
     }
 
     /// The width a chip needs for `item`, using the shared text measurement.
@@ -613,23 +739,49 @@ impl Chip {
         } else {
             0
         };
-        let close = if self.show_close { CHIP_CLOSE_SLOT } else { 0 };
+        let close = if item.close_allowed(self.show_close) { CHIP_CLOSE_SLOT } else { 0 };
         estimate_text_width(&item.label, font, 1.0) as i32 + padding * 2 + icon as i32 + close
     }
 
-    /// The band the chip row occupies: full width, `CHIP_HEIGHT` tall, centred in the
-    /// control's rectangle.
+    /// Whether the row flows onto further rows instead of folding its tail into `+N`.
+    pub fn wrap(&self) -> bool {
+        self.wrap
+    }
+
+    /// Enables or disables multi-row flow.
     ///
-    /// # Why the row has its own height
-    ///
-    /// A chip is chrome: it is the same height whoever hands it the row. Deriving it from
-    /// `rect.height - 8` made a 240x120 census cell draw a **112 px chip** — a column shaped
-    /// like a chip rather than a chip — and made a chip inside a 64 px toolbar a different
-    /// object from one inside a 120 px cell. [`ControlMetrics::full_width_band`] is the
-    /// shared derivation for "my width, my own height", so the drawn chip and the 24 px
-    /// `size_hint` can no longer describe different controls.
+    /// Off by default, so a caller that never asks keeps the single-row pixels it had. With it on, a
+    /// row that runs out of width starts a new one and the `+N` summary disappears: the summary is
+    /// what a single-row layout does instead of wrapping, and doing both would lose chips twice.
+    pub fn set_wrap(&mut self, wrap: bool) {
+        if self.wrap == wrap {
+            return;
+        }
+        self.wrap = wrap;
+        self.layout_cache = None;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Sets a single item's close affordance independently of the control's switch.
+    pub fn set_item_closable(&mut self, id: &str, closable: bool) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
+            return false;
+        };
+        item.closable = Some(closable);
+        self.layout_cache = None;
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The band the chip row occupies, or the full rectangle when wrapping.
     fn row_band(&self) -> Rect {
-        ControlMetrics::full_width_band(self.geometry(), dimensions::CHIP_HEIGHT)
+        if self.wrap {
+            self.geometry()
+        } else {
+            ControlMetrics::full_width_band(self.geometry(), dimensions::CHIP_HEIGHT)
+        }
     }
 
     /// Rebuilds the cached layout when its inputs have changed.
@@ -660,19 +812,32 @@ impl Chip {
     fn build_layout(&self, band: Rect, font: Font) -> ChipLayout {
         let mut layout = Vec::with_capacity(self.items.len());
         let mut x = band.x + dimensions::CHIP_PADDING_H as i32;
+        let mut y = band.y;
         let right = band.x + band.width as i32;
+        // A chip is its own height, clamped to the band only when the band is shorter than one
+        // chip — the rule the single-row layout always followed.
+        let chip_height =
+            if self.wrap { dimensions::CHIP_HEIGHT.min(band.height.max(1)) } else { band.height };
         let mut overflow = None;
         for (index, item) in self.items.iter().enumerate() {
             let width =
                 (self.chip_width(item, self.chip_padding, &font).max(10) as u32).min(band.width);
             if x + width as i32 > right {
-                overflow = Some((index, (right - x).max(0) as u32));
-                break;
+                if self.wrap {
+                    // Multi-row flow: start the next row at the same left inset. A chip wider than
+                    // the whole band still gets one row of its own rather than looping forever.
+                    x = band.x + dimensions::CHIP_PADDING_H as i32;
+                    y += chip_height as i32 + self.chip_spacing / 2;
+                } else {
+                    overflow = Some((index, (right - x).max(0) as u32));
+                    break;
+                }
             }
             let available = (right - x).max(1) as u32;
-            layout.push((index, Rect::new(x, band.y, width.min(available), band.height)));
+            layout.push((index, Rect::new(x, y, width.min(available), chip_height)));
             x += width as i32 + self.chip_spacing;
         }
+        let mut overflow_label = String::new();
         let overflow_cell = overflow.and_then(|(first_hidden, room)| {
             let hidden = self.items.len() - first_hidden;
             if hidden == 0 || room < 18 {
@@ -689,7 +854,8 @@ impl Chip {
             let available = (right - start).max(1) as u32;
             let width = (CHIP_OVERFLOW_WIDTH as u32).min(available);
             let hidden = self.items.len() - layout.len();
-            Some((Rect::new(start, band.y, width, band.height), hidden))
+            overflow_label = format!("+{hidden}");
+            Some((Rect::new(start, band.y, width, chip_height), hidden))
         });
         ChipLayout {
             band,
@@ -699,7 +865,34 @@ impl Chip {
             spacing: self.chip_spacing,
             chips: layout,
             overflow: overflow_cell,
+            overflow_label,
         }
+    }
+
+    /// The number of rows the items occupy when wrapping.
+    ///
+    /// Measured without touching the layout cache: `size_hint` takes `&self`, and the count is a
+    /// pure function of the items and the band.
+    fn wrapped_row_count(&self) -> usize {
+        let rect = self.geometry();
+        if rect.width == 0 || self.items.is_empty() {
+            return 1;
+        }
+        let font = effective_font(self.style());
+        let inset = dimensions::CHIP_PADDING_H as i32;
+        let right = rect.x + rect.width as i32;
+        let mut x = rect.x + inset;
+        let mut rows = 1usize;
+        for item in &self.items {
+            let width =
+                (self.chip_width(item, self.chip_padding, font).max(10) as u32).min(rect.width);
+            if x + width as i32 > right && x > rect.x + inset {
+                rows += 1;
+                x = rect.x + inset;
+            }
+            x += width as i32 + self.chip_spacing;
+        }
+        rows
     }
 
     #[cfg(test)]
@@ -721,8 +914,11 @@ impl Chip {
         self.cached_layout()
             .chips
             .iter()
-            .find(|(_, chip)| {
-                pos.x >= chip.x
+            .find(|(index, chip)| {
+                // A disabled chip is drawn but not a target: clicking one must fall through to
+                // whatever is behind rather than toggling a read-only item.
+                self.items.get(*index).is_some_and(|item| item.enabled)
+                    && pos.x >= chip.x
                     && pos.x < chip.x + chip.width as i32
                     && pos.y >= chip.y
                     && pos.y < chip.y + chip.height as i32
@@ -740,11 +936,13 @@ impl Chip {
 
     /// Returns the chip whose close affordance is under the pointer.
     fn hit_close(&mut self, pos: Point) -> Option<usize> {
-        if !self.show_close {
-            return None;
-        }
         self.ensure_layout();
+        let show_close = self.show_close;
         self.cached_layout().chips.iter().find_map(|(index, chip)| {
+            let allowed = self.items.get(*index).is_some_and(|item| item.close_allowed(show_close));
+            if !allowed {
+                return None;
+            }
             let close = Rect::new(
                 chip.x + chip.width as i32 - CHIP_CLOSE_SLOT,
                 chip.y,
@@ -789,6 +987,12 @@ impl Widget for Chip {
     }
 
     fn size_hint(&self) -> crate::core::Size {
+        if self.wrap {
+            // A wrapped row's height grows with the number of rows it flows onto, so the hint has
+            // to grow with it rather than staying one chip tall.
+            let rows = self.wrapped_row_count().max(1) as u32;
+            return crate::core::Size::new(80, dimensions::CHIP_HEIGHT * rows);
+        }
         crate::core::Size::new(80, 24)
     }
 
@@ -1013,6 +1217,11 @@ impl EventHandler for Chip {
                 let next = self.hit_index(*pos);
                 if next != self.hovered_index {
                     self.hovered_index = next;
+                    // The id travels with the transition, so a host can show a tooltip for the chip
+                    // it is actually over without mapping a private index itself.
+                    let id =
+                        next.and_then(|index| self.items.get(index).map(|item| item.id.clone()));
+                    self.chip_hovered.emit(id);
                     self.base.request_redraw();
                 }
                 if let Some(source) = self.drag_source {
@@ -1026,8 +1235,11 @@ impl EventHandler for Chip {
                 }
             }
             Event::MouseLeave { .. } => {
-                let changed =
-                    self.hovered_index.take().is_some() || self.drag_target.take().is_some();
+                let hovered = self.hovered_index.take().is_some();
+                let changed = hovered || self.drag_target.take().is_some();
+                if hovered {
+                    self.chip_hovered.emit(None);
+                }
                 if changed {
                     self.base.request_redraw();
                 }
@@ -1065,24 +1277,60 @@ impl EventHandler for Chip {
                     self.base.request_redraw();
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => match *key {
-                37 => self.move_focus(-1),
-                39 => self.move_focus(1),
-                13 | 32 => {
-                    if let Some(index) = self.focused_index() {
-                        let _ = self.toggle_index(index);
+            Event::KeyPress { key, modifiers } => {
+                let pressed = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let shift = pressed.contains(crate::shortcut::Modifiers::SHIFT);
+                match *key {
+                    37 => {
+                        if shift && self.multi_select {
+                            self.selection_anchor.get_or_insert(self.focused_index.unwrap_or(0));
+                        }
+                        self.move_focus(-1);
+                        if shift && self.multi_select {
+                            self.extend_selection_to_focus();
+                        } else {
+                            self.selection_anchor = None;
+                        }
                     }
-                }
-                46 | 8 => {
-                    // Delete/Backspace removes the focused chip through the same path as
-                    // its close affordance.
-                    if let Some(index) = self.focused_index() {
-                        let _ = self.remove_index(index);
+                    39 => {
+                        if shift && self.multi_select {
+                            self.selection_anchor.get_or_insert(self.focused_index.unwrap_or(0));
+                        }
+                        self.move_focus(1);
+                        if shift && self.multi_select {
+                            self.extend_selection_to_focus();
+                        } else {
+                            self.selection_anchor = None;
+                        }
                     }
+                    // Home/End reach the ends of the row, which a long list otherwise makes a long
+                    // arrow-key walk.
+                    36 => {
+                        self.selection_anchor = None;
+                        self.move_focus_edge(false);
+                    }
+                    35 => {
+                        self.selection_anchor = None;
+                        self.move_focus_edge(true);
+                    }
+                    13 | 32 => {
+                        if let Some(index) = self.focused_index() {
+                            let _ = self.toggle_index(index);
+                        }
+                    }
+                    46 | 8 => {
+                        // Delete/Backspace removes the focused chip through the same path as
+                        // its close affordance; a read-only chip refuses.
+                        if let Some(index) = self.focused_index() {
+                            if self.items.get(index).is_some_and(|item| item.enabled) {
+                                let _ = self.remove_index(index);
+                            }
+                        }
+                    }
+                    // Unknown key; ignore
+                    _ => {}
                 }
-                // Unknown key; ignore
-                _ => {}
-            },
+            }
             // Other events are not relevant for this widget
             _ => {}
         }
@@ -1121,6 +1369,9 @@ impl Draw for Chip {
             .unwrap_or_else(|| crate::core::Color::border_of(background));
         let text_color =
             theme.as_ref().and_then(|t| t.text_color).or(style.text_color).unwrap_or(Color::BLACK);
+        // One font for the whole row: resolving it inside the loop re-created the family string per
+        // chip, and the avatar path resolved it twice per avatar chip.
+        let font = effective_font(style);
 
         // `chip:selected` is the theme's **declared** fill for the selected chip, and it applies
         // to that one chip's box and ink — not to the row. It used to be consumed into the row
@@ -1164,7 +1415,11 @@ impl Draw for Chip {
             // falls back to the same tint derivation the other states use. The fallback keeps the
             // chip readable on a theme that declares no such key, which is why the derivation is
             // not replaced outright.
-            let mut bg = if item.selected {
+            let mut bg = if !item.enabled {
+                // A read-only chip reads as present but inert: the weakest fill the other states
+                // use, with a dimmed label below.
+                background.blend(&text_color, 0.03)
+            } else if item.selected {
                 background.blend(&text_color, 0.22)
             } else if self.focused_index == Some(index) {
                 background.blend(&text_color, 0.12)
@@ -1173,7 +1428,7 @@ impl Draw for Chip {
             } else {
                 background.blend(&text_color, 0.06)
             };
-            let mut label_ink = text_color;
+            let mut label_ink = if item.enabled { text_color } else { text_color.with_alpha(120) };
             // The pill's ink must contrast with the fill it is actually painted on. A selected
             // chip whose theme declares a fill but no ink kept the body text colour, so the
             // accent pill carried dark text on a dark blue fill (the census sample showed exactly
@@ -1238,7 +1493,7 @@ impl Draw for Chip {
                         context.draw_text_fitted_cow(
                             avatar_rect,
                             text,
-                            effective_font(style),
+                            font,
                             label_ink,
                             HorizontalAlignment::Center,
                         );
@@ -1269,7 +1524,7 @@ impl Draw for Chip {
             context.draw_text_line_cow(
                 label_box,
                 &item.label,
-                effective_font(style),
+                font,
                 label_ink,
                 HorizontalAlignment::Left,
             );
@@ -1278,7 +1533,7 @@ impl Draw for Chip {
             //
             // Two strokes forming an ×, in the ink of the pill it sits on. The slot is charged
             // in `chip_width`, so the label was fitted into the room that is actually left.
-            if self.show_close {
+            if item.close_allowed(self.show_close) {
                 let cx = chip_rect.x + chip_rect.width as i32 - CHIP_CLOSE_SLOT / 2;
                 let cy = chip_rect.y + chip_rect.height as i32 / 2;
                 let arm = 3;
@@ -1299,14 +1554,15 @@ impl Draw for Chip {
         }
 
         // ── Overflow summary ──
-        if let Some((cell, hidden)) = self.cached_layout().overflow {
+        if let Some((cell, _)) = self.cached_layout().overflow {
             let radius = (cell.height / 2).max(1);
             let fill = background.blend(&text_color, 0.06);
             context.fill_rounded_rect(cell, radius, fill);
             context.draw_rounded_rect_stroke(cell, radius, border, 1);
-            let font = effective_font(style);
-            let text = format!("+{hidden}");
-            context.draw_text_line_cow(cell, &text, font, text_color, HorizontalAlignment::Center);
+            // The caption was built with the layout: the hidden count is a layout product, so
+            // formatting it here made the paint path recompute a layout answer.
+            let text = self.cached_layout().overflow_label.as_str();
+            context.draw_text_line_cow(cell, text, font, text_color, HorizontalAlignment::Center);
         }
 
         // ── Drag insertion marker ──
@@ -1975,7 +2231,10 @@ mod tests {
         assert!(schema.readable && schema.writable);
         let record_schema = schema.record_schema.expect("a `Records` schema names its shape");
         assert_eq!(record_schema.id_field, "id");
-        assert_eq!(record_schema.names(), vec!["id", "label", "selected", "icon_source", "avatar"]);
+        assert_eq!(
+            record_schema.names(),
+            vec!["id", "label", "selected", "icon_source", "avatar", "enabled", "closable"]
+        );
         assert!(record_schema.ids_unique && record_schema.ids_required);
         // The control itself carries the same schema, so the two cannot drift.
         assert_eq!(record_schema, &CHIP_ITEM_SCHEMA);
@@ -2092,5 +2351,103 @@ mod tests {
         assert!(chip.move_item(0, 2));
         assert_eq!(chip.items()[2].id, "bug");
         assert_eq!(*moved.lock().unwrap(), vec!["bug".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod issue_2_8_tests {
+    use super::*;
+    use crate::event::Event;
+
+    /// SP-18: a disabled item refuses toggling while its neighbours keep working.
+    #[test]
+    fn a_disabled_item_refuses_toggling() {
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 32));
+        chip.set_items(vec![
+            ChipItem::new("a", "A").with_enabled(false),
+            ChipItem::new("b", "B"),
+        ]);
+        assert!(!chip.toggle_index(0));
+        assert!(chip.selected_ids().is_empty());
+        assert!(chip.toggle_index(1));
+        assert_eq!(chip.selected_ids(), ["b"]);
+    }
+
+    /// SP-18: the per-item close override wins over the control-level switch.
+    #[test]
+    fn per_item_close_override_is_stored_and_read_back() {
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 32));
+        chip.set_items(vec![ChipItem::new("a", "A"), ChipItem::new("b", "B")]);
+        assert!(chip.set_item_closable("b", false));
+        assert_eq!(chip.items()[1].closable, Some(false));
+        assert!(!chip.set_item_closable("missing", true));
+        // The record round-trip keeps the override.
+        let read = WidgetProperties::get(&chip, "items").expect("items is readable");
+        let CapabilityValue::Records(list) = read else {
+            panic!("items is a record list");
+        };
+        let record = list.items().last().expect("two records");
+        assert_eq!(record.get("closable"), Some(&CapabilityValue::Bool(false)));
+    }
+
+    /// SP-20: Home and End reach the row's ends.
+    #[test]
+    fn home_and_end_move_focus_to_the_row_edges() {
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 32));
+        chip.set_items(vec![
+            ChipItem::new("a", "A"),
+            ChipItem::new("b", "B"),
+            ChipItem::new("c", "C"),
+        ]);
+        chip.move_focus(1);
+        chip.handle_event(&Event::key_press(35, 0));
+        assert_eq!(chip.focused_index(), Some(2));
+        chip.handle_event(&Event::key_press(36, 0));
+        assert_eq!(chip.focused_index(), Some(0));
+    }
+
+    /// SP-17: wrapping flows onto further rows and stops folding into `+N`.
+    #[test]
+    fn wrapping_flows_onto_further_rows() {
+        let mut chip = Chip::new(Rect::new(0, 0, 120, 80));
+        chip.set_items(
+            (0..6)
+                .map(|index| ChipItem::new(format!("i{index}"), format!("Item {index}")))
+                .collect(),
+        );
+        chip.set_wrap(true);
+        let (chips, overflow) = chip.chip_layout_with_overflow();
+        assert_eq!(chips.len(), 6);
+        assert!(overflow.is_none());
+        assert!(chips.iter().any(|(_, rect)| rect.y > 0), "a second row exists");
+        assert!(chip.size_hint().height > dimensions::CHIP_HEIGHT);
+    }
+
+    /// COMP-H02: committing splits on the separator and honours the limit and duplicates rule.
+    #[test]
+    fn committing_splits_on_the_separator_and_enforces_the_rules() {
+        use super::chip_input::ChipInput;
+        let mut input = ChipInput::new(Rect::new(0, 0, 300, 80));
+        input.set_text("a,b");
+        assert_eq!(input.commit(), 2);
+        assert_eq!(input.items().len(), 2);
+        assert_eq!(input.text(), "");
+        input.set_text("a");
+        assert_eq!(input.commit(), 0, "a duplicate is refused");
+        input.set_max_count(2);
+        input.set_text("c");
+        assert_eq!(input.commit(), 0, "the limit refuses the third chip");
+        assert_eq!(input.items().len(), 2);
+    }
+
+    /// COMP-H02: backspace on an empty line removes the last chip.
+    #[test]
+    fn backspace_on_an_empty_line_removes_the_last_chip() {
+        use super::chip_input::ChipInput;
+        let mut input = ChipInput::new(Rect::new(0, 0, 300, 80));
+        input.set_items(vec![ChipItem::new("a", "A"), ChipItem::new("b", "B")]);
+        input.handle_event(&Event::key_press(8, 0));
+        assert_eq!(input.items().len(), 1);
+        assert_eq!(input.items()[0].id, "a");
     }
 }

@@ -17,7 +17,7 @@
 //! reserve is read from that box — the reserve is a width the permanent column carries rather than
 //! a subtraction from the message's width.
 
-use crate::compat::{String, ToString};
+use crate::compat::{Rc, RefCell, String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -67,7 +67,16 @@ pub struct StatusBar {
     /// total delta (rather than per-frame increments) lets a host that missed a frame
     /// still resize to the right place.
     pub size_grip_dragged: Signal1<(i32, i32)>,
+    /// The cached child boxes, keyed by [`Self::slot_signature`].
+    ///
+    /// `slot_bands` is read by the painter, the hit test, `text_area` and `widget_rect` in one
+    /// frame. Deriving it once per geometry/child-set revision means those readers share one
+    /// run instead of each allocating a fresh `Vec` (G-P04).
+    slot_bands_cache: SlotBandsCache,
 }
+
+/// The cached child boxes and the signature they were built for.
+type SlotBandsCache = RefCell<Option<(u64, Rc<Vec<(usize, Rect)>>)>>;
 
 /// One child placed on the status strip.
 struct StatusSlot {
@@ -90,6 +99,7 @@ impl StatusBar {
             widgets: Vec::new(),
             grip_drag: None,
             size_grip_dragged: Signal1::new(),
+            slot_bands_cache: RefCell::new(None),
         }
     }
     /// Returns the transient message, or `""` when none is shown.
@@ -241,7 +251,37 @@ impl StatusBar {
     }
 
     /// The box every child occupies, in insertion order.
-    fn slot_bands(&self) -> Vec<(usize, Rect)> {
+    fn slot_bands(&self) -> Rc<Vec<(usize, Rect)>> {
+        let key = self.slot_signature();
+        if let Some((cached_key, bands)) = self.slot_bands_cache.borrow().as_ref() {
+            if *cached_key == key {
+                return Rc::clone(bands);
+            }
+        }
+        let bands = Rc::new(self.compute_slot_bands());
+        *self.slot_bands_cache.borrow_mut() = Some((key, Rc::clone(&bands)));
+        bands
+    }
+
+    /// A fold over the facts [`Self::compute_slot_bands`] reads.
+    fn slot_signature(&self) -> u64 {
+        let rect = self.geometry();
+        let mut signature = (rect.x as u32 as u64).rotate_left(7)
+            ^ (rect.y as u32 as u64).rotate_left(15)
+            ^ (rect.width as u64).rotate_left(27)
+            ^ (rect.height as u64).rotate_left(39);
+        for (index, slot) in self.widgets.iter().enumerate() {
+            let hint = slot.widget.size_hint();
+            signature = signature.rotate_left(4)
+                ^ (index as u64)
+                ^ (hint.width as u64).rotate_left(20)
+                ^ ((slot.permanent as u64) << 52);
+        }
+        signature
+    }
+
+    /// Rebuilds the child boxes; [`Self::slot_bands`] is the cached entry point.
+    fn compute_slot_bands(&self) -> Vec<(usize, Rect)> {
         let band = self.geometry();
         let (message, permanent) = self.segment_boxes(band);
         let mut placed = Vec::with_capacity(self.widgets.len());
@@ -264,19 +304,32 @@ impl StatusBar {
 
     /// The box of the child at `index`, or `None` when the index is out of range.
     pub fn widget_rect(&self, index: usize) -> Option<Rect> {
-        self.slot_bands().into_iter().find(|(slot, _)| *slot == index).map(|(_, rect)| rect)
+        self.slot_bands().iter().copied().find(|(slot, _)| *slot == index).map(|(_, rect)| rect)
     }
 
     /// The part of `area` left after the children of one kind on its trailing side.
     fn text_area(&self, area: Rect, permanent: bool) -> Rect {
         let mut right = area.x + area.width as i32;
-        for (index, rect) in self.slot_bands() {
+        for (index, rect) in self.slot_bands().iter().copied() {
             if self.widgets[index].permanent != permanent {
                 continue;
             }
             right = right.min(rect.x - 4);
         }
         Rect::new(area.x, area.y, (right - area.x).max(0) as u32, area.height)
+    }
+
+    /// The size grip's public geometry, or `None` when the grip is disabled.
+    ///
+    /// A host that resizes its window from the status bar reads this instead of reconstructing
+    /// the strip's arithmetic: the exposed box and the painted grip are one derivation (M-10).
+    pub fn grip_rect(&self) -> Option<Rect> {
+        self.size_grip_rect(self.geometry())
+    }
+
+    /// Whether `pos` lies in the size grip's hit region.
+    pub fn grip_at(&self, pos: Point) -> bool {
+        self.grip_rect().is_some_and(|grip| grip.contains_point(pos))
     }
 
     /// Whether a size-grip drag is in progress.
@@ -501,7 +554,7 @@ impl EventHandler for StatusBar {
         | Event::MouseMove { pos } = event
         {
             let bands = self.slot_bands();
-            for (index, band) in bands {
+            for (index, band) in bands.iter().copied() {
                 if band.contains_point(*pos) {
                     let slot = &mut self.widgets[index];
                     slot.widget.set_geometry(band);
@@ -603,7 +656,7 @@ impl Draw for StatusBar {
         // Child widgets are painted last, each in the box the same band derivation reports,
         // so their hit boxes and their pixels agree.
         let bands = self.slot_bands();
-        for (index, band) in bands {
+        for (index, band) in bands.iter().copied() {
             let slot = &mut self.widgets[index];
             slot.widget.set_geometry(band);
             if let Some(drawable) = crate::widget::draw_bridge::draw_of(slot.widget.as_mut()) {

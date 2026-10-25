@@ -10,6 +10,7 @@
 //! and `PopupWindow` (a chrome-only popup), which `WidgetKind::Dialog` was previously
 //! aliased to.
 
+use crate::compat::RefCell;
 use crate::core::{Color, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -19,8 +20,9 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::composite::ButtonRole;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The height of the dialog's title bar, in pixels.
@@ -48,6 +50,22 @@ pub enum TitleBarButton {
     Close,
     /// The context-help mark; activating it emits `help_requested`.
     Help,
+}
+
+/// A caller-defined title-bar action: an icon and the id a handler receives (DLG-02).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleBarAction {
+    /// The mark painted in the title bar.
+    pub icon: IconName,
+    /// The identifier emitted through `title_bar_action` when the mark is pressed.
+    pub id: String,
+}
+
+impl TitleBarAction {
+    /// Creates an action from its icon and id.
+    pub fn new(icon: IconName, id: impl Into<String>) -> Self {
+        Self { icon, id: id.into() }
+    }
 }
 
 /// The drag in progress on the dialog's title bar.
@@ -111,6 +129,18 @@ pub struct Dialog {
     pub finished: Signal1<i32>,
     /// Emitted when the title bar's Help button is activated.
     pub help_requested: GenericSignal,
+    /// Emitted with a [`TitleBarAction`]'s id when that mark is activated (DLG-02).
+    pub title_bar_action: Signal1<String>,
+    /// The caller-defined title-bar actions. Empty keeps the [`TitleBarButton`] set (DLG-02).
+    title_bar_actions: Vec<TitleBarAction>,
+    /// The action row: each button's label and role (DLG-01).
+    buttons: Vec<(String, ButtonRole)>,
+    /// The index of the button Enter activates (DLG-01).
+    default_button: Option<usize>,
+    /// The action row's painted rectangles, cached for the press path (DLG-01).
+    button_rects: RefCell<Vec<Rect>>,
+    /// The content frame written on the last paint, so a still frame skips the write (G-P12).
+    placed_content: Option<(Rect, ObjectId)>,
 }
 
 impl Dialog {
@@ -140,6 +170,12 @@ impl Dialog {
             closed: GenericSignal::new(),
             finished: Signal1::new(),
             help_requested: GenericSignal::new(),
+            title_bar_action: Signal1::new(),
+            title_bar_actions: Vec::new(),
+            buttons: Vec::new(),
+            default_button: None,
+            button_rects: RefCell::new(Vec::new()),
+            placed_content: None,
         }
     }
 
@@ -355,6 +391,91 @@ impl Dialog {
         self.base.request_redraw();
     }
 
+    /// Appends an action button and returns its index (DLG-01).
+    ///
+    /// The role states what pressing it means: a [`ButtonRole::Destructive`] button rejects
+    /// the dialog, every other role accepts it. The row is painted at the frame's bottom band
+    /// through the same `action_row_geometry` derivation the other dialogs use.
+    pub fn add_button(&mut self, text: impl Into<String>, role: ButtonRole) -> usize {
+        self.buttons.push((text.into(), role));
+        if self.default_button.is_none() {
+            // The first button becomes the default, which is the conventional safe answer.
+            self.default_button = Some(self.buttons.len() - 1);
+        }
+        self.base.request_redraw();
+        self.buttons.len() - 1
+    }
+
+    /// Marks `index` as the button Enter activates (DLG-01).
+    pub fn set_default_button(&mut self, index: usize) {
+        if index >= self.buttons.len() {
+            return;
+        }
+        self.default_button = Some(index);
+        self.base.request_redraw();
+    }
+
+    /// The action row's labels, in order (DLG-01).
+    pub fn button_texts(&self) -> Vec<&str> {
+        self.buttons.iter().map(|(text, _)| text.as_str()).collect()
+    }
+
+    /// The role of the button at `index` (DLG-01).
+    pub fn button_role(&self, index: usize) -> Option<ButtonRole> {
+        self.buttons.get(index).map(|(_, role)| *role)
+    }
+
+    /// Presses the button at `index`: a destructive action rejects, anything else accepts.
+    pub fn activate_button(&mut self, index: usize) -> bool {
+        let Some(role) = self.buttons.get(index).map(|(_, role)| *role) else {
+            return false;
+        };
+        if role == ButtonRole::Destructive {
+            self.reject();
+        } else {
+            self.accept();
+        }
+        true
+    }
+
+    /// Replaces the caller-defined title-bar actions (DLG-02).
+    pub fn set_title_bar_actions(&mut self, actions: impl IntoIterator<Item = TitleBarAction>) {
+        let next: Vec<TitleBarAction> = actions.into_iter().collect();
+        if self.title_bar_actions == next {
+            return;
+        }
+        self.title_bar_actions = next;
+        self.base.request_redraw();
+    }
+
+    /// The caller-defined title-bar actions, in paint order.
+    pub fn title_bar_actions(&self) -> &[TitleBarAction] {
+        &self.title_bar_actions
+    }
+
+    /// The title-bar action rectangles, in the same right-to-left order the enum buttons use.
+    fn custom_title_bar_rects(&self) -> Vec<(TitleBarAction, Rect)> {
+        if self.title.is_empty() || self.title_bar_actions.is_empty() {
+            return Vec::new();
+        }
+        let frame = self.frame_rect();
+        let bar = ControlMetrics::top_band(frame, DIALOG_TITLE_BAR_HEIGHT);
+        if bar.height == 0 || bar.width < DIALOG_CLOSE_BUTTON {
+            return Vec::new();
+        }
+        let side = DIALOG_CLOSE_BUTTON.min(bar.height);
+        let mut right = bar.x + bar.width as i32 - side as i32 - 4;
+        let mut rects = Vec::with_capacity(self.title_bar_actions.len());
+        for action in self.title_bar_actions.iter().rev() {
+            rects.push((
+                action.clone(),
+                Rect::new(right, bar.y + ((bar.height - side) / 2) as i32, side, side),
+            ));
+            right -= side as i32 + 4;
+        }
+        rects
+    }
+
     /// Shows or hides the title-bar close button, leaving any Help button in place.
     ///
     /// Off by default, so the default chrome is unchanged. When on, a press on the button
@@ -446,11 +567,18 @@ impl Dialog {
     /// child inside the frame on every frame of the animation instead of snapping into place
     /// when the animation settles.
     fn content_rect_of(&self, frame: Rect) -> Rect {
-        if self.title.is_empty() {
-            return frame;
+        let top = if self.title.is_empty() {
+            frame
+        } else {
+            let inset = DIALOG_TITLE_BAR_HEIGHT.min(frame.height);
+            Rect::new(frame.x, frame.y + inset as i32, frame.width, frame.height - inset)
+        };
+        if self.buttons.is_empty() {
+            return top;
         }
-        let inset = DIALOG_TITLE_BAR_HEIGHT.min(frame.height);
-        Rect::new(frame.x, frame.y + inset as i32, frame.width, frame.height - inset)
+        // The action row owns the frame's bottom band, so the content stops above it.
+        let bottom = dimensions::DIALOG_BUTTON_HEIGHT.min(top.height);
+        Rect::new(top.x, top.y, top.width, top.height.saturating_sub(bottom))
     }
 
     /// Places the content child inside the frame the dialog paints at `frame`.
@@ -536,6 +664,11 @@ impl Widget for Dialog {
                 CapabilityValue::Int(i64::from(*v))
             })),
             "help_requested" => Some(EventSignalRef::unit("help_requested", &self.help_requested)),
+            "title_bar_action" => {
+                Some(EventSignalRef::mapped("title_bar_action", &self.title_bar_action, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
             _ => None,
         }
     }
@@ -626,6 +759,12 @@ impl EventHandler for Dialog {
         }
         match event {
             Event::MousePress { pos, button: 1, .. } => {
+                for (action, rect) in self.custom_title_bar_rects() {
+                    if rect.contains_point(*pos) {
+                        self.title_bar_action.emit(action.id);
+                        return;
+                    }
+                }
                 for (kind, rect) in self.title_bar_button_rects() {
                     if rect.contains_point(*pos) {
                         match kind {
@@ -634,6 +773,16 @@ impl EventHandler for Dialog {
                         }
                         return;
                     }
+                }
+                // The action row is painted at the frame's bottom band; a press there is a
+                // button press, not a window move (DLG-01).
+                let pressed_button = {
+                    let rects = self.button_rects.borrow();
+                    rects.iter().position(|rect| rect.contains_point(*pos))
+                };
+                if let Some(index) = pressed_button {
+                    self.activate_button(index);
+                    return;
                 }
                 if self.drag_bar().is_some_and(|bar| bar.contains_point(*pos)) {
                     // The *painted* frame moves with the pointer, not the offered rectangle: the
@@ -663,6 +812,15 @@ impl EventHandler for Dialog {
             }
             Event::KeyPress { key, .. } if *key == crate::event::key_codes::ESCAPE => {
                 self.reject();
+            }
+            Event::KeyPress { key, .. }
+                if (*key == crate::event::key_codes::ENTER
+                    || *key == crate::event::key_codes::LINE_FEED)
+                    && self.default_button.is_some() =>
+            {
+                if let Some(index) = self.default_button {
+                    self.activate_button(index);
+                }
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -756,11 +914,18 @@ impl Draw for Dialog {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        // The child follows the frame as it grows, so a half-revealed dialog holds its content
+        // The content follows the frame as it grows, so a half-revealed dialog holds its content
         // inside the chrome rather than showing a full-size child around a small frame. The
         // tree painter draws the content after this function returns, so the placement made
-        // here is the rectangle that very frame is drawn into.
-        self.place_content_in(rect);
+        // here is the rectangle that very frame is drawn into. A still frame writes the same
+        // rectangle it wrote last frame, so the write is skipped (G-P12).
+        if let Some(content) = self.content_widget {
+            let changed = self.placed_content != Some((rect, content));
+            if changed {
+                self.place_content_in(rect);
+                self.placed_content = Some((rect, content));
+            }
+        }
 
         let radius = dimensions::DIALOG_RADIUS.min(rect.width / 2).min(rect.height / 2);
         if radius > 0 {
@@ -776,6 +941,43 @@ impl Draw for Dialog {
                 Color::BLACK,
             );
             context.draw_rect(rect, border);
+        }
+
+        // ── The action row ──
+        //
+        // The buttons live in the frame's bottom band, painted before the title-bar early
+        // return so a titleless dialog keeps them. The row's own geometry is the shared
+        // `action_row_geometry` derivation, so a Dialog button is the same object as one in
+        // every other dialog in this module (DLG-01).
+        if !self.buttons.is_empty() {
+            let labels: Vec<String> = self.buttons.iter().map(|(label, _)| label.clone()).collect();
+            let action_font = effective_font(style);
+            let band = super::message_box::inset_action_band(
+                ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT),
+                rect.y,
+            );
+            let row =
+                super::message_box::action_row_geometry(context, action_font, &labels, band, true);
+            for (index, button) in row.buttons.iter().enumerate() {
+                let is_default = self.default_button == Some(index);
+                let fill = if is_default { ink } else { surface.blend(&ink, 0.12) };
+                let text_ink = if is_default { surface } else { ink };
+                context.fill_rect(*button, fill);
+                context.draw_rect(*button, border);
+                context.draw_text_line_cow(
+                    *button,
+                    &labels[index],
+                    action_font,
+                    text_ink,
+                    HorizontalAlignment::Center,
+                );
+                if is_default {
+                    context.draw_rounded_rect_stroke(*button, 2, border, 2);
+                }
+            }
+            *self.button_rects.borrow_mut() = row.buttons;
+        } else {
+            self.button_rects.borrow_mut().clear();
         }
 
         if self.title.is_empty() {
@@ -805,7 +1007,11 @@ impl Draw for Dialog {
         let title_line = context.text_line(band, title_font);
         // Title-bar buttons occupy the right end of the strip, so a long title elides before
         // them instead of running underneath.
-        let reserved = self.title_bar_buttons.len() as u32 * (DIALOG_CLOSE_BUTTON + 4);
+        let reserved = if self.title_bar_actions.is_empty() {
+            self.title_bar_buttons.len() as u32 * (DIALOG_CLOSE_BUTTON + 4)
+        } else {
+            self.title_bar_actions.len() as u32 * (DIALOG_CLOSE_BUTTON + 4)
+        };
         let title_width = rect.width.saturating_sub(16).saturating_sub(reserved);
         context.draw_text_fitted_cow(
             Rect::new(rect.x + 8, title_line.y, title_width, title_line.height.max(1)),
@@ -814,6 +1020,9 @@ impl Draw for Dialog {
             ink,
             HorizontalAlignment::Left,
         );
+        for (action, button) in self.custom_title_bar_rects() {
+            crate::widget::draw_icon_centered(context, button, button.height, ink, action.icon);
+        }
         for (kind, button) in self.title_bar_button_rects() {
             crate::widget::draw_icon_centered(
                 context,

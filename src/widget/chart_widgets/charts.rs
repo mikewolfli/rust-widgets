@@ -448,18 +448,31 @@ pub fn draw_legend_entries(
     layout: &CartesianLayout,
     entries: &[(&str, Color)],
 ) {
-    if entries.is_empty() {
-        return;
-    }
+    draw_legend_entries_iter(context, layout, entries.iter().copied());
+}
+
+/// Draws a legend from any `(label, colour)` iterator.
+///
+/// The control-layer charts used to `collect()` their series into a `Vec` on every frame purely
+/// to hand it here, so a static series list allocated once per paint. Passing the iterator keeps
+/// the legend allocation-free (F-P13).
+pub fn draw_legend_entries_iter<'a, I>(
+    context: &mut dyn ChartContext,
+    layout: &CartesianLayout,
+    entries: I,
+) where
+    I: IntoIterator<Item = (&'a str, Color)>,
+{
     let max_rows = ((layout.plot_h / 18.0).floor() as usize).max(1);
     let max_items = max_rows.saturating_sub(1).max(1);
     let mut cursor_y = layout.legend_y;
-    for (name, color) in entries.iter().take(max_items) {
+    let mut iter = entries.into_iter();
+    for (name, color) in iter.by_ref().take(max_items) {
         context.draw_line(
             Point::from_f32(layout.legend_x, cursor_y),
             Point::from_f32(layout.legend_x + 20.0, cursor_y),
             3.0,
-            *color,
+            color,
         );
         context.draw_text(
             truncate_legend_label(name, 20).as_ref(),
@@ -469,7 +482,7 @@ pub fn draw_legend_entries(
         );
         cursor_y += 18.0;
     }
-    let hidden = entries.len().saturating_sub(max_items);
+    let hidden = iter.count();
     if hidden > 0 {
         use core::fmt::Write as _;
         let mut summary = String::new();

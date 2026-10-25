@@ -51,26 +51,91 @@ use winapi::um::winuser::{
 /// Child-window class name used for every self-drawn canvas.
 const CANVAS_CLASS: &str = "RustWidgetsCanvasClass";
 
-/// Maps a canvas `HWND` to the widget registry id it paints.
+/// The mounted canvases, indexed in both directions: `HWND` → widget id, and widget id → `HWND`.
+///
+/// # Why two maps and one lock
+///
+/// Two questions are asked of this table on hot paths, from opposite ends:
+///
+/// - a window message arrives with an `HWND` and needs its widget id (`canvas_wnd_proc`,
+///   `forward_mouse`, `paint_canvas`);
+/// - an API call arrives with a widget id and needs its window (`resize_surface`,
+///   `unmount_surface`, `invalidate_surface`, `invalidate_surface_rect`), and the last three are
+///   on the per-frame damage path.
+///
+/// The first direction is the natural map key. The second used to scan the whole table by value
+/// (`map.iter().find(|(_, widget)| **widget == id)`), which made every invalidation O(n) in the
+/// number of mounted canvases and, worse, held the lock for the scan. Both directions are
+/// therefore kept, under one mutex and written by exactly the two functions that create and
+/// destroy a canvas ([`mount_canvas`], [`unmount_canvas`]), so the two halves can never disagree
+/// about whether a widget has a surface.
 ///
 /// # Lock policy
 ///
-/// Every accessor below goes through [`MutexExt::lock_guard`], which recovers from a
-/// poisoned lock instead of panicking. That is not a stylistic choice: these maps are
-/// read and written from `canvas_wnd_proc`, and a panic raised inside an
-/// `extern "system"` callback cannot unwind across the FFI boundary — Rust aborts the
-/// process. A poisoned map (some other thread panicked while holding it) therefore used
-/// to turn a recoverable bookkeeping fault into a hard crash of the whole application.
-/// The sibling module `windows::types` already answers a poisoned handle map by logging
-/// and returning `None`; this module now follows the same policy, so the backend has one
+/// The writers go through [`MutexExt::lock_guard`], which recovers from a poisoned lock instead of
+/// panicking. That is not a stylistic choice: these maps are read and written from
+/// `canvas_wnd_proc`, and a panic raised inside an `extern "system"` callback cannot unwind across
+/// the FFI boundary — Rust aborts the process. A poisoned map (some other thread panicked while
+/// holding it) therefore used to turn a recoverable bookkeeping fault into a hard crash of the
+/// whole application. The sibling module `windows::types` already answers a poisoned handle map by
+/// logging and returning `None`; this module now follows the same policy, so the backend has one
 /// answer to the question rather than two.
 ///
-/// Only the id is stored: geometry lives in `widget::runtime` (the widget owns
-/// it) and the `HWND` itself is also kept on the window as `GWLP_USERDATA`, so a
-/// message handler can recover the id without a map lookup if needed.
-fn canvases() -> &'static Mutex<HashMap<usize, ObjectId>> {
-    static CANVASES: OnceLock<Mutex<HashMap<usize, ObjectId>>> = OnceLock::new();
-    CANVASES.get_or_init(|| Mutex::new(HashMap::new()))
+/// Only ids and handles are stored: geometry lives in `widget::runtime` (the widget owns it) and
+/// the `HWND` itself is also kept on the window as `GWLP_USERDATA`, so a message handler can
+/// recover the id without a map lookup if needed.
+#[derive(Default)]
+struct CanvasRegistry {
+    /// `HWND` → widget id: what a window message needs.
+    by_hwnd: HashMap<usize, ObjectId>,
+    /// Widget id → `HWND`: what the invalidation/resize surface methods need.
+    by_widget: HashMap<ObjectId, usize>,
+}
+
+impl CanvasRegistry {
+    /// Records `hwnd` as the canvas of `id`, keeping the reverse index in step.
+    ///
+    /// A handle that was already recorded is overwritten rather than left pointing at two widgets;
+    /// its previous widget keeps its reverse entry only if that entry still names this handle.
+    fn insert(&mut self, hwnd: usize, id: ObjectId) {
+        if let Some(previous) = self.by_hwnd.insert(hwnd, id) {
+            if self.by_widget.get(&previous) == Some(&hwnd) {
+                self.by_widget.remove(&previous);
+            }
+        }
+        self.by_widget.insert(id, hwnd);
+    }
+
+    /// Forgets `hwnd`, answering whether it was recorded.
+    ///
+    /// The reverse entry is removed only when it still names this handle: a widget that was
+    /// re-mounted onto another handle must keep resolving to the live one, not be erased by the
+    /// removal of a stale canvas.
+    fn remove(&mut self, hwnd: usize) -> bool {
+        let Some(id) = self.by_hwnd.remove(&hwnd) else {
+            return false;
+        };
+        if self.by_widget.get(&id) == Some(&hwnd) {
+            self.by_widget.remove(&id);
+        }
+        true
+    }
+
+    /// The widget id a canvas paints, or `None` when the handle is not a mounted canvas.
+    fn widget_of(&self, hwnd: usize) -> Option<ObjectId> {
+        self.by_hwnd.get(&hwnd).copied()
+    }
+
+    /// The canvas window of a mounted widget, or `None` when the id has no surface.
+    fn hwnd_of(&self, id: ObjectId) -> Option<usize> {
+        self.by_widget.get(&id).copied()
+    }
+}
+
+/// The process-wide canvas registry; see [`CanvasRegistry`] for the two directions.
+fn canvases() -> &'static Mutex<CanvasRegistry> {
+    static CANVASES: OnceLock<Mutex<CanvasRegistry>> = OnceLock::new();
+    CANVASES.get_or_init(|| Mutex::new(CanvasRegistry::default()))
 }
 
 /// Returns the canvas's origin in its parent's client area.
@@ -343,10 +408,13 @@ unsafe extern "system" fn canvas_wnd_proc(
 
 /// Returns the widget id painted by `hwnd`.
 fn widget_id_of(hwnd: HWND) -> Option<ObjectId> {
-    canvases().lock().ok()?.get(&(hwnd as usize)).copied()
+    canvases().lock().ok()?.widget_of(hwnd as usize)
 }
 
 /// Renders the mounted widget into the window's client area.
+///
+/// # Safety
+/// Must run on the thread that owns `hwnd`; the handle must name a live window this backend created.
 unsafe fn paint_canvas(hwnd: HWND) {
     let mut paint: PAINTSTRUCT = std::mem::zeroed();
     let hdc: HDC = BeginPaint(hwnd, &mut paint);
@@ -389,6 +457,9 @@ unsafe fn paint_canvas(hwnd: HWND) {
 ///
 /// Shared by the two painters so neither has to repeat the `GetClientRect` dance —
 /// and so a zero-sized window is rejected in one place rather than in two.
+///
+/// # Safety
+/// `hwnd` must be a live window handle owned by the calling thread.
 pub(crate) unsafe fn client_size(hwnd: HWND) -> Option<(u32, u32)> {
     let mut rect: RECT = std::mem::zeroed();
     if GetClientRect(hwnd, &mut rect) == 0 {
@@ -408,6 +479,9 @@ pub(crate) unsafe fn client_size(hwnd: HWND) -> Option<(u32, u32)> {
 /// be the one they both call — the same reasoning the Linux backend records for its
 /// `blit_rgba`. A second copy would be correct on the day it was written and would
 /// drift the first time either end was touched.
+///
+/// # Safety
+/// `hdc` must be a live device context and `frame` must hold at least `width * height * 4` bytes.
 pub(crate) unsafe fn blit_frame(hdc: HDC, width: u32, height: u32, frame: &[u8]) {
     if width == 0 || height == 0 {
         return;
@@ -565,6 +639,9 @@ pub(crate) fn invalidate_canvas_rect(hwnd: HWND, rect: Rect) -> bool {
 /// would drop the `TME_LEAVE` request below and make the pointer stick to the
 /// last hovered control, and reporting a hover as a drag defeats the
 /// unchanged-hover early exit the runtime uses to skip a repaint.
+///
+/// # Safety
+/// No caller invariants: the call only reads process-wide key state.
 pub(crate) unsafe fn move_phase() -> MousePhase {
     use winapi::um::winuser::{GetKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON};
     // A negative result means the button is currently down.
@@ -581,6 +658,9 @@ pub(crate) unsafe fn move_phase() -> MousePhase {
 /// offset by the canvas origin to reach the absolute space the widget tree uses.
 /// Routing then goes through the platform's hit test, so a click on a widget nested
 /// inside the mounted one reaches that widget rather than the surface owner.
+///
+/// # Safety
+/// `hwnd` must be a live window handle this backend created.
 unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
     let Some(widget_id) = widget_id_of(hwnd) else {
         return;
@@ -658,6 +738,9 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
 /// records: the delta is in `wParam`'s high word and the point is in *screen* space. The
 /// only difference is the extra canvas origin, because widget geometry is absolute while
 /// this child window's client area starts at its own corner.
+///
+/// # Safety
+/// `hwnd` must be a live window handle this backend created.
 unsafe fn forward_wheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
     use winapi::um::winuser::{GET_WHEEL_DELTA_WPARAM, WHEEL_DELTA};
     let Some(widget_id) = widget_id_of(hwnd) else {
@@ -720,6 +803,9 @@ unsafe fn forward_wheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
 /// dispatched separately so the recognizers see one event per finger, which is the
 /// shape their state machines expect.
 #[cfg(feature = "touch")]
+///
+/// # Safety
+/// `hwnd` must be a live window handle this backend created.
 unsafe fn forward_touch(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
     let input_count = (wparam & 0xFFFF) as u32;
     if input_count == 0 {
@@ -804,6 +890,9 @@ unsafe fn forward_touch(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
 ///
 /// Control characters are dropped for the reason `windows::types::forward_window_char`
 /// records: they are commands (`WM_KEYDOWN` already delivered them) rather than text.
+///
+/// # Safety
+/// `hwnd` must be a live window handle this backend created.
 unsafe fn forward_char(hwnd: HWND, wparam: WPARAM) {
     let Some(widget_id) = widget_id_of(hwnd) else {
         return;
@@ -829,6 +918,9 @@ unsafe fn forward_char(hwnd: HWND, wparam: WPARAM) {
 /// Tab is consumed here to move focus, matching the other backends: it is not a
 /// printable character, so forwarding it to the widget would be a no-op and the user
 /// could never leave the first control.
+///
+/// # Safety
+/// `hwnd` must be a live window handle this backend created.
 unsafe fn forward_key(hwnd: HWND, wparam: WPARAM) {
     let Some(widget_id) = widget_id_of(hwnd) else {
         return;
@@ -862,6 +954,9 @@ unsafe fn forward_key(hwnd: HWND, wparam: WPARAM) {
 ///
 /// Tab is deliberately not special-cased here: focus traversal happens on the press, and repeating
 /// it on the release would move focus twice for one tab.
+///
+/// # Safety
+/// `hwnd` must be a live window handle this backend created.
 unsafe fn forward_key_release(hwnd: HWND, wparam: WPARAM) {
     let Some(widget_id) = widget_id_of(hwnd) else {
         return;
@@ -890,6 +985,9 @@ fn key_target_for_id(widget_id: ObjectId) -> ObjectId {
 /// key, so bit 3 stays clear; Control is reported as physical Control, and any
 /// `Shortcut::primary` binding is resolved against CTRL by the shortcut layer on
 /// this platform.
+///
+/// # Safety
+/// No caller invariants: the call only reads process-wide key state.
 pub(crate) unsafe fn current_modifiers() -> u32 {
     use winapi::um::winuser::{GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
     // Widget-layer bits (see `Modifiers::from_event_bits`).
@@ -1038,7 +1136,7 @@ pub(crate) fn unmount_canvas(hwnd: HWND) -> bool {
              route input or invalidation to it"
         );
     }
-    let removed = canvases().lock_guard().remove(&(hwnd as usize)).is_some();
+    let removed = canvases().lock_guard().remove(hwnd as usize);
     if !removed {
         // Reached when `unmount_canvas` is called for a handle this module does not track —
         // a double unmount, or a canvas destroyed behind its back. Reported rather than
@@ -1049,9 +1147,13 @@ pub(crate) fn unmount_canvas(hwnd: HWND) -> bool {
 }
 
 /// Looks up the canvas window for a mounted widget id.
+///
+/// O(1): the reverse half of [`CanvasRegistry`] is written by exactly the mount/unmount pair, so
+/// this answers from an index instead of scanning every mounted canvas. An id with no surface —
+/// including the unknown-id case the surface methods report as `false` — answers `None`.
 pub(crate) fn hwnd_for_widget(id: ObjectId) -> Option<HWND> {
-    let map = canvases().lock().ok()?;
-    map.iter().find(|(_, widget)| **widget == id).map(|(hwnd, _)| *hwnd as HWND)
+    let registry = canvases().lock().ok()?;
+    registry.hwnd_of(id).map(|hwnd| hwnd as HWND)
 }
 
 #[cfg(test)]
@@ -1079,6 +1181,48 @@ mod tests {
     #[test]
     fn hwnd_for_unknown_widget_is_none() {
         assert!(hwnd_for_widget(0xDEAD_BEEF).is_none());
+    }
+
+    #[test]
+    fn registry_indexes_both_directions() {
+        let mut registry = CanvasRegistry::default();
+        registry.insert(0x1000, 7);
+        // Forward and reverse agree after one write, which is what makes the reverse lookup O(1)
+        // without a second bookkeeping path to keep in sync.
+        assert_eq!(registry.widget_of(0x1000), Some(7));
+        assert_eq!(registry.hwnd_of(7), Some(0x1000));
+        assert_eq!(registry.widget_of(0x2000), None, "an unknown handle has no widget");
+        assert_eq!(registry.hwnd_of(8), None, "an unknown widget has no canvas");
+    }
+
+    #[test]
+    fn removing_a_canvas_clears_both_directions() {
+        let mut registry = CanvasRegistry::default();
+        registry.insert(0x1000, 7);
+        assert!(registry.remove(0x1000));
+        assert_eq!(registry.widget_of(0x1000), None);
+        assert_eq!(
+            registry.hwnd_of(7),
+            None,
+            "a widget whose canvas was unmounted must not keep resolving to the dead handle"
+        );
+        // A second removal answers "this was not a mounted canvas", which is what
+        // `unmount_canvas` reports instead of pretending the entry existed.
+        assert!(!registry.remove(0x1000));
+    }
+
+    #[test]
+    fn removing_a_stale_handle_keeps_the_live_mapping() {
+        // A widget re-mounted onto a second handle must keep resolving to that live handle even
+        // when the old one is removed afterwards.
+        let mut registry = CanvasRegistry::default();
+        registry.insert(0x1000, 7);
+        registry.insert(0x2000, 7);
+        assert_eq!(registry.hwnd_of(7), Some(0x2000));
+        assert!(registry.remove(0x1000));
+        assert_eq!(registry.hwnd_of(7), Some(0x2000));
+        assert_eq!(registry.widget_of(0x1000), None);
+        assert_eq!(registry.widget_of(0x2000), Some(7));
     }
 
     #[test]

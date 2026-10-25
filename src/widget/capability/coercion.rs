@@ -21,6 +21,15 @@
 //!   non-negative signed integers. A value that does not fit the target type
 //!   (for example `-1` for `usize`, or `2^64 - 1` for `i64`) is rejected rather
 //!   than being wrapped or saturated, as is a float targeted at an integer type.
+//! * **Property setters use the saturating narrowers.** Storage narrower than
+//!   the coercion result (`i32`, `u32`, `u16`, `u8`) goes through
+//!   [`expect_i32_saturating`], [`expect_u32_saturating`],
+//!   [`expect_u16_saturating`] or [`expect_u8_saturating`]. They keep the type
+//!   check (a float or string is still rejected) but clamp an out-of-range
+//!   magnitude to the nearest bound. A plain `as` narrowing would wrap — for
+//!   example `1 << 40` becoming `0` for an `i32` property — which silently
+//!   injects a wrong value and can flip range invariants such as
+//!   `minimum <= maximum` (principle #50).
 //! * **Enumerations parse from strings only.** The `expect_*` functions for
 //!   control enums require a string, which is normalised by [`normalize_key`]
 //!   first: underscores, hyphens, and spaces are removed and the result is
@@ -177,6 +186,47 @@ pub fn expect_i64(value: CapabilityValue) -> Result<i64, CapabilityAccessError> 
 pub fn expect_u32(value: CapabilityValue) -> Result<u32, CapabilityAccessError> {
     let raw = expect_usize(value)?;
     u32::try_from(raw).map_err(|_| CapabilityAccessError::TypeMismatch)
+}
+
+/// Extracts an `i32`, saturating values outside its range to the nearest bound.
+///
+/// The type rules are [`expect_i64`]'s: signed integers and unsigned integers
+/// that fit in `i64` are accepted, while floats and strings are rejected. Only
+/// the magnitude is handled differently: a value below `i32::MIN` becomes
+/// `i32::MIN` and one above `i32::MAX` becomes `i32::MAX` instead of wrapping
+/// with `as`. This is the coercion the property setters use.
+pub fn expect_i32_saturating(value: CapabilityValue) -> Result<i32, CapabilityAccessError> {
+    let raw = expect_i64(value)?;
+    Ok(raw.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
+}
+
+/// Extracts a `u32`, saturating values above `u32::MAX`.
+///
+/// Accepts the same payloads as [`expect_usize`] (unsigned integers and
+/// non-negative signed integers); negative, float and string payloads are still
+/// rejected. An out-of-range magnitude clamps to `u32::MAX` rather than
+/// wrapping.
+pub fn expect_u32_saturating(value: CapabilityValue) -> Result<u32, CapabilityAccessError> {
+    let raw = expect_usize(value)?;
+    Ok(u32::try_from(raw).unwrap_or(u32::MAX))
+}
+
+/// Extracts a `u16`, saturating values above `u16::MAX`.
+///
+/// Accepts the same payloads as [`expect_usize`]; an out-of-range magnitude
+/// clamps to `u16::MAX` rather than wrapping.
+pub fn expect_u16_saturating(value: CapabilityValue) -> Result<u16, CapabilityAccessError> {
+    let raw = expect_usize(value)?;
+    Ok(u16::try_from(raw).unwrap_or(u16::MAX))
+}
+
+/// Extracts a `u8`, saturating values above `u8::MAX`.
+///
+/// Accepts the same payloads as [`expect_usize`]; an out-of-range magnitude
+/// clamps to `u8::MAX` rather than wrapping.
+pub fn expect_u8_saturating(value: CapabilityValue) -> Result<u8, CapabilityAccessError> {
+    let raw = expect_usize(value)?;
+    Ok(u8::try_from(raw).unwrap_or(u8::MAX))
 }
 
 /// Extracts an ordered list of strings from a `Tuple` payload.
@@ -960,5 +1010,47 @@ pub const fn orientation_to_str(orientation: Orientation) -> &'static str {
     match orientation {
         Orientation::Horizontal => "horizontal",
         Orientation::Vertical => "vertical",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The narrowing helpers clamp their magnitude instead of wrapping with `as`.
+    ///
+    /// This is the contract the property setters rely on: a value such as
+    /// `1 << 40` must not become `0` for an `i32` property.
+    #[test]
+    fn saturating_narrowers_clamp_instead_of_wrapping() {
+        assert_eq!(expect_i32_saturating(CapabilityValue::Int(1 << 40)), Ok(i32::MAX));
+        assert_eq!(expect_i32_saturating(CapabilityValue::Int(-(1 << 40))), Ok(i32::MIN));
+        assert_eq!(expect_i32_saturating(CapabilityValue::Int(-7)), Ok(-7));
+        assert_eq!(
+            expect_i32_saturating(CapabilityValue::UInt(i64::MAX as u64)),
+            Ok(i32::MAX)
+        );
+
+        assert_eq!(expect_u32_saturating(CapabilityValue::UInt(u64::MAX)), Ok(u32::MAX));
+        assert_eq!(expect_u16_saturating(CapabilityValue::Int(70_000)), Ok(u16::MAX));
+        assert_eq!(expect_u8_saturating(CapabilityValue::Int(300)), Ok(u8::MAX));
+        assert_eq!(expect_u8_saturating(CapabilityValue::Int(42)), Ok(42));
+    }
+
+    /// Saturation changes only the magnitude policy; the type rules are still enforced.
+    #[test]
+    fn saturating_narrowers_still_reject_wrong_types() {
+        assert_eq!(
+            expect_i32_saturating(CapabilityValue::Float(1.0)),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
+        assert_eq!(
+            expect_u32_saturating(CapabilityValue::Int(-1)),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
+        assert_eq!(
+            expect_u8_saturating(CapabilityValue::String("5".into())),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
     }
 }

@@ -19,7 +19,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 pub use crate::widget::menu_toolbar::MAX_SUBMENU_DEPTH;
-use crate::widget::metrics::effective_font;
+use crate::widget::metrics::{effective_font, estimate_text_width};
 use crate::widget::{BaseWidget, Draw, IconName, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -121,6 +121,12 @@ pub struct MenuItem {
     pub checked: bool,
     /// Optional submenu items for cascading menus.
     pub submenu: Option<Vec<MenuItem>>,
+    /// Whether this row is a group divider rather than a choice (M-06).
+    pub separator: bool,
+    /// The accelerator text painted in the row's trailing column.
+    pub shortcut: String,
+    /// The action id emitted through `action_triggered` when this row is chosen (COMP-G04).
+    pub action_id: Option<String>,
 }
 
 impl MenuItem {
@@ -133,7 +139,30 @@ impl MenuItem {
             enabled: true,
             checked: false,
             submenu: None,
+            separator: false,
+            shortcut: String::new(),
+            action_id: None,
         }
+    }
+
+    /// Creates a group divider row: a full-width rule with no label and no hit target.
+    pub fn separator(id: u64) -> Self {
+        let mut item = Self::new(id, "");
+        item.separator = true;
+        item.enabled = false;
+        item
+    }
+
+    /// Sets the accelerator text shown in the row's trailing column.
+    pub fn with_shortcut(mut self, shortcut: &str) -> Self {
+        self.shortcut = shortcut.to_string();
+        self
+    }
+
+    /// Links the row to an action id emitted through `action_triggered`.
+    pub fn with_action_id(mut self, action_id: &str) -> Self {
+        self.action_id = Some(action_id.to_string());
+        self
     }
 
     /// Sets the icon for this menu item.
@@ -249,6 +278,20 @@ pub(crate) fn draw_menu_panel_with_branches(
     for (i, item) in items.iter().enumerate() {
         let item_rect = menu_item_rect(panel, i);
 
+        // A separator owns no label and no highlight; it is the only row kind that draws a
+        // full-width divider (M-06).
+        if item.separator {
+            context.draw_line(
+                Point::new(item_rect.x + 4, item_rect.y + item_rect.height as i32 / 2),
+                Point::new(
+                    item_rect.x + item_rect.width as i32 - 4,
+                    item_rect.y + item_rect.height as i32 / 2,
+                ),
+                item_rule,
+            );
+            continue;
+        }
+
         // Highlight on checked rows
         if item.checked {
             context.fill_rounded_rect(item_rect, 2, item_highlight);
@@ -288,13 +331,24 @@ pub(crate) fn draw_menu_panel_with_branches(
         }
 
         let item_line = context.text_line(item_rect, item_font);
-        // Fitted between the label start and the checkmark zone: an unbounded label ran under
-        // the check glyph on checked rows (and past the popup edge on long ones).
-        let item_text_right = if item.checked {
-            item_rect.x + item_rect.width as i32 - PADDING - 14
+        // The trailing columns are reserved before the label is fitted: the accelerator text
+        // gets its own right-aligned column, and the check/submenu marks keep their zone.
+        let shortcut_width = if item.shortcut.is_empty() {
+            0
         } else {
-            item_rect.x + item_rect.width as i32 - PADDING
+            estimate_text_width(&item.shortcut, item_font, 1.0) + 8
         };
+        let mark_zone = if item.checked {
+            14
+        } else if branches_open && item.submenu.is_some() && item.enabled {
+            12
+        } else {
+            0
+        };
+        let trailing = shortcut_width.max(mark_zone);
+        // Fitted between the label start and the trailing columns: an unbounded label ran under
+        // the check glyph on checked rows (and past the popup edge on long ones).
+        let item_text_right = item_rect.x + item_rect.width as i32 - PADDING - trailing as i32;
         let item_text_width = (item_text_right - item_x).max(0) as u32;
         context.draw_text_fitted_cow(
             Rect::new(item_x, item_line.y, item_text_width, item_line.height.max(1)),
@@ -303,6 +357,21 @@ pub(crate) fn draw_menu_panel_with_branches(
             item_text_color,
             HorizontalAlignment::Left,
         );
+        if !item.shortcut.is_empty() {
+            let shortcut_band = Rect::new(
+                item_rect.x + item_rect.width as i32 - PADDING - shortcut_width as i32,
+                item_line.y,
+                shortcut_width,
+                item_line.height.max(1),
+            );
+            context.draw_text_fitted_cow(
+                shortcut_band,
+                &item.shortcut,
+                item_font,
+                item_ink.blend(&panel_fill, 0.55),
+                HorizontalAlignment::Right,
+            );
+        }
 
         // Checkmark for checked items. Drawn as an `IconName` outline rather than the `✓`
         // (U+2713) character: no bundled face covers the dingbats block, so the character fell
@@ -334,7 +403,8 @@ pub(crate) fn draw_menu_panel_with_branches(
                     Point::new(sub_x, sub_y),
                     Point::new(sub_x, sub_y + 8),
                     Point::new(sub_x + 5, sub_y + 4),
-                ],
+                ]
+                .into(),
                 closed: true,
                 color: item_ink.blend(&panel_fill, 0.45),
                 filled: true,
@@ -342,17 +412,8 @@ pub(crate) fn draw_menu_panel_with_branches(
             });
         }
 
-        // Separator between rows (except the last)
-        if i + 1 < items.len() {
-            context.draw_line(
-                Point::new(item_rect.x + 4, item_rect.y + item_rect.height as i32),
-                Point::new(
-                    item_rect.x + item_rect.width as i32 - 4,
-                    item_rect.y + item_rect.height as i32,
-                ),
-                item_rule,
-            );
-        }
+        // A divider is drawn only by a separator row (see the loop head); the old adjacent-row
+        // line was a group boundary the item model could not express.
     }
 }
 
@@ -425,6 +486,9 @@ pub struct MenuButton {
     pub item_triggered: Signal1<u64>,
     /// Emitted when a branch row opens its child panel, carrying the branch's text.
     pub submenu_requested: Signal1<String>,
+    /// Emitted with the linked [`crate::menu_toolbar::action::Action`] id when a leaf row with
+    /// an `action_id` is chosen (COMP-G04).
+    pub action_triggered: Signal1<String>,
 }
 
 impl MenuButton {
@@ -450,6 +514,7 @@ impl MenuButton {
             about_to_hide: GenericSignal::new(),
             item_triggered: Signal1::new(),
             submenu_requested: Signal1::new(),
+            action_triggered: Signal1::new(),
         }
     }
 
@@ -799,11 +864,12 @@ impl MenuButton {
         let Some(item) = self.items_at(level).and_then(|items| items.get(index)) else {
             return;
         };
-        if !item.enabled {
+        if !item.enabled || item.separator {
             return;
         }
         let id = item.id;
         let text = item.text.clone();
+        let action_id = item.action_id.clone();
         let is_branch = item.submenu.as_ref().is_some_and(|children| !children.is_empty());
         if is_branch {
             if level >= MAX_SUBMENU_DEPTH {
@@ -815,6 +881,9 @@ impl MenuButton {
             return;
         }
         self.item_triggered.emit(id);
+        if let Some(action_id) = action_id {
+            self.action_triggered.emit(action_id);
+        }
         self.close_menu();
     }
 
@@ -847,7 +916,7 @@ impl MenuButton {
             let level = offset + 1;
             for (index, item) in panel.items.iter().enumerate() {
                 let row = menu_item_rect(panel.rect, index);
-                if item.enabled && row.contains_point(pos) {
+                if item.enabled && !item.separator && row.contains_point(pos) {
                     return Some((level, index));
                 }
             }
@@ -876,7 +945,7 @@ impl MenuButton {
         }
         for (i, item) in self.menu_items.iter().enumerate() {
             let ir = self.item_rect(i);
-            if ir.contains_point(pos) && item.enabled {
+            if ir.contains_point(pos) && item.enabled && !item.separator {
                 return Some(i);
             }
         }
@@ -962,6 +1031,11 @@ impl Widget for MenuButton {
             "about_to_hide" => Some(EventSignalRef::unit("about_to_hide", &self.about_to_hide)),
             "about_to_show" => Some(EventSignalRef::unit("about_to_show", &self.about_to_show)),
             "clicked" => Some(EventSignalRef::unit("clicked", &self.clicked)),
+            "action_triggered" => {
+                Some(EventSignalRef::mapped("action_triggered", &self.action_triggered, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
             _ => None,
         }
     }
@@ -1189,7 +1263,7 @@ impl Draw for MenuButton {
                 ],
             };
             context.execute_command(RenderCommand::DrawPath {
-                points,
+                points: points.into(),
                 closed: true,
                 color: arrow_color,
                 filled: true,

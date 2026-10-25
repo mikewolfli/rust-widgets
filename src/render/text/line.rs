@@ -27,7 +27,7 @@
 //! 4. **Reporting** — the total advance, which is invariant under reordering (a sum), so the
 //!    width a control reserved before the reorder still holds after it.
 
-use crate::compat::{String, Vec};
+use crate::compat::{Rc, String, Vec};
 use crate::core::Font;
 use crate::render::{ShapedText, TextCluster};
 
@@ -154,10 +154,11 @@ pub(crate) fn shape_line(text: &str, font: &Font, scale: f32) -> ShapedText {
         total_advance += tracking * (clusters.len() - 1) as f32;
     }
 
-    let order = crate::render::text::bidi::visual_order(text, &ranges);
-    // Reordering is the identity for every left-to-right line, so the permutation is checked
-    // before a second vector is built: the common path allocates nothing extra.
-    if order.iter().enumerate().any(|(visual, &logical)| visual != logical) {
+    // Reordering is the identity for every left-to-right line. The levels are memoised with the
+    // shaped result (G-17), and `visual_order_from_levels` returns `None` rather than a
+    // permutation when no level is odd — so an unchanged all-LTR line allocates nothing here.
+    let levels = line_bidi_levels(text, &ranges, font, scale);
+    if let Some(order) = crate::render::text::bidi::visual_order_from_levels(&levels) {
         let mut reordered: Vec<TextCluster> = Vec::with_capacity(clusters.len());
         for &logical in &order {
             reordered.push(clusters[logical].clone());
@@ -166,6 +167,26 @@ pub(crate) fn shape_line(text: &str, font: &Font, scale: f32) -> ShapedText {
     }
 
     ShapedText { clusters, advance: total_advance }
+}
+
+/// The bidi levels of a line's clusters, from the shaping cache when a face is available.
+///
+/// `cached_bidi_levels` hands back a shared buffer, so a repeat of an unchanged line is a refcount
+/// bump instead of a fresh `BidiInfo` analysis. Without a face there is no shaping key to cache
+/// under, so the uncached entry point runs — the same answer, just recomputed (G-17).
+fn line_bidi_levels(text: &str, ranges: &[(usize, usize)], font: &Font, scale: f32) -> Rc<[u8]> {
+    #[cfg(feature = "text-shaping")]
+    if let Some(levels) =
+        crate::render::text::shaping::cached_bidi_levels(text, ranges, font, scale)
+    {
+        return levels;
+    }
+    #[cfg(not(feature = "text-shaping"))]
+    {
+        // The font and scale are not part of the uncached bidi question; only the text is.
+        let _ = (font, scale);
+    }
+    Rc::from(crate::render::text::bidi::levels_for(text, ranges))
 }
 
 /// The width [`shape_line`] measures for `text` — the renderer's own answer.

@@ -13,10 +13,11 @@
 # Why the snapshots are committed and re-generated here
 # -----------------------------------------------------
 # Layers 1 and 2 are machine judgements; they cannot see "this control looks wrong".
-# The 376 SVGs under `snapshots/svg/` are the human-reviewable half — 188 controls in
-# two appearances, one file each, diffable. That value depends entirely on the files
-# being *current*: if a control's drawing changes and the snapshot does not, the next
-# reviewer approves a picture of something that no longer exists.
+# The committed SVGs under `snapshots/svg/` are the human-reviewable half — a dark/light
+# pair per control, plus a pair for each companion pairing and the icon sheets. That value
+# depends entirely on the files being *current*: if a control's drawing changes and the
+# snapshot does not, the next reviewer approves a picture of something that no longer
+# exists.
 #
 # So this gate regenerates the whole set into a scratch directory and requires a
 # byte-for-byte match. It is the same shape as `check_generated_sources.sh` and
@@ -26,7 +27,8 @@
 # What it asserts
 # ---------------
 #   [1] the count is 188 dark + 188 light = 376, named by canonical name, plus the two icon
-#       sheets (BLUE25 ICON-7) which are counted separately
+#       sheets (BLUE25 ICON-7) and every companion pairing's dark/light file, which are
+#       counted separately
 #   [2] every file is non-empty and contains at least one drawing element
 #   [3] regeneration matches the committed files byte for byte
 #   [4] the two appearances actually differ for every control
@@ -164,6 +166,16 @@ match = re.search(r"EXTRA_APPEARANCES[^=]*=\s*&\[(.*?)\];", src, re.DOTALL)
 print(0 if match is None else len(re.findall(r"\(\s*\x22[^\x22]+\x22\s*,", match.group(1))))
 PY
 )"
+# The companion pairings are read from the exporter's own `PAIRS` table for the same reason:
+# a pair is two files, and a number written here could drift from the table that declares
+# them. A missing pair would otherwise be silently subtracted from an expected total.
+PAIRS="$("$PYTHON" - <<'PY'
+import pathlib, re
+src = pathlib.Path("examples/export_control_svgs.rs").read_text(encoding="utf-8")
+match = re.search(r"PAIRS[^=]*=\s*&\[(.*?)\];", src, re.DOTALL)
+print(0 if match is None else len(re.findall(r"\(\s*\x22[^\x22]+\x22\s*,", match.group(1))))
+PY
+)"
 COMMITTED="$(find "$SNAPSHOT_DIR" -maxdepth 1 -name '*.svg' | wc -l)"
 # The icon sheets are counted separately, because they are a different *kind* of file: they
 # do not come from the control registry, so folding them into `CONTROLS * 2` would make the
@@ -177,12 +189,12 @@ SHEETS="$(find "$SNAPSHOT_DIR" -maxdepth 1 -name 'icon_sheet*.svg' | wc -l)"
 # the default shape says nothing about, say, `draw_win_panel_frame`'s white/grey bevel, whose whole
 # purpose is an illusion of relief and which is only ever reachable by setting the property. A total
 # of `EXTRAS` here would have made this gate report every declared extra as an unaccounted file.
-EXPECTED=$((CONTROLS * 2 + EXTRAS * 2 + SHEETS))
+EXPECTED=$((CONTROLS * 2 + EXTRAS * 2 + PAIRS * 2 + SHEETS))
 if [[ "$COMMITTED" -ne "$EXPECTED" ]]; then
-    echo "  FAIL  expected $EXPECTED committed SVGs ($CONTROLS controls x 2 appearances + $EXTRAS extra state(s) x 2 + $SHEETS icon sheet(s)), found $COMMITTED"
+    echo "  FAIL  expected $EXPECTED committed SVGs ($CONTROLS controls x 2 appearances + $EXTRAS extra state(s) x 2 + $PAIRS companion pair(s) x 2 + $SHEETS icon sheet(s)), found $COMMITTED"
     exit 1
 fi
-echo "  PASS  $CONTROLS controls x 2 appearances + $EXTRAS extra x 2 + $SHEETS icon sheet(s) = $COMMITTED files"
+echo "  PASS  $CONTROLS controls x 2 appearances + $EXTRAS extra x 2 + $PAIRS pairs x 2 + $SHEETS icon sheet(s) = $COMMITTED files"
 
 echo "[3b/5] every snapshot contains content, not just a skeleton"
 EMPTY="$("$PYTHON" - <<'PY'
@@ -367,7 +379,7 @@ if ! diff -u "$GALLERY_SCRATCH/committed.md" control.md > "$GALLERY_SCRATCH/gall
     echo "        regenerate with: $PYTHON tools/generate_control_index.py"
     exit 1
 fi
-echo "  PASS  control.md matches the generated index ($(grep -c 'light\.svg) |$' control.md) control rows listed)"
+echo "  PASS  control.md matches the generated index ($(grep -v 'pair_' control.md | grep -c 'light\.svg) |$') control rows + $(grep -c '^| `pair_' control.md) pair rows)"
 
 echo ""
 echo "check_svg_snapshots: checked=$CONTROLS skipped=0 failed=0 (each with a dark and a light snapshot)"

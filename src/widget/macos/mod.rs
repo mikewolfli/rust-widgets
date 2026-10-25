@@ -33,16 +33,20 @@
 //! (a button's corner radius, a push button's height); the constants below cover the shapes
 //! that table does not name yet.
 
+pub mod popup_item_list;
 pub mod segmented_control;
 pub mod source_list;
 pub mod stepper;
 pub mod toolbar;
+pub mod value_spinbox;
 pub mod window_chrome;
 
-pub use segmented_control::MacSegmentedControl;
+pub use popup_item_list::{PopupAnchor, PopupItem, PopupItemList};
+pub use segmented_control::{MacSegment, MacSegmentedControl};
 pub use source_list::{MacSourceList, SourceListRow, SourceListSection};
 pub use stepper::MacStepper;
 pub use toolbar::{MacToolbar, MacToolbarItem, ToolbarItemDisplayMode, ToolbarItemKind};
+pub use value_spinbox::ValueSpinBox;
 pub use window_chrome::{MacWindowChrome, WindowChromeButton};
 
 mod shared;
