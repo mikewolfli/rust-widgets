@@ -401,7 +401,7 @@ impl ApplyReport {
 /// A node declares **where it is created** separately from where it sits in the tree
 /// ([`Node::host`](crate::view::Node::host) / `Node::portal`). [`apply`] itself cannot create
 /// the overlay layer — that is engine-owned state — so a caller that needs portals honoured on
-/// an *insert* passes an [`OverlayHost`] through [`apply_with_reserved_and_overlay`]. Without
+/// an *insert* passes an `OverlayHost` through `apply_with_reserved_and_overlay`. Without
 /// one, an inserted portal is parented to its declared parent, which is the pre-portal
 /// behaviour; the engine always passes one, so the two paths agree.
 pub fn apply(
@@ -442,7 +442,7 @@ struct ApplyServices<'a> {
     icon_resolver: Option<&'a dyn IconResourceResolver>,
 }
 
-/// [`apply_with_reservations`] with a portal-host resolver.
+/// `apply_with_reservations` with a portal-host resolver.
 /// Ids allocated for a batch's inserted subtrees before `apply` runs, keyed by the node's
 /// declared key (the empty string for a keyless node).
 ///

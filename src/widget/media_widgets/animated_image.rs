@@ -633,6 +633,11 @@ impl Widget for AnimatedImage {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "frame_advanced" => {
+                Some(EventSignalRef::mapped("frame_advanced", &self.frame_advanced, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
             _ => None,
         }
     }

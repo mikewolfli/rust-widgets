@@ -191,7 +191,7 @@ impl BrowserHistory {
 /// Creates a history with the default cap, matching [`BrowserHistory::new`].
 ///
 /// The derived `Default` previously zeroed `max_entries`, which would have
-/// disabled history instead of honouring [`MAX_HISTORY_ENTRIES`].
+/// disabled history instead of honouring `MAX_HISTORY_ENTRIES`.
 impl Default for BrowserHistory {
     fn default() -> Self {
         Self::new()

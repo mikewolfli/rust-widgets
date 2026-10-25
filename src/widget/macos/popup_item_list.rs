@@ -287,3 +287,25 @@ impl EventHandler for PopupItemList {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_popup_opens_on_its_rows_and_dismisses_without_a_selection() {
+        let mut list = PopupItemList::new(Rect::new(0, 0, 160, 0));
+        list.set_items(crate::compat::Vec::from([
+            PopupItem::new("Open"),
+            PopupItem::new("Close").disabled(),
+        ]));
+        assert_eq!(list.items().len(), 2);
+        assert!(!list.items()[1].enabled);
+        list.popup_at(Point::new(10, 20));
+        assert!(list.is_visible());
+        list.dismiss();
+        assert!(!list.is_visible());
+        list.dismiss();
+        assert!(list.selected_index().is_none());
+    }
+}

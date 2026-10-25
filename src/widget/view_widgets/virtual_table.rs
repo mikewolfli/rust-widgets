@@ -346,7 +346,7 @@ impl VirtualTable {
     ///
     /// Returns an **owned** window, preserving the established public contract. A cache hit shares
     /// the cached matrix behind an [`Arc`] and only clones the handle, not the window's rows,
-    /// columns or strings (D09-VIEW-03); the draw path uses [`Self::visible_window_cells`] to read
+    /// columns or strings (D09-VIEW-03); the draw path uses `Self::visible_window_cells` to read
     /// the same cached matrix without even cloning the handle.
     pub fn fetch_visible_window(&mut self) -> Vec<Vec<Option<String>>> {
         match self.visible_window_cells() {
@@ -731,7 +731,7 @@ impl VirtualTable {
     /// under a point is a division rather than a walk. The previous version nested a loop over the
     /// visible grid and tested every cell's rectangle, which ran on every `MouseMove` and cost
     /// `O(visible cells)`. The 2 px inter-cell gap is rejected explicitly, matching the box
-    /// [`Self::cell_rect`] paints.
+    /// `Self::cell_rect` paints.
     pub fn cell_at(&self, pos: crate::core::Point) -> Option<(usize, usize)> {
         Some((self.row_at(pos.y)?, self.column_at(pos.x)?))
     }
@@ -839,6 +839,26 @@ impl Widget for VirtualTable {
                     }
                 }))
             }
+            "selection_set_changed" => Some(EventSignalRef::mapped(
+                "selection_set_changed",
+                &self.selection_set_changed,
+                // A list of `(row, column)` cells: each pair travels as its own `Tuple`, so a
+                // subscriber can read the cell boundaries instead of re-parsing a `Debug` string.
+                |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(
+                        v.iter()
+                            .map(|cell| {
+                                crate::widget::capability::CapabilityValue::Tuple(
+                                    crate::compat::Vec::from([
+                                        crate::widget::capability::CapabilityValue::UInt(cell.0 as u64),
+                                        crate::widget::capability::CapabilityValue::UInt(cell.1 as u64),
+                                    ]),
+                                )
+                            })
+                            .collect(),
+                    )
+                },
+            )),
             _ => None,
         }
     }

@@ -30,7 +30,7 @@ pub mod font_preview;
 /// Compiled in **every** profile, not only the unstripped ones: the `IconName` vocabulary, the
 /// `IconData` shape and the `draw_icon_at` / `draw_icon_centered` primitives are what a control
 /// uses to paint an icon inline (a combo box's chevron, a rating's star), and those controls exist
-/// on `mini`/`embedded` too. Only the [`Icon`] widget and the host registry below stay gated.
+/// on `mini`/`embedded` too. Only the `Icon` widget and the host registry below stay gated.
 pub mod icon;
 /// The storage behind the runtime icon registry. Its own module so the lock and the table can be
 /// reasoned about without the public API (`crate::widget::icon_registry`) in view.

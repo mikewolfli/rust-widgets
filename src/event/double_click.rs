@@ -13,7 +13,7 @@
 //! shared definition.
 //!
 //! This tracker makes the **gesture tuning the one rule**: it calls
-//! [`crate::gesture::is_double_tap_pair`], the same predicate `DoubleTapGesture` uses for its
+//! `crate::gesture::is_double_tap_pair`, the same predicate `DoubleTapGesture` uses for its
 //! second tap, so the interval and the movement bound cannot drift between the two input
 //! families. The platform's own detection is then normalised to that rule rather than accepted
 //! blindly.
@@ -199,16 +199,31 @@ impl DoubleClickTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "touch")]
     use crate::gesture::{set_tuning, GestureTuning};
 
+    /// Runs `f` with the gesture tuning pinned to `timeout_ms`.
+    ///
+    /// `gesture` is gated behind `touch`, so a build without it has no runtime tuning to set:
+    /// the event layer then uses `DEFAULT_DOUBLE_CLICK_TIMEOUT_MS`. Every case below uses that
+    /// default's 400 ms, so the no-`touch` branch calls `f` directly rather than asserting a
+    /// threshold the build does not have.
     fn with_timeout<T>(timeout_ms: u64, f: impl FnOnce() -> T) -> T {
-        let previous = set_tuning(Some(GestureTuning {
-            double_tap_timeout_ms: timeout_ms,
-            ..GestureTuning::default()
-        }));
-        let result = f();
-        set_tuning(previous);
-        result
+        #[cfg(feature = "touch")]
+        {
+            let previous = set_tuning(Some(GestureTuning {
+                double_tap_timeout_ms: timeout_ms,
+                ..GestureTuning::default()
+            }));
+            let result = f();
+            set_tuning(previous);
+            result
+        }
+        #[cfg(not(feature = "touch"))]
+        {
+            let _ = timeout_ms;
+            f()
+        }
     }
 
     #[test]

@@ -137,9 +137,10 @@ impl PresetChipBar {
 
     /// Appends a chip with a caller-chosen id.
     ///
-    /// Returns [`IconItemError::InvalidId`] when the id is already in use or is zero, which is the
-    /// same id contract `pie_menu`'s items follow: an id is an identity, and a duplicate makes
-    /// "which chip did the user press" ambiguous.
+    /// Returns `IconItemError::ItemNotFound` when
+    /// the id is already in use, and the same error for a zero id, which is the id contract
+    /// `pie_menu`'s items follow: an id is an identity, and a duplicate makes "which chip did the
+    /// user press" ambiguous.
     pub fn add_preset_with_id(
         &mut self,
         id: u64,

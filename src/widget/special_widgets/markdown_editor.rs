@@ -1335,7 +1335,7 @@ impl MarkdownEditor {
     ///
     /// This is the single formatting entry point: the keyboard chords below and the mounted
     /// [`MarkdownToolbar`] both call it, so a toolbar button and its shortcut cannot diverge. The
-    /// write goes through [`Self::commit_text`], so the wrap is one undo step.
+    /// write goes through `Self::commit_text`, so the wrap is one undo step.
     ///
     /// Returns whether the document changed.
     pub fn wrap_selection(&mut self, prefix: &str, suffix: &str) -> bool {

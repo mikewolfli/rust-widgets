@@ -317,7 +317,7 @@ pub enum Event {
     /// forced the receiver to decode bytes back into an integer it had just encoded. The id is
     /// carried directly here.
     ///
-    /// [`crate::event::r#loop::request_animation_frame`] is the producer; the loop's dispatch
+    /// `crate::event::r#loop::request_animation_frame` is the producer; the loop's dispatch
     /// phase is the consumer. The legacy `Custom` encoding is still *accepted* so a host that
     /// replicates it — or an event captured before this variant existed — keeps working.
     AnimationFrame(u64),

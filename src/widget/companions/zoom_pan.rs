@@ -446,3 +446,24 @@ impl WidgetProperties for ZoomPanController {
         ]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoom_is_clamped_to_the_configured_range() {
+        let mut controller = ZoomPanController::new(Rect::new(0, 0, 320, 240));
+        controller.set_zoom_range(0.5, 4.0);
+        controller.set_zoom_level(100.0);
+        assert_eq!(controller.zoom_level(), 4.0);
+        // A non-finite write is ignored rather than stored.
+        controller.set_zoom_level(f32::NEG_INFINITY);
+        assert_eq!(controller.zoom_level(), 4.0);
+        // An inverted range is swapped instead of becoming empty.
+        controller.set_zoom_range(8.0, 2.0);
+        assert_eq!(controller.min_zoom(), 2.0);
+        assert_eq!(controller.max_zoom(), 8.0);
+        assert_eq!(controller.zoom_level(), 4.0);
+    }
+}

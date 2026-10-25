@@ -11,11 +11,11 @@
 //!
 //! - **C ABI functions** convert `RwError` → `ErrorId` (i32) so that
 //!   C/C++ callers receive a stable numeric error code.
-//! - **Rust internal APIs** carry the cause through [`RwError::source`]
+//! - **Rust internal APIs** carry the cause through `RwError::source`
 //!   when they need to, and otherwise report the failure with the crate's
 //!   own return conventions. `RwResult<T>` is the alias for that purpose; it is
 //!   exported for FFI wrappers, and it is used inside this module by
-//!   [`catch_panic`]. It is **not** the return type of every internal function —
+//!   `catch_panic`. It is **not** the return type of every internal function —
 //!   an earlier revision of this note claimed it was, which was never true.
 //! - **`catch_panic`** must be used at every `extern "C" fn` entry
 //!   point to prevent unwinding across the FFI boundary (UB).
@@ -24,7 +24,7 @@
 //!
 //! **State:** Production callers: `src/bindings/binding_impl.rs:2300` and
 //! `:2310` (`rw_error_code` / `rw_error_message` read this module's
-//! [`ffi`] slot).
+//! `ffi` slot).
 
 // ---------------------------------------------------------------------------
 // ErrorId — stable integer error codes (for C/C++ FFI only)

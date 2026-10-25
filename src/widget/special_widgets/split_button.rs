@@ -11,7 +11,7 @@
 //! *pushes* the trigger narrower instead of being placed from the trailing edge while the trigger
 //! is placed from the leading one.
 //!
-//! [`SplitButton::column_widths`] states that relation once and both boxes are read from it, so the
+//! `SplitButton::column_widths` states that relation once and both boxes are read from it, so the
 //! two columns cannot be placed from opposite edges. The one thing that is *declared* rather than
 //! derived is the arrow's preferred width ([`dimensions::SPLIT_ARROW_COLUMN_WIDTH`]) — see that
 //! constant for why the number is a constant and not the `v` glyph's advance.

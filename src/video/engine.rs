@@ -555,7 +555,7 @@ impl VideoEngine {
 
     /// Frames dropped since the last call, resetting the count.
     ///
-    /// See [`crate::video::clock::MediaClock::take_dropped`] for why it is taken and not read.
+    /// See `crate::video::clock::MediaClock::take_dropped` for why it is taken and not read.
     pub fn take_dropped_frames(&mut self) -> u64 {
         self.clock.take_dropped()
     }

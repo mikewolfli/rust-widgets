@@ -833,7 +833,7 @@ impl GridTableWidget {
     /// sort, the direction is flipped. Otherwise it becomes the sole sort spec
     /// with ascending order.
     ///
-    /// The stored specs are not a decoration: [`Self::ensure_sort_order`] materialises a projected
+    /// The stored specs are not a decoration: `Self::ensure_sort_order` materialises a projected
     /// row -> source row map from them, and every read path resolves a row through it. The signal
     /// is emitted after the map is rebuilt, so a subscriber cannot observe "sorted" before the
     /// rows actually move.

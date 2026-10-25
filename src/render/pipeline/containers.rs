@@ -484,7 +484,7 @@ impl SoftwareSurface {
 
     /// Consumes the surface and returns the presented frame without copying it.
     ///
-    /// See [`BackBuffer::take_front`] for why this exists: the render entry points own
+    /// See `BackBuffer::take_front` for why this exists: the render entry points own
     /// the backend, so moving the buffer is always safe there and saves one full-frame
     /// copy per painted frame.
     pub fn into_frame_rgba(mut self) -> Vec<u8> {

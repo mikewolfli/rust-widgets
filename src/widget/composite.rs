@@ -6,7 +6,7 @@
 //! # The four steps this fixes
 //!
 //! BLUE22 §B.4 identified the gap between `WidgetFactory::create` and the
-//! [`Layout`](crate::layout::Layout) trait: the JSON path has a complete
+//! `Layout` trait: the JSON path has a complete
 //! declare → assemble → apply chain (`store_layout` → `add_widget_to_layout` →
 //! `apply_layout`), but the **code path** had nothing equivalent. A composite
 //! control therefore computed its sub-part geometry by hand, from `self.geometry()`,
@@ -28,7 +28,7 @@
 //! It holds children, computes its own [`Hints`] from theirs (the shared
 //! `implicitWidth = max(implicitBackgroundWidth + …, implicitContentWidth + …)`
 //! formula is exactly this), hands each child's hints to
-//! [`Layout::arrange`](crate::layout::Layout::arrange), and applies the rectangles
+//! `Layout::arrange`, and applies the rectangles
 //! that come back.
 //!
 //! **There is no layout algorithm here.** Not a direction, not a wrap rule, not an

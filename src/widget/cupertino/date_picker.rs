@@ -651,6 +651,15 @@ impl Widget for CupertinoDatePicker {
                     ]))
                 }))
             }
+            "countdown_changed" => {
+                Some(EventSignalRef::mapped("countdown_changed", &self.countdown_changed, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                        CapabilityValue::UInt(v.2 as u64),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }

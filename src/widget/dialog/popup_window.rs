@@ -257,7 +257,7 @@ impl PopupWindow {
     ///
     /// The size is recomputed from the gesture's origin rather than accumulated, so moving
     /// the pointer back restores the original size exactly. The top-left corner is fixed and
-    /// both dimensions are clamped to [`MIN_RESIZE`].
+    /// both dimensions are clamped to `MIN_RESIZE`.
     pub fn resize_to(&mut self, pos: Point) {
         let (Some(origin), Some(start)) = (self.resize_origin, self.resize_geometry) else {
             return;
@@ -271,7 +271,7 @@ impl PopupWindow {
     ///
     /// This is the programmatic counterpart of the grip gesture: a host that recomputes a
     /// popup's size from its content does not have to fake a pointer drag. Both dimensions are
-    /// clamped to [`MIN_RESIZE`].
+    /// clamped to `MIN_RESIZE`.
     pub fn set_size(&mut self, size: Size) {
         let rect = self.base.geometry();
         self.apply_size(rect, size.width.max(MIN_RESIZE), size.height.max(MIN_RESIZE));

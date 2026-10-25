@@ -632,7 +632,7 @@ pub enum RuntimeGuiMode {
 /// A backend is interactive when the native window path it is running is compiled into
 /// **this** build. Two kinds of evidence express that, and neither is a name:
 ///
-/// * **The backend's type.** [`create_native_platform`] constructs `SelectedMacOSPlatform` and
+/// * **The backend's type.** `create_native_platform` constructs `SelectedMacOSPlatform` and
 ///   `WindowsPlatform`; those types only exist when their target and feature are both active, so
 ///   a successful downcast *is* the compile-time proof. This replaces the `"cocoa"` and
 ///   `"WindowsPlatform"` string arms, and it also covers the objc2 backend the `macos` feature

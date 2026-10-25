@@ -956,7 +956,7 @@ impl RichEdit {
     /// as though the caret were at 0 — so an implementation that derived the anchor from the caret
     /// picked the wrong end and the range collapsed on the second extension (observed: `(1, 1)` where
     /// `(0, 2)` was due). The moving end is therefore tracked in its own field
-    /// ([`Self::extend_caret`]), which is set whenever the caret moves for any reason.
+    /// (`Self::extend_caret`), which is set whenever the caret moves for any reason.
     ///
     /// `target` is clamped to the value and snapped to a character boundary, so an offset computed
     /// from a pixel can never leave the caret inside a multi-byte character.
@@ -1003,7 +1003,7 @@ impl RichEdit {
     /// # How a pixel becomes an offset
     ///
     /// The answer is found by walking the line's own characters and measuring the prefix, using
-    /// [`estimate_text_width`](crate::widget::metrics::estimate_text_width) — the same model the
+    /// `estimate_text_width` — the same model the
     /// paint path lays the ink out with and the caret is placed by. A division by an assumed advance
     /// would be a fourth copy of the width model, which is precisely the defect the caret's own docs
     /// record ("`col * 7`, with the comment rough char width").

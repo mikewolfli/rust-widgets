@@ -1044,6 +1044,12 @@ impl Widget for GanttWidget {
                     ])
                 }))
             }
+            "task_hovered" => {
+                Some(EventSignalRef::mapped("task_hovered", &self.task_hovered, |v| match v {
+                    Some(index) => CapabilityValue::UInt(*index as u64),
+                    None => CapabilityValue::Null,
+                }))
+            }
             _ => None,
         }
     }

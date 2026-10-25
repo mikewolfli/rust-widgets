@@ -394,3 +394,20 @@ impl WidgetProperties for TooltipManager {
         ]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_registered_widget_can_show_a_tooltip() {
+        let mut manager = TooltipManager::new(Rect::new(0, 0, 320, 200));
+        manager.register(11, "Save");
+        assert_eq!(manager.text_for(11), Some("Save"));
+        assert!(manager.show_now(11));
+        assert_eq!(manager.tooltip(), Some("Save"));
+        manager.hide();
+        assert!(manager.tooltip().is_none());
+        assert!(!manager.show_now(12));
+    }
+}

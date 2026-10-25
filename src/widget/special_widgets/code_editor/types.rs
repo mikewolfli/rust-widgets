@@ -465,7 +465,7 @@ impl EditorBuffer {
 /// The range is expressed in **document coordinates** (line + character column)
 /// rather than byte offsets, so it survives edits that happen above it only if
 /// the host re-derives the spans — the editor therefore also exposes a helper to
-/// shift spans after an edit ([`CodeEditor::shift_read_only_spans_after`]).
+/// shift spans after an edit (`CodeEditor::shift_read_only_spans_after`).
 /// Use [`ReadOnlySpan::lines`] to lock whole lines, which is the common case of
 /// "this generated block is immutable".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -586,7 +586,7 @@ impl ListBox {
     ///
     /// A binary search rather than a linear scan: `draw` asks this once per visible row, so the scan
     /// made one frame cost O(visible rows × selected rows) (WDGT-09). The list is kept sorted by
-    /// every mutation — see [`ListBox::add_to_selection`].
+    /// every mutation — see `ListBox::add_to_selection`.
     pub fn is_selected(&self, index: usize) -> bool {
         self.selected_indices.binary_search(&index).is_ok()
     }
@@ -890,7 +890,7 @@ impl ListBox {
     /// A selected row is an index into the old order. Sorting moves the row the index names,
     /// so remapping it would silently select a different label. Clearing is the only outcome
     /// that cannot lie; a caller that needs to preserve a selection should sort its own model
-    /// and call [`ListBox::set_items`] equivalent mutators itself.
+    /// and call `ListBox::set_items` equivalent mutators itself.
     pub fn sort_items(&mut self) {
         // Ascending byte order is the convenient default, not the only order: `sort_items_by`
         // carries the comparison, so a descending or case-insensitive sort is one call away

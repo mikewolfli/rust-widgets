@@ -5,7 +5,7 @@
 //!
 //! # Why this exists
 //!
-//! [`PropertyDriver`] already owns the interpolation, the theme-priced duration and the
+//! `PropertyDriver` already owns the interpolation, the theme-priced duration and the
 //! target, and [`Widget::tick`](crate::widget::Widget::tick) is the bus that advances a
 //! control. What every control still spelled out by hand was the same three-step
 //! choreography: keep two drivers, retarget them from the pointer state on every
@@ -13,24 +13,24 @@
 //! reason the long-tail controls had no transition at all.
 //!
 //! `InteractionFade` states that choreography once. A control owns one of these, calls
-//! [`sync`](Self::sync) from its `MouseEnter`/`MouseLeave`/`MousePress`/`MouseRelease`
-//! arms, and forwards [`tick`](Self::tick)/[`is_animating`](Self::is_animating) from its
+//! `sync` from its `MouseEnter`/`MouseLeave`/`MousePress`/`MouseRelease`
+//! arms, and forwards `tick`/`is_animating` from its
 //! `Widget` implementation.
 //!
 //! # Rest is exactly zero
 //!
 //! Both drivers are built with `PropertyDriver::at(0.0, MotionSlot::Fast)`, so a freshly
 //! constructed control paints its resting appearance byte-for-byte. A draw path multiplies
-//! its tint by [`intensity`](Self::intensity) and can therefore branch on `> 0.0`: until a
+//! its tint by `intensity` and can therefore branch on `> 0.0`: until a
 //! real interaction moves a driver, the tint is not applied at all.
 //!
 //! # Reduced motion
 //!
-//! No branch lives here. The drivers are priced by [`MotionSlot::Fast`], whose duration is
+//! No branch lives here. The drivers are priced by `MotionSlot::Fast`, whose duration is
 //! read through the existing timing path ([`TransitionTempo::duration_ms`], which goes
 //! through `motion_tokens` and applies the same reduced-motion collapse as
 //! `effective_duration`). With reduced motion in force that duration is zero, so the first
-//! [`tick`](Self::tick) reaches the target and reports that no further frame is needed.
+//! `tick` reaches the target and reports that no further frame is needed.
 //!
 //! [`TransitionTempo::duration_ms`]: crate::style::animation::TransitionTempo::duration_ms
 

@@ -53,7 +53,7 @@ pub struct ActionManager {
 pub struct ShortcutDisagreement {
     /// The action id one or both tables claim the chord routes to.
     pub action_id: String,
-    /// The chord in canonical form ([`canonicalize_shortcut_type`]).
+    /// The chord in canonical form (`canonicalize_shortcut_type`).
     pub chord: String,
     /// Whether the action registry's reverse index holds this chord.
     pub action_manager_has: bool,
@@ -227,7 +227,7 @@ impl ActionManager {
     }
     /// Triggers an action bound to a typed [`Shortcut`], preserving the physical
     /// [`Modifiers::CTRL`](crate::shortcut::Modifiers::CTRL) bit (unlike
-    /// [`trigger_shortcut`], whose string input folds `Ctrl` onto `Primary`). This
+    /// `trigger_shortcut`, whose string input folds `Ctrl` onto `Primary`). This
     /// is the typed reverse-lookup counterpart of
     /// [`bind_shortcut_type`](Self::bind_shortcut_type).
     pub fn trigger_shortcut_type(&mut self, shortcut: &Shortcut) -> bool {

@@ -249,7 +249,7 @@ impl Platform for MacOSPlatform {
         }
     }
 
-    /// Presents AppKit's own file picker — see [`super::file_picker`] for the panel choice, the
+    /// Presents AppKit's own file picker — see `super::file_picker` for the panel choice, the
     /// main-thread rule and what the answer does and does not claim.
     fn choose_path(
         &self,
@@ -262,7 +262,7 @@ impl Platform for MacOSPlatform {
     /// Hands a URL or path to the system's default handler by spawning `open`.
     ///
     /// See [`Platform::open_external`] for why this returns on hand-off rather than on the
-    /// handler finishing, and [`crate::platform::external`] for the shared validation and
+    /// handler finishing, and `crate::platform::external` for the shared validation and
     /// spawn.
     fn open_external(&self, target: &str) -> Result<(), crate::platform::types::OpenError> {
         crate::platform::external::spawn_handler("open", &[], target)
@@ -278,7 +278,7 @@ impl Platform for MacOSPlatform {
         crate::platform::external::program_is_on_path("open")
     }
 
-    /// The displays AppKit reports; see [`super::displays`].
+    /// The displays AppKit reports; see `super::displays`.
     fn displays(&self) -> Vec<Display> {
         super::displays::displays()
     }
@@ -313,7 +313,7 @@ impl Platform for MacOSPlatform {
         unsafe { super::displays::window_display(resolve_window_ptr(self, window_id)?) }
     }
 
-    /// A revision of AppKit's current display set; see [`super::displays::generation`].
+    /// A revision of AppKit's current display set; see `super::displays::generation`.
     fn display_generation(&self) -> u64 {
         super::displays::generation()
     }
@@ -372,28 +372,28 @@ impl Platform for MacOSPlatform {
 
     /// Whether the user asked for increased contrast.
     ///
-    /// `NSWorkspace.accessibilityDisplayShouldIncreaseContrast`; see [`super::environment`].
+    /// `NSWorkspace.accessibilityDisplayShouldIncreaseContrast`; see `super::environment`.
     fn high_contrast(&self) -> Option<bool> {
         super::environment::high_contrast()
     }
 
     /// Whether the user asked for reduced motion.
     ///
-    /// `NSWorkspace.accessibilityDisplayShouldReduceMotion`; see [`super::environment`].
+    /// `NSWorkspace.accessibilityDisplayShouldReduceMotion`; see `super::environment`.
     fn reduce_motion(&self) -> Option<bool> {
         super::environment::reduce_motion()
     }
 
     /// Whether the user asked for translucent materials to be reduced.
     ///
-    /// `NSWorkspace.accessibilityDisplayShouldReduceTransparency`; see [`super::environment`].
+    /// `NSWorkspace.accessibilityDisplayShouldReduceTransparency`; see `super::environment`.
     fn reduce_transparency(&self) -> Option<bool> {
         super::environment::reduce_transparency()
     }
 
     /// The host's current accent colour, from `NSColor.controlAccentColor`.
     ///
-    /// See [`super::environment::accent_color`] for the colour-space conversion and why the answer
+    /// See `super::environment::accent_color` for the colour-space conversion and why the answer
     /// is `None` rather than a default blue when AppKit cannot be asked.
     fn accent_color(&self) -> Option<crate::core::Color> {
         super::environment::accent_color()
@@ -409,14 +409,14 @@ impl Platform for MacOSPlatform {
     /// macOS posts notifications for each of these; this backend is polled, so the revision is a
     /// hash of the values a caller would read. `0` when AppKit cannot be asked (off-main).
     ///
-    /// [`crate::platform::locale::environment_revision`] is the shared accessor: hashing the four
+    /// `crate::platform::locale::environment_revision` is the shared accessor: hashing the four
     /// facts by hand here is what kept an accent or reduced-transparency change invisible to the
     /// style snapshot (P-03), and what made adding a fact an eight-file edit (P-06).
     fn environment_generation(&self) -> u64 {
         crate::platform::locale::environment_revision(self)
     }
 
-    /// The font families AppKit reports; see [`super::environment::system_fonts`].
+    /// The font families AppKit reports; see `super::environment::system_fonts`.
     fn system_fonts(&self) -> Vec<crate::platform::types::SystemFont> {
         super::environment::system_fonts()
     }

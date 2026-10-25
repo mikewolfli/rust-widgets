@@ -18,7 +18,7 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// How the image is rotated before it is laid out.
 ///
 /// A quarter turn swaps the oriented width and height, so the layout, the size hint and the
-/// destination box all read [`oriented_dimensions`] rather than the source dimensions directly.
+/// destination box all read `oriented_dimensions` rather than the source dimensions directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImageRotation {
     /// No rotation.

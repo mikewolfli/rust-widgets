@@ -268,7 +268,7 @@ impl AssetWatcher {
         Ok(())
     }
 
-    /// Take up to [`ASSET_POLL_BATCH_LIMIT`] buffered events from the channel.
+    /// Take up to `ASSET_POLL_BATCH_LIMIT` buffered events from the channel.
     ///
     /// The per-call work is bounded (D09-WATCH-01): a consumer that paused through
     /// a storm delivers the backlog over successive calls instead of materializing

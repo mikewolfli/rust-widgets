@@ -430,7 +430,7 @@ impl JsonLoader {
     /// The published route's subscription is on the control's own dynamic signal, whose handle is
     /// the only key that can remove it; the marker route now yields a token too — a real disconnect
     /// for the base signals it connects, and a liveness flag for the value-trigger table, which has
-    /// no per-callback removal (see [`Self::bind_value_trigger`]). A host that added a wire at run
+    /// no per-callback removal (see `Self::bind_value_trigger`). A host that added a wire at run
     /// time can therefore take it back without destroying the control, whichever spelling the
     /// document used; returning `None` now means the binding was *refused*, not that it was made
     /// silently.

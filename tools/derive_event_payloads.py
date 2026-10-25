@@ -170,6 +170,14 @@ MANUAL: dict[tuple[str, str], tuple[str, str]] = {
     # The filter row's arm serialises the condition list as one text value; a later revision can
     # move the arm to a structured tuple without changing the name a subscriber uses.
     ("filter_row", "filter_changed"): ("Some(K::String)", "Some(S::Scalar)"),
+    # A code-editor change is (start line, removed lines, inserted lines, inserted text, whole
+    # document) — four unsigned counts and a string, so more than one kind travels in one value.
+    # The arm delivers those five components positionally rather than a `Debug` dump.
+    ("code_editor", "text_change"): ("Some(K::String)", "Some(S::Mixed)"),
+    # A virtual table's selection set is a list of `(row, column)` pairs. No shape models a list
+    # of pairs, so `Mixed` is the honest statement (the same one `kanban_board.card_moved` makes
+    # for a card position nested inside a tuple): the arm delivers a `Tuple` of `Tuple2`s.
+    ("virtual_table", "selection_set_changed"): ("Some(K::String)", "Some(S::Mixed)"),
 }
 
 # Compatibility spellings published alongside their canonical name (kept in step with the

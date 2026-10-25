@@ -203,7 +203,7 @@ impl Dialog {
     ///
     /// Replaces any previous content child and records the link in **both** directions, so the tree
     /// walk (and the modal subtree test) sees it. That pairing is BLUE22 §B.6 rule 5, and it is now
-    /// expressed through the shared [`BaseWidget::add_child_linked`]/[`remove_child_linked`] pair
+    /// expressed through the shared [`BaseWidget::add_child_linked`]/`remove_child_linked` pair
     /// rather than three inline writes: the inline form was correct here but was one of eleven
     /// hand-written copies of the same rule, of which eight were incomplete.
     ///

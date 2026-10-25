@@ -221,7 +221,7 @@ pub const fn compile_target_shortcut_style() -> crate::shortcut::PlatformShortcu
 ///
 /// What replaced it:
 ///
-/// * [`Platform::supports_web_engine`] — the capability question, answered honestly
+/// * `Platform::supports_web_engine` — the capability question, answered honestly
 ///   (`false` everywhere today) instead of a `Option<Box<dyn ..>>` whose `None` a
 ///   caller could not distinguish from "not attempted".
 /// * `src/web/`'s simulated loader, which is the `web_engine_view` control's real
@@ -322,7 +322,7 @@ pub struct DropEvent {
 /// Controls how text is displayed in a text-entry control.
 ///
 /// Defined here rather than in `app` because a backend must name it when it
-/// implements [`Platform::set_widget_echo_mode`], and `platform` must not depend
+/// implements `Platform::set_widget_echo_mode`, and `platform` must not depend
 /// on `app` (that would invert the layering, principle #3). `app` re-exports it
 /// so callers keep their existing import path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -376,13 +376,13 @@ pub enum WindowStateFlag {
 /// have silently mishandled two of them — the same "plausible value with nothing behind it" shape
 /// the capability flags kept showing up in.
 ///
-/// What actually answers "which desktop backend is this" is [`Platform::backend_name`], which every
+/// What actually answers "which desktop backend is this" is `Platform::backend_name`, which every
 /// backend implements and which is already the key the capability matrix and `runtime_gui_mode_for`
 /// use. An enum duplicating a name that is authoritative elsewhere is a second source for one fact
 /// (principle #54), and this one had already diverged.
 ///
 /// `MobileBackend` stays because it is genuinely used: it is the return of
-/// [`MobilePlatformExtension::mobile_backend`], and `runtime.rs` matches on it to select the
+/// `MobilePlatformExtension::mobile_backend`, and `runtime.rs` matches on it to select the
 /// `android-mobile` / `ios-mobile` / `harmony-mobile` name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MobileBackend {
@@ -459,11 +459,11 @@ pub struct PlatformCapabilities {
     /// The backend has a host clipboard for text (not merely an in-process buffer).
     pub clipboard: bool,
     /// The backend can hand a URL or path to the host's default handler
-    /// (see [`Platform::open_external`]).
+    /// (see `Platform::open_external`).
     pub open_external: bool,
     /// The backend can present the host's own path picker — "open file", "save file" or "choose a
     /// directory" — and answer with the path the user chose or with "cancelled"
-    /// (see [`Platform::choose_path`]).
+    /// (see `Platform::choose_path`).
     ///
     /// # What this flag is not
     ///
@@ -479,10 +479,10 @@ pub struct PlatformCapabilities {
     /// forbids.
     pub file_dialog: bool,
     /// The backend can enumerate the host's installed font families
-    /// (see [`Platform::system_fonts`]).
+    /// (see `Platform::system_fonts`).
     ///
     /// winit does not provide this; it is this crate's own gap, recorded as BLUE28 B28.39. A
-    /// `true` means [`Platform::system_fonts`] answers a real list; an empty list under a `true`
+    /// `true` means `Platform::system_fonts` answers a real list; an empty list under a `true`
     /// is possible on a minimal system and is not a promise violation.
     pub system_fonts: bool,
 }
@@ -532,7 +532,7 @@ pub enum PathPickerError {
 ///
 /// `choose_path` is synchronous: it blocks until the modal dialog closes. A mobile or Web host
 /// presents its picker as an Activity result / promise, so the library cannot block there. The
-/// asynchronous pair [`Platform::request_path`] + [`Platform::take_path_choice`] keeps one
+/// asynchronous pair `Platform::request_path` + `Platform::take_path_choice` keeps one
 /// contract for those hosts; `choose_path` stays for the desktops that can block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathChoice {
@@ -599,8 +599,8 @@ pub struct EmbeddedCapabilityContract {
 /// Runtime capability negotiation result split by profile contract.
 ///
 /// A backend answers with exactly one of these, matching the family it was
-/// built for: see [`Platform::hosted_capability_contract`] and
-/// [`Platform::embedded_capability_contract`]. The variant tells the caller
+/// built for: see `Platform::hosted_capability_contract` and
+/// `Platform::embedded_capability_contract`. The variant tells the caller
 /// which half of the capability model applies, so it must not have to guess
 /// from the widget set.
 pub enum CapabilityContract {
@@ -610,7 +610,7 @@ pub enum CapabilityContract {
     Embedded(EmbeddedCapabilityContract),
 }
 /// The capabilities a backend with the given `family` reports when it does **not**
-/// override [`Platform::capabilities`].
+/// override `Platform::capabilities`.
 ///
 /// Exposed so the documented OS capability matrix can be checked against source
 /// rather than trusted. A backend cannot be instantiated off its own host, but the
@@ -620,7 +620,7 @@ pub enum CapabilityContract {
 /// # Why this is no longer derived from the family
 ///
 /// It used to answer `true` for the four host integrations on `Desktop` — an
-/// **inference from a classification to a capability** (see [`Platform::capabilities`],
+/// **inference from a classification to a capability** (see `Platform::capabilities`,
 /// which now defaults to an honest all-`false`). The function still takes a family so
 /// the matrix test can name the case it is describing, but the answer no longer varies
 /// with it: an undeclared capability is absent, whichever class of machine the backend
@@ -641,7 +641,7 @@ pub fn default_capabilities_for(_family: PlatformFamily) -> PlatformCapabilities
     }
 }
 
-/// Identifies one display in a backend's [`Platform::displays`] list.
+/// Identifies one display in a backend's `Platform::displays` list.
 ///
 /// A newtype rather than a bare `u64` so a display id cannot be confused with a widget id or a
 /// window id at a call site: they are all integers, and the mistake is silent.
@@ -667,7 +667,7 @@ impl DisplayId {
 /// A host that keeps a window visible across a monitor change — "the panel was on the display
 /// that just got unplugged; put it back on a display that remains" — needs two readings it could
 /// not get from this crate before: the current set of displays, and which one a window is on.
-/// [`Platform::dpi_scale_factor`] answers a single global scale for "the" display and
+/// `Platform::dpi_scale_factor` answers a single global scale for "the" display and
 /// [`PlatformCapabilities::dpi_scaling`] says whether that answer is measured, but neither can
 /// enumerate screens, so a host could neither compare a window's screen against the remaining
 /// ones nor read a per-display `scale` after a DPI change. See
@@ -691,7 +691,7 @@ pub struct Display {
 /// # Why `source` is optional
 ///
 /// A host that wants the widget layer to paint with a system face must hand back its **bytes**
-/// through [`crate::render::text::register_face`], and that needs a readable file. CoreText
+/// through `crate::render::text::register_face`, and that needs a readable file. CoreText
 /// (`kCTFontURLAttribute`), DirectWrite (`IDWriteLocalFontFileLoader`) and fontconfig all name the
 /// file behind a family, so `source` is populated there. A backend that knows only names — Harmony's
 /// empty list, for example — reports `None`. A caller that requires bytes must skip entries whose
@@ -801,7 +801,7 @@ pub struct DisplayInfo {
 ///
 /// BLUE28 B28.09 separates the **widget intent** from the platform's cursor object: a control
 /// answers [`Widget::cursor_icon`](crate::widget::Widget::cursor_icon), the runtime dispatches it
-/// once per hover change through [`Platform::set_cursor`], and each backend maps it to its own
+/// once per hover change through `Platform::set_cursor`, and each backend maps it to its own
 /// cursor API. The variant set mirrors winit's `CursorIcon` minus the platform-only variants this
 /// library has no consumer for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -858,11 +858,11 @@ pub enum CursorIcon {
 /// [`SafeArea`](crate::widget::SafeArea) widget paints with when the host supplies none, because
 /// on such a device zero insets place content under the status bar and the home indicator. It is
 /// **not** a platform answer: a backend that cannot read the real insets reports `None` from
-/// [`Platform::safe_area_insets`], which is a different fact from "the insets are zero".
+/// `Platform::safe_area_insets`, which is a different fact from "the insets are zero".
 ///
 /// # Why this type lives in the platform layer
 ///
-/// [`Platform::safe_area_insets`] returns it, and the widget layer re-exports it. Defining the
+/// `Platform::safe_area_insets` returns it, and the widget layer re-exports it. Defining the
 /// struct in the widget layer and translating in the platform layer would put two descriptions of
 /// one fact in the tree — the duplication principle #54 forbids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

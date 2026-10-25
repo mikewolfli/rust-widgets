@@ -322,7 +322,7 @@ impl<'a> ColorBitmapFace<'a> {
     ///
     /// # Why the decode goes through a scratch buffer
     ///
-    /// [`decode_png`] writes RGBA into the buffer it is given and hands back a *view of it*, and the
+    /// `decode_png` writes RGBA into the buffer it is given and hands back a *view of it*, and the
     /// view's size is the PNG's own — the strike's size (109 px), not the cell's. The scale step
     /// reads one buffer and writes another, so they cannot be the same buffer: aliasing them would
     /// be a borrow error, and if it compiled it would have the scaler read pixels it had already

@@ -7,7 +7,7 @@
 //!
 //! BLUE22 §B.8 lists this control's defect as "the scroll bars' positions computed by hand":
 //! `h_band` and `v_band` were each written as the control's own extent minus an
-//! `if other_bar_visible { bar }` correction, twice, in two directions. [`ScrollArea::assemble_chrome`]
+//! `if other_bar_visible { bar }` correction, twice, in two directions. `ScrollArea::assemble_chrome`
 //! states the geometry once: the content box is the control's rectangle minus the bars it owes, and
 //! each bar is the strip the content leaves — so "the other bar shortens this one" is a consequence
 //! of the two bands' shared corner rather than a term repeated in two places.
@@ -510,7 +510,7 @@ impl ScrollArea {
     ///
     /// # What changes when a bar is mounted
     ///
-    /// * the band is the one [`Self::assemble_chrome`] already derives, written into the bar's
+    /// * the band is the one `Self::assemble_chrome` already derives, written into the bar's
     ///   own `geometry` — the child is placed by the same derivation the self-drawn bar used;
     /// * the control's `draw` delegates that band to [`ScrollBar::draw`] instead of painting a
     ///   groove and thumb itself;

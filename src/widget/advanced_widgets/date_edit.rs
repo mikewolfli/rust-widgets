@@ -675,7 +675,7 @@ impl DateEdit {
     /// Returns the stored display-format pattern.
     ///
     /// The pattern is interpreted when the widget paints, through the shared
-    /// [`format_with_pattern_into`] substituter. A pattern with no recognised token still paints
+    /// `format_with_pattern_into` substituter. A pattern with no recognised token still paints
     /// the field's fixed `YYYY-MM-DD` spelling.
     pub fn display_format(&self) -> &str {
         &self.display_format
@@ -1286,6 +1286,9 @@ impl Widget for DateEdit {
             }
             "calendar_closed" => {
                 Some(EventSignalRef::unit("calendar_closed", &self.calendar_closed))
+            }
+            "editing_finished" => {
+                Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
             }
             _ => None,
         }

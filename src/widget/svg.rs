@@ -258,7 +258,7 @@ pub fn text_subpath_count(svg: &str) -> usize {
 /// left exactly such a test green.
 ///
 /// "The first shape path" is the counterpart of "the first text path", and the two are disjoint by
-/// [`is_text_path`], so a document cannot answer both for the same element. The raw parser stays
+/// `is_text_path`, so a document cannot answer both for the same element. The raw parser stays
 /// private: this is the narrow, named question, and it hands back the shape's bounds rather than an
 /// unparsed `d`.
 pub fn first_shape_bounds(svg: &str) -> Option<(i32, i32, i32, i32)> {

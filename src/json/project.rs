@@ -133,7 +133,7 @@ impl ProjectNode {
     ///
     /// # Where this reads from
     ///
-    /// [`collect_properties`] removes the wire keys, because they are not property values — so the
+    /// `collect_properties` removes the wire keys, because they are not property values — so the
     /// handlers are captured **separately** at parse time rather than recovered from the property
     /// list. The first version of this method read the property list and could therefore never
     /// return anything; its test caught that immediately.

@@ -638,7 +638,7 @@ impl TerminalView {
     /// Scrolls the output by whole visible pages.
     ///
     /// A positive `direction` moves toward older output, matching the sign convention of
-    /// [`Self::scroll_output`]. Returns whether the viewport moved.
+    /// `Self::scroll_output`. Returns whether the viewport moved.
     pub fn scroll_page(&mut self, direction: i32) -> bool {
         let page = self.visible_output_rows.max(1) as i32;
         let moved = self.scroll_output(direction.signum() * page);

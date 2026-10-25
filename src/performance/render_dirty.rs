@@ -35,7 +35,7 @@ pub const FULL_REPAINT_AREA_RATIO: f32 = 0.5;
 /// The previous implementation called `render_all` **once per region**, so N damaged regions
 /// meant N complete widget-tree traversals and N command streams — the dominant cost of a partial
 /// repaint was the part the clip was supposed to save (G-04). This version walks the tree exactly
-/// once: [`RenderContext::begin_region_buckets`] records every command against the bounds of the
+/// once: `RenderContext::begin_region_buckets` records every command against the bounds of the
 /// control that emitted it, and the end call replays each control only into the regions it
 /// touches. A control outside all damage emits no pixels; a control covering several regions is
 /// replayed into each, which is what the clip is for.

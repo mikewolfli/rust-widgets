@@ -68,7 +68,7 @@ pub struct DiffLine {
     /// The byte spans that differ, as `(left_span, right_span)`, for a `Changed` row.
     ///
     /// Computed once when the row list is built. The paint path used to call
-    /// [`differing_spans`] for every visible changed row on every frame, allocating two `Vec`s
+    /// `differing_spans` for every visible changed row on every frame, allocating two `Vec`s
     /// per row per frame; this carries the answer instead.
     pub changed_spans: Option<((usize, usize), (usize, usize))>,
 }

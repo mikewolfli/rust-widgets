@@ -439,7 +439,7 @@ impl InplaceEditor {
     /// Deletes the character after the caret, or the selection when one is active.
     ///
     /// This is the forward-delete the editor previously expressed by passing a sentinel
-    /// replacement character through [`Self::insert_char`], which made a deletion indistinguishable
+    /// replacement character through `Self::insert_char`, which made a deletion indistinguishable
     /// from typed text in every log and test.
     pub fn delete_forward(&mut self) -> bool {
         if self.delete_selection() {

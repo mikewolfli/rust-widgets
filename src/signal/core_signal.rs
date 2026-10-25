@@ -512,7 +512,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// allocates nothing.
     ///
     /// This is additive: `connect` keeps its published signature and behaviour, and a signal may
-    /// mix both kinds (see [`SlotCallback`]).
+    /// mix both kinds (see `SlotCallback`).
     pub fn connect_ref<F>(&self, slot: F) -> ConnectionHandle
     where
         F: FnMut(&T) + Send + Sync + 'static,

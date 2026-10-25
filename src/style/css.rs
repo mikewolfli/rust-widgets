@@ -1138,7 +1138,7 @@ impl CssParser {
     ///
     /// # Why this is a list and not a second match
     ///
-    /// The alternative was to make [`Self::apply_value`] return whether it matched, but that
+    /// The alternative was to make `Self::apply_value` return whether it matched, but that
     /// would tempt a caller to treat the unknown case as an error everywhere — including in the
     /// stylesheet path, where ignoring is correct. Naming the vocabulary separately keeps the two
     /// policies independent.
@@ -1148,12 +1148,12 @@ impl CssParser {
     /// The list used to name `border-style` and `font-weight` with **no** arm behind them, so a
     /// declaration was accepted, cached and silently dropped, while `css_trace` used this method
     /// to decide "known" and therefore never reported the two as inert. The list is now
-    /// [`KNOWN_PROPERTIES`], `apply_value` implements every entry, and
+    /// `KNOWN_PROPERTIES`, `apply_value` implements every entry, and
     /// `known_property_list_matches_what_apply_one_handles` iterates the list itself (rather than
     /// a hand-copied subset) so the two cannot drift apart again.
     ///
     /// Matching is ASCII case-insensitive, which is what CSS specifies for property names;
-    /// [`Self::apply_value`] applies the same rule, so "known" and "applies" agree for every
+    /// `Self::apply_value` applies the same rule, so "known" and "applies" agree for every
     /// spelling.
     pub fn is_known_property(property: &str) -> bool {
         KNOWN_PROPERTIES.iter().any(|known| known.eq_ignore_ascii_case(property))
@@ -1162,7 +1162,7 @@ impl CssParser {
     /// The property names this parser acts on, in the order they are documented.
     ///
     /// One list, read by [`Self::is_known_property`] and by the trace (through it), and kept in
-    /// step with [`Self::apply_value`]'s arms by a behavioural test (G-404).
+    /// step with `Self::apply_value`'s arms by a behavioural test (G-404).
     pub fn known_properties() -> &'static [&'static str] {
         KNOWN_PROPERTIES
     }
@@ -1326,7 +1326,7 @@ impl CssParser {
     /// Checks one declaration's property and value without writing a style.
     ///
     /// This is the trace's "would this apply?" question (G-164): it runs the **same** match arms
-    /// as [`Self::apply_value`] through the `Check` sink, so the verdict is the apply's own rather
+    /// as `Self::apply_value` through the `Check` sink, so the verdict is the apply's own rather
     /// than a second rule set's, and no scratch [`WidgetStyle`] is built or mutated. An unknown
     /// property is not an error here — the apply ignores it by design — so a caller that needs
     /// to distinguish the two asks [`Self::is_known_property`] first, as the trace does.

@@ -149,7 +149,7 @@ pub fn x_labels() -> Vec<String> {
 /// meant the snapshot showed a flat list with a tree's chrome around it, and that collapsing a
 /// branch was impossible for a model built this way.
 ///
-/// [`TreeModel::node`] now accepts shape, so the sample states it directly: two branches that each
+/// `TreeModel::node` now accepts shape, so the sample states it directly: two branches that each
 /// have two children, and leaves below. The snapshot therefore shows what the control is for —
 /// disclosure glyphs, real indentation, and a row hierarchy a reader can check against this list.
 #[cfg(full_widgets)]

@@ -634,7 +634,7 @@ impl TextEdit {
     ///
     /// It replaces the old "push onto the end" behaviour, so typing, Enter and any future paste all
     /// share the max-length gate, the undo snapshot and the caret advance. The candidate is checked
-    /// **whole** by [`Self::within_max_length`], which is what makes the limit survive a paste (the
+    /// **whole** by `Self::within_max_length`, which is what makes the limit survive a paste (the
     /// gate's own docs record that it used to be read only when the limit itself was set).
     pub fn insert_str(&mut self, text: &str) {
         if text.is_empty() {
@@ -1148,7 +1148,7 @@ impl TextEdit {
     ///
     /// The row comes from the **wrap table** ([`Self::layout_rows`]) rather than from a second
     /// implementation of the break rule, and within the row the offset is found by measuring the
-    /// prefix with the renderer's own measurement ([`Self::text_advance`]) — the same model the
+    /// prefix with the renderer's own measurement (`Self::text_advance`) — the same model the
     /// painter lays the row out with — so the marker cannot drift off the column it belongs to.
     /// model the painter and the caret use. An assumed advance per character would be a fourth copy
     /// of the width model, which is the defect the caret's own history records (`col * 7`).
@@ -1236,7 +1236,7 @@ impl TextEdit {
     /// twenty-character field. A limit that only applies to the value that was already there is not
     /// a limit — it is a one-shot trim with a misleading name.
     ///
-    /// The gate is now [`Self::within_max_length`], which every path that appends or replaces text
+    /// The gate is now `Self::within_max_length`, which every path that appends or replaces text
     /// consults, and this setter keeps its truncation because the *existing* text has to conform too.
     pub fn set_max_length(&mut self, max_length: Option<usize>) {
         self.max_length = max_length;

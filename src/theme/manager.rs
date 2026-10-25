@@ -272,7 +272,7 @@ impl ThemeManager {
     /// because a caller may legitimately keep several light themes. Instead
     /// [`Self::set_appearance`] resolves the collision by an explicit, auditable rule:
     /// **the first-registered theme of that appearance wins**, recorded in
-    /// [`Self::registration_order`]. Registering the same name again **updates** it in place and
+    /// `Self::registration_order`. Registering the same name again **updates** it in place and
     /// does not change its position, so re-loading a theme file never shifts the tie-break.
     /// Passing an explicit name to [`Self::set_theme`] bypasses the rule entirely.
     pub fn register_theme(&mut self, theme: Theme) {
@@ -1125,7 +1125,7 @@ use crate::compat::{lock, Mutex, MutexGuard, OnceLock};
 /// # Lock order (recorded at the mutex)
 ///
 /// The theme mutex may be held while taking the **`frame_wait`** lock (through
-/// [`note_theme_mutation`] -> [`crate::widget::runtime::arm_global_repaint`] -> `wake`).
+/// `note_theme_mutation` -> `crate::widget::runtime::arm_global_repaint` -> `wake`).
 /// No code may take the theme mutex while holding the `frame_wait` lock: that would close the
 /// cycle. The frame step ([`crate::widget::runtime`]) releases this guard before arming a
 /// repaint, and the macOS accent observer is delivered from AppKit's run loop, never from
@@ -1410,7 +1410,7 @@ fn evict_semantic_border_least_recently_used(cache: &mut SemanticBorderCache) {
 /// uncached call took the global manager's mutex, classified the name and rebuilt the role's style
 /// (including its `Font`, a heap `String`) — measured at ~2.5µs, i.e. several hundred µs of pure
 /// theme resolution in a 100-widget frame. The result changes only when the theme registry does,
-/// which is what [`THEME_REVISION`] records, so a cache hit is exact rather than approximate.
+/// which is what `THEME_REVISION` records, so a cache hit is exact rather than approximate.
 /// Resolves the active theme's style for `widget_name`, sharing the cached value.
 ///
 /// The hot callers (theme application on hover/press) only read the style while merging it into
@@ -1606,7 +1606,7 @@ pub fn resolved_theme_style_for_state(
 /// the uncached form took the global manager's mutex, allocated a `format!("<kind>:<suffix>")`
 /// key and searched a `BTreeMap` on every call. It is now resolved through the semantic-border
 /// cache, whose key is the caller's own `&str` plus the `Copy` meaning enum — a hit neither locks
-/// nor allocates. The entry is validated by the same [`THEME_REVISION`] every other resolution
+/// nor allocates. The entry is validated by the same `THEME_REVISION` every other resolution
 /// cache uses, so a theme switch (or an environment change) invalidates it on the same path. A
 /// `None` answer is cached too: "this theme names no border for this meaning" is a resolution,
 /// not an absence of one.
@@ -2550,6 +2550,26 @@ mod theme_crossfade_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Probe: what colour does the window's fill resolve to under each preset?
+    #[test]
+    fn probe_window_background_colours() {
+        for theme in [Theme::default(), Theme::dark(), Theme::macos_light(), Theme::macos_dark()] {
+            let name = theme.name.clone();
+            let mut manager = ThemeManager::new();
+            manager.register_theme(theme);
+            manager.set_theme(&name);
+            let style = manager.resolve_style("window");
+            eprintln!(
+                "[PROBE] {name}: window bg={:?} theme bg={:?} surface={:?} primary={:?} error={:?}",
+                style.background_color,
+                manager.effective_colors().background,
+                manager.effective_colors().surface_container,
+                manager.effective_colors().primary,
+                manager.effective_colors().error
+            );
+        }
+    }
 
     /// A theme mutation must arm the next frame's full repaint.
     ///

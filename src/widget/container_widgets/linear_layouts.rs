@@ -20,7 +20,7 @@
 //! They delegate the arithmetic to the same engines a tree layout uses
 //! ([`crate::layout::FlexLayout`], [`crate::layout::flow::FlowLayout`],
 //! [`crate::layout::wrap::WrapLayout`]) rather than re-deriving it: the engines take
-//! [`ChildInfo`] hints, which is exactly the channel a control's content sizes are. The
+//! `ChildInfo` hints, which is exactly the channel a control's content sizes are. The
 //! control therefore reports its arrangement through the same solver the host layout tree
 //! uses, and the two cannot drift.
 //!

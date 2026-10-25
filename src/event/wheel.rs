@@ -12,7 +12,7 @@
 //! its own rule, [`WheelScroll::from_event`] applies one normalisation for all
 //! callers:
 //!
-//! - a component whose absolute value is at least [`WHEEL_DELTA_UNITS`] (120) is
+//! - a component whose absolute value is at least `WHEEL_DELTA_UNITS` (120) is
 //! in legacy 1/120 ticks and is divided by 120, truncating toward zero;
 //! - a smaller component is already a notch count and is used as-is.
 //!
@@ -22,7 +22,7 @@
 //!
 //! Callers that want one line per notch pass `lines_per_notch = 1`. A desktop
 //! control that follows the conventional three lines per notch passes
-//! [`DEFAULT_LINES_PER_NOTCH`]. The result is expressed in whole lines (or
+//! `DEFAULT_LINES_PER_NOTCH`. The result is expressed in whole lines (or
 //! steps for controls that select by row), never in pixels: the caller owns the
 //! line-to-pixel conversion.
 

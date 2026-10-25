@@ -5,8 +5,8 @@
 //!
 //! The bar publishes `back_pressed` and an edge-swipe as bare signals, so keeping the title,
 //! the back button and the page sequence in sync is left to the host. This companion owns that
-//! bookkeeping: [`Self::push`] / [`Self::pop`] update the title and the back affordance, and
-//! `popped` announces the title that was left (COMP-L07).
+//! bookkeeping: [`CupertinoNavigationStack::push`] / [`CupertinoNavigationStack::pop`] update the
+//! title and the back affordance, and `popped` announces the title that was left (COMP-L07).
 //!
 //! The crate already has [`crate::widget::nav_widgets::navigation_stack::NavigationStack`], which
 //! hosts page *widgets* and draws the outgoing/incoming pages. This type is the Cupertino

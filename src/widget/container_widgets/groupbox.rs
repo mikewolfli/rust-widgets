@@ -20,7 +20,7 @@
 //! `TITLE_INSET + indicator_reserve()` and the indicator was then placed *backwards* from the
 //! title's own leading edge (`title.x - spacing - box`). Those are the same relation stated twice,
 //! with the sign of the second one inverted — which is how the indicator once hung outside the
-//! frame while its width was computed correctly. [`GroupBox::title_columns`] states it once, so the
+//! frame while its width was computed correctly. `GroupBox::title_columns` states it once, so the
 //! reserve and the placement are one answer.
 
 use crate::compat::{Rc, RefCell, String, ToString};
@@ -152,7 +152,7 @@ impl GroupBox {
     ///
     /// Refused on a group that was not made collapsible: the state would be unreachable
     /// from the UI, which is the same reason [`Self::set_checked`] refuses on a plain box.
-    /// Collapsing hides every mounted child and gives [`Self::content_rect`] zero height,
+    /// Collapsing hides every mounted child and gives `Self::content_rect` zero height,
     /// so a layout that follows the rect also gives the space back.
     pub fn set_collapsed(&mut self, collapsed: bool) {
         if !self.collapsible || self.collapsed == collapsed {
@@ -251,7 +251,7 @@ impl GroupBox {
     /// Sets checkable state.
     ///
     /// Requests a redraw because the flag changes what is painted: a checkable box grows an
-    /// indicator column (see [`Self::indicator_reserve`]), so toggling it is visible. Without this
+    /// indicator column (see `Self::indicator_reserve`), so toggling it is visible. Without this
     /// a programmatic `set_checkable` (and the published `set("checkable", ..)` / JSON path that
     /// reaches it) left the frame unchanged until some unrelated repaint happened.
     pub fn set_checkable(&mut self, checkable: bool) {
@@ -753,6 +753,11 @@ impl Widget for GroupBox {
             "toggled" => Some(EventSignalRef::mapped("toggled", &self.toggled, |v| {
                 CapabilityValue::Bool(*v)
             })),
+            "collapse_changed" => {
+                Some(EventSignalRef::mapped("collapse_changed", &self.collapse_changed, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
             _ => None,
         }
     }

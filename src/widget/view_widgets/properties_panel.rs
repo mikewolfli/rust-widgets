@@ -585,7 +585,7 @@ impl PropertiesPanel {
     ///
     /// The grouping is cached; this accessor materialises borrowed entries for
     /// callers outside the draw path. The draw pass and the hit test read
-    /// [`Self::grouped_indices`] directly and allocate nothing.
+    /// `Self::grouped_indices` directly and allocate nothing.
     pub fn properties_by_category(&self) -> Vec<(String, Vec<&PropertyEntry>)> {
         self.grouped_indices()
             .iter()

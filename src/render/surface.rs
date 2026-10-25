@@ -272,7 +272,7 @@ impl Hairline {
 /// A bevel declared as data: which way the face is turned, and from what colour its two tones
 /// derive.
 ///
-/// # Why this is not the [`Bevel`](crate::render::bevel::Bevel) itself
+/// # Why this is not the `Bevel` itself
 ///
 /// `Bevel` holds *resolved colours*, and resolving them needs the control's border colour —
 /// which is a fact only known per draw. A declared surface style must be equal across frames and

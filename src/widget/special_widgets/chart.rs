@@ -756,6 +756,23 @@ impl Widget for ChartWidget {
                     ]))
                 }))
             }
+            "series_toggled" => {
+                Some(EventSignalRef::mapped("series_toggled", &self.series_toggled, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::Bool(v.1),
+                    ]))
+                }))
+            }
+            "zoom_y_changed" => {
+                Some(EventSignalRef::mapped("zoom_y_changed", &self.zoom_y_changed, |v| match v {
+                    Some((low, high)) => CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::Float(*low),
+                        CapabilityValue::Float(*high),
+                    ])),
+                    None => CapabilityValue::Null,
+                }))
+            }
             _ => None,
         }
     }

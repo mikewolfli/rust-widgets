@@ -422,6 +422,23 @@ impl Widget for MacSourceList {
                     ]))
                 }))
             }
+            "selection_cleared" => {
+                Some(EventSignalRef::unit("selection_cleared", &self.selection_cleared))
+            }
+            "row_context_menu" => {
+                Some(EventSignalRef::mapped(
+                    "row_context_menu",
+                    &self.row_context_menu,
+                    // `(row id, pointer)` travels as two strings: the point has no carrier of its
+                    // own, so it is delivered in the same `x,y` spelling the geometry properties use.
+                    |(id, pos)| {
+                        CapabilityValue::Tuple(crate::compat::Vec::from([
+                            CapabilityValue::String(id.clone()),
+                            CapabilityValue::String(format!("{},{}", pos.x, pos.y)),
+                        ]))
+                    },
+                ))
+            }
             _ => None,
         }
     }

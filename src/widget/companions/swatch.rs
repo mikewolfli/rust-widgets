@@ -322,3 +322,21 @@ impl WidgetProperties for Swatch {
         property_names_of!["colors", "selected_index", "cell_size", "columns", BASE_PROPERTY_NAMES]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_selection_is_clamped_to_the_live_palette() {
+        let mut swatch = Swatch::new(Rect::new(0, 0, 240, 120));
+        let last = swatch.colors().len() - 1;
+        swatch.set_selected_index(usize::MAX);
+        assert_eq!(swatch.selected_index(), last);
+        assert!(swatch.selected_color().is_some());
+        // Replacing the palette with a shorter one pulls the selection back into range.
+        swatch.set_colors(crate::compat::Vec::from([Color::BLACK]));
+        assert_eq!(swatch.selected_index(), 0);
+        assert_eq!(swatch.selected_color(), Some(Color::BLACK));
+    }
+}

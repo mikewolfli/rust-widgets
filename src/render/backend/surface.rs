@@ -1800,7 +1800,7 @@ impl<'a> RenderContext<'a> {
         self.push_layer(bounds, effect);
     }
 
-    /// Ends the innermost [`RenderContext::push_layer`] / [`RenderContext::push_material_layer`]
+    /// Ends the innermost `RenderContext::push_layer` / [`RenderContext::push_material_layer`]
     /// and composites it.
     pub fn pop_layer(&mut self) {
         self.dispatch_owned(RenderCommand::PopLayer);

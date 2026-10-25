@@ -310,7 +310,7 @@ impl TableWidget {
     /// Shows or hides the header band.
     ///
     /// Hiding it gives the rows the header's height back, rather than leaving an empty strip; the
-    /// paint loop, the hit test and an editor's geometry all read [`Self::rows_band`], so they move
+    /// paint loop, the hit test and an editor's geometry all read `Self::rows_band`, so they move
     /// together.
     pub fn set_header_visible(&mut self, visible: bool) {
         if self.header_visible == visible {

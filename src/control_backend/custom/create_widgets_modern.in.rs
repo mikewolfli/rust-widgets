@@ -1325,5 +1325,265 @@ macro_rules! impl_modern_widgets {
         ) -> ObjectId {
             self.mount_widget_of_kind(WidgetKind::RibbonBar, parent, "", x, y, width, height)
         }
+
+        // Companion controls registered as first-class capabilities. `mount_widget_of_kind`
+        // resolves each through the constructor registry, so the returned id addresses the real
+        // control rather than a stand-in. Ungated because the kind variants exist in every
+        // profile; the registry itself returns `0` where it is not compiled in, which is the
+        // same answer the trait default gives.
+        fn create_chart_tooltip(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::ChartTooltip, parent, "", x, y, width, height)
+        }
+
+        fn create_compass(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Compass, parent, "", x, y, width, height)
+        }
+
+        fn create_dependency_editor(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::DependencyEditor, parent, "", x, y, width, height)
+        }
+
+        fn create_diff_file_list(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::DiffFileList, parent, "", x, y, width, height)
+        }
+
+        fn create_filter_row(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::FilterRow, parent, "", x, y, width, height)
+        }
+
+        fn create_find_bar(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::FindBar, parent, "", x, y, width, height)
+        }
+
+        fn create_grid_view_header(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::GridViewHeader, parent, "", x, y, width, height)
+        }
+
+        fn create_kanban_card_view(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::KanbanCardView, parent, "", x, y, width, height)
+        }
+
+        fn create_kanban_column_header(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(
+                WidgetKind::KanbanColumnHeader,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
+        }
+
+        fn create_legend(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Legend, parent, "", x, y, width, height)
+        }
+
+        fn create_markdown_outline_panel(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(
+                WidgetKind::MarkdownOutlinePanel,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
+        }
+
+        fn create_range_preset_bar(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::RangePresetBar, parent, "", x, y, width, height)
+        }
+
+        fn create_scale_bar(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::ScaleBar, parent, "", x, y, width, height)
+        }
+
+        fn create_shape_canvas(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::ShapeCanvas, parent, "", x, y, width, height)
+        }
+
+        fn create_swatch(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::Swatch, parent, "", x, y, width, height)
+        }
+
+        fn create_tile_loader(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::TileLoader, parent, "", x, y, width, height)
+        }
+
+        fn create_timeline_axis(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::TimelineAxis, parent, "", x, y, width, height)
+        }
+
+        fn create_toast_host(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::ToastHost, parent, "", x, y, width, height)
+        }
+
+        fn create_tooltip_manager(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::TooltipManager, parent, "", x, y, width, height)
+        }
+
+        fn create_zoom_control(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::ZoomControl, parent, "", x, y, width, height)
+        }
+
+        fn create_zoom_pan_controller(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(
+                WidgetKind::ZoomPanController,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
+        }
     };
 }

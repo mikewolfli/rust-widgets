@@ -75,7 +75,7 @@ impl Platform for IosMobilePlatform {
     ///
     /// `darwin_probes` needs `libc` symbols that only exist on an Apple target, and that one fact
     /// used to cost this module everything: `platform_impl.rs` carries the `Platform` impl, so
-    /// gating *it* also hid [`super::tests`] — 9 assertions that exercise only the trait interface
+    /// gating *it* also hid `super::tests` — 9 assertions that exercise only the trait interface
     /// and touch no UIKit — from every non-Apple host. Gating the three probe bodies here is the
     /// same fix `platform/ime_macos.rs` applies to its AppKit touch points, and it keeps the
     /// selection rule where it belongs (`platform/mod.rs` still requires an Apple target for the
@@ -247,7 +247,7 @@ impl Platform for IosMobilePlatform {
     /// The user's preferred text size, mapped from `UIContentSizeCategory`.
     ///
     /// BLUE28 B28.10: the category is a name, not a multiplier, so the mapping lives in
-    /// [`super::native::text_scale`]. `None` off the main thread or without the UIKit FFI; the
+    /// `super::native::text_scale`. `None` off the main thread or without the UIKit FFI; the
     /// trait's `1.0` is the honest absence in those builds.
     fn text_scale(&self) -> f32 {
         #[cfg(all(apple_uikit, feature = "ios-uikit-ffi"))]
@@ -262,7 +262,7 @@ impl Platform for IosMobilePlatform {
 
     /// A revision of the environment facts, derived from their current values.
     ///
-    /// [`crate::platform::locale::environment_revision`] is the shared accessor, so the hashed fact
+    /// `crate::platform::locale::environment_revision` is the shared accessor, so the hashed fact
     /// set is the one the style snapshot reads. That matters here in particular: the iOS backend
     /// reports the reduced-transparency switch (`Self::reduce_transparency`), and a revision that
     /// hashed only appearance/contrast/motion/locale would leave a change to it undetected for the

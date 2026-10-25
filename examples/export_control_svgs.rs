@@ -417,12 +417,16 @@ fn build_pair_scene(factory: &WidgetFactory, stem: &str) -> Option<PairScene> {
             use rust_widgets::widget::companions::{
                 SpeedDial, SpeedDialAction, SpeedDialDirection,
             };
-            let main = Rect::new(192, 72, 40, 40);
+            let main = Rect::new(192, 80, 40, 40);
             let primary = create(main)?;
-            let mut dial = SpeedDial::new(Rect::new(8, 72, 224, 40));
-            dial.set_direction(SpeedDialDirection::Left);
+            let mut dial = SpeedDial::new(Rect::new(8, 0, 224, 120));
+            // Upwards is the arrangement the family documents and the one where every caption has
+            // room beside its circle; a horizontal dial would stack the captions over each other.
+            dial.set_direction(SpeedDialDirection::Up);
+            // The census canvas is 120 px tall: two 40 px buttons plus the primary fill it exactly,
+            // so the sample states zero gap rather than pushing an action out of the picture.
+            dial.set_spacing(0);
             dial.set_actions(vec![
-                SpeedDialAction::new("New file", "+"),
                 SpeedDialAction::new("Upload", "^"),
                 SpeedDialAction::new("Share", ">"),
             ]);
@@ -578,7 +582,7 @@ fn build_pair_scene(factory: &WidgetFactory, stem: &str) -> Option<PairScene> {
             use rust_widgets::widget::input_widgets::input_companions::Chip;
             let primary = create(Rect::new(8, 8, 224, 40))?;
             let mut chip = Chip::new("urgent");
-            chip.set_bounds(Rect::new(8, 56, 80, 24));
+            chip.set_bounds(Rect::new(8, 56, 112, 24));
             chip.set_selected(true);
             Some(PairScene::new(primary, Companion::Painted(Box::new(chip)), false))
         }
@@ -600,7 +604,7 @@ fn build_pair_scene(factory: &WidgetFactory, stem: &str) -> Option<PairScene> {
         "image_gallery" => {
             use rust_widgets::widget::view_widgets::column_chooser::ColumnChooser;
             use rust_widgets::widget::view_widgets::data_grid::ColumnSpec;
-            let primary = create(Rect::new(8, 8, 224, 104))?;
+            let primary = create(Rect::new(8, 8, 110, 104))?;
             let mut chooser = ColumnChooser::new(Rect::new(126, 8, 106, 104));
             let columns = vec![
                 ColumnSpec::new("Name", 90),

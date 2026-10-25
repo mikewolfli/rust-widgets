@@ -19,7 +19,7 @@
 //!   * `frame_timer` is the timer for the profiles where the `gpu` module does not compile
 //!     (`mini`, `embedded`). `gpu::performance` cannot serve those hosts at all.
 //!   * `batcher` is a *policy* (timeout + count), not a second merge: `flush` hands its rects to
-//!     [`region::DirtyRegionTracker`], so the merge arithmetic exists once. The frame loop's own
+//!     `region::DirtyRegionTracker`, so the merge arithmetic exists once. The frame loop's own
 //!     coalescing (`FrameStats::repaints_coalesced`) is per-surface, not per-rectangle, so it
 //!     does not replace the timeout budget a host may want for incremental painting.
 //!
@@ -63,9 +63,9 @@
 //!   adaptive thresholds** and the quality decision that follows. Its samples carry
 //!   GPU/CPU/memory utilisation and good/bad streaks; `PerformanceStats` is its
 //!   single statistics endpoint.
-//! * This module owns the **reporting endpoint for frame timing**: [`FrameProfiler`]
-//!   and [`Profiler`] (rolling window with average/min/max/fps and per-section
-//!   attribution) and [`FrameTimer`] (timestamp-window average FPS). A host that
+//! * This module owns the **reporting endpoint for frame timing**: `FrameProfiler`
+//!   and `Profiler` (rolling window with average/min/max/fps and per-section
+//!   attribution) and `FrameTimer` (timestamp-window average FPS). A host that
 //!   displays frame statistics reads one of these; it must not read
 //!   `gpu::performance` as a second statistics table.
 //!

@@ -653,3 +653,23 @@ impl WidgetProperties for ToastHost {
         ]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_toast_leaves_the_visible_queue_on_its_deadline() {
+        let mut host = ToastHost::new(Rect::new(0, 0, 320, 200));
+        let mut toast = Toast::new(Rect::new(0, 0, 200, 48), "Saved");
+        toast.set_ttl_ms(1_000);
+        let id = host.push_at(toast, 10).expect("the queue admits a toast");
+        assert_eq!(host.visible_toasts().len(), 1);
+        // The deadline is one second after admission, so half a second changes nothing.
+        assert_eq!(host.expire_toasts(500), 0);
+        assert_eq!(host.expire_toasts(1_010), 1);
+        assert!(host.visible_toasts().is_empty());
+        // An expired toast cannot be dismissed a second time.
+        assert!(!host.dismiss(id));
+    }
+}

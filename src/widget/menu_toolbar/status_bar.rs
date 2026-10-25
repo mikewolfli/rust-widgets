@@ -7,7 +7,7 @@
 //!
 //! BLUE22 §B.8 lists this control's defect as "multiple segments by hand, the last position
 //! hard-coded". The strip really is a row of segments — a transient message on the leading side and
-//! a permanent one on the trailing side — so [`StatusBar::segment_boxes`] derives both boxes from
+//! a permanent one on the trailing side — so `StatusBar::segment_boxes` derives both boxes from
 //! one set of terms: the strip's padding, the grip's own box, and the trailing edge. The permanent
 //! column is as wide as the grip's reserve and ends at the trailing edge (the `FlexEnd` statement),
 //! and the transient column fills the room that is left (the `fill` statement). Neither position is
@@ -113,7 +113,7 @@ impl StatusBar {
     /// Returns whether the resize grip is drawn. Defaults to `true`.
     ///
     /// The grip is the three diagonals [`StatusBar::draw`] paints in the strip's
-    /// trailing corner, and [`StatusBar::size_grip_rect`] reserves the message's room
+    /// trailing corner, and `StatusBar::size_grip_rect` reserves the message's room
     /// for it. Disabling this flag removes both the ink and the reserve.
     pub fn size_grip_enabled(&self) -> bool {
         self.size_grip_enabled

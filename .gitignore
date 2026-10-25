@@ -43,6 +43,7 @@ __pycache__/
 .ruff_cache/
 .pair_preview/
 .tmp_shots/
+.shotcheck/
 
 # Build outputs
 **/*.exp

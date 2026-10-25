@@ -614,8 +614,8 @@ impl Chip {
     ///
     /// # Why this re-resolves the theme
     ///
-    /// A selection change flips this control between [`WidgetState::Normal`] and
-    /// [`WidgetState::Selected`], and those are two different theme keys (`chip` and
+    /// A selection change flips this control between `WidgetState::Normal` and
+    /// `WidgetState::Selected`, and those are two different theme keys (`chip` and
     /// `"chip:selected"`). `apply_active_theme` runs once, inside the creation funnels, and a
     /// redraw re-runs `draw` rather than the theme application — so without this call the
     /// control kept the style it was built in, `chip:selected` resolved to `rgb(33,150,243)` and
@@ -1085,6 +1085,12 @@ impl Widget for Chip {
             "overflow_activated" => {
                 Some(EventSignalRef::mapped("overflow_activated", &self.overflow_activated, |v| {
                     crate::widget::capability::CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "chip_hovered" => {
+                Some(EventSignalRef::mapped("chip_hovered", &self.chip_hovered, |v| match v {
+                    Some(id) => CapabilityValue::String(id.clone()),
+                    None => CapabilityValue::Null,
                 }))
             }
             _ => None,
@@ -2363,10 +2369,7 @@ mod issue_2_8_tests {
     #[test]
     fn a_disabled_item_refuses_toggling() {
         let mut chip = Chip::new(Rect::new(0, 0, 300, 32));
-        chip.set_items(vec![
-            ChipItem::new("a", "A").with_enabled(false),
-            ChipItem::new("b", "B"),
-        ]);
+        chip.set_items(vec![ChipItem::new("a", "A").with_enabled(false), ChipItem::new("b", "B")]);
         assert!(!chip.toggle_index(0));
         assert!(chip.selected_ids().is_empty());
         assert!(chip.toggle_index(1));

@@ -257,7 +257,7 @@ impl LineChart {
     /// Sets the primary series' data points, replacing any previous primary data.
     ///
     /// Non-finite samples (`NaN`, `±Inf`) have no honest pixel position and are dropped; see
-    /// [`is_finite_sample`](crate::widget::chart_widgets::is_finite_sample). A lone bad sample would
+    /// `is_finite_sample`. A lone bad sample would
     /// otherwise stretch the auto-range and squash every real point.
     pub fn set_data(&mut self, points: Vec<(f64, f64)>) {
         self.ensure_primary();
@@ -620,7 +620,7 @@ impl LineChart {
     /// Returns the colour the grid is drawn in: the caller's override, or the chart
     /// chrome's grid strength when none was set.
     ///
-    /// `axis_chrome_color(0.16)` is the third member of [`axis_chrome`]'s triple — the grid
+    /// `axis_chrome_color(0.16)` is the third member of `axis_chrome`'s triple — the grid
     /// derivation every chart shares — named directly because the triple itself is only
     /// compiled in the engine-less build.
     pub fn grid_color(&self) -> Color {

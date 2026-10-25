@@ -17,9 +17,9 @@
 //!   (good/neutral/bad streaks, memory/CPU pressure, trap detection) and the
 //!   quality decision those drive. [`PerformanceStats`] is its single statistics
 //!   endpoint; nothing else here produces a second table for the same metric.
-//! * [`crate::performance::profiler`] owns per-section attribution
-//!   ([`FrameProfiler`](crate::performance::profiler::FrameProfiler) and
-//!   [`Profiler`](crate::performance::profiler::Profiler)): which named stage of
+//! * `crate::performance::profiler` owns per-section attribution
+//!   (`FrameProfiler` and
+//!   `Profiler`): which named stage of
 //!   a frame spent the time. It does not decide quality.
 //!
 //! Neither monitors `crate::wgpu_backend` GPU timestamps today: `measure_gpu_time`

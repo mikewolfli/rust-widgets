@@ -113,7 +113,7 @@ impl UpdateBatcher {
 
     /// Discards queued updates without flushing them.
     ///
-    /// The batch is now empty, so the first-pending timer restarts on the next [`add`]. The
+    /// The batch is now empty, so the first-pending timer restarts on the next `add`. The
     /// last-flush timer is left alone: a clear immediately before the timeout does not buy
     /// extra time, so the next `add` may trigger a flush at once.
     pub fn clear(&mut self) {

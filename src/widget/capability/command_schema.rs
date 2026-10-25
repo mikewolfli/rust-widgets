@@ -6,7 +6,7 @@
 //!
 //! # What problem this solves
 //!
-//! [`WidgetCapability::commands`](super::types::WidgetCapability::commands) is a list of names.
+//! `WidgetCapability::commands` is a list of names.
 //! A name is enough to *offer* a command but not to *validate a binding to it*: a designer
 //! drawing a connection from an event to a command must know whether the command takes an
 //! argument, what type that argument is, and whether invoking it has an effect the user should be
@@ -20,9 +20,9 @@
 //! how a command behaves:
 //!
 //! 1. the `set_foo` convention, which [`WidgetProperties::command`] itself
-//!    (see [`super::properties_trait::WidgetProperties::default_command`]) resolves by looking
+//!    (see `super::properties_trait::WidgetProperties::default_command`) resolves by looking
 //!    `foo` up in the control's property list; and
-//! 2. an explicit classification of the non-`set_` verbs in [`VERB_CLASSES`], which is the one
+//! 2. an explicit classification of the non-`set_` verbs in `VERB_CLASSES`, which is the one
 //!    thing the convention cannot say (a verb like `toggle` has no property named `toggle`).
 //!
 //! So the schema cannot disagree with the dispatcher about `set_*` commands: it consults the same
@@ -36,7 +36,7 @@
 //! before is still invokable; a `set_*` command still reports that it needs a value. The schema
 //! is a **description** of the existing behaviour, added so a designer can act on it.
 //!
-//! [`WidgetProperties::command`]: super::properties_trait::WidgetProperties::command
+//! `WidgetProperties::command`
 
 use crate::compat::{String, Vec};
 

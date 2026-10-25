@@ -563,7 +563,7 @@ impl GpuManagerBuilder {
     ///   Vulkan/Metal/DX12) are not gated by it: the ladder still prefers a GL adapter over
     ///   failing and reports the degradation through [`GpuManager::backend_tier`] and
     ///   [`GpuManager::warnings`], per principle #45.
-    /// * `target_quality` seeds the manager's [`GpuQualityTracker`] after construction. The
+    /// * `target_quality` seeds the manager's `GpuQualityTracker` after construction. The
     ///   tracker's own starting level is derived from the *adapter* (`GpuQualityTracker::new`),
     ///   which is the right default and the wrong answer when the caller has stated what it
     ///   wants — so the seed is applied only when it actually differs, and the tracker remains

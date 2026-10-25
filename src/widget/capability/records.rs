@@ -18,7 +18,7 @@
 //!   an error.
 //!
 //! The tempting shortcut was to carry the list as its JSON spelling in a `String` property. That is
-//! refused here for the same reason [`Constraint`](super::Constraint) is enforced rather than
+//! refused here for the same reason `Constraint` is enforced rather than
 //! documented: a stringified list is *accepted* by any setter, so a typo in a field name produces a
 //! control nothing like the document asked for and no error anywhere. A record list that arrives
 //! typed can be checked against the schema the control publishes, and refused with a reason.

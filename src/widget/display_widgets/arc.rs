@@ -163,7 +163,7 @@ impl Arc {
     ///
     /// The field stores whole degrees, so the value is rounded and clamped to the `i16` range it
     /// can hold; a non-finite input is ignored rather than turned into a sentinel angle. This is
-    /// the same 12-o'clock origin [`crate::widget::display_widgets::ProgressCircle`] paints from,
+    /// the same 12-o'clock origin `crate::widget::display_widgets::ProgressCircle` paints from,
     /// so a gauge arc and a progress ring can start at the same place.
     pub fn set_start_angle(&mut self, angle: f32) {
         if !angle.is_finite() {
@@ -525,7 +525,7 @@ impl Arc {
         out.push_str(rest);
     }
 
-    /// The centre-reading template. See [`Self::value_format`].
+    /// The centre-reading template. See `Self::value_format`.
     pub fn format(&self) -> &str {
         &self.value_format
     }

@@ -276,7 +276,7 @@ pub static CHILD_ATTR_SCHEMA: &[LayoutParam] = &[
 /// The child-placement keys a layout **kind** actually honours.
 ///
 /// Derived from the kind rather than stored per kind, so a kind added to
-/// [`LAYOUT_KIND_SCHEMAS`] cannot forget to declare which of the grid keys it reads.
+/// `LAYOUT_KIND_SCHEMAS` cannot forget to declare which of the grid keys it reads.
 pub fn child_attrs_honoured_by(type_token: &str) -> Vec<&'static str> {
     let grid =
         matches!(type_token, "grid" | "Grid" | "uniform_grid" | "uniformGrid" | "uniform-grid");

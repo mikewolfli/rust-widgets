@@ -83,7 +83,7 @@ pub enum CapabilityValue {
     /// The order is the payload's own order (a pair is `[first, second]`), which is the one thing a
     /// consumer can rely on. A `Vec` rather than `(a, b, c, d)` because the schema covers arities 2–4
     /// **and** a variable-length list: one variant with a length serves all of them, and the declared
-    /// [`EventPayloadShape`](crate::widget::capability::EventPayloadShape) is what tells a consumer
+    /// `EventPayloadShape` is what tells a consumer
     /// which arrangement to expect.
     Tuple(crate::compat::Vec<CapabilityValue>),
     /// An ordered, id-keyed list of records — the value of a collection property (BLUE26 B26.09).

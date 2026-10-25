@@ -717,7 +717,7 @@ impl TimeEdit {
     /// Returns the stored display-format pattern.
     ///
     /// The pattern is interpreted when the widget paints, through the shared
-    /// [`super::date_edit::format_with_pattern_into`] substituter. The tokens include
+    /// `super::date_edit::format_with_pattern_into` substituter. The tokens include
     /// `h`/`hh` (12-hour), `AP`/`ap` (meridiem) and `SSS`/`zzz` (milliseconds).
     pub fn display_format(&self) -> &str {
         &self.display_format
@@ -935,7 +935,7 @@ impl Widget for TimeEdit {
 
     /// The size this control claims when nothing constrains it.
     ///
-    /// The answer is `max(floor, content + padding)` through [`ControlMetrics::implicit_size`], with the
+    /// The answer is `max(floor, content + padding)` through `ControlMetrics::implicit_size`, with the
     /// content being the **formatted value** measured by the shared estimator and the floor being the
     /// field's own minimum. It used to be the pair of literals `(100, 28)`, which had no link to the
     /// advance model the renderer draws with: a value formatted as `"HH:mm:ss"` is wider than 100 at
@@ -1023,6 +1023,9 @@ impl Widget for TimeEdit {
                 Some(EventSignalRef::mapped("time_changed", &self.time_changed, |v| {
                     CapabilityValue::String(format!("{v:?}"))
                 }))
+            }
+            "editing_finished" => {
+                Some(EventSignalRef::unit("editing_finished", &self.editing_finished))
             }
             _ => None,
         }

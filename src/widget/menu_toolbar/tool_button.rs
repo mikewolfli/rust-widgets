@@ -164,7 +164,7 @@ impl ToolButton {
     /// not checkable and unchecked, [`ToolButtonPopupMode::DelayedPopup`],
     /// [`ToolButtonStyle::IconOnly`], and auto-raise off. Note that the default
     /// style hides the label even though one is set, but only once an icon is
-    /// available to replace it -- see [`ToolButton::wants_label`].
+    /// available to replace it -- see `ToolButton::wants_label`.
     pub fn new(text: impl Into<String>, geometry: Rect) -> Self {
         let text = text.into();
         Self {
@@ -258,7 +258,7 @@ impl ToolButton {
 
     /// Sets or clears the icon path and requests a redraw.
     ///
-    /// The path is stored verbatim and decoded lazily by [`Self::resolved_icon`] on the first
+    /// The path is stored verbatim and decoded lazily by `Self::resolved_icon` on the first
     /// paint -- not here, because a caller that sets an icon on a control it never shows should not
     /// pay for the decode, and because a decode at set time would have to run inside the event
     /// handler that called it.
@@ -662,7 +662,7 @@ impl ToolButton {
     /// The box the icon occupies, or `None` when the style does not ask for one.
     ///
     /// The icon is square. Its position depends on where the label went, which is what
-    /// [`Self::content_bands`] decides *when the style stacks them*; with the label beside it the two
+    /// `Self::content_bands` decides *when the style stacks them*; with the label beside it the two
     /// share one full-height row, which is why the band split is not applied there -- splitting a
     /// one-row box by a whole line's height would leave the icon a two-pixel sliver.
     pub fn icon_rect(&self) -> Option<Rect> {

@@ -119,7 +119,7 @@ impl Platform for AndroidPlatform {
     /// It has exactly one host integration — the system clipboard, through the JNI bridge — and
     /// the trait default would report it as absent. `clipboard` is a **runtime** fact rather than
     /// a build fact: the `JavaVM` and the host `Activity`'s `Context` are both supplied by the app
-    /// at startup, so the flag asks [`crate::platform::android_jni::clipboard_ready`] instead of
+    /// at startup, so the flag asks `crate::platform::android_jni::clipboard_ready` instead of
     /// the feature. A host that has not attached its `Context` gets `false`, which is the honest
     /// answer for a process that cannot reach the clipboard yet, and a `widget-handle` caller that
     /// reads the bit acts on a fact rather than on a hope.
@@ -221,7 +221,7 @@ impl Platform for AndroidPlatform {
     ///
     /// `None` without an attached `Context`: the backend cannot ask the activity's configuration
     /// until the host has handed it over. The reading is cached for
-    /// [`crate::platform::environment_cache::ENVIRONMENT_TTL`] because the style layer re-reads the
+    /// `crate::platform::environment_cache::ENVIRONMENT_TTL` because the style layer re-reads the
     /// environment revision on a 250 ms poll and each read is a JNI round trip (P-02).
     fn system_theme(&self) -> Option<bool> {
         #[cfg(feature = "android-jni")]
@@ -275,7 +275,7 @@ impl Platform for AndroidPlatform {
     /// The default locale, from `Locale.getDefault()`.
     ///
     /// The JNI call and the interning happen once per
-    /// [`crate::platform::environment_cache::ENVIRONMENT_TTL`], not once per environment poll.
+    /// `crate::platform::environment_cache::ENVIRONMENT_TTL`, not once per environment poll.
     fn system_locale(&self) -> Option<&'static str> {
         #[cfg(feature = "android-jni")]
         {
@@ -291,7 +291,7 @@ impl Platform for AndroidPlatform {
 
     /// A revision of the environment facts, derived from their current values.
     ///
-    /// Derived through [`crate::platform::locale::environment_revision`] so the fact set is the one
+    /// Derived through `crate::platform::locale::environment_revision` so the fact set is the one
     /// the style snapshot consumes — including the accent colour and the reduced-transparency
     /// preference, which a per-backend spelling of the hash had missed (P-03/P-06).
     fn environment_generation(&self) -> u64 {
@@ -843,7 +843,7 @@ impl Platform for AndroidPlatform {
 
     /// The host clipboard, or `None` when this process cannot reach it.
     ///
-    /// Gated on the same [`crate::platform::android_jni::clipboard_ready`] the capability flag
+    /// Gated on the same `crate::platform::android_jni::clipboard_ready` the capability flag
     /// asks, so the two answer together: a host that reads `clipboard: true` and then calls this
     /// gets a backend, and a host that reads `false` gets `None` rather than a backend whose every
     /// write is refused. The rich methods still check readiness themselves — the handshake can be

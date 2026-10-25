@@ -13,7 +13,7 @@
 //!
 //! ## UIA integration helpers (cfg-gated)
 //!
-//! The `uia_control_type()` function maps [`super::A11yRole`] to UIA control
+//! The `uia_control_type()` function maps `super::A11yRole` to UIA control
 //! type IDs for modern UI Automation (UIA) provider conformance.
 
 use super::{A11yState, AccessibilityBridge};

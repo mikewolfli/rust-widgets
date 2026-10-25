@@ -358,7 +358,7 @@ impl SegmentedButton {
     /// Joins a mutually exclusive group, or leaves it with `None`.
     ///
     /// Joining does not clear the local selection; the next selection in any member wins and
-    /// causes the other members to report no selection (see [`Self::group_owned_elsewhere`]).
+    /// causes the other members to report no selection (see `Self::group_owned_elsewhere`).
     pub fn set_group_id(&mut self, group: Option<String>) {
         if self.group_id == group {
             return;

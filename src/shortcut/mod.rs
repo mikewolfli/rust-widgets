@@ -8,10 +8,10 @@
 //!
 //! # Who pumps the events
 //!
-//! [`ShortcutManager`] is a **host-owned** object, not a framework service:
+//! `ShortcutManager` is a **host-owned** object, not a framework service:
 //! nothing in `src/platform` feeds it, and no global instance exists. The host
 //! application creates it, registers shortcuts on it, and calls
-//! [`ShortcutManager::handle_event`] from its own event loop for every key
+//! `ShortcutManager::handle_event` from its own event loop for every key
 //! press it wants shortcuts to see — the same division 参考工具包 draws with
 //! `shortcut` living inside the application, not inside a widget. The
 //! framework deliberately does not intercept keys behind the host's back:
@@ -20,7 +20,7 @@
 //! layer has no single place that could decide it for every host.
 //!
 //! The signal side is wired, the input side is not by design:
-//! [`ShortcutManager::shortcut_triggered`] connects to
+//! `ShortcutManager::shortcut_triggered` connects to
 //! `ActionRouter::route_action_id` (`src/action/app.rs`), which routes the
 //! action id to the [`crate::action::ActionManager`]. A minimal host loop:
 //!

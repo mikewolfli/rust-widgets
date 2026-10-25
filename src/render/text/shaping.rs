@@ -21,7 +21,7 @@
 //!
 //! Shaping is only meaningful with a face, so it is compiled in only when one is
 //! ([`crate::render::text::shaping::active_faces`] is empty otherwise) and the model in
-//! [`crate::render::text::line`] stays the whole story for a default build. The default build's
+//! `crate::render::text::line` stays the whole story for a default build. The default build's
 //! bytes do not change.
 //!
 //! # Why the engine is built per call rather than stored
@@ -522,7 +522,7 @@ impl RustybuzzShaper {
     /// A shaper over the first of this build's opt-in faces that covers `text`, if any.
     ///
     /// This is the convenience for a caller that has not named a family: it picks by coverage.
-    /// Presentation goes through [`Self::new`] with the face [`face_for_family`] selected, so a
+    /// Presentation goes through [`Self::new`] with the face `face_for_family` selected, so a
     /// label's *metrics* never change behind a caller's back.
     ///
     /// Returns `None` on a build with no vector face enabled, which is the honest answer: there
@@ -548,7 +548,7 @@ impl RustybuzzShaper {
     ///
     /// Positions are in logical pixels; the run's `width` is the sum of the glyph advances, and
     /// its `height` is the font's line box — the same box
-    /// [`crate::render::text::line`]'s model reports.
+    /// `crate::render::text::line`'s model reports.
     ///
     /// The run is a shared handle from the thread's cache, so a repeated request is a refcount
     /// bump rather than a deep copy of its glyph and position buffers (G-13).
@@ -576,7 +576,7 @@ impl RustybuzzShaper {
     /// This is the glyph-level form of [`Self::shape_face`]: a run of positioned glyph ids where
     /// one glyph may cover several characters (`ffi` becomes the face's `ffi` ligature). It is
     /// only useful to a renderer that paints glyph identities rather than cluster text; the
-    /// cluster model in [`crate::render::text::line`] keeps the ligature-free form because its
+    /// cluster model in `crate::render::text::line` keeps the ligature-free form because its
     /// caret geometry assumes one cluster per drawn box.
     pub fn shape_face_with_ligatures(
         &self,
@@ -674,7 +674,7 @@ impl RustybuzzShaper {
 
 /// The glyph run the software renderer paints when glyph-level text is enabled.
 ///
-/// Face selection is the same one measurement uses ([`face_for_family`]), so enabling the
+/// Face selection is the same one measurement uses (`face_for_family`), so enabling the
 /// glyph-level path never changes which face a named family resolves to. The run is shaped at
 /// `weight`, and the caller must outline the ids at the same weight
 /// ([`crate::render::text::outline_glyph_at_weight`]) or the pen positions and the ink describe two

@@ -210,7 +210,7 @@ impl FontPreview {
     /// Returns the weight tokens the preview treats as available.
     ///
     /// The host-supplied list when one was written, otherwise
-    /// [`DEFAULT_WEIGHT_AXIS`].
+    /// `DEFAULT_WEIGHT_AXIS`.
     pub fn font_weights(&self) -> &[u16] {
         if self.font_weights.is_empty() {
             &DEFAULT_WEIGHT_AXIS

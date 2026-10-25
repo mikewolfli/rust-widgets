@@ -1220,11 +1220,11 @@ impl BatchRenderer for SoftwarePaintBackend {
     ///
     /// # What changed (D09-RENDER-05)
     ///
-    /// This used to `clone()` the entire [`BatchState`] before replaying, which
+    /// This used to `clone()` the entire `BatchState` before replaying, which
     /// deep-copied every recorded batch and every cached image on the backend —
     /// so replaying one small batch cost as much as the whole state. It now
     /// borrows the batch data and the surface as separate fields of `self`
-    /// (through [`replay_into`]), so nothing is cloned and the cost tracks only
+    /// (through `replay_into`), so nothing is cloned and the cost tracks only
     /// the target batch. Replay semantics are unchanged: commands are translated
     /// in order against the same transform/opacity state and drawn through the
     /// same `PaintBackend::execute_command` path.

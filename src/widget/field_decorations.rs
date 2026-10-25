@@ -38,7 +38,7 @@
 //! # What is measured and what is argued
 //!
 //! Only the renderer knows its font metrics, so every string's width arrives here as a number the
-//! caller measured ([`DecorationMetrics`]), and the box arithmetic below is pure. A caller that guessed
+//! caller measured (`DecorationMetrics`), and the box arithmetic below is pure. A caller that guessed
 //! a width would place the value at a different x than the glyphs it draws — the divergence `GroupBox`
 //! and `TabBar` both had to fix by measuring their own titles.
 

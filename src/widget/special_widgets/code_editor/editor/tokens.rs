@@ -155,7 +155,7 @@ impl CodeEditor {
 
     /// The cached spans of `line`, borrowed from the cache.
     ///
-    /// The public form of [`Self::cached_tokens_on_line`]: a host walking every line to
+    /// The public form of `Self::cached_tokens_on_line`: a host walking every line to
     /// export or count spans would otherwise allocate a `Vec` per line through
     /// [`Self::tokens_on_line`], which is `O(lines x spans)` allocations for a read-only
     /// pass (J-P09).

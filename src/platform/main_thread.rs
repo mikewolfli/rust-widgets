@@ -29,7 +29,7 @@
 //! # Repeating work
 //!
 //! There is no repeating form on purpose. A callback that wants to run again calls
-//! [`schedule_in`] again at its end, which is one line and makes the *interval* the caller's
+//! `schedule_in` again at its end, which is one line and makes the *interval* the caller's
 //! explicit choice rather than a second mechanism with its own drift (principles #54/#101).
 
 // Standard-library types on purpose, and the module is `#[cfg(not(alloc_frugal))]`: the queue
@@ -107,7 +107,7 @@ fn run_due(queue: &Mutex<Vec<Due>>) {
 /// Returns whether a loop in this process is in a position to run it: `true` when a loop has
 /// driven a frame, so it will reach the queue on its next one — the same fact
 /// [`crate::platform::stop::loop_has_ticked`] reports, and the same reason
-/// [`crate::quit`](crate::quit) reports it for a stop request. `false` means no loop has ticked
+/// `crate::quit` reports it for a stop request. `false` means no loop has ticked
 /// yet; **the work is still queued** and a loop started later runs it (after its deadline), which
 /// is what makes "schedule the ending, then run the loop" work for a host that does both from one
 /// thread.

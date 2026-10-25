@@ -716,7 +716,7 @@ pub fn has_focus(id: ObjectId) -> bool {
 /// Whether `id` may take keyboard focus from a pointer press.
 ///
 /// The widget must be a mounted, enabled control that reports
-/// [`Widget::is_focusable`](crate::widget::Widget::is_focusable). A disabled control stays in the
+/// `Widget::is_focusable`. A disabled control stays in the
 /// tab order (so the user can move past it) but must not *receive* focus, which is why enabled
 /// state is checked here rather than in [`Widget::is_focusable`].
 pub fn widget_wants_keyboard_focus(id: ObjectId) -> bool {
@@ -2115,7 +2115,7 @@ impl core::fmt::Display for FrameStats {
 /// 0. **Refresh the device facts.** One snapshot per frame, read before anything else, so every
 ///    control in this frame sees the same text scale, motion preference and direction. A host
 ///    that changed a system setting sees it apply on the next frame, never part-way through a
-///    paint (see [`crate::style::environment`]'s module docs).
+///    paint (see `crate::style::environment`'s module docs).
 /// 1. **Drain input.** Pointer, key and focus events that arrived since the last frame
 ///    land first, because an animation's *target* comes from state and state comes from
 ///    these events. Reversed, a control would not begin reacting until the following
@@ -2553,7 +2553,7 @@ fn take_frame_repaint_reasons() -> alloc::vec::Vec<(ObjectId, RepaintReason)> {
 ///   runs at a speed that depends on how many layers happened to call in.
 ///
 /// So the driver is this one function, called once per frame by the host *before* it paints.
-/// The set of controls advanced is the runtime's **animating registry** ([`ANIMATING`]), not a
+/// The set of controls advanced is the runtime's **animating registry** (`ANIMATING`), not a
 /// fresh virtual `is_animating()` call for every mounted control. Membership is the control's
 /// animating bit; it is set whenever the runtime observes a state change that leaves the control
 /// in flight (mount, event dispatch, property write, tick) and cleared when a tick observes the
@@ -2572,7 +2572,7 @@ fn take_frame_repaint_reasons() -> alloc::vec::Vec<(ObjectId, RepaintReason)> {
 /// A control lives in exactly one of two places, and they are reached by completely
 /// different APIs:
 ///
-/// * **mounted** on the [`MOUNTED`] registry, which is how a host that built its tree
+/// * **mounted** on the `MOUNTED` registry, which is how a host that built its tree
 ///   through [`crate::app`] holds every control; the window tree sweeps it;
 /// * **owned by the caller**, as the `Box<dyn Widget>` that
 ///   [`crate::widget::WidgetFactory::create`] returns and that the documented embedding
@@ -2803,7 +2803,7 @@ pub fn animation_bus_reset_host_owned() {
 /// * a **host-owned** control that was advanced this frame, which the host reports with
 ///   [`animation_bus_note_host_owned_animating`] -- and, on the frame it settles, which is
 ///   the frame the old answer was `true` for a control that has since stopped, which is why
-///   [`LAST_SWEEP_HAD_UNSETTLED_MOUNTED`] is kept: it is the only way to schedule the frame
+///   `LAST_SWEEP_HAD_UNSETTLED_MOUNTED` is kept: it is the only way to schedule the frame
 ///   that observes the settle.
 ///
 /// ["smooth"](super) has two halves and this function is what keeps the second one honest:
@@ -3023,7 +3023,7 @@ impl Drop for InFlightGuard {
 /// while `f` runs, exactly as [`with_widget_mut`] and [`dispatch_event`] already do for their entries.
 ///
 /// While `f` runs the entry is lent out **read-only**, so a nested read of this same id still resolves
-/// (see [`LENT_OUT`]) and a nested **write** to it is refused. Reads are unavailable while an outer
+/// (see `LENT_OUT`) and a nested **write** to it is refused. Reads are unavailable while an outer
 /// mutable operation or event dispatch holds the widget.
 ///
 /// Returns `None` when `id` is not mounted, or when a nested call targets the id this call is reading.
@@ -3962,7 +3962,7 @@ pub fn request_repaint_rect_because(id: ObjectId, rect: Rect, reason: RepaintRea
 /// runtime cannot look up the box the repaint is bounded by or the window above the control
 /// while the tick is on the stack. The control does know its own box, so it hands the rectangle
 /// over now; the platform submission and the window invalidation happen in
-/// [`flush_deferred_damage`], which the frame driver calls as soon as the sweep releases the
+/// `flush_deferred_damage`, which the frame driver calls as soon as the sweep releases the
 /// registry.
 ///
 /// A control outside a tick should call [`request_repaint_rect`] instead: this path costs one
@@ -4257,7 +4257,7 @@ pub fn surfaces_of(window: ObjectId) -> Vec<ObjectId> {
 /// Almost every setter ends in `request_redraw`, which reaches this function, so the
 /// parent-chain walk used to cost one map lookup (plus a widget borrow) per tree level on
 /// that hot path. The answer is resolved once when the control mounts and stored on its
-/// [`Mounted`] entry; a lookup then reads that entry and compares the **direct parent** the
+/// `Mounted` entry; a lookup then reads that entry and compares the **direct parent** the
 /// answer was resolved from. `BaseWidget::set_parent`/`add_child_linked` can move a widget
 /// after it is mounted, and a mismatch re-resolves rather than returning a stale window.
 /// A widget that is not in the registry (unmounted, or lent out to a callback) falls back to
@@ -4381,7 +4381,7 @@ fn request_repaint_subtree_because(id: ObjectId, reason: RepaintReason) {
 /// # Coalescing
 ///
 /// A request for a surface already repainted this frame is folded into it and counted as
-/// coalesced; see [`note_frame_repaint_reason`].
+/// coalesced; see `note_frame_repaint_reason`.
 pub fn request_repaint_because(id: ObjectId, reason: RepaintReason) {
     // A whole-control request names no rectangle, so no layer can be proven still valid for the
     // control itself. The invalidation is bounded to the control's box when the runtime can read

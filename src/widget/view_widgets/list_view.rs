@@ -9,7 +9,7 @@
 //! literal in three places — the paint loop and both press arms of `handle_event` — and the two
 //! sides **disagreed about where row 0 starts**: the loop measured from `ContentMetrics`'s content
 //! box while the press arms measured from `rect.y`. A press on the first row therefore selected the
-//! second. [`Self::row_rect`] is now the one derivation both read.
+//! second. `Self::row_rect` is now the one derivation both read.
 use crate::core::Color;
 use crate::core::HorizontalAlignment;
 use crate::core::Rect;
@@ -639,7 +639,7 @@ impl ListView {
     }
     /// Selects `row` honouring the modifier keys held during the click.
     ///
-    /// In [`SelectionMode::Extended`](crate::widget::input_widgets::listbox::SelectionMode::Extended)
+    /// In `SelectionMode::Extended`
     /// this is what implements the documented interaction model: `Shift` selects the
     /// range from the anchor, `Ctrl`/`Primary` toggles the row, and no modifier replaces
     /// the selection. In every other mode it is [`Self::select_row`], so an event handler

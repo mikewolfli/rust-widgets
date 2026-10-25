@@ -301,3 +301,24 @@ impl WidgetProperties for ChartTooltip {
         property_names_of!["anchor", "offset", "follow_pointer", "content", BASE_PROPERTY_NAMES]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn showing_a_bubble_publishes_it_and_hiding_clears_it() {
+        let mut tooltip = ChartTooltip::new(Rect::new(0, 0, 240, 160));
+        assert!(!tooltip.is_visible());
+        tooltip.show_at(
+            Point::new(20, 30),
+            crate::compat::Vec::from([TooltipLine::new("AAPL 182.10")]),
+        );
+        assert!(tooltip.is_visible());
+        assert_eq!(tooltip.anchor(), Point::new(20, 30));
+        assert_eq!(tooltip.content().len(), 1);
+        assert_eq!(tooltip.content()[0].text, "AAPL 182.10");
+        tooltip.hide();
+        assert!(!tooltip.is_visible());
+    }
+}

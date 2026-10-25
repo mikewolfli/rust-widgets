@@ -56,13 +56,13 @@
 //!
 //! # Context propagation
 //!
-//! A [`View`] describes its tree from its own state, plus an optional [`Context`]: a
+//! A `View` describes its tree from its own state, plus an optional `Context`: a
 //! small `String`-keyed map a root supplies so a value can be **shared by an entire
 //! subtree** without being threaded through every intermediate node by hand (a web UI
 //! framework's `createContext`/`useContext`, Material's `InheritedWidget`, SwiftUI's
 //! `@Environment`, resolved once here).
 //!
-//! The key property is **when** it is read: [`View::build_with`] resolves context values
+//! The key property is **when** it is read: `View::build_with` resolves context values
 //! into concrete node properties *before* the tree is returned, so `diff` sees an ordinary
 //! value-settled tree and never needs the context to compare two builds. If nodes held a
 //! live "look upward" reference instead, `build` would stop being a pure function of what
@@ -71,8 +71,8 @@
 //! # Reachability
 //!
 //! **State:** the declarative retained-tree implementation. The mounting/updating entry points
-//! are [`ViewEngine::mount`], [`ViewEngine::update`], and — for a caller that already owns a
-//! [`Node`] tree — [`ViewEngine::mount_tree`] / [`ViewEngine::update_tree`].
+//! are `ViewEngine::mount`, `ViewEngine::update`, and — for a caller that already owns a
+//! `Node` tree — `ViewEngine::mount_tree` / `ViewEngine::update_tree`.
 //!
 //! Not duplicated by `crate::json`: the JSON loader parses *one* tree and instantiates it once,
 //! with no previous tree to compare against, so it cannot preserve an identity across an
@@ -87,7 +87,7 @@
 //! control at, re-solved in full on every `apply_layout`. This module is the one that carries
 //! key identity, minimal-move patching and scoped diffs. The decision (principle #101) is that
 //! this engine is the **single** implementation, so the declarative loader must hand its
-//! produced [`Node`] tree to [`ViewEngine::mount_tree`] / [`ViewEngine::update_tree`] instead of
+//! produced `Node` tree to `ViewEngine::mount_tree` / `ViewEngine::update_tree` instead of
 //! keeping the second registry, and the engine must own the layout registration that `LAYOUT_MAP`
 //! performs today. Until that forward lands, the two paths coexist: this one is complete and
 //! tested, and the loader's path-only tree is the one production still applies.

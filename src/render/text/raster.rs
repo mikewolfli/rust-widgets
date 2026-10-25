@@ -489,7 +489,7 @@ pub struct OutlinePoint {
 /// outright unusable number for a colour emoji.
 ///
 /// So the two backends ask different questions of the same face, and the answers must agree. They
-/// do, because both are derived from the same [`Flattener`] with the same [`Placement`]: the
+/// do, because both are derived from the same `Flattener` with the same `Placement`: the
 /// rasteriser fills the polygons, this hands them out. There is one flattening rule, not two.
 ///
 /// # Why the polygons arrive as deviceless points instead of a path string
@@ -502,7 +502,7 @@ pub struct OutlinePoint {
 ///
 /// Consistent with [`GlyphSource::paint`]: the text layer owns no per-glyph storage. `points`
 /// receives the flattened vertices in order and `contours` the `(start, end)` sub-range of each
-/// closed polygon within it, exactly as [`PointBuffer`] records them. Returns `None` when no face
+/// closed polygon within it, exactly as `PointBuffer` records them. Returns `None` when no face
 /// covers `ch`, when the cell is degenerate, or when the outline does not fit — the same refusals
 /// `paint` makes, for the same reasons.
 ///
@@ -515,17 +515,17 @@ pub struct OutlinePoint {
 /// need `2 * MAX_POINTS` slots and turned every multi-contour glyph (`A` has two) into a `None` —
 /// so every glyph fell through to the bitmap path and the outline path was silently never used.
 ///
-/// `contours.len()` must be at least [`MAX_CONTOURS`]; both constants are exported so a caller can
+/// `contours.len()` must be at least `MAX_CONTOURS`; both constants are exported so a caller can
 /// size them without guessing.
 #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 /// # Why the face is chosen by `family`, not by coverage
 ///
 /// The outline must come from the **same face the layout measured with**. Measurement goes through
-/// [`crate::render::text::shape_line`], which selects a face with `shaping::face_for_family` — so a
+/// `crate::render::text::shape_line`, which selects a face with `shaping::face_for_family` — so a
 /// `Font::new("Arial", 11.0, …)` on a build that ships only Open Sans measures with the
 /// *estimate* model (0.6 em per Latin cluster) and asks this function for a face by that name.
 ///
-/// So this honours `family` for the same reason [`crate::render::text::shaping::face_for_family`]
+/// So this honours `family` for the same reason `crate::render::text::shaping::face_for_family`
 /// documents: a caller that **named** a face has said which face it wants, and a function that
 /// silently substituted another would be a surprise rather than an upgrade.
 ///

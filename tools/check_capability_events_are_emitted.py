@@ -49,6 +49,22 @@ hatch:
     (`on_theme_changed()` returns `theme_changed`), where the name mismatch is the only reason a
     textual match fails.
 
+# Duplicate struct names
+
+The attribution above is by bare type name, and the crate has a few names that two types share.
+`input_companions::Chip` (the COMP-C02 companion a host draws) and `special_widgets::Chip` (the
+control the `chip` capability serves) are both `Chip`; `code_editor::palette::CommandPalette` (the
+editor's own popup) and `special_widgets::command_palette::CommandPalette` are both
+`CommandPalette`. Merging their signal sets attributes a helper's events to the control, which
+reported `chip_clicked`/`remove_requested`/`drag_finished` and `committed`/`dismissed` as
+unpublished events of controls that never declare or emit them.
+
+`control_only_files` resolves that without an exemption table: when a name is defined in more than
+one file and exactly one of those files implements `Widget` for it, only that file's body counts.
+A capability event must be emitted by a *control*, so a same-named helper cannot own one. Names
+defined in one file, and names whose duplicate definitions both implement `Widget`, keep the
+previous merged behaviour.
+
 Run from the repo root.
 """
 
@@ -153,6 +169,12 @@ QUOTED_RE = re.compile(r'"([^"]+)"')
 
 FIELD_RE = re.compile(r"pub\s+(\w+)\s*:\s*[^;=\n]*Signal[^;=\n]*")
 ACCESSOR_RE = re.compile(r"pub fn (\w+)\(&self\)\s*->\s*&[^;{\n]*Signal")
+# Every `pub struct` definition, so a name two files share can be told apart (see
+# `control_only_files`).
+STRUCT_DEF_RE = re.compile(r"\npub struct (\w+)[^{]*\{")
+# `impl Widget for Type`, path-qualified or not. Used only to identify which definition of a
+# duplicated name is a control.
+WIDGET_IMPL_RE = re.compile(r"\nimpl\s+(?:(?:[A-Za-z_]\w*::)*Widget)\s+for\s+(\w+)\b")
 
 
 def strip_test_modules(text: str) -> str:
@@ -198,6 +220,40 @@ def collect_type_aliases() -> dict[str, str]:
     return aliases
 
 
+def control_only_files() -> dict[str, set[str]]:
+    """Struct name -> the one file allowed to own its signals, for duplicated names.
+
+    The crate has a handful of type names that two definitions share, and one of the pair is
+    sometimes a helper rather than a control (`input_companions::Chip` vs the `Chip` control,
+    `code_editor::palette::CommandPalette` vs the `CommandPalette` control). Attribution is by
+    bare name, so without this both signal sets land on the capability and the helper's events
+    are reported as events of a control that never emits them.
+
+    The rule is narrow on purpose: it applies only to a name defined in **more than one** file,
+    and only when **exactly one** of those files implements `Widget` for it. That file is the
+    control, so it is the one whose emits and declarations a capability may claim. A name defined
+    once is unchanged, and a duplicate whose definitions both implement `Widget` keeps the
+    previous (merged) treatment rather than guessing which one a capability means.
+    """
+    definitions: dict[str, set[str]] = {}
+    widget_impls: dict[str, set[str]] = {}
+    for path in sorted(SRC.rglob("*.rs")):
+        text = path.read_text()
+        for match in STRUCT_DEF_RE.finditer(text):
+            definitions.setdefault(match.group(1), set()).add(str(path))
+        for match in WIDGET_IMPL_RE.finditer(text):
+            widget_impls.setdefault(match.group(1), set()).add(str(path))
+
+    allowed: dict[str, set[str]] = {}
+    for name, paths in definitions.items():
+        if len(paths) < 2:
+            continue
+        implementing = paths & widget_impls.get(name, set())
+        if len(implementing) == 1:
+            allowed[name] = implementing
+    return allowed
+
+
 def collect_struct_emits() -> dict[str, set[str]]:
     """Type name -> the signal names emitted inside its own `impl` blocks, tests excluded.
 
@@ -208,6 +264,7 @@ def collect_struct_emits() -> dict[str, set[str]]:
     filed under `EventHandler` and the emits never reached `Canvas`.
     """
     emits: dict[str, set[str]] = {}
+    control_files = control_only_files()
     # `impl Trait for Type` first (longer, more specific), then the inherent `impl Type`. The trait
     # may itself be path-qualified (`impl crate::event::EventHandler for Foo`), which an earlier
     # `[A-Za-z_]\w*` pattern did not match — that silently dropped every emit in files whose trait
@@ -221,6 +278,10 @@ def collect_struct_emits() -> dict[str, set[str]]:
         for match in header_re.finditer(production):
             # With the optional trait part made non-capturing, group 1 is always the type.
             struct = match.group(1)
+            # A same-named helper type's emits belong to the helper, not to the control the
+            # capability serves; see `control_only_files`.
+            if struct in control_files and str(path) not in control_files[struct]:
+                continue
             depth = 1
             index = match.end()
             while index < len(production) and depth > 0:
@@ -246,10 +307,15 @@ def collect_struct_declares() -> dict[str, set[str]]:
     emits is a public event of that control, so the capability table has to publish it.
     """
     declares: dict[str, set[str]] = {}
+    control_files = control_only_files()
     for path in sorted(SRC.rglob("*.rs")):
         production = strip_test_modules(path.read_text())
         for match in re.finditer(r"\npub struct (\w+)[^{]*\{", production):
             struct = match.group(1)
+            # A same-named helper type's fields are not the control's events; see
+            # `control_only_files`.
+            if struct in control_files and str(path) not in control_files[struct]:
+                continue
             depth = 1
             index = match.end()
             while index < len(production) and depth > 0:

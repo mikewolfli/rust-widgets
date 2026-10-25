@@ -15,7 +15,7 @@
 //! in two different orders.
 //!
 //! BLUE22 §B.8 asks for `HBox` with the direction-appropriate padding, so both boxes come from
-//! [`IndicatorGeometry::column_widths`]: the value column (which fills) and the indicator column,
+//! `IndicatorGeometry::column_widths`: the value column (which fills) and the indicator column,
 //! stated as "the value takes what the indicator does not", which makes "the value yields to the
 //! indicator" true by construction rather than by two subtractions that happen to agree.
 
@@ -1217,8 +1217,8 @@ impl ComboBox {
     }
     /// Sets maximum number of visible items in dropdown.
     ///
-    /// Read by [`Self::visible_item_count`], which clamps it against the item count to size
-    /// [`Self::list_rect`]. It was stored, published (`get`/`set` plus a schema row and a round-trip
+    /// Read by `Self::visible_item_count`, which clamps it against the item count to size
+    /// `Self::list_rect`. It was stored, published (`get`/`set` plus a schema row and a round-trip
     /// test) and read by nothing, because there was no list to clamp.
     ///
     /// The window is re-clamped as well as the field, so shrinking the limit on a list scrolled past

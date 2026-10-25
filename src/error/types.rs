@@ -15,8 +15,8 @@ use crate::compat::{fmt, format, Box, MiniToString, String};
 ///
 /// # Usage
 /// - **Produced at runtime today**: `INVALID_ARGUMENT` (every capability and style
-///   refusal records it — see [`ffi::record_capability_error`]) and `GENERAL`
-///   (a caught panic). [`ffi`]'s reader reports `SUCCESS` as the literal `0`
+///   refusal records it — see `ffi::record_capability_error`) and `GENERAL`
+///   (a caught panic). `ffi`'s reader reports `SUCCESS` as the literal `0`
 ///   [`ErrorId::SUCCESS`] holds when no failure was recorded.
 /// - **Reserved for future use** (stable API, not yet wired):
 ///   `NOT_IMPLEMENTED`, `UNSUPPORTED_OPERATION`, `NULL_POINTER`, `OUT_OF_MEMORY`,

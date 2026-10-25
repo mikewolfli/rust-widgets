@@ -319,7 +319,7 @@ impl I18nManager {
     /// # Context matching
     ///
     /// A `Some(ctx)` lookup accepts an entry whose own `context` is `None`: an entry without a
-    /// context is documented as "unambiguous on its own" (see [`Translation::context`]), which is
+    /// context is documented as "unambiguous on its own" (see `Translation::context`), which is
     /// exactly the case where qualifying the lookup adds nothing. It used to return the raw key
     /// instead — so a catalogue that did not restate the context on every entry lost all of its
     /// translations the moment a caller used the `tr!("key", "ctx", n)` spelling, which is the

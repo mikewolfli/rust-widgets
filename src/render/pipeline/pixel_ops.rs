@@ -632,7 +632,7 @@ pub(crate) fn glyph_coverage_weight(coverage: u8) -> f32 {
 ///
 /// This applies `coverage` **as given** — it is the general-purpose blend, used by geometry as well
 /// as by text. Callers blending glyph ink should use [`blend_pixel`]'s coverage after passing it
-/// through [`glyph_coverage_weight`].
+/// through `glyph_coverage_weight`.
 pub fn blend_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color, coverage: f32) {
     blend_pixel_with_mode(frame, width, x, y, color, coverage, BlendMode::Normal);
 }

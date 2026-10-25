@@ -166,7 +166,7 @@ impl DateTimeSection {
 ///
 /// [`DateTimeEdit::display_format`] holds a format pattern string that is
 /// exposed as a property and is interpreted when the widget paints, through the
-/// shared [`super::date_edit::format_with_pattern_into`] substituter. A pattern
+/// shared `super::date_edit::format_with_pattern_into` substituter. A pattern
 /// with no recognised token falls back to `YYYY-MM-DD HH:MM:SS`.
 /// `YYYY-MM-DD HH:MM:SS` spelling. The pattern is stored and round-tripped, not
 /// yet applied when painting.
@@ -324,7 +324,7 @@ impl DateTimeEdit {
     /// Returns the stored display-format pattern.
     ///
     /// The pattern is applied by the next paint; see
-    /// [`super::date_edit::format_with_pattern_into`] for the token table.
+    /// `super::date_edit::format_with_pattern_into` for the token table.
     pub fn display_format(&self) -> &str {
         &self.display_format
     }
@@ -430,7 +430,7 @@ impl DateTimeEdit {
     /// Stores the display-format pattern.
     ///
     /// The pattern is applied by the next paint; see
-    /// [`super::date_edit::format_with_pattern_into`] for the token table.
+    /// `super::date_edit::format_with_pattern_into` for the token table.
     pub fn set_display_format(&mut self, fmt: String) {
         if self.display_format == fmt {
             return;

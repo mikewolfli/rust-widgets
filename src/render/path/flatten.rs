@@ -7,7 +7,7 @@
 //! # Why this is an adapter and not a flattener
 //!
 //! The curve-to-polyline rule already exists, tuned and tested for glyphs, in
-//! [`crate::render::text::raster`]: subdivide until a segment's deviation from its chord is below a
+//! `crate::render::text::raster`: subdivide until a segment's deviation from its chord is below a
 //! device-pixel tolerance, refuse rather than truncate when the result would exceed its budget, and
 //! fill by the non-zero winding rule. An icon outline is the same kind of shape, so it uses the same
 //! rule. Writing a second flattener here would be two implementations of one concept — principle
@@ -226,7 +226,7 @@ fn parse_dynamic_cached(
 /// # What "packed" means, and why the caller sizes the buffers
 ///
 /// `points` receives the vertices and `contours` the `(start, end)` sub-range of each closed
-/// contour within it — the same shape [`crate::render::text::raster::outline`] returns, so a backend
+/// contour within it — the same shape `crate::render::text::raster::outline` returns, so a backend
 /// that already consumes glyph geometry consumes this too. The buffers being the caller's is the
 /// same choice: the icon layer owns no per-icon storage.
 ///

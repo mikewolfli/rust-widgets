@@ -6,9 +6,9 @@
 //! # The popup's rows are derived, not painted ad hoc
 //!
 //! BLUE22 §B.8 lists `menu` / `menu_item`'s defect as "the check and arrow paddings written by
-//! hand". The *columns* of a row are derived (see [`Menu::indicator_box`] and
-//! [`Menu::label_box`], which state the standard menu-item relations), and the *run* of rows is
-//! one derivation in [`Menu::item_bands`] that the painter and every hit path share. The run used
+//! hand". The *columns* of a row are derived (see `Menu::indicator_box` and
+//! `Menu::label_box`, which state the standard menu-item relations), and the *run* of rows is
+//! one derivation in `Menu::item_bands` that the painter and every hit path share. The run used
 //! to be a `let mut y` inside `draw`; a `FlexLayout` column replaced it for a while, but every row
 //! has a fixed height the control owns, so the layout only rediscovered constants — on each draw,
 //! which is once per frame while the popup reveals.
@@ -505,7 +505,7 @@ pub struct Menu {
     /// Emitted with the index of the entry that was chosen, alongside
     /// [`Self::triggered`]. Use this when two entries share a label.
     pub triggered_index: Signal1<usize>,
-    /// Emitted with the **action id** of a row built from an [`ActionManager`].
+    /// Emitted with the **action id** of a row built from an `ActionManager`.
     ///
     /// This is the consumer path the action registry was missing: a menu item carries the id it
     /// was resolved from, so a host can route the activation to `ActionManager::trigger_action`
@@ -1049,7 +1049,7 @@ impl Menu {
     /// registered command, so the menu is a view of the registry rather than a second declaration
     /// of it. The row keeps the action id; activating it emits [`Self::action_triggered`].
     /// Returns `None` when the id is unknown, which is the same answer
-    /// [`ActionManager::action_definition`] gives instead of inventing an empty row.
+    /// `ActionManager::action_definition` gives instead of inventing an empty row.
     pub fn add_action_from_manager(
         &mut self,
         manager: &mut crate::action::ActionManager,
@@ -1147,7 +1147,7 @@ impl Menu {
     /// Registers every linked row's shortcut in the global registry.
     ///
     /// This is the "native menu shortcut becomes a registry binding" step: a row's displayed
-    /// accelerator is parsed once and inserted into [`ShortcutManager`], so conflict detection
+    /// accelerator is parsed once and inserted into `ShortcutManager`, so conflict detection
     /// and dispatch see it like any other chord. A glyph spelling that
     /// [`crate::shortcut::Shortcut::from_string`] cannot parse is skipped rather than guessed at.
     /// Returns the number of bindings registered.

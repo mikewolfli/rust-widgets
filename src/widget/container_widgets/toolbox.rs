@@ -46,7 +46,7 @@ const MIN_CONTENT_EXTENT: u32 = 24;
 /// # Overflow
 ///
 /// The tab strip and the page share one axis, so they cannot both have the room they would like.
-/// The page keeps [`MIN_CONTENT_EXTENT`] and the *strip* gives way: when the tabs no longer fit,
+/// The page keeps `MIN_CONTENT_EXTENT` and the *strip* gives way: when the tabs no longer fit,
 /// the strip is scrolled by whole tabs (see [`ToolBox::scroll_offset`]) rather than letting an
 /// item be placed past the control's edge. An item is therefore either drawn whole, inside the
 /// strip, or not drawn at all.
@@ -413,7 +413,7 @@ impl ToolBox {
     ///   gesture that dismisses the popup.
     ///
     /// The page's visibility and rectangle are applied from the item flag
-    /// ([`Self::sync_pages`]), and a real change is announced through
+    /// (`Self::sync_pages`), and a real change is announced through
     /// [`Self::item_expanded_changed`]; a repeated write is a no-op.
     pub fn set_item_expanded(&mut self, index: usize, expanded: bool) -> bool {
         if index >= self.items.len() {
@@ -691,7 +691,7 @@ impl ToolBox {
     ///
     /// Returns nothing because every positive value is valid; zero is clamped to one. The
     /// value is the strip's own metric, not a content measurement, and it defaults to
-    /// [`ITEM_HEIGHT`] so an existing toolbox keeps its pixels.
+    /// `ITEM_HEIGHT` so an existing toolbox keeps its pixels.
     pub fn set_item_height(&mut self, height: u32) {
         let height = height.max(1);
         if self.item_height == height {
@@ -734,7 +734,7 @@ impl ToolBox {
 
     /// The largest value [`Self::scroll_offset`] may take. Zero when every tab fits.
     ///
-    /// The strip is never allowed to spend the page's own [`MIN_CONTENT_EXTENT`]: that is what
+    /// The strip is never allowed to spend the page's own `MIN_CONTENT_EXTENT`: that is what
     /// makes "the page keeps at least one line" true at *any* tab count, including the case
     /// where the tabs alone are taller than the whole control.
     pub fn max_scroll(&self) -> usize {

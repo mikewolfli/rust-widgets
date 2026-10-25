@@ -36,7 +36,7 @@
 //! |---|---|---|
 //! | d-1 | Availability must be asked per target, not kept in a list | [`availability`] asks the factory; an unavailable control is **reported**, never generated |
 //! | d-2 | CSS is resolved at generation time, inlined as property assignments | [`is_style_only_property`] records CSS-only names; the generated file contains no `apply_css` |
-//! | d-3 | Layout is solved at generation time into constant coordinates | [`plan_geometry`] runs the real `crate::layout` engine and emits literals |
+//! | d-3 | Layout is solved at generation time into constant coordinates | `plan_geometry` runs the real `crate::layout` engine and emits literals |
 //! | d-4 | Capacity is checked at generation time | [`GenerationReport::capacity_overflow`] against the target's child capacity |
 //!
 //! # What this module is *not*
@@ -1637,7 +1637,7 @@ fn constructor_type_for(factory: &WidgetFactory, widget: &str) -> Option<&'stati
     (!path.ends_with("UnsupportedControl")).then_some(path)
 }
 
-/// [`constructor_type_for`] against a freshly built registry, for the public spelling.
+/// `constructor_type_for` against a freshly built registry, for the public spelling.
 pub fn constructor_path(widget: &str) -> &'static str {
     constructor_type_for(WidgetFactory::shared(), widget)
         .unwrap_or("rust_widgets::designer::UnsupportedControl")

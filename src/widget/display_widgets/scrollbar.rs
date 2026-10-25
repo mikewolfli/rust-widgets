@@ -768,8 +768,8 @@ impl ScrollBar {
     ///
     /// # The two-phase fade, and why the delta is *split*
     ///
-    /// The opacity holds at `1.0` for [`SCROLLBAR_IDLE_DELAY_MS`], and only then begins to fade
-    /// toward [`SCROLLBAR_IDLE_OPACITY`]. That ordering is what makes the bar feel *responsive*
+    /// The opacity holds at `1.0` for `SCROLLBAR_IDLE_DELAY_MS`, and only then begins to fade
+    /// toward `SCROLLBAR_IDLE_OPACITY`. That ordering is what makes the bar feel *responsive*
     /// rather than twitchy: fading on the first idle millisecond would dim the bar while the
     /// reader is still reading what they just scrolled to.
     ///

@@ -168,7 +168,7 @@ pub fn process_cpu_utilization() -> Option<f32> {
 ///
 /// Kept under an unambiguous name so the two facts cannot be confused again: this says "how much of
 /// the thread budget is in use", which is useful for diagnosis, but it does **not** say how busy
-/// those threads are and must never be handed to [`crate::Platform::process_cpu_utilization`] or to
+/// those threads are and must never be handed to `crate::Platform::process_cpu_utilization` or to
 /// any pressure threshold that expects CPU load (rule #37).
 ///
 /// Returns `None` when `/proc/self/status` is unreadable or has no `Threads:` line. Unlike the old

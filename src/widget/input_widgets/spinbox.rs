@@ -11,12 +11,12 @@
 //! the sibling column's width**. The value's box is therefore not "the field minus a constant"
 //! — it is whatever the column leaves.
 //!
-//! That relation is stated once in [`SpinBox::row_widths`]: the value takes the remainder, so the
+//! That relation is stated once in `SpinBox::row_widths`: the value takes the remainder, so the
 //! column pushes it narrower when the column grows, and no second placement can disagree about
 //! which edge the column sits on.
 //!
-//! The public accessors ([`SpinBox::editable_rect`], [`SpinBox::up_button`],
-//! [`SpinBox::down_button`]) keep their names and their meaning: they report the derivation's
+//! The public accessors (`SpinBox::editable_rect`, `SpinBox::up_button`,
+//! `SpinBox::down_button`) keep their names and their meaning: they report the derivation's
 //! answer rather than a second copy of it, so the paint path, the hit test and the tests all read
 //! one geometry.
 use crate::compat::{format, Box, Rc, String, ToString};
@@ -1288,7 +1288,7 @@ impl SpinBox {
     /// Reading out `$12` is correct — a screen reader should hear the unit. But **drawing** it as one
     /// string puts the prefix inside the value's glyph run, which makes the value's own origin include
     /// it: the caret lands after the `$` at position 0, and a select-all would take the `$` with it. The
-    /// painter therefore draws [`Self::value_text`] in the value's box and the two slots in their own,
+    /// painter therefore draws `Self::value_text` in the value's box and the two slots in their own,
     /// while this stays the form a caller announces or logs — which is why it is `pub`.
     ///
     /// See [`crate::widget::decorations`] for the full argument.

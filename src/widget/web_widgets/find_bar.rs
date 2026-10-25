@@ -261,3 +261,21 @@ impl EventHandler for WebFindBar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_query_and_match_counter_are_bounded_by_the_reported_count() {
+        let mut bar = WebFindBar::new(Rect::new(0, 0, 320, 36));
+        bar.open();
+        assert!(bar.is_open());
+        bar.set_query("needle");
+        assert_eq!(bar.query(), "needle");
+        bar.set_match_progress(9, 3);
+        assert_eq!(bar.match_progress(), (3, 3));
+        bar.close();
+        assert!(!bar.is_open());
+    }
+}

@@ -6,7 +6,7 @@
 //!
 //! # One line breaker
 //!
-//! [`break_lines`] and [`place_lines`] are the crate's only implementation of "where does a
+//! `break_lines` and `place_lines` are the crate's only implementation of "where does a
 //! wrapped line end and where do its items sit". [`WrapLayout`] calls them with the sizes it was
 //! told; [`FlowLayout`](crate::layout::FlowLayout) calls them with the sizes its children report.
 //! The two layouts keep their own size sources and configuration surfaces, but not two
@@ -419,7 +419,7 @@ impl WrapLayout {
 
     /// Compute rects for all children within the content area.
     ///
-    /// The line breaking and placement live in [`break_lines`] and [`place_lines`], shared with
+    /// The line breaking and placement live in `break_lines` and `place_lines`, shared with
     /// [`FlowLayout`](crate::layout::FlowLayout); this method only converts the layout's child
     /// table into the size slice those functions take and zips the ids back on.
     fn compute_rects(&self, content: Rect) -> Vec<(ObjectId, Rect)> {

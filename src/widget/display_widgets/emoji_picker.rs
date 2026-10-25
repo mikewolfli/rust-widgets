@@ -409,7 +409,7 @@ impl EmojiPicker {
     ///
     /// # The one place the tabs, the search and the grid agree
     ///
-    /// The filter itself is defined once, in [`Self::glyph_is_visible`], and every projection
+    /// The filter itself is defined once, in `Self::glyph_is_visible`, and every projection
     /// (this accessor, the hit-test, the cursor and the draw path) goes through it — so the
     /// drawing loop, the hit-test and the keyboard cursor cannot disagree about what is on
     /// screen. This allocating form is kept as the public accessor; the internal paths use the

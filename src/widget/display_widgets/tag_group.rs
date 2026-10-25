@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! `TagGroup` — the companion container for a row of [`Tag`] controls.
+//! `TagGroup` — the companion container for a row of `Tag` controls.
 //!
 //! A `Tag` is deliberately one label: it does not own the row it sits in. A host that shows
 //! "the filters currently applied" therefore had to lay the tags out itself and forward every
 //! close and selection by hand. This container owns that composition and reuses the tag's own
-//! painting and event paths — it stores real [`Tag`] children rather than copying their drawing
+//! painting and event paths — it stores real `Tag` children rather than copying their drawing
 //! code, so a tag and a tag in a group cannot render differently.
 //!
 //! # Where this lives

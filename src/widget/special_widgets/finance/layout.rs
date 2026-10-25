@@ -463,8 +463,8 @@ impl PlotArea {
 
     /// The plot area of a **volume pane**, which carries its own index labels.
     ///
-    /// The horizontal margins are deliberately [`Self::DEFAULT_LEFT_MARGIN`] and
-    /// [`Self::DEFAULT_RIGHT_MARGIN`] rather than the caller's own numbers: a volume pane's
+    /// The horizontal margins are deliberately `Self::DEFAULT_LEFT_MARGIN` and
+    /// `Self::DEFAULT_RIGHT_MARGIN` rather than the caller's own numbers: a volume pane's
     /// bar 17 has to sit under the price pane's bar 17, which is arithmetic here or nowhere.
     ///
     /// The bottom reserves the shared index-tick row. It used to be 6 px on the theory that
@@ -646,7 +646,7 @@ pub const PANEL_MIN_CONTRAST: f32 = 4.5;
 ///
 /// `resolved_theme_style` classifies by *control kind*, and none of `candlestick_chart`,
 /// `volume_chart`, `depth_chart` or `indicator_chart` is in `WidgetRole::for_kind_name`'s
-/// table, so all four classify as [`WidgetRole::Surface`]
+/// table, so all four classify as `WidgetRole::Surface`
 /// (`src/theme/types.rs`) and the theme writes **the window fill itself** into
 /// `style.background_color`. Painting the panel in that colour would make a pane on a window
 /// byte-identical to the window behind it — geometrically correct, visually absent — so a

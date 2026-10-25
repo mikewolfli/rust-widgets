@@ -9,7 +9,7 @@
 //!
 //! * [`IconSource`] — a drawable glyph, either a crate token or static geometry.
 //! * [`SharedIconPixels`] — validated RGBA8 bytes plus the fit rule for an icon slot.
-//! * [`IconModeSet`] — the **state variants** of one logical icon: its on/off pair, its
+//! * `IconModeSet` — the **state variants** of one logical icon: its on/off pair, its
 //!   idle/hover/pressed renditions and its disabled rendition. A control that changes
 //!   glyph with its state (a check box's tick, a lock's open/closed pair, a speaker's
 //!   mute) declares that set once, and the fallback rule is applied here rather than in

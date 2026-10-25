@@ -7,8 +7,8 @@
 //!
 //! A workbench-shaped window (menu/tool bar on top, status bar at the bottom, sidebars,
 //! and an editor in the middle) is a two-dimensional arrangement with **fixed pixel
-//! tracks** on the edges and one elastic center. [`BoxLayout`](super::BoxLayout) is
-//! single-axis, and [`GridLayout`](super::GridLayout) distributes columns by stretch
+//! tracks** on the edges and one elastic center. `BoxLayout` is
+//! single-axis, and `GridLayout` distributes columns by stretch
 //! factor rather than by a fixed pixel extent, so neither can express "48px toolbar,
 //! rest is the editor" without the caller computing the tracks itself.
 //!

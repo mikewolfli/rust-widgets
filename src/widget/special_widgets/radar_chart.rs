@@ -633,6 +633,17 @@ impl Widget for RadarChart {
                     ]))
                 }))
             }
+            "series_visibility_changed" => Some(EventSignalRef::mapped(
+                "series_visibility_changed",
+                &self.series_visibility_changed,
+                // `(series index, visible)` — a number and a flag, so the declared shape is `Mixed`.
+                |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::Bool(v.1),
+                    ]))
+                },
+            )),
             _ => None,
         }
     }
@@ -985,13 +996,7 @@ impl RadarChart {
                 metrics.height as i32,
                 rect,
             );
-            context.draw_text_fitted_cow(
-                bounds,
-                label,
-                font,
-                label_ink,
-                HorizontalAlignment::Left,
-            );
+            context.draw_text_fitted_cow(bounds, label, font, label_ink, HorizontalAlignment::Left);
         }
     }
 
@@ -1762,7 +1767,9 @@ mod tests {
         let edges = recorder
             .commands
             .iter()
-            .filter(|command| matches!(command, crate::render::RenderCommand::DrawLineStroke { .. }))
+            .filter(|command| {
+                matches!(command, crate::render::RenderCommand::DrawLineStroke { .. })
+            })
             .count();
         assert_eq!(radials, 4, "4 dimensions must emit one radial each, got {radials}");
         assert_eq!(edges, 4, "each data edge is stroked exactly once, got {edges}");

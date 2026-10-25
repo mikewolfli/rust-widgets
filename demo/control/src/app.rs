@@ -1671,3 +1671,46 @@ pub fn run() {
     println!("║  Total events: {}                                      ║", entries.len());
     println!("╚══════════════════════════════════════════════════════════╝");
 }
+
+#[cfg(test)]
+mod paint_tests {
+    use super::*;
+    use rust_widgets::core::{Color, Size};
+
+    /// Probe: render the demo's real window tree and report what the background pixel is.
+    #[test]
+    fn probe_window_pixels() {
+        let _guard = rust_widgets::theme::theme_test_guard();
+        let log = Arc::new(EventLog::new());
+        let mut app = App::with_config(AppConfig::default().with_app_name("probe"));
+        app.init();
+        install_macos_themes();
+        switch_appearance(true);
+        let win = app.new_window("probe", 100, 100, 1180, 760);
+        let slots = build_window_chrome(&win, &log);
+        let mut followers = Vec::new();
+        let mut slots = slots;
+        slots.extend(build_all_controls(&win, &log, &mut followers));
+        register_window_layout(&win, slots, followers, &log);
+
+        let size = Size::new(1180, 760);
+        let frame = rust_widgets::widget::runtime::render_frame_tree(
+            win.raw_id(),
+            size,
+            Color::rgb(240, 240, 240),
+        )
+        .expect("frame");
+        let pixels = frame.as_chunks::<4>().0;
+        let corner = pixels[0];
+        eprintln!("[PROBE] corner pixel = {:?}", corner);
+        let mut counts: Vec<([u8; 4], usize)> = Vec::new();
+        for p in pixels {
+            match counts.iter_mut().find(|(c, _)| *c == *p) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((*p, 1)),
+            }
+        }
+        counts.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        eprintln!("[PROBE] top colours: {:?}", &counts[..counts.len().min(8)]);
+    }
+}

@@ -13,7 +13,7 @@
 //!   dictionary plus a `/Crypt` filter, references it from the trailer and the
 //!   catalog, and encrypts every content stream with AES-128-CBC. The `% RW-NOTE`
 //!   marker then states that encryption was applied (see
-//!   [`serialize_security_diagnostics_entries`]).
+//!   `serialize_security_diagnostics_entries`).
 //! - **Without `pdf-encryption`**: the profile stays intent only; the `% RW-NOTE`
 //!   marker records the requested permissions and states the output is **not**
 //!   encrypted, because it is not.
@@ -330,7 +330,7 @@ fn encode_permission_flags(security: &PdfSecurity) -> u32 {
 /// blob rather than undecryptable bytes wearing a dictionary.
 ///
 /// # Errors
-/// Returns `Err` when the OS entropy source is unavailable (see [`generate_salt`]).
+/// Returns `Err` when the OS entropy source is unavailable (see `generate_salt`).
 #[cfg(feature = "pdf-encryption")]
 pub fn encrypt_pdf(
     content: &[u8],

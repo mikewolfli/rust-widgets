@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! SVG string conversion helpers for [`SvgPaintBackend`].
+//! SVG string conversion helpers for `SvgPaintBackend`.
 //!
 //! Provides color formatting and XML escaping utilities
 //! shared across SVG element generation.

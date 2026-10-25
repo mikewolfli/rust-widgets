@@ -1420,7 +1420,7 @@ const DOCK_AREA_STATE_VERSION_FLAT: u8 = 1;
 ///
 /// # Events and the capability registry
 ///
-/// `DockArea` is not a [`WidgetKind`](crate::widget::WidgetKind), so it has no capability
+/// `DockArea` is not a `WidgetKind`, so it has no capability
 /// record and no published event schema. [`Self::active_dock_changed`,
 /// `Self::dock_removed`] and [`Self::layout_changed`] are host-facing Rust signals on this
 /// owner, not a second list for [`DockWidget`]'s three published events

@@ -27,7 +27,7 @@ pub struct EventHandlerContext {
     /// slider, its caption, which is not the value at all). That is the defect this field closes: a
     /// handler registered through `events: { "value_changed": … }` now receives exactly the value
     /// the control emitted, in the same [`CapabilityValue`] representation the capability/schema
-    /// layer declares (rule #95). A payload-free event carries [`CapabilityValue::Null`], which is
+    /// layer declares (rule #95). A payload-free event carries `CapabilityValue::Null`, which is
     /// the honest "this event reported nothing" value rather than a fabricated zero.
     ///
     /// [`CapabilityValue`]: crate::widget::capability::CapabilityValue
@@ -56,7 +56,7 @@ unsafe impl Send for EventHandlerContext {}
 impl EventHandlerContext {
     /// Create a new event handler context with a payload-free trigger.
     ///
-    /// The payload is [`CapabilityValue::Null`], matching a `unit` event: the trigger happened and
+    /// The payload is `CapabilityValue::Null`, matching a `unit` event: the trigger happened and
     /// carried nothing. Call [`Self::with_payload`] to attach a typed value.
     pub fn new(trigger: WidgetTriggerEvent) -> Self {
         Self { trigger, payload: crate::widget::capability::CapabilityValue::Null, user_data: None }

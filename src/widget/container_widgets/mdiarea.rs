@@ -1171,6 +1171,27 @@ impl Widget for MdiArea {
                     ]))
                 },
             )),
+            "subwindow_minimized_changed" => Some(EventSignalRef::mapped(
+                "subwindow_minimized_changed",
+                &self.subwindow_minimized_changed,
+                // `(id, minimized)` — an object id travels as `UInt`, the flag as `Bool`.
+                |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0),
+                        CapabilityValue::Bool(v.1),
+                    ]))
+                },
+            )),
+            "subwindow_tab_moved" => Some(EventSignalRef::mapped(
+                "subwindow_tab_moved",
+                &self.subwindow_tab_moved,
+                |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                },
+            )),
             _ => None,
         }
     }

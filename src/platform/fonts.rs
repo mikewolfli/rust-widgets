@@ -13,10 +13,10 @@
 //!
 //! The set of installed fonts changes only when the host installs one, which is not a state this
 //! library observes; a caller that has just installed a font can ask
-//! [`refresh_system_fonts`] to drop the snapshot.
+//! `refresh_system_fonts` to drop the snapshot.
 //!
 //! One policy question lives here too, because it needs the snapshot: which installed family a host
-//! should register for full CJK coverage — see [`register_system_cjk_font`].
+//! should register for full CJK coverage — see `register_system_cjk_font`.
 
 use crate::compat::{OnceLock, RwLock, String, ToString, Vec};
 use crate::platform::SystemFont;
@@ -207,7 +207,7 @@ pub fn families() -> Vec<String> {
 ///
 /// This is the fallback for a backend that reports no installed fonts (Harmony, WASM,
 /// Redox) and for a host preview with no system font store: those families are exactly the
-/// ones [`face_for_family`](crate::render::text::font_assets::face_for_family) can draw.
+/// ones `face_for_family` can draw.
 #[cfg(feature = "text-shaping")]
 pub fn bundled_families() -> Vec<String> {
     let mut families: Vec<String> = crate::render::text::font_assets::active_faces()

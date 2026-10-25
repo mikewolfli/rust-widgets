@@ -6,7 +6,7 @@
 //! Provides a predicate-based file watcher that can monitor any directory
 //! for changes to files matching a user-supplied filter.
 //!
-//! It also carries the **logical resource identity** seam ([`resource`]): one name for an asset that
+//! It also carries the **logical resource identity** seam (`resource`): one name for an asset that
 //! resolves the same at run time and in a static package. That half is pure data and traits with no
 //! OS dependency, so it is compiled wherever the module is — the watcher is the part that needs
 //! `desktop-runtime`.

@@ -23,7 +23,7 @@
 //! floor**, not decoration. That is why a button labelled with 5 px text is
 //! still 100x40 rather than 100x18.
 //!
-//! [`ControlMetrics`] is the Rust-native spelling of that formula: no trait
+//! `ControlMetrics` is the Rust-native spelling of that formula: no trait
 //! objects, no virtual dispatch, just pure functions over value types.
 //!
 //! The [`metrics`] constants alongside it are the numeric half of the same
@@ -39,8 +39,8 @@
 //! duplication; a second name for one function eliminates nothing and only leaves
 //! two spellings of the same derivation to drift apart (rule #101). It is therefore
 //! deleted rather than kept "for symmetry". A control that wants a fixed piece of
-//! chrome centred reaches for [`ControlMetrics::center_in`]; a **panel** reaches for
-//! [`ControlMetrics::painted_box`], which differs in the one way a panel needs — it is
+//! chrome centred reaches for `ControlMetrics::center_in`; a **panel** reaches for
+//! `ControlMetrics::painted_box`, which differs in the one way a panel needs — it is
 //! clamped up to a one-pixel floor so a squeezed dialog stays visible instead of
 //! collapsing to a zero-extent, invisible rect.
 
@@ -108,7 +108,7 @@ fn flat_cluster_model(text: &str, size: f32, scale: f32) -> (f32, usize) {
 ///
 /// **With a face** (a build that ships vector/bitmap faces — every `desktop`/`tablet`/`mobile`
 /// profile) the cluster advances come from the face's own layout tables, through the same
-/// [`crate::render::text::shaping::cluster_advances`] the renderer's `shape_line` uses. That is
+/// `crate::render::text::shaping::cluster_advances` the renderer's `shape_line` uses. That is
 /// the renderer's real ruler, so a `size_hint` and the paint agree glyph for glyph.
 ///
 /// **Without a face** it falls back to the same grapheme traversal (`for_each_cluster`) and the
@@ -125,7 +125,7 @@ fn flat_cluster_model(text: &str, size: f32, scale: f32) -> (f32, usize) {
 /// # Cost
 ///
 /// The face path parses (and caches) a shaper face per active face — see
-/// [`crate::render::text::shaping::cluster_advances`]; the fallback reuses one cluster buffer
+/// `crate::render::text::shaping::cluster_advances`; the fallback reuses one cluster buffer
 /// per call and allocates nothing per cluster, so it stays safe on the layout hot path.
 pub fn estimate_text_width(text: &str, font: &crate::core::Font, scale: f32) -> u32 {
     let size = font.size().max(0.0);
@@ -720,7 +720,7 @@ pub const FOCUS_RING_WIDTH: u32 = 2;
 /// and extends past it. Four logical pixels is the AppKit focus-ring width (3-4 pt), and it
 /// is deliberately wider than [`FOCUS_RING_WIDTH`] because a glow loses contrast where it
 /// blurs. Only the macOS metrics profile selects it (see
-/// [`ControlMetricsProfile`](crate::widget::metrics::ControlMetricsProfile)); the default
+/// `ControlMetricsProfile`); the default
 /// inset ring is unchanged.
 pub const FOCUS_HALO_WIDTH: u32 = 4;
 
@@ -959,7 +959,7 @@ pub mod dimensions {
     ///
     /// Apple's `UISwitch` measures `51x31` at 1x, which is the geometry
     /// `cupertino_switch` draws. It is deliberately *narrower* than
-    /// [`SWITCH_TRACK`](Self::SWITCH_TRACK) rather than a scaled copy of it: a
+    /// `SWITCH_TRACK` rather than a scaled copy of it: a
     /// Material switch and an iOS switch are two different shapes, and rendering
     /// the iOS name with the Material proportions is what made `cupertino_switch`
     /// a second spelling of `switch` rather than a control of its own.
@@ -968,7 +968,7 @@ pub mod dimensions {
     /// An iOS switch thumb's radius: 13, i.e. a 26 px disc in a 31 px track.
     ///
     /// `UISwitch`'s thumb is a 27 pt disc; a 26 px one keeps the track's own
-    /// `2` px inset arithmetic ([`SWITCH_THUMB_INSET`](Self::SWITCH_THUMB_INSET))
+    /// `2` px inset arithmetic (`SWITCH_THUMB_INSET`)
     /// exact at integer pixels, which is what a bitmap renderer needs.
     pub const CUPERTINO_SWITCH_THUMB_RADIUS: u32 = 13;
 

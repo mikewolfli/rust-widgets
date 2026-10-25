@@ -148,7 +148,7 @@ impl JsonEventBinding {
     /// the payload and which no callback table can select), so this answers the *marker* route: a
     /// value-bearing marker (`ValueChanged`, `SelectionChanged`) travels the app layer's
     /// value-trigger channel, and every other marker has a signal or a published name of its own
-    /// (see [`JsonTriggerMarker::base_signal`] and
+    /// (see `JsonTriggerMarker::base_signal` and
     /// [`JsonTriggerMarker::published_counterpart`]).
     ///
     /// It is derived from the marker on **both** variants rather than from the raw payload: that is
@@ -176,7 +176,7 @@ impl JsonEventBinding {
     /// The published event this binding corresponds to, when it has one.
     ///
     /// A [`Self::Published`] binding returns its own name; a [`Self::Marker`] binding returns the
-    /// counterpart recorded in [`MARKER_PUBLISHED_EVENTS`]. `None` therefore means "this binding
+    /// counterpart recorded in `MARKER_PUBLISHED_EVENTS`. `None` therefore means "this binding
     /// rides the compatibility route and no published name exists for its intent".
     pub fn published_counterpart(self) -> Option<&'static str> {
         match self {
@@ -250,7 +250,7 @@ impl JsonTriggerMarker {
     /// now exists and every closeable control emits it from its own `close`/`dismiss` path, so
     /// `Closed` has a real signal to reach and is bound rather than refused.
     ///
-    /// Derived from [`Self::base_signal`] rather than from a second `match`, so the two answers
+    /// Derived from `Self::base_signal` rather than from a second `match`, so the two answers
     /// cannot disagree about which channel a close takes.
     pub fn uses_close_callback(self) -> bool {
         matches!(self.base_signal(), Some(BaseSignal::Closed))
@@ -298,7 +298,7 @@ impl JsonTriggerMarker {
     /// All three markers named above now have a real channel, so none of them is left unrouted:
     ///
     /// * `on_focus` / `on_blur` travel on the widget's own focus signals
-    ///   ([`Self::base_signal`]) and no longer report a reason at all.
+    ///   (`Self::base_signal`) and no longer report a reason at all.
     /// * `on_double_click` keeps its reason — no widget callback can carry it — and travels on its
     ///   published counterpart, `double_clicked` ([`Self::published_counterpart`]); the loader wires
     ///   that name and refuses with a message naming it when the control does not publish it.
@@ -329,7 +329,7 @@ impl JsonTriggerMarker {
     /// The published event name this marker corresponds to, or `None` when the intent has no
     /// published spelling.
     ///
-    /// See [`MARKER_PUBLISHED_EVENTS`] for why the answer is data rather than a second `match`.
+    /// See `MARKER_PUBLISHED_EVENTS` for why the answer is data rather than a second `match`.
     pub fn published_counterpart(self) -> Option<&'static str> {
         MARKER_PUBLISHED_EVENTS
             .iter()
@@ -363,7 +363,7 @@ impl JsonTriggerMarker {
     /// is the failure this module refuses elsewhere (a handler told the right event happened while
     /// running on another one).
     ///
-    /// The **channel** a marker travels on is [`Self::base_signal`] / [`Self::uses_value_callback`]
+    /// The **channel** a marker travels on is `Self::base_signal` / [`Self::uses_value_callback`]
     /// / [`Self::published_counterpart`], not this value: the kind is what the handler is told, not
     /// how the binding is made.
     pub fn trigger_kind(self) -> crate::platform::WidgetTriggerKind {
@@ -494,11 +494,11 @@ pub const MARKER_PUBLISHED_EVENTS: &[(JsonTriggerMarker, Option<&'static str>)] 
 /// Every marker that has no published counterpart.
 ///
 /// A gate reads this to require an explicit decision for a new marker: a marker added to
-/// [`MARKER_KEYS`] without a row in [`MARKER_PUBLISHED_EVENTS`] is absent from the table rather
+/// [`MARKER_KEYS`] without a row in `MARKER_PUBLISHED_EVENTS` is absent from the table rather
 /// than silently "unpublished", and a marker whose row is `None` is recorded here.
 ///
 /// `None` means "no published spelling", **not** "no channel": the two focus markers are carried
-/// by the widget's own focus signals ([`JsonTriggerMarker::base_signal`]) and are routable.
+/// by the widget's own focus signals (`JsonTriggerMarker::base_signal`) and are routable.
 pub fn markers_without_published_counterpart() -> impl Iterator<Item = JsonTriggerMarker> {
     MARKER_PUBLISHED_EVENTS.iter().filter_map(|(marker, name)| name.is_none().then_some(*marker))
 }

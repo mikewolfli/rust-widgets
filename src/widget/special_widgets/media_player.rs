@@ -616,7 +616,7 @@ impl MediaPlayer {
     /// # Why this exists (BLUE24 §1: a mechanism with no consumer)
     ///
     /// This control had everything a player needs **except the advancing**: a
-    /// `position_ms`, a [`Self::progress_ratio`], a `position_changed` signal, a
+    /// `position_ms`, a `Self::progress_ratio`, a `position_changed` signal, a
     /// `play`/`pause`, and a progress rule in `draw` that reads the ratio. What it did
     /// not have was anything that *moved* `position_ms` while `playing` was true — so a
     /// started player painted a bar frozen at zero for ever, and the progress rule was
@@ -637,7 +637,7 @@ impl MediaPlayer {
     /// # Why it stops at the end rather than wrapping
     ///
     /// Reaching the end clears the playing state and emits `position_changed` with the final
-    /// position, matching [`VideoPlayer::tick`]'s behaviour and the single playback-ended
+    /// position, matching `VideoPlayer::tick`'s behaviour and the single playback-ended
     /// fact a host can act on. Wrapping would need a repeat mode, which this control does
     /// not have — inventing one here would be a second mechanism for a question the
     /// control has not been asked.

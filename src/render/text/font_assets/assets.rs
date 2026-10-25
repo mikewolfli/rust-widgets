@@ -271,7 +271,7 @@ pub fn with_parsed_face<R>(
 
 /// Drops every parse cached on this thread, so the next `with_parsed_face` reads the font again.
 ///
-/// Called from [`invalidate_face_cache`] when a host registers or clears a face. Other threads keep
+/// Called from `invalidate_face_cache` when a host registers or clears a face. Other threads keep
 /// their own entries, which is safe: an entry is keyed by the address of the bytes it was parsed
 /// from, so a different face registered under the same name cannot be served by it.
 #[cfg(any(
@@ -372,7 +372,7 @@ static SLOT_GENERATIONS: crate::compat::Mutex<[u32; COVERAGE_CACHE_SLOTS]> =
 /// # Why this exists rather than every caller walking `active_faces`
 ///
 /// With the `runtime-fonts` feature on, a host may register its own face
-/// ([`crate::render::text::register_face`]). That face must be consulted before the compiled
+/// (`crate::render::text::register_face`). That face must be consulted before the compiled
 /// ones — a host that supplied a font did so because it wants *that* font — so the lookup cannot
 /// simply iterate the compiled list. Every caller that needs "which face draws this character"
 /// (`VectorSource`, the SVG backend's `outline_by_coverage`, the shaper's coverage probe) routes
@@ -385,7 +385,7 @@ static SLOT_GENERATIONS: crate::compat::Mutex<[u32; COVERAGE_CACHE_SLOTS]> =
 /// finding the one that covers the character — for a Latin label that is one parse per glyph; for a
 /// CJK glyph it is a parse of Latin *and* CJK. Nothing about the answer changes between frames on a
 /// build with no runtime faces, so it is work the process repeats purely because nothing remembered
-/// it. The cache ([`COVERAGE_CACHE_SLOTS`]) remembers it per codepoint, `tofu` included.
+/// it. The cache (`COVERAGE_CACHE_SLOTS`) remembers it per codepoint, `tofu` included.
 #[cfg(any(
     feature = "text-shaping",
     feature = "fonts-vector-latin",
@@ -500,7 +500,7 @@ pub(crate) fn invalidate_face_cache() {
 /// same either way, so there is no second code path to keep in step.
 ///
 /// This is the **compiled** list; a face registered at runtime via
-/// [`crate::render::text::register_face`] is not in it. Use [`face_for_char`] when the question is
+/// `crate::render::text::register_face` is not in it. Use [`face_for_char`] when the question is
 /// "which face draws this character", which is almost always.
 #[cfg(any(
     feature = "text-shaping",
@@ -591,7 +591,7 @@ pub fn active_faces() -> &'static [FaceBytes] {
 /// # What this does *not* change
 ///
 /// It is not a fallback for a mis-named font, and it does not re-lay-out anything. Measurement still
-/// goes through [`crate::render::text::shape_line`], which still honours the family — so a caller who
+/// goes through `crate::render::text::shape_line`, which still honours the family — so a caller who
 /// names a face this build ships gets that face's advances, and a caller who names one it does not
 /// gets the estimate model, exactly as `shaping::face_for_family` documents. What is now consistent
 /// is only the *in* question: whichever face the rasteriser would use for a character is the face

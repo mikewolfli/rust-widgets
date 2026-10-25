@@ -32,7 +32,7 @@
 //!
 //! The platform bridge is a real OS object, so a test can only exercise the submit path through a
 //! substitute. The installed bridge is therefore a thread-local slot, the same shape
-//! [`crate::style::environment`] uses for the device facts and for the same reason: every submit
+//! `crate::style::environment` uses for the device facts and for the same reason: every submit
 //! point is then reachable in a unit test with no window and no accessibility bus.
 //!
 //! # Honesty about what this does not do

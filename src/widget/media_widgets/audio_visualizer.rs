@@ -533,7 +533,7 @@ impl AudioVisualizer {
 
     /// Sets the peak hold duration in milliseconds.
     ///
-    /// The field is read by [`AudioVisualizer::advance_peak_hold`], which the animation bus drives:
+    /// The field is read by `AudioVisualizer::advance_peak_hold`, which the animation bus drives:
     /// a peak is held for this long after the bar leaves it, then falls. Before that method existed
     /// the field was stored, published and read by nothing, and a marker sat at its highest ever
     /// value for the lifetime of the widget -- which is not "hold for 500 ms", it is "hold forever".
@@ -883,7 +883,7 @@ impl Widget for AudioVisualizer {
     /// markers were still falling answered `false`, so such a host would stop scheduling frames
     /// mid-decline and the markers would freeze part-way — the exact "held forever" shape the
     /// peak-hold clock was written to end, reintroduced one layer up. The condition mirrors
-    /// [`Self::advance_peak_hold`]: a marker is in flight while peak-hold is on and it sits above the
+    /// `Self::advance_peak_hold`: a marker is in flight while peak-hold is on and it sits above the
     /// bar it tracks.
     fn is_animating(&self) -> bool {
         self.peak_moving || self.smoothing_moving

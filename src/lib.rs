@@ -1263,7 +1263,7 @@ pub fn run() {
 /// touch, `PostQuitMessage` is thread-affine). Recording the request is one atomic store, which
 /// every thread may do, and the loop's own frame tick performs the toolkit's stop — every loop
 /// this library owns calls `drive_frame` on the thread that owns it. See
-/// [`platform::stop`](crate::platform::stop) for that seam, and [`platform::Platform::quit`] for
+/// `platform::stop` for that seam, and [`platform::Platform::quit`] for
 /// the backend-level "perform it now" half.
 ///
 /// This is the entry a host should use when it is **not** driving the loop: a smoke test that
@@ -1518,7 +1518,7 @@ pub fn create_panel(
 ///
 /// Returns `0` on a profile that does not ship the message box (`mini`,
 /// `embedded`). Callers must treat `0` as "no control was created" rather than
-/// using it as a parent: see the note above [`NO_SUCH_CONTROL`].
+/// using it as a parent: see the note above `NO_SUCH_CONTROL`.
 pub fn create_message_box(
     parent: crate::core::ObjectId,
     title: &str,
@@ -1696,7 +1696,7 @@ pub fn create_splitter(
 }
 
 /// Creates a grid widget — a visual row/column matrix, distinct from the generic
-/// [`layout::GridLayout`](crate::layout::GridLayout) placement engine.
+/// `layout::GridLayout` placement engine.
 /// # Profile gate
 ///
 /// Shares [`create_tab_widget`]'s `widgets_unstripped` gate for the same reason: the
@@ -2003,8 +2003,8 @@ pub fn reapply_active_theme() {
 ///
 /// # When to call it
 ///
-/// The device preference is read through [`crate::style::environment`], whose snapshot is taken once
-/// per frame by [`drive_frame`](crate::drive_frame). A host that learns of a system appearance
+/// The device preference is read through `crate::style::environment`, whose snapshot is taken once
+/// per frame by `drive_frame`. A host that learns of a system appearance
 /// change therefore calls this between frames — which is exactly what the environment's own docs
 /// describe ("a host that changed a system setting between frames sees it take effect on the next
 /// one"). A profile without a theme module has nothing to switch and reports `false`.
@@ -3108,7 +3108,7 @@ pub fn choose_path(
 /// granularity is one frame interval (~16 ms). Repeating work is done by having the callback call
 /// this again; there is deliberately no repeating form (one mechanism, one interval).
 ///
-/// See [`platform::main_thread`](crate::platform::main_thread) for why the frame tick is the
+/// See `platform::main_thread` for why the frame tick is the
 /// executor and what a panicking callback does.
 #[cfg(not(alloc_frugal))]
 pub fn schedule_on_main(after: std::time::Duration, work: impl FnOnce() + Send + 'static) -> bool {

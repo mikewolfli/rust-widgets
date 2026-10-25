@@ -111,7 +111,7 @@ pub(crate) fn apply_active_theme(widget: &mut dyn Widget) {
 ///
 /// # The defect this exists to fix
 ///
-/// [`apply_active_theme`] runs inside the two creation funnels, so a control is themed exactly
+/// `apply_active_theme` runs inside the two creation funnels, so a control is themed exactly
 /// **once**, in the state its constructor produced. Every latching control in the crate changes
 /// its state later, through a setter (`set_checked`, `set_selected_index`, …) that fires its
 /// signals and asks for a redraw — and a redraw re-runs `draw`, not the theme application. The
@@ -133,7 +133,7 @@ pub(crate) fn apply_active_theme(widget: &mut dyn Widget) {
 /// # Why this is the theme layer's job
 ///
 /// Resolving `"<kind>:<state>"` needs the factory name (to classify the kind into a role) and
-/// the store's resolved style — the same two facts [`apply_active_theme`] needs, and the two
+/// the store's resolved style — the same two facts `apply_active_theme` needs, and the two
 /// reasons it lives behind the `widgets_unstripped` gate. A control cannot answer either question,
 /// so the setter cannot do this itself; the call has to come from the theme side.
 ///
@@ -145,7 +145,7 @@ pub(crate) fn apply_active_theme(widget: &mut dyn Widget) {
 ///
 /// # Gating
 ///
-/// [`apply_active_theme`] and this function carry the **same** gate,
+/// `apply_active_theme` and this function carry the **same** gate,
 /// `all(not(alloc_frugal), widgets_unstripped)`. That is deliberate and load-bearing: the two
 /// were previously gated differently (`full_widgets` here, the wider gate there), so a build
 /// with an OS backend but no device profile — `--features windows`, which `build.rs` marks

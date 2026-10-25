@@ -123,7 +123,7 @@ impl ControlBackend for super::CustomPaintControlBackend {
     /// the control's *defaults*, and every `on_*` handler the document declared was dropped,
     /// because both paths reach the widget through `with_widget`/`with_widget_mut`.
     ///
-    /// Delegates to [`adopt_widget_box`](super::CustomPaintControlBackend::adopt_widget_box),
+    /// Delegates to `adopt_widget_box`,
     /// which is also the tail of the name-based path — one implementation of "mount this
     /// box, record both directions of the parent relation, give a window its host surface".
     ///

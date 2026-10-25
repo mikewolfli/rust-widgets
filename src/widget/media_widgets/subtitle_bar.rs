@@ -202,3 +202,19 @@ impl Draw for SubtitleBar {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_caption_round_trips_and_the_line_cap_has_a_floor() {
+        let mut bar = SubtitleBar::new(Rect::new(0, 0, 320, 48));
+        bar.set_text("first line\nsecond line");
+        assert_eq!(bar.text(), "first line\nsecond line");
+        bar.set_max_lines(0);
+        assert_eq!(bar.max_lines(), 1);
+        bar.clear();
+        assert_eq!(bar.text(), "");
+    }
+}

@@ -61,7 +61,7 @@ pub use traits::*;
 ///
 /// [`Binding`] could notify listeners, but nothing in the widget layer listened: the bridge from
 /// a model value to a control's property was missing, so the module had no consumer. This trait is
-/// the smallest shape that bridge needs — a name and a [`CapabilityValue`] in both directions —
+/// the smallest shape that bridge needs — a name and a `CapabilityValue` in both directions —
 /// and a widget type implements it by delegating to its own property contract. It is deliberately
 /// not tied to `Widget`, so a headless model target (a test double, a serialized form) can use the
 /// same binding path.

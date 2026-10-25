@@ -32,7 +32,7 @@
 //! # What `loop_has_ticked` answers, and what it does not
 //!
 //! A request made while no loop is running has no reader: nothing is ticking, so nothing will
-//! read it. [`request`] reports that fact by returning whether a loop has driven a frame in
+//! read it. `request` reports that fact by returning whether a loop has driven a frame in
 //! this process. It is deliberately the *observed* fact and not a per-backend claim: a backend
 //! whose loop never runs (a state-only host, `mini`/`embedded`) has not ticked and answers
 //! `false`, which is what a caller needs to decide whether to arrange its own ending.

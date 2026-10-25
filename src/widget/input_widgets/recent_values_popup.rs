@@ -12,7 +12,7 @@
 //! beside the field, exactly as `SuggestionPopup` is.
 //!
 //! It shares `SuggestionPopup`'s row rhythm and empty-state text through
-//! [`popup_support`](super::popup_support), so the two popups in this family cannot drift into two
+//! `popup_support`, so the two popups in this family cannot drift into two
 //! different row heights.
 
 use crate::compat::{String, ToString, Vec};

@@ -350,7 +350,7 @@ impl TextArea {
     /// The single derivation every reader goes through — [`Self::selected_text`], the paint, and
     /// the deletion paths — so "is there a selection" and "which bytes are in it" cannot be
     /// answered two different ways. A zero-width anchor/caret pair is not a range: see
-    /// [`Self::normalize_selection`].
+    /// `Self::normalize_selection`.
     pub fn selection_range(&self) -> Option<(usize, usize)> {
         let anchor = self.selection_anchor?;
         let caret = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));

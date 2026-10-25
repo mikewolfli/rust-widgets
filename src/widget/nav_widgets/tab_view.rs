@@ -430,7 +430,7 @@ impl TabView {
     /// Enables or disables horizontal strip scrolling (a wheel over the strip moves it).
     ///
     /// Disabled by default, which keeps the historical behaviour of squeezing a crowded run
-    /// down to [`TAB_MIN_WIDTH`] per tab.
+    /// down to `TAB_MIN_WIDTH` per tab.
     pub fn set_strip_scrollable(&mut self, scrollable: bool) {
         if self.scrollable_strip == scrollable {
             return;

@@ -174,7 +174,7 @@ impl QualityManager {
     /// Updates the quality configuration.
     ///
     /// The stored configuration is normalized (thresholds, counts and an inverted quality range are
-    /// repaired), and [`Self::current_level`] is re-clamped against the *new* range. Without the
+    /// repaired), and `Self::current_level` is re-clamped against the *new* range. Without the
     /// re-clamp, shrinking the range left the level outside it — the manager would report a level its
     /// own config forbids until the next change fired a branch, and a level at the old maximum never
     /// degrades because its arm only reacts to `should_degrade`.

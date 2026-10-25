@@ -53,7 +53,7 @@ const SNACKBAR_MARGIN: i32 = 8;
 /// [`Self::Classic`] is the scaffold's own compact M2-style strip and is the default,
 /// so a scaffold that never asks for anything else paints exactly the bytes it always
 /// did. [`Self::Material3`] hands the band to a real
-/// [`BottomNavigationBar`](crate::widget::nav_widgets::bottom_navigation_bar::BottomNavigationBar),
+/// `BottomNavigationBar`,
 /// which paints the sliding M3 pill — one implementation instead of two that could
 /// disagree about where the selection indicator is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

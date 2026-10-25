@@ -277,7 +277,7 @@ impl AdapterInfo {
     /// type that also exists without the `gpu-wgpu` feature; the string values
     /// come from `format!("{:?}", wgpu::Backend)` in `Self::from_wgpu`.
     ///
-    /// A CPU adapter is forced to [`GpuBackendTier::Software`] regardless of the
+    /// A CPU adapter is forced to `GpuBackendTier::Software` regardless of the
     /// backend name: lavapipe reports Vulkan and llvmpipe reports GL, so mapping
     /// on the backend string alone would report a software rasterizer as a
     /// primary or GL tier and hide the degradation (G-211).

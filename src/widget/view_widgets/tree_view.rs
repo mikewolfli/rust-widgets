@@ -1564,6 +1564,19 @@ impl Widget for TreeView {
                     ]))
                 }))
             }
+            "selection_set_changed" => Some(EventSignalRef::mapped(
+                "selection_set_changed",
+                &self.selection_set_changed,
+                |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(
+                        v.iter()
+                            .map(|item| {
+                                crate::widget::capability::CapabilityValue::UInt(*item as u64)
+                            })
+                            .collect(),
+                    )
+                },
+            )),
             _ => None,
         }
     }

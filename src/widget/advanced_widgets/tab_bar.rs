@@ -947,7 +947,7 @@ impl TabBar {
     ///
     /// Raises the maximum to match if the new minimum would exceed it, mirroring
     /// [`Self::set_tab_max_width`]. Without that the pair could be left inverted, and
-    /// [`Self::compute_tab_width`]`s `clamp(min, max)` **panics** on `min > max` — reaching it via
+    /// `Self::compute_tab_width``s `clamp(min, max)` **panics** on `min > max` — reaching it via
     /// `set_tab_min_width(5000)` on a bar whose maximum was still the 200 default. The two setters
     /// were asymmetric: `set_tab_max_width` already pulled the maximum up to the minimum, this one
     /// left the maximum behind.

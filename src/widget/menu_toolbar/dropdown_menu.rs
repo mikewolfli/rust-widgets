@@ -1028,7 +1028,7 @@ impl DropdownMenu {
     /// How many nested panels are open below the field's list.
     ///
     /// `0` when nothing is open and at most [`MAX_SUBMENU_DEPTH`], because a branch at
-    /// that depth is drawn with its arrow but refused by [`Self::open_submenu_at`].
+    /// that depth is drawn with its arrow but refused by `Self::open_submenu_at`.
     pub fn submenu_depth(&self) -> usize {
         self.submenus.len()
     }

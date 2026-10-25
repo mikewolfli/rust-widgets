@@ -239,7 +239,7 @@ impl AppBar {
     /// Sets the trailing action buttons, replacing any previous list.
     ///
     /// The buttons are drawn from the bar's trailing edge inward, each as wide as its own
-    /// measured label (never narrower than [`APP_BAR_ACTION_MIN_WIDTH`]). When the total does
+    /// measured label (never narrower than `APP_BAR_ACTION_MIN_WIDTH`). When the total does
     /// not fit, a single overflow affordance takes the innermost slot and
     /// [`Self::action_overflow_pressed`] reports a tap on it — the actions themselves stay in
     /// the model and are still reachable by index through [`Self::actions`].
@@ -295,7 +295,7 @@ impl AppBar {
 
     /// Sets an optional widget shown in a band below the main bar.
     ///
-    /// The main bar keeps [`APP_BAR_MIN_HEIGHT`]; the slot takes the rest of the bar's
+    /// The main bar keeps `APP_BAR_MIN_HEIGHT`; the slot takes the rest of the bar's
     /// rectangle, so a host that wants a nested bottom strip lays the bar out taller. Passing
     /// `None` restores the single-band bar and therefore the original pixels.
     pub fn set_bottom_widget(&mut self, widget: Option<Box<dyn Widget>>) {

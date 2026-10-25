@@ -4,7 +4,7 @@
 //! `ColumnChooser` — show/hide and reorder a table's columns (COMP-F03).
 //!
 //! A wide table can only be read by scrolling, and a column the reader does not need still costs
-//! its width. The companion takes the same [`ColumnSpec`] values a header publishes (including
+//! its width. The companion takes the same `ColumnSpec` values a header publishes (including
 //! their token form, so visibility survives a save/load round trip), filters them by a search
 //! string and reports every change back to the owning grid.
 

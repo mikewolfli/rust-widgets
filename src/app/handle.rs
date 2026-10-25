@@ -296,7 +296,7 @@ pub trait WidgetHandle: Sized {
     /// Returns `true` when the control accepted the value; `false` when it did not — an id that
     /// is not a mounted widget, or a control that publishes no `value`. A caller branches on the
     /// result at runtime if it cares; it never branches on the OS. See
-    /// [`write_control_property`] for why this is a property write rather than a call into the
+    /// `write_control_property` for why this is a property write rather than a call into the
     /// platform's host-native surface.
     fn set_value(&self, value: f64) -> bool {
         write_control_property(
@@ -1671,7 +1671,7 @@ impl WindowOptions {
 
     /// Creates the window through the library's widget path and applies the attributes.
     ///
-    /// The returned [`WindowCreation::window`] is the widget id (what every other API uses); the
+    /// The returned `WindowCreation::window` is the widget id (what every other API uses); the
     /// attributes are applied to the **host** window that widget is attached to. Attributes a
     /// backend cannot honour are returned in `unsupported`, never silently ignored.
     pub fn create(self) -> crate::platform::WindowCreation {
@@ -2460,7 +2460,7 @@ impl MenuBarHandle {
     /// `on_click` cannot serve this control: a menu bar has one target per entry, and its
     /// published event is `triggered` carrying the title, not `clicked` carrying nothing.
     /// The subscription is recorded like the other handle callbacks, so
-    /// [`WidgetHandle::remove_callbacks`] really disconnects it.
+    /// `WidgetHandle::remove_callbacks` really disconnects it.
     pub fn on_triggered<F: FnMut(String) + Send + 'static>(&self, f: F) {
         let id = self.raw_id();
         let held: std::sync::Arc<std::sync::Mutex<F>> =
@@ -2862,7 +2862,7 @@ impl SliderHandle {
     /// Set the current slider value (clamped to min/max range).
     ///
     /// The value is written both to the in-process mirror and to the control
-    /// through its `value` property (via [`write_control_property`]), so the change is
+    /// through its `value` property (via `write_control_property`), so the change is
     /// visible on screen and not just to `value()`. On a backend without a
     /// numeric value for sliders the mirror is still updated, because it is the
     /// authoritative copy for the self-drawn path.
@@ -3149,7 +3149,7 @@ impl CheckBoxHandle {
     /// Written to the control through its property contract, and recorded in the
     /// in-process mirror as well
     /// through the control's own `checked` property, so the box really moves. (See
-    /// [`write_control_property`] for the host-native surface this replaced.)
+    /// `write_control_property` for the host-native surface this replaced.)
     ///
     /// This always lands on a definite state, tri-state mode or not, so
     /// [`CheckBoxHandle::check_state`] and the control cannot disagree.
@@ -4752,7 +4752,7 @@ impl PanelHandle {
     ///
     /// The nested panel's geometry is recorded here as well, so its own
     /// [`PanelHandle::set_layout`] follows the box this panel gives it. See
-    /// [`apply_panel_geometry`], which re-runs a child panel's layout after the
+    /// `apply_panel_geometry`, which re-runs a child panel's layout after the
     /// parent places it.
     pub fn new_panel(&self, x: i32, y: i32, w: u32, h: u32) -> PanelHandle {
         let panel = PanelHandle::from_raw(crate::create_panel(self.raw_id(), x, y, w, h));
@@ -5334,7 +5334,7 @@ impl WindowHandle {
 
     /// Register a callback invoked when the window is about to close.
     ///
-    /// Connects to the widget's own `closed` signal through [`register_close_callback`], so the
+    /// Connects to the widget's own `closed` signal through `register_close_callback`, so the
     /// callback fires when the **widget** closes (a title-bar close, a `Window::close`, or the
     /// published `close` command), not only when [`WindowHandle::close`] is called.
     ///

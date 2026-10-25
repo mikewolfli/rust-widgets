@@ -425,3 +425,26 @@ impl WidgetProperties for FilterRow {
         property_names_of!["columns", "conditions", "operator", "live", BASE_PROPERTY_NAMES]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_condition_is_accepted_only_for_a_real_column() {
+        let mut row = FilterRow::new(Rect::new(0, 0, 320, 32));
+        row.set_columns(crate::compat::Vec::from([
+            String::from("Name"),
+            String::from("City"),
+        ]));
+        assert_eq!(row.columns().len(), 2);
+        assert!(row.set_condition(1, FilterCondition::contains(1, "Berlin")));
+        assert_eq!(row.conditions().len(), 1);
+        assert_eq!(row.conditions()[0].operand, "Berlin");
+        // A column past the end is refused rather than silently filed under another column.
+        assert!(!row.set_condition(9, FilterCondition::contains(9, "Nowhere")));
+        assert_eq!(row.conditions().len(), 1);
+        row.clear_filters();
+        assert!(row.conditions().is_empty());
+    }
+}

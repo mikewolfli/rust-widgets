@@ -41,7 +41,7 @@
 //!
 //! The cost is that a newly added data control is not covered until someone writes its arm. That is the
 //! honest failure mode — a control whose snapshot stays empty, rather than one silently filled with the
-//! wrong shape — and [`apply`] reports how many it filled so the count can be checked rather than assumed.
+//! wrong shape — and `apply` reports how many it filled so the count can be checked rather than assumed.
 
 use crate::compat::Arc;
 use crate::core::{Color, ObjectId, Point, Rect, Size};
@@ -122,6 +122,7 @@ use crate::widget::special_widgets::toast::{ToastItem, ToastLevel, ToastStack};
 use crate::widget::view_widgets::data_grid::DataGrid;
 use crate::widget::view_widgets::data_source::IncrementalTableDataSource;
 use crate::widget::view_widgets::grid_table::GridTableWidget;
+use crate::widget::view_widgets::image_gallery::ImageGallery;
 use crate::widget::view_widgets::list_view::{ListView, VecListModel};
 use crate::widget::view_widgets::properties_panel::{
     PropertiesPanel, PropertyEntry, PropertyValue,
@@ -539,8 +540,31 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             }
             None => false,
         },
+        "image_gallery" => match widget_as_mut::<ImageGallery>(widget) {
+            Some(gallery) => {
+                // A gallery whose own snapshot says "No images in gallery" teaches a reviewer nothing
+                // about the grid, the captions or the selection ring.
+                if gallery.images().is_empty() {
+                    for index in 1..=4 {
+                        gallery.add_image(
+                            &format!("sample-{index}.png"),
+                            Some(&format!("Image {index}")),
+                        );
+                    }
+                }
+                true
+            }
+            None => false,
+        },
         "dialog" => match widget_as_mut::<Dialog>(widget) {
             Some(dialog) => {
+                // A dialog with no action row is an empty frame: the row is half of what a dialog
+                // *is*, so the sample states the conventional pair and lets the picture show it.
+                if dialog.button_texts().is_empty() {
+                    dialog.set_title("Dialog");
+                    dialog.add_button("Cancel", crate::widget::composite::ButtonRole::Normal);
+                    dialog.add_button("OK", crate::widget::composite::ButtonRole::Primary);
+                }
                 dialog.open();
                 // Same reasoning as the sheet above: the reveal is what the draw reads, so the
                 // sample is settled fully shown and not merely aimed there, under a frame cap.

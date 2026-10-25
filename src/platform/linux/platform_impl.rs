@@ -197,7 +197,7 @@ impl Platform for LinuxPlatform {
     /// in-process and never opens native GTK windows", so it must not claim a host integration it
     /// does not wire up. `dpi_scaling`, `ime` and `accessibility` are answered by the in-process
     /// toolkit layer; there is no host menu protocol, so `native_menu` is `false` — the same
-    /// reasoning [`crate::platform::wayland`] records.
+    /// reasoning `crate::platform::wayland` records.
     ///
     /// # Why `dpi_scaling` follows `dpi_scale_factor`
     ///
@@ -317,7 +317,7 @@ impl Platform for LinuxPlatform {
     /// Hands a URL or path to the desktop's default handler by spawning `xdg-open`.
     ///
     /// See [`Platform::open_external`] for the hand-off (not completion) contract, and
-    /// [`crate::platform::external`] for why an option-shaped target is refused rather than
+    /// `crate::platform::external` for why an option-shaped target is refused rather than
     /// escaped: `xdg-open` parses its own arguments and rejects both `-` and `-- /path`.
     fn open_external(&self, target: &str) -> Result<(), crate::platform::types::OpenError> {
         crate::platform::external::spawn_handler("xdg-open", &[], target)
@@ -447,7 +447,7 @@ impl Platform for LinuxPlatform {
     ///
     /// GTK has no synchronous "current locale" API that does not duplicate the C library's
     /// answer, so this reads the POSIX variables through
-    /// [`crate::platform::locale::interned_from_environment`]. Caching there keeps the four
+    /// `crate::platform::locale::interned_from_environment`. Caching there keeps the four
     /// `std::env::var` reads off the 250 ms environment poll (P-02/P-04), and the value is interned
     /// once for the style layer's snapshot.
     fn system_locale(&self) -> Option<&'static str> {
@@ -456,7 +456,7 @@ impl Platform for LinuxPlatform {
 
     /// A revision of the environment facts, derived from their current values.
     ///
-    /// See [`crate::platform::locale::environment_revision`]: the shared accessor hashes the
+    /// See `crate::platform::locale::environment_revision`: the shared accessor hashes the
     /// complete fact set the style snapshot reads (P-03/P-06).
     fn environment_generation(&self) -> u64 {
         crate::platform::locale::environment_revision(self)
@@ -1712,7 +1712,7 @@ impl Platform for LinuxPlatform {
     /// `state` delegation does. Inheriting the trait default here made a copy/paste inside the
     /// library a silent no-op while the identical call on every sibling backend worked.
     ///
-    /// With `gtk-native` the write goes through [`super::gdk_clipboard`], which owns the
+    /// With `gtk-native` the write goes through `super::gdk_clipboard`, which owns the
     /// main-thread rule and the read-back confirmation. This method used to publish to GDK
     /// inline and then report **`state`'s** answer, so a failed display write was indistinguishable
     /// from a successful one — and `get_clipboard_text` below read only the record, so the two
@@ -1791,7 +1791,7 @@ impl Platform for LinuxPlatform {
     /// * `0`: no display clipboard is reachable from this build/thread, so this backend cannot
     ///   report changes. That is the trait's honest "not reported", not a fabricated constant.
     ///
-    /// The counter and the handler live in [`super::gdk_clipboard`], next to the rest of the GDK
+    /// The counter and the handler live in `super::gdk_clipboard`, next to the rest of the GDK
     /// clipboard binding, so the write path and the change signal describe the same object.
     fn clipboard_generation(&self) -> u64 {
         #[cfg(all(unix_desktop, feature = "gtk-native"))]

@@ -31,7 +31,7 @@
 //!
 //! `sysconf` is a libc call with no file I/O. The `pmset` and `ps` probes each spawn a
 //! short-lived child process, so their answers are cached for a short TTL
-//! ([`BATTERY_CACHE_TTL`], [`MEMORY_CACHE_TTL`]): `AdaptivePerformanceMonitor` samples memory
+//! (`BATTERY_CACHE_TTL`, `MEMORY_CACHE_TTL`): `AdaptivePerformanceMonitor` samples memory
 //! every frame, and spawning `ps` at 60 Hz was a measurable share of a frame. A TTL is the
 //! honest middle ground between "never ask" and "ask 60 times a second": the figure is live to
 //! within a few seconds, and the cache is stamped rather than permanent.

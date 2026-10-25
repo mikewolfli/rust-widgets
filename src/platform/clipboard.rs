@@ -177,7 +177,7 @@ pub trait RichClipboardBackend: Send + Sync {
     ///
     /// The fixed kinds this crate ships (`text/plain`, `text/html`, `text/rtf`) and any
     /// application-defined type a writer put there: for each, the bytes are the content's own
-    /// bytes ([`ClipboardContent::raw_bytes`]). [`ClipboardContent::Image`] and
+    /// bytes (`ClipboardContent::raw_bytes`). [`ClipboardContent::Image`] and
     /// [`ClipboardContent::Files`] answer `None` for the reason recorded on that method — their
     /// MIME type does not name the bytes this crate would have to return.
     ///

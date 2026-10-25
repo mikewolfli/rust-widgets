@@ -1801,6 +1801,17 @@ impl Widget for WebEngineView {
                     ]))
                 }))
             }
+            "download_progress_changed" => Some(EventSignalRef::mapped(
+                "download_progress_changed",
+                &self.download_progress_changed,
+                // `(download id, fraction)` — text and a float, so the declared shape is `Mixed`.
+                |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::String(v.0.clone()),
+                        crate::widget::capability::CapabilityValue::Float(f64::from(v.1)),
+                    ]))
+                },
+            )),
             _ => None,
         }
     }

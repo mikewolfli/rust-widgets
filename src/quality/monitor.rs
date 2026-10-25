@@ -36,7 +36,7 @@ pub struct FrameTimeMonitor {
 impl FrameTimeMonitor {
     /// Creates a new frame time monitor with the specified target frame rate.
     ///
-    /// The history window defaults to [`DEFAULT_HISTORY_CAPACITY`] samples. Use
+    /// The history window defaults to `DEFAULT_HISTORY_CAPACITY` samples. Use
     /// [`Self::with_capacity`] when a longer consecutive-frame window is needed.
     pub fn new(target_frame_rate: f32) -> Self {
         Self::with_capacity(target_frame_rate, DEFAULT_HISTORY_CAPACITY)

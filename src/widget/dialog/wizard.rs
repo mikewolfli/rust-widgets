@@ -491,7 +491,7 @@ impl WizardDialog {
     /// Enables or disables a [`WizardOption`].
     ///
     /// The change reaches both the painted row and its hit targets, because both are
-    /// derived from [`nav_slots`](Self::nav_slots).
+    /// derived from `nav_slots`.
     pub fn set_option(&mut self, option: WizardOption, enabled: bool) {
         let present = self.options.contains(&option);
         if present == enabled {

@@ -40,19 +40,19 @@
 //!
 //! This module owns hardware adaptation and per-stage attribution: adapter
 //! selection, hardware-adaptive buffer profiles, and
-//! [`performance::PerformanceStats`] (frame classification, pressure, traps) used
+//! `performance::PerformanceStats` (frame classification, pressure, traps) used
 //! to adjust quality. `crate::performance::profiler` owns per-section frame
 //! timing (`FrameProfiler`/`Profiler`). The boundary is deliberate — the two
 //! answer different questions — and each metric has exactly one statistics
-//! endpoint: adaptive decisions read [`performance::PerformanceStats`], never a
+//! endpoint: adaptive decisions read `performance::PerformanceStats`, never a
 //! second frame table built here.
 //!
 //! # One backend answer (G-211)
 //!
-//! Adapter selection lives in [`backend_ladder`]; [`GpuManager`] publishes its
-//! result (including [`GpuBackendTier`]) through
-//! [`publish_shared_selection`], so other GPU paths read the same answer with
-//! [`shared_selection`] instead of running a second ladder.
+//! Adapter selection lives in `backend_ladder`; `GpuManager` publishes its
+//! result (including `GpuBackendTier`) through
+//! `publish_shared_selection`, so other GPU paths read the same answer with
+//! `shared_selection` instead of running a second ladder.
 pub mod adapter;
 /// Backend degradation ladder (`Primary` → OpenGL ES → software).
 ///

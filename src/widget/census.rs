@@ -78,7 +78,7 @@ pub struct AppearanceCensus {
     ///
     /// Alpha is part of the identity: a theme that varies a layer's opacity rather than its hue
     /// (a scrim is the standard case) changes the drawing, and a key that dropped alpha could not
-    /// see it. See [`count_ink`].
+    /// see it. See `count_ink`.
     pub dominant: Option<(u8, u8, u8, u8)>,
     /// Painted pixels that are not the dominant colour: text, borders, icons.
     pub detail: u32,
@@ -276,7 +276,7 @@ fn select(appearance: AppearanceMode) {
     global_theme_manager().set_appearance(appearance);
 }
 
-/// Registers the built-in light and dark presets so [`select`] can find them.
+/// Registers the built-in light and dark presets so `select` can find them.
 ///
 /// A caller that has already registered themes of its own keeps them; this only
 /// guarantees the two presets exist, which is what makes the light/dark comparison

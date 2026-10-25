@@ -1515,7 +1515,7 @@ impl LineEdit {
     ///
     /// # Why the anchor is a **character index**, not a position
     ///
-    /// `index` is a byte offset and is converted once, here, by [`Self::byte_index_at_x`].
+    /// `index` is a byte offset and is converted once, here, by `Self::byte_index_at_x`.
     /// Pressing past the end of the value is not a no-op: the press anchors at the end and
     /// the following drag then selects backwards, which is how a user selects the tail of a
     /// value shorter than the field.
@@ -1575,7 +1575,7 @@ impl LineEdit {
     /// This is where a zero-width gesture is collapsed: a press that never moved leaves the caret
     /// exactly on its anchor, and a highlight of no width is not a selection. The collapse happens
     /// here, at the end, rather than in [`Self::press_at`] — see the note there, and
-    /// [`Self::normalize_selection`].
+    /// `Self::normalize_selection`.
     pub fn end_drag(&mut self) -> bool {
         let was_dragging = core::mem::replace(&mut self.dragging_selection, false);
         if was_dragging {

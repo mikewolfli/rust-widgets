@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! `MarkdownToolbar` — the formatting strip paired with [`MarkdownEditor`].
+//! `MarkdownToolbar` — the formatting strip paired with [`MarkdownEditor`](super::MarkdownEditor).
 //!
-//! The editor publishes [`MarkdownEditor::wrap_selection`] and
-//! [`MarkdownEditor::toggle_line_prefix`] as its single formatting entry points (issue COMP-H04 /
+//! The editor publishes [`MarkdownEditor::wrap_selection`](super::MarkdownEditor::wrap_selection) and
+//! [`MarkdownEditor::toggle_line_prefix`](super::MarkdownEditor::toggle_line_prefix) as its single
+//! formatting entry points (issue COMP-H04 /
 //! SP-03). This control is the pointer half of that contract: it lays the enabled actions out as
 //! one row of cells and emits the token of the cell a reader activates. It deliberately does **not**
 //! hold the editor — a toolbar that reached into a text control would be the second implementation
@@ -85,8 +86,8 @@ const MIN_CELL_WIDTH: i32 = 26;
 ///
 /// The control owns only the action list and its presentation. Activating a cell emits
 /// [`Self::action_triggered`]; the host forwards that token to the editor's own action
-/// ([`MarkdownEditor::wrap_selection`](super::markdown_editor::MarkdownEditor::wrap_selection) or
-/// [`MarkdownEditor::toggle_line_prefix`](super::markdown_editor::MarkdownEditor::toggle_line_prefix)).
+/// ([`MarkdownEditor::wrap_selection`](super::MarkdownEditor::wrap_selection) or
+/// [`MarkdownEditor::toggle_line_prefix`](super::MarkdownEditor::toggle_line_prefix)).
 pub struct MarkdownToolbar {
     base: BaseWidget,
     actions: Vec<String>,

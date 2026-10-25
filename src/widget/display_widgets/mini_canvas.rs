@@ -125,7 +125,7 @@ impl MiniCanvas {
         self.push_command(RenderCommand::FillCircle { center, radius, color });
     }
 
-    /// The largest number of commands the canvas retains. Defaults to [`DEFAULT_MAX_COMMANDS`].
+    /// The largest number of commands the canvas retains. Defaults to `DEFAULT_MAX_COMMANDS`.
     pub fn max_commands(&self) -> usize {
         self.max_commands
     }

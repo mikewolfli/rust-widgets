@@ -56,7 +56,7 @@ const AXIS_TICK: i32 = 4;
 
 /// How a [`TimelineAxis`] renders the label of a tick.
 ///
-/// The axis unit is the caller's (see [`GanttTask`]), so only two interpretations
+/// The axis unit is the caller's (see `GanttTask`), so only two interpretations
 /// are offered: print the value, or read it as days since the Unix epoch. A format
 /// string language would silently assume a unit the chart does not own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -137,7 +137,7 @@ impl TimelineAxis {
 
     /// Sets the visible range and returns the magnification to 1:1.
     ///
-    /// A reversed range is widened to a single unit, mirroring [`GanttWidget`]'s
+    /// A reversed range is widened to a single unit, mirroring `GanttWidget`'s
     /// viewport rule; an unchanged range at 1:1 emits nothing.
     pub fn set_range(&mut self, start: i64, end: i64) {
         let end = end.max(start.saturating_add(1));

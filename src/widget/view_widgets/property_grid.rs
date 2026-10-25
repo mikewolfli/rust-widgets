@@ -362,7 +362,7 @@ impl PropertyGrid {
     /// A selection past the end of the list is reported as `None` rather than as a stale index.
     /// [`properties_mut`](Self::properties_mut) hands out `&mut Vec<PropertyItem>`, so a caller can
     /// shrink the list without either of the methods that maintain this invariant
-    /// ([`clear`](Self::clear), [`remove_property`](Self::remove_property)) running; the index then
+    /// ([`clear`](Self::clear), `remove_property`) running; the index then
     /// named a row that does not exist, and `draw` highlighted nothing. Filtering here is what makes
     /// the accessor honest regardless of how the list changed.
     pub fn selected_index(&self) -> Option<usize> {
@@ -557,7 +557,7 @@ impl PropertyGrid {
     /// tolerated rather than prevented — an accessor returning `&mut Vec` cannot police its
     /// borrow — and [`selected_index`](Self::selected_index) filters the stale value out on read,
     /// so no caller observes a selection the grid cannot paint. Prefer
-    /// [`add_property`](Self::add_property) / [`remove_property`](Self::remove_property), which
+    /// [`add_property`](Self::add_property) / `remove_property`, which
     /// keep the cursor in range.
     pub fn properties_mut(&mut self) -> &mut Vec<PropertyItem> {
         self.group_revision = self.group_revision.wrapping_add(1);
@@ -608,6 +608,23 @@ impl Widget for PropertyGrid {
                 "context_menu_requested",
                 &self.context_menu_requested,
                 |v| crate::widget::capability::CapabilityValue::String(format!("{},{}", v.x, v.y)),
+            )),
+            "color_picker_requested" => Some(EventSignalRef::mapped(
+                "color_picker_requested",
+                &self.color_picker_requested,
+                // `(row index, property name)` — the declared shape is `Mixed` because the two
+                // components are a number and text.
+                |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
+                        crate::widget::capability::CapabilityValue::String(v.1.clone()),
+                    ]))
+                },
+            )),
+            "file_picker_requested" => Some(EventSignalRef::mapped(
+                "file_picker_requested",
+                &self.file_picker_requested,
+                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
             )),
             _ => None,
         }

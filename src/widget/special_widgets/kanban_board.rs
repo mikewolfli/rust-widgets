@@ -783,7 +783,7 @@ impl KanbanBoard {
         self.column_width
     }
 
-    /// Sets the width of one column (floored at [`MIN_COLUMN_WIDTH`]).
+    /// Sets the width of one column (floored at `MIN_COLUMN_WIDTH`).
     pub fn set_column_width(&mut self, width: u32) {
         let width = width.max(MIN_COLUMN_WIDTH);
         if self.column_width == width {
@@ -1281,10 +1281,7 @@ impl KanbanBoard {
         // A drop that carried a selected group moves the rest of the group with it, which is the
         // batch operation a multi-selection exists for. The batch is reported separately so the
         // published single-card `card_moved` payload keeps its shape.
-        if moved
-            && self.selected_cards.len() > 1
-            && self.selected_cards.contains(&card_id)
-        {
+        if moved && self.selected_cards.len() > 1 && self.selected_cards.contains(&card_id) {
             let batch: Vec<String> =
                 self.selected_cards.iter().filter(|id| **id != card_id).cloned().collect();
             let mut destination = target.card + 1;
@@ -1439,6 +1436,24 @@ impl Widget for KanbanBoard {
             "card_activated" => {
                 Some(EventSignalRef::mapped("card_activated", &self.card_activated, |v| {
                     CapabilityValue::String(v.clone())
+                }))
+            }
+            "card_hovered" => {
+                Some(EventSignalRef::mapped("card_hovered", &self.card_hovered, |v| match v {
+                    Some(id) => CapabilityValue::String(id.clone()),
+                    None => CapabilityValue::Null,
+                }))
+            }
+            "cards_moved" => Some(EventSignalRef::mapped("cards_moved", &self.cards_moved, |v| {
+                CapabilityValue::Tuple(
+                    v.iter().map(|id| CapabilityValue::String(id.clone())).collect(),
+                )
+            })),
+            "selection_changed" => {
+                Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
+                    CapabilityValue::Tuple(
+                        v.iter().map(|id| CapabilityValue::String(id.clone())).collect(),
+                    )
                 }))
             }
             _ => None,

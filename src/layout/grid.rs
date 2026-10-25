@@ -174,7 +174,7 @@ impl GridLayout {
     ///
     /// The logical extent is reduced until it is exactly addressable by the capped cell
     /// array, so `rows * cols` always equals the number of storage slots. A `rows × cols`
-    /// product above [`Self::MAX_CELLS`] is therefore refused deterministically rather than
+    /// product above `Self::MAX_CELLS` is therefore refused deterministically rather than
     /// leaving a logical range with no backing storage.
     pub fn new(rows: u32, cols: u32, spacing: u32, margin: u32) -> Self {
         let safe_rows = rows.max(1);
@@ -449,7 +449,7 @@ impl GridLayout {
     /// cells is a decision the caller must make explicitly through `remove_widget`.
     ///
     /// The logical extent stays exactly addressable: a requested extent whose product would
-    /// exceed [`Self::MAX_CELLS`] is **refused** rather than reduced. Reducing it (the previous
+    /// exceed `Self::MAX_CELLS` is **refused** rather than reduced. Reducing it (the previous
     /// behaviour) shrank the column count as well, which re-indexed every existing placement into
     /// a different cell and dropped stretch weights — a silent rewrite of the caller's layout
     /// rather than a refusal. `false` is the same deterministic answer [`Self::add_widget`] gives

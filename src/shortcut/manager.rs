@@ -197,7 +197,7 @@ impl ShortcutManager {
         entry.enabled.then_some(action_id)
     }
 
-    /// Whether a typed binding matches a key press, using the same rule as [`Self::lookup`].
+    /// Whether a typed binding matches a key press, using the same rule as `Self::lookup`.
     ///
     /// # Why this is the single decision point
     ///

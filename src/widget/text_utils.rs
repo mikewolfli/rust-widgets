@@ -12,10 +12,10 @@
 //!
 //! | Question | Helpers |
 //! |---|---|
-//! | "shorten to at most N characters" | [`elide`], [`elide_end`], [`elide_middle`], [`elide_start`] |
-//! | "shorten to at most N pixels" | [`elide_to_width`] |
-//! | "split into lines of at most N characters" | [`wrap_char_ranges`] |
-//! | "split into lines of at most N pixels, at word breaks" | [`wrap_to_width`] |
+//! | "shorten to at most N characters" | `elide`, `elide_end`, `elide_middle`, `elide_start` |
+//! | "shorten to at most N pixels" | `elide_to_width` |
+//! | "split into lines of at most N characters" | `wrap_char_ranges` |
+//! | "split into lines of at most N pixels, at word breaks" | `wrap_to_width` |
 //!
 //! Each family has a character-budget and a width-budget form because the two are
 //! needed in different places: a pre-layout size hint has no renderer to measure with,
@@ -282,7 +282,7 @@ pub fn elide_start(text: &str, max_chars: usize) -> Cow<'_, str> {
 
 /// Shortens `text` so its measured width fits `max_width`, eliding the **middle**.
 ///
-/// The width-budget counterpart of [`elide_middle`], for a path or URL in a column too
+/// The width-budget counterpart of `elide_middle`, for a path or URL in a column too
 /// narrow for its full text but whose tail is as identifying as its head. Same contract
 /// as [`elide_to_width`]: `measure` is the caller's renderer measurement, the ellipsis is
 /// part of the budget, and when even the ellipsis does not fit the result is empty

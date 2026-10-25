@@ -13,17 +13,17 @@
 //! (`cupertino_segmented_control`) claiming two metric sets.
 //!
 //! This module is therefore the desktop sibling: it owns the controls a desktop surface needs
-//! and draws all of them with [`ControlMetricsProfile::Macos`]. It shares the crate's existing
-//! machinery — [`BaseWidget`] for state, `Draw` for painting, [`FocusRing`] for keyboard focus
+//! and draws all of them with `ControlMetricsProfile::Macos`. It shares the crate's existing
+//! machinery — [`BaseWidget`] for state, `Draw` for painting, `FocusRing` for keyboard focus
 //! and the theme palette for colours — rather than introducing a second styling subsystem.
 //!
 //! # Sub-modules
 //!
-//! - [`segmented_control`] — `MacSegmentedControl`, a multi-way picker on a unified track
-//! - [`source_list`] — `MacSourceList`, a sectioned sidebar with single-row selection
-//! - [`stepper`] — `MacStepper`, an increment/decrement control with an optional wrap
-//! - [`toolbar`] — `MacToolbar`, a horizontal strip of item slots
-//! - [`window_chrome`] — `MacWindowChrome`, a title bar with traffic-light controls
+//! - `segmented_control` — `MacSegmentedControl`, a multi-way picker on a unified track
+//! - `source_list` — `MacSourceList`, a sectioned sidebar with single-row selection
+//! - `stepper` — `MacStepper`, an increment/decrement control with an optional wrap
+//! - `toolbar` — `MacToolbar`, a horizontal strip of item slots
+//! - `window_chrome` — `MacWindowChrome`, a title bar with traffic-light controls
 //!
 //! # Metrics
 //!

@@ -267,7 +267,7 @@ pub trait GlyphSource: Send + Sync {
     /// report — "this character is mine, and it is empty".
     ///
     /// The default implementation is the 1-bit path: take the glyph, scale it by
-    /// [`paint_bitmap`]. A face whose ink is not 1-bit (a vector outline, a colour bitmap)
+    /// `paint_bitmap`. A face whose ink is not 1-bit (a vector outline, a colour bitmap)
     /// overrides this and writes its own coverage, and reports which with [`Painted::ink`].
     fn paint(&self, ch: char, cell: Cell, out: &mut [u8]) -> Option<Painted> {
         let glyph = self.glyph(ch)?;

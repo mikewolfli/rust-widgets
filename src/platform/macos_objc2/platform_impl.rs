@@ -312,7 +312,7 @@ impl Platform for MacOSObjc2Platform {
 
     /// A revision of the environment facts, derived from their current values.
     ///
-    /// [`crate::platform::locale::environment_revision`] is the shared accessor, so the hashed fact
+    /// `crate::platform::locale::environment_revision` is the shared accessor, so the hashed fact
     /// set is the one the style snapshot reads — including the accent colour and the
     /// reduced-transparency preference this backend now reports (P-03). Hashing only four facts
     /// here would hide those two changes forever (P-06).
@@ -675,7 +675,7 @@ impl Platform for MacOSObjc2Platform {
     /// This used to record bookkeeping only and hand the actual AppKit view to the
     /// sibling cocoa backend — which the objc2 backend never links, so a successfully
     /// "mounted" widget produced no pixels. It now creates its own surface: a
-    /// [`RustWidgetsObjc2CanvasView`](super::native::RustWidgetsObjc2CanvasView) whose
+    /// `RustWidgetsObjc2CanvasView` whose
     /// `drawRect:` pulls one RGBA frame from `widget::runtime` and blits it, mirroring
     /// `macos/canvas.rs::draw_rect`. The AppKit work stays in `native`; the shared
     /// `BackendState` record is kept so a later repaint request resolves the surface.

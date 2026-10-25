@@ -298,7 +298,7 @@ impl MacOsImeBridge {
 
     /// Commit a piece of text (called by the native IME callback).
     ///
-    /// Delegates to the [`ImeBridge::commit_text`](ImeBridge::commit_text) trait method so the native
+    /// Delegates to the `ImeBridge::commit_text` trait method so the native
     /// callback path and the trait path cannot diverge: both clear the composition **and** deliver
     /// the text to the focused widget as `Event::ImeCommit`. Keeping the delivery in one place is
     /// what stops a native commit from being the one path that silently dropped it.

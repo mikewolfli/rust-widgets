@@ -897,7 +897,7 @@ impl Theme {
     /// shadow and gave it to every control, so a floating toast and a flush list row were
     /// painted at the same height and a theme could not say "cards are level 1". Reading the
     /// shadow through a *level* is what makes that expressible, and the ladder itself lives in
-    /// [`render::surface::default_shadow`] so the relationship between levels is stated once.
+    /// `render::surface::default_shadow` so the relationship between levels is stated once.
     ///
     /// `tint` is the shadow's hue (normally black); each level applies its own alpha to it, so a
     /// theme states the hue once and the levels own their opacity.

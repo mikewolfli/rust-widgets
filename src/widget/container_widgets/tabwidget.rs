@@ -6,7 +6,7 @@
 //! # The tab strip is assembled from measured widths
 //!
 //! BLUE22 §B.8 lists this control's defect as "tab width by hand". The width is measured and
-//! clamped by [`TabWidget::tab_width_hints`], and the run — where each tab starts — is a single
+//! clamped by `TabWidget::tab_width_hints`, and the run — where each tab starts — is a single
 //! pass over those widths plus the gap. It used to be handed to a `FlexLayout` through a
 //! `CompositeBuilder`, which created a temporary label widget per tab on **every** call; the draw
 //! pass and the hit test both ask for the run, so that was one temporary widget per tab per frame.
@@ -231,7 +231,7 @@ pub enum TabPosition {
 
 impl TabPosition {
     /// Parses a property token, accepting exactly the spellings
-    /// [`tab_position_token`] publishes.
+    /// `tab_position_token` publishes.
     pub fn from_token(token: &str) -> Option<Self> {
         match token {
             "north" => Some(TabPosition::North),
@@ -266,7 +266,7 @@ pub enum TabShape {
 
 impl TabShape {
     /// Parses a property token, accepting exactly the spellings
-    /// [`tab_shape_token`] publishes.
+    /// `tab_shape_token` publishes.
     pub fn from_token(token: &str) -> Option<Self> {
         match token {
             "rounded" => Some(TabShape::Rounded),
@@ -844,7 +844,7 @@ impl TabWidget {
     /// missing: `enabled` was reachable only through [`Self::tab_mut`], whose write does not
     /// request a redraw, so a host that disabled a tab saw it stay enabled until something else
     /// repainted. A change requests a redraw; disabling the current tab moves the selection under
-    /// the existing [`Self::nearest_visible_index`] rule, so the widget never shows a page it says
+    /// the existing `Self::nearest_visible_index` rule, so the widget never shows a page it says
     /// is unusable.
     pub fn set_tab_enabled(&mut self, index: usize, enabled: bool) -> bool {
         let Some(tab) = self.tabs.get_mut(index) else {

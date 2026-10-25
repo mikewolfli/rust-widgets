@@ -284,7 +284,7 @@ impl Button {
     ///
     /// The text and enabled state are read from the definition, the host binding is recorded, and
     /// a live cell subscribes to the command's signals. This is the button half of COMP-25; the
-    /// click itself still emits [`Button::clicked`], which a host routes to
+    /// click itself still emits `Button::clicked`, which a host routes to
     /// `ActionManager::trigger_action` (or to [`Self::trigger_linked_action`]).
     #[cfg(full_widgets)]
     pub fn bind_action(

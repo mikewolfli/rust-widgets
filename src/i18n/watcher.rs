@@ -171,13 +171,13 @@ impl I18nFileWatcher {
     pub fn sender(&self) -> &Sender<ReloadEvent> {
         &self.reload_sender
     }
-    /// Apply up to [`I18N_DRAIN_BATCH_LIMIT`] pending reload events from this
+    /// Apply up to `I18N_DRAIN_BATCH_LIMIT` pending reload events from this
     /// watcher's own channel (D09-WATCH-01).
     ///
     /// The per-call work is bounded and the rest stay queued for later calls, so a
     /// consumer that paused through a storm does not pay for the whole backlog in
     /// one frame. This is the watcher-owned equivalent of [`process_reload_events`]
-    /// and applies events through [`I18nManager::reload_translation_quiet`] for the
+    /// and applies events through `I18nManager::reload_translation_quiet` for the
     /// same reason: an announcing reload would feed this channel back onto itself.
     pub fn drain_events(&self) -> Vec<ReloadEvent> {
         process_reload_events_bounded(&self.reload_receiver, I18N_DRAIN_BATCH_LIMIT)
@@ -330,7 +330,7 @@ pub fn init_with_hot_reload(
 }
 /// Process pending reload events and apply the corresponding translations.
 ///
-/// Applies up to [`I18N_RELOAD_BATCH_LIMIT`] events already queued on `receiver`,
+/// Applies up to `I18N_RELOAD_BATCH_LIMIT` events already queued on `receiver`,
 /// re-reads the translation file for each announced language, and returns the
 /// events actually applied. Any events beyond the batch limit — and any left in
 /// the receiver when the limit is hit — stay queued and are applied by the next
@@ -341,7 +341,7 @@ pub fn init_with_hot_reload(
 ///
 /// # Why this does not announce the reload it performs
 ///
-/// The events are applied with [`I18nManager::reload_translation_quiet`]. The
+/// The events are applied with `I18nManager::reload_translation_quiet`. The
 /// announcing variant would push a fresh [`ReloadEvent::TranslationReloaded`]
 /// onto the very channel being drained here, so the same language would be
 /// reloaded (and re-announced) once more on the next pass — forever, since the
@@ -439,7 +439,7 @@ pub fn disable_global_hot_reload() {
 ///
 /// This is the frame-loop entry point: call it once per frame and translations
 /// edited on disk appear without a restart. It applies at most
-/// [`I18N_RELOAD_BATCH_LIMIT`] events per frame (D09-WATCH-01); a larger backlog
+/// `I18N_RELOAD_BATCH_LIMIT` events per frame (D09-WATCH-01); a larger backlog
 /// is spread over subsequent frames rather than processed in one unbounded pass.
 /// It is deliberately cheap when hot reload is off — one mutex lock and a `None`
 /// check — because the platform loops call it on every tick whether or not a

@@ -482,7 +482,7 @@ impl Accordion {
     /// Enables or disables open/close animation. Off by default.
     ///
     /// Turning it off clears any in-flight open fraction. `open_progress` is the map
-    /// [`Self::row_rects`] reads for the *drawn* band, so leaving an entry behind kept a section
+    /// `Self::row_rects` reads for the *drawn* band, so leaving an entry behind kept a section
     /// frozen at a half-open height that nothing would ever finish: `tick` stops early when
     /// `animated` is false, so the stale entry was unreachable and unrepairable.
     pub fn set_animated(&mut self, animated: bool) {

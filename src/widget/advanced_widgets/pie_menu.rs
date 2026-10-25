@@ -620,7 +620,7 @@ impl PieMenu {
     /// Sets the outer radius, clamping it to a finite value no smaller than
     /// [`Self::MIN_RADIUS`] and shrinking the inner radius to stay inside it.
     ///
-    /// Repaints: [`Self::update_geometry`] calls `BaseWidget::set_geometry`, which
+    /// Repaints: `Self::update_geometry` calls `BaseWidget::set_geometry`, which
     /// deliberately stores the rectangle **without** requesting a redraw (see its own docs),
     /// so the caller here owes one.
     pub fn set_radius(&mut self, radius: f32) {
@@ -727,7 +727,7 @@ impl PieMenu {
     }
 
     /// Returns the hover highlight colour: the caller's override, or the theme-derived
-    /// [`Self::theme_hover_color`] when none was set.
+    /// `Self::theme_hover_color` when none was set.
     pub fn hover_color(&self) -> Color {
         self.hover_color.unwrap_or_else(Self::theme_hover_color)
     }
@@ -745,7 +745,7 @@ impl PieMenu {
     }
 
     /// Returns the label colour: the caller's override, or the theme-derived
-    /// [`Self::theme_text_color`] when none was set.
+    /// `Self::theme_text_color` when none was set.
     pub fn text_color(&self) -> Color {
         self.text_color.unwrap_or_else(Self::theme_text_color)
     }
@@ -1208,6 +1208,11 @@ impl Widget for PieMenu {
             }
             "about_to_show" => Some(EventSignalRef::unit("about_to_show", &self.about_to_show)),
             "about_to_hide" => Some(EventSignalRef::unit("about_to_hide", &self.about_to_hide)),
+            "triggered_id" => Some(EventSignalRef::mapped(
+                "triggered_id",
+                &self.triggered_id,
+                |v| CapabilityValue::UInt(*v),
+            )),
             _ => None,
         }
     }

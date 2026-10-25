@@ -26,9 +26,9 @@
 //!
 //! # Widget kind
 //!
-//! There is no `StickyHeader` variant in [`WidgetKind`], and this module may not add one
+//! There is no `StickyHeader` variant in `WidgetKind`, and this module may not add one
 //! (the enum is the capability layer's bookkeeping). The record therefore reuses the
-//! closest existing kind, a header row: [`WidgetKind::KanbanColumnHeader`]. That is the
+//! closest existing kind, a header row: `WidgetKind::KanbanColumnHeader`. That is the
 //! accounting the issue asks for ("`WidgetKind` 记账沿用最近似现有类型"), and it is stated
 //! here rather than left for a reader to discover.
 

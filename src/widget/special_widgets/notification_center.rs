@@ -671,6 +671,11 @@ impl Widget for NotificationCenter {
                 &self.notification_dismissed,
                 |v| crate::widget::capability::CapabilityValue::String(v.clone()),
             )),
+            "all_read_requested" => {
+                Some(EventSignalRef::mapped("all_read_requested", &self.all_read_requested, |_| {
+                    crate::widget::capability::CapabilityValue::Null
+                }))
+            }
             _ => None,
         }
     }

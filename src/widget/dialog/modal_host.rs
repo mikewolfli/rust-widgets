@@ -260,3 +260,23 @@ impl Draw for ModalHost {
         context.fill_rect(rect, color);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_repeated_push_raises_one_entry_instead_of_duplicating_it() {
+        let mut host = ModalHost::new(Rect::new(0, 0, 400, 300));
+        host.push(7);
+        host.push(9);
+        host.push(7);
+        assert_eq!(host.stack(), &[9, 7]);
+        assert!(host.is_modal_top(7));
+        assert_eq!(host.top_modal(), Some(7));
+        assert_eq!(host.pop(), Some(7));
+        assert_eq!(host.depth(), 1);
+        assert_eq!(host.pop(), Some(9));
+        assert_eq!(host.pop(), None);
+    }
+}

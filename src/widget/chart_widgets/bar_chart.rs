@@ -704,7 +704,7 @@ impl BarChart {
     /// Sets the bars to display. Clears any previous bars.
     ///
     /// A bar whose value is non-finite cannot be mapped to a height, so it is dropped rather than
-    /// drawn at a fabricated position (see [`is_finite_sample`](crate::widget::chart_widgets::is_finite_sample)).
+    /// drawn at a fabricated position (see `is_finite_sample`).
     pub fn set_bars(&mut self, entries: Vec<BarEntry>) {
         let next: Vec<BarEntry> = entries.into_iter().filter(|bar| bar.value.is_finite()).collect();
         if self.animate_value_changes && self.bar_shape_matches(&next) {
@@ -1003,6 +1003,36 @@ impl Widget for BarChart {
                     CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "bar_clicked_with_series" => Some(EventSignalRef::mapped(
+                "bar_clicked_with_series",
+                &self.bar_clicked_with_series,
+                |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                },
+            )),
+            "bar_hovered_with_series" => Some(EventSignalRef::mapped(
+                "bar_hovered_with_series",
+                &self.bar_hovered_with_series,
+                |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                },
+            )),
+            "bar_unhovered_with_series" => Some(EventSignalRef::mapped(
+                "bar_unhovered_with_series",
+                &self.bar_unhovered_with_series,
+                |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                },
+            )),
             _ => None,
         }
     }

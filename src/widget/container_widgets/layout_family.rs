@@ -17,7 +17,7 @@
 //!   the layout manager's.
 //! * `Expanded`, `Flexible` and `Spacer` are the three answers to "how should my parent
 //!   distribute the leftover room", and they publish it through
-//!   [`Widget::default_layout_params`] and [`Widget::hints`] — the channels the layout
+//!   `Widget::default_layout_params` and `Widget::hints` — the channels the layout
 //!   engines already read. They therefore work *inside* a real layout tree as well.
 //! * `Align`, `SizedBox`, `Padding` and `IntrinsicWidth` state a single-child rule that had
 //!   no layout manager: nine anchors, a fixed box, four independent insets, and "my width is
@@ -28,11 +28,11 @@
 //! A wrapper positions **one** content box: a label and the size it asks for. The size is a
 //! property in its own right (`content_width` / `content_height`) so a form authored in JSON
 //! can describe its content without a second control, and so the wrapper can report a real
-//! [`Widget::size_hint`] instead of guessing.
+//! `Widget::size_hint` instead of guessing.
 //!
 //! # Painting
 //!
-//! Every wrapper paints the same three things, through [`paint_wrapper`]: its own box as a
+//! Every wrapper paints the same three things, through `paint_wrapper`: its own box as a
 //! hairline frame (so a wrapper whose content is smaller than itself is still visible), the
 //! content area filled with a theme-derived tint, and the content label centred in it. The
 //! tint is the theme's accent blended into the resolved surface, which is what makes the
@@ -586,7 +586,7 @@ impl EventHandler for Spacer {
 
 /// Center — centres its content in a box that is a fraction of its own size.
 ///
-/// The content rectangle comes from [`CenterLayout`], the same rule the layout manager
+/// The content rectangle comes from `CenterLayout`, the same rule the layout manager
 /// applies to a tree child, so a `Center` control and a centred child of a real layout
 /// occupy identical pixels. `width_factor` / `height_factor` are that layout's
 /// `0.0..=1.0` fractions; a non-finite factor falls back to `1.0` there, and the value read
@@ -2021,7 +2021,7 @@ pub const DEFAULT_ASPECT_RATIO: f32 = 16.0 / 9.0;
 
 /// AspectRatio — a box that derives one extent from the other through a fixed ratio.
 ///
-/// The content rectangle comes from [`AspectRatioLayout`], the same rule a tree child of that
+/// The content rectangle comes from `AspectRatioLayout`, the same rule a tree child of that
 /// layout gets, so the control and the manager agree. `respect_parent` selects that layout's
 /// two modes: bounded on both axes (fit inside) or derived from the parent's width alone.
 pub struct AspectRatio {
@@ -2088,7 +2088,7 @@ impl AspectRatio {
     /// Sets the width:height ratio.
     ///
     /// A non-finite or non-positive ratio has no rectangle to describe, so it is refused
-    /// rather than stored: [`AspectRatioLayout`] would panic on it, and a control must not be
+    /// rather than stored: `AspectRatioLayout` would panic on it, and a control must not be
     /// able to reach that panic from a property write.
     pub fn set_ratio(&mut self, ratio: f32) -> Result<(), CapabilityAccessError> {
         if !ratio.is_finite() || ratio <= 0.0 {

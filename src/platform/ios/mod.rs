@@ -11,7 +11,7 @@ pub mod native;
 ///
 /// **Compiled on every host**, with its three `darwin_probes` call sites individually
 /// `target_vendor = "apple"`-gated. It used to carry the Apple gate itself, for the reason that its
-/// memory/power/process probes need `libc` — but that also hid [`tests`], 9 assertions that use only
+/// memory/power/process probes need `libc` — but that also hid `tests`, 9 assertions that use only
 /// the `Platform` trait interface and touch no UIKit. A test that never compiles is a test that can
 /// never fail, which is the host-invisible class `blue23.md` §0A.6 ITEM 7 exists to close.
 ///

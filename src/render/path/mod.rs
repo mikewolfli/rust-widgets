@@ -5,7 +5,7 @@
 //!
 //! Two members, two jobs: [`parser`] reads SVG path data into curve segments, and [`flatten`] turns
 //! those segments into device-space polylines for the fill. Flattening is *not* re-implemented in
-//! [`flatten`] — the deviation-adaptive subdivider lives in [`crate::render::text::raster`] and is
+//! [`flatten`] — the deviation-adaptive subdivider lives in `crate::render::text::raster` and is
 //! reused, so there is a single curve-to-polyline rule in the crate (principle #101).
 
 pub mod flatten;

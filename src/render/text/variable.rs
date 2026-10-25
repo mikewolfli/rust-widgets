@@ -131,7 +131,7 @@ impl VariableFace {
 
     /// The variable-face view of `family`, when this build carries or a host registered that family.
     ///
-    /// The lookup is [`super::shaping::face_for_family`], the same one measurement and outlining use,
+    /// The lookup is `super::shaping::face_for_family`, the same one measurement and outlining use,
     /// so a family that resolves here is the face those paths would draw.
     pub fn for_family(family: &str) -> Option<Self> {
         super::shaping::face_for_family(family).map(Self::new)

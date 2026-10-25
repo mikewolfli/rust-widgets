@@ -28,7 +28,7 @@
 //! one line — "`mini`/`embedded` are generation **targets**, not runtime **environments**".
 //!
 //! What is *not* assumed is the ability to construct a target's controls:
-//! [`generator::availability`] **asks the factory** instead of consulting a list, and reports a
+//! `generator::availability` **asks the factory** instead of consulting a list, and reports a
 //! name it cannot resolve rather than emitting code that would fail to compile on the target.
 //!
 //! # Reachability
@@ -48,16 +48,16 @@
 //!
 //! # Where generated files live (D7-b-3)
 //!
-//! Generated sources are **committed** and written through [`artifact::regenerate_into`];
+//! Generated sources are **committed** and written through `artifact::regenerate_into`;
 //! `tools/check_generated_sources.sh` is the regenerate-and-compare gate that makes committing
-//! safe. See [`artifact`] for the decision and its reasoning.
+//! safe. See `artifact` for the decision and its reasoning.
 //!
 //! # Scope
 //!
-//! [`generator::generate`] is a pure function: document text in, source text out, no filesystem and no
+//! `generator::generate` is a pure function: document text in, source text out, no filesystem and no
 //! clock. That is what lets `tests/generator_output_compiles_test.rs` compile its output for real and
 //! what makes two runs over one document byte-identical. Writing files is a separate concern with its
-//! own failure modes, so it lives in [`artifact`] and the core stays pure.
+//! own failure modes, so it lives in `artifact` and the core stays pure.
 
 pub mod artifact;
 pub mod generator;

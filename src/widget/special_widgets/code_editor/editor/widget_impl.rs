@@ -227,6 +227,23 @@ impl Widget for CodeEditor {
             "palette_changed" => {
                 Some(EventSignalRef::unit("palette_changed", &self.palette_changed))
             }
+            "marker_clicked" => {
+                Some(EventSignalRef::mapped("marker_clicked", &self.marker_clicked, |v| {
+                    CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "text_change" => Some(EventSignalRef::mapped("text_change", &self.text_change, |v| {
+                // The declared shape is `Mixed`: the change is a start line, two line counts, the
+                // inserted text and the whole-document flag. Delivering them positionally is what
+                // lets a subscriber read the region, instead of re-parsing a `Debug` spelling.
+                CapabilityValue::Tuple(alloc::vec![
+                    CapabilityValue::UInt(v.start_line as u64),
+                    CapabilityValue::UInt(v.removed_lines as u64),
+                    CapabilityValue::UInt(v.inserted_lines as u64),
+                    CapabilityValue::String(v.inserted_text.clone()),
+                    CapabilityValue::Bool(v.whole_document),
+                ])
+            })),
             _ => None,
         }
     }

@@ -501,7 +501,7 @@ impl Widget for FloatingLabel {
 /// conflating them is visibly wrong: without a `label` name the widget's own label was
 /// unreachable, so a floating-label field had nothing to float. The shared constructor
 /// helper writes a label into `text` (the first name in `LABEL_PROPERTY_NAMES`) and
-/// [`crate::widget::capability::widget_label_property_name`] now prefers `label` for this
+/// `crate::widget::capability::widget_label_property_name` now prefers `label` for this
 /// kind, so the constructor's string lands where the caption is drawn.
 impl WidgetProperties for FloatingLabel {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {

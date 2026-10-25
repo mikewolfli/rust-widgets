@@ -184,10 +184,10 @@ impl<T: Clone + Send + 'static> Binding<T> {
     /// the outermost pass — cleared the first pass's unsubscribe tombstone; an
     /// `unsubscribe` racing the same window also missed the tombstone and resurrected
     /// its listener. `notifying` is now raised inside the same critical section as the
-    /// take, and a `set` that observes `notifying` increments [`pending_replays`]
+    /// take, and a `set` that observes `notifying` increments `pending_replays`
     /// instead of running a silent empty pass, so the running pass replays for it.
     ///
-    /// [`pending_replays`]: BindingInner::pending_replays
+    /// `pending_replays`: BindingInner::pending_replays
     pub fn set(&self, value: T) {
         // ── Publish the notification window and take the listeners, atomically ──
         //

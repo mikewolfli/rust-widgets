@@ -334,12 +334,12 @@ pub trait Platform: Send + Sync {
     ///
     /// # The fact set must match the consumer's
     ///
-    /// [`crate::style::environment`] reads six facts to build its snapshot and reuses the snapshot
+    /// `crate::style::environment` reads six facts to build its snapshot and reuses the snapshot
     /// whenever this revision is unchanged. A backend that hashes only some of them leaves the
     /// rest undetectable: a change in the accent colour or in the reduced-transparency preference
     /// kept the old snapshot indefinitely (P-03).
     ///
-    /// [`crate::platform::locale::environment_revision`] is the shared accessor that hashes the
+    /// `crate::platform::locale::environment_revision` is the shared accessor that hashes the
     /// complete set; a backend whose revision is derived should answer
     /// `crate::platform::locale::environment_revision(self)` rather than spell the facts out
     /// (P-06).
@@ -351,7 +351,7 @@ pub trait Platform: Send + Sync {
     ///
     /// # What an implementation does
     ///
-    /// Bumps [`crate::platform::environment_notify`]'s revision (the default) and, when the backend
+    /// Bumps `crate::platform::environment_notify`'s revision (the default) and, when the backend
     /// caches the facts, drops that cache so the next read goes to the host. A backend that has a
     /// native notification source calls this from its observer callback; a host that learns about
     /// a settings change some other way can call it directly. The call is a *statement* that the
@@ -397,7 +397,7 @@ pub trait Platform: Send + Sync {
     /// The answer is one bit of OS state. [`ThemeMode`](crate::style::ThemeMode) is a *policy*
     /// (`Light`, `Dark`, `Auto`) that lives in the style layer, and a platform that returned it
     /// would be deciding policy from OS knowledge — the inversion rule #36 forbids. The style
-    /// layer's [`environment`](crate::style::environment) converts `Some(true)` to `Dark` and
+    /// layer's `environment` converts `Some(true)` to `Dark` and
     /// `Some(false)` to `Light`.
     ///
     /// # What each answer means

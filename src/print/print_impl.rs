@@ -662,7 +662,7 @@ impl Printer {
     /// Creates a printer with an explicit backend and page size.
     ///
     /// The backend is normally auto-selected from the environment
-    /// ([`PrintBackend::default_for_platform`]). This constructor makes the choice
+    /// (`PrintBackend::default_for_platform`). This constructor makes the choice
     /// explicit, which is what lets a caller (or a test) select the in-memory backend
     /// without racing on a process-wide environment variable.
     pub fn with_backend(backend: PrintBackend, page_size: Size) -> Self {
@@ -756,7 +756,7 @@ impl Printer {
     /// runs on the worker thread with the same result. The library owns the temporary spool file
     /// and removes it on both the success and failure paths, so a caller never handles a path.
     ///
-    /// Rendering still happens before the worker starts (see [`Self::render_print_job`]); the
+    /// Rendering still happens before the worker starts (see `Self::render_print_job`); the
     /// long part — waiting for `lpr`/`lp`/the Windows `Print` verb — is what moves off the caller.
     ///
     /// `on_complete` is not invoked when this method itself returns `Err` (the job never

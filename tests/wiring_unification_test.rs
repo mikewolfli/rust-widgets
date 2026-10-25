@@ -7,6 +7,12 @@
 //! module boundaries: a command resolved from `ActionManager` must reach a menu row, a toolbar
 //! item, a menu-bar action and a button; the shortcut registry must be the one that dispatches;
 //! and the alias registry must be the one the designer manifest exports.
+//!
+//! `#![cfg(feature = "full_widgets")]` because every subject here is compiled out of a stripped
+//! profile: `WidgetFactory`, `capability_manifest_json`, `Menu`/`MenuBar`/`ToolBar` and
+//! `Button::bind_action` are all `#[cfg(full_widgets)]`. Without the gate the embedded profile
+//! fails to build this target over names that correctly do not exist there.
+#![cfg(feature = "full_widgets")]
 
 use rust_widgets::action::{ActionManager, ActionRouter};
 use rust_widgets::core::Rect;

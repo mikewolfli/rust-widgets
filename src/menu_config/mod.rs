@@ -12,8 +12,8 @@
 //! process-wide manager,
 //! the menu family reads its policy through the menu toolbar's `effects::current`
 //! boundary, and the master switch defaults to **on**. A host that wants the
-//! pre-adaptive rendering calls [`set_enabled`]`(false)`; verification paths install
-//! [`MenuConfig::verification`] through [`use_verification_policy`] so committed
+//! pre-adaptive rendering calls `set_enabled``(false)`; verification paths install
+//! `MenuConfig::verification` through `use_verification_policy` so committed
 //! snapshots stay host-independent.
 mod config;
 mod dialog;

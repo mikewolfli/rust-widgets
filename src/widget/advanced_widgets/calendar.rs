@@ -253,7 +253,7 @@ pub struct Calendar {
     ///
     /// Covers every way the page can move — the navigation bar, Page Up/Down, arrow keys
     /// crossing a month boundary, and the programmatic setters — because they all go through
-    /// [`Calendar::show_page`]. the reference toolkit's `currentPageChanged` answers the same question.
+    /// `Calendar::show_page`. the reference toolkit's `currentPageChanged` answers the same question.
     pub current_page_changed: Signal1<(i32, u32)>,
     date_format: String,
     /// The day cell under the pointer, painted with a subtle highlight.

@@ -176,7 +176,7 @@ pub struct BaseWidget {
     /// one exists) is emitted alongside it for its own listeners.
     ///
     /// Not emitted for a mere visibility toggle — closing is the lifecycle transition, and
-    /// [`BaseWidget::set_visible`] is a rendering concern.
+    /// `BaseWidget::set_visible` is a rendering concern.
     pub closed: GenericSignal,
     /// Whether [`Self::request_redraw`] has ever been called on this widget.
     ///
@@ -1007,7 +1007,7 @@ impl BaseWidget {
     ///
     /// Exposed so a control that must derive a disabled ink for a colour it cannot pass through
     /// `self.base` (a track, a glyph, a chart series) uses the same value rather than restating
-    /// it. It is [`dimensions::DISABLED_VEIL_ALPHA`] over 255, so the ink and the veil are one
+    /// it. It is `dimensions::DISABLED_VEIL_ALPHA` over 255, so the ink and the veil are one
     /// figure.
     pub fn disabled_ink_weight() -> f32 {
         crate::widget::metrics::dimensions::DISABLED_VEIL_ALPHA as f32 / 255.0
@@ -1211,8 +1211,8 @@ impl BaseWidget {
     pub fn is_pressed(&self) -> bool {
         self.pressed
     }
-    /// Records whether the widget should paint pressed. See [`Self::pressed`] for why
-    /// this is separate from [`Self::grabbed`].
+    /// Records whether the widget should paint pressed. See `Self::pressed` for why
+    /// this is separate from `Self::grabbed`.
     pub fn set_pressed(&mut self, pressed: bool) {
         self.pressed = pressed;
     }
@@ -1290,7 +1290,7 @@ impl BaseWidget {
     /// is repainted?", and the answer is needed by
     /// [`crate::widget::draw_bridge::draw_of`] to keep a self-driving animation from being
     /// advanced on every paint — a feedback loop that never stops. Asking
-    /// [`Self::ever_requested_redraw`] instead *looked* equivalent and was not: every widget whose
+    /// `Self::ever_requested_redraw` instead *looked* equivalent and was not: every widget whose
     /// constructor prepares its first frame calls [`Self::request_redraw`] while it is still being
     /// built, so "has ever asked" is `true` for essentially every control in the crate, including
     /// a plain `Button`. It is also already load-bearing for a different question —

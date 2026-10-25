@@ -880,7 +880,7 @@ impl WidgetProperties for MessageBox {
 /// [`MessageBox::default_button`] is `None`.
 ///
 /// A primary press is resolved against the **same** button rects the draw path painted (see
-/// [`action_row_geometry`]), so the button a user sees under the pointer is the button that is
+/// `action_row_geometry`), so the button a user sees under the pointer is the button that is
 /// activated. Before this the box answered only keys: it painted an OK button that could not be
 /// clicked, which is a control whose ink and whose hit region were two different things — the
 /// defect rule 5 of the assembly spec names, and the one this crate has already recorded twice

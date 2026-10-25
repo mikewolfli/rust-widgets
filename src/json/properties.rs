@@ -364,7 +364,7 @@ fn declares_icon_spec_field(
 }
 
 /// Serialises a record list back into the JSON array a document carries (the inverse of
-/// [`records_from_json`]).
+/// `records_from_json`).
 ///
 /// # Why the writer lives beside the reader
 ///

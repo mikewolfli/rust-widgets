@@ -867,15 +867,15 @@ impl ActiveAnimation {
 /// # Reachability (issue §9 item #5)
 ///
 /// This engine **is** on the production path, not only a standalone capability. Controls do not
-/// call it directly; they own a [`PropertyDriver`](crate::style::PropertyDriver) (or a
-/// [`Transition`](crate::style::Transition)), whose `tick` builds and advances an `AnimationDriver`
+/// call it directly; they own a `PropertyDriver` (or a
+/// `Transition`), whose `tick` builds and advances an `AnimationDriver`
 /// internally. `Button::tick`, `PieMenu::tick` and the other animated controls therefore reach this
 /// code every frame, and the interpolation curve (not each control) is the single place that defines
 /// how a styled value moves.
 ///
-/// The group composers ([`AnimationGroup`](crate::style::AnimationGroup),
-/// [`ParallelAnimation`](crate::style::ParallelAnimation),
-/// [`SequentialAnimation`](crate::style::SequentialAnimation)) remain a **retained public
+/// The group composers (`AnimationGroup`,
+/// `ParallelAnimation`,
+/// `SequentialAnimation`) remain a **retained public
 /// capability** with no in-crate control consumer: they compose *named* timeline animations, which
 /// the property-transition path does not need. That is a deliberate scope decision (rule #4: the
 /// library maps a control to the platform's ability; it does not invent a timeline the host never
@@ -2299,7 +2299,7 @@ impl FrameStep {
 /// own `advance` ran. The clock measures **one** delta per frame and hands that exact value to
 /// every animation, which is what makes a coordinated transition (a sheet and its scrim, a row
 /// and its disclosure arrow) move in step. It also gives a group one place to advance, which is
-/// the consumer [`AnimationGroup`](crate::style::animation_group::AnimationGroup) documented
+/// the consumer `AnimationGroup` documented
 /// itself as lacking.
 ///
 /// The first frame reports a zero delta: a clock cannot know how long the frame *before* the

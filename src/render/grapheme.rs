@@ -6,8 +6,8 @@
 //! # What this module is, and what it deliberately is not
 //!
 //! It holds the two range predicates that decide whether a scalar continues the cluster
-//! before it — [`is_combining_mark`] and [`is_variation_selector`]. They are the shared
-//! vocabulary of [`crate::render::text::line::for_each_cluster`], which is the crate's
+//! before it — `is_combining_mark` and `is_variation_selector`. They are the shared
+//! vocabulary of `crate::render::text::line::for_each_cluster`, which is the crate's
 //! **only** cluster-splitting rule, and of the SVG backend's per-scalar positioning.
 //!
 //! It deliberately does **not** carry a second splitter. A `GraphemeProcessor` with its own

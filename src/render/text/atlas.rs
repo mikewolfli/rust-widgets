@@ -19,7 +19,7 @@
 //! # Scope
 //!
 //! The atlas is owned by its caller and has no process-wide state. A renderer that paints on one
-//! thread creates one and passes `&mut` to it; the slots hold [`Rc`](crate::compat::Rc) buffers,
+//! thread creates one and passes `&mut` to it; the slots hold [`Rc`] buffers,
 //! so an [`AtlasSlot`] can be kept by a caller while the atlas continues to use the same bytes.
 //!
 //! # Frame epochs
@@ -59,7 +59,7 @@ pub const ATLAS_GC_FRAMES: u64 = 2;
 /// * `italic` is part of the key because the rasteriser has no italic axis: the atlas applies a
 ///   synthetic oblique, which produces different bytes from the upright glyph (G-18).
 ///
-/// `Ord` is derived as well as `Hash`/`Eq` because this crate's [`HashMap`](crate::compat::HashMap)
+/// `Ord` is derived as well as `Hash`/`Eq` because this crate's [`HashMap`]
 /// alias becomes an ordered map on allocation-frugal builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GlyphKey {

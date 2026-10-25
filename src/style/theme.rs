@@ -459,7 +459,7 @@ pub fn motion_tokens() -> (u32, u32, u32) {
 /// in a build that has no theme. It also keeps the *choice* of curve in one place, which is what
 /// lets a theme author change how the library feels without any control changing.
 ///
-/// The fallback is [`EasingFunction::default`], which is the same curve an unthemed build drew
+/// The fallback is `EasingFunction::default`, which is the same curve an unthemed build drew
 /// before the token existed — not an invented value, so a build with no theme is unchanged.
 #[cfg(device_profile)]
 pub fn motion_easing() -> crate::style::animation::EasingFunction {

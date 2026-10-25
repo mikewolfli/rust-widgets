@@ -86,7 +86,7 @@ pub const RANGE_SLIDER_HANDLE_RADIUS: u32 = 8;
 /// How much larger than the handle the clickable area is.
 ///
 /// A touch target may be kinder than the mark it belongs to — that is what
-/// [`dimensions::TOUCH_TARGET_MIN`] is for — but it must be expressed as a **relation to the
+/// `dimensions::TOUCH_TARGET_MIN` is for — but it must be expressed as a **relation to the
 /// handle**, not as a second absolute number. `is_handle_hit` used to carry its own `let handle_radius
 /// = 10i32`, so widening the drawn handle would silently have narrowed its hit area's margin.
 pub const RANGE_SLIDER_HIT_SLOP: u32 = 2;
@@ -448,7 +448,7 @@ impl RangeSlider {
     /// A right-to-left selector places the *lower* value at the right edge, because that is where its
     /// line begins — so both the handles' positions and the mapping from a click's x-coordinate flip
     /// together. They flip through the same inset
-    /// ([`RangeSlider::track_begin_and_length`] plus [`crate::core::TextDirection`]), which is the
+    /// (`RangeSlider::track_begin_and_length` plus [`crate::core::TextDirection`]), which is the
     /// property that stops a click on a handle from returning a different value from the one drawn.
     pub fn set_direction(&mut self, direction: crate::core::TextDirection) {
         if self.direction == direction {
@@ -462,7 +462,7 @@ impl RangeSlider {
     ///
     /// # The invariant this restores
     ///
-    /// `min_range` is capped at the width of `[min, max]` (see [`Self::reconcile_bounds`]). Without
+    /// `min_range` is capped at the width of `[min, max]` (see `Self::reconcile_bounds`). Without
     /// that cap a request wider than the span was stored verbatim, and because every setter derives
     /// its allowed interval from `upper ± min_range`, the handles were then driven outside `[min, max]`
     /// — `set_min_range(200)` on a 100-wide selector followed by `set_lower_value(_)` produced a

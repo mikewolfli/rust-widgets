@@ -2742,7 +2742,7 @@ pub extern "C" fn rw_backend_name() -> *const c_char {
 /// - bit6: external open (hand a URL/path to the host's default handler)
 ///
 /// The last two are appended, so a host compiled against an earlier layout still reads bits 0-4
-/// exactly as before. See [`PlatformCapabilities::clipboard`] for what each one means.
+/// exactly as before. See `PlatformCapabilities::clipboard` for what each one means.
 ///
 /// This reflects the platform's *general* capabilities; use
 /// [`rw_platform_capability_contract`] for the contract of a specific runtime

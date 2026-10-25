@@ -140,7 +140,7 @@ pub struct BezierCurveEditor {
     ///
     /// The payload is kept as the historical pair so the published event schema is unchanged;
     /// a multi-segment curve can carry more handles than this event can name, and
-    /// [`Self::segments`] is the authoritative reader for those.
+    /// `Self::segments` is the authoritative reader for those.
     pub curve_changed: Signal1<((f32, f32), (f32, f32))>,
 }
 

@@ -65,7 +65,7 @@ pub use icon_names::IconName;
 /// `(points, contours)` shape but are separate implementations, and this comment says so rather
 /// than claiming a reuse that does not exist.) Without the feature (or for a name that
 /// is not a token), the generated fallback geometry draws instead. Both paths are the ones
-/// [`Icon::draw_icon`] takes, so an inline icon and an [`Icon`] widget cannot render
+/// `Icon::draw_icon` takes, so an inline icon and an [`Icon`] widget cannot render
 /// differently.
 ///
 /// A `rect` with zero width or height draws nothing, and a name that neither the data nor the
@@ -160,7 +160,7 @@ pub struct IconSourceMetadata {
 /// The device box a source occupies inside a slot, and the design extent it came from.
 ///
 /// What a caller asks *before* drawing, so the room it reserves and the glyph that lands in it come
-/// from one rule instead of two. [`Icon::icon_rect`], `ToolButton::icon_rect` and `Chip::chip_width`
+/// from one rule instead of two. `Icon::icon_rect`, `ToolButton::icon_rect` and `Chip::chip_width`
 /// each derive their own box today; a caller that has to know where content will actually land asks
 /// here rather than restating the fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,7 +257,7 @@ fn source_geometry(source: IconRef<'_>) -> Result<SourceGeometry, IconPaintError
 
 /// Measures where a source's content lands inside `slot`.
 ///
-/// The measurement half of [`paint_icon`]: both call [`glyph_box`], so a reserved box and a painted
+/// The measurement half of [`paint_icon`]: both call `glyph_box`, so a reserved box and a painted
 /// glyph cannot disagree. An empty slot measures empty rather than failing — see
 /// [`IconMetrics::is_empty`].
 ///
@@ -398,7 +398,7 @@ pub fn paint_icon(
 /// through the text path.
 ///
 /// This function closes that gap without changing the API: it resolves `name` exactly the way
-/// [`Icon::draw_icon`] does (a bundled token, then a host registration, then the generated
+/// `Icon::draw_icon` does (a bundled token, then a host registration, then the generated
 /// fallback), and **returns `false` when it resolved nothing** so the caller can keep whatever text
 /// behaviour it had. A host that passes `"star"` now gets a real outline; a host that still passes
 /// `"★"` keeps the old result rather than losing its icon.
@@ -437,7 +437,7 @@ pub fn icon_token_is_drawable(name: &str) -> bool {
     resolve_named_icon(name).is_some()
 }
 
-/// Draws a legacy widget icon [`Image`](crate::image::Image) into `slot`, reporting whether
+/// Draws a legacy widget icon `Image` into `slot`, reporting whether
 /// anything was painted.
 ///
 /// # The one seam for widgets that still hold an `Image`

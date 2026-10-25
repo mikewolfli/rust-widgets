@@ -39,8 +39,8 @@
 //! layout sits on which parent — and the geometry application. It is deliberately not a
 //! second retained-tree implementation.
 //!
-//! The bridge is [`SharedLayoutRegistry`] plus [`SharedLayoutRegistry::apply_with_hints`]
-//! (and the free [`apply_layout_with_hints`]): a caller that has the child hints (the view
+//! The bridge is `SharedLayoutRegistry` plus `SharedLayoutRegistry::apply_with_hints`
+//! (and the free `apply_layout_with_hints`): a caller that has the child hints (the view
 //! engine does) can drive the stored layouts through `Layout::arrange`, instead of the
 //! id-only `update` path `apply_layout` uses. The thread-local `LAYOUT_MAP` remains the
 //! transitional default. What the view side still has to do is hold one registry instance

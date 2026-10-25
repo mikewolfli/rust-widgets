@@ -6,14 +6,14 @@
 //! On `target_os = "windows"` this module binds the TSF COM interfaces by hand and asks the OS
 //! the one question it can answer correctly: can this thread create and activate an
 //! `ITfThreadMgr` (`CoCreateInstance(CLSID_TF_ThreadMgr)` + `Activate`)? That result is what
-//! [`WindowsImeBridge::has_native_ime`] records. Building an edit context on top of the thread
+//! `WindowsImeBridge::has_native_ime` records. Building an edit context on top of the thread
 //! manager is only defined against a real `ITextStoreACP` text store; there is none here, and
 //! issuing those calls anyway faulted on Windows (see the `tsf` module), so the binding honestly
 //! stops at activation.
 //!
 //! On every other target — and in headless testing — the same type is a pure state machine
 //! that correctly tracks marked text, composition start offsets, and cursor positions, and
-//! reports [`ImeBridge::is_active`] as `false` because there is genuinely no TSF connection.
+//! reports `ImeBridge::is_active` as `false` because there is genuinely no TSF connection.
 
 use crate::compat::{lock, Mutex, String, ToString};
 use crate::core::ObjectId;

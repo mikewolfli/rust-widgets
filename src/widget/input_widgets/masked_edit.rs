@@ -450,7 +450,7 @@ impl MaskedEdit {
     /// The mask sits *between* the two spaces: display position 5 may already be raw character 2
     /// because three literal characters precede it. A display range translated by averaging or by
     /// subtracting the literal count would land on the wrong character, so each end is converted
-    /// independently through [`Self::display_to_raw_index`] — the same function the caret and the
+    /// independently through `Self::display_to_raw_index` — the same function the caret and the
     /// insert path use, so all three agree about which character a position addresses.
     ///
     /// The start is converted from the display position *after* the last selected character while

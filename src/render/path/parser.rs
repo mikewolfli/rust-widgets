@@ -9,7 +9,7 @@
 //! `docs/plans/blue25.md` §6). Turning a `d` into pixels needs two things: **reading the commands**
 //! and **flattening the curves**. This module does only the first. Flattening — subdividing a curve
 //! until its chord is within a device-pixel tolerance — is already implemented, tuned and tested in
-//! [`crate::render::text::raster`], so writing a second one here would be two implementations of one
+//! `crate::render::text::raster`, so writing a second one here would be two implementations of one
 //! concept (principle #101). [`Subpath`] therefore yields **segments**, and the caller hands them to
 //! whatever flattener it already uses.
 //!

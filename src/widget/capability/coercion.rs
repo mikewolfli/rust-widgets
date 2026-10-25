@@ -635,7 +635,7 @@ pub fn expect_horizontal_alignment(
 ///
 /// The mirror of [`expect_horizontal_alignment`] only earns its keep if the word it emits is one
 /// the schema actually publishes. Every `alignment` row declares
-/// `&["left", "centre", "right"]`, and [`Self::expect_horizontal_alignment`] accepts both
+/// `&["left", "centre", "right"]`, and `Self::expect_horizontal_alignment` accepts both
 /// spellings — so a reader that emitted `center` was **reading back a word its own contract never
 /// mentions**. That is the harmful direction the crate's vocabulary rule forbids: a designer
 /// building a combo box from `accepted_tokens` renders `centre`, and the control's current value

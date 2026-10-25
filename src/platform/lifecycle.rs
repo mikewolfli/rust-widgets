@@ -13,13 +13,13 @@
 //!
 //! # Unknown is not Active
 //!
-//! The initial phase is `Unknown`: [`lifecycle_state`] answers `None` until the host reports one,
-//! and [`orientation`] answers `None` until a rotation is reported. A backend that has not heard
+//! The initial phase is `Unknown`: `lifecycle_state` answers `None` until the host reports one,
+//! and `orientation` answers `None` until a rotation is reported. A backend that has not heard
 //! from its host must not claim the app is in the foreground or the device is portrait.
 //!
 //! # The animation clock
 //!
-//! [`set_state`] stops the animation clock for `Inactive` and `Background` and restarts it for
+//! `set_state` stops the animation clock for `Inactive` and `Background` and restarts it for
 //! `Active`. The restart leaves a one-frame zero-delta request in
 //! [`crate::widget::runtime`], so time spent in the background is not replayed as one huge step.
 

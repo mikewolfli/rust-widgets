@@ -18,7 +18,7 @@ use super::{distance, point_delta, tuning, GestureKind, GestureRecognizer};
 ///
 /// The recogniser used to decide everything on `TouchEnd`, so a finger that travelled far and
 /// then reversed still had its earlier travel counted. The move path now locks the dominant axis
-/// once the accumulated travel crosses [`GestureTuning::swipe_min_distance`], and a move whose
+/// once the accumulated travel crosses `GestureTuning::swipe_min_distance`, and a move whose
 /// component along that axis points back the other way **cancels** the attempt (the finger drew
 /// one direction and then undid it). `partial` exposes the locked direction and current speed so
 /// a host can preview the swipe before the release confirms it.

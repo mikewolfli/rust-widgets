@@ -120,7 +120,7 @@ pub trait Widget: EventHandler + Any {
     /// Get cursor shape this control wants while hovered.
     ///
     /// BLUE28 B28.09: intent lives on the control; the runtime dispatches it once per hover
-    /// change through [`Platform::set_cursor`]. The single match here is the default policy for
+    /// change through `Platform::set_cursor`. The single match here is the default policy for
     /// every widget, so a new control inherits a sensible shape without a second table to sync.
     fn cursor_icon(&self) -> crate::platform::CursorIcon {
         use crate::platform::CursorIcon;
@@ -300,7 +300,7 @@ pub trait Widget: EventHandler + Any {
     /// # Why this re-resolves the theme
     ///
     /// `enabled` is one of the inputs [`Widget::widget_state`] answers from, so it selects the
-    /// `"<kind>:disabled"` key a theme author may have written. [`crate::style::apply_active_theme`]
+    /// `"<kind>:disabled"` key a theme author may have written. `crate::style::apply_active_theme`
     /// runs only inside the two creation funnels, in the state the constructor produced, and a
     /// redraw re-runs `draw` rather than the theme application — so without this call a control
     /// disabled **after** it was themed kept the fill of its creation state and the override was
@@ -467,7 +467,7 @@ pub trait Widget: EventHandler + Any {
     ///
     /// Through the property contract, so a control added later is announced correctly without
     /// editing this method and a control that has no value concept simply answers empty rather than
-    /// a fabricated `0`. The spellings are [`VALUE_PROPERTY_NAMES`]'s decision, made once.
+    /// a fabricated `0`. The spellings are `VALUE_PROPERTY_NAMES`'s decision, made once.
     fn accessible_value(&self) -> String {
         // A disabled control's value is still its value: a reader inspecting a greyed-out slider
         // benefits from knowing where it sits, and suppressing it would make "disabled" and
@@ -617,7 +617,7 @@ pub trait Widget: EventHandler + Any {
         self.base().style()
     }
 
-    /// The [`WidgetState`] this control is currently in.
+    /// The `WidgetState` this control is currently in.
     ///
     /// # Why this is on the trait and not on each control
     ///
@@ -661,7 +661,7 @@ pub trait Widget: EventHandler + Any {
         }
     }
 
-    /// The [`SemanticState`] this control carries, independent of its interaction state.
+    /// The `SemanticState` this control carries, independent of its interaction state.
     ///
     /// # Why this is a second method rather than more `widget_state` variants
     ///
@@ -671,7 +671,7 @@ pub trait Widget: EventHandler + Any {
     /// [`StateOverlay`](crate::style::StateOverlay) exists for the fill. This is that split for
     /// the border: the fill answers to the interaction, the border to the meaning.
     ///
-    /// Defaults to [`SemanticState::None`], so the 188 controls need not change at once — the
+    /// Defaults to `SemanticState::None`, so the 188 controls need not change at once — the
     /// same additive step [`Self::widget_state`] took (principle #21). A control whose result is
     /// `None` draws exactly as it did before this method existed.
     fn semantic_state(&self) -> crate::style::SemanticState {

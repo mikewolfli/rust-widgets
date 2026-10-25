@@ -1212,7 +1212,7 @@ impl EventLoop {
     ///
     /// Kept for callers that hold an [`EventLoop`] and want to ask without going through the
     /// dispatch path (a test, or a host with its own pump). The loop thread uses the shared
-    /// [`AnimFrameState`] because it captures the `Arc`, not `self`.
+    /// `AnimFrameState` because it captures the `Arc`, not `self`.
     pub fn take_cancelled_animation_frame(&self, id: u64) -> bool {
         lock(&self.cancelled_anim_frames).dispatched_and_cancelled(id)
     }
@@ -1235,7 +1235,7 @@ impl EventLoop {
     /// Installs a parent resolver override, replacing the built-in one.
     ///
     /// Capture/target/bubble propagation is **already on** when the loop is constructed: the loop
-    /// asks the widget registry for each control's parent ([`runtime_parent`]). This method is the
+    /// asks the widget registry for each control's parent (`runtime_parent`). This method is the
     /// override entry for a host whose tree the registry cannot describe, not the switch that
     /// enables propagation (W-01).
     ///

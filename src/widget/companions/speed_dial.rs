@@ -326,19 +326,38 @@ impl Draw for SpeedDial {
                     glyph_color,
                     HorizontalAlignment::Center,
                 );
-                // The label opens to the right of the button, as the family places an
-                // extended FAB's caption.
-                let label_x = target.x + target.width as i32 + SPEED_DIAL_LABEL_GAP;
-                let available =
-                    (self.geometry().x + self.geometry().width as i32 - label_x).max(0) as u32;
-                if available > 0 {
-                    let line = context.text_line(target, &label_font);
+                // The caption sits on the side **away** from the primary button, unless that side
+                // has no room. A horizontal dial used to print every label to the right of its
+                // circle, which is where the next circle and the primary button are; a vertical
+                // dial near the trailing edge has no room on the right at all.
+                let right_room = self.geometry().x + self.geometry().width as i32
+                    - (target.x + target.width as i32);
+                let expands_left =
+                    target.x + target.width as i32 / 2 < main.x + main.width as i32 / 2;
+                let put_left = expands_left || right_room < target.width as i32 / 2;
+                let gap = SPEED_DIAL_LABEL_GAP;
+                let (label_rect, alignment) = if put_left {
+                    let right = target.x - gap;
+                    let left = self.geometry().x;
+                    (
+                        Rect::new(left, line.y, (right - left).max(0) as u32, line.height.max(1)),
+                        HorizontalAlignment::Right,
+                    )
+                } else {
+                    let left = target.x + target.width as i32 + gap;
+                    let right = self.geometry().x + self.geometry().width as i32;
+                    (
+                        Rect::new(left, line.y, (right - left).max(0) as u32, line.height.max(1)),
+                        HorizontalAlignment::Left,
+                    )
+                };
+                if label_rect.width > 0 {
                     context.draw_text_fitted_cow(
-                        Rect::new(label_x, line.y, available, line.height.max(1)),
+                        label_rect,
                         &action.label,
                         &label_font,
                         ink.with_alpha((255.0 * progress) as u8),
-                        HorizontalAlignment::Left,
+                        alignment,
                     );
                 }
             }

@@ -410,3 +410,24 @@ impl WidgetProperties for Legend {
         property_names_of!["entries", "orientation", "checkable", "position", BASE_PROPERTY_NAMES]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toggling_an_entry_reports_the_series_and_refuses_a_stale_index() {
+        let mut legend = Legend::new(Rect::new(0, 0, 240, 80));
+        legend.set_entries(crate::compat::Vec::from([
+            LegendEntry::new("Revenue", Color::PRIMARY),
+            LegendEntry::new("Cost", Color::ERROR),
+        ]));
+        assert_eq!(legend.entries().len(), 2);
+        assert!(legend.set_entry_visible(1, false));
+        assert!(!legend.entries()[1].visible);
+        // An entry that was already visible is reported as a no-op success rather than a toggle.
+        assert!(legend.set_entry_visible(0, true));
+        assert!(legend.entries()[0].visible);
+        assert!(!legend.set_entry_visible(5, false));
+    }
+}

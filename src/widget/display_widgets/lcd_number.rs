@@ -131,7 +131,7 @@ impl LCDNumber {
     /// `false`.
     ///
     /// `true` draws the point at a third of its cell's width and `false` at half — see
-    /// [`LCDNumber::draw_decimal_point`], which is the only reader. The choice matters because a
+    /// `LCDNumber::draw_decimal_point`, which is the only reader. The choice matters because a
     /// point is a mark rather than a glyph: at full cell width it reads as a bar between two digits.
     pub fn is_small_decimal_point(&self) -> bool {
         self.small_decimal_point
@@ -308,8 +308,8 @@ impl LCDNumber {
     ///
     /// Truncating was the right call for a panel with no glyph for a point, and that was the
     /// state this file recorded: `3.5` drew as `35`, which is not a rounding choice a reader can
-    /// see. [`Self::draw_decimal_point`] is now that glyph, so a fractional value in `Dec` mode
-    /// shows its point rather than dropping it, and [`Self::small_decimal_point`] chooses the
+    /// see. `Self::draw_decimal_point` is now that glyph, so a fractional value in `Dec` mode
+    /// shows its point rather than dropping it, and `Self::small_decimal_point` chooses the
     /// point's size -- which is the whole reason the property exists.
     ///
     /// The point is a *position*, not a digit: it is charged against the digit budget the same

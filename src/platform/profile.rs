@@ -458,7 +458,7 @@ pub fn system_theme() -> Option<bool> {
 ///
 /// `0` means this profile cannot report changes — `mini` has no platform singleton, and a backend
 /// that has not bound a change source answers zero. The style layer uses the revision to avoid
-/// re-reading every fact on every frame; see [`crate::style::environment`] (G-08). The fact set is
+/// re-reading every fact on every frame; see `crate::style::environment` (G-08). The fact set is
 /// the one the style snapshot consumes, so a change in any of those six facts is observable (P-03).
 pub fn environment_generation() -> u64 {
     #[cfg(feature = "mini")]
