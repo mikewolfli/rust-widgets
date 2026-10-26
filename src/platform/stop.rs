@@ -120,6 +120,14 @@ pub(crate) fn honour_request_on_loop_thread() {
     if !is_requested() {
         return;
     }
+    // Test isolation: the flag's own unit tests freeze the bridge so a straggling loop thread —
+    // one that outlived its test's seam guard by a scheduling hair — cannot consume the request
+    // under test. The bridge's own consumption behaviour is covered deterministically by the loop
+    // tests, which never freeze it. Production builds compile this gate away.
+    #[cfg(test)]
+    if TEST_CONSUMERS_FROZEN.load(Ordering::SeqCst) {
+        return;
+    }
     // # Why the request is taken *after* the backend agrees to stop
     //
     // Taking first and stopping second loses the request whenever the backend refuses — and a
@@ -146,13 +154,48 @@ pub(crate) fn honour_request_on_loop_thread() {
 #[cfg(test)]
 pub(crate) static TEST_SEAM_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Set by the flag's own unit tests: while set, a frame tick does not consume a pending request.
+///
+/// The lock above serialises *tests*, but a loop runs on its own thread **inside** its test's
+/// guard by design — and a loop that outlives its test by a scheduling hair can consume a
+/// request in a sibling test's ask/read window. That is the flake the lock alone kept re-opening
+/// (measured again on the final review round: eight consecutive ask/read retries all raced).
+/// Freezing the bridge isolates the unit under test — the flag — while the bridge itself stays
+/// covered by the loop tests, which never freeze it.
+#[cfg(test)]
+static TEST_CONSUMERS_FROZEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Freezes/restores the loop bridge's consumption for the flag's own unit tests.
+#[cfg(test)]
+pub(crate) fn freeze_consumers(frozen: bool) {
+    TEST_CONSUMERS_FROZEN.store(frozen, Ordering::SeqCst);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Freezes the loop bridge for the duration of a flag test (see [`freeze_consumers`]).
+    struct FrozenConsumers;
+
+    impl FrozenConsumers {
+        fn new() -> Self {
+            freeze_consumers(true);
+            Self
+        }
+    }
+
+    impl Drop for FrozenConsumers {
+        fn drop(&mut self) {
+            freeze_consumers(false);
+        }
+    }
+
     #[test]
     fn a_request_is_recorded_and_consumed_once() {
         let _serial = TEST_SEAM_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _frozen = FrozenConsumers::new();
         // The flag is process-wide, so this test states its own end state rather than assuming
         // one: take() first, then assert the record, the read and the single consumption.
         let _ = take();
@@ -167,6 +210,7 @@ mod tests {
     #[test]
     fn a_stop_request_does_not_depend_on_which_thread_asked() {
         let _serial = TEST_SEAM_SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _frozen = FrozenConsumers::new();
         // The whole point of the flag: asking from a thread that does not own any loop must not
         // panic, must not call into a toolkit, and must leave the request where a loop reads it.
         let _ = take();
@@ -179,24 +223,11 @@ mod tests {
             loop_has_ticked(),
             "the answer must describe the loop, not the thread that asked"
         );
-        // The ask/read pair is retried: the flag is process-wide, and a loop that does not take
-        // the seam can (legitimately) consume a request between the ask and this read — measured
-        // rarely under the full suite. A `request()` that genuinely records is consumed by the
-        // immediate next read, so a regression still fails every attempt; only the race is
-        // retried away. (Every loop-driving test in the crate holds the seam lock, but the flag's
-        // contract cannot forbid a reader, so the test cannot assume one is absent.)
-        let mut taken = false;
-        for _ in 0..8 {
-            let _ = take();
-            let _ = std::thread::spawn(request)
-                .join()
-                .expect("the asking thread must not panic on a retry");
-            taken = take();
-            if taken {
-                break;
-            }
-        }
-        assert!(taken, "a request from another thread must be readable and consumable");
+        // The request is recorded by the asker and read here, on the test's own thread. The
+        // loop bridge is frozen for the duration (see [`FrozenConsumers`]), so the only reader in
+        // this window is this thread — the survival claim is deterministic, not a race against a
+        // straggling loop.
+        assert!(take(), "a foreign thread's request must be readable and consumable");
         assert!(!is_requested());
     }
 }
