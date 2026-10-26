@@ -70,9 +70,7 @@
 //!
 //! # Reachability
 //!
-//! **State:** the declarative retained-tree implementation. The mounting/updating entry points
-//! are `ViewEngine::mount`, `ViewEngine::update`, and — for a caller that already owns a
-//! `Node` tree — `ViewEngine::mount_tree` / `ViewEngine::update_tree`.
+//! **State:** Production callers: src/event/loop.rs:1304 calls `reactive_pump_event()` to wake the host that drives this engine, and src/designer/mod.rs:104 shares `GENERATED_WIRE_PROP_PREFIX` / `is_generated_wire_prop` with the code generator. The engine's own mounting entry points are `ViewEngine::mount`, `ViewEngine::update`, and — for a caller that already owns a `Node` tree — `ViewEngine::mount_tree` / `ViewEngine::update_tree`.
 //!
 //! Not duplicated by `crate::json`: the JSON loader parses *one* tree and instantiates it once,
 //! with no previous tree to compare against, so it cannot preserve an identity across an

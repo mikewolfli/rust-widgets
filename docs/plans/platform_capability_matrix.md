@@ -67,6 +67,7 @@
 | **Cascader** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Center** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Chart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ChartTooltip** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **CheckBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **CheckListBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Chip** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -79,6 +80,7 @@
 | **ColumnView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ComboBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **CommandLink** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Compass** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ConfirmDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ContextMenu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **CupertinoAlertDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -91,14 +93,17 @@
 | **DatePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **DateRangePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **DateTimePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **DependencyEditor** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **DepthChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Dial** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Dialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **DiffFileList** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **DirectoryDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Divider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **DockPanel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **DockWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **DoubleSpinBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **DrawerSectionHeader** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **DropZone** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Dropdown** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **DropdownMenu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -108,6 +113,8 @@
 | **Expanded** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FAB** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FileDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **FilterRow** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **FindBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **FindReplaceDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Flex** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Flexible** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -121,6 +128,7 @@
 | **Gauge** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Grid** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **GridTable** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **GridViewHeader** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **GroupBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Heatmap** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **HeroAnimation** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -133,15 +141,20 @@
 | **InputDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **IntrinsicWidth** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **KanbanBoard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **KanbanCardView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **KanbanColumnHeader** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Keyboard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **LCDNumber** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Label** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **LayerPanel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Legend** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Line** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **LineChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **LineEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **ListBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **ListView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **LottieWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MarkdownOutlinePanel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **MaskedEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **MasonryLayout** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **MaterialNavigationRail** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -152,6 +165,7 @@
 | **MenuBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **MenuButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **MenuItem** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **MenuPanel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **MessageBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **Meter** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **MiniCanvas** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -169,6 +183,7 @@
 | **Panel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **PieChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **PieMenu** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **PlaylistPanel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Popover** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **PopupWindow** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ProgressBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
@@ -181,6 +196,7 @@
 | **QuoteBoard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **RadarChart** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **RadioButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
+| **RangePresetBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **RangeSlider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Rating** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **RefreshControl** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -189,12 +205,14 @@
 | **RiveWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Roller** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SafeArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ScaleBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ScrollArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **ScrollBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SearchBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SearchBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SegmentedButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SegmentedControl** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ShapeCanvas** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ShortcutEditor** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SignaturePad** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SizedBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -202,6 +220,7 @@
 | **Slider** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **Spacer** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Sparkline** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **SpeedDial** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SpinBox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **Spinner** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SplashScreen** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -209,6 +228,8 @@
 | **StackedWidget** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **StatusBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **Stepper** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **Swatch** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **SwipeActions** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **SwipeToDismiss** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Switch** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TabBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -219,13 +240,17 @@
 | **TagInput** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TextArea** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TextEdit** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TileLoader** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TimePicker** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TimelineAxis** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Toast** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ToastHost** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ToggleButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **ToolBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **ToolButton** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Toolbox** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Tooltip** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **TooltipManager** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TreeTable** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **TreeView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **UndoView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
@@ -241,16 +266,19 @@
 | **WebEngineSettings** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **WebEngineView** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **WebEngineWebChannel** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **WebFindBar** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **Window** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ✅ |
 | **Wizard** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **WizardDialog** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 | **WrapLayout** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ZoomControl** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
+| **ZoomPanController** | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | 🟦 | ⬜ |
 
 ---
 
-Total widgets: 209 (200 WidgetKind variants plus 9 documented WebEngine wrapper types)
+Total widgets: 237 (228 WidgetKind variants plus 9 documented WebEngine wrapper types)
 
-C-ABI typed constructors: 22 of 209 widget types. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
+C-ABI typed constructors: 22 of 237 widget types. The remainder are reachable through `rw_create_widget_of_kind`, which takes a factory name at run time.
 
 ---
 

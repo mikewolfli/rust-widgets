@@ -904,6 +904,7 @@ extern "C" fn draw_rect(this: &Object, _cmd: Sel, _rect: NSRect) {
             // the view for `currentContext` sends an unknown selector and AppKit
             // raises `NSInvalidArgumentException`, which aborts the process
             // because a foreign exception cannot unwind through Rust.
+            // `[NSGraphicsContext currentContext]` is a **class** method. Asking
             let context: id = msg_send![class!(NSGraphicsContext), currentContext];
             if context == nil {
                 log::error!(
@@ -1301,17 +1302,34 @@ impl MacOSPlatform {
     }
 }
 
+/// Converts a point in a non-flipped AppKit view into **widget** coordinates (top-down, local).
+///
+/// Split out of [`local_point`] because it is pure arithmetic and therefore testable without a
+/// live `NSView`: the whole point of the function is the subtraction, and a missing subtraction
+/// is invisible on a machine with no display (it made every click land on the mirrored control).
+pub(crate) fn widget_point(view_height: f64, local: NSPoint) -> Point {
+    Point::new(local.x.round() as i32, (view_height - local.y).round() as i32)
+}
+
 /// Converts a window-space AppKit point into canvas-local coordinates.
 ///
-/// NSWindow reports bottom-up window coordinates; the canvas is flipped, so the
-/// conversion has to go through `convertPoint:fromView:` rather than subtracting.
+/// NSWindow reports bottom-up window coordinates and the canvas is **not** flipped
+/// ([`is_flipped`] returns `NO`, see its note on why), so `convertPoint:fromView:` answers a
+/// `y` measured from the view's **bottom** edge. Widget geometry counts from the top, so
+/// [`widget_point`] subtracts it from the view's height — without that every click was mirrored
+/// vertically and landed on whichever control sat at `height - y`, which made a press on the top
+/// row arrive as a press on the bottom row (or on empty space, so nothing happened at all).
+///
+/// `bounds`, not `frame`: same size, but `bounds` is expressed in the view's own coordinate
+/// space and carries no superview offset.
 ///
 /// # Safety
 ///
 /// `view` must be a live canvas view.
 pub(crate) unsafe fn local_point(view: id, window_point: NSPoint) -> Point {
     let local: NSPoint = msg_send![view, convertPoint: window_point fromView: nil];
-    Point::new(local.x.round() as i32, local.y.round() as i32)
+    let bounds: NSRect = msg_send![view, bounds];
+    widget_point(bounds.size.height, local)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1584,6 +1602,21 @@ mod tests {
     #[test]
     fn view_for_unknown_id_is_none() {
         assert!(view_for(0xABCD).is_none());
+    }
+
+    /// The canvas is **not** flipped, so AppKit's `y` counts up from the bottom while widget
+    /// geometry counts down from the top. Dropping the subtraction turned every click into its
+    /// own mirror image: a press on the top row arrived as a press on the bottom row, which is
+    /// how "the demo's controls do not react" looked from the outside.
+    #[test]
+    fn a_bottom_up_view_point_maps_to_top_down_widget_coordinates() {
+        // 760-tall view: the top edge is widget y = 0, the bottom edge widget y = 760.
+        assert_eq!(widget_point(760.0, NSPoint::new(20.0, 760.0)), Point::new(20, 0));
+        assert_eq!(widget_point(760.0, NSPoint::new(20.0, 0.0)), Point::new(20, 760));
+        // A press 20 px below the top edge is 740 px up from the bottom.
+        assert_eq!(widget_point(760.0, NSPoint::new(95.0, 740.0)), Point::new(95, 20));
+        // `x` is untouched: only the vertical axis is inverted.
+        assert_eq!(widget_point(760.0, NSPoint::new(1180.0, 380.0)), Point::new(1180, 380));
     }
 }
 

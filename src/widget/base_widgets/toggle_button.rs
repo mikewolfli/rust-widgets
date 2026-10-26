@@ -737,7 +737,7 @@ impl ToggleButton {
         self.interaction_progress.set_target(self.interaction_target_progress());
         // Auto-repeat runs on this control's existing clock: no thread, no platform timer.
         let held = self.auto_repeat_held();
-        let repeats = self.auto_repeat.tick(delta_ms, held);
+        let repeats = self.auto_repeat.advance(delta_ms, held);
         for _ in 0..repeats {
             self.emit_auto_repeat();
         }
@@ -793,6 +793,9 @@ impl Widget for ToggleButton {
         self.set_state_theme_hook();
         self.sync_group_registration();
         self.base.request_redraw();
+        // `Disabled` is one of the five states, so an enabled change is a state change and must
+        // be announced through the same signal every other state transition uses (B-008).
+        self.state_changed.emit(self.state());
     }
 
     /// The button and its open menu accept the pointer.

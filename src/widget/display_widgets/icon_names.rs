@@ -172,7 +172,7 @@ impl IconName {
     ///
     /// The tokens are lower-case and underscore-separated (`"arrow_left"`), and are the
     /// exact spellings accepted by [`IconName::from_name`] and by the `icon` property. They
-    /// are also the names used by `Icon::set_icon`.
+    /// are also the names used by [`Icon::set_icon`].
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Check => "check",
@@ -251,7 +251,7 @@ impl IconName {
     ///
     /// The match is exact and case-sensitive: only the tokens produced by
     /// [`IconName::as_str`] are accepted, so `"ArrowLeft"` and `"arrow left"` both return
-    /// `None`. Use `Icon::set_icon` when an unrecognised name should fall back to a
+    /// `None`. Use [`Icon::set_icon`] when an unrecognised name should fall back to a
     /// placeholder rather than being rejected.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {

@@ -3,7 +3,7 @@
 
 //! Core rendering data types for text and geometry.
 
-use crate::compat::{String, Vec};
+use crate::compat::{Arc, Vec};
 
 /// Measured dimensions of a laid-out text run, in logical pixels.
 ///
@@ -98,7 +98,11 @@ mod tests {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextCluster {
     /// Cluster source text (one or more unicode scalars).
-    pub text: String,
+    ///
+    /// Shared rather than owned: a bidi reorder rebuilds the cluster order, and a `String` here
+    /// deep-copied every cluster's text on each rebuild (G-006). Drawing and measurement only
+    /// borrow it, so the count is sufficient.
+    pub text: Arc<str>,
     /// Logical horizontal advance in pixels.
     pub advance: f32,
 }

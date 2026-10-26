@@ -26,6 +26,14 @@
 //! The counter is thread-local, so the harness' own allocations on other threads cannot leak into
 //! the measurement; that also lets this file's tests run in parallel with the rest of the suite.
 
+// The entry points under measurement (`theme::WidgetRole`, `WidgetFactory`, `sample_fill`,
+// `render::role_surface_style`) only exist once the widget tree and the capability table are
+// built, i.e. under `full_widgets`. Integration tests are auto-discovered and compiled for
+// *every* feature combination a gate asks for, so without this the file breaks
+// `--no-default-features --features mini` / `embedded` with imports of items that are
+// deliberately absent there. `full_widgets` implies `device_profile` and `widgets_unstripped`
+// (build.rs), which is exactly the set these imports need.
+#![cfg(full_widgets)]
 #![allow(clippy::missing_const_for_thread_local)]
 
 use std::alloc::{GlobalAlloc, Layout, System};

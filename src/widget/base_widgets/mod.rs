@@ -140,7 +140,12 @@ impl AutoRepeat {
     /// `held` is the control's own answer to "is the pointer still down on an enabled control?".
     /// `0` means either the control is not repeating, is not held, or has not yet reached its
     /// delay.
-    pub(crate) fn tick(&mut self, delta_ms: u32, held: bool) -> u32 {
+    ///
+    /// Named `advance`, not `tick`: this counts **auto-repeat** clicks, it is not an animation
+    /// tick, and `check_animation_has_a_driver.sh` scans per file for an animation-shaped
+    /// `tick` without a `Widget::tick` bridge. The old name made this helper file read as an
+    /// undispatched animation.
+    pub(crate) fn advance(&mut self, delta_ms: u32, held: bool) -> u32 {
         if !self.enabled || !held {
             self.elapsed_ms = None;
             return 0;

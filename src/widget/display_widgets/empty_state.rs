@@ -46,13 +46,11 @@ pub struct EmptyState {
     action_text: String,
     /// The secondary action's label, empty when there is none.
     secondary_action_text: String,
-    /// Whether the action button is currently armed by a left press.
-    ///
-    /// A press arms the button and paints it pressed; the release decides whether
-    /// the action fires. This is the same press/release pair the crate's binary
-    /// controls use, so a press alone never commits.
-    pressed: bool,
     /// Whether the secondary action is armed by a left press.
+    ///
+    /// The **primary** action needs no field: `BaseWidget` already records the press that a
+    /// release must pair with (`check_state_source_is_the_base.sh`). Only the secondary action
+    /// is a second pointer target inside one control, so only it carries its own arm flag.
     secondary_pressed: bool,
     /// Emitted when the action button is clicked.
     pub action_pressed: GenericSignal,
@@ -75,7 +73,10 @@ struct MessageWrapCache {
 /// The colours and interaction state shared by both emptiness action buttons.
 struct ActionButtonPaint {
     fill: Color,
-    pressed: bool,
+    /// Whether this button is armed by a press. A paint input, not control state: the primary
+    /// arm lives in `BaseWidget` and the secondary in `EmptyState::secondary_pressed`, and this
+    /// struct only carries the answer into the painter.
+    armed: bool,
     is_enabled: bool,
     ink: Color,
     surface: Color,
@@ -97,7 +98,6 @@ impl EmptyState {
             message: DEFAULT_MESSAGE.to_string(),
             action_text: String::new(),
             secondary_action_text: String::new(),
-            pressed: false,
             secondary_pressed: false,
             action_pressed: GenericSignal::new(),
             secondary_action_pressed: GenericSignal::new(),
@@ -253,14 +253,14 @@ impl EmptyState {
         font: &Font,
         paint: ActionButtonPaint,
     ) {
-        let ActionButtonPaint { fill, pressed, is_enabled, ink, surface } = paint;
+        let ActionButtonPaint { fill, armed, is_enabled, ink, surface } = paint;
         let corner_radius = rect.height / 2;
         // A pressed action is a step toward the ink, the same direction every other
         // pressed surface in the crate moves. The resting fill is unchanged, so a
         // control that is never pressed paints exactly as it did.
         let btn_bg = if !is_enabled {
             ink.blend(&surface, 0.8)
-        } else if pressed {
+        } else if armed {
             fill.blend(&ink, 0.18)
         } else {
             fill
@@ -574,7 +574,7 @@ impl Draw for EmptyState {
                 &action_font,
                 ActionButtonPaint {
                     fill: action_fill,
-                    pressed: self.pressed,
+                    armed: self.base.is_pressed(),
                     is_enabled,
                     ink,
                     surface,
@@ -590,7 +590,7 @@ impl Draw for EmptyState {
                     &action_font,
                     ActionButtonPaint {
                         fill: action_fill.blend(&surface, 0.55),
-                        pressed: self.secondary_pressed,
+                        armed: self.secondary_pressed,
                         is_enabled,
                         ink,
                         surface,
@@ -618,8 +618,8 @@ impl EventHandler for EmptyState {
                     // Check the primary and secondary action buttons.
                     if let Some((primary, secondary)) = self.action_button_rects() {
                         if primary.contains_point(*pos) {
-                            if !self.pressed {
-                                self.pressed = true;
+                            if !self.base.is_pressed() {
+                                self.base.set_pressed(true);
                                 self.base.request_redraw();
                             }
                             return;
@@ -640,8 +640,8 @@ impl EventHandler for EmptyState {
             }
             Event::MouseRelease { pos, button } => {
                 if *button == 1 {
-                    if self.pressed {
-                        self.pressed = false;
+                    if self.base.is_pressed() {
+                        self.base.set_pressed(false);
                         // A release inside commits; anywhere else abandons the press, which is
                         // the platform convention for a button the pointer was dragged off.
                         if let Some((primary, _)) = self.action_button_rects() {
@@ -830,7 +830,7 @@ mod tests {
         // Dragged off the button before release: the gesture is abandoned.
         es.handle_event(&Event::mouse_release(1, 1, 1));
         assert!(!*fired.lock().unwrap(), "a release outside must not commit");
-        assert!(!es.pressed, "the arm is cleared either way");
+        assert!(!es.base.is_pressed(), "the arm is cleared either way");
 
         // A release that was never armed does not commit either.
         es.handle_event(&Event::mouse_release(inside_x, inside_y, 1));

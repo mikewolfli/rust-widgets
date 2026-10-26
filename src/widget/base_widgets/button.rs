@@ -622,7 +622,7 @@ impl Button {
         // Auto-repeat shares this control's existing clock: a held button reports one repeat per
         // elapsed interval, and no thread or platform timer is involved.
         let held = self.auto_repeat_held();
-        let repeats = self.auto_repeat.tick(delta_ms, held);
+        let repeats = self.auto_repeat.advance(delta_ms, held);
         for _ in 0..repeats {
             self.emit_auto_repeat();
         }

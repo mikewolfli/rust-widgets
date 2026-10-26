@@ -426,8 +426,12 @@ pub struct ListItemState {
     pub selected: bool,
     /// Whether the row carries keyboard focus.
     pub focused: bool,
-    /// Whether the pointer is over the row.
-    pub hovered: bool,
+    /// Whether the pointer is over **this row** (data hover, not the control's own hover).
+    ///
+    /// Named `row_hovered` rather than `hovered` because the control-level fact is
+    /// `BaseWidget::is_hovered`: a bare `hovered` field here would read as a second source of
+    /// the widget's own state, which `check_state_source_is_the_base.sh` reports.
+    pub row_hovered: bool,
     /// Whether the view is enabled.
     pub enabled: bool,
 }
@@ -1521,7 +1525,7 @@ impl Draw for ListView {
                             row: i,
                             selected: self.selection.is_selected(i),
                             focused: Some(i) == current_row,
-                            hovered: Some(i) == self.hovered_row,
+                            row_hovered: Some(i) == self.hovered_row,
                             enabled: self.base.is_enabled(),
                         },
                     );

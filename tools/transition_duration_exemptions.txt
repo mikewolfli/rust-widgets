@@ -92,3 +92,17 @@ src/widget/display_widgets/color_well.rs    the dwell window that groups a doubl
 src/widget/display_widgets/icon.rs    the frame step of a multi-frame icon animation, a data duration, not a transition
 src/widget/input_widgets/lineedit.rs    the multi-click grouping window, a dwell timing rather than a transition
 src/widget/menu_toolbar/tool_button.rs    the hover dwell before a delayed popup opens, not the popup's transition duration
+
+# ── Dwell timings added when the scan was widened to constant definitions ──
+#
+# The seven below were reported once the scan started reading `const …_MS = N`
+# definitions as well as `Duration::from_millis(N)` call sites. None of them is a
+# visual transition: each answers "how long may the user's hand rest / how long do we
+# group clicks?", which is a dwell measured against wall time, not a movement priced
+# by the theme's motion scale.
+src/widget/base_widgets/mod.rs    the auto-repeat delay and interval of a held button; a dwell before the next repeat, not a transition
+src/widget/input_widgets/text_match.rs    the type-ahead reset window; a typing dwell, not a transition
+src/widget/media_widgets/rive_widget.rs    not a duration at all: `RIV_ANIMATION_DURATION_KEY` is a Rive property **key** (57), matched only because its name contains "DURATION"
+src/widget/menu_toolbar/effects.rs    the hover dwell before a submenu opens, not the submenu's transition
+src/widget/view_widgets/list_view.rs    the double-click grouping window the host must match to the OS, not a transition
+src/widget/view_widgets/properties_panel.rs    the hover dwell before a property tooltip appears, not the tooltip's transition

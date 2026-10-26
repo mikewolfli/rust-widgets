@@ -50,7 +50,7 @@ pub fn generation() -> u64 {
 /// prove a notification invalidates a reading. One lock owned by this module (the owner of the
 /// counter) is the smallest thing that makes both assertions deterministic.
 #[cfg(test)]
-pub(crate) fn test_lock() -> crate::compat::MutexGuard<'static, ()> {
+pub(crate) fn environment_test_guard() -> crate::compat::MutexGuard<'static, ()> {
     static LOCK: crate::compat::OnceLock<crate::compat::Mutex<()>> = crate::compat::OnceLock::new();
     crate::compat::lock(LOCK.get_or_init(|| crate::compat::Mutex::new(())))
 }
@@ -82,7 +82,7 @@ mod tests {
     /// A bump is observable even when the backend derives `0`.
     #[test]
     fn a_bump_is_a_new_revision_and_zero_is_none() {
-        let _guard = test_lock();
+        let _guard = environment_test_guard();
         let before = generation();
         let first = bump();
         let second = bump();

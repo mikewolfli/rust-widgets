@@ -1336,6 +1336,24 @@ impl RustWidgetsObjc2CanvasView {
         }
     }
 
+    /// The pointer's position in **widget** coordinates (top-down, absolute).
+    ///
+    /// `isFlipped` is `false` on this class — the view keeps AppKit's bottom-up native system so
+    /// the blit's row order matches the context — so `convertPoint:fromView:` answers a `y`
+    /// counted up from the view's bottom edge. Widget geometry counts down from the top, so the
+    /// view's own height is subtracted. Without that, every pointer event was mirrored
+    /// vertically: a press on the top row hit whichever control lives at `height - y`.
+    #[cfg(widgets_unstripped)]
+    fn pointer_position(&self, event: &NSEvent) -> Point {
+        let local = self.convertPoint_fromView(event.locationInWindow(), None);
+        let origin = self.frame().origin;
+        let height = self.bounds().size.height;
+        Point::new(
+            (origin.x + local.x).round() as i32,
+            (origin.y + height - local.y).round() as i32,
+        )
+    }
+
     /// Translates an AppKit mouse event into a widget event and routes it.
     #[cfg(widgets_unstripped)]
     fn forward_mouse(&self, event: &NSEvent, phase: MousePhase) {
@@ -1343,12 +1361,7 @@ impl RustWidgetsObjc2CanvasView {
             let Some(widget_id) = self.widget_target() else {
                 return;
             };
-            let local = self.convertPoint_fromView(event.locationInWindow(), None);
-            let origin = self.frame().origin;
-            let position = Point::new(
-                (origin.x + local.x).round() as i32,
-                (origin.y + local.y).round() as i32,
-            );
+            let position = self.pointer_position(event);
             let modifiers = crate::platform::macos::accelerator::map_modifiers(
                 event.modifierFlags().bits() as u64,
             );
@@ -1412,12 +1425,7 @@ impl RustWidgetsObjc2CanvasView {
             let Some(widget_id) = self.widget_target() else {
                 return;
             };
-            let local = self.convertPoint_fromView(event.locationInWindow(), None);
-            let origin = self.frame().origin;
-            let position = Point::new(
-                (origin.x + local.x).round() as i32,
-                (origin.y + local.y).round() as i32,
-            );
+            let position = self.pointer_position(event);
             let modifiers = crate::platform::macos::accelerator::map_modifiers(
                 event.modifierFlags().bits() as u64,
             );
@@ -1651,9 +1659,12 @@ fn blit_rgba(context: &CGContext, width: u32, height: u32, frame: &[u8]) -> bool
         return false;
     };
 
-    // `kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedLast` gives an
-    // in-memory R, G, B, A byte order — the order the software renderer produces.
-    let bitmap_info = CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Little.0;
+    // `kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big` gives an in-memory R, G, B, A
+    // byte order — the order the software renderer produces. The sibling raw-objc backend
+    // (`platform::macos::cg`) shipped this pairing with `Order32Little`, which normalises to
+    // A, B, G, R and put the alpha byte in the red channel: every window came out tinted with
+    // the theme's error red while the frame handed to the blit was correct.
+    let bitmap_info = CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0;
     // SAFETY: every pointer argument is either null (let CG allocate) or a value
     // derived from the borrowed `frame` and the live colour space.
     let Some(bitmap) = (unsafe {

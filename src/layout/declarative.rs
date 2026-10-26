@@ -47,7 +47,7 @@
 //! and call the hint-aware entry when it applies a subtree; that edit belongs to
 //! `src/view/**`, which this module does not own.
 
-use crate::compat::{Box, HashMap, Vec};
+use crate::compat::{BTreeSet, Box, HashMap, Vec};
 use core::cell::RefCell;
 
 use crate::core::{ObjectId, Rect};
@@ -72,10 +72,10 @@ thread_local! {
         RefCell::new(HashMap::new());
     /// Parents whose layout has been invalidated since its last application.
     ///
-    /// A `Vec` rather than a set: a UI tree has tens of containers, and the linear scan
-    /// is cheaper than hashing an `ObjectId` on every call.
+    /// An ordered set, so "already invalidated?" and "clear this parent" are both
+    /// logarithmic rather than a linear scan of a growing `Vec` (LAY-006).
     #[allow(clippy::missing_const_for_thread_local)]
-    static DIRTY_LAYOUTS: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };
+    static DIRTY_LAYOUTS: RefCell<BTreeSet<ObjectId>> = RefCell::new(BTreeSet::new());
 }
 
 /// Marks `parent_id`'s stored layout as needing a fresh application.
@@ -88,10 +88,7 @@ pub fn invalidate_layout(parent_id: ObjectId) -> bool {
         return false;
     }
     DIRTY_LAYOUTS.with(|dirty| {
-        let mut dirty = dirty.borrow_mut();
-        if !dirty.contains(&parent_id) {
-            dirty.push(parent_id);
-        }
+        dirty.borrow_mut().insert(parent_id);
     });
     true
 }
@@ -109,7 +106,9 @@ pub fn apply_layout_if_dirty(parent_id: ObjectId, rect: Rect) -> Option<Vec<(Obj
     if !is_layout_dirty(parent_id) {
         return None;
     }
-    DIRTY_LAYOUTS.with(|dirty| dirty.borrow_mut().retain(|id| *id != parent_id));
+    DIRTY_LAYOUTS.with(|dirty| {
+        dirty.borrow_mut().remove(&parent_id);
+    });
     Some(apply_layout(parent_id, rect))
 }
 
@@ -276,7 +275,9 @@ pub fn store_layout(parent_id: ObjectId, layout: Box<dyn Layout>) {
 /// reused.
 pub fn forget_layout(parent_id: ObjectId) -> bool {
     let removed = LAYOUT_MAP.with(|map| map.borrow_mut().remove(&parent_id).is_some());
-    DIRTY_LAYOUTS.with(|dirty| dirty.borrow_mut().retain(|id| *id != parent_id));
+    DIRTY_LAYOUTS.with(|dirty| {
+        dirty.borrow_mut().remove(&parent_id);
+    });
     removed
 }
 

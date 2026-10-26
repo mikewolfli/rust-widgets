@@ -1185,7 +1185,10 @@ impl EventHandler for RadarChart {
         match event {
             Event::MouseMove { pos } => {
                 let axis = self.axis_at(*pos);
-                if axis != self.hovered_axis {
+                // Capture the comparison before the assignment: the old `else if` compared the
+                // new value with itself, so an axis-only move never repainted (SP-102).
+                let axis_changed = axis != self.hovered_axis;
+                if axis_changed {
                     self.hovered_axis = axis;
                     if let Some(axis) = axis {
                         self.axis_hovered.emit(axis);
@@ -1198,7 +1201,7 @@ impl EventHandler for RadarChart {
                         self.vertex_hovered.emit(vertex);
                     }
                     self.base.request_redraw();
-                } else if axis != self.hovered_axis {
+                } else if axis_changed {
                     self.base.request_redraw();
                 }
             }

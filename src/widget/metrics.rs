@@ -749,6 +749,24 @@ pub const DAMAGE_MARGIN: u32 =
     if FOCUS_RING_WIDTH > FOCUS_HALO_WIDTH { FOCUS_RING_WIDTH } else { FOCUS_HALO_WIDTH }
         + FOCUS_HALO_BLUR_RADIUS;
 
+/// Narrowest editor that still leaves a readable text column beside its outline panel: 240.
+///
+/// Below this the side panel is not mounted at all — half of the editor would go to it and the
+/// text column left over is narrower than a word. This is a **fit** threshold (does the
+/// companion belong here at all?), not a size tier: it selects no subtree shape and is
+/// deliberately a named metric so the paint code carries no bare literal
+/// (`check_breakpoints_are_not_in_draw.sh`).
+pub const OUTLINE_PANEL_MIN_EDITOR_WIDTH: u32 = 240;
+
+/// Board width below which a quote table's cells use the compact inset: 420.
+///
+/// Eight pixels of inset each side do not fit five numeric columns into a narrow board; the
+/// symbol then has too little text room and every four-letter ticker elides. Half the inset is
+/// the compact answer, and naming it here keeps that decision out of the draw path as a bare
+/// literal (`check_breakpoints_are_not_in_draw.sh`), the same way
+/// [`OUTLINE_PANEL_MIN_EDITOR_WIDTH`] does.
+pub const QUOTE_BOARD_COMPACT_CELL_WIDTH: u32 = 420;
+
 /// Which side of a control's border a focus ring occupies.
 ///
 /// [`Inner`](Self::Inner) is the behaviour every current draw site has: the stroke is

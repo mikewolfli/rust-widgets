@@ -215,6 +215,49 @@ fn all_kinds() -> Vec<WidgetKind> {
         DrawerSectionHeader,
         LayerPanel,
         PlaylistPanel,
+        // Controls that were present in the enum but missing from this list. The list is what
+        // the reachability gate iterates, so a row missing here is a control nothing checked —
+        // and `kind_list_is_exhaustive` counts them for exactly that reason.
+        Swatch,
+        FilterRow,
+        Legend,
+        ChartTooltip,
+        TooltipManager,
+        ZoomPanController,
+        ToastHost,
+        TileLoader,
+        ZoomControl,
+        ScaleBar,
+        Compass,
+        TimelineAxis,
+        DependencyEditor,
+        DiffFileList,
+        MarkdownOutlinePanel,
+        FindBar,
+        ShapeCanvas,
+        KanbanCardView,
+        KanbanColumnHeader,
+        RangePresetBar,
+        GridViewHeader,
+        Spacer,
+        Center,
+        Align,
+        SizedBox,
+        Padding,
+        Expanded,
+        Flexible,
+        IntrinsicWidth,
+        AspectRatio,
+        Flex,
+        FlowLayout,
+        WrapLayout,
+        Tag,
+        Gauge,
+        Clock,
+        Accordion,
+        AlertDialog,
+        ConfirmDialog,
+        AboutDialog,
     ];
     kinds
 }
@@ -545,7 +588,7 @@ mod tests {
     /// mutually visible.
     #[test]
     fn kind_list_is_exhaustive() {
-        // 181 since BLUE20 layer 4 added `Heatmap` (and the count moved again with the controls
+        // 228, the enum's own count (`tools/check_widget_kind_count.sh` prints it). It was 181 when
         // added after it). The number is written down here on purpose: this is the list the
         // reachability gate iterates, so a variant added to `WidgetKind` without a row here would
         // silently escape the gate. `exhaustive` already makes that a compile error; this makes
@@ -554,7 +597,7 @@ mod tests {
         // Kept in step with `tools/check_widget_kind_count.sh`, which is the *other* place the
         // number is asserted — it parses `src/widget/kind.rs` and prints the canonical figure.
         // When this assertion and that script disagree, the script is right: it reads the enum.
-        assert_eq!(super::all_kinds().len(), 181);
+        assert_eq!(super::all_kinds().len(), 228);
     }
 
     /// The `match` in `exhaustive` and the `vec!` in `all_kinds` must agree.

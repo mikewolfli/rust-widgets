@@ -832,15 +832,24 @@ fn register_cjk_face(log: &Arc<EventLog>) {
 ///
 /// `main()` 仅调用 `app::run()`；所有窗口创建、菜单/工具栏构建、事件循环都在这里。
 ///
-/// # Why this returns `Result` instead of exiting the process
+/// # Why the exit code is decided here rather than in `main`
 ///
 /// Every start-up failure (no surface support, a failed mount, a widget of the wrong type)
 /// used to call `std::process::exit(1)` on the spot. That bypasses the drop of `App` and the
-/// window, so no platform cleanup runs, and the `main` stub cannot tell success from failure.
-/// The graceful path is the one the finance demo already used — record the reason, then
-/// return — so all four failures now log and return an `Err`, and `main` decides the exit
-/// code. Nothing in this module terminates the process.
-pub fn run() -> Result<(), String> {
+/// window, so no platform cleanup runs. The graceful path records the reason and returns; this
+/// entry point prints it and maps it to the process exit code, keeping `main` a pure stub.
+pub fn run() -> std::process::ExitCode {
+    match run_inner() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("错误：{message}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// The fallible body of [`run`]; nothing in this module terminates the process.
+fn run_inner() -> Result<(), String> {
     banner();
 
     let log = Arc::new(EventLog::new());

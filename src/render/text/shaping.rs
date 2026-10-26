@@ -165,7 +165,7 @@ pub(crate) fn cluster_advances(
     ranges: &[(usize, usize)],
     font: &Font,
     scale: f32,
-) -> Option<Vec<f32>> {
+) -> Option<Rc<[f32]>> {
     let face = face_for_metrics(text, font)?;
     // The same memo every other shaping entry point uses. `text_line` measures before it draws and
     // a layout measures again on the next frame, so this request repeats far more often than it
@@ -192,7 +192,10 @@ pub(crate) fn cluster_advances(
     })
     .flatten();
     if let Some(advances) = advances {
-        store_advances(key, advances.clone());
+        // Share the computed slice by refcount: a cache hit used to deep-copy the whole advance
+        // vector, which made the cache cost about as much as the shaping it saved (G-002).
+        let advances: Rc<[f32]> = advances.into();
+        store_advances(key, Rc::clone(&advances));
         Some(advances)
     } else {
         None
@@ -375,7 +378,7 @@ thread_local! {
     /// Per-cluster advances, keyed the same way. Kept separately because this result carries the
     /// cluster partition, which a glyph run does not: one shape pass can answer both, but the two
     /// answers are different projections and reconstituting one from the other would lose data.
-    static CLUSTER_ADVANCES: RefCell<FifoCache<Vec<f32>>> = RefCell::new(FifoCache::new());
+    static CLUSTER_ADVANCES: RefCell<FifoCache<Rc<[f32]>>> = RefCell::new(FifoCache::new());
     /// Bidi levels per cluster, keyed with the shaped result so an unchanged line reuses both
     /// (G-17). Stored as a shared slice: the caller passes it to `bidi::visual_order_from_levels`
     /// without rebuilding `order`/`levels` or re-running the paragraph analysis.
@@ -442,11 +445,11 @@ fn store_run(key: ShapeKey, run: Option<Rc<ShapedGlyphRun>>) {
     let _ = SHAPED_RUNS.try_with(|cache| cache.borrow_mut().insert(key, run));
 }
 
-fn cached_advances(key: &ShapeKey) -> Option<Vec<f32>> {
+fn cached_advances(key: &ShapeKey) -> Option<Rc<[f32]>> {
     CLUSTER_ADVANCES.try_with(|cache| cache.borrow().get(key).cloned()).ok().flatten()
 }
 
-fn store_advances(key: ShapeKey, advances: Vec<f32>) {
+fn store_advances(key: ShapeKey, advances: Rc<[f32]>) {
     let _ = CLUSTER_ADVANCES.try_with(|cache| cache.borrow_mut().insert(key, advances));
 }
 

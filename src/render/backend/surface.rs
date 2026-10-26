@@ -762,7 +762,7 @@ fn fit_text_to_width<'a>(
         let mut rest = text;
         let mut matches = true;
         for cluster in clusters {
-            match rest.strip_prefix(cluster.text.as_str()) {
+            match rest.strip_prefix(&*cluster.text) {
                 Some(tail) => rest = tail,
                 None => {
                     matches = false;

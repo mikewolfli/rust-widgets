@@ -76,18 +76,36 @@ impl GpuBackendTier {
         self != Self::Primary
     }
 
+    /// Maps an adapter backend name to its ladder tier.
+    ///
+    /// The single decision table for both callers: [`Self::from_backend`] folds the `wgpu`
+    /// enum into this function, and `AdapterInfo` (which may exist without the `wgpu` types)
+    /// passes the name it stores. Keeping the rules here means a new backend cannot be classified
+    /// one way by the ladder and another way by the adapter report (G-229).
+    pub fn from_backend_name(name: &str) -> Self {
+        match name {
+            "Vulkan" | "Metal" | "Dx12" | "BrowserWebGpu" => Self::Primary,
+            "Gl" => Self::OpenGlEs,
+            // `Noop`, the synthetic "CPU" tag, or anything a future `wgpu` release adds: the
+            // terminal rung is the honest answer, because nothing below it exists.
+            _ => Self::Software,
+        }
+    }
+
     /// Maps a `wgpu` adapter's backend to its ladder tier.
     ///
     /// `Noop` is mapped to [`GpuBackendTier::Software`] because it performs no
     /// real rasterization and can only be the terminal fallback in a build that
     /// explicitly enables it.
     pub fn from_backend(backend: wgpu::Backend) -> Self {
-        match backend {
-            wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12 => Self::Primary,
-            wgpu::Backend::Gl => Self::OpenGlEs,
-            wgpu::Backend::BrowserWebGpu => Self::Primary,
-            wgpu::Backend::Noop => Self::Software,
-        }
+        Self::from_backend_name(match backend {
+            wgpu::Backend::Vulkan => "Vulkan",
+            wgpu::Backend::Metal => "Metal",
+            wgpu::Backend::Dx12 => "Dx12",
+            wgpu::Backend::Gl => "Gl",
+            wgpu::Backend::BrowserWebGpu => "BrowserWebGpu",
+            wgpu::Backend::Noop => "Noop",
+        })
     }
 }
 

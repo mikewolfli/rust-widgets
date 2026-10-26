@@ -319,7 +319,6 @@ pub struct Slider {
     /// The value link to a spin box, while bound.
     link: Option<Arc<NumericLink>>,
     /// The spin box's link slot, kept so [`Slider::unbind`] clears the peer side too.
-    link_slot: Option<NumericLinkSlot>,
     /// The reactive model value this control consumes through the property bridge.
     ///
     /// Present only after [`Slider::bind_value`]. The value is not pushed from `set_value`
@@ -457,7 +456,6 @@ impl Slider {
             slider_pressed: GenericSignal::new(),
             slider_released: GenericSignal::new(),
             link: None,
-            link_slot: None,
             binding: None,
         }
     }
@@ -554,7 +552,6 @@ impl Slider {
             }
         });
 
-        self.link_slot = Some(spin.numeric_link_slot());
         let slot = spin.numeric_link_slot();
         if let Some(previous) = slot.borrow().as_ref() {
             // A second bind supersedes the first rather than leaving two live links on one spin

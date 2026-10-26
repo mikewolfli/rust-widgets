@@ -402,6 +402,11 @@ impl FlexLayout {
             mix(item.min_size.height as u64);
             mix(item.max_size.width as u64);
             mix(item.max_size.height as u64);
+            // Basis, order and baseline all change the arrangement, so leaving them out let a
+            // changed item reuse a stale cache entry (LAY-001).
+            mix(item.basis.map(|basis| basis as u64 + 1).unwrap_or(0));
+            mix(item.order as u64);
+            mix(item.baseline.map(|baseline| baseline as u64 + 1).unwrap_or(0));
         }
         mix(self.child_sizes.len() as u64);
         for size in &self.child_sizes {

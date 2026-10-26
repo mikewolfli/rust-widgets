@@ -1500,6 +1500,14 @@ thread_local! {
     /// return the ancestor the user is no longer pointing at.
     static LAST_POINT_HIT: RefCell<Option<(Point, Rect, u64, Option<ObjectId>)>> =
         const { RefCell::new(None) };
+
+    /// Per-window containment cache for [`scan_widget_at_point`].
+    ///
+    /// The scan runs on every pointer move of a drag, and a fresh `Vec` per call was one
+    /// allocation per move (G-318). A nested scan (a control's hit rule querying the tree) gets
+    /// its own local buffer instead of re-borrowing this one.
+    static POINT_BUCKETS: RefCell<alloc::vec::Vec<(ObjectId, bool)>> =
+        const { RefCell::new(alloc::vec::Vec::new()) };
 }
 
 /// Returns the deepest mounted control whose own hit rule accepts `point`.
@@ -1537,12 +1545,30 @@ fn widget_at_point(point: Point, viewport: Rect) -> Option<ObjectId> {
 
 /// The bucketed registry scan behind [`widget_at_point`].
 fn scan_widget_at_point(point: Point) -> Option<ObjectId> {
+    // Reuse the thread's bucket list. `try_borrow_mut` keeps a nested scan from panicking on a
+    // borrow conflict; that nested case is rare and pays for a local list (G-318).
+    match POINT_BUCKETS.try_with(|cell| match cell.try_borrow_mut() {
+        Ok(mut buckets) => {
+            buckets.clear();
+            Ok(scan_widget_at_point_buffered(point, &mut buckets))
+        }
+        Err(_) => Err(()),
+    }) {
+        Ok(Ok(hit)) => hit,
+        _ => {
+            let mut buckets = alloc::vec::Vec::new();
+            scan_widget_at_point_buffered(point, &mut buckets)
+        }
+    }
+}
+
+fn scan_widget_at_point_buffered(
+    point: Point,
+    buckets: &mut alloc::vec::Vec<(ObjectId, bool)>,
+) -> Option<ObjectId> {
     let mut best: Option<(ObjectId, u32)> = None;
     let _ = MOUNTED.try_with(|map_cell| {
         let map = map_cell.borrow();
-        // Windows are few, so a per-call list beats a map here. It answers "does this
-        // window's client area contain the pointer?" once per window, not once per control.
-        let mut buckets: alloc::vec::Vec<(ObjectId, bool)> = alloc::vec::Vec::new();
         for (id, entry) in map.iter() {
             let widget = entry.widget.as_ref();
             // A cached window is only usable while the direct parent it was resolved from is
@@ -1552,7 +1578,7 @@ fn scan_widget_at_point(point: Point) -> Option<ObjectId> {
                 _ => None,
             };
             if let Some(window) = bucket {
-                if !bucket_contains_point(&map, window, point, &mut buckets) {
+                if !bucket_contains_point(&map, window, point, buckets) {
                     continue;
                 }
             }
@@ -3094,7 +3120,12 @@ pub fn read_widget<R>(id: ObjectId, f: impl FnOnce(&dyn Widget) -> R) -> Option<
 
 /// Whether `id` currently has a lent-out entry (read or mutating).
 fn lent_present(id: ObjectId) -> bool {
-    LENT_OUT.with(|map| map.borrow().contains_key(&id))
+    // The table is empty for almost every read: the detach/renter dance only fills it while a
+    // callback runs. `is_empty` short-circuits the hash probe on the hot path (G-317).
+    LENT_OUT.with(|map| {
+        let map = map.borrow();
+        !map.is_empty() && map.contains_key(&id)
+    })
 }
 
 /// Runs `f` with a **read-only** view of a widget currently lent out of [`MOUNTED`].
@@ -4101,6 +4132,12 @@ fn grow_by_damage_margin(rect: Rect) -> Rect {
 }
 
 /// Epoch of the last global-input change (see [`arm_global_repaint`]).
+///
+/// Only the two ends of the mechanism read it: the arming function (device profiles only) and
+/// `flush_global_repaint`'s non-test arm. A *test* build compares against the thread-local
+/// generation instead, so in a stripped test build — no device profile, hence no arming site —
+/// nothing would reference it and the dead-code lint would fire.
+#[cfg(any(device_profile, not(test)))]
 static GLOBAL_REPAINT_EPOCH: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 thread_local! {
@@ -4132,7 +4169,12 @@ thread_local! {
 ///
 /// A still, event-driven host therefore repaints after a theme change instead of
 /// keeping the frame it already drew until the user happens to move the mouse.
-#[cfg(any(device_profile, test))]
+///
+/// Every arming site is a device-profile one (the theme manager, the theme crossfade in
+/// `drive_frame`, `segmented_button`), so this is `device_profile` rather than
+/// `any(device_profile, test)`: a stripped test build has no caller, and the wider gate only made
+/// the three items it shares with `flush_global_repaint` read as dead code there.
+#[cfg(device_profile)]
 pub(crate) fn arm_global_repaint() {
     GLOBAL_REPAINT_EPOCH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let _ = GLOBAL_REPAINT_LOCAL.try_with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
@@ -4145,7 +4187,9 @@ fn global_repaint_generation() -> u64 {
 }
 
 /// The epoch a theme mutation bumps, so `theme::manager` can assert it armed the repaint.
-#[cfg(test)]
+///
+/// The only reader is `theme::manager`'s test module, which a stripped build does not compile.
+#[cfg(all(test, device_profile))]
 pub(crate) fn global_repaint_epoch_for_test() -> u64 {
     // The thread-local generation, for the same reason `flush_global_repaint` compares against it:
     // a concurrent test's theme mutation must not make "exactly one repaint" unassertable.
@@ -4770,6 +4814,14 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static REPAINT: RefCell<HashMap<ObjectId, RepaintState>> = RefCell::new(HashMap::new());
 
+    /// Scratch tracker for [`dirty_rects_into`].
+    ///
+    /// The buffer-reusing form promised to avoid allocation, but rebuilt the tracker on every
+    /// call anyway (G-312). One tracker per thread is reused, cleared, and merged in place.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static DIRTY_OUT: RefCell<crate::performance::DirtyRegionTracker> =
+        RefCell::new(crate::performance::DirtyRegionTracker::new());
+
     /// The most recently rendered frame per widget, so an incremental repaint has
     /// something to carry forward.
     ///
@@ -5300,21 +5352,19 @@ pub fn dirty_rects_into(id: ObjectId, out: &mut alloc::vec::Vec<Rect>) -> bool {
     if !has_dirty_rects(id) {
         return false;
     }
-    let mut tracker = REPAINT
-        .try_with(|map| {
-            map.borrow().get(&id).map(|state| {
-                let mut copy = crate::performance::DirtyRegionTracker::new();
+    DIRTY_OUT.with(|tracker| {
+        let mut tracker = tracker.borrow_mut();
+        tracker.clear();
+        let _ = REPAINT.try_with(|map| {
+            if let Some(state) = map.borrow().get(&id) {
                 for region in state.tracker.regions() {
-                    copy.add(region.rect);
+                    tracker.add(region.rect);
                 }
-                copy
-            })
-        })
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    tracker.merge();
-    out.extend(tracker.regions().iter().map(|region| region.rect));
+            }
+        });
+        tracker.merge();
+        out.extend(tracker.regions().iter().map(|region| region.rect));
+    });
     !out.is_empty()
 }
 
@@ -5699,17 +5749,23 @@ fn composite_surface(
     surface_size: (u32, u32),
 ) {
     let (origin_x, origin_y) = origin;
-    for row in 0..surface_size.1 as i32 {
-        let window_y = origin_y + row;
-        if window_y < 0 || window_y >= window_height as i32 {
-            continue;
-        }
-        for column in 0..surface_size.0 as i32 {
-            let window_x = origin_x + column;
-            if window_x < 0 || window_x >= window_width as i32 {
-                continue;
-            }
-            let source = ((row as u32 * surface_size.0 + column as u32) * 4) as usize;
+    // Intersect the surface rectangle with the window once. The old loop tested every pixel of a
+    // surface that was partly (or entirely) outside the window, which is the common case for a
+    // control scrolled past an edge (G-315).
+    let surface_width = surface_size.0 as i32;
+    let surface_height = surface_size.1 as i32;
+    let x0 = origin_x.max(0);
+    let y0 = origin_y.max(0);
+    let x1 = origin_x.saturating_add(surface_width).min(window_width as i32);
+    let y1 = origin_y.saturating_add(surface_height).min(window_height as i32);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    for window_y in y0..y1 {
+        let row = (window_y - origin_y) as u32;
+        for window_x in x0..x1 {
+            let column = (window_x - origin_x) as u32;
+            let source = ((row * surface_size.0 + column) * 4) as usize;
             let destination = ((window_y as u32 * window_width + window_x as u32) * 4) as usize;
             let alpha = surface[source + 3] as u32;
             if alpha == 0 {

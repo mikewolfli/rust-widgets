@@ -821,57 +821,13 @@ mod tests {
         }
         worker.join().expect("the timer worker thread must join cleanly");
     }
-}
-
-#[cfg(all(test, alloc_frugal))]
-mod mini_tests {
-    use super::*;
-    use crate::event::EventQueue;
-
-    #[test]
-    fn mini_pump_fires_due_timers() {
-        let queue = EventQueue::new();
-        let manager = TimerManager::new(queue.sender());
-        manager
-            .start_timer(7, 11, Duration::from_millis(1), false)
-            .expect("one-shot timer should start");
-
-        let mut found = false;
-        for _ in 0..1000 {
-            manager.pump();
-            if let Some((target, event, _priority)) = queue.dequeue() {
-                if target == 7 && matches!(event, crate::event::types::Event::Timer { id: 11 }) {
-                    found = true;
-                    break;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-
-        assert!(found, "mini pump should have posted the due timer event");
-    }
-
-    /// A coarse timer tolerates lateness while a precise one does not, and the tolerance
-    /// participates in the wake calculation rather than only in the due check.
-    #[test]
-    fn timer_precision_expresses_tolerated_lateness() {
-        assert_eq!(TimerPrecision::Precise.tolerance_ms(), 0);
-        assert_eq!(TimerPrecision::Precise.tolerance(), Duration::ZERO);
-        assert!(TimerPrecision::Coarse.tolerance_ms() > 0);
-        assert_eq!(TimerPrecision::default(), TimerPrecision::Precise);
-
-        let deadline = Instant::now() + Duration::from_millis(10);
-        let entry = TimerEntry {
-            interval: Duration::from_millis(10),
-            repeating: false,
-            next_fire: deadline,
-            tolerance: TimerPrecision::Coarse.tolerance(),
-            generation: 1,
-        };
-        assert_eq!(entry.fire_at(), deadline + TimerPrecision::Coarse.tolerance());
-    }
 
     /// W-P09: the deadline index reports the earliest timer instead of scanning the map.
+    ///
+    /// The deadline heap exists for the parked worker — `discard_stale_and_peek` is the question
+    /// "how long may I sleep?", and the `mini` pump never asks it (it drains due timers on every
+    /// call). That is why these three tests live here and not in `mini_tests`, which is compiled
+    /// only when the method does not exist.
     #[test]
     fn the_timer_heap_reports_the_earliest_deadline() {
         let now = Instant::now();
@@ -946,5 +902,54 @@ mod mini_tests {
         state.timers.remove(&(1, 1));
         assert_eq!(state.discard_stale_and_peek(), None);
         assert!(state.deadlines.is_empty(), "the stale entry is discarded on the way out");
+    }
+}
+
+#[cfg(all(test, alloc_frugal))]
+mod mini_tests {
+    use super::*;
+    use crate::event::EventQueue;
+
+    #[test]
+    fn mini_pump_fires_due_timers() {
+        let queue = EventQueue::new();
+        let manager = TimerManager::new(queue.sender());
+        manager
+            .start_timer(7, 11, Duration::from_millis(1), false)
+            .expect("one-shot timer should start");
+
+        let mut found = false;
+        for _ in 0..1000 {
+            manager.pump();
+            if let Some((target, event, _priority)) = queue.dequeue() {
+                if target == 7 && matches!(event, crate::event::types::Event::Timer { id: 11 }) {
+                    found = true;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(found, "mini pump should have posted the due timer event");
+    }
+
+    /// A coarse timer tolerates lateness while a precise one does not, and the tolerance
+    /// participates in the wake calculation rather than only in the due check.
+    #[test]
+    fn timer_precision_expresses_tolerated_lateness() {
+        assert_eq!(TimerPrecision::Precise.tolerance_ms(), 0);
+        assert_eq!(TimerPrecision::Precise.tolerance(), Duration::ZERO);
+        assert!(TimerPrecision::Coarse.tolerance_ms() > 0);
+        assert_eq!(TimerPrecision::default(), TimerPrecision::Precise);
+
+        let deadline = Instant::now() + Duration::from_millis(10);
+        let entry = TimerEntry {
+            interval: Duration::from_millis(10),
+            repeating: false,
+            next_fire: deadline,
+            tolerance: TimerPrecision::Coarse.tolerance(),
+            generation: 1,
+        };
+        assert_eq!(entry.fire_at(), deadline + TimerPrecision::Coarse.tolerance());
     }
 }

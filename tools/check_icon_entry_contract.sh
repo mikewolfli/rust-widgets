@@ -111,6 +111,8 @@ index_only() {
       echo "items hold private fields and no id; a row would have to invent one";;
     *bottom_navigation_bar.rs|*navigation_drawer.rs|*core.rs)
       echo "nav items are position/keyed by their own model; no item id is published";;
+    *material.rs)
+      echo "rail items are addressed by index and carry no id; the collection has no stable key for a row";;
     *)
       echo "";;
   esac

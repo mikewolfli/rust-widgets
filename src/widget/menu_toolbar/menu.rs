@@ -1430,7 +1430,12 @@ impl Menu {
     /// afterwards to confirm the change took effect.
     pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(item) = self.items.get_mut(index) {
-            item.set_enabled(enabled);
+            if item.is_enabled() != enabled {
+                item.set_enabled(enabled);
+                // A state change that is not repainted is invisible until something else
+                // happens to damage the popup (M-002).
+                self.base.request_redraw();
+            }
         }
     }
     /// Returns enabled state for item at index.
@@ -1445,8 +1450,10 @@ impl Menu {
     /// entry is not checkable — see [`MenuEntry::set_checkable`].
     pub fn set_item_checked(&mut self, index: usize, checked: bool) {
         if let Some(item) = self.items.get_mut(index) {
-            if item.is_checkable() {
+            if item.is_checkable() && item.is_checked() != checked {
                 item.set_checked(checked);
+                // The tick is drawn from the entry, so the popup must repaint (M-002).
+                self.base.request_redraw();
             }
         }
     }

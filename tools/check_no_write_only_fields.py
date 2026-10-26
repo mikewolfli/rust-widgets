@@ -58,6 +58,22 @@ ALLOW_LIST: set[tuple[str, str]] = {
         "src/widget/menu_toolbar/action.rs",
         "_toggled_handle",
     ): "keep-alive: holds the signal connection open; never read by design",
+    (
+        "src/widget/view_widgets/list_view.rs",
+        "row_hovered",
+    ): "public field of the state a host's ItemDelegate receives; read outside this crate",
+    (
+        "src/widget/media_widgets/camera_preview.rs",
+        "resolutions",
+    ): "public field of a camera-device descriptor; a host fills and reads it, the control does not",
+    (
+        "src/widget/media_widgets/video_player.rs",
+        "artwork",
+    ): "public field of media metadata; read by the host, never by the control",
+    (
+        "src/widget/web_widgets/web_engine.rs",
+        "scroll_pos",
+    ): "public field of a history entry; the host restores it, the view does not re-read it",
 }
 
 FIELD_DECL = re.compile(
@@ -82,6 +98,48 @@ INIT_FIELD = re.compile(r"\b([a-z_][a-z0-9_]*)\s*:\s*[^:=]")
 # field "write-only" on its own; it is recorded as a **read** so an otherwise-unread field that is
 # merely forwarded through shorthand is not reported as write-only.
 INIT_SHORTHAND = re.compile(r"(?<![.\w])([a-z_][a-z0-9_]*)\s*[,}]")
+
+
+def fields_read_by_derives(text: str) -> set[str]:
+    """Field names of structs whose `#[derive]` compares (or hashes/orders) them.
+
+    `#[derive(PartialEq)]` generates an `==` that reads every field; a cache key rewrites its
+    fields and then compares them to decide whether to rebuild. That is a real reader, but it
+    is generated code, so a scan of `.field` spellings cannot see it.
+
+    Only the semantic traits count. `Clone` and `Debug` also touch every field, but nothing
+    depends on the value, so counting them would let a genuinely forgotten field hide behind a
+    `#[derive(Debug)]` that exists for logging.
+    """
+    semantic = ("PartialEq", "Eq", "Hash", "PartialOrd", "Ord")
+    names: set[str] = set()
+    for derive in re.finditer(r"#\[derive\(([^)]*)\)\]", text):
+        traits = [part.strip() for part in derive.group(1).split(",")]
+        if not any(trait in semantic for trait in traits):
+            continue
+        # The struct declaration follows the attribute, possibly after other attributes.
+        # It must be the **next item**: searching forward for the next `struct` would attach
+        # this derive to a later struct whenever the decorated item is an `enum` (which is
+        # exactly how `TagTone`'s derive came to mark every `Tag` field as compared).
+        tail = text[derive.end():]
+        item = re.search(
+            r"(?:\s*#\[[^\]]*\]\s*)*"
+            r"\s*(?:pub(?:\([^)]*\))?\s+)?(struct|enum|union)\s+\w+[^{;]*\{",
+            tail,
+        )
+        if not item or item.group(1) != "struct":
+            continue
+        body_start = derive.end() + item.end()
+        depth = 1
+        index = body_start
+        while index < len(text) and depth > 0:
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+            index += 1
+        names.update(m.group(1) for m in FIELD_DECL.finditer(text[body_start:index]))
+    return names
 
 
 def struct_fields(text: str) -> set[str]:
@@ -138,8 +196,17 @@ def main() -> int:
     findings: list[tuple[str, str]] = []
     for path, text in owned.items():
         rel = path.relative_to(root).as_posix()
+        compared = fields_read_by_derives(text)
         for name in sorted(struct_fields(text)):
             if name.startswith("_"):
+                continue
+            if name in compared:
+                # A derived semantic trait reads every field of its struct. `PartialEq`/
+                # `Eq`/`Hash`/`Ord` are *used*: a cache key or a config value is compared to
+                # decide whether to rebuild, so `DayLineKey::grid_x` and
+                # `TooltipWrapKey::family_hash` have a real reader the textual tally cannot
+                # see. `Clone`/`Debug` are deliberately not counted — they copy or print a
+                # field without anything depending on its value.
                 continue
             writes, reads = access.get(name, [0, 0])
             if writes > 0 and reads == 0 and (rel, name) not in ALLOW_LIST:

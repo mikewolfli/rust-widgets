@@ -24,6 +24,30 @@ use crate::render::pipeline::pixel_ops::blend_coverage_bitmap;
 use crate::render::text::{is_combining_mark, is_variation_selector};
 use crate::render::SoftwareSurface;
 
+/// Shrinks a pixel bounding box to the current clip rectangle.
+///
+/// Coverage loops that evaluate a primitive per pixel were iterating the primitive's full
+/// bounding box and letting `blend_pixel_clipped!` reject each out-of-clip sample. A small glyph
+/// or circle inside a large clip therefore paid for thousands of samples nobody could see
+/// (G-007). Returning the intersection lets the loop skip them outright.
+#[inline]
+fn clip_pixel_box(
+    clip: Option<(i32, i32, u32, u32)>,
+    min_x: i32,
+    min_y: i32,
+    max_x: i32,
+    max_y: i32,
+) -> (i32, i32, i32, i32) {
+    match clip {
+        Some((x, y, width, height)) => {
+            let clip_max_x = x.saturating_add(u32_to_i32_saturating(width)).saturating_sub(1);
+            let clip_max_y = y.saturating_add(u32_to_i32_saturating(height)).saturating_sub(1);
+            (min_x.max(x), min_y.max(y), max_x.min(clip_max_x), max_y.min(clip_max_y))
+        }
+        None => (min_x, min_y, max_x, max_y),
+    }
+}
+
 macro_rules! set_pixel_clipped {
     ($blend:expr, $clip:expr, $frame:expr, $width:expr, $x:expr, $y:expr, $color:expr) => {
         if pixel_visible($clip, $x as i32, $y as i32) {
@@ -777,6 +801,7 @@ impl SoftwareSurface {
         let max_x = (from.x.max(to.x) + pad).min(width - 1);
         let min_y = from.y.min(to.y).saturating_sub(pad).max(0);
         let max_y = (from.y.max(to.y) + pad).min(height - 1);
+        let (min_x, min_y, max_x, max_y) = clip_pixel_box(clip, min_x, min_y, max_x, max_y);
         let ax = from.x as f32;
         let ay = from.y as f32;
         let bx = to.x as f32;
@@ -849,6 +874,7 @@ impl SoftwareSurface {
         let y0 = (center.y - radius as i32 - 1).max(0);
         let x1 = (center.x + radius as i32 + 1).min(width - 1);
         let y1 = (center.y + radius as i32 + 1).min(height - 1);
+        let (x0, y0, x1, y1) = clip_pixel_box(clip, x0, y0, x1, y1);
         for py in y0..=y1 {
             for px in x0..=x1 {
                 let coverage = circle_fill_coverage_grid(px, py, center, r, sample_grid);
@@ -896,6 +922,7 @@ impl SoftwareSurface {
         let y0 = (center.y - radius as i32 - 1).max(0);
         let x1 = (center.x + radius as i32 + 1).min(width - 1);
         let y1 = (center.y + radius as i32 + 1).min(height - 1);
+        let (x0, y0, x1, y1) = clip_pixel_box(clip, x0, y0, x1, y1);
         for py in y0..=y1 {
             for px in x0..=x1 {
                 let stroke_coverage = circle_stroke_coverage_grid(
@@ -1659,27 +1686,38 @@ impl SoftwareSurface {
         let screen_width = size.width;
         let screen_height = size.height;
         let frame = self.buffer.back_mut();
+        // Intersect the quad's bounding box with the screen and the clip once, rather than
+        // testing every sample of a mostly-offscreen quad (G-007/G-012).
+        let (min_x, min_y, max_x, max_y) = clip_pixel_box(
+            clip,
+            min_x.max(0),
+            min_y.max(0),
+            max_x.min(screen_width as i32 - 1),
+            max_y.min(screen_height as i32 - 1),
+        );
+        if max_x < min_x || max_y < min_y {
+            return;
+        }
+        // Pre-multiply the inverse determinant, then step `u`/`v` across a row: the old form
+        // evaluated two divides and four multiplies per pixel, for the same linear map (G-012).
+        let inv_det = 1.0 / det;
+        let u_dx = vy * inv_det;
+        let u_dy = -vx * inv_det;
+        let v_dx = -uy * inv_det;
+        let v_dy = ux * inv_det;
+        let row_dx = (min_x - p00.x) as f32 + 0.5;
         // Pixel centres, so a corner pixel samples its own centre rather than its top-left edge.
         for y in min_y..=max_y {
-            if y < 0 || y as u32 >= screen_height {
-                continue;
-            }
+            let dy = (y - p00.y) as f32 + 0.5;
+            let mut u = row_dx * u_dx + dy * u_dy;
+            let mut v = row_dx * v_dx + dy * v_dy;
             for x in min_x..=max_x {
-                if x < 0 || x as u32 >= screen_width {
-                    continue;
+                if (0.0..1.0).contains(&u) && (0.0..1.0).contains(&v) {
+                    let [r, g, b, a] = sample_bilinear(data, source_width, source_height, u, v);
+                    blend_source_pixel(frame, screen_width, x as u32, y as u32, r, g, b, a);
                 }
-                if !pixel_visible(clip, x, y) {
-                    continue;
-                }
-                let dx = (x - p00.x) as f32 + 0.5;
-                let dy = (y - p00.y) as f32 + 0.5;
-                let u = (dx * vy - dy * vx) / det;
-                let v = (dy * ux - dx * uy) / det;
-                if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
-                    continue;
-                }
-                let [r, g, b, a] = sample_bilinear(data, source_width, source_height, u, v);
-                blend_source_pixel(frame, screen_width, x as u32, y as u32, r, g, b, a);
+                u += u_dx;
+                v += v_dx;
             }
         }
     }

@@ -13,7 +13,7 @@
 
 ## 特点
 
-- **221 种控件**——输入、表格、树、停靠面板、对话框、媒体、图表、编辑器等，所有平台共用同一套实现。
+- **228 种控件**——输入、表格、树、停靠面板、对话框、媒体、图表、编辑器等，所有平台共用同一套实现。
 - **输出可复现**——每个控件、每种外观都有提交到仓库的 SVG 与像素快照，视觉变化因此是可审阅的 diff，
   而不是聊天窗口里的一张截图。
 - **能力诚实**——宿主提供不了的服务返回 `false` / `None`；不会先假装成功再报告“已完成”。
@@ -26,18 +26,18 @@
 
 ```toml
 [dependencies]
-rust_widgets = "2.9.2"
+rust_widgets = "2.9.3"
 ```
 
 **必须且只能选择一个设备配置**。它们互斥：`mini` 与 `embedded` 会把 crate 的一部分*编译掉*，
 与 `desktop` 叠加不是“取最小公共集”，而是一个无法工作的构建。
 
 ```toml
-rust_widgets = { version = "2.9.2", features = ["desktop"] }                       # 默认
-rust_widgets = { version = "2.9.2", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.9.2", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.9.2", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.9.2", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.9.3", features = ["desktop"] }                       # 默认
+rust_widgets = { version = "2.9.3", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.9.3", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.9.3", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.9.3", default-features = false, features = ["mini"] }
 ```
 
 | 配置 | 适用场景 |

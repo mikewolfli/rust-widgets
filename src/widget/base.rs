@@ -182,7 +182,7 @@ pub struct BaseWidget {
     ///
     /// Set once and never cleared, because it answers a question about the control's
     /// whole life rather than about the current frame: "does this control ever ask to be
-    /// A surface that never asks keeps `RepaintMode::Full` and pays no
+    /// repainted?". A surface that never asks keeps `RepaintMode::Full` and pays no
     /// bookkeeping, which is the trade-off `widget::runtime::should_track_damage`
     /// makes.
     ///
@@ -743,6 +743,10 @@ impl BaseWidget {
             crate::widget::runtime::with_widget_mut(child, |child| {
                 child.set_parent(Some(parent));
             });
+            // A new child changes the extent this container may assign. `add_child` requests a
+            // layout and nine of the thirteen `add_child_linked` callers had to remember to do
+            // it themselves; doing it here makes the two entry points agree (G-322).
+            self.request_layout();
             true
         }
     }

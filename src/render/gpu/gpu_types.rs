@@ -30,8 +30,11 @@ pub trait GpuRenderer {
     fn has_capability(&self, capability: GpuCapability) -> bool;
     /// Renders a frame.
     fn render_frame(&mut self) -> Result<(), String>;
-    /// Returns GPU memory usage in bytes.
-    fn memory_usage(&self) -> u64;
-    /// Returns GPU vendor information.
-    fn vendor_info(&self) -> &str;
+    /// Returns GPU memory usage in bytes, or `None` when the backend cannot query it.
+    ///
+    /// A backend that does not know its memory use must say so. Returning `0` reads as “no
+    /// GPU memory in use” and silently hides the missing query (G-232).
+    fn memory_usage(&self) -> Option<u64>;
+    /// Returns GPU vendor information, or `None` when the backend has no adapter to report.
+    fn vendor_info(&self) -> Option<&str>;
 }

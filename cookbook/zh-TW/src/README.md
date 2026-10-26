@@ -13,7 +13,7 @@
 在繼續閱讀之前，有兩個結果值得先內化：
 
 1. **控件在每個作業系統上看起來完全相同。** 你的按鈕在 Windows、macOS、Linux、iOS、Android 與網頁上擁有相同的像素，因為它們都是由同一套 Rust 光柵化器所繪製。
-2. **Widget 可用性屬於*設定檔*問題，而非作業系統問題。** 在 `desktop`/`tablet`/`mobile` 設定檔中，全部 200 種 widget 在每個平台上都可使用。只有資源受限的 `embedded`/`mini` 設定檔會編譯精簡的集合。
+2. **Widget 可用性屬於*設定檔*問題，而非作業系統問題。** 在 `desktop`/`tablet`/`mobile` 設定檔中，全部 228 種 widget 在每個平台上都可使用。只有資源受限的 `embedded`/`mini` 設定檔會編譯精簡的集合。
 
 這就是為什麼平台章節記載的是[每個作業系統*提供*什麼](chapters/platform-support.md#13-平台服務確實會因作業系統而異)（DPI、IME、無障礙、原生選單），而不是列出哪些控件在哪些地方能用 —— 因為那張清單到處都一樣。
 
@@ -21,7 +21,7 @@
 
 rust-widgets 讓您只需一套 Rust 程式碼庫，即可在各大平台上產出一致的介面。它包含了豐富的控制項庫、硬體自適應渲染，以及深度的平台整合——所有功能皆透過簡潔、地道風格的 Rust API 提供。
 
-> 下方程式碼片段僅用於說明預期的 API 形式。若需要能對 2.9.2 編譯的程式碼，請從 [`chapters/getting-started.md`](chapters/getting-started.md) 開始，
+> 下方程式碼片段僅用於說明預期的 API 形式。若需要能對 2.9.3 編譯的程式碼，請從 [`chapters/getting-started.md`](chapters/getting-started.md) 開始，
 > 該檔案已針對當前的 crate 驗證過。
 
 ```rust
@@ -44,9 +44,9 @@ fn main() {
 
 ## 主要特色
 
-### 豐富的控制項函式庫 — 200 種控件
+### 豐富的控制項函式庫 — 228 種控件
 
-內建 200 種控件，涵蓋各種常見的 UI 需求，而且**全部都是自繪的，因此每個平台都能使用**：
+內建 228 種控件，涵蓋各種常見的 UI 需求，而且**全部都是自繪的，因此每個平台都能使用**：
 
 - **核心控制項**：Button、CheckBox、RadioButton、Label、LineEdit、TextEdit、
   ComboBox、SpinBox、Slider、ScrollBar、ProgressBar
@@ -79,7 +79,7 @@ fn main() {
 ### 九大平台，統一 API
 
 下表列出的是**各平台如何提供繪製表面與事件迴圈**——而非哪些控件可用。
-因為所有控件皆為自繪，下列每個平台都支援全部 200 種控件；只有
+因為所有控件皆為自繪，下列每個平台都支援全部 228 種控件；只有
 `embedded`/`mini` 設定檔會減少編譯進來的控件數量。
 
 | 平台 | 後端提供 | 功能標記 |
@@ -167,7 +167,7 @@ TwoFingerTap、TwoFingerSwipe、LongPressDrag、Pinch 與 Rotate——並支援�
 
 | | |
 |---|---|
-| **版本** | 2.9.2 |
+| **版本** | 2.9.3 |
 | **授權條款** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **儲存庫** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **測試數量** | 5300+ |

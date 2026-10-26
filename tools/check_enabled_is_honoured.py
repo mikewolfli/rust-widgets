@@ -65,6 +65,30 @@ NON_INTERACTIVE: dict[str, str] = {
         "redraw",
     "src/widget/window.rs": "the window shell itself; its children hold the interactions",
     "src/widget/draw_bridge.rs": "not a control: the `impl_draw_bridge!` macro body",
+    "src/widget/advanced_widgets/key_tip_badge.rs":
+        "passive badge overlay: shows a key hint, its handler only forwards to the base",
+    "src/widget/companions/chart_tooltip.rs":
+        "passive overlay: the chart shows and hides it; its handler only re-anchors the bubble "
+        "to the pointer, which is a redraw and not an interaction",
+    "src/widget/companions/drawer_section_header.rs":
+        "passive header: labels a drawer section, its handler only forwards to the base",
+    "src/widget/companions/tooltip_manager.rs":
+        "host-driven: `note_hover`/`note_leave`/`note_pointer`/`tick` are the API, and the handler "
+        "only forwards to the base",
+    "src/widget/display_widgets/clock.rs":
+        "pure readout: draws a time, handles no input",
+    "src/widget/media_widgets/subtitle_bar.rs":
+        "passive overlay: displays subtitles over the video, handles no input",
+    "src/widget/special_widgets/chart.rs":
+        "passive overlay: the crosshair is drawn by the chart at the hover position",
+    "src/widget/special_widgets/map_view_companions.rs":
+        "passive overlay: a tile loader and a scale bar draw map chrome, handles no input",
+    "src/widget/container_widgets/layout_family.rs":
+        "container: only forwards, the children it holds are what interact",
+    "src/widget/container_widgets/linear_layouts.rs":
+        "containers: Flex/FlowLayout/WrapLayout lay out their children; `Flex` is the only one "
+        "with an interaction (an emitted `item_clicked`), and its handler gates on `is_enabled()`",
+
     "src/widget/capability/properties_tests.rs": "test support, not a control",
     "src/widget/capability/access.rs": "property dispatch, not a control",
     "src/widget/base.rs":

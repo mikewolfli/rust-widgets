@@ -27,7 +27,7 @@
 //! diagnostic (`path [0, 2]`) and to derive a binding name from it. Paths are also what a diff
 //! between two documents would compare, which is what a regenerate-and-compare gate needs.
 
-use crate::compat::{format, String, Vec};
+use crate::compat::{format, HashMap, String, Vec};
 use serde_json::Value;
 
 /// One node of a parsed project.
@@ -173,6 +173,12 @@ pub struct JsonProject {
     pub root_widget: String,
     /// Every node, in parent-before-child (pre-order) order. The root is first.
     nodes: Vec<ProjectNode>,
+    /// Path → index into `nodes`.
+    ///
+    /// Built once at parse time so [`JsonProject::node`] is a hash lookup instead of a linear
+    /// scan of the whole document (G-501). The project is immutable after parsing, so the index
+    /// cannot drift.
+    path_index: HashMap<Vec<usize>, usize>,
     /// The project's commands, in document order.
     ///
     /// # Why the section lives on the project rather than on a node
@@ -211,7 +217,9 @@ impl JsonProject {
         let mut nodes = Vec::new();
         collect_preorder(&root_widget, body, &mut Vec::new(), 0, &mut nodes)?;
         let actions = parse_action_definitions(body.get("actions"))?;
-        Ok(Self { root_widget, nodes, actions })
+        let path_index =
+            nodes.iter().enumerate().map(|(index, node)| (node.path.clone(), index)).collect();
+        Ok(Self { root_widget, nodes, path_index, actions })
     }
 
     /// The command with `id`, if the project declares one.
@@ -238,7 +246,7 @@ impl JsonProject {
 
     /// The node at `path`, or `None`.
     pub fn node(&self, path: &[usize]) -> Option<&ProjectNode> {
-        self.nodes.iter().find(|n| n.path.as_slice() == path)
+        self.path_index.get(path).and_then(|index| self.nodes.get(*index))
     }
 
     /// Every node, in pre-order.

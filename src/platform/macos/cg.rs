@@ -37,13 +37,39 @@ pub(crate) type CGImageRef = *mut c_void;
 /// `kCGImageAlphaPremultipliedLast`: alpha stored last within the word.
 pub(crate) const BITMAP_ALPHA_PREMULTIPLIED_LAST: u32 = 1;
 
+/// `kCGImageAlphaPremultipliedFirst`: alpha stored first within the word.
+///
+/// Test-only: the regression test draws into the **canonical** little-endian BGRA bitmap
+/// (premultiplied first + 32-bit little) rather than into a buffer carrying the same flags as
+/// the source. A destination that shares the source's flags cannot detect a byte-order mistake:
+/// the conversion and the raw read-back cancel it out.
+#[cfg(test)]
+pub(crate) const BITMAP_ALPHA_PREMULTIPLIED_FIRST: u32 = 2;
+
+/// `kCGBitmapByteOrder32Big`.
+///
+/// Chosen together with [`BITMAP_ALPHA_PREMULTIPLIED_LAST`] to give a memory layout of
+/// **R, G, B, A** — the same order the software renderer produces. The pairing is not
+/// interchangeable: `PremultipliedLast | ByteOrder32Little` normalises to **A, B, G, R** in
+/// memory, so writing R, G, B, A into such a buffer puts the alpha byte in the red channel.
+///
+/// # How that was found, after it had shipped
+///
+/// Every window on screen came out tinted with the theme's error red on a mid-grey frame, while
+/// the same frame dumped straight from `drawRect:` was correct. The round-trip test below could
+/// not see it because it built its *destination* bitmap with the same flags as the source: the
+/// conversion and the raw read-back cancelled. `blit_draws_the_picture_the_display_shows` draws
+/// into the little-endian BGRA context AppKit actually composites and fails on the old pairing
+/// with `(255, 40, 30, 200)` where `(200, 30, 40, 255)` was written.
+pub(crate) const BITMAP_BYTE_ORDER_32_BIG: u32 = 4 << 12;
+
 /// `kCGBitmapByteOrder32Little`.
 ///
-/// Chosen together with [`BITMAP_ALPHA_PREMULTIPLIED_LAST`] to give a memory
-/// layout of **R, G, B, A** byte order — the same order the software renderer
-/// produces. With `ByteOrder32Big` the word would instead be laid out as
-/// `A, B, G, R` in memory, swapping red and blue (which the orientation test
-/// below catches).
+/// Test-only: it names the little-endian BGRA buffer AppKit composites into, which is the
+/// destination of `blit_draws_the_picture_the_display_shows`. Paired with
+/// [`BITMAP_ALPHA_PREMULTIPLIED_LAST`] the same flag means `A, B, G, R` in memory — the source
+/// pairing bug this file's tests now pin, so no production path may use it.
+#[cfg(test)]
 pub(crate) const BITMAP_BYTE_ORDER_32_LITTLE: u32 = 2 << 12;
 
 /// `CGRect` in CoreGraphics' own layout (`CGFloat` is `f64` on 64-bit).
@@ -178,7 +204,7 @@ pub(crate) unsafe fn blit_rgba(
         8,
         width as usize * 4,
         color_space,
-        BITMAP_ALPHA_PREMULTIPLIED_LAST | BITMAP_BYTE_ORDER_32_LITTLE,
+        BITMAP_ALPHA_PREMULTIPLIED_LAST | BITMAP_BYTE_ORDER_32_BIG,
     );
     if bitmap.is_null() {
         CGColorSpaceRelease(color_space);
@@ -244,11 +270,11 @@ mod tests {
     }
 
     #[test]
-    fn bitmap_info_encodes_premultiplied_rgba_little_endian() {
-        // kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Little
+    fn bitmap_info_encodes_premultiplied_rgba() {
+        // kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big
         assert_eq!(BITMAP_ALPHA_PREMULTIPLIED_LAST, 1);
-        assert_eq!(BITMAP_BYTE_ORDER_32_LITTLE, 2 << 12);
-        assert_eq!(BITMAP_ALPHA_PREMULTIPLIED_LAST | BITMAP_BYTE_ORDER_32_LITTLE, 0x2001);
+        assert_eq!(BITMAP_BYTE_ORDER_32_BIG, 4 << 12);
+        assert_eq!(BITMAP_ALPHA_PREMULTIPLIED_LAST | BITMAP_BYTE_ORDER_32_BIG, 0x4001);
     }
 
     #[test]
@@ -297,7 +323,7 @@ mod tests {
                 8,
                 WIDTH as usize * 4,
                 space,
-                BITMAP_ALPHA_PREMULTIPLIED_LAST | BITMAP_BYTE_ORDER_32_LITTLE,
+                BITMAP_ALPHA_PREMULTIPLIED_LAST | BITMAP_BYTE_ORDER_32_BIG,
             );
             assert!(!context.is_null(), "destination context");
 
@@ -327,6 +353,85 @@ mod tests {
             assert_eq!(at(WIDTH - 1, HEIGHT - 1), (255, 255, 255), "bottom-right must stay white");
 
             CGContextRelease(context);
+            CGColorSpaceRelease(space);
+        }
+    }
+
+    /// The blit must produce the **picture CoreGraphics shows**, not merely a buffer that reads
+    /// back the bytes it was handed.
+    ///
+    /// # Why the round-trip above cannot answer this
+    ///
+    /// It creates the destination bitmap with the *same* `bitmap_info` as the source. If that
+    /// combination did not mean what its name says, `CGContextDrawImage` would convert into a
+    /// wrong destination layout and the raw read-back would apply the inverse mistake — the two
+    /// would cancel, and the test would pass while every window on screen was tinted. That is
+    /// exactly what happened: `(200, 30, 40, 255)` reached the display as `(255, 40, 30, 200)`.
+    /// This test removes the cancellation by drawing into the little-endian BGRA context AppKit
+    /// composites into and reading the channels in that format's own order.
+    #[test]
+    fn blit_draws_the_picture_the_display_shows() {
+        const WIDTH: u32 = 4;
+        const HEIGHT: u32 = 4;
+
+        // Two **non-primary** colours as well as the primaries: a byte-order swap maps pure red
+        // onto pure red (255 is asymmetric only in green/blue), so an all-primary frame can hide
+        // a swap. A mid grey would hide it entirely.
+        let quadrants = [(200u8, 30u8, 40u8), (30, 200, 40), (30, 40, 200), (17, 200, 210)];
+        let mut frame = vec![0u8; (WIDTH * HEIGHT * 4) as usize];
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                let offset = ((y * WIDTH + x) * 4) as usize;
+                let (r, g, b) =
+                    quadrants[((y >= HEIGHT / 2) as usize) * 2 + (x >= WIDTH / 2) as usize];
+                frame[offset] = r;
+                frame[offset + 1] = g;
+                frame[offset + 2] = b;
+                frame[offset + 3] = 255;
+            }
+        }
+
+        // SAFETY: all arguments are valid for the duration of the test; every CoreGraphics
+        // object created here is released before returning.
+        unsafe {
+            let space = CGColorSpaceCreateDeviceRGB();
+            assert!(!space.is_null(), "colour space");
+            let destination = CGBitmapContextCreate(
+                std::ptr::null_mut(),
+                WIDTH as usize,
+                HEIGHT as usize,
+                8,
+                WIDTH as usize * 4,
+                space,
+                BITMAP_ALPHA_PREMULTIPLIED_FIRST | BITMAP_BYTE_ORDER_32_LITTLE,
+            );
+            assert!(!destination.is_null(), "BGRA destination context");
+
+            assert!(blit_rgba(destination, WIDTH, HEIGHT, &frame), "blit must succeed");
+
+            let data = CGBitmapContextGetData(destination) as *mut u8;
+            assert!(!data.is_null(), "bitmap data");
+            let stride = CGBitmapContextGetBytesPerRow(destination) as usize;
+            // Little-endian BGRA: byte 0 is blue, byte 1 green, byte 2 red, byte 3 alpha.
+            let at = |x: u32, y: u32| {
+                let o = y as usize * stride + x as usize * 4;
+                (*data.add(o + 2), *data.add(o + 1), *data.add(o), *data.add(o + 3))
+            };
+
+            for (index, (x, y)) in
+                [(0u32, 0u32), (WIDTH - 1, 0), (0, HEIGHT - 1), (WIDTH - 1, HEIGHT - 1)]
+                    .into_iter()
+                    .enumerate()
+            {
+                let (r, g, b) = quadrants[index];
+                assert_eq!(
+                    at(x, y),
+                    (r, g, b, 255),
+                    "quadrant {index} must reach the display with its own colour"
+                );
+            }
+
+            CGContextRelease(destination);
             CGColorSpaceRelease(space);
         }
     }

@@ -471,13 +471,6 @@ pub struct EmbeddedEngineStats {
     pub target_fps: u32,
 }
 
-#[cfg(not(alloc_frugal))]
-pub(crate) fn embedded_engine_shared() -> Arc<EmbeddedEngineShared> {
-    static SHARED: OnceLock<Arc<EmbeddedEngineShared>> = OnceLock::new();
-    SHARED.get_or_init(|| Arc::new(EmbeddedEngineShared::new())).clone()
-}
-
-#[cfg(alloc_frugal)]
 pub(crate) fn embedded_engine_shared() -> Arc<EmbeddedEngineShared> {
     static SHARED: OnceLock<Arc<EmbeddedEngineShared>> = OnceLock::new();
     SHARED.get_or_init(|| Arc::new(EmbeddedEngineShared::new())).clone()

@@ -422,7 +422,7 @@ impl EventHandler for MyWidget {
 
 ---
 
-## `WidgetKind` 枚举 — 200 变体
+## `WidgetKind` 枚举 — 228 变体
 
 `WidgetKind` 枚举对每个控件类型进行分类。它通过特性门控：
 28 个变体始终可用；151 个需要非 `mini` 特性。

@@ -806,8 +806,11 @@ impl QuoteBoard {
     /// Eight pixels each side cannot fit five columns into a 240 px board; the symbol then had
     /// 32 px of text room and every four-letter ticker elided. A narrow board therefore uses
     /// half the inset, which is also what keeps a numeric cell's right alignment on its column.
+    ///
+    /// The width comes from the metric table rather than a literal: it is a fit decision, and a
+    /// named threshold is the reviewed spelling (`check_breakpoints_are_not_in_draw.sh`).
     fn cell_inset(&self) -> i32 {
-        if self.base.geometry().width < 420 {
+        if self.base.geometry().width < crate::widget::metrics::QUOTE_BOARD_COMPACT_CELL_WIDTH {
             4
         } else {
             8

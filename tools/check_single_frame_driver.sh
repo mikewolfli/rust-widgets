@@ -67,14 +67,21 @@ echo "  PASS  runtime::drive_frame is defined"
 
 echo "[2/3] the animation bus has exactly one driver"
 # Strips `//…` line comments so the gate reads code, not the prose about it.
-# Finds every live call to `tick_animations(`, then asserts they all sit inside
-# `drive_frame`'s own body. Anywhere else is a second driver.
-BUS_CALLS="$(grep -rn 'tick_animations(' src/ --include=*.rs \
+# Finds every live call to the animation bus — `tick_animations(` (the public entry) or its
+# internal sweep `tick_animations_sweep(` — then asserts they all sit inside `drive_frame`'s
+# own body (or inside `tick_animations`, which only forwards to the sweep). Anywhere else is a
+# second driver.
+#
+# The sweep exists because one registry walk now answers "advanced how many" and "still
+# moving?" together; before it, `drive_frame` walked the tree three times per frame. The bus
+# entry point it replaced was `tick_animations`, so the scan has to accept both spellings or it
+# reports the refactor (not the defect) and stops guarding anything.
+BUS_CALLS="$(grep -rEn 'tick_animations(_sweep)?\(' src/ --include=*.rs \
     | sed -e 's://.*::' \
     | grep -vE '^[^:]+:[0-9]+:[[:space:]]*$')"
 
 # Drop the definition itself and its doc-comment references.
-BUS_CALLS_CODE="$(printf '%s\n' "$BUS_CALLS" | grep -vE 'fn tick_animations\(' || true)"
+BUS_CALLS_CODE="$(printf '%s\n' "$BUS_CALLS" | grep -vE 'fn tick_animations(_sweep)?\(' || true)"
 
 if [ -z "$BUS_CALLS_CODE" ]; then
     echo "  FAIL  nothing calls tick_animations at all"
@@ -102,13 +109,17 @@ if [ -z "$DRIVER_BODY" ]; then
     echo "  FAIL  could not extract drive_frame's body"
     exit 1
 fi
-IN_DRIVER="$(printf '%s\n' "$DRIVER_BODY" | grep -c 'tick_animations(' || true)"
+IN_DRIVER="$(printf '%s\n' "$DRIVER_BODY" | grep -cE 'tick_animations(_sweep)?\(' || true)"
 # Locate calls by line number so the "inside the driver" test is positional.
 DRIVER_START="$(grep -n '^pub fn drive_frame(' "$RUNTIME" | head -n 1 | cut -d: -f1)"
 DRIVER_END="$((DRIVER_START + $(printf '%s\n' "$DRIVER_BODY" | wc -l) - 1))"
+# `tick_animations` is the public entry and is allowed to call the sweep; that call is the
+# bus delegating to itself, not a second driver.
+TICK_START="$(awk '/^pub fn tick_animations\(/{print NR; exit}' "$RUNTIME")"
+TICK_END="$(awk -v s="$TICK_START" 'NR>=s && /^}$/{print NR; exit}' "$RUNTIME")"
 STRAY="$(printf '%s\n' "$BUS_CALLS_CODE" \
-    | awk -F: -v lo="$DRIVER_START" -v hi="$DRIVER_END" \
-        '!/#\[test\]/ && ($2 < lo || $2 > hi) { print }' || true)"
+    | awk -F: -v lo="$DRIVER_START" -v hi="$DRIVER_END" -v tlo="$TICK_START" -v thi="$TICK_END" \
+        '!/#\[test\]/ && !(($2 >= lo && $2 <= hi) || ($2 >= tlo && $2 <= thi)) { print }' || true)"
 # A call inside a `#[cfg(test)] mod tests` is a test double driving the bus on
 # purpose, which is how criterion 4's "exactly once" is measured. Only a call in
 # non-test code outside the driver is a finding.

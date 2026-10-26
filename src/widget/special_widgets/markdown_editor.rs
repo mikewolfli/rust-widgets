@@ -2251,8 +2251,11 @@ impl MarkdownEditor {
         }
         let rect = self.geometry();
         // Half the editor is the most a side panel may take; below this the text column would be
-        // too narrow to read, so the panel is simply not mounted.
-        if rect.width < 240 || rect.height < TEXT_TOP as u32 + 48 {
+        // too narrow to read, so the panel is simply not mounted. The threshold is a named metric
+        // (a fit decision), not a bare literal in the paint path.
+        if rect.width < crate::widget::metrics::OUTLINE_PANEL_MIN_EDITOR_WIDTH
+            || rect.height < TEXT_TOP as u32 + 48
+        {
             return None;
         }
         let width = self.outline_panel.width().min(rect.width / 2).max(1);

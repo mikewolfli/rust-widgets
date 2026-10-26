@@ -155,6 +155,7 @@ number_picker: value_changed
 order_book: level_clicked, level_hovered, level_unhovered
 otp_input: value_changed, completed, canceled, submitted
 padding: 
+page_find_bar: search_requested, next_requested, previous_requested, closed  [alias_of=web_find_bar]
 pagination: page_changed, clicked, page_hover_changed
 panel: toggled, collapse_changed
 password_edit: text_changed, editing_finished, return_pressed, context_menu_requested, cursor_position_changed, selection_changed, text_edited, undo_available, redo_available, copy_available  [alias_of=line_edit]

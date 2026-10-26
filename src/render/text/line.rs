@@ -96,7 +96,9 @@ pub(crate) fn shape_line(text: &str, font: &Font, scale: f32) -> ShapedText {
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     for_each_cluster(text, |cluster_text, range| {
         clusters.push(TextCluster {
-            text: cluster_text.into(),
+            // One shared allocation per cluster; the bidi reorder below then shares it by
+            // refcount instead of copying (G-006).
+            text: crate::compat::Arc::from(cluster_text),
             advance: estimate_cluster_advance(cluster_text, font.size(), scale),
         });
         ranges.push(range);
@@ -322,7 +324,7 @@ mod tests {
     #[test]
     fn a_left_to_right_line_keeps_its_logical_order() {
         let shaped = shape_line("abc", &font(), 1.0);
-        let texts: Vec<&str> = shaped.clusters().iter().map(|c| c.text.as_str()).collect();
+        let texts: Vec<&str> = shaped.clusters().iter().map(|c| &*c.text).collect();
         assert_eq!(texts, ["a", "b", "c"]);
     }
 
@@ -330,7 +332,7 @@ mod tests {
     fn an_arabic_line_is_reordered_for_painting() {
         // Logical order in, visual order out: the last logical character is painted first.
         let shaped = shape_line("\u{05e9}\u{05dc}\u{05d5}\u{05dd}", &font(), 1.0);
-        let texts: Vec<&str> = shaped.clusters().iter().map(|c| c.text.as_str()).collect();
+        let texts: Vec<&str> = shaped.clusters().iter().map(|c| &*c.text).collect();
         assert_eq!(texts, ["\u{05dd}", "\u{05d5}", "\u{05dc}", "\u{05e9}"]);
     }
 
@@ -347,7 +349,7 @@ mod tests {
     #[test]
     fn a_combining_mark_merges_into_its_base_cluster() {
         let shaped = shape_line("a\u{0301}b", &font(), 1.0);
-        let texts: Vec<&str> = shaped.clusters().iter().map(|c| c.text.as_str()).collect();
+        let texts: Vec<&str> = shaped.clusters().iter().map(|c| &*c.text).collect();
         assert_eq!(texts, ["a\u{0301}", "b"], "the accent must not become its own cluster");
     }
 

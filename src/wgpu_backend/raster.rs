@@ -605,31 +605,32 @@ fn draw_image_scaled_cpu_rgba8(
     clip_rect: Option<PixelRect>,
     blend: BlendMode,
 ) {
-    let clip_rect = match clip_rect {
-        Some(value) => value,
-        None => return,
+    let Some(clip_rect) = clip_rect else {
+        return;
     };
     let mut sink = PixelSink { pixels, width, mode: blend };
-    let x_start = clip_rect.x;
-    let y_start = clip_rect.y;
-    let x_end = clip_rect.right();
-    let y_end = clip_rect.bottom();
+    let (x_start, y_start, x_end, y_end) =
+        (clip_rect.x, clip_rect.y, clip_rect.right(), clip_rect.bottom());
+    let (rw, sw) = (rect.width as u64, source_width as u64);
+    let start = (x_start - rect.x) as u64 * sw;
+    let (src_x_start, acc_start) = ((start / rw) as u32, start % rw);
+    let last_y = source_height.saturating_sub(1) as u64;
     for y in y_start..y_end {
         let local_y = (y - rect.y) as u32;
-        let src_y = ((local_y as u64 * source_height as u64) / rect.height as u64)
-            .min(source_height.saturating_sub(1) as u64) as u32;
+        let src_y =
+            ((local_y as u64 * source_height as u64) / rect.height as u64).min(last_y) as u32;
+        let mut acc = acc_start;
+        let mut src_x = src_x_start;
         for x in x_start..x_end {
-            let local_x = (x - rect.x) as u32;
-            let src_x = ((local_x as u64 * source_width as u64) / rect.width as u64)
-                .min(source_width.saturating_sub(1) as u64) as u32;
             let src_offset = ((src_y * source_width + src_x) * 4) as usize;
-            let color = Rgba8 {
-                r: source_rgba8[src_offset],
-                g: source_rgba8[src_offset + 1],
-                b: source_rgba8[src_offset + 2],
-                a: source_rgba8[src_offset + 3],
-            };
+            let pixel = &source_rgba8[src_offset..src_offset + 4];
+            let color = Rgba8 { r: pixel[0], g: pixel[1], b: pixel[2], a: pixel[3] };
             sink.set(x as u32, y as u32, color);
+            acc += sw;
+            while acc >= rw {
+                acc -= rw;
+                src_x = src_x.saturating_add(1);
+            }
         }
     }
 }

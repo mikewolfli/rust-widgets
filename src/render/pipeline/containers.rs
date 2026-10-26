@@ -99,45 +99,73 @@ thread_local! {
 /// last eight bytes, which still distinguishes the strings a label cache actually sees (a status
 /// line that ends differently, a number that grew) without reading the middle again.
 fn text_measurement_fingerprint(text: &str, font: &Font, scale: f32) -> (u64, u64) {
-    use core::hash::{Hash, Hasher};
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    #[inline]
+    fn mix(hash: &mut u64, bytes: &[u8]) {
+        for byte in bytes {
+            *hash ^= u64::from(*byte);
+            *hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+
+    #[inline]
+    fn mix_u32(hash: &mut u64, value: u32) {
+        mix(hash, &value.to_le_bytes());
+    }
+
+    #[inline]
+    fn mix_u16(hash: &mut u64, value: u16) {
+        mix(hash, &value.to_le_bytes());
+    }
+
+    #[inline]
+    fn mix_bool(hash: &mut u64, value: bool) {
+        mix(hash, &[u8::from(value)]);
+    }
+
     let size = font.size().to_bits();
     let letter = font.letter_spacing().to_bits();
     let word = font.word_spacing().to_bits();
     let line = font.line_height().to_bits();
     let scale = scale.to_bits();
 
-    let mut first = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut first);
-    font.family().hash(&mut first);
-    size.hash(&mut first);
-    font.weight().hash(&mut first);
-    font.is_bold().hash(&mut first);
-    font.is_italic().hash(&mut first);
-    letter.hash(&mut first);
-    word.hash(&mut first);
-    line.hash(&mut first);
-    scale.hash(&mut first);
+    // FNV-1a rather than the default SipHash: this runs for every label on every measure and
+    // every shape, and the inputs are short ASCII strings, not attacker-controlled map keys
+    // (G-003). Same coverage, so a collision still needs both halves to agree.
+    let mut first = FNV_OFFSET;
+    mix(&mut first, text.as_bytes());
+    mix(&mut first, font.family().as_bytes());
+    mix_u32(&mut first, size);
+    mix_u16(&mut first, font.weight());
+    mix_bool(&mut first, font.is_bold());
+    mix_bool(&mut first, font.is_italic());
+    mix_u32(&mut first, letter);
+    mix_u32(&mut first, word);
+    mix_u32(&mut first, line);
+    mix_u32(&mut first, scale);
 
     let bytes = text.as_bytes();
     let head = &bytes[..bytes.len().min(8)];
     let tail = &bytes[bytes.len().saturating_sub(8)..];
 
-    let mut second = std::collections::hash_map::DefaultHasher::new();
-    0xA5u8.hash(&mut second);
-    bytes.len().hash(&mut second);
-    head.hash(&mut second);
-    tail.hash(&mut second);
-    scale.hash(&mut second);
-    line.hash(&mut second);
-    word.hash(&mut second);
-    letter.hash(&mut second);
-    font.is_italic().hash(&mut second);
-    font.is_bold().hash(&mut second);
-    font.weight().hash(&mut second);
-    size.hash(&mut second);
-    font.family().hash(&mut second);
+    let mut second = FNV_OFFSET;
+    mix(&mut second, &[0xA5]);
+    mix_u32(&mut second, bytes.len() as u32);
+    mix(&mut second, head);
+    mix(&mut second, tail);
+    mix_u32(&mut second, scale);
+    mix_u32(&mut second, line);
+    mix_u32(&mut second, word);
+    mix_u32(&mut second, letter);
+    mix_bool(&mut second, font.is_italic());
+    mix_bool(&mut second, font.is_bold());
+    mix_u16(&mut second, font.weight());
+    mix_u32(&mut second, size);
+    mix(&mut second, font.family().as_bytes());
 
-    (first.finish(), second.finish())
+    (first, second)
 }
 
 /// The number of samples in a resolved gradient ramp.

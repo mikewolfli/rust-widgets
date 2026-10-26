@@ -582,10 +582,12 @@ impl Draw for Window {
             }
             if !self.title.is_empty() {
                 let font = crate::widget::metrics::role_font(self.style(), 13.0);
-                let text = self.title.clone();
+                let line = context.text_line(bar, &font);
+                // Borrow the title: the fitted helper returns a `Cow`, so cloning the `String`
+                // here was an allocation per frame for a value that is only read (G-320).
                 context.draw_text_fitted_cow(
-                    context.text_line(bar, &font),
-                    &text,
+                    line,
+                    &self.title,
                     &font,
                     bg_color.contrast_color(),
                     crate::core::HorizontalAlignment::Center,
@@ -819,6 +821,11 @@ mod window_contract_tests {
 
     /// G-301: one authoritative store. The host-facing pair and the base/layout path read and
     /// write the same bound, in both directions.
+    ///
+    /// The host-facing pair is `Window::set_min_size(width, height)` / `icon()`'s setter, which a
+    /// stripped build does not carry (`#[cfg(not(alloc_frugal))]`): with no platform singleton
+    /// there is nothing to ask, so the round trip it asserts has no `mini` spelling.
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn window_size_bounds_share_the_base_store() {
         let mut window = Window::new("Doc".to_string(), Rect::new(0, 0, 400, 300));
@@ -864,6 +871,7 @@ mod window_contract_tests {
         assert_eq!(own_hits.load(Ordering::SeqCst), 2);
     }
 
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn host_facing_window_facts_round_trip() {
         let mut window = Window::new("Doc".to_string(), Rect::new(0, 0, 400, 300));

@@ -63,6 +63,16 @@ struct InlineDeclEntry {
     last_used: u64,
 }
 
+/// A parsed stylesheet, plus the use stamp that orders eviction.
+struct RulesEntry {
+    /// The source text, compared on a hash hit.
+    text: String,
+    /// The parsed rules; shared so a repeated application re-uses the parse (G-403).
+    rules: Rc<Vec<CssRule>>,
+    /// Monotonic use stamp; the smallest one is evicted at capacity (G-161).
+    last_used: u64,
+}
+
 thread_local! {
     // `HashMap::new` is const only under alloc_frugal (BTreeMap); the std profile cannot be const.
     #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
@@ -74,12 +84,22 @@ thread_local! {
         RefCell::new(HashMap::new());
     /// The monotonically increasing stamp both caches use to order eviction.
     static CACHE_TICK: Cell<u64> = const { Cell::new(0) };
+    /// Parsed stylesheets, keyed by source hash. Applying the same inline CSS to every control
+    /// used to lex and parse it once per control; a hit is now a refcount bump (G-403).
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
+    static RULES_CACHE: RefCell<HashMap<u64, RulesEntry>> = RefCell::new(HashMap::new());
 }
 
 /// How many converted declaration values one thread keeps.
 const DECL_CACHE_LIMIT: usize = 512;
 /// How many inline declaration lists one thread keeps.
 const INLINE_DECL_CACHE_LIMIT: usize = 64;
+/// How many parsed stylesheets one thread keeps.
+///
+/// A widget's inline CSS is one text per control class in practice, so a small bound is
+/// enough; it exists to stop a program that formats a different sheet per frame from growing
+/// without limit.
+const RULES_CACHE_LIMIT: usize = 32;
 
 /// The next use stamp, shared by both caches so "oldest" is one global order.
 fn next_cache_tick() -> u64 {
@@ -1839,9 +1859,9 @@ impl CssParser {
         state: Option<PseudoState>,
         style: &mut WidgetStyle,
     ) -> Result<(), String> {
-        let rules = Self::parse_rules(css)?;
+        let rules = Self::cached_rules(css)?;
         // Filter and apply matching rules in order
-        for rule in &rules {
+        for rule in rules.iter() {
             if let Some(selector) = Self::parse_selector(&rule.selector_text) {
                 if selector.matches(kind, class, id, state) {
                     Self::apply_declarations(&rule.declarations, style)?;
@@ -1849,6 +1869,47 @@ impl CssParser {
             }
         }
         Ok(())
+    }
+
+    /// [`Self::parse_rules`] memoised by source text (G-403).
+    ///
+    /// Returns the shared parse, so a control applying the same inline CSS as its siblings pays
+    /// one lexer pass for the whole class rather than one per control. A hash collision misses
+    /// because the stored text is compared.
+    fn cached_rules(css: &str) -> Result<Rc<Vec<CssRule>>, String> {
+        let hash = declaration_hash(css);
+        let hit = RULES_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let entry = cache.get_mut(&hash)?;
+            if entry.text != css {
+                return None;
+            }
+            entry.last_used = next_cache_tick();
+            Some(Rc::clone(&entry.rules))
+        });
+        if let Some(hit) = hit {
+            return Ok(hit);
+        }
+        let rules = Rc::new(Self::parse_rules(css)?);
+        RULES_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= RULES_CACHE_LIMIT {
+                let victim =
+                    cache.iter().min_by_key(|(_, entry)| entry.last_used).map(|(key, _)| *key);
+                if let Some(victim) = victim {
+                    cache.remove(&victim);
+                }
+            }
+            cache.insert(
+                hash,
+                RulesEntry {
+                    text: String::from(css),
+                    rules: Rc::clone(&rules),
+                    last_used: next_cache_tick(),
+                },
+            );
+        });
+        Ok(rules)
     }
 }
 

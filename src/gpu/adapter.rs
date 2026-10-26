@@ -290,16 +290,9 @@ impl AdapterInfo {
         if self.device_type.is_cpu() {
             return GpuBackendTier::Software;
         }
-        match self.backend.as_str() {
-            // Primary tier: the APIs `wgpu` supports first-class.
-            "Vulkan" | "Metal" | "Dx12" | "BrowserWebGpu" => GpuBackendTier::Primary,
-            // GL covers OpenGL ES (Linux/Android), WebGL (web) and desktop
-            // OpenGL through ANGLE (Windows/macOS).
-            "Gl" => GpuBackendTier::OpenGlEs,
-            // Everything else — `Noop`, or the synthetic "CPU" tag set by
-            // `cpu_fallback` — is the terminal software rung.
-            _ => GpuBackendTier::Software,
-        }
+        // One decision table for the whole crate: the same function the ladder uses for
+        // `wgpu::Backend` (G-229).
+        GpuBackendTier::from_backend_name(self.backend.as_str())
     }
 
     /// Whether this adapter is running below the primary backend tier.

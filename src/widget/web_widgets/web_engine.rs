@@ -336,7 +336,6 @@ pub struct WebEngineView {
     /// HTML source the current find was computed over; a new document invalidates the matches.
     find_needle: String,
     /// Whether the active find is case sensitive.
-    find_case_sensitive: bool,
     /// Byte offsets of the current matches in [`Self::html_content`].
     find_matches: Vec<usize>,
     /// Index into [`Self::find_matches`] of the match a find-next/previous action selected.
@@ -785,7 +784,6 @@ impl WebEngineView {
             user_agent: DEFAULT_USER_AGENT.to_string(),
             background_transparent: false,
             find_needle: String::new(),
-            find_case_sensitive: false,
             find_matches: Vec::new(),
             find_current: None,
             pending_javascript: None,
@@ -1430,7 +1428,6 @@ impl WebEngineView {
         backwards: bool,
     ) -> (usize, usize) {
         self.find_needle = needle.to_string();
-        self.find_case_sensitive = case_sensitive;
         if needle.is_empty() {
             self.find_matches.clear();
             self.find_current = None;
@@ -2533,7 +2530,7 @@ mod tests {
         #[cfg(feature = "js-engine")]
         assert!(ok && payload == "2", "a real engine returns the value: {payload}");
         #[cfg(not(feature = "js-engine"))]
-        assert!(!ok, "without an engine the honest answer is an error");
+        assert!(!ok, "without an engine the honest answer is an error, got {payload:?}");
     }
 
     /// History entries restore a title, and the crash/hover signals resolve.

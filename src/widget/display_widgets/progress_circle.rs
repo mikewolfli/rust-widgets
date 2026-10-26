@@ -177,6 +177,10 @@ impl ProgressCircle {
             self.value_animation.jump_to(clamped);
         }
         self.request_frame_repaint(None);
+        if !self.base.is_enabled() {
+            // The value is stored and painted; a disabled ring does not announce it.
+            return;
+        }
         self.value_changed.emit(clamped);
     }
 
@@ -197,6 +201,10 @@ impl ProgressCircle {
             self.sweep = 0.0;
         }
         self.request_frame_repaint(None);
+        if !self.base.is_enabled() {
+            // Same rule as `set_value`.
+            return;
+        }
         self.indeterminate_changed.emit(indeterminate);
     }
 

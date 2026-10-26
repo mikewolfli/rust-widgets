@@ -100,8 +100,6 @@ pub struct Snackbar {
     queue: Vec<(String, Option<String>, Option<String>)>,
     /// Where the bar sits in the control's rectangle.
     anchor: SnackbarAnchor,
-    /// Whether the pointer is over the bar, which pauses the countdown (SP-67).
-    hovered: bool,
     /// Emitted when action is triggered.
     pub action_triggered: Signal1<String>,
     /// Emitted when snackbar is dismissed.
@@ -127,7 +125,6 @@ impl Snackbar {
             max_queued: SNACKBAR_MAX_QUEUED,
             queue: Vec::new(),
             anchor: SnackbarAnchor::default(),
-            hovered: false,
             action_triggered: Signal1::new(),
             dismissed: Signal1::new(),
         }
@@ -414,7 +411,9 @@ impl Widget for Snackbar {
                 // from under a reading user is a usability defect, and a hover is exactly the
                 // signal that someone is reading it (SP-67). The reveal above is untouched, so
                 // an in-flight enter/exit still advances.
-                if !self.hovered {
+                // Read the base's hover (SP-67 pause) rather than a private copy: the runtime
+                // commits the transition for every control, so one field cannot drift from it.
+                if !self.base.is_hovered() {
                     self.elapsed_ms = self.elapsed_ms.saturating_add(delta_ms);
                     if self.elapsed_ms >= self.duration_ms {
                         self.dismiss();
@@ -554,16 +553,16 @@ impl EventHandler for Snackbar {
 
         match event {
             Event::MouseEnter { .. } | Event::MouseMove { .. } => {
-                // Hover state for the countdown; the bar's own reveal keeps whatever progress it
-                // has, so the transition is unaffected (SP-67).
-                if !self.hovered {
-                    self.hovered = true;
+                // `self.base.handle_event` above already recorded the hover; the bar's own
+                // reveal keeps whatever progress it has, so the transition is unaffected (SP-67).
+                if !self.base.is_hovered() {
+                    self.base.set_hovered(true);
                     self.base.request_redraw();
                 }
             }
             Event::MouseLeave { .. } => {
-                if self.hovered {
-                    self.hovered = false;
+                if self.base.is_hovered() {
+                    self.base.set_hovered(false);
                     self.base.request_redraw();
                 }
             }

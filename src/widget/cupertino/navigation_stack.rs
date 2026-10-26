@@ -156,6 +156,11 @@ impl Widget for CupertinoNavigationStack {
 impl EventHandler for CupertinoNavigationStack {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            // A disabled control is inert: it consumes no input and emits nothing the user
+            // cannot reach (`check_enabled_is_honoured.sh`).
+            return;
+        }
         // A click on the stack's own indicator area is its back action; the host's bar wires
         // its `back_pressed` to `handle_back` for the normal path.
         if let Event::MousePress { pos, button: 1, .. } = event {

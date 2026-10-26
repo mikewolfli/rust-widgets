@@ -927,7 +927,10 @@ fn transform_command(
             };
             #[cfg(not(feature = "3d"))]
             let scale = 1.0f32;
-            let font = Font::simple(BATCH_DEFAULT_FONT_FAMILY, (*font_size * scale).max(1.0));
+            // Interned family: the batch replays the same default face for every label, so a
+            // per-label `Font::simple` allocated the family name each time (G-005).
+            let font =
+                Font::simple_interned(BATCH_DEFAULT_FONT_FAMILY, (*font_size * scale).max(1.0));
             #[cfg(feature = "3d")]
             let origin = state.try_apply_to_point(position)?;
             #[cfg(not(feature = "3d"))]

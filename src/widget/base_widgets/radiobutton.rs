@@ -691,7 +691,7 @@ impl Widget for RadioButton {
     // movement, so it costs nothing on the animation bus.
     fn tick(&mut self, delta_ms: u32) -> bool {
         let held = self.auto_repeat_held();
-        let repeats = self.auto_repeat.tick(delta_ms, held);
+        let repeats = self.auto_repeat.advance(delta_ms, held);
         for _ in 0..repeats {
             self.set_checked(true);
             self.emit_clicked();

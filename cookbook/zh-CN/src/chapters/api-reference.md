@@ -2,7 +2,7 @@
 
 本章提供整个 `rust_widgets` 公共 API 的逐模块完整参考。当你需要为任务查找正确的类型、函数或 trait 时，可将其作为快速查阅手册。
 
-本文档所描述的库版本为 **2.9.2**。代码示例假定已使用 `use rust_widgets::*;` 或按所示使用显式路径。
+本文档所描述的库版本为 **2.9.3**。代码示例假定已使用 `use rust_widgets::*;` 或按所示使用显式路径。
 
 ---
 
@@ -530,7 +530,7 @@ pub trait Draw {
 
 ### 控件种类枚举
 
-`WidgetKind` 枚举系统中的每种控件类型（设备档位下共 200 种）。选定的变体：
+`WidgetKind` 枚举系统中的每种控件类型（设备档位下共 228 种）。选定的变体：
 
 - `Button`, `CheckBox`, `RadioButton`, `Label`
 - `LineEdit`, `TextArea`, `ComboBox`, `ListBox`, `SpinBox`, `Dropdown`

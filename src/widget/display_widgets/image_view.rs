@@ -379,6 +379,10 @@ impl ImageView {
         // not enough: two images of the same size have different pixels.
         self.scaled_image = None;
         self.base.request_redraw();
+        if !self.base.is_enabled() {
+            // The image is stored either way; a disabled view simply does not announce it.
+            return;
+        }
         self.image_changed.emit();
     }
 
@@ -456,6 +460,10 @@ impl ImageView {
         }
         self.zoom_level = zoom;
         self.base.request_redraw();
+        if !self.base.is_enabled() {
+            // The zoom is stored; a disabled view does not announce a view the user cannot reach.
+            return;
+        }
         self.view_changed.emit((self.zoom_level, self.pan_offset));
     }
 
@@ -471,6 +479,10 @@ impl ImageView {
         }
         self.pan_offset = offset;
         self.base.request_redraw();
+        if !self.base.is_enabled() {
+            // Same rule as `set_zoom_level`.
+            return;
+        }
         self.view_changed.emit((self.zoom_level, self.pan_offset));
     }
 
@@ -504,6 +516,11 @@ impl ImageView {
                 Ok(())
             }
             Err(error) => {
+                if !self.base.is_enabled() {
+                    // A failed decode still returns the error to the caller; the signal is what a
+                    // disabled view withholds.
+                    return Err(error);
+                }
                 self.load_failed.emit(error.clone());
                 Err(error)
             }

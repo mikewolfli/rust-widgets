@@ -1114,13 +1114,14 @@ impl VectorSource {
         let sub_height = cell.height as usize * SUBSAMPLES as usize;
         let total = sub_width.checked_mul(sub_height)?;
         // The winding scratch is the one thing this cannot keep on the stack: a 400x400 cell at
-        // 4x4 subsampling is 2.56 M accumulators. It is zeroed per glyph and dropped at the end of
-        // the call, so it is never resident — the third constraint.
-        let mut rows = crate::compat::vec![0i32; total];
+        // 4x4 subsampling is 2.56 M accumulators. It is zeroed per glyph and returned to the
+        // thread's scratch pool at the end of the call, so a repeated miss reuses the block
+        // instead of allocating it again (G-004).
+        let mut rows = crate::render::scratch::ScratchI32::new(total);
 
         {
             let mut accumulator =
-                Accumulator { rows: &mut rows, width: sub_width, height: sub_height };
+                Accumulator { rows: &mut rows[..], width: sub_width, height: sub_height };
             fill_outline(&points, &mut accumulator);
         }
         out[..cell.area()].fill(0);

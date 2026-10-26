@@ -88,8 +88,8 @@ mod tests {
     #[test]
     fn a_reading_is_reused_inside_the_ttl_only() {
         // The notification revision is process-wide, so a concurrent bump would look like a change
-        // to this cache. See `environment_notify::test_lock`.
-        let _guard = crate::platform::environment_notify::test_lock();
+        // to this cache. See `environment_notify::environment_test_guard`.
+        let _guard = crate::platform::environment_notify::environment_test_guard();
         static CACHE: EnvironmentFactCache<u32> = OnceLock::new();
         let mut reads = 0;
         let first = cached_environment_fact(&CACHE, || {
@@ -117,7 +117,7 @@ mod tests {
     /// A notification invalidates a reading that is still inside its TTL.
     #[test]
     fn a_notification_invalidates_a_fresh_reading() {
-        let _guard = crate::platform::environment_notify::test_lock();
+        let _guard = crate::platform::environment_notify::environment_test_guard();
         static CACHE: EnvironmentFactCache<u32> = OnceLock::new();
         let first = cached_environment_fact(&CACHE, || 1);
         assert_eq!(first, 1);

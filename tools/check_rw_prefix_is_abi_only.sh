@@ -60,9 +60,21 @@ cd "$ROOT_DIR"
 ERRORS=0
 
 # Files allowed to define an `rw_*` name, with the reason. Keyed by path.
-#   * `src/bindings/` is the C ABI itself.
+#   * `src/bindings/` is the C ABI itself (handled by the `case` below).
+#   * `src/error/mod.rs` — `RwError`/`RwResult`, settled public Rust API (the type itself
+#     now lives in `src/error/types.rs` and is re-exported here; [3] checks the real file).
+#   * `src/platform/harmony/host_facts.rs` and `src/platform/ios/host_facts.rs` — the
+#     **mobile host ABI**. The ArkTS host and the UIKit shell call these across the
+#     process/language boundary by flat C name (`rw_harmony_set_theme`,
+#     `rw_ios_ime_commit`, …), so they need the prefix for the same reason
+#     `src/bindings/` does. They are not generated from the C header because the
+#     header describes the desktop ABI; the hosts here are Swift/ArkTS, and each
+#     setter's contract is documented at its definition.
 ACCEPTED_FILES=$(cat <<'FILES'
 src/error/mod.rs
+src/error/types.rs
+src/platform/harmony/host_facts.rs
+src/platform/ios/host_facts.rs
 FILES
 )
 
@@ -113,6 +125,11 @@ while IFS= read -r hit; do
   case "$hit" in
     *"///"*|*"//!"*|*"// "*) continue ;;
   esac
+  # The mobile host ABI — same argument as `src/bindings/`: a flat C symbol the
+  # ArkTS/UIKit host calls by name. See the note on `ACCEPTED_FILES` above.
+  if printf '%s\n' "$ACCEPTED_FILES" | grep -qx "$file"; then
+    continue
+  fi
   echo "  ❌ $hit"
   export_violations=$((export_violations + 1))
 done < <(grep -rEn '^[[:space:]]*#\[(no_mangle|export_name)' src/ --include="*.rs" || true)
@@ -125,12 +142,14 @@ ERRORS=$((ERRORS + export_violations))
 echo ""
 echo "=== [3] The accepted exceptions must still be real ==="
 # If `RwError` is ever renamed, this list should shrink; a stale exception is how an
-# allowlist turns into a place leaks hide.
-if grep -q 'pub struct RwError' src/error/mod.rs; then
-  echo "  ✅ src/error/mod.rs still defines RwError (documented exception)"
+# allowlist turns into a place leaks hide. The definition moved to `src/error/types.rs`
+# when the error module was split into a façade; the re-export in `mod.rs` is what makes
+# the exception still apply, so this checks the definition wherever it now lives.
+if grep -rq 'pub struct RwError' src/error/; then
+  echo "  ✅ src/error/ still defines RwError (documented exception)"
 else
-  echo "  ❌ src/error/mod.rs no longer defines RwError, so the exception in this"
-  echo "     script is stale — remove the entry rather than leaving it to hide a"
+  echo "  ❌ no file under src/error/ defines RwError, so the exceptions in this"
+  echo "     script are stale — remove them rather than leaving them to hide a"
   echo "     future leak"
   ERRORS=$((ERRORS + 1))
 fi

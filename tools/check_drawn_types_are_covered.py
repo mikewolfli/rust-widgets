@@ -85,13 +85,101 @@ DRAW_IMPL = re.compile(r"^impl Draw for ([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
 #: `check_mechanism_has_a_consumer.py`'s table does: an acknowledgement without a successor is how
 #: a finding becomes permanent. An entry whose type later becomes registered is reported stale.
 ACKNOWLEDGED = {
-    "KeySequenceEdit": (
-        "src/widget/advanced_widgets/key_sequence_edit.rs",
-        "A single-shortcut capture field with no registry entry: it is exported from "
-        "`src/widget/mod.rs` and nothing constructs it, so it has no snapshot, no census row and no "
-        "test gate. Not a duplicate of `shortcut_editor` (that manages a list, this captures one), "
-        "so it needs registering or deleting rather than folding. BLUE23 appendix A (`shortcut_editor` "
-        "row) is where the decision goes.",
+    "ChartCrosshair": (
+        "src/widget/chart_widgets/chart_crosshair.rs",
+        "Drawn by `BarChart` / `LineChart` at the hover position; those controls' own snapshots and tests cover the picture. Registering it as a kind would expose a crosshair a host cannot meaningfully mount on its own.",
+    ),
+    "ChipInput": (
+        "src/widget/special_widgets/chip_input.rs",
+        "The editable field `Chip` composes; host-mountable but with no registry row. Decide register-as-kind or fold into `chip`'s snapshot.",
+    ),
+    "ColumnChooser": (
+        "src/widget/view_widgets/column_chooser.rs",
+        "Column-visibility companion for table/tree headers; drawn inside its owner's rect, no own census row.",
+    ),
+    "CupertinoNavigationStack": (
+        "src/widget/cupertino/navigation_stack.rs",
+        "Cupertino navigation container: exported from `widget/mod.rs`, no `create_*` constructor and no canonical name, so nothing snapshots it.",
+    ),
+    "DrumColumn": (
+        "src/widget/misc_widgets/drum_column.rs",
+        "One scrolling column of the drum picker; the picker's snapshot covers the assembled control.",
+    ),
+    "FormatToolbar": (
+        "src/widget/input_widgets/input_companions.rs",
+        "Rich-text formatting strip; the editor that owns it draws it, so it has no independent census row.",
+    ),
+    "GridFindBar": (
+        "src/widget/view_widgets/grid_find_bar.rs",
+        "Find strip for grid views; exported companion, unregistered.",
+    ),
+    "KeyTipBadge": (
+        "src/widget/advanced_widgets/key_tip_badge.rs",
+        "Key-tip overlay drawn beside a focused control; unregistered companion.",
+    ),
+    "MapMarkerDetail": (
+        "src/widget/special_widgets/map_marker_detail.rs",
+        "Detail card `MapView` draws beside a selected marker; the map's snapshot covers it.",
+    ),
+    "MarkdownToolbar": (
+        "src/widget/special_widgets/markdown_toolbar.rs",
+        "Toolbar the markdown editor draws above its text; covered by the editor's snapshot.",
+    ),
+    "MediaScrubber": (
+        "src/widget/media_widgets/media_scrubber.rs",
+        "Scrub bar of the media player; the player draws it, so it has no independent row.",
+    ),
+    "MediaTransportBar": (
+        "src/widget/media_widgets/media_transport.rs",
+        "Transport controls of the media player; same reasoning as `MediaScrubber`.",
+    ),
+    "ModalHost": (
+        "src/widget/dialog/modal_host.rs",
+        "Host that centres a modal child; a layout role rather than a control a host mounts.",
+    ),
+    "PopupItemList": (
+        "src/widget/macos/popup_item_list.rs",
+        "macOS popup item list behind `ComboBox`; the combo's snapshot covers the closed and open pictures.",
+    ),
+    "PresetChipBar": (
+        "src/widget/misc_widgets/preset_chip_bar.rs",
+        "Row of preset chips; exported companion with no constructor.",
+    ),
+    "RecentValuesPopup": (
+        "src/widget/input_widgets/recent_values_popup.rs",
+        "Recent-values dropdown of an input; drawn by its owner.",
+    ),
+    "Scrollbar": (
+        "src/widget/input_widgets/input_companions.rs",
+        "The scroll *indicator* used by scroll areas and lists (distinct from the registered `ScrollBar` kind); drawn inside its owner.",
+    ),
+    "StepButtons": (
+        "src/widget/input_widgets/input_companions.rs",
+        "Increment/decrement pair of the spin box; the spin box's snapshot covers it.",
+    ),
+    "StickyHeader": (
+        "src/widget/container_widgets/sticky_header.rs",
+        "Container that pins a header over scrolling content; exported, unregistered.",
+    ),
+    "SubtitleBar": (
+        "src/widget/media_widgets/subtitle_bar.rs",
+        "Subtitle overlay of the video player; the player draws it.",
+    ),
+    "SuggestionPopup": (
+        "src/widget/input_widgets/suggestion_popup.rs",
+        "Suggestions dropdown of an input; drawn by its owner.",
+    ),
+    "TagGroup": (
+        "src/widget/display_widgets/tag_group.rs",
+        "Group of tags; exported companion, unregistered.",
+    ),
+    "ValidationBubble": (
+        "src/widget/input_widgets/validation_bubble.rs",
+        "Error bubble of a form field; drawn by its owner.",
+    ),
+    "ValueSpinBox": (
+        "src/widget/macos/value_spinbox.rs",
+        "macOS stepper field; the macOS profile's controls are drawn through the shared palette, unregistered here.",
     ),
 }
 

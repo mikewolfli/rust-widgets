@@ -679,6 +679,9 @@ pub struct WgpuRenderer {
     shader_cache: HashMap<String, wgpu::ShaderModule>,
     /// Device resources reused across calls (REND-02).
     cache: RefCell<RenderCache>,
+    /// What `wgpu` reported for the selected adapter, kept so [`GpuRenderer::vendor_info`] can
+    /// answer with the real device name instead of a constant (G-232).
+    adapter_info: wgpu::AdapterInfo,
 }
 impl WgpuRenderer {
     /// Create a new renderer by requesting a default GPU adapter and logical device.
@@ -1184,6 +1187,7 @@ impl WgpuRenderer {
             mesh_pipeline,
             shader_cache,
             cache: RefCell::new(RenderCache::default()),
+            adapter_info,
         })
     }
     /// Render one offscreen RGBA frame by clearing a texture with the given color and read pixels back.
@@ -2316,15 +2320,16 @@ impl GpuRenderer for WgpuRenderer {
             .to_string())
     }
 
-    fn memory_usage(&self) -> u64 {
-        // No reliable GPU-memory query is available through the current wgpu backend.
-        0
+    fn memory_usage(&self) -> Option<u64> {
+        // `wgpu` exposes no portable bytes-in-use query: `AdapterInfo` carries a device name and
+        // limits, not an allocation total. Reporting `None` is the honest answer (G-232).
+        None
     }
 
-    fn vendor_info(&self) -> &str {
-        // Vendor/device info is available from `wgpu::Adapter::get_info()`, but we do not
-        // store the adapter after construction. This will be plumbed in a follow-up.
-        "wgpu (WGPU)"
+    fn vendor_info(&self) -> Option<&str> {
+        // The real adapter name, captured at construction. An empty name means the backend had
+        // nothing to report, which is also `None` rather than an invented string (G-232).
+        (!self.adapter_info.name.is_empty()).then_some(self.adapter_info.name.as_str())
     }
 }
 

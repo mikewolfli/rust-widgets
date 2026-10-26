@@ -585,6 +585,11 @@ impl Draw for Flex {
 impl EventHandler for Flex {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        if !self.base.is_enabled() {
+            // A disabled control is inert: it consumes no input and emits nothing the user
+            // cannot reach (`check_enabled_is_honoured.sh`).
+            return;
+        }
         if let Event::MousePress { pos, button: 1, .. } = event {
             if let Some(index) = self.item_at(*pos) {
                 self.item_clicked.emit(index);

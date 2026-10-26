@@ -323,6 +323,23 @@ impl Widget for TooltipManager {
     fn size_hint(&self) -> Size {
         Size::new(240, 40)
     }
+    /// Advances the host's tooltip clocks from the frame bus.
+    ///
+    /// [`Self::tick`] takes the host's monotonic clock because a tooltip's *duration* is a
+    /// wall-clock fact; the bus only knows how much time the frame covers. Accumulating the
+    /// delta reproduces the same clock for a host that drives every frame (the same choice
+    /// `segmented_button` makes for the tooltips it owns).
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        let now_ms = self.now_ms.saturating_add(u64::from(delta_ms));
+        Self::tick(self, u64::from(delta_ms), now_ms)
+    }
+    /// A tooltip owes frames while a hover delay is counting down or one is on screen.
+    ///
+    /// Without this the bus would stop sweeping after the first frame and a tooltip shown at
+    /// the end of its delay would never expire.
+    fn is_animating(&self) -> bool {
+        self.hovered.is_some() || self.visible
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef> {

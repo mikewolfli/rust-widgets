@@ -61,6 +61,27 @@
 #                   heap `String`, so the face cannot be a `const`; each cell is initialised once and
 #                   then only read. Same reasoning as `metrics.rs` (the default font), and the same
 #                   guarantee: no second lock and no widget state behind it.
+#   display_widgets/icon.rs      — `static UNKNOWN_FONT: OnceLock<Font>`, the fallback face drawn for an
+#                   icon whose family is not installed. One initialisation, then reads only; same
+#                   class as the three `OnceLock<Font>` files above.
+#   display_widgets/color_history.rs
+#                   `OnceLock<Vec<Color>>`, the recently-used colours snapshotted as a slice so the
+#                   picker can hand out `&[Color]` without rebuilding a `Vec` per paint. The cell is
+#                   replaced (not mutated) when the history changes, so it guards no widget state.
+#   misc_widgets/segmented_button.rs
+#                   `static GROUPS: OnceLock<Mutex<BTreeMap<String, SegmentedGroupEntry>>>` — the
+#                   **process-wide** group table every segmented button in every window shares. It
+#                   is not per-widget state (which is why it lives in a `static`, not in the
+#                   control), and a `Sync` cell is required by the `OnceLock` static itself.
+#
+# # What is *not* excused by name
+#
+# A lock guarding `ActionLiveState` (the public `Action` handle's live state) or
+# `NumericLinkState` (the value shared by a linked `Slider` and spin box) is skipped line by line
+# rather than by file: those two cells must be `Sync` because they are captured by `Signal`
+# callbacks and by `Action` handles a host may call from any thread, while the files holding them
+# (`button.rs`, `menu.rs`, `menu_bar.rs`, `tool_bar.rs`, `slider.rs`) still get scanned for any
+# *other* lock. A `use ... Mutex ...;` import is likewise not a lock: it names a type.
 #
 # Usage: tools/check_locking.sh
 set -euo pipefail
@@ -93,6 +114,9 @@ EXEMPT_FILES = {
     "src/widget/display_widgets/font_preview.rs",
     "src/widget/input_widgets/masked_edit.rs",
     "src/widget/view_widgets/query_builder.rs",
+    "src/widget/display_widgets/icon.rs",
+    "src/widget/display_widgets/color_history.rs",
+    "src/widget/misc_widgets/segmented_button.rs",
 }
 # Only *blocking* primitives are a finding. `Atomic*` is deliberately not matched:
 # a monotonic id counter (`static NEXT_ID: AtomicU64`) is lock-free — it cannot
@@ -102,6 +126,14 @@ PATTERN = re.compile(r"\b(?:Mutex|RwLock|OnceLock|LazyLock)\b")
 
 # Phrases that mention a synchronisation type without using one.
 PROSE = ("// ", "/// ", "//!", "lock-free", "no lock")
+
+# A `use` item names a type; it does not lock anything. Counting the import made every file
+# that holds a shared cell (`button.rs`, `menu*.rs`) a finding on its own import line.
+IMPORT_PREFIX = "use "
+
+# Guards around a cell that must be `Sync` because it is captured by a signal or an `Action`
+# handle. Explained in the header under "What is not excused by name".
+SHARED_SYNC_CELLS = ("ActionLiveState", "NumericLinkState")
 
 # The two character classes whose net count decides whether a line opens a body.
 # Named constants rather than inline literals: when these were written inline, the
@@ -382,6 +414,10 @@ for path in sorted(Path(SCAN_ROOT).rglob("*.rs")):
     for number, line in enumerate(production.split("\n"), start=1):
         stripped = line.strip()
         if any(token in stripped for token in PROSE):
+            continue
+        if stripped.startswith(IMPORT_PREFIX):
+            continue
+        if any(cell in stripped for cell in SHARED_SYNC_CELLS):
             continue
         if PATTERN.search(stripped):
             findings.append(f"{path}:{number}: {stripped}")

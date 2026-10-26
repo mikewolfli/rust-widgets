@@ -139,11 +139,38 @@ echo "[3/4] no animated control is constructed at the target end"
 HITS="$(grep -rnE 'PropertyDriver::(at|default)\s*\(\s*1\.0' src/widget/ --include=*.rs \
     | sed -e 's://.*::' || true)"
 HITS="$(printf '%s\n' "$HITS" | grep -vE ':[[:space:]]*$' || true)"
+
+# Controls that are **shown at rest** *and* read their own visibility later, so the heuristic
+# below ("a file that reads `is_visible()` must start hidden") would invert the rule for them.
+# Each is here with the fact that makes `1.0` its resting value; a control that starts hidden
+# must not be added, because that would be the defect this gate exists for.
+# Lookup by `case`, not an associative array: this project's gates run under the host's
+# `bash`, which is 3.2 on macOS and has no `declare -A`.
+shown_at_rest_reason() {
+    case "$1" in
+        src/widget/dialog/alert_dialogs.rs)
+            echo "a freshly built alert is constructed visible (new_visible: true); its reveal is what a later show/hide moves, not what the first frame fades in from" ;;
+        src/widget/view_widgets/image_gallery.rs)
+            echo "the gallery shows its first image at construction, so its reveal is already at the shown end" ;;
+        src/widget/view_widgets/tree_view.rs)
+            echo "every node is expanded at construction, so expansion_progress rests at 1.0" ;;
+        src/widget/overlay_widgets/splash_screen.rs)
+            echo "a splash screen is opaque the moment it is mounted; it must not animate itself into existence" ;;
+        *) echo "" ;;
+    esac
+}
+
 ACCEPTED=""
 FINDINGS=""
 while IFS= read -r line; do
     [ -z "$line" ] && continue
     file="${line%%:*}"
+    shown_reason="$(shown_at_rest_reason "$file")"
+    if [ -n "$shown_reason" ]; then
+        ACCEPTED="${ACCEPTED}${line}  (shown at rest: ${shown_reason})
+"
+        continue
+    fi
     # A control that hides itself at rest must start hidden; one that is shown at rest
     # must start shown. The read of the base flag is what distinguishes them -- but only a
     # read in the **production** body, so the `#[cfg(test)]` module is stripped first: a
@@ -152,7 +179,10 @@ while IFS= read -r line; do
     #
     # `sed`/`awk` stop at the first `#[cfg(test)]`, which is where the module begins, so
     # everything after it is excluded.
-    if sed -n '1,/^#\[cfg(test)\]/p' "$file" | grep -qE 'is_visible\(\)|self\.visible'; then
+    # `self\.visible\b`: a word boundary, so `self.visible_count()` (a row count in
+    # `timeline_widget`) is not read as a visibility fact. Without it a read-only count
+    # made a shown-at-rest timeline look like a hidden-at-rest control.
+    if sed -n '1,/^#\[cfg(test)\]/p' "$file" | grep -qE 'is_visible\(\)|self\.visible\b'; then
         FINDINGS="${FINDINGS}${line}
 "
     else

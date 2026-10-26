@@ -59,7 +59,11 @@ echo "[1/3] read the declared \`:error\` kinds from the preset"
 # The kinds live in the array literal of the `for kind in [ … ]` loop whose body inserts the
 # `"{kind}:error"` key. Reading them here, rather than restating them, is what makes the
 # gate track the source rather than a copy that can drift.
-error_line="$(grep -nE '\{kind\}:error' "$PRESETS" | head -1 | cut -d: -f1)"
+# The key is built as `format!("{kind}:{}", WidgetState::Error.state_suffix())` — the suffix is
+# the state table's own answer, not a literal `error` — so the anchor matches either spelling.
+# `|| true`: a missing anchor is reported below, and without it `set -e` aborted the script at this
+# assignment, so the gate printed `[1/3]` and exited 1 with no explanation.
+error_line="$(grep -nE '\{kind\}:.*([Ee]rror)' "$PRESETS" | head -1 | cut -d: -f1 || true)"
 if [ -z "$error_line" ]; then
     echo "  FAIL  $PRESETS no longer inserts a \`\"{kind}:error\"\` key"
     echo "        Either the table moved or it was removed; this gate is measuring nothing."

@@ -43,6 +43,8 @@
 
 // Core data types and commands
 mod core;
+// Reusable scratch byte/word buffers shared by the software and WGPU raster paths (G-004).
+pub(crate) mod scratch;
 // Rendering backends
 mod backend;
 // (controls/ directory was migrated to pipeline/special.rs — see pipeline module)

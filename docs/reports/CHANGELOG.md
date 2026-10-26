@@ -5,6 +5,64 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.9.3 (2026-10-27) — hot-path allocation and cache-lookup round
+
+First implementation round over `docs/issues/issue-20261026.md`, in the report's own order
+(chapter 1 → 2 → 3). Full per-item evidence, boundaries and the remaining worklist are in
+`docs/log/log-20261026-2.md`.
+
+### Render and text
+
+- Cached shaped cluster advances are shared as `Rc<[f32]>`; a cache hit no longer deep-copies the
+  advance vector (G-002).
+- Text measurement/shaping fingerprints use FNV-1a instead of two default SipHash passes
+  (G-003).
+- The glyph rasteriser's winding scratch comes from a bounded thread-local pool instead of a fresh
+  multi-megabyte `i32` block per uncached glyph (G-004).
+- `TextCluster::text` is `Arc<str>`, so a bidirectional reorder shares each cluster's text instead
+  of copying it (G-006).
+- Anti-aliased line, filled circle, stroked ring and affine image-quad draws intersect their
+  bounding box with the clip before sampling, and the quad path advances `u`/`v` per row instead of
+  dividing per pixel (G-007, G-012).
+- Batch text uses an interned font family, removing one family allocation per replayed label
+  (G-005).
+- `embedded_engine_shared` has one body instead of two identical cfg-gated copies (G-021).
+
+### GPU
+
+- One backend→tier decision table (`GpuBackendTier::from_backend_name`) now feeds both the ladder
+  and `AdapterInfo`, so the two cannot disagree (G-229).
+- `GpuRenderer::vendor_info` reports the selected adapter's real name, and `memory_usage` returns
+  `None` when the backend cannot query it instead of a constant/`0` (G-232).
+- The WGPU CPU image scaler fills a column map once per draw rather than dividing per pixel
+  (G-224).
+
+### Widget runtime and layout
+
+- `dirty_rects_into` reuses a thread-local tracker; `lent_present` short-circuits on an empty loan
+  table; the point-hit window buckets are pooled (G-312, G-317, G-318).
+- `composite_surface` intersects the surface rectangle with the window before compositing
+  (G-315).
+- The window title is drawn from a borrow instead of a per-frame `String` clone (G-320).
+- `add_child_linked` now requests a layout, matching `add_child` (G-322); a truncated base-widget
+  doc sentence is repaired (G-323).
+- The flex cache key includes basis, order and baseline (LAY-001); dirty declarative layouts use an
+  ordered set instead of a linear `Vec` (LAY-006).
+
+### JSON, style and demos
+
+- `JsonProject` keeps a path→node index built at parse time (G-501).
+- Parsed stylesheets are memoised by source text, so applying one inline sheet to many controls
+  parses it once (G-403).
+- `demo/code_editor`'s `main` is a pure entry stub; exit-code mapping moved into `app::run`
+  (DEMO-001).
+
+### Breaking change
+
+- `GpuRenderer::memory_usage` returns `Option<u64>` and `GpuRenderer::vendor_info` returns
+  `Option<&str>`. Both had no in-repository callers; the old shapes reported fabricated values.
+  Recorded under principle #21 (a stable identity replaces a fake value; callers audited).
+
 ## 2.9.2 (2026-10-26) — full-scan hardening: render/text caches, platform facts, widget contracts
 
 Full-scan round over `docs/issues/issue-20261025.md`. The work is grouped the way the scan is: render pipeline, platform facts, widget contracts, companions, docs.

@@ -157,6 +157,11 @@ impl Badge {
         self.count = count;
         self.sync_fade();
         self.base.request_redraw();
+        if !self.base.is_enabled() {
+            // A disabled badge keeps the value (a host can read it back) but does not announce
+            // it: a subscriber would react to a change the user cannot reach.
+            return;
+        }
         self.count_changed.emit(count);
     }
 
@@ -208,6 +213,11 @@ impl Badge {
         }
         self.level = level;
         self.base.request_redraw();
+        if !self.base.is_enabled() {
+            // Same rule as `set_count`: the level is stored, the signal is not raised while the
+            // control is disabled.
+            return;
+        }
         self.level_changed.emit(badge_level_to_str(level));
     }
 

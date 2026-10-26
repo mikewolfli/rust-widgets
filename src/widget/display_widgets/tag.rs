@@ -103,8 +103,6 @@ pub struct Tag {
     /// only when the style changes, which is a real allocation on a control that repaints on
     /// every hover.
     font_cache: Option<Font>,
-    /// Whether the pointer is currently over the tag.
-    hovered: bool,
     /// Emitted when the close glyph is activated, with the tag's own text as the payload.
     pub closed: Signal1<String>,
     /// Emitted with the new flag when the selection actually changes.
@@ -122,7 +120,6 @@ impl Tag {
             closable: false,
             icon: None,
             font_cache: None,
-            hovered: false,
             closed: Signal1::new(),
             selected_changed: Signal1::new(),
         }
@@ -202,8 +199,13 @@ impl Tag {
     }
 
     /// Whether the pointer is currently over the tag.
+    ///
+    /// Read from [`BaseWidget::is_hovered`](crate::widget::base::BaseWidget::is_hovered) rather
+    /// than a private copy: the runtime commits the hover transition for every control, so a
+    /// second field could answer differently from the state every other control sees
+    /// (`check_state_source_is_the_base.sh`).
     pub fn is_hovered(&self) -> bool {
-        self.hovered
+        self.base.is_hovered()
     }
 
     /// The tag's optional leading icon.
@@ -230,11 +232,10 @@ impl Tag {
     /// [`Event::MouseEnter`] and [`Event::MouseLeave`] drive this automatically; the setter
     /// exists for a host that synthesises hover, such as a list forwarding a pointer position.
     pub fn set_hovered(&mut self, hovered: bool) {
-        if self.hovered == hovered {
+        if self.base.is_hovered() == hovered {
             return;
         }
-        self.hovered = hovered;
-        self.base.request_redraw();
+        self.base.set_hovered(hovered);
     }
 
     /// The rectangle the close glyph occupies, or `None` when the tag is not closable.
@@ -427,7 +428,7 @@ impl Draw for Tag {
         // A hovered tag shifts its fill slightly towards its own contrast colour, which
         // lightens it in a dark appearance and darkens it in a light one. At rest the fill is
         // untouched, so the default picture is byte-identical.
-        let fill = if self.hovered {
+        let fill = if self.base.is_hovered() {
             base_fill.blend(&base_fill.contrast_color(), TAG_HOVER_TINT)
         } else {
             base_fill
@@ -499,7 +500,8 @@ impl EventHandler for Tag {
                 self.closed.emit(self.text.clone());
                 self.base.request_redraw();
             }
-            Event::MousePress { pos, button: 1, .. } => {
+            // A disabled tag accepts no pointer input, exactly like its key arm above (D-024).
+            Event::MousePress { pos, button: 1, .. } if self.base.is_enabled() => {
                 if let Some(close) = self.close_rect() {
                     if close.contains(*pos) {
                         self.closed.emit(self.text.clone());

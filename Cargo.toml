@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.9.2"
+version = "2.9.3"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -29,10 +29,12 @@ include = [
     # `tools/` paths below are the declared ones and they ship — so
     # `tools/check_declared_targets_ship.sh` still passes. Dropping this line without
     # shrinking ~250 KB elsewhere re-breaks publishing.
-    "benches/**/*",
-    "examples/**/*",
+    # "benches/**/*",
+    # "examples/**/*",
     "include/**/*",
     "language/**/*",
+    "crates/**/*",
+    "themes/**/*",
     # Both files under `tools/` are *declared* as Cargo targets below, so they must
     # ship: a target whose path is absent from the package makes `cargo package`
     # warn `ignoring test \`view_platform_gate_probe\` as

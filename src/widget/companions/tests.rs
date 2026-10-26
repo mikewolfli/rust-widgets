@@ -1,4 +1,10 @@
 //! Focused tests for the companion controls.
+//!
+//! Gated as a **file** (`#![cfg(test)]`), not only by the `#[cfg(test)] mod tests;` in
+//! `companions.rs`: lexical tools that scan one file at a time (`check_locking.sh`) cannot see
+//! the attribute on the `mod` item, so without this its `Arc<Mutex<Vec<T>>>` recording helpers
+//! read as production locking.
+#![cfg(test)]
 
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};

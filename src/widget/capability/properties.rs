@@ -2592,23 +2592,6 @@ pub(crate) fn shortcut_editor_capability() -> WidgetCapability {
     }
 }
 
-/// The base contract `KeySequenceEdit` publishes.
-///
-/// The control's value is edited through its own API, so the capability surface is exactly the
-/// four names every widget inherits.
-#[cfg(not(alloc_frugal))]
-const KEY_SEQUENCE_EDITOR_PROPERTIES: &[PropertySchema] = &[
-    // ADV-07: the recorded chord, the recording switch and the history flags.
-    PropertySchema::new("key_sequence", PropertyValueKind::String, true, true),
-    PropertySchema::new("recording", PropertyValueKind::Bool, true, true),
-    PropertySchema::new("can_undo", PropertyValueKind::Bool, true, false),
-    PropertySchema::new("can_redo", PropertyValueKind::Bool, true, false),
-    PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
-    PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
-    PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
-    PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-];
-
 /// The chord recorder (`KeySequenceEdit`), published separately from `ShortcutEditor`.
 ///
 /// The two controls capture different things: `ShortcutEditor` edits a command id plus a list of

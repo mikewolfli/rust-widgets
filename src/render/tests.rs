@@ -215,6 +215,16 @@ fn software_backend_delegates_text_shaping() {
 /// character) or a missing face (tofu). Both show up in the measured advance: a CJK glyph is about
 /// one em wide, so two of them advance about twice one. A build without a CJK face answers `None`
 /// from `face_for_char`, which the demo reports in its log, and there is no width to assert.
+///
+/// `face_for_char` is re-exported only when some outline face or shaper is compiled in
+/// (`src/render/text/mod.rs`), so the test follows the same gate; under the stripped profiles the
+/// function does not exist and this file would not compile at all.
+#[cfg(any(
+    feature = "text-shaping",
+    feature = "fonts-vector-latin",
+    feature = "fonts-complex",
+    cjk_outline_face
+))]
 #[test]
 fn cjk_text_measures_as_full_width_glyphs() {
     let _guard = crate::style::theme_test_guard();
@@ -1431,6 +1441,10 @@ fn bevel_stroke_inner_clamps_huge_width_without_panicking() {
 
 // ── STY-01: per-corner radii and the border-style semantics ─────────────────
 
+// `Recorder` lives in `widget::macos::test_support`, which a stripped build does not compile
+// (`#[cfg(full_widgets)] pub mod macos;`). These tests are the only users, so the availability
+// gate on the module is the availability gate on them.
+#[cfg(full_widgets)]
 mod corner_and_border_style_tests {
     use super::*;
     use crate::render::RenderContext;
