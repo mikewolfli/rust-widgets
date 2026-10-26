@@ -223,7 +223,7 @@ impl Draw for ChartTooltip {
                 line_height,
             );
             let color = line.color.unwrap_or_else(|| fill.contrast_color());
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 row,
                 &line.text,
                 font,

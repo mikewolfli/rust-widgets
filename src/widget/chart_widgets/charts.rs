@@ -308,6 +308,16 @@ pub fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLay
         axis_color,
     );
 }
+thread_local! {
+    /// One reused label buffer for the y-axis ticks.
+    ///
+    /// The function's own local `String` grew once per frame (float formatting writes in parts),
+    /// and this axis is drawn every frame; a thread-local buffer keeps the steady state at zero
+    /// allocations. Separate buffers for y and x so neither can observe the other's borrow.
+    static Y_TICK_LABEL: crate::compat::RefCell<crate::compat::String> =
+        const { crate::compat::RefCell::new(crate::compat::String::new()) };
+}
+
 /// Draws value ticks and labels along the y axis.
 ///
 /// `min_y` and `max_y` bound the *data* range, not the screen: `min_y` is placed
@@ -330,8 +340,6 @@ pub fn draw_y_ticks(
     // appearance the tick labels (`80,80,80` on an `18,18,18` surface) sat at 2.3:1 -- barely
     // legible -- while the near-white gridlines were the brightest thing in the picture.
     let (axis_color, label_color, grid_color) = axis_chrome();
-    // One reused label buffer: `format!` allocated a `String` per tick per frame.
-    let mut label = crate::compat::String::new();
     // A label is a full line box, so two labels whose ticks are closer than one line overlap and
     // the axis becomes an unreadable stack. That is not hypothetical: the demo's bar chart in a
     // short row drew "90.0/70.0/50.0/30.0/10.0" on top of each other. The gridlines stay at every
@@ -363,19 +371,28 @@ pub fn draw_y_ticks(
             axis_color,
         );
         let value = min_y + (max_y - min_y) * t as f64;
-        label.clear();
-        let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{value:.1}"));
         if tick % label_stride != 0 {
             continue;
         }
-        context.draw_text(
-            &label,
-            Point::from_f32(layout.plot_x - 44.0, y + 4.0),
-            10.0,
-            label_color,
-        );
+        Y_TICK_LABEL.with(|label| {
+            let mut label = label.borrow_mut();
+            label.clear();
+            let _ = core::fmt::Write::write_fmt(&mut *label, format_args!("{value:.1}"));
+            context.draw_text(
+                &label,
+                Point::from_f32(layout.plot_x - 44.0, y + 4.0),
+                10.0,
+                label_color,
+            );
+        });
     }
 }
+thread_local! {
+    /// One reused label buffer for the x-axis ticks; see [`Y_TICK_LABEL`] for why.
+    static X_TICK_LABEL: crate::compat::RefCell<crate::compat::String> =
+        const { crate::compat::RefCell::new(crate::compat::String::new()) };
+}
+
 /// Draws value ticks and labels along the x axis.
 ///
 /// The x counterpart to [`draw_y_ticks`]: `min_x` at the left edge, `max_x` at
@@ -395,8 +412,6 @@ pub fn draw_x_ticks(
     // appearance the tick labels (`80,80,80` on an `18,18,18` surface) sat at 2.3:1 -- barely
     // legible -- while the near-white gridlines were the brightest thing in the picture.
     let (axis_color, label_color, grid_color) = axis_chrome();
-    // One reused label buffer, as in `draw_y_ticks`.
-    let mut label = crate::compat::String::new();
     for tick in 0..=tick_count {
         let t = tick as f32 / tick_count as f32;
         let x = layout.plot_x + t * layout.plot_w;
@@ -415,8 +430,6 @@ pub fn draw_x_ticks(
             axis_color,
         );
         let value = min_x + (max_x - min_x) * t as f64;
-        label.clear();
-        let _ = core::fmt::Write::write_fmt(&mut label, format_args!("{value:.1}"));
         // The label is centred on its tick and clamped inside the **plot area's** own width.
         //
         // Two problems are fixed together here. The origin was `x - 12`, a fixed half-width
@@ -428,13 +441,18 @@ pub fn draw_x_ticks(
         // The right clamp subtracts the label's own width; clamping the *origin* to the plot's
         // right edge let the last tick's label start there and paint past both the margin and the
         // legend column.
-        let label_width = (label.chars().count() as f32 * 10.0 * 0.6).max(10.0);
-        let min_x = layout.plot_x;
-        let max_x = (layout.plot_x + layout.plot_w - label_width).max(min_x);
-        let label_x = (x - label_width / 2.0).clamp(min_x, max_x);
-        let label_y = (layout.plot_y + layout.plot_h + 16.0)
-            .min(layout.plot_y + layout.plot_h + layout.tick_label_height());
-        context.draw_text(&label, Point::from_f32(label_x, label_y), 10.0, label_color);
+        X_TICK_LABEL.with(|label| {
+            let mut label = label.borrow_mut();
+            label.clear();
+            let _ = core::fmt::Write::write_fmt(&mut *label, format_args!("{value:.1}"));
+            let label_width = (label.chars().count() as f32 * 10.0 * 0.6).max(10.0);
+            let min_x = layout.plot_x;
+            let max_x = (layout.plot_x + layout.plot_w - label_width).max(min_x);
+            let label_x = (x - label_width / 2.0).clamp(min_x, max_x);
+            let label_y = (layout.plot_y + layout.plot_h + 16.0)
+                .min(layout.plot_y + layout.plot_h + layout.tick_label_height());
+            context.draw_text(&label, Point::from_f32(label_x, label_y), 10.0, label_color);
+        });
     }
 }
 /// Draws the series legend to the right of the plot area.

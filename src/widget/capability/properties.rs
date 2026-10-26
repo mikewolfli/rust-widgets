@@ -841,12 +841,13 @@ pub(crate) fn gantt_widget_capability() -> WidgetCapability {
         aliases: &["gantt"],
         properties: GANTT_WIDGET_PROPERTIES,
         events: events_of!("gantt_widget"),
-        // Audit 20261026: `set_viewport` stays unpublished — the viewport is the writable
-        // `viewport_start`/`viewport_end` pair (principle #18). `set_tasks` cannot be a property:
-        // a task carries typed `dependencies` (a nested structure no record field can hold) and
-        // dropping it would silently erase schedule links. `select_task` names a task while
-        // `selected_id` is read-only. Both stay unpublished.
-        commands: &["zoom"],
+        // `set_viewport` stays unpublished — the viewport is the writable
+        // `viewport_start`/`viewport_end` pair (principle #18). `set_tasks` names its payload
+        // through the `tasks` records property (B26.03), whose `dependencies` field carries each
+        // relationship kind as an `<id>:<fts|sts|ftf>` token, so a schedule write cannot lose a
+        // link. `select_task` names a task while `selected_id` is read-only, so it stays
+        // unpublished.
+        commands: &["zoom", "set_tasks"],
     }
 }
 
@@ -1796,8 +1797,9 @@ pub(crate) fn kanban_board_capability() -> WidgetCapability {
         aliases: &["kanban", "board"],
         properties: KANBAN_BOARD_PROPERTIES,
         events: events_of!("kanban_board"),
-        // add_column/add_card/move_card were published without a payload property and always failed OutOfRange; re-publish when their payload properties land.
-        commands: &["cancel_drag"],
+        // `cancel_drag` is payload-free; `set_columns` / `set_cards` name their payload through
+        // the `columns` / `cards` records properties (B26.03).
+        commands: &["cancel_drag", "set_columns", "set_cards"],
     }
 }
 
@@ -3528,6 +3530,105 @@ pub(crate) fn find_bar_capability() -> WidgetCapability {
         properties: FIND_BAR_PROPERTIES,
         events: events_of!("find_bar"),
         commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `web_find_bar` — the web view's find strip (`COMP-L03`).
+pub(crate) fn web_find_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::WebFindBar,
+        canonical_name: "web_find_bar",
+        aliases: &[],
+        properties: WEB_FIND_BAR_PROPERTIES,
+        events: events_of!("web_find_bar"),
+        commands: &["next", "previous", "close"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `menu_panel` — a drop-down menu panel a host anchors itself (`COMP-A01`).
+pub(crate) fn menu_panel_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::MenuPanel,
+        canonical_name: "menu_panel",
+        aliases: &[],
+        properties: MENU_PANEL_PROPERTIES,
+        events: events_of!("menu_panel"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `speed_dial` — a floating trigger that fans out its actions (`COMP-A02`).
+pub(crate) fn speed_dial_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SpeedDial,
+        canonical_name: "speed_dial",
+        aliases: &[],
+        properties: SPEED_DIAL_PROPERTIES,
+        events: events_of!("speed_dial"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `swipe_actions` — a multi-action background for a swiped row (`COMP-A03`).
+pub(crate) fn swipe_actions_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SwipeActions,
+        canonical_name: "swipe_actions",
+        aliases: &[],
+        properties: SWIPE_ACTIONS_PROPERTIES,
+        events: events_of!("swipe_actions"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `drawer_section_header` — the small heading row that groups a drawer's items (`COMP-A04`).
+pub(crate) fn drawer_section_header_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::DrawerSectionHeader,
+        canonical_name: "drawer_section_header",
+        aliases: &[],
+        properties: DRAWER_SECTION_HEADER_PROPERTIES,
+        // This heading emits no signals (`drawer_section_header:` in the census), so the list is
+        // the empty literal rather than an `events_of!` lookup.
+        events: &[],
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `layer_panel` — the companion list for a canvas's layers (`COMP-I01`).
+pub(crate) fn layer_panel_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::LayerPanel,
+        canonical_name: "layer_panel",
+        aliases: &[],
+        properties: LAYER_PANEL_PROPERTIES,
+        events: events_of!("layer_panel"),
+        // `set_entries` names its payload through the `entries` records property (B26.03); the
+        // selection / visibility / scroll verbs stay Rust-side because no property carries their
+        // layer id.
+        commands: &["set_entries"],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `playlist_panel` — the companion list for a media player's queue (`COMP-I03`).
+pub(crate) fn playlist_panel_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::PlaylistPanel,
+        canonical_name: "playlist_panel",
+        aliases: &[],
+        properties: PLAYLIST_PANEL_PROPERTIES,
+        events: events_of!("playlist_panel"),
+        // `set_tracks` names its payload through the `tracks` records property (B26.03);
+        // `track_selected` is an event name rather than a command, and `set_filter` stays Rust-side
+        // because the writable `filter` property is its document route.
+        commands: &["set_tracks"],
     }
 }
 

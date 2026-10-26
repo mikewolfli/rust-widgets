@@ -289,7 +289,7 @@ impl Draw for Legend {
                 cell.width.saturating_sub(LEGEND_MARKER + 8),
                 cell.height,
             );
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 label,
                 &entry.label,
                 font,

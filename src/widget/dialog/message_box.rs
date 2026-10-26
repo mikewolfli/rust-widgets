@@ -1487,7 +1487,7 @@ impl Draw for MessageBox {
                 row.width.saturating_sub(box_side + 6),
                 row_h,
             );
-            context.draw_text_line(
+            context.draw_text_line_cow(
                 label_band,
                 &self.check_box_text,
                 body_font,
@@ -1501,7 +1501,7 @@ impl Draw for MessageBox {
         if let Some(toggle) = self.details_toggle_rect() {
             let toggle_band =
                 Rect::new(toggle.x + 2, toggle.y, toggle.width.saturating_sub(4), toggle.height);
-            context.draw_text_line(
+            context.draw_text_line_cow(
                 toggle_band,
                 &self.details_toggle_label(),
                 body_font,

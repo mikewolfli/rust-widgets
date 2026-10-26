@@ -10,16 +10,22 @@
 //!
 //! This is the web family's own find bar, distinct from the markdown editor's
 //! `special_widgets::markdown_editor::FindBar` (which searches an editor buffer, not a page).
+//! Each is its own `WidgetKind`, so a host can address either one by name.
 //!
-//! Registration surface (out of scope for this file): canonical name `find_bar`, kind
-//! [`WidgetKind::FindBar`].
+//! Registration surface: canonical name `web_find_bar` (alias `page_find_bar`), kind
+//! [`WidgetKind::WebFindBar`], registered in the factory like any other companion.
 
 use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
+use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
+use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A web-page find bar.
 pub struct WebFindBar {
@@ -43,7 +49,7 @@ impl WebFindBar {
     /// Creates a closed find bar.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::FindBar, geometry, "WebFindBar"),
+            base: BaseWidget::new(WidgetKind::WebFindBar, geometry, "WebFindBar"),
             query: String::new(),
             match_index: 0,
             match_count: 0,
@@ -154,6 +160,121 @@ impl Widget for WebFindBar {
         Size::new(280, 32)
     }
     impl_draw_bridge!();
+    impl_widget_property_hooks!();
+    /// Resolves this control's published event names to the signals that emit them.
+    ///
+    /// `connect_event` validates a name against the capability table; only this method joins
+    /// that name to the signal the control actually emits, so every published name gets an
+    /// arm here and the arm set cannot drift from the published set (the gate compares them).
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "search_requested" => Some(EventSignalRef::mapped(
+                "search_requested",
+                &self.search_requested,
+                |(query, case_sensitive)| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::String(query.clone()),
+                        CapabilityValue::Bool(*case_sensitive),
+                    ]))
+                },
+            )),
+            "next_requested" => Some(EventSignalRef::unit("next_requested", &self.next_requested)),
+            "previous_requested" => {
+                Some(EventSignalRef::unit("previous_requested", &self.previous_requested))
+            }
+            "closed" => Some(EventSignalRef::unit("closed", &self.closed)),
+            _ => None,
+        }
+    }
+}
+
+impl WidgetProperties for WebFindBar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        match name {
+            "query" => Ok(CapabilityValue::String(self.query.clone())),
+            "case_sensitive" => Ok(CapabilityValue::Bool(self.case_sensitive)),
+            "visible" => Ok(CapabilityValue::Bool(self.visible)),
+            "match_index" => Ok(CapabilityValue::UInt(self.match_index as u64)),
+            "match_count" => Ok(CapabilityValue::UInt(self.match_count as u64)),
+            _ => base_property_get(self, name),
+        }
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        match name {
+            // A query write is a search request: the setter emits `search_requested`, which is
+            // the same thing typing into the field does.
+            "query" => {
+                self.set_query(expect_string(value)?);
+                Ok(())
+            }
+            // Re-runs the current query under the new sensitivity, exactly like the toggle.
+            "case_sensitive" => {
+                self.set_case_sensitive(expect_bool(value)?);
+                Ok(())
+            }
+            // The two halves of the visibility switch: `open` is silent, `close` reports via
+            // the `closed` signal — the same report closing through the UI produces.
+            "visible" => {
+                if expect_bool(value)? {
+                    self.open();
+                } else {
+                    self.close();
+                }
+                Ok(())
+            }
+            // The match pair is two scalars because the property vocabulary has no paired-number
+            // kind; each write takes the live value of the other axis, and the one-based index
+            // keeps `0` = "no selection".
+            "match_index" => {
+                let index = expect_usize(value)?;
+                self.set_match_progress(index, self.match_count);
+                Ok(())
+            }
+            "match_count" => {
+                let count = expect_usize(value)?;
+                self.set_match_progress(self.match_index, count);
+                Ok(())
+            }
+            _ => base_property_set(self, name, value),
+        }
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![
+            "query",
+            "case_sensitive",
+            "visible",
+            "match_index",
+            "match_count",
+            BASE_PROPERTY_NAMES
+        ]
+    }
+
+    /// Runs one of the commands `web_find_bar` publishes.
+    ///
+    /// Each is the payload-free half of a request the host answers: `next`/`previous` emit
+    /// their `*_requested` signals (the host runs the page search), and `close` hides the bar
+    /// and reports through `closed`. A query change is a value-carrying operation, so it is a
+    /// property write (`query`), not a command.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "next" => {
+                self.next_match();
+                Ok(())
+            }
+            "previous" => {
+                self.previous_match();
+                Ok(())
+            }
+            "close" => {
+                self.close();
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Draw for WebFindBar {
@@ -277,5 +398,74 @@ mod tests {
         assert_eq!(bar.match_progress(), (3, 3));
         bar.close();
         assert!(!bar.is_open());
+    }
+
+    #[test]
+    fn the_property_route_round_trips_and_reports_searches() {
+        let mut bar = WebFindBar::new(Rect::new(0, 0, 320, 36));
+        let searches = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = searches.clone();
+        bar.search_requested.connect(move |value| {
+            let (query, case_sensitive) = &*value;
+            sink.lock().unwrap().push((query.clone(), *case_sensitive));
+        });
+        // Round trip: every writable property reads back the value that was written.
+        bar.set("query", CapabilityValue::String("rust".into())).unwrap();
+        bar.set("case_sensitive", CapabilityValue::Bool(true)).unwrap();
+        bar.set("match_count", CapabilityValue::UInt(7)).unwrap();
+        bar.set("match_index", CapabilityValue::UInt(2)).unwrap();
+        assert_eq!(bar.get("query").unwrap(), CapabilityValue::String("rust".into()));
+        assert_eq!(bar.get("case_sensitive").unwrap(), CapabilityValue::Bool(true));
+        assert_eq!(bar.get("match_count").unwrap(), CapabilityValue::UInt(7));
+        assert_eq!(bar.get("match_index").unwrap(), CapabilityValue::UInt(2));
+        // A query write is a search request; the case toggle re-runs the current query.
+        assert_eq!(
+            searches.lock().unwrap().as_slice(),
+            [("rust".to_string(), false), ("rust".to_string(), true)]
+        );
+        // The visibility write goes through open/close, so closing reports via `closed`.
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = closed.clone();
+        bar.closed.connect(move || {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        bar.set("visible", CapabilityValue::Bool(true)).unwrap();
+        assert!(bar.get("visible").unwrap() == CapabilityValue::Bool(true));
+        bar.set("visible", CapabilityValue::Bool(false)).unwrap();
+        assert_eq!(bar.get("visible").unwrap(), CapabilityValue::Bool(false));
+        assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+        // Read-only names refuse; unknown names are refused as unknown.
+        assert!(bar.set("match_progress", CapabilityValue::UInt(1)).is_err());
+        assert!(bar.get("no_such_property").is_err());
+    }
+
+    #[test]
+    fn the_command_channel_emits_the_requests_the_host_answers() {
+        let mut bar = WebFindBar::new(Rect::new(0, 0, 320, 36));
+        bar.set("visible", CapabilityValue::Bool(true)).unwrap();
+        let nexts = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let prevs = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let closes = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let n = nexts.clone();
+        bar.next_requested.connect(move || {
+            n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let p = prevs.clone();
+        bar.previous_requested.connect(move || {
+            p.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        let c = closes.clone();
+        bar.closed.connect(move || {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        bar.command("next").unwrap();
+        bar.command("previous").unwrap();
+        bar.command("close").unwrap();
+        let order = std::sync::atomic::Ordering::SeqCst;
+        assert_eq!(nexts.load(order), 1);
+        assert_eq!(prevs.load(order), 1);
+        assert_eq!(closes.load(order), 1);
+        assert_eq!(bar.get("visible").unwrap(), CapabilityValue::Bool(false));
+        assert_eq!(bar.command("no_such_command"), Err(CapabilityAccessError::UnknownCommand));
     }
 }

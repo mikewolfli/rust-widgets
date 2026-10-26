@@ -850,7 +850,7 @@ impl Draw for Accordion {
                 };
                 // An open section's title is emphasised; a closed one is ordinary ink.
                 let title_ink = if section.expanded { accent } else { ink };
-                ctx.draw_text_line(
+                ctx.draw_text_line_cow(
                     title_band,
                     section.title(),
                     &font,
@@ -870,7 +870,7 @@ impl Draw for Accordion {
                     row.width.saturating_sub(HEADER_PADDING.saturating_mul(2)),
                     row.height,
                 );
-                ctx.draw_text_line(
+                ctx.draw_text_line_cow(
                     body_band,
                     section.body(),
                     &font,

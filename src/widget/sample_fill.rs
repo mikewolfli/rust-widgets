@@ -58,7 +58,10 @@ use crate::widget::advanced_widgets::dial::Dial;
 use crate::widget::advanced_widgets::pie_menu::PieMenu;
 use crate::widget::advanced_widgets::ribbon_bar::RibbonBar;
 use crate::widget::advanced_widgets::tab_bar::TabBar;
-use crate::widget::companions::{Legend, LegendEntry};
+use crate::widget::companions::{
+    DrawerSectionHeader, LayerEntry, LayerPanel, Legend, LegendEntry, MenuPanel, MenuPanelItem,
+    PlaylistPanel, SpeedDial, SpeedDialAction, SwipeAction, SwipeActions,
+};
 use crate::widget::container_widgets::carousel::Carousel;
 use crate::widget::container_widgets::groupbox::GroupBox;
 use crate::widget::container_widgets::mdiarea::MdiArea;
@@ -132,6 +135,7 @@ use crate::widget::view_widgets::tree_table::TreeTable;
 use crate::widget::view_widgets::tree_view::{TreeView, VecTreeModel};
 use crate::widget::view_widgets::virtual_list::VirtualList;
 use crate::widget::view_widgets::virtual_table::VirtualTable;
+use crate::widget::web_widgets::find_bar::WebFindBar;
 use crate::widget::web_widgets::web_engine::WebEngineView;
 use crate::widget::{Draw, SimpleRegistry};
 
@@ -1166,6 +1170,77 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
         "web_engine_view" => match widget_as_mut::<WebEngineView>(widget) {
             Some(view) => {
                 view.load_html("<h1>Web content</h1>");
+                true
+            }
+            None => false,
+        },
+        "web_find_bar" => match widget_as_mut::<WebFindBar>(widget) {
+            Some(bar) => {
+                bar.open();
+                bar.set_query("widget");
+                bar.set_match_progress(2, 7);
+                true
+            }
+            None => false,
+        },
+        "menu_panel" => match widget_as_mut::<MenuPanel>(widget) {
+            Some(panel) => {
+                panel.set_items(vec![
+                    MenuPanelItem::new("Cut"),
+                    MenuPanelItem::new("Copy").with_icon("copy"),
+                    MenuPanelItem::new("Paste").with_enabled(false),
+                ]);
+                panel.open();
+                true
+            }
+            None => false,
+        },
+        "speed_dial" => match widget_as_mut::<SpeedDial>(widget) {
+            Some(dial) => {
+                dial.set_actions(vec![
+                    SpeedDialAction::new("Share", "+"),
+                    SpeedDialAction::new("Edit", "E"),
+                ]);
+                dial.set_expanded(true);
+                true
+            }
+            None => false,
+        },
+        "swipe_actions" => match widget_as_mut::<SwipeActions>(widget) {
+            Some(swipe) => {
+                swipe.set_leading_actions(vec![SwipeAction::new("Archive")]);
+                swipe.set_trailing_actions(vec![SwipeAction::new("Delete")]);
+                swipe.set_offset(48.0);
+                true
+            }
+            None => false,
+        },
+        "drawer_section_header" => match widget_as_mut::<DrawerSectionHeader>(widget) {
+            Some(header) => {
+                header.set_label("Library");
+                true
+            }
+            None => false,
+        },
+        "layer_panel" => match widget_as_mut::<LayerPanel>(widget) {
+            Some(panel) => {
+                panel.set_entries(vec![
+                    LayerEntry::new(1, "background"),
+                    LayerEntry::new(2, "ink"),
+                    LayerEntry::new(3, "notes").with_visible(false),
+                ]);
+                true
+            }
+            None => false,
+        },
+        "playlist_panel" => match widget_as_mut::<PlaylistPanel>(widget) {
+            Some(panel) => {
+                panel.set_tracks(vec![
+                    "/music/one.mp3".to_string(),
+                    "/music/two.mp3".to_string(),
+                    "/music/three.mp3".to_string(),
+                ]);
+                panel.set_current_index(Some(0));
                 true
             }
             None => false,

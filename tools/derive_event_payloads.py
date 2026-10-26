@@ -247,6 +247,9 @@ DOMAIN_AS_STRING: frozenset[str] = frozenset(
         # A finance enum with a handful of variants and no data. Its name is the whole value, which
         # is the same contract `PropertyValueKind::Enum` gives the property side.
         "BookSide",
+        # The side a swipe action sits on. A data-less two-variant enum published as its lower-case
+        # token (`leading`/`trailing`) by `SwipeSide::as_str`, the same contract as `DropEffect`.
+        "SwipeSide",
         # The find/replace dialog's search request and its four flags. Both are plain structs with
         # public fields and no nested representation, so they travel as their own spelling -- the
         # same contract as `DragPayload` and `BarcodeResult` above. They were added so the dialog's

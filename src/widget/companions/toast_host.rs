@@ -545,7 +545,7 @@ impl Draw for ToastHost {
                 row.width.saturating_sub(stripe.width + 16),
                 row.height,
             );
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 text,
                 &toast.message,
                 font,

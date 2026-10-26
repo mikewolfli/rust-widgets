@@ -397,6 +397,10 @@ impl WidgetProperties for ZoomPanController {
             "min_zoom" => Ok(CapabilityValue::Float(f64::from(self.min_zoom))),
             "max_zoom" => Ok(CapabilityValue::Float(f64::from(self.max_zoom))),
             "roi" => Ok(optional_rect_value(self.roi)),
+            // The content extent is one `Size`; the property vocabulary has no size kind, so it is
+            // published as the two scalars every pair-shaped value in this crate uses.
+            "content_width" => Ok(CapabilityValue::UInt(u64::from(self.content_size.width))),
+            "content_height" => Ok(CapabilityValue::UInt(u64::from(self.content_size.height))),
             _ => base_property_get(self, name),
         }
     }
@@ -431,6 +435,28 @@ impl WidgetProperties for ZoomPanController {
                 }
                 Ok(())
             }
+            // Each half takes the live value of the other, exactly like the viewport pair on
+            // `gantt_widget`; the content extent the fit modes read is the one set here.
+            "content_width" => {
+                let width = match value {
+                    CapabilityValue::UInt(width) => {
+                        u32::try_from(width).map_err(|_| CapabilityAccessError::TypeMismatch)?
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_content_size(Size::new(width, self.content_size.height));
+                Ok(())
+            }
+            "content_height" => {
+                let height = match value {
+                    CapabilityValue::UInt(height) => {
+                        u32::try_from(height).map_err(|_| CapabilityAccessError::TypeMismatch)?
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_content_size(Size::new(self.content_size.width, height));
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -442,6 +468,8 @@ impl WidgetProperties for ZoomPanController {
             "min_zoom",
             "max_zoom",
             "roi",
+            "content_width",
+            "content_height",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -465,5 +493,22 @@ mod tests {
         assert_eq!(controller.min_zoom(), 2.0);
         assert_eq!(controller.max_zoom(), 8.0);
         assert_eq!(controller.zoom_level(), 4.0);
+    }
+
+    /// The content extent is writable through its two published scalars, each taking the live
+    /// value of the other axis.
+    #[test]
+    fn content_size_round_trips_through_its_scalar_pair() {
+        let mut controller = ZoomPanController::new(Rect::new(0, 0, 320, 240));
+        assert_eq!(controller.get("content_width").unwrap(), CapabilityValue::UInt(1024));
+        assert_eq!(controller.get("content_height").unwrap(), CapabilityValue::UInt(768));
+        controller
+            .set("content_width", CapabilityValue::UInt(640))
+            .expect("content_width writable");
+        controller
+            .set("content_height", CapabilityValue::UInt(480))
+            .expect("content_height writable");
+        assert_eq!(controller.content_size(), Size::new(640, 480));
+        assert!(controller.set("content_width", CapabilityValue::Float(1.0)).is_err());
     }
 }

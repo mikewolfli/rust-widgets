@@ -35,7 +35,7 @@ impl DrawerSectionHeader {
     /// Creates a heading with an empty label.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Label, geometry, "DrawerSectionHeader"),
+            base: BaseWidget::new(WidgetKind::DrawerSectionHeader, geometry, "DrawerSectionHeader"),
             label: String::new(),
             displayed: String::new(),
             inset: 16,

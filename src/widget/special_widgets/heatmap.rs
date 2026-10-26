@@ -1321,7 +1321,7 @@ impl Draw for Heatmap {
                     let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
                     context.fill_rect(box_rect, background);
                     context.draw_rect(box_rect, border);
-                    context.draw_text_line(
+                    context.draw_text_line_cow(
                         box_rect,
                         text,
                         font,

@@ -79,12 +79,12 @@ fn selector_index_key(selector: &Selector) -> RuleIndexKey<'_> {
 /// allocation instead of making a new `String` per match (G-163).
 fn normalize_kind_key(input: &str, out: &mut String) {
     out.clear();
-    for ch in input.chars() {
-        if matches!(ch, '_' | '-' | ' ') {
-            continue;
-        }
-        out.extend(ch.to_lowercase());
-    }
+    // The rule lives in one place (`capability::coercion`); this only decides where the result
+    // goes, and the fast path fills `out` from a stack buffer instead of building a second
+    // `String` per match (G-163).
+    crate::widget::capability::coercion::with_normalized_key(input, |normalized| {
+        out.push_str(normalized);
+    });
 }
 
 /// The reusable buffers one selector match needs.

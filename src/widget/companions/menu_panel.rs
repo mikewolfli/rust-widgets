@@ -20,7 +20,9 @@ use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-use crate::widget::capability::WidgetProperties;
+use crate::widget::capability::{
+    RecordField, RecordList, RecordSchema, RecordValue, WidgetProperties,
+};
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_draw_bridge, impl_widget_property_hooks, property_names_of};
@@ -64,6 +66,25 @@ impl MenuPanelItem {
     }
 }
 
+/// One row of the `items` records property: a row's text, optional icon and enabled flag.
+///
+/// The list is flat because the property vocabulary has no record-of-record kind; the panel's
+/// selection and highlight are indices into this list, so a write that reorders rows moves the
+/// indices with it.
+pub const MENU_PANEL_ITEM_SCHEMA: RecordSchema = RecordSchema {
+    fields: &[
+        RecordField::required("text", crate::widget::capability::PropertyValueKind::String),
+        RecordField::optional("icon", crate::widget::capability::PropertyValueKind::String),
+        RecordField::optional("enabled", crate::widget::capability::PropertyValueKind::Bool),
+    ],
+    // A row has no id of its own: the panel addresses rows by index, and two rows may carry the
+    // same text. `text` is named as the nominal identity so the records validator has a field to
+    // read, with uniqueness and non-emptiness explicitly **not** claimed.
+    id_field: "text",
+    ids_unique: false,
+    ids_required: false,
+};
+
 /// A drop-down menu panel that a host anchors itself.
 pub struct MenuPanel {
     base: BaseWidget,
@@ -86,7 +107,7 @@ impl MenuPanel {
     /// Creates a closed panel occupying `geometry`.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Menu, geometry, "MenuPanel"),
+            base: BaseWidget::new(WidgetKind::MenuPanel, geometry, "MenuPanel"),
             items: Vec::new(),
             selected_index: None,
             highlighted_index: None,
@@ -484,42 +505,38 @@ impl Widget for MenuPanel {
     }
 }
 
-/// Encodes one row as `[text, icon-or-null, enabled]`.
-fn item_value(item: &MenuPanelItem) -> CapabilityValue {
-    CapabilityValue::Tuple(Vec::from([
-        CapabilityValue::String(item.text.clone()),
-        match item.icon.as_deref() {
-            Some(icon) => CapabilityValue::String(icon.to_string()),
-            None => CapabilityValue::Null,
-        },
-        CapabilityValue::Bool(item.enabled),
-    ]))
+/// One row of [`MENU_PANEL_ITEM_SCHEMA`].
+fn menu_item_record(item: &MenuPanelItem) -> RecordValue {
+    let mut record = RecordValue::new()
+        .with("text", CapabilityValue::String(item.text.clone()))
+        .with("enabled", CapabilityValue::Bool(item.enabled));
+    if let Some(icon) = item.icon.as_deref() {
+        record = record.with("icon", CapabilityValue::String(icon.to_string()));
+    }
+    record
 }
 
-/// Decodes the row-list property.
-fn expect_items(value: CapabilityValue) -> Result<Vec<MenuPanelItem>, CapabilityAccessError> {
-    let CapabilityValue::Tuple(rows) = value else {
-        return Err(CapabilityAccessError::TypeMismatch);
-    };
-    let mut items = Vec::with_capacity(rows.len());
-    for row in rows {
-        let CapabilityValue::Tuple(parts) = row else {
-            return Err(CapabilityAccessError::TypeMismatch);
-        };
-        if parts.len() != 3 {
-            return Err(CapabilityAccessError::TypeMismatch);
-        }
-        let mut parts = parts.into_iter();
-        let text = match parts.next().ok_or(CapabilityAccessError::TypeMismatch)? {
-            CapabilityValue::String(text) => text,
+/// Decodes the `items` write into rows.
+///
+/// The whole list is decoded before `set_items` runs, so a refused row leaves the panel unchanged.
+fn menu_items_from_records(list: &RecordList) -> Result<Vec<MenuPanelItem>, CapabilityAccessError> {
+    let mut items = Vec::with_capacity(list.items().len());
+    for record in list.items() {
+        let text = match record.get("text") {
+            Some(CapabilityValue::String(text)) => text.clone(),
             _ => return Err(CapabilityAccessError::TypeMismatch),
         };
-        let icon = match parts.next().ok_or(CapabilityAccessError::TypeMismatch)? {
-            CapabilityValue::String(icon) => Some(icon),
-            CapabilityValue::Null => None,
-            _ => return Err(CapabilityAccessError::TypeMismatch),
+        let icon = match record.get("icon") {
+            None | Some(CapabilityValue::Null) => None,
+            Some(CapabilityValue::String(icon)) => Some(icon.clone()),
+            Some(_) => return Err(CapabilityAccessError::TypeMismatch),
         };
-        let enabled = expect_bool(parts.next().ok_or(CapabilityAccessError::TypeMismatch)?)?;
+        // An omitted `enabled` is the same default `MenuPanelItem::new` gives a row.
+        let enabled = match record.get("enabled") {
+            None | Some(CapabilityValue::Null) => true,
+            Some(CapabilityValue::Bool(enabled)) => *enabled,
+            Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+        };
         items.push(MenuPanelItem { text, icon, enabled });
     }
     Ok(items)
@@ -528,7 +545,10 @@ fn expect_items(value: CapabilityValue) -> Result<Vec<MenuPanelItem>, Capability
 impl WidgetProperties for MenuPanel {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "items" => Ok(CapabilityValue::Tuple(self.items.iter().map(item_value).collect())),
+            "items" => Ok(CapabilityValue::Records(RecordList::from_items(
+                &MENU_PANEL_ITEM_SCHEMA,
+                self.items.iter().map(menu_item_record).collect(),
+            ))),
             "selected_index" => Ok(match self.selected_index {
                 Some(index) => CapabilityValue::UInt(index as u64),
                 None => CapabilityValue::Null,
@@ -546,7 +566,17 @@ impl WidgetProperties for MenuPanel {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "items" => {
-                self.set_items(expect_items(value)?);
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&MENU_PANEL_ITEM_SCHEMA).map_err(|violation| {
+                    log::warn!("menu_panel.items refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("items"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                self.set_items(menu_items_from_records(&list)?);
                 Ok(())
             }
             "selected_index" => match value {

@@ -190,6 +190,159 @@ pub struct GanttDependency {
     pub kind: DependencyKind,
 }
 
+impl DependencyKind {
+    /// The token this kind is published as in a `tasks` record (B26.09).
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::FinishToStart => "fts",
+            Self::StartToStart => "sts",
+            Self::FinishToFinish => "ftf",
+        }
+    }
+
+    /// Parses a published token; `None` for an unknown spelling.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "fts" => Some(Self::FinishToStart),
+            "sts" => Some(Self::StartToStart),
+            "ftf" => Some(Self::FinishToFinish),
+            _ => None,
+        }
+    }
+}
+
+/// The row shape of the `tasks` property (`BLUE26 B26.09`).
+///
+/// A task is one flat record. `dependencies` is the typed edge list rendered as
+/// `"<predecessor_id>:<fts|sts|ftf>"` tokens: a record field cannot hold a nested structure
+/// (a `Records` field value is refused, see `records.rs`), so the relationship kind travels in
+/// the token instead. A token with **no** `:kind` suffix is a finish-to-start edge — the meaning a
+/// plain [`GanttTask::depends_on`] id has. Because the split is on the last colon, a task id must
+/// not itself end in `":fts"`, `":sts"` or `":ftf"`.
+pub const GANTT_TASK_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "label",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "start",
+                crate::widget::capability::PropertyValueKind::Int,
+            ),
+            crate::widget::capability::RecordField::required(
+                "end",
+                crate::widget::capability::PropertyValueKind::Int,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "progress",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "milestone",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "dependencies",
+                crate::widget::capability::PropertyValueKind::StringList,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`GANTT_TASK_SCHEMA`].
+///
+/// Both dependency spellings are written as tokens: a `depends_on` id is a finish-to-start edge,
+/// which is exactly what `":fts"` says, so the round trip through the property does not depend on
+/// which spelling the caller used.
+fn gantt_task_record(task: &GanttTask) -> crate::widget::capability::RecordValue {
+    let mut dependencies: Vec<String> = task
+        .depends_on
+        .iter()
+        .map(|id| map_dependency_token(id, DependencyKind::FinishToStart))
+        .collect();
+    dependencies
+        .extend(task.dependencies.iter().map(|edge| map_dependency_token(&edge.id, edge.kind)));
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(task.id.clone()))
+        .with("label", CapabilityValue::String(task.label.clone()))
+        .with("start", CapabilityValue::Int(task.start))
+        .with("end", CapabilityValue::Int(task.end))
+        .with("progress", CapabilityValue::UInt(u64::from(task.progress)))
+        .with("milestone", CapabilityValue::Bool(task.milestone));
+    if !dependencies.is_empty() {
+        record = record.with(
+            "dependencies",
+            CapabilityValue::Tuple(dependencies.into_iter().map(CapabilityValue::String).collect()),
+        );
+    }
+    record
+}
+
+/// Formats one dependency as the `<id>:<kind>` token [`GANTT_TASK_SCHEMA`] declares.
+fn map_dependency_token(id: &str, kind: DependencyKind) -> String {
+    crate::compat::format!("{id}:{}", kind.token())
+}
+
+/// Rebuilds one [`GanttTask`] from a row of [`GANTT_TASK_SCHEMA`].
+fn gantt_task_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<GanttTask, CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let integer = |name: &str| match record.get(name) {
+        Some(CapabilityValue::Int(value)) => Ok(*value),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let progress = match record.get("progress") {
+        None | Some(CapabilityValue::Null) => 0,
+        Some(CapabilityValue::UInt(value)) => {
+            u8::try_from(*value).map_err(|_| CapabilityAccessError::TypeMismatch)?
+        }
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let milestone = match record.get("milestone") {
+        None | Some(CapabilityValue::Null) => false,
+        Some(CapabilityValue::Bool(value)) => *value,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let mut task = if milestone {
+        GanttTask::milestone(text("id")?, text("label")?, integer("start")?)
+    } else {
+        GanttTask::new(text("id")?, text("label")?, integer("start")?, integer("end")?, progress)
+    };
+    match record.get("dependencies") {
+        None | Some(CapabilityValue::Null) => {}
+        Some(CapabilityValue::Tuple(values)) => {
+            for value in values {
+                let token = match value {
+                    CapabilityValue::String(token) => token,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                let (id, kind) = match token.rsplit_once(':') {
+                    Some((id, suffix)) => match DependencyKind::from_token(suffix) {
+                        Some(kind) => (id, kind),
+                        // Not a relationship suffix, so the whole token is the id.
+                        None => (token.as_str(), DependencyKind::FinishToStart),
+                    },
+                    None => (token.as_str(), DependencyKind::FinishToStart),
+                };
+                task.dependencies.push(GanttDependency { id: id.to_string(), kind });
+            }
+        }
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    }
+    Ok(task)
+}
+
 /// Basic gantt widget with selectable task rows and zoomable viewport.
 pub struct GanttWidget {
     base: BaseWidget,
@@ -1066,6 +1219,15 @@ impl Widget for GanttWidget {
 impl WidgetProperties for GanttWidget {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The whole schedule as records (B26.09): `set_tasks` takes a list the bare command
+            // channel cannot carry, so the list is the property and `set_tasks` is its published
+            // command form.
+            "tasks" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &GANTT_TASK_SCHEMA,
+                    self.tasks().iter().map(gantt_task_record).collect(),
+                )))
+            }
             "task_count" => Ok(CapabilityValue::UInt(self.tasks().len() as u64)),
             "selected_id" => match self.selected_id() {
                 Some(id) => Ok(CapabilityValue::String(id.to_string())),
@@ -1082,6 +1244,29 @@ impl WidgetProperties for GanttWidget {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
+            // A whole-schedule replacement through the control's own `set_tasks`. The dependency
+            // editor is re-synced afterwards so the edge list it shows is the schedule the chart
+            // now draws, instead of the one from the previous task list.
+            "tasks" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&GANTT_TASK_SCHEMA).map_err(|violation| {
+                    log::warn!("gantt_widget.tasks refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("tasks"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let tasks = list
+                    .items()
+                    .iter()
+                    .map(gantt_task_from_record)
+                    .collect::<Result<Vec<_>, CapabilityAccessError>>()?;
+                self.set_tasks(tasks);
+                self.sync_dependencies_from_tasks();
+                Ok(())
+            }
             "viewport_start" => {
                 let start = expect_i64(value)?;
                 let (_, end) = self.viewport();
@@ -1124,6 +1309,7 @@ impl WidgetProperties for GanttWidget {
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "tasks",
             "task_count",
             "selected_id",
             "viewport_start",
@@ -1139,15 +1325,19 @@ impl WidgetProperties for GanttWidget {
     ///
     /// `zoom` is payload-free here: a bare invocation zooms in around the
     /// centre, which is the direction the affordance always offers, so the
-    /// widget's real `zoom` receives a fixed factor. `set_tasks`, `set_viewport`
-    /// and `select_task` need the tasks, the bounds and the index respectively.
+    /// widget's real `zoom` receives a fixed factor. `set_tasks` names its payload
+    /// through the `tasks` records property (B26.03), so a bare invocation reports
+    /// the missing value through the same route every `set_*` command uses.
+    /// `set_viewport` and `select_task` are not published: the viewport is the
+    /// writable `viewport_start`/`viewport_end` pair and `selected_id` is read-only.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "zoom" => {
                 self.zoom(1.25);
                 Ok(())
             }
-            "set_tasks" | "set_viewport" | "select_task" => Err(CapabilityAccessError::OutOfRange),
+            "set_tasks" => self.default_command(name),
+            "set_viewport" | "select_task" => Err(CapabilityAccessError::OutOfRange),
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }
@@ -1692,7 +1882,7 @@ impl Draw for GanttWidget {
                     let bubble = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
                     context.fill_rect(bubble, background);
                     context.draw_rect(bubble, border);
-                    context.draw_text_line(
+                    context.draw_text_line_cow(
                         bubble,
                         &text,
                         font,
@@ -2463,6 +2653,91 @@ mod tests {
         ]);
         gantt.sync_dependencies_from_tasks();
         assert_eq!(gantt.dependency_editor().dependencies(), &[Dependency::new("t1", "t2")]);
+    }
+
+    /// The schedule round-trips through the `tasks` records property, including every typed
+    /// dependency kind (the `dependencies` field is the `<id>:<fts|sts|ftf>` token list).
+    #[test]
+    fn tasks_round_trip_through_records_with_every_dependency_kind() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        let mut build = GanttTask::new("b", "Build", 5, 10, 50);
+        build
+            .dependencies
+            .push(GanttDependency { id: "a".into(), kind: DependencyKind::StartToStart });
+        build
+            .dependencies
+            .push(GanttDependency { id: "c".into(), kind: DependencyKind::FinishToFinish });
+        let mut ship = GanttTask::new("c", "Ship", 10, 14, 0);
+        ship.depends_on.push("a".into());
+        gantt.set_tasks(vec![
+            GanttTask::new("a", "Design", 0, 5, 100),
+            build,
+            ship,
+            GanttTask::milestone("m", "Release", 14),
+        ]);
+
+        let records = gantt.get("tasks").unwrap();
+        let CapabilityValue::Records(list) = &records else {
+            panic!("tasks must be records");
+        };
+        let tokens = |id: &str| -> Vec<String> {
+            list.items()
+                .iter()
+                .find(|row| row.get("id") == Some(&CapabilityValue::String(id.to_string())))
+                .and_then(|row| row.get("dependencies"))
+                .map(|value| match value {
+                    CapabilityValue::Tuple(items) => items
+                        .iter()
+                        .filter_map(|item| match item {
+                            CapabilityValue::String(token) => Some(token.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(tokens("b"), ["a:sts", "c:ftf"]);
+        assert_eq!(tokens("c"), ["a:fts"]);
+
+        let mut target = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        target.set("tasks", records.clone()).expect("tasks writable");
+        assert_eq!(target.get("tasks").unwrap(), records);
+        assert_eq!(target.tasks().len(), 4);
+        // The milestone kept its single instant rather than being widened to a bar.
+        let milestone = target.tasks().iter().find(|task| task.id == "m").expect("milestone");
+        assert!(milestone.milestone);
+        assert_eq!(milestone.start, milestone.end);
+        // The write re-syncs the editor, so it lists the edges the schedule now declares.
+        assert_eq!(target.dependency_editor().dependencies().len(), 3);
+    }
+
+    /// A token whose suffix is not a relationship kind is an id that happens to contain a colon.
+    #[test]
+    fn an_unknown_dependency_suffix_stays_part_of_the_id() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        let row = crate::widget::capability::RecordValue::new()
+            .with("id", CapabilityValue::String("b".into()))
+            .with("label", CapabilityValue::String("Build".into()))
+            .with("start", CapabilityValue::Int(5))
+            .with("end", CapabilityValue::Int(9))
+            .with(
+                "dependencies",
+                CapabilityValue::Tuple(vec![CapabilityValue::String("a:weird".into())]),
+            );
+        let list = crate::widget::capability::RecordList::from_items(&GANTT_TASK_SCHEMA, vec![row]);
+        gantt.set("tasks", CapabilityValue::Records(list)).expect("writable");
+        assert_eq!(
+            gantt.tasks()[0].dependencies,
+            vec![GanttDependency { id: "a:weird".into(), kind: DependencyKind::FinishToStart }]
+        );
+    }
+
+    /// The list-valued command is the payload-free spelling of the property write.
+    #[test]
+    fn set_tasks_command_reports_a_missing_payload() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        assert_eq!(gantt.command("set_tasks"), Err(CapabilityAccessError::OutOfRange));
     }
 }
 

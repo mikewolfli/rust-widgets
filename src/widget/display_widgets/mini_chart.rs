@@ -799,14 +799,14 @@ impl Draw for MiniChart {
                 // spelling; each half of the plot is a bounded band so a long label is fitted
                 // with an ellipsis instead of bleeding into its neighbour.
                 let half = (chart_area_w / 2).max(1);
-                context.draw_text_line(
+                context.draw_text_line_cow(
                     Rect::new(chart_origin_x, label_y, half, 12),
                     &first_label,
                     &font,
                     axis_color,
                     HorizontalAlignment::Left,
                 );
-                context.draw_text_line(
+                context.draw_text_line_cow(
                     Rect::new(chart_origin_x + half as i32, label_y, half, 12),
                     &last_label,
                     &font,

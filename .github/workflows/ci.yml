@@ -73,6 +73,16 @@ jobs:
           chmod +x tools/check_version_consistency.sh
           ./tools/check_version_consistency.sh
 
+      # The three crates under `demo/` depend on this library by path and are not workspace
+      # members, so no root target compiles them. Two of them were found broken (a `Layout`
+      # impl missing the `arrange*` / `update_with_context` entries the trait requires with no
+      # default) only when they were built by hand, so the demos are now compiled here.
+      - name: Run demo crates gate
+        shell: bash
+        run: |
+          chmod +x tools/check_demo_crates.sh
+          ./tools/check_demo_crates.sh
+
       # The three cookbook locales are built from the same API, and a sample that no
       # longer compiles ships documentation that fails on the reader's first command.
       # This gate was only ever run by hand (a PR-template checkbox), so it is wired into

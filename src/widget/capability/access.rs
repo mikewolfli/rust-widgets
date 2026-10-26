@@ -286,6 +286,7 @@ pub fn default_widget_property_default_value(
                     | WidgetKind::MaterialSnackbar
                     | WidgetKind::ModalBottomSheet
                     | WidgetKind::FindBar
+                    | WidgetKind::WebFindBar
             ) =>
         {
             return Some(CapabilityValue::Bool(false));
@@ -1078,6 +1079,12 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Chart => match property_name {
+            // `gantt_widget` shares this kind; a fresh chart has no tasks, and the empty list of
+            // the declared schema is what a dropped binding resets to (`Null` would be a value the
+            // schema refuses).
+            "tasks" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::gantt_widget::GANTT_TASK_SCHEMA,
+            )),
             "task_count" => CapabilityValue::UInt(0),
             "selected_id" => CapabilityValue::Null,
             "selected_marker_id" => CapabilityValue::Null,
@@ -1421,6 +1428,14 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::KanbanBoard => match property_name {
+            // A fresh board has no columns and no cards; the empty list of the declared schema is
+            // what a dropped binding resets to (`Null` would be a value the schema refuses).
+            "columns" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::kanban_board::KANBAN_COLUMN_SCHEMA,
+            )),
+            "cards" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::kanban_board::KANBAN_CARD_SCHEMA,
+            )),
             "column_count" => CapabilityValue::UInt(0),
             "card_count" => CapabilityValue::UInt(0),
             "dragging_card_id" => CapabilityValue::Null,
@@ -2539,6 +2554,9 @@ pub fn default_widget_property_default_value(
             "min_zoom" => CapabilityValue::Float(0.05),
             "max_zoom" => CapabilityValue::Float(32.0),
             "roi" => CapabilityValue::Null,
+            // Mirrors `ZoomPanController::new`'s content extent.
+            "content_width" => CapabilityValue::UInt(1024),
+            "content_height" => CapabilityValue::UInt(768),
             _ => return None,
         },
         WidgetKind::ToastHost => match property_name {
@@ -2615,6 +2633,79 @@ pub fn default_widget_property_default_value(
             "replace_visible" => CapabilityValue::Bool(false),
             "match_count" => CapabilityValue::UInt(0),
             "current_range" => CapabilityValue::Null,
+            _ => return None,
+        },
+        WidgetKind::WebFindBar => match property_name {
+            "query" => CapabilityValue::String(String::new()),
+            "case_sensitive" => CapabilityValue::Bool(false),
+            "visible" => CapabilityValue::Bool(false),
+            "match_index" | "match_count" => CapabilityValue::UInt(0),
+            _ => return None,
+        },
+        WidgetKind::MenuPanel => match property_name {
+            // A fresh panel has no rows; the empty list is what a dropped binding resets to.
+            "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::companions::MENU_PANEL_ITEM_SCHEMA,
+            )),
+            "selected_index" | "highlighted_index" => CapabilityValue::Null,
+            // `MENU_DEFAULT_MAX_ROWS` in `companions/menu_panel.rs`.
+            "max_visible_rows" => CapabilityValue::UInt(8),
+            "open" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::SpeedDial => match property_name {
+            "actions" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::companions::SPEED_DIAL_ACTION_SCHEMA,
+            )),
+            "expanded" => CapabilityValue::Bool(false),
+            "direction" => CapabilityValue::String("up".to_string()),
+            "spacing" => CapabilityValue::UInt(12),
+            "collapse_on_activate" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        WidgetKind::SwipeActions => match property_name {
+            "leading_actions" | "trailing_actions" => {
+                CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                    &crate::widget::companions::SWIPE_ACTION_SCHEMA,
+                ))
+            }
+            "max_reveal_width" => CapabilityValue::UInt(240),
+            "icon_side" => CapabilityValue::UInt(18),
+            "offset" => CapabilityValue::Float(0.0),
+            _ => return None,
+        },
+        WidgetKind::DrawerSectionHeader => match property_name {
+            "label" => CapabilityValue::String(String::new()),
+            "inset" => CapabilityValue::UInt(16),
+            "uppercase" => CapabilityValue::Bool(false),
+            _ => return None,
+        },
+        WidgetKind::LayerPanel => match property_name {
+            // A fresh panel mirrors no layers; the empty list is what a dropped binding resets
+            // to (`Null` would be a value the schema refuses).
+            "entries" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::companions::LAYER_ENTRY_SCHEMA,
+            )),
+            "entry_count" => CapabilityValue::UInt(0),
+            "selected_layer" => CapabilityValue::Null,
+            "show_visibility_checkboxes" => CapabilityValue::Bool(true),
+            "show_reorder_handles" => CapabilityValue::Bool(true),
+            "row_height" => CapabilityValue::UInt(22),
+            _ => return None,
+        },
+        WidgetKind::PlaylistPanel => match property_name {
+            // A fresh panel mirrors an empty queue; the empty list is what a dropped binding
+            // resets to (`Null` would be a value the schema refuses).
+            "tracks" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::companions::PLAYLIST_TRACK_SCHEMA,
+            )),
+            "track_count" => CapabilityValue::UInt(0),
+            "current_index" => CapabilityValue::Null,
+            "show_track_numbers" => CapabilityValue::Bool(true),
+            "show_now_playing_badge" => CapabilityValue::Bool(true),
+            "row_height" => CapabilityValue::UInt(22),
+            "title_from_source" => CapabilityValue::Bool(true),
+            "filter" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::ShapeCanvas => match property_name {

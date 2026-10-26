@@ -501,6 +501,8 @@ pub use misc_widgets::qr_code::QRCode;
 pub use misc_widgets::segmented_button::{Segment, SegmentedButton};
 // Re-export web widgets
 #[cfg(full_widgets)]
+pub use web_widgets::find_bar::WebFindBar;
+#[cfg(full_widgets)]
 pub use web_widgets::web_engine::WebEngine;
 /// Type alias for backward compatibility — `WebView` is now `WebEngineView`.
 #[cfg(full_widgets)]

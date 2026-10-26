@@ -297,7 +297,7 @@ impl Tag {
         if reusable {
             return self.font_cache.clone().unwrap_or_default();
         }
-        let font = style_font.unwrap_or_else(|| Font::simple("Arial", 12.0));
+        let font = style_font.unwrap_or_else(|| Font::simple_interned("Arial", 12.0));
         self.font_cache = Some(font.clone());
         font
     }
@@ -320,7 +320,8 @@ impl Widget for Tag {
         // advanced exactly one point size, and diverged the moment the shaper knew more
         // (kerning, wide glyphs, an explicit line height). The font is resolved exactly as
         // `draw` resolves it, so the hint and the painting agree on the same face.
-        let font = self.base.style().font.clone().unwrap_or_else(|| Font::simple("Arial", 12.0));
+        let font =
+            self.base.style().font.clone().unwrap_or_else(|| Font::simple_interned("Arial", 12.0));
         let label = estimate_text_width(&self.text, &font, 1.0);
         let close = if self.closable { TAG_CLOSE_GAP + TAG_CLOSE_SIDE } else { 0 };
         let icon = if self.icon.is_some() { TAG_ICON_SIDE + TAG_ICON_GAP } else { 0 };
@@ -457,7 +458,7 @@ impl Draw for Tag {
         let label_band = Rect::new(label_left, rect.y, label_width, rect.height);
         // Bounded text: a long label is fitted with an ellipsis rather than running past the
         // tag (and, in the SVG backend, past the control's own rectangle).
-        ctx.draw_text_line(label_band, &self.text, &font, ink, HorizontalAlignment::Left);
+        ctx.draw_text_line_cow(label_band, &self.text, &font, ink, HorizontalAlignment::Left);
 
         if let Some(close) = close {
             // An "x" drawn as two strokes rather than a glyph: a font-dependent glyph would

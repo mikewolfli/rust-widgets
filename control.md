@@ -2,9 +2,9 @@
 
 # 控件图像总览 / Control gallery
 
-本页共 **240** 张控件快照名（每个两种外观，共 **480** 张 SVG）。
+本页共 **247** 张控件快照名（每个两种外观，共 **494** 张 SVG）。
 这些名字来自控件注册表（`factory.widget_names()`），其中包含少量**别名**
-（如 `wizard_dialog` 同时以 `wizard` 注册），因此快照名数多于 `WidgetKind` 的枚举数（**221**）。
+（如 `wizard_dialog` 同时以 `wizard` 注册），因此快照名数多于 `WidgetKind` 的枚举数（**228**）。
 
 此外还有 **10** 张**状态快照**（下表），它们不是额外的控件，而是某个控件在用户可切换到的状态下的样子。
 
@@ -54,11 +54,11 @@
 | Media and web (`media_widgets`) | 7 | [跳转](#media-and-web) |
 | Miscellaneous (`misc_widgets`) | 9 | [跳转](#miscellaneous) |
 | Cupertino (iOS-style) (`cupertino`) | 8 | [跳转](#cupertino-ios-style) |
-| Web (`web_widgets`) | 1 | [跳转](#web) |
-| companions (`companions`) | 7 | [跳转](#companions) |
+| Web (`web_widgets`) | 2 | [跳转](#web) |
+| companions (`companions`) | 13 | [跳转](#companions) |
 | macos (`macos`) | 5 | [跳转](#macos) |
 | Core controls (`root`) | 2 | [跳转](#core-controls) |
-| **合计** | **240** | |
+| **合计** | **247** | |
 
 ## Base controls
 
@@ -392,22 +392,29 @@
 
 ## Web
 
-`web_widgets` — 1 个控件。
+`web_widgets` — 2 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
 | `web_engine_view` | ![web_engine_view (dark)](snapshots/svg/web_engine_view.svg) | ![web_engine_view (light)](snapshots/svg/web_engine_view.light.svg) |
+| `web_find_bar` | ![web_find_bar (dark)](snapshots/svg/web_find_bar.svg) | ![web_find_bar (light)](snapshots/svg/web_find_bar.light.svg) |
 
 ## companions
 
-`companions` — 7 个控件。
+`companions` — 13 个控件。
 
 | 控件 | 深色 | 浅色 |
 |---|---|---|
 | `chart_tooltip` | ![chart_tooltip (dark)](snapshots/svg/chart_tooltip.svg) | ![chart_tooltip (light)](snapshots/svg/chart_tooltip.light.svg) |
+| `drawer_section_header` | ![drawer_section_header (dark)](snapshots/svg/drawer_section_header.svg) | ![drawer_section_header (light)](snapshots/svg/drawer_section_header.light.svg) |
 | `filter_row` | ![filter_row (dark)](snapshots/svg/filter_row.svg) | ![filter_row (light)](snapshots/svg/filter_row.light.svg) |
+| `layer_panel` | ![layer_panel (dark)](snapshots/svg/layer_panel.svg) | ![layer_panel (light)](snapshots/svg/layer_panel.light.svg) |
 | `legend` | ![legend (dark)](snapshots/svg/legend.svg) | ![legend (light)](snapshots/svg/legend.light.svg) |
+| `menu_panel` | ![menu_panel (dark)](snapshots/svg/menu_panel.svg) | ![menu_panel (light)](snapshots/svg/menu_panel.light.svg) |
+| `playlist_panel` | ![playlist_panel (dark)](snapshots/svg/playlist_panel.svg) | ![playlist_panel (light)](snapshots/svg/playlist_panel.light.svg) |
+| `speed_dial` | ![speed_dial (dark)](snapshots/svg/speed_dial.svg) | ![speed_dial (light)](snapshots/svg/speed_dial.light.svg) |
 | `swatch` | ![swatch (dark)](snapshots/svg/swatch.svg) | ![swatch (light)](snapshots/svg/swatch.light.svg) |
+| `swipe_actions` | ![swipe_actions (dark)](snapshots/svg/swipe_actions.svg) | ![swipe_actions (light)](snapshots/svg/swipe_actions.light.svg) |
 | `toast_host` | ![toast_host (dark)](snapshots/svg/toast_host.svg) | ![toast_host (light)](snapshots/svg/toast_host.light.svg) |
 | `tooltip_manager` | ![tooltip_manager (dark)](snapshots/svg/tooltip_manager.svg) | ![tooltip_manager (light)](snapshots/svg/tooltip_manager.light.svg) |
 | `zoom_pan_controller` | ![zoom_pan_controller (dark)](snapshots/svg/zoom_pan_controller.svg) | ![zoom_pan_controller (light)](snapshots/svg/zoom_pan_controller.light.svg) |

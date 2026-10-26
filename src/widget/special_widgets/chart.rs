@@ -1083,7 +1083,7 @@ impl Draw for ChartWidget {
                         let box_rect = Rect::new(x, y, width.max(1) as u32, height.max(1) as u32);
                         context.fill_rect(box_rect, surface);
                         context.draw_rect(box_rect, border);
-                        context.draw_text_line(
+                        context.draw_text_line_cow(
                             box_rect,
                             text,
                             font,
@@ -1197,6 +1197,15 @@ impl PlotArea {
     }
 }
 
+thread_local! {
+    /// One buffer for the value-axis tick labels.
+    ///
+    /// The axis formats up to five labels per frame, and [`format_axis_value`] answers with an
+    /// owned `String`; reusing one buffer keeps the frame free of per-label allocations while the
+    /// tooltip paths keep their owned spelling.
+    static AXIS_LABEL: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
 /// Formats one value-axis tick label.
 ///
 /// Rounding is deliberate rather than `{:?}`-style: a tick is a *reading*, and the extra
@@ -1205,25 +1214,44 @@ impl PlotArea {
 /// and fractional ticks keep one decimal — enough to tell two adjacent ticks apart, and short
 /// enough to fit [`AXIS_LABEL_COLUMN`].
 fn format_axis_value(value: f64) -> String {
+    let mut text = String::new();
+    write_axis_value(value, &mut text);
+    text
+}
+
+/// [`format_axis_value`] writing into a caller's buffer, for a path that must not allocate.
+///
+/// The value axis formats up to five labels per frame; each `format!` built a fresh `String`.
+fn write_axis_value(value: f64, out: &mut String) {
+    out.clear();
     if !value.is_finite() {
-        return "—".to_string();
-    }
-    if (value - value.round()).abs() < 1e-9 {
-        format!("{}", value.round() as i64)
+        out.push('\u{2014}');
+    } else if (value - value.round()).abs() < 1e-9 {
+        let _ = write!(out, "{}", value.round() as i64);
     } else {
-        format!("{value:.1}")
+        let _ = write!(out, "{value:.1}");
     }
 }
 
-/// Round tick values covering `min..=max`.
+/// The most ticks [`write_nice_ticks`] may produce (the historical 64-step cap plus the first
+/// value).
+const NICE_TICKS_LIMIT: usize = 65;
+
+/// Round tick values covering `min..=max`, written into `out`; returns how many were written.
 ///
 /// The step is a nice number (1, 2, 2.5 or 5 times a power of ten) chosen so about `target`
 /// intervals fit the range, which is the rule every chart axis uses. The first tick is the
 /// smallest multiple of the step at or above `min`, so the labels keep their short decimal
 /// spellings instead of inheriting the raw range's floating-point noise.
-fn nice_ticks(min: f64, max: f64, target: usize) -> Vec<f64> {
+///
+/// # Why a caller-supplied buffer
+///
+/// The value axis runs this once per frame; it used to build a `Vec` of the same few numbers
+/// every time. The allocating `nice_ticks` spelling this replaced is gone, so the buffer form is
+/// the only implementation and cannot drift from a second copy.
+fn write_nice_ticks(min: f64, max: f64, target: usize, out: &mut [f64]) -> usize {
     if !min.is_finite() || !max.is_finite() || max <= min {
-        return Vec::new();
+        return 0;
     }
     let raw = (max - min) / target.max(1) as f64;
     let magnitude = 10f64.powf(raw.log10().floor());
@@ -1240,16 +1268,20 @@ fn nice_ticks(min: f64, max: f64, target: usize) -> Vec<f64> {
         10.0
     } * magnitude;
     let first = (min / step).ceil() * step;
-    let mut values = Vec::new();
+    let mut written = 0;
     let mut value = first;
     while value <= max + step * 1e-9 {
-        values.push(value);
+        if written == out.len() {
+            break;
+        }
+        out[written] = value;
+        written += 1;
         value += step;
-        if values.len() > 64 {
+        if written > 64 {
             break;
         }
     }
-    values
+    written
 }
 
 /// Converts an HSL colour to RGB.
@@ -1449,8 +1481,9 @@ impl ChartWidget {
         // `0.30000000000000004` is a value no reader asked for. `nice_ticks` answers the values
         // and the count it chose, so a narrow range does not produce four labels that all round
         // to the same text.
-        let ticks = nice_ticks(min, max, TICKS as usize);
-        for value in ticks {
+        let mut tick_values = [0.0f64; NICE_TICKS_LIMIT];
+        let tick_count = write_nice_ticks(min, max, TICKS as usize, &mut tick_values);
+        for &value in &tick_values[..tick_count] {
             if value < min - f64::EPSILON || value > max + f64::EPSILON {
                 continue;
             }
@@ -1468,13 +1501,17 @@ impl ChartWidget {
                 height: label_height as u32,
             };
             let line = context.text_line(band, &font);
-            context.draw_text_fitted_cow(
-                line,
-                &format_axis_value(value),
-                &font,
-                axis_ink,
-                HorizontalAlignment::Right,
-            );
+            AXIS_LABEL.with(|label| {
+                let mut label = label.borrow_mut();
+                write_axis_value(value, &mut label);
+                context.draw_text_fitted_cow(
+                    line,
+                    &label,
+                    &font,
+                    axis_ink,
+                    HorizontalAlignment::Right,
+                );
+            });
         }
     }
 
@@ -3038,10 +3075,13 @@ mod tests {
 
     #[test]
     fn axis_ticks_land_on_round_numbers() {
-        let ticks = nice_ticks(0.0, 100.0, 4);
+        let mut buffer = [0.0f64; NICE_TICKS_LIMIT];
+        let written = write_nice_ticks(0.0, 100.0, 4, &mut buffer);
+        let ticks = &buffer[..written];
         assert!(ticks.len() >= 3);
         assert!(ticks.iter().all(|value| (value - value.round()).abs() < 1e-9));
-        let narrow = nice_ticks(0.0, 1.0, 4);
+        let written = write_nice_ticks(0.0, 1.0, 4, &mut buffer);
+        let narrow = &buffer[..written];
         assert!(narrow.windows(2).all(|pair| pair[1] > pair[0]));
     }
 }

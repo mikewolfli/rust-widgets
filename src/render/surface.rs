@@ -60,7 +60,6 @@
 use crate::core::{Color, Rect};
 use crate::render::bevel::{Bevel, BevelDirection};
 use crate::render::RenderContext;
-use alloc::vec::Vec;
 
 /// How far a face sits off the page.
 ///
@@ -667,13 +666,14 @@ pub const BEVEL_STROKE_WIDTH: u32 = 1;
 /// a kind the library has never heard of gets the theme's own default rather than a compile error.
 pub fn role_surface_style(kind_name: &str) -> SurfaceStyle {
     // Normalised the same way `WidgetRole::for_kind_name` normalises, so the two role tables
-    // classify an identically spelled kind identically.
-    let normalized: Vec<u8> = kind_name
-        .bytes()
-        .filter(|b| !matches!(b, b'_' | b'-' | b' '))
-        .map(|b| b.to_ascii_lowercase())
-        .collect();
-    let name = core::str::from_utf8(&normalized).unwrap_or("");
+    // classify an identically spelled kind identically. The normalisation runs on the stack: a
+    // `Vec<u8>` here allocated twice per call (the filtered collect grew it), and this function
+    // runs once per created control and once per resolved role.
+    crate::widget::capability::coercion::with_normalized_key(kind_name, role_surface_style_for_key)
+}
+
+/// The role table itself, over an already-normalised kind name.
+fn role_surface_style_for_key(name: &str) -> SurfaceStyle {
     match name {
         // Raised chrome: things that sit *above* the page and are meant to be seen as such.
         "card" => SurfaceStyle::solid().elevated(Elevation::Level1),

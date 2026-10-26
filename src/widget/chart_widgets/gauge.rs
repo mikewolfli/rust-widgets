@@ -835,7 +835,7 @@ impl Draw for Gauge {
             inner.round().max(1.0) as u32,
             (inner / 2.0).round().max(1.0) as u32,
         );
-        ctx.draw_text_line(readout_band, &readout, &font, ink, HorizontalAlignment::Center);
+        ctx.draw_text_line_cow(readout_band, &readout, &font, ink, HorizontalAlignment::Center);
 
         if !self.label.is_empty() {
             let label_band = Rect::new(
@@ -844,7 +844,7 @@ impl Draw for Gauge {
                 readout_band.width,
                 (radius / 3.0).round().max(1.0) as u32,
             );
-            ctx.draw_text_line(
+            ctx.draw_text_line_cow(
                 label_band,
                 &self.label,
                 &font,

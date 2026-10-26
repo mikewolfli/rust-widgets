@@ -138,6 +138,13 @@ pub struct ListBox {
     item_revision: u64,
     /// Memoised advances of the row icons, parallel to `item_meta`.
     icon_advance_cache: RefCell<Option<IconAdvanceCache>>,
+    /// The row font derived from the row height when the style names no font.
+    ///
+    /// Memoised because a draw asks for it on every visible row; building a `Font` allocates its
+    /// family `Arc` each time, which showed up as the only heap traffic in an unthemed
+    /// `list_box` frame (2.0 allocations/frame, measured). A style font still wins and is
+    /// returned directly, so the cache is only the fallback's.
+    row_font_cache: RefCell<Option<(u32, Font)>>,
 }
 
 /// Memoised per-row icon advances, parallel to `item_meta`.
@@ -332,6 +339,7 @@ impl ListBox {
             item_changed: Signal1::new(),
             item_revision: 0,
             icon_advance_cache: RefCell::new(None),
+            row_font_cache: RefCell::new(None),
         }
     }
     /// Bumped whenever `items` or `item_meta` changes, so the icon-advance cache invalidates.
@@ -1056,7 +1064,18 @@ impl ListBox {
             return font.clone();
         }
         let size = (self.row_height() * 0.7).clamp(8.0, 32.0);
-        Font::new("sans-serif", size, false, false)
+        // The fallback is memoised on the size it was derived from: `Font::new` builds a family
+        // `Arc` (two allocations), and this method runs once per visible row per frame.
+        let key = size.to_bits();
+        let mut cache = self.row_font_cache.borrow_mut();
+        if let Some((cached_key, font)) = cache.as_ref() {
+            if *cached_key == key {
+                return font.clone();
+            }
+        }
+        let font = Font::new("sans-serif", size, false, false);
+        *cache = Some((key, font.clone()));
+        font
     }
 
     /// The band item `index` occupies, in device space, or `None` when it is scrolled out.

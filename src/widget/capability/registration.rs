@@ -307,6 +307,13 @@ impl WidgetFactory {
             self.register(diff_file_list_capability(), create_diff_file_list);
             self.register(markdown_outline_panel_capability(), create_markdown_outline_panel);
             self.register(find_bar_capability(), create_find_bar);
+            self.register(web_find_bar_capability(), create_web_find_bar);
+            self.register(menu_panel_capability(), create_menu_panel);
+            self.register(speed_dial_capability(), create_speed_dial);
+            self.register(swipe_actions_capability(), create_swipe_actions);
+            self.register(drawer_section_header_capability(), create_drawer_section_header);
+            self.register(layer_panel_capability(), create_layer_panel);
+            self.register(playlist_panel_capability(), create_playlist_panel);
             self.register(shape_canvas_capability(), create_shape_canvas);
             self.register(kanban_card_view_capability(), create_kanban_card_view);
             self.register(kanban_column_header_capability(), create_kanban_column_header);

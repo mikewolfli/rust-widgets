@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::{format, Arc, String};
+use crate::compat::{format, Arc, HashMap, OnceLock, RefCell, String};
 
 /// Converts a caller's family name into the shared form the descriptor stores.
 ///
@@ -10,7 +10,85 @@ use crate::compat::{format, Arc, String};
 /// face from an existing one, and the frame path does that for every control it
 /// paints — with an owned `String` family each of those copies reallocated the name.
 fn font_family(family: impl Into<String>) -> Arc<str> {
-    Arc::from(family.into())
+    intern_family(&family.into())
+}
+
+thread_local! {
+    /// Family names already shared, so a face built per frame reuses one `Arc<str>`.
+    ///
+    /// Bounded: an application that builds fonts from many distinct family names must not grow
+    /// this without limit. Past the bound construction still works — it just makes a fresh `Arc`.
+    ///
+    /// `HashMap::new` is const only under alloc_frugal (BTreeMap); the std profile cannot be const.
+    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
+    static FAMILIES: RefCell<HashMap<String, Arc<str>>> = RefCell::new(HashMap::new());
+}
+
+/// The number of family names [`intern_family`] keeps before it stops adding new ones.
+const FAMILY_CACHE_LIMIT: usize = 32;
+
+/// The shared `Arc<str>` spelling of `name`, making a new one only the first time.
+///
+/// # Why
+///
+/// Several controls build a face from a borrowed family per frame — a chart adapter's label
+/// face, a tag's fallback, a clock's readout. Each construction copied the name into its own
+/// `Arc<str>` (two heap allocations), which a counting allocator measured as the *only*
+/// per-frame traffic in those controls. A hit is a hash probe and a refcount bump.
+fn intern_family(name: &str) -> Arc<str> {
+    FAMILIES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(shared) = cache.get(name) {
+            return Arc::clone(shared);
+        }
+        let shared: Arc<str> = Arc::from(name);
+        if cache.len() < FAMILY_CACHE_LIMIT {
+            cache.insert(String::from(name), Arc::clone(&shared));
+        }
+        shared
+    })
+}
+
+/// The family name of the built-in default UI face.
+const DEFAULT_UI_FAMILY: &str = "Arial";
+/// The size of the built-in default UI face, in points.
+const DEFAULT_UI_SIZE: f32 = 14.0;
+
+/// The shared default UI descriptor, built once.
+///
+/// # Why cached
+///
+/// `Font::default()` is what every control's `size_hint` reaches for, and a draw calls
+/// `size_hint` once per control per frame. Each call used to build a fresh `Arc<str>` family
+/// from a `String` — two heap allocations per control per frame, and, measured with a
+/// counting allocator, the *only* heap traffic in an otherwise allocation-free `Button`
+/// frame (2.0 allocations/frame). Cloning the cached descriptor is a refcount bump.
+///
+/// The value is identical to the old `with_weight("Arial", 14.0, …)`: same family, size and
+/// normalised weight, so nothing that compares fonts can tell the two constructions apart.
+fn default_ui_font() -> &'static Font {
+    static DEFAULT: OnceLock<Font> = OnceLock::new();
+    DEFAULT.get_or_init(|| {
+        Font::with_weight_shared(
+            font_family(DEFAULT_UI_FAMILY),
+            DEFAULT_UI_SIZE,
+            Font::REGULAR_WEIGHT,
+            false,
+        )
+    })
+}
+
+/// The shared default **bold** UI descriptor; see [`default_ui_font`].
+fn default_ui_bold_font() -> &'static Font {
+    static DEFAULT: OnceLock<Font> = OnceLock::new();
+    DEFAULT.get_or_init(|| {
+        Font::with_weight_shared(
+            font_family(DEFAULT_UI_FAMILY),
+            DEFAULT_UI_SIZE,
+            Font::BOLD_WEIGHT,
+            false,
+        )
+    })
 }
 
 /// Font descriptor used by text rendering and themes.
@@ -227,6 +305,24 @@ impl Font {
         let weight = if bold { Self::BOLD_WEIGHT } else { Self::REGULAR_WEIGHT };
         Self::with_weight(family, size, weight, italic)
     }
+
+    /// [`Self::new`] for a borrowed family name, reusing the family's shared `Arc<str>`.
+    ///
+    /// Identical to `new` for the same inputs. The difference is where the family `Arc` comes
+    /// from: this looks it up in [`intern_family`], so a face built per frame (the chart
+    /// adapter's label, a tag's fallback, a clock's readout) allocates nothing after its first
+    /// use.
+    #[cfg(full_widgets)]
+    pub(crate) fn new_interned(family: &str, size: f32, bold: bool, italic: bool) -> Self {
+        let weight = if bold { Self::BOLD_WEIGHT } else { Self::REGULAR_WEIGHT };
+        Self::with_weight_shared(intern_family(family), size, weight, italic)
+    }
+
+    /// [`Self::simple`] for a borrowed family name; see [`Self::new_interned`].
+    #[cfg(full_widgets)]
+    pub(crate) fn simple_interned(family: &str, size: f32) -> Self {
+        Self::new_interned(family, size, false, false)
+    }
     /// Creates a font descriptor with explicit weight.
     pub fn with_weight(family: impl Into<String>, size: f32, weight: u16, italic: bool) -> Self {
         Self::with_weight_shared(font_family(family), size, weight, italic)
@@ -291,11 +387,11 @@ impl Font {
     }
     /// Returns the shared default UI font descriptor.
     pub fn default_ui() -> Self {
-        Self::with_weight("Arial", 14.0, Self::REGULAR_WEIGHT, false)
+        default_ui_font().clone()
     }
     /// Returns a shared default bold UI descriptor.
     pub fn default_ui_bold() -> Self {
-        Self::with_weight("Arial", 14.0, Self::BOLD_WEIGHT, false)
+        default_ui_bold_font().clone()
     }
     /// Normalizes arbitrary weight to nearest 100 in `[100, 900]`.
     pub const fn normalize_weight(weight: u16) -> u16 {

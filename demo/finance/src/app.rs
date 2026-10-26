@@ -650,6 +650,37 @@ impl LayoutTrait for PanelLayout {
             self.panels.len()
         ));
     }
+
+    // The demo's layout positions its seven fixed panels from its own slot geometry, not from what
+    // each child reports it wants, so the hint channel and the device context carry nothing it
+    // would act on. Forwarding keeps role one placement path authoritative.
+    fn arrange(
+        &self,
+        rect: Rect,
+        _children: &[rust_widgets::layout::ChildInfo],
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.update(rect, out);
+    }
+
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        _children: &[rust_widgets::layout::ChildInfo],
+        _context: &rust_widgets::layout::LayoutContext,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.update(rect, out);
+    }
+
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        _context: &rust_widgets::layout::LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.update(rect, widgets);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -240,17 +240,13 @@ fn drawing_shared_images_does_not_scale_with_the_pixel_payload() {
 
     // The plan's §19.13 line is "the dynamic clone cost of a common glyph does not grow with the
     // image's pixel count". That is a claim about the *payload*, so the measurement compares a large
-    // image against a small one at the same consumer count:
+    // image against a small one at the same consumer count. A copy-the-bytes-per-frame
+    // implementation would allocate on the order of the payload (262 144 bytes for the fixture
+    // below), so the two are distinguishable by this comparison rather than by a fixed number.
     //
-    //   measured (empty-label buttons, image icon): 16 consumers -> 32 allocations,
-    //   i.e. exactly two per consumer per frame: the button's own surface record and the
-    //   shared-image draw record. The surface record is chrome the icon did not add; the
-    //   second one is the image. Both are constant-size records, so neither grows with the
-    //   source's pixel count.
-    //
-    // A copy-the-bytes-per-frame implementation would instead allocate on the order of the
-    // payload (262 144 bytes for the fixture below), so the two are distinguishable by this
-    // comparison rather than by a fixed number.
+    // The steady state measured here is now zero allocations for both sizes (see the assertion
+    // below): the button's per-frame default-face construction that used to dominate the count is
+    // cached, so what remains is the equality of the two payloads.
     let large = SharedIconPixels::from_rgba8(vec![7u8; 256 * 256 * 4], 256, 256)
         .expect("a 256x256 RGBA8 buffer is valid");
     let small = SharedIconPixels::from_rgba8(vec![7u8; 8 * 8 * 4], 8, 8)
@@ -293,12 +289,16 @@ fn drawing_shared_images_does_not_scale_with_the_pixel_payload() {
         "a 256x256 source cost {with_large} allocations and an 8x8 source cost {with_small}: the \
          per-frame cost grew with the payload, so the pixels are being copied per frame"
     );
+    // The steady state is **zero**: drawing a button with a shared icon allocates nothing per
+    // frame. The earlier pin of `consumers * 2` was measured against a path that rebuilt the
+    // default face (`Font::default()`) once per button per frame — the surface and shared-image
+    // records themselves have always been allocation-free. That construction is now cached, so
+    // the number dropped to zero while the equality check above kept exactly the property this
+    // test exists for: a copy-per-frame implementation would still differ between the two sizes.
     assert_eq!(
-        with_large,
-        consumers * 2,
-        "expected the surface record plus the shared-image record per consumer ({} total); \
-         measured {with_large}",
-        consumers * 2
+        with_large, 0,
+        "drawing a shared icon used to allocate {with_large} times per frame; the steady state \
+         must be allocation-free"
     );
 }
 

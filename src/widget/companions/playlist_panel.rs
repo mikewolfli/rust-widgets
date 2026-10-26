@@ -43,6 +43,25 @@ const PLAYLIST_REMOVE_WIDTH: i32 = 16;
 /// Padding inside the panel.
 const PLAYLIST_PADDING: i32 = 4;
 
+/// One row of the `tracks` records property: the source path of one queue entry.
+///
+/// The queue is one flat list, matching the player's `Vec<String>` model. Identity is position in
+/// this list, and every signal reports that original position (a filter narrows what is shown,
+/// never what is stored).
+pub const PLAYLIST_TRACK_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[crate::widget::capability::RecordField::required(
+            "path",
+            crate::widget::capability::PropertyValueKind::String,
+        )],
+        // The queue may hold the same source twice, and the model accepts an empty path; `path` is
+        // named as the nominal identity so the records validator has a field to read, with
+        // uniqueness and non-emptiness explicitly **not** claimed.
+        id_field: "path",
+        ids_unique: false,
+        ids_required: false,
+    };
+
 /// The queue a media player's playlist API is driven from.
 pub struct PlaylistPanel {
     base: BaseWidget,
@@ -55,6 +74,13 @@ pub struct PlaylistPanel {
     title_from_source: bool,
     /// The filter text; `None` or empty shows every track.
     filter: Option<String>,
+    /// The original indices the filter currently shows, in order.
+    ///
+    /// Rebuilt when the queue or the filter changes, never while drawing or handling a pointer
+    /// event: those paths read it as a slice. Before this cache a filtered queue rebuilt the
+    /// index list — folding the filter and lower-casing every track — once per frame *and* once
+    /// per mouse move, and the unfiltered case allocated a `Vec` of `0..len` on every read.
+    visible_indices: Vec<usize>,
     /// The selected row, as an index into `tracks`.
     selected: Option<usize>,
     /// The first visible row of the *filtered* view.
@@ -75,7 +101,7 @@ impl PlaylistPanel {
     /// Creates an empty playlist panel.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::ListView, geometry, "PlaylistPanel"),
+            base: BaseWidget::new(WidgetKind::PlaylistPanel, geometry, "PlaylistPanel"),
             tracks: Vec::new(),
             current_index: None,
             show_track_numbers: true,
@@ -83,6 +109,7 @@ impl PlaylistPanel {
             row_height: 22,
             title_from_source: true,
             filter: None,
+            visible_indices: Vec::new(),
             selected: None,
             scroll_offset: 0,
             hovered: None,
@@ -107,6 +134,7 @@ impl PlaylistPanel {
             }
         }
         self.clamp_scroll();
+        self.rebuild_visible_indices();
         self.base.request_redraw();
     }
 
@@ -167,6 +195,7 @@ impl PlaylistPanel {
         }
         self.filter = filter;
         self.scroll_offset = 0;
+        self.rebuild_visible_indices();
         self.base.request_redraw();
     }
 
@@ -233,18 +262,25 @@ impl PlaylistPanel {
     }
 
     /// The original indices shown, in order, after the filter.
-    fn visible_tracks(&self) -> Vec<usize> {
+    fn visible_tracks(&self) -> &[usize] {
+        &self.visible_indices
+    }
+
+    /// Rebuilds [`Self::visible_indices`] from the current queue and filter.
+    ///
+    /// The lowercase fold happens here — once per model change — rather than inside the draw and
+    /// pointer paths, which read the cached slice instead.
+    fn rebuild_visible_indices(&mut self) {
+        self.visible_indices.clear();
         match self.filter.as_deref() {
-            None => (0..self.tracks.len()).collect(),
+            None => self.visible_indices.extend(0..self.tracks.len()),
             Some(filter) => {
                 let folded = filter.to_lowercase();
-                (0..self.tracks.len())
-                    .filter(|index| {
-                        self.tracks
-                            .get(*index)
-                            .is_some_and(|track| track.to_lowercase().contains(&folded))
-                    })
-                    .collect()
+                for (index, track) in self.tracks.iter().enumerate() {
+                    if track.to_lowercase().contains(&folded) {
+                        self.visible_indices.push(index);
+                    }
+                }
             }
         }
     }
@@ -307,20 +343,40 @@ impl PlaylistPanel {
         )
     }
 
-    /// The label painted for a track.
+    /// The label painted for a track, borrowed from the queue entry.
     ///
     /// A friendly title is the file's own name, without its directory or extension, which is what
-    /// a queue conventionally shows; the raw string stays the data the panel holds.
-    fn track_label(&self, track: &str) -> String {
+    /// a queue conventionally shows; the raw string stays the data the panel holds. The result is
+    /// a **slice of the input**, so drawing a row allocates nothing (it used to build a fresh
+    /// `String` per visible row per frame).
+    fn track_label<'a>(&self, track: &'a str) -> &'a str {
         if !self.title_from_source {
-            return track.to_string();
+            return track;
         }
         let name = track.rsplit(['/', '\\']).next().unwrap_or(track);
         match name.rfind('.') {
-            Some(dot) if dot > 0 => name[..dot].to_string(),
-            _ => name.to_string(),
+            Some(dot) if dot > 0 => &name[..dot],
+            _ => name,
         }
     }
+}
+
+/// Writes `value` as ASCII decimal into `buffer`, returning the written slice.
+///
+/// The row number used to be `to_string()`, one heap allocation per visible row per frame; a
+/// queue position is at most 20 digits, so a stack buffer covers every value.
+fn format_row_number(mut value: usize, buffer: &mut [u8; 20]) -> &str {
+    let mut cursor = buffer.len();
+    loop {
+        cursor -= 1;
+        buffer[cursor] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    // Only ASCII digits were written, so this cannot fail.
+    core::str::from_utf8(&buffer[cursor..]).unwrap_or("")
 }
 
 impl EventHandler for PlaylistPanel {
@@ -444,6 +500,9 @@ impl Draw for PlaylistPanel {
 
         let visible = self.visible_tracks();
         let rows = self.visible_rows();
+        // One stack buffer for every row number; `to_string` allocated once per visible row per
+        // frame, and a queue number is at most 20 ASCII digits.
+        let mut number_buffer = [0u8; 20];
         for (position, &track_index) in
             visible.iter().enumerate().skip(self.scroll_offset).take(rows)
         {
@@ -461,10 +520,10 @@ impl Draw for PlaylistPanel {
                 // A queue number is a position within the *list*, so it counts the original
                 // index, not the filtered row: the number a reader sees is the one the player
                 // reports.
-                let number = (track_index + 1).to_string();
+                let number = format_row_number(track_index + 1, &mut number_buffer);
                 context.draw_text_fitted_cow(
                     Rect::new(label_x, row_rect.y, PLAYLIST_NUMBER_WIDTH as u32, row_rect.height),
-                    &number,
+                    number,
                     font,
                     ink.with_alpha(120),
                     HorizontalAlignment::Right,
@@ -492,7 +551,7 @@ impl Draw for PlaylistPanel {
                 .text_line(Rect::new(label_x, row_rect.y, label_width, row_rect.height), font);
             context.draw_text_fitted_cow(
                 Rect::new(label_x, line.y, label_width, line.height),
-                &label,
+                label,
                 font,
                 if is_current { ink } else { ink.blend(&surface, 0.2) },
                 HorizontalAlignment::Left,
@@ -559,9 +618,31 @@ impl Widget for PlaylistPanel {
     }
 }
 
+/// One row of [`PLAYLIST_TRACK_SCHEMA`].
+fn playlist_track_record(track: &str) -> crate::widget::capability::RecordValue {
+    crate::widget::capability::RecordValue::new()
+        .with("path", CapabilityValue::String(track.to_owned()))
+}
+
+/// Rebuilds one queue entry from a row of [`PLAYLIST_TRACK_SCHEMA`].
+fn playlist_track_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<String, CapabilityAccessError> {
+    match record.get("path") {
+        Some(CapabilityValue::String(path)) => Ok(path.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
 impl WidgetProperties for PlaylistPanel {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            "tracks" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &PLAYLIST_TRACK_SCHEMA,
+                    self.tracks.iter().map(|track| playlist_track_record(track)).collect(),
+                )))
+            }
             "track_count" => Ok(CapabilityValue::UInt(self.tracks.len() as u64)),
             "current_index" => Ok(match self.current_index {
                 Some(index) => CapabilityValue::UInt(index as u64),
@@ -581,6 +662,27 @@ impl WidgetProperties for PlaylistPanel {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
+            // A full-list write: every row is validated and decoded before the queue is replaced,
+            // so a refused write leaves the panel unchanged (the `records` discipline).
+            "tracks" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&PLAYLIST_TRACK_SCHEMA).map_err(|violation| {
+                    log::warn!("playlist_panel.tracks refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("tracks"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let tracks = list.items().iter().map(playlist_track_from_record).collect::<Result<
+                    Vec<_>,
+                    CapabilityAccessError,
+                >>(
+                )?;
+                self.set_tracks(tracks);
+                Ok(())
+            }
             // The queue is the player's model, mirrored through `set_tracks`.
             "track_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             "current_index" => {
@@ -627,6 +729,7 @@ impl WidgetProperties for PlaylistPanel {
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "tracks",
             "track_count",
             "current_index",
             "show_track_numbers",
@@ -644,7 +747,9 @@ impl WidgetProperties for PlaylistPanel {
             "track_selected" | "set_tracks" | "set_filter" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            // `set_tracks` (and any future `set_foo`) resolves through the property route by the
+            // `default_command` convention, so the payload it needs is the property write.
+            _ => self.default_command(name),
         }
     }
 }
@@ -727,5 +832,42 @@ mod tests {
         assert_eq!(panel.current_index(), Some(9));
         panel.set_current_index(Some(42));
         assert_eq!(panel.current_index(), None, "an index past the queue is dropped");
+    }
+
+    /// The queue travels as one flat record list, so a write rebuilds it and a read reports it back
+    /// in the same order.
+    #[test]
+    fn tracks_round_trip_through_the_property_route() {
+        let mut panel = panel();
+        let read = panel.get("tracks").expect("tracks is readable");
+        let CapabilityValue::Records(list) = read.clone() else {
+            panic!("tracks must be a record list");
+        };
+        assert_eq!(list.items().len(), 3);
+        assert_eq!(
+            list.items()[0].get("path"),
+            Some(&CapabilityValue::String("/music/one.mp3".to_string()))
+        );
+        panel.set("tracks", read).expect("identity write");
+        assert_eq!(panel.tracks().len(), 3);
+
+        // A row with no `path` refuses the whole write, leaving the queue unchanged.
+        let refused = panel.set(
+            "tracks",
+            CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                &PLAYLIST_TRACK_SCHEMA,
+                vec![crate::widget::capability::RecordValue::new()],
+            )),
+        );
+        assert!(matches!(refused, Err(CapabilityAccessError::ConstraintViolation { .. })));
+        assert_eq!(panel.tracks().len(), 3);
+    }
+
+    /// `set_tracks` is the payload-free spelling of the property write, so a bare invocation
+    /// reports that the value is what is missing.
+    #[test]
+    fn set_tracks_reports_a_missing_payload() {
+        let mut panel = panel();
+        assert_eq!(panel.command("set_tracks"), Err(CapabilityAccessError::OutOfRange));
     }
 }

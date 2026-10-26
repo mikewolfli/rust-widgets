@@ -732,7 +732,10 @@ fn fit_text_to_width<'a>(
     // A single ellipsis stands in when the budget cannot hold any glyph at all: an empty
     // label would read as "this control has no text", which is a different statement.
     const ELLIPSIS: char = '\u{2026}';
-    let ellipsis_width = backend.measure_text(&ELLIPSIS.to_string(), font).width as f32;
+    // The same mark as a `&str`, for the one call that measures it: `ELLIPSIS.to_string()`
+    // allocated a `String` on every elided label just to hand the backend one character.
+    const ELLIPSIS_TEXT: &str = "\u{2026}";
+    let ellipsis_width = backend.measure_text(ELLIPSIS_TEXT, font).width as f32;
     if ellipsis_width > max_width {
         return Cow::Owned(ELLIPSIS.to_string());
     }
@@ -752,11 +755,22 @@ fn fit_text_to_width<'a>(
     // happened, and that comparison leaves the rare reordered line on the original per-prefix
     // walk — same behaviour, no quadratic cost paid where the reorder does not occur.
     let shaped_matches_text = {
-        let mut rebuilt = crate::compat::String::new();
+        // "Concatenating the clusters reproduces `text`" is checked by walking the source as a
+        // prefix chain: each cluster must be the next slice, and nothing may be left over. The
+        // old form built the concatenation first — a `String` that grew twice per elided label —
+        // only to compare it.
+        let mut rest = text;
+        let mut matches = true;
         for cluster in clusters {
-            rebuilt.push_str(&cluster.text);
+            match rest.strip_prefix(cluster.text.as_str()) {
+                Some(tail) => rest = tail,
+                None => {
+                    matches = false;
+                    break;
+                }
+            }
         }
-        rebuilt == text
+        matches && rest.is_empty()
     };
     if !shaped_matches_text {
         return Cow::Owned(fit_text_to_width_by_prefix(text, budget, font, backend, ELLIPSIS));
@@ -793,16 +807,21 @@ fn fit_text_to_width<'a>(
 
     // True measure of a prefix of `length` clusters, matching `measure_text`'s contract.
     //
-    // The buffer is reused across candidates: collecting a fresh `String` per candidate turned a
-    // two-cluster confirmation into a per-candidate allocation (G-20).
-    let mut prefix_buffer = crate::compat::String::new();
-    let mut prefix_fits = |length: usize| -> bool {
-        if length == 0 {
+    // The prefix is a **slice of `text`**, not a rebuilt string: the cluster-order check above
+    // just proved the clusters concatenate to `text`, so the first `length` clusters are exactly
+    // `text`'s first `prefix_bytes` bytes. The old form rebuilt every candidate into a reused
+    // `String`; that allocation was the remaining per-frame cost of an elided label (measured:
+    // 2 growth allocations per candidate after the earlier fixes).
+    let prefix_bytes_at = |length: usize| -> usize {
+        clusters[..length].iter().map(|cluster| cluster.text.len()).sum()
+    };
+    // Takes the byte count rather than the cluster count: the loop advances both, and a closure
+    // capturing the moving byte count would borrow it for its whole lifetime.
+    let prefix_fits = |bytes: usize| -> bool {
+        if bytes == 0 {
             return true;
         }
-        prefix_buffer.clear();
-        prefix_buffer.extend(clusters[..length].iter().flat_map(|cluster| cluster.text.chars()));
-        backend.measure_text(&prefix_buffer, font).width as f32 <= budget
+        backend.measure_text(&text[..bytes], font).width as f32 <= budget
     };
 
     // Confirm the estimate by finding the **first** prefix that does not fit, which is exactly
@@ -815,12 +834,17 @@ fn fit_text_to_width<'a>(
     // is always the one the old code produced.
     const CONFIRM_SLACK: usize = 2;
     let search_from = estimated.saturating_sub(CONFIRM_SLACK);
+    let mut prefix_bytes = prefix_bytes_at(search_from.min(clusters.len()));
     let mut confirmed = None;
     let mut length = search_from;
     while length <= clusters.len() {
-        if !prefix_fits(length) {
+        if !prefix_fits(prefix_bytes) {
             confirmed = Some(length - 1);
             break;
+        }
+        // The next candidate adds exactly the next cluster's bytes; the slice stays contiguous.
+        if let Some(cluster) = clusters.get(length) {
+            prefix_bytes += cluster.text.len();
         }
         length += 1;
     }
@@ -835,10 +859,12 @@ fn fit_text_to_width<'a>(
         }
     };
 
-    let mut kept = crate::compat::String::new();
-    for cluster in &clusters[..confirmed] {
-        kept.push_str(&cluster.text);
-    }
+    // Reserved once at the exact size the accepted clusters need, so the assembly is one
+    // allocation rather than a growing `String`. The accepted text is `text`'s own prefix (the
+    // cluster-order check proved the two agree), so it is copied in one `push_str`.
+    let accepted_bytes = prefix_bytes_at(confirmed);
+    let mut kept = crate::compat::String::with_capacity(accepted_bytes + ELLIPSIS_TEXT.len());
+    kept.push_str(&text[..accepted_bytes]);
 
     kept.push(ELLIPSIS);
     Cow::Owned(kept)

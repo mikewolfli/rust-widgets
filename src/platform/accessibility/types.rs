@@ -641,10 +641,17 @@ impl From<WidgetKind> for AccessibleRole {
             | WidgetKind::TileLoader
             | WidgetKind::TimelineAxis
             | WidgetKind::FindBar
+            | WidgetKind::WebFindBar
             | WidgetKind::ShapeCanvas
             | WidgetKind::KanbanCardView
             | WidgetKind::KanbanColumnHeader
-            | WidgetKind::GridViewHeader => AccessibleRole::Group,
+            | WidgetKind::GridViewHeader
+            | WidgetKind::MenuPanel
+            | WidgetKind::SpeedDial
+            | WidgetKind::SwipeActions
+            | WidgetKind::DrawerSectionHeader
+            | WidgetKind::LayerPanel
+            | WidgetKind::PlaylistPanel => AccessibleRole::Group,
             _ => AccessibleRole::Unknown,
         }
     }

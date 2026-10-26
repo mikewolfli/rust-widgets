@@ -68,8 +68,23 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const GANTT_WIDGET_PROPERTIES: &[PropertySchema] = &[
+            // The whole schedule as records (B26.09). Dependencies travel as `<id>:<fts|sts|ftf>`
+            // tokens because a record field cannot hold the nested edge structure; `set_tasks` is
+            // the payload-free spelling of the write (B26.03).
+            PropertySchema::records(
+                "tasks",
+                true,
+                true,
+                &crate::widget::special_widgets::gantt_widget::GANTT_TASK_SCHEMA,
+            ),
             PropertySchema::new("task_count", PropertyValueKind::UInt, true, false),
+            // The selection is reported only. The control's selection entry point is the Rust-side
+            // `select_index`; publishing `select_task` would need a writable id property as its
+            // payload channel, which would be a second spelling of the same action (B26.03).
             PropertySchema::new("selected_id", PropertyValueKind::String, true, false),
+            // `set_viewport` is never published: no property is named `viewport`, and the two
+            // bounds travel through these writable scalars — the same reason `mini_chart.set_range`
+            // stays unpublished.
             PropertySchema::new("viewport_start", PropertyValueKind::Int, true, true),
             PropertySchema::new("viewport_end", PropertyValueKind::Int, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -650,10 +665,23 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const KANBAN_BOARD_PROPERTIES: &[PropertySchema] = &[
-            // The columns and cards are two-level lists; `add_column` / `add_card`
-            // are Rust-side APIs today with no property route, so the counts are
-            // what the property layer reports, following the same convention as
-            // `Meter` and `RadarChart`.
+            // The two levels of the model travel as two flat record lists (B26.09): `columns`
+            // carries column metadata, `cards` carries every card with its `column` index and
+            // optional `lane`. Their `set_*` commands are the payload-free spelling of the write
+            // (B26.03); `add_column` / `add_card` / `move_card` stay Rust-side methods whose
+            // payloads the records now transport, so they are not published.
+            PropertySchema::records(
+                "columns",
+                true,
+                true,
+                &crate::widget::special_widgets::kanban_board::KANBAN_COLUMN_SCHEMA,
+            ),
+            PropertySchema::records(
+                "cards",
+                true,
+                true,
+                &crate::widget::special_widgets::kanban_board::KANBAN_CARD_SCHEMA,
+            ),
             PropertySchema::new("column_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("card_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("dragging_card_id", PropertyValueKind::String, true, false),
@@ -1559,6 +1587,10 @@ macro_rules! impl_properties_other {
             PropertySchema::new("min_zoom", PropertyValueKind::Float, true, true),
             PropertySchema::new("max_zoom", PropertyValueKind::Float, true, true),
             PropertySchema::new("roi", PropertyValueKind::Rect, true, true),
+            // The content extent is a `Size`, which the vocabulary does not declare; the two
+            // scalars are the pair convention this crate uses for such a value.
+            PropertySchema::new("content_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("content_height", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -1730,6 +1762,19 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        /// Web find bar beside a web view (`COMP-L03`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const WEB_FIND_BAR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("query", PropertyValueKind::String, true, true),
+            PropertySchema::new("case_sensitive", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("match_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("match_count", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
         /// Scene container for free-form shapes (`COMP-17`).
         #[cfg(not(alloc_frugal))]
         pub(crate) const SHAPE_CANVAS_PROPERTIES: &[PropertySchema] = &[
@@ -1804,6 +1849,134 @@ macro_rules! impl_properties_other {
             ),
             PropertySchema::new("filter_icon_visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("sort_columns", PropertyValueKind::String, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Drop-down menu panel a host anchors itself (`COMP-A01`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const MENU_PANEL_PROPERTIES: &[PropertySchema] = &[
+            // The row list travels as one flat record list (B26.09); `selected_index` and
+            // `highlighted_index` are indices into it.
+            PropertySchema::records(
+                "items",
+                true,
+                true,
+                &crate::widget::companions::MENU_PANEL_ITEM_SCHEMA,
+            ),
+            PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("highlighted_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("max_visible_rows", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("open", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Floating trigger that fans out its actions (`COMP-A02`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const SPEED_DIAL_PROPERTIES: &[PropertySchema] = &[
+            // The action list travels as one flat record list (B26.09); `action_activated`
+            // reports the row's index into it.
+            PropertySchema::records(
+                "actions",
+                true,
+                true,
+                &crate::widget::companions::SPEED_DIAL_ACTION_SCHEMA,
+            ),
+            PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("direction", true, true, &["up", "left"]),
+            PropertySchema::new("spacing", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("collapse_on_activate", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Multi-action background for a swiped row (`COMP-A03`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const SWIPE_ACTIONS_PROPERTIES: &[PropertySchema] = &[
+            // Each side travels as its own flat record list (B26.09); `action_triggered`
+            // reports the side token and the row's index on that side.
+            PropertySchema::records(
+                "leading_actions",
+                true,
+                true,
+                &crate::widget::companions::SWIPE_ACTION_SCHEMA,
+            ),
+            PropertySchema::records(
+                "trailing_actions",
+                true,
+                true,
+                &crate::widget::companions::SWIPE_ACTION_SCHEMA,
+            ),
+            PropertySchema::new("max_reveal_width", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("icon_side", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("offset", PropertyValueKind::Float, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Small heading row that groups a drawer's items (`COMP-A04`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const DRAWER_SECTION_HEADER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("label", PropertyValueKind::String, true, true),
+            PropertySchema::new("inset", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("uppercase", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Companion list for a canvas's layers (`COMP-I01`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const LAYER_PANEL_PROPERTIES: &[PropertySchema] = &[
+            // The layer list travels as one flat record list (B26.09); identity is the `id`
+            // field, never the row index. `entry_count` is its read-only count and
+            // `selected_layer` the id the host reports through `layer_selected`.
+            PropertySchema::records(
+                "entries",
+                true,
+                true,
+                &crate::widget::companions::LAYER_ENTRY_SCHEMA,
+            ),
+            PropertySchema::new("entry_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("selected_layer", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("show_visibility_checkboxes", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_reorder_handles", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Companion list for a media player's queue (`COMP-I03`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const PLAYLIST_PANEL_PROPERTIES: &[PropertySchema] = &[
+            // The queue travels as one flat record list (B26.09); identity is position in the
+            // list, and every signal reports that original position. `track_count` is its
+            // read-only count.
+            PropertySchema::records(
+                "tracks",
+                true,
+                true,
+                &crate::widget::companions::PLAYLIST_TRACK_SCHEMA,
+            ),
+            PropertySchema::new("track_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("show_track_numbers", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("show_now_playing_badge", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("title_from_source", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("filter", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

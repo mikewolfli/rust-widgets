@@ -444,3 +444,32 @@ removed immediately after the run so the working tree is unchanged.
 > "no longer defines items — remove it from MOD_RS_PENDING (a stale allowlist entry
 > excuses nothing and hides the next regression)". Recorded as a gap rather than claimed
 > as a pass.
+
+## Demo crate compile round (2026-10-26)
+
+The three demo crates under `demo/` depend on this library by path and are not workspace
+members, so no root target compiled them. Two of them were broken (a `Layout` impl that
+predated the `arrange` / `arrange_with_context` / `update_with_context` entries the trait
+requires with no default) and nothing reported it. `check_demo_crates.sh` is the gate.
+
+| gate | injected | reported |
+|---|---|---|
+| `check_demo_crates.sh` | renamed `fn arrange(` → `fn arrange_removed(` in `demo/control/src/app.rs`, so that crate no longer implements the required `Layout::arrange` | `═══ DEMO CRATE: demo/control ═══` / `error[E0046]: not all trait items implemented, missing: \`arrange\`` / `  ❌ demo/control does not compile` / `check_demo_crates: passed=2 failed=1` |
+
+### Bookkeeping: gates named but not yet injected
+
+`check_gates_are_worth_running.sh` step [3/3] fails when a gate has **no line at all** here.
+These eight gates existed without one (a pre-existing gap found while wiring the demo gate).
+The `—` rows record them as the honest backlog the file's own status column defines, rather
+than inventing an injection that was never run.
+
+| gate | injected | reported |
+|---|---|---|
+| `check_bsd_cross.sh` | — | — |
+| `check_native_control_paths.sh` | — | — |
+| `check_platform_docs_truthfulness.sh` | — | — |
+| `check_platform_facts_matrix.sh` | — | — |
+| `check_platform_probe.sh` | — | — |
+| `check_profile_target_matrix.sh` | — | — |
+| `check_redox_cross.sh` | — | — |
+| `check_target_backend_selection.sh` | — | — |

@@ -238,6 +238,170 @@ impl KanbanColumn {
     }
 }
 
+/// The row shape of the `columns` property (`BLUE26 B26.09`).
+///
+/// A column is one flat record: identity, header, collapse flag and WIP limit. The cards it holds
+/// are **not** nested here — the property vocabulary has no record-of-records kind (a `Records`
+/// field value is refused, see `records.rs`), so the board publishes its two levels as two flat
+/// lists: `columns` (this schema) and `cards` ([`KANBAN_CARD_SCHEMA`]), whose `column` field is the
+/// index into this list. Card order within a column is the order of the `cards` list.
+pub const KANBAN_COLUMN_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "title",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "collapsed",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "wip_limit",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// The row shape of the `cards` property (`BLUE26 B26.09`).
+///
+/// A card is one flat record. `column` is the **index** into the current `columns` list, because a
+/// column reference by index is what [`CardPosition`] already means; `lane` names the swimlane the
+/// card is assigned to, when it has one. Both lists travel together: a `cards` write is refused
+/// when any row names a column or lane that does not exist, and it never writes a half-applied
+/// board.
+pub const KANBAN_CARD_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "title",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "column",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "description",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "done",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "lane",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`KANBAN_COLUMN_SCHEMA`].
+fn kanban_column_record(column: &KanbanColumn) -> crate::widget::capability::RecordValue {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(column.id.clone()))
+        .with("title", CapabilityValue::String(column.title.clone()))
+        .with("collapsed", CapabilityValue::Bool(column.collapsed));
+    if let Some(limit) = column.wip_limit {
+        record = record.with("wip_limit", CapabilityValue::UInt(limit as u64));
+    }
+    record
+}
+
+/// Rebuilds one column's metadata from a row of [`KANBAN_COLUMN_SCHEMA`].
+///
+/// The returned column has no cards: a `columns` write carries column state only, and the board
+/// adopts the existing cards of a column with the same id (see the `columns` arm of
+/// [`KanbanBoard`]'s `set`).
+fn kanban_column_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<KanbanColumn, CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let mut column = KanbanColumn::new(text("id")?, text("title")?);
+    match record.get("collapsed") {
+        None | Some(CapabilityValue::Null) => {}
+        Some(CapabilityValue::Bool(collapsed)) => column.collapsed = *collapsed,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    }
+    match record.get("wip_limit") {
+        None | Some(CapabilityValue::Null) => {}
+        Some(CapabilityValue::UInt(limit)) => {
+            column.wip_limit =
+                Some(usize::try_from(*limit).map_err(|_| CapabilityAccessError::TypeMismatch)?);
+        }
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    }
+    Ok(column)
+}
+
+/// One row of [`KANBAN_CARD_SCHEMA`].
+fn kanban_card_record(
+    position: CardPosition,
+    card: &KanbanCard,
+    lane: Option<&str>,
+) -> crate::widget::capability::RecordValue {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(card.id.clone()))
+        .with("title", CapabilityValue::String(card.title.clone()))
+        .with("description", CapabilityValue::String(card.description.clone()))
+        .with("done", CapabilityValue::Bool(card.done))
+        .with("column", CapabilityValue::UInt(position.column as u64));
+    if let Some(lane) = lane {
+        record = record.with("lane", CapabilityValue::String(lane.to_string()));
+    }
+    record
+}
+
+/// Rebuilds `(column index, lane, card)` from a row of [`KANBAN_CARD_SCHEMA`].
+fn kanban_card_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<(usize, Option<String>, KanbanCard), CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let column = match record.get("column") {
+        Some(CapabilityValue::UInt(index)) => {
+            usize::try_from(*index).map_err(|_| CapabilityAccessError::TypeMismatch)?
+        }
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let mut card = KanbanCard::new(text("id")?, text("title")?);
+    match record.get("description") {
+        None | Some(CapabilityValue::Null) => {}
+        Some(CapabilityValue::String(description)) => card.description = description.clone(),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    }
+    match record.get("done") {
+        None | Some(CapabilityValue::Null) => {}
+        Some(CapabilityValue::Bool(done)) => card.done = *done,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    }
+    let lane = match record.get("lane") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::String(lane)) => Some(lane.clone()),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok((column, lane, card))
+}
+
 /// Where a card is: which column, and its index within that column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CardPosition {
@@ -1463,12 +1627,36 @@ impl Widget for KanbanBoard {
 
 /// `KanbanBoard`'s property contract.
 ///
-/// The columns and cards are two-level lists, written through `add_column` /
-/// `add_card`; the property layer reports the derived counts and the one display
-/// flag, matching `Meter`'s and `RadarChart`'s convention for list-valued state.
+/// The two levels of the model are two flat `Records` properties (`BLUE26 B26.09`): `columns`
+/// carries column metadata, `cards` carries every card with its `column` index and optional `lane`
+/// assignment. Each has a published `set_*` command that is the payload-free spelling of the write;
+/// `add_column` / `add_card` / `move_card` are Rust-side APIs whose payloads are what those records
+/// now transport, so they are not published (B26.03).
 impl WidgetProperties for KanbanBoard {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            "columns" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &KANBAN_COLUMN_SCHEMA,
+                    self.columns().iter().map(kanban_column_record).collect(),
+                )))
+            }
+            "cards" => {
+                let mut items = Vec::new();
+                for (column, entry) in self.columns().iter().enumerate() {
+                    for (card, value) in entry.cards.iter().enumerate() {
+                        items.push(kanban_card_record(
+                            CardPosition { column, card },
+                            value,
+                            self.lane_of(&value.id),
+                        ));
+                    }
+                }
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &KANBAN_CARD_SCHEMA,
+                    items,
+                )))
+            }
             "column_count" => Ok(CapabilityValue::UInt(self.column_count() as u64)),
             "card_count" => Ok(CapabilityValue::UInt(self.cards().len() as u64)),
             "dragging_card_id" => Ok(match self.dragged_card_id() {
@@ -1492,6 +1680,91 @@ impl WidgetProperties for KanbanBoard {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
+            // A column write replaces column state; cards are adopted **by column id** from the
+            // existing board, because a card belongs to a column identity, not to a slot. A column
+            // that disappears takes its cards with it, and their lane assignments are dropped.
+            "columns" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&KANBAN_COLUMN_SCHEMA).map_err(|violation| {
+                    log::warn!("kanban_board.columns refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("columns"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut columns = list
+                    .items()
+                    .iter()
+                    .map(kanban_column_from_record)
+                    .collect::<Result<Vec<_>, CapabilityAccessError>>()?;
+                for column in &mut columns {
+                    if let Some(existing) = self.columns.iter().find(|entry| entry.id == column.id)
+                    {
+                        column.cards = existing.cards.clone();
+                    }
+                }
+                self.columns = columns;
+                let live: Vec<String> = self
+                    .columns
+                    .iter()
+                    .flat_map(|entry| entry.cards.iter().map(|card| card.id.clone()))
+                    .collect();
+                self.card_lanes.retain(|card_id, _| live.iter().any(|id| id == card_id));
+                self.invalidate_layout();
+                self.base.request_redraw();
+                Ok(())
+            }
+            // A card write replaces the whole board's cards. Every row is checked before anything
+            // is written: an unknown column or lane refuses the write with the board unchanged.
+            "cards" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&KANBAN_CARD_SCHEMA).map_err(|violation| {
+                    log::warn!("kanban_board.cards refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("cards"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let column_count = self.columns.len();
+                let mut buckets: Vec<Vec<KanbanCard>> = vec![Vec::new(); column_count];
+                let mut lanes: HashMap<String, String> = HashMap::new();
+                for record in list.items() {
+                    let (column, lane, card) = kanban_card_from_record(record)?;
+                    let Some(bucket) = buckets.get_mut(column) else {
+                        return Err(CapabilityAccessError::ConstraintViolation {
+                            property: crate::compat::String::from("cards"),
+                            reason: crate::compat::format!(
+                                "card '{}' names column {column}, but the board has {column_count} column(s)",
+                                card.id
+                            ),
+                        });
+                    };
+                    if let Some(lane) = &lane {
+                        if !self.lanes.iter().any(|entry| entry.id == *lane) {
+                            return Err(CapabilityAccessError::ConstraintViolation {
+                                property: crate::compat::String::from("cards"),
+                                reason: crate::compat::format!(
+                                    "card '{}' names lane '{lane}', which the board does not have",
+                                    card.id
+                                ),
+                            });
+                        }
+                        lanes.insert(card.id.clone(), lane.clone());
+                    }
+                    bucket.push(card);
+                }
+                for (entry, cards) in self.columns.iter_mut().zip(buckets) {
+                    entry.cards = cards;
+                }
+                self.card_lanes = lanes;
+                self.invalidate_layout();
+                self.base.request_redraw();
+                Ok(())
+            }
             // The card count is derived from the columns; the drag state is written
             // by the pointer. Neither has a meaningful value a caller could set.
             "column_count" | "card_count" | "dragging_card_id" | "hovered_column" => {
@@ -1546,6 +1819,8 @@ impl WidgetProperties for KanbanBoard {
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `KANBAN_BOARD_PROPERTIES`.
         property_names_of![
+            "columns",
+            "cards",
             "column_count",
             "card_count",
             "dragging_card_id",
@@ -1561,21 +1836,20 @@ impl WidgetProperties for KanbanBoard {
 
     /// Runs one of the commands `kanban_board` publishes.
     ///
-    /// `cancel_drag` is the one published command whose whole effect is to discard
-    /// state, so it is the only one that can run with no argument and it executes
-    /// here. The other three all describe *what* to add or where to move it — a
-    /// `KanbanColumn`, a `KanbanCard`, a `CardPosition` pair — and the control has no
-    /// defensible default for any of them, so they are refused as
-    /// [`CapabilityAccessError::OutOfRange`]: the names are valid and the payloads
-    /// are what is missing.
+    /// `cancel_drag` is the one command whose whole effect is to discard state, so it runs with
+    /// no argument. The list-valued operations are payload-free spellings of a property write
+    /// (B26.03): `set_columns` / `set_cards` name their payload through the `columns` / `cards`
+    /// records properties, so a bare invocation reports that the value is what is missing. The
+    /// write itself goes through the property route, and `add_column` / `add_card` / `move_card`
+    /// are the Rust-side methods that same route calls; they are not published, because their
+    /// payloads are exactly the records those properties now carry.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "cancel_drag" => {
                 self.cancel_drag();
                 Ok(())
             }
-            "add_column" | "add_card" | "move_card" => Err(CapabilityAccessError::OutOfRange),
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            _ => self.default_command(name),
         }
     }
 }
@@ -3910,6 +4184,76 @@ mod tests {
             board.set("lane_count", CapabilityValue::UInt(0)),
             Err(CapabilityAccessError::ReadOnlyProperty)
         );
+    }
+
+    /// The two levels round-trip through their flat record lists: a fresh board fed the
+    /// `columns` and `cards` a seeded board reports reads the same state back.
+    #[test]
+    fn columns_and_cards_round_trip_through_records() {
+        let mut source = lane_board();
+        assert!(source.set_card_lane("b", "slow"));
+        let mut target = KanbanBoard::new(Rect::new(0, 0, 600, 400));
+        target.add_lane(KanbanLane::new("fast", "Fast"));
+        target.add_lane(KanbanLane::new("slow", "Slow"));
+
+        target.set("columns", source.get("columns").unwrap()).expect("columns writable");
+        target.set("cards", source.get("cards").unwrap()).expect("cards writable");
+
+        assert_eq!(target.get("columns").unwrap(), source.get("columns").unwrap());
+        assert_eq!(target.get("cards").unwrap(), source.get("cards").unwrap());
+        assert_eq!(target.get("column_count").unwrap(), CapabilityValue::UInt(1));
+        assert_eq!(target.get("card_count").unwrap(), CapabilityValue::UInt(2));
+        assert_eq!(target.lane_of("a"), None);
+        assert_eq!(target.lane_of("b"), Some("slow"));
+    }
+
+    /// A card row naming a column the board does not have is refused **whole**: the
+    /// board keeps the cards it had rather than accepting the rows that did resolve.
+    #[test]
+    fn a_card_naming_an_unknown_column_is_refused_without_side_effects() {
+        let mut board = board();
+        let CapabilityValue::Records(mut list) = board.get("cards").unwrap() else {
+            panic!("cards must be records");
+        };
+        list = crate::widget::capability::RecordList::from_items(
+            &KANBAN_CARD_SCHEMA,
+            list.items()
+                .iter()
+                .map(|row| {
+                    let mut row = row.clone();
+                    row = row.with("column", CapabilityValue::UInt(99));
+                    row
+                })
+                .collect(),
+        );
+        let refused = board.set("cards", CapabilityValue::Records(list));
+        assert!(
+            matches!(refused, Err(CapabilityAccessError::ConstraintViolation { .. })),
+            "expected a constraint violation, got {refused:?}"
+        );
+        assert_eq!(board.get("column_count").unwrap(), CapabilityValue::UInt(3));
+        assert_eq!(board.get("card_count").unwrap(), CapabilityValue::UInt(1));
+        assert_eq!(board.columns()[0].cards[0].id, "a");
+    }
+
+    /// A `columns` write adopts the existing cards of a column with the same id, so
+    /// renaming or reordering columns never loses cards.
+    #[test]
+    fn a_column_write_adopts_its_cards_by_id() {
+        let mut board = board();
+        board.set("columns", board.get("columns").unwrap()).expect("identity write");
+        assert_eq!(board.column_count(), 3);
+        assert_eq!(board.columns()[0].cards.len(), 1, "todo keeps its card");
+        assert_eq!(board.columns()[0].cards[0].id, "a");
+    }
+
+    /// The list-valued commands are payload-free spellings of the property write, so a
+    /// bare invocation reports that the value is what is missing.
+    #[test]
+    fn set_columns_and_set_cards_report_a_missing_payload() {
+        let mut board = board();
+        assert_eq!(board.command("set_columns"), Err(CapabilityAccessError::OutOfRange));
+        assert_eq!(board.command("set_cards"), Err(CapabilityAccessError::OutOfRange));
     }
 }
 

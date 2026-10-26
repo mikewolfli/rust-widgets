@@ -927,7 +927,78 @@ pub fn naive_date_to_string(date: NaiveDate) -> String {
 /// so `"Partially_Checked"`, `"partially-checked"`, and `"PARTIALLY CHECKED"`
 /// all become `"partiallychecked"`. Used by every string-based `expect_*`
 /// parser, which is why separators in the accepted spellings do not matter.
+///
+/// The common (ASCII, short) case is normalised on the stack and copied once into the
+/// returned `String`, so one call is one exact-size allocation rather than the two a
+/// `collect()` over a growing iterator used to make. Callers that only need the spelling for a
+/// map probe or a `match` should use [`with_normalized_key`], which allocates nothing.
 pub fn normalize_key(input: &str) -> String {
+    let mut buffer = [0u8; NORMALIZED_KEY_BUFFER];
+    if let Some(normalized) = normalize_key_into(input, &mut buffer) {
+        return String::from(normalized);
+    }
+    normalize_key_allocating(input)
+}
+
+/// Runs `f` with the normalised form of `input`, without building an owned `String`.
+///
+/// # Why this exists
+///
+/// A registry lookup or a role classification only needs the normalised spelling for the
+/// duration of the call: it is a `HashMap`/`BTreeMap` probe key or the subject of a `match`.
+/// `normalize_key` answers with an owned `String` for those callers anyway, and an owned string
+/// whose only use is transient is a per-lookup heap allocation on paths that run once per
+/// created control, once per interaction-state change and once per document node.
+///
+/// The returned slice borrows the stack buffer, so the caller cannot keep it — which is exactly
+/// the lifetime the lookup needs. Inputs the fast path refuses (non-ASCII, or longer than the
+/// buffer) take [`normalize_key`], so the answer is identical for every input.
+pub fn with_normalized_key<R>(input: &str, f: impl FnOnce(&str) -> R) -> R {
+    let mut buffer = [0u8; NORMALIZED_KEY_BUFFER];
+    match normalize_key_into(input, &mut buffer) {
+        Some(normalized) => f(normalized),
+        None => f(&normalize_key_allocating(input)),
+    }
+}
+
+/// The stack buffer [`with_normalized_key`] normalises into.
+///
+/// 64 bytes covers every canonical name and token this crate ships (the longest is under 30
+/// characters) with room for a host-supplied class name; anything longer takes the allocating
+/// path, so the size is a threshold rather than a limit on what can be normalised.
+const NORMALIZED_KEY_BUFFER: usize = 64;
+
+/// Writes the normalised form into `buffer`.
+///
+/// Answers `None` — meaning "use the allocating path" — for a non-ASCII character, because
+/// Unicode lower-casing can expand one character into several (which a byte-for-byte buffer
+/// would silently truncate), and for an input longer than the buffer.
+fn normalize_key_into<'a>(
+    input: &str,
+    buffer: &'a mut [u8; NORMALIZED_KEY_BUFFER],
+) -> Option<&'a str> {
+    let mut length = 0;
+    for ch in input.chars() {
+        if matches!(ch, '_' | '-' | ' ') {
+            continue;
+        }
+        let lower = ch.to_ascii_lowercase();
+        if !lower.is_ascii() || length == buffer.len() {
+            return None;
+        }
+        buffer[length] = lower as u8;
+        length += 1;
+    }
+    // Only ASCII bytes were written, so this cannot fail; `ok` keeps the helper total.
+    core::str::from_utf8(&buffer[..length]).ok()
+}
+
+/// The allocating normalisation, used only for the inputs [`normalize_key_into`] refuses.
+///
+/// This is the rule itself, spelled with the Unicode-aware `char::to_lowercase` the fast path
+/// substitutes an ASCII-only version of; keeping both here is what makes "identical for every
+/// input" checkable.
+fn normalize_key_allocating(input: &str) -> String {
     input
         .chars()
         .filter(|ch| !matches!(*ch, '_' | '-' | ' '))

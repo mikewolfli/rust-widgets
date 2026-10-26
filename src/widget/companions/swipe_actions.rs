@@ -17,7 +17,9 @@ use crate::signal::Signal1;
 use crate::widget::capability::coercion::expect_u32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-use crate::widget::capability::WidgetProperties;
+use crate::widget::capability::{
+    RecordField, RecordList, RecordSchema, RecordValue, WidgetProperties,
+};
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_draw_bridge, impl_widget_property_hooks, property_names_of};
@@ -82,6 +84,25 @@ impl SwipeAction {
     }
 }
 
+/// One row of the `leading_actions` / `trailing_actions` records properties: an action's label,
+/// optional icon token and optional fill override.
+///
+/// The reveal order is the order of the list on its side, so a write that reorders rows moves the
+/// activation index with it.
+pub const SWIPE_ACTION_SCHEMA: RecordSchema = RecordSchema {
+    fields: &[
+        RecordField::required("text", crate::widget::capability::PropertyValueKind::String),
+        RecordField::optional("icon", crate::widget::capability::PropertyValueKind::String),
+        RecordField::optional("fill", crate::widget::capability::PropertyValueKind::Color),
+    ],
+    // An action has no id of its own: the background addresses actions by side and index, and two
+    // actions may carry the same text. `text` is named as the nominal identity so the records
+    // validator has a field to read, with uniqueness and non-emptiness explicitly **not** claimed.
+    id_field: "text",
+    ids_unique: false,
+    ids_required: false,
+};
+
 /// The multi-action background painted behind a swiped row.
 pub struct SwipeActions {
     base: BaseWidget,
@@ -105,11 +126,7 @@ impl SwipeActions {
     /// Creates an empty background. The host sets its geometry through [`Widget::set_geometry`].
     pub fn new() -> Self {
         Self {
-            base: BaseWidget::new(
-                WidgetKind::SwipeToDismiss,
-                Rect::new(0, 0, 0, 0),
-                "SwipeActions",
-            ),
+            base: BaseWidget::new(WidgetKind::SwipeActions, Rect::new(0, 0, 0, 0), "SwipeActions"),
             leading_actions: Vec::new(),
             trailing_actions: Vec::new(),
             max_reveal_width: 240,
@@ -364,47 +381,40 @@ impl Widget for SwipeActions {
     }
 }
 
-/// Encodes one action as `[text, icon-or-null, fill-or-null]`.
-fn action_value(action: &SwipeAction) -> CapabilityValue {
-    CapabilityValue::Tuple(Vec::from([
-        CapabilityValue::String(action.text.clone()),
-        match action.icon.as_deref() {
-            Some(icon) => CapabilityValue::String(icon.to_string()),
-            None => CapabilityValue::Null,
-        },
-        match action.fill {
-            Some(fill) => CapabilityValue::Color(fill),
-            None => CapabilityValue::Null,
-        },
-    ]))
+/// One row of [`SWIPE_ACTION_SCHEMA`].
+fn swipe_action_record(action: &SwipeAction) -> RecordValue {
+    let mut record = RecordValue::new().with("text", CapabilityValue::String(action.text.clone()));
+    if let Some(icon) = action.icon.as_deref() {
+        record = record.with("icon", CapabilityValue::String(icon.to_string()));
+    }
+    if let Some(fill) = action.fill {
+        record = record.with("fill", CapabilityValue::Color(fill));
+    }
+    record
 }
 
-/// Decodes an action-list property.
-fn expect_actions(value: CapabilityValue) -> Result<Vec<SwipeAction>, CapabilityAccessError> {
-    let CapabilityValue::Tuple(rows) = value else {
-        return Err(CapabilityAccessError::TypeMismatch);
-    };
-    let mut actions = Vec::with_capacity(rows.len());
-    for row in rows {
-        let CapabilityValue::Tuple(parts) = row else {
-            return Err(CapabilityAccessError::TypeMismatch);
-        };
-        if parts.len() != 3 {
-            return Err(CapabilityAccessError::TypeMismatch);
-        }
-        let mut parts = parts.into_iter();
-        let text = match parts.next().ok_or(CapabilityAccessError::TypeMismatch)? {
-            CapabilityValue::String(text) => text,
+/// Decodes one action list write into rows.
+///
+/// The whole list is decoded before the setter runs, so a refused row leaves the background
+/// unchanged.
+fn swipe_actions_from_records(
+    list: &RecordList,
+) -> Result<Vec<SwipeAction>, CapabilityAccessError> {
+    let mut actions = Vec::with_capacity(list.items().len());
+    for record in list.items() {
+        let text = match record.get("text") {
+            Some(CapabilityValue::String(text)) => text.clone(),
             _ => return Err(CapabilityAccessError::TypeMismatch),
         };
-        let icon = match parts.next().ok_or(CapabilityAccessError::TypeMismatch)? {
-            CapabilityValue::String(icon) => Some(icon),
-            CapabilityValue::Null => None,
-            _ => return Err(CapabilityAccessError::TypeMismatch),
+        let icon = match record.get("icon") {
+            None | Some(CapabilityValue::Null) => None,
+            Some(CapabilityValue::String(icon)) => Some(icon.clone()),
+            Some(_) => return Err(CapabilityAccessError::TypeMismatch),
         };
-        let fill = match parts.next().ok_or(CapabilityAccessError::TypeMismatch)? {
-            CapabilityValue::Null => None,
-            other => Some(expect_color(other)?),
+        // An omitted fill keeps the default destructive red `SwipeAction::new` uses.
+        let fill = match record.get("fill") {
+            None | Some(CapabilityValue::Null) => None,
+            Some(other) => Some(expect_color(other.clone())?),
         };
         actions.push(SwipeAction { text, icon, fill });
     }
@@ -414,12 +424,14 @@ fn expect_actions(value: CapabilityValue) -> Result<Vec<SwipeAction>, Capability
 impl WidgetProperties for SwipeActions {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "leading_actions" => {
-                Ok(CapabilityValue::Tuple(self.leading_actions.iter().map(action_value).collect()))
-            }
-            "trailing_actions" => {
-                Ok(CapabilityValue::Tuple(self.trailing_actions.iter().map(action_value).collect()))
-            }
+            "leading_actions" => Ok(CapabilityValue::Records(RecordList::from_items(
+                &SWIPE_ACTION_SCHEMA,
+                self.leading_actions.iter().map(swipe_action_record).collect(),
+            ))),
+            "trailing_actions" => Ok(CapabilityValue::Records(RecordList::from_items(
+                &SWIPE_ACTION_SCHEMA,
+                self.trailing_actions.iter().map(swipe_action_record).collect(),
+            ))),
             "max_reveal_width" => Ok(CapabilityValue::UInt(self.max_reveal_width as u64)),
             "icon_side" => Ok(CapabilityValue::UInt(self.icon_side as u64)),
             "offset" => Ok(CapabilityValue::Float(f64::from(self.offset))),
@@ -438,11 +450,31 @@ impl WidgetProperties for SwipeActions {
                 Ok(())
             }
             "leading_actions" => {
-                self.set_leading_actions(expect_actions(value)?);
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&SWIPE_ACTION_SCHEMA).map_err(|violation| {
+                    log::warn!("swipe_actions.leading_actions refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("leading_actions"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                self.set_leading_actions(swipe_actions_from_records(&list)?);
                 Ok(())
             }
             "trailing_actions" => {
-                self.set_trailing_actions(expect_actions(value)?);
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&SWIPE_ACTION_SCHEMA).map_err(|violation| {
+                    log::warn!("swipe_actions.trailing_actions refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("trailing_actions"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                self.set_trailing_actions(swipe_actions_from_records(&list)?);
                 Ok(())
             }
             "offset" => {

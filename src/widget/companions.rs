@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! Reusable companion controls: swatch grid, filter row, legend, chart tooltip, tooltip
-//! pipeline, zoom/pan controller and toast queue.
+//! pipeline, zoom/pan controller, toast queue, menu panel, speed dial, swipe actions, drawer
+//! section header, layer panel and playlist panel.
 //!
 //! # Why these live together
 //!
@@ -13,7 +14,10 @@
 //! production limit (principle #9) is not crossed as the set grows.
 //!
 //! The capability property/event tables in `src/widget/capability/` remain the single
-//! publication surface; this module adds no entries there.
+//! publication surface. Seven companions are reachable through their Rust types only and
+//! publish no row there; six (`MenuPanel`, `SpeedDial`, `SwipeActions`,
+//! `DrawerSectionHeader`, `LayerPanel`, `PlaylistPanel`) own a `WidgetKind` and publish a
+//! capability row, so a document can create them by name.
 //!
 //! # Reused models instead of local copies
 //!
@@ -25,28 +29,28 @@
 //!
 //! # `WidgetKind` mapping
 //!
-//! The shared `WidgetKind` enum is intentionally not extended here (it is owned by the
-//! capability/schema surface). Each companion declares the closest existing kind for base
+//! The shared `WidgetKind` enum is owned by the capability/schema surface. Six companions own
+//! a kind of their own (`MenuPanel`, `SpeedDial`, `SwipeActions`, `DrawerSectionHeader`,
+//! `LayerPanel`, `PlaylistPanel`). The other seven declare the closest existing kind for base
 //! bookkeeping: `Swatch` → `ColorHistory`, `FilterRow` → `QueryBuilder`, `Legend` → `Chart`,
-//! `ChartTooltip`/`TooltipManager` → `Tooltip`, `ZoomPanController` → `ImageView`,
-//! `ToastHost` → `PopupWindow`, `MenuPanel` → `Menu`, `SpeedDial` → `FAB`,
-//! `SwipeActions` → `SwipeToDismiss` and `DrawerSectionHeader` → `Label`. The kind is
-//! bookkeeping only; behaviour is implemented here.
+//! `ChartTooltip`/`TooltipManager` → `Tooltip`, `ZoomPanController` → `ImageView` and
+//! `ToastHost` → `PopupWindow`. The kind is bookkeeping only; behaviour is implemented here.
 //!
 //! # What the borrowed kinds cost in audits (G-306)
 //!
-//! The mapping is not invisible to kind-level accounting: any `WidgetKind` statistic, and
-//! any registry audit that asks "which module implements this kind?", counts a companion
+//! The mapping is not invisible to kind-level accounting: any `WidgetKind` statistic, and any
+//! registry audit that asks "which module implements this kind?", counts a borrowing companion
 //! under the kind it borrows. A `Swatch` is counted as `ColorHistory`, a `FilterRow` as
 //! `QueryBuilder`, a `Legend` as `Chart`, a `ChartTooltip`/`TooltipManager` as `Tooltip`, a
 //! `ZoomPanController` as `ImageView` and a `ToastHost` as `PopupWindow`. The direction is
-//! one-way — the borrowed kind never claims the companion as its own type — but a report
-//! saying "N controls of kind X" includes the companion even when X's module does not
-//! implement it. Because the capability tables publish no row for these controls (see
-//! "Reused models instead of local copies" above), a reader that needs an exact answer
-//! must consult this table rather than the reported kind alone; a registry test that pins
-//! the borrowed-kind → borrower pairs would make the deviation testable instead of only
-//! documented.
+//! one-way — the borrowed kind never claims the companion as its own type — but a report saying
+//! "N controls of kind X" includes the companion even when X's module does not implement it.
+//! Because the capability tables publish no row for these seven controls (see "Reused models
+//! instead of local copies" above), a reader that needs an exact answer must consult this table
+//! rather than the reported kind alone; a registry test that pins the borrowed-kind → borrower
+//! pairs would make the deviation testable instead of only documented. The six companions that
+//! own a kind do report it, so they are counted under their own name and are absent from this
+//! deviation set.
 //!
 //! # Safety
 //!
@@ -85,13 +89,13 @@ pub use crate::widget::view_widgets::thumbnail_cache::ThumbnailCache;
 pub use chart_tooltip::{ChartTooltip, TooltipLine};
 pub use drawer_section_header::DrawerSectionHeader;
 pub use filter_row::FilterRow;
-pub use layer_panel::{LayerEntry, LayerPanel};
+pub use layer_panel::{LayerEntry, LayerPanel, LAYER_ENTRY_SCHEMA};
 pub use legend::{Legend, LegendEntry, LegendOrientation, LegendPosition};
-pub use menu_panel::{MenuPanel, MenuPanelItem};
-pub use playlist_panel::PlaylistPanel;
-pub use speed_dial::{SpeedDial, SpeedDialAction, SpeedDialDirection};
+pub use menu_panel::{MenuPanel, MenuPanelItem, MENU_PANEL_ITEM_SCHEMA};
+pub use playlist_panel::{PlaylistPanel, PLAYLIST_TRACK_SCHEMA};
+pub use speed_dial::{SpeedDial, SpeedDialAction, SpeedDialDirection, SPEED_DIAL_ACTION_SCHEMA};
 pub use swatch::Swatch;
-pub use swipe_actions::{SwipeAction, SwipeActions, SwipeSide};
+pub use swipe_actions::{SwipeAction, SwipeActions, SwipeSide, SWIPE_ACTION_SCHEMA};
 pub use toast_host::{
     HostedToast, ToastAnchor, ToastHost, ToastOverflowPolicy, ToastStackingDirection,
 };

@@ -280,7 +280,7 @@ impl Draw for FilterRow {
         if self.columns.is_empty() {
             let placeholder =
                 Rect::new(rect.x + 8, rect.y, rect.width.saturating_sub(16), rect.height);
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 placeholder,
                 "No filter columns",
                 font,
@@ -309,7 +309,7 @@ impl Draw for FilterRow {
             } else {
                 (editor, ink)
             };
-            context.draw_text_fitted(
+            context.draw_text_fitted_cow(
                 cell,
                 text,
                 font,

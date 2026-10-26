@@ -764,6 +764,8 @@ pub enum WidgetKind {
     MarkdownOutlinePanel,
     /// FindBar — query, match and replacement controls for an editor.
     FindBar,
+    /// WebFindBar — the web family's own find bar (searches a page, not an editor buffer).
+    WebFindBar,
     /// ShapeCanvas — a scene that hosts, selects and orders shapes.
     ShapeCanvas,
     /// KanbanCardView — a real card control for a kanban column.
@@ -774,6 +776,18 @@ pub enum WidgetKind {
     RangePresetBar,
     /// GridViewHeader — a shared table header with sorting, resizing and filtering.
     GridViewHeader,
+    /// MenuPanel — a reusable drop-down menu panel a host anchors itself (COMP-A01).
+    MenuPanel,
+    /// SpeedDial — a floating trigger that fans out its actions (COMP-A02).
+    SpeedDial,
+    /// SwipeActions — a multi-action background for a swiped row (COMP-A03).
+    SwipeActions,
+    /// DrawerSectionHeader — the small heading row that groups a drawer's items (COMP-A04).
+    DrawerSectionHeader,
+    /// LayerPanel — the companion list for a canvas's layers (COMP-I01).
+    LayerPanel,
+    /// PlaylistPanel — the companion list for a media player's queue (COMP-I03).
+    PlaylistPanel,
 }
 
 impl WidgetKind {
@@ -1177,11 +1191,18 @@ impl WidgetKind {
             Self::DiffFileList => "DiffFileList",
             Self::MarkdownOutlinePanel => "MarkdownOutlinePanel",
             Self::FindBar => "FindBar",
+            Self::WebFindBar => "WebFindBar",
             Self::ShapeCanvas => "ShapeCanvas",
             Self::KanbanCardView => "KanbanCardView",
             Self::KanbanColumnHeader => "KanbanColumnHeader",
             Self::RangePresetBar => "RangePresetBar",
             Self::GridViewHeader => "GridViewHeader",
+            Self::MenuPanel => "MenuPanel",
+            Self::SpeedDial => "SpeedDial",
+            Self::SwipeActions => "SwipeActions",
+            Self::DrawerSectionHeader => "DrawerSectionHeader",
+            Self::LayerPanel => "LayerPanel",
+            Self::PlaylistPanel => "PlaylistPanel",
         }
     }
 
@@ -1276,11 +1297,16 @@ impl WidgetKind {
             | Self::DiffFileList
             | Self::MarkdownOutlinePanel
             | Self::FindBar
+            | Self::WebFindBar
             | Self::ShapeCanvas
             | Self::KanbanCardView
             | Self::KanbanColumnHeader
             | Self::RangePresetBar
-            | Self::GridViewHeader => true,
+            | Self::GridViewHeader
+            | Self::MenuPanel
+            | Self::SpeedDial
+            | Self::LayerPanel
+            | Self::PlaylistPanel => true,
             _ => false,
         }
     }
@@ -1309,11 +1335,14 @@ impl WidgetKind {
             | Self::OtpInput
             | Self::InplaceEditor
             // Companions with an editable text field: the find bar's query/replace, the filter
-            // row's per-column operand, and the two in-place editors on a kanban control.
+            // row's per-column operand, the two in-place editors on a kanban control and the
+            // layer panel's in-place rename.
             | Self::FilterRow
             | Self::FindBar
+            | Self::WebFindBar
             | Self::KanbanCardView
-            | Self::KanbanColumnHeader => true,
+            | Self::KanbanColumnHeader
+            | Self::LayerPanel => true,
             _ => false,
         }
     }

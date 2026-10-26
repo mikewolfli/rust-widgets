@@ -150,6 +150,11 @@ pub struct LineChart {
     sorted_x: std::cell::RefCell<Option<Vec<Vec<usize>>>>,
     /// The pointer position where a press began, for the click-vs-pan threshold (CH-06).
     press_start: Option<Point>,
+    /// Reused vertex buffer for the current series' mapped points.
+    ///
+    /// `mapped_points` used to answer with a fresh `Vec` per series per frame; the draw path owns
+    /// one buffer and rewrites it instead.
+    mapped: Vec<Point>,
     /// The point under the press, reported on release when the gesture was a click (CH-06).
     pressed_point: Option<(usize, usize)>,
     /// Whether the current drag actually panned (CH-06).
@@ -233,6 +238,7 @@ impl LineChart {
             hovered: None,
             show_tooltip: false,
             zoom_enabled: false,
+            mapped: Vec::new(),
             flat_extents: std::cell::Cell::new(SeriesExtents::default()),
             sorted_x: std::cell::RefCell::new(None),
             press_start: None,
@@ -1069,8 +1075,17 @@ impl Draw for LineChart {
 
             // `map_to_pixel` is a pure function of the pair, so the line can be walked
             // without materialising every point — the only allocation is the decimated
-            // copy a dense series needs.
-            let mapped = self.mapped_points(series_index, x_min, x_max, y_min, y_max, plot_area);
+            // copy a dense series needs, and that copy reuses this control's buffer.
+            Self::write_mapped_points(
+                points,
+                x_min,
+                x_max,
+                y_min,
+                y_max,
+                plot_area,
+                &mut self.mapped,
+            );
+            let mapped = &self.mapped;
 
             // ── Filled area under the line ──
             if self.series[series_index].fill.unwrap_or(self.fill_area) {
@@ -1135,32 +1150,33 @@ impl Draw for LineChart {
 }
 
 impl LineChart {
-    /// The series' points in pixel space, decimated to at most two samples per pixel column.
+    /// Writes the series' points in pixel space into `out`, decimated to at most two samples per
+    /// pixel column.
     ///
     /// A series shorter than twice the plot width is mapped one-to-one. A denser one keeps
     /// the first, lowest, highest and last point of every column, which preserves the drawn
     /// envelope while bounding the work per frame — the previous path emitted one stroke per
     /// sample, so ten thousand points meant ten thousand primitives for a plot 400 px wide.
-    fn mapped_points(
-        &self,
-        series_index: usize,
+    ///
+    /// The buffer is the caller's: the draw path reuses one `Vec` for every series and frame,
+    /// where this used to answer with an owned `Vec` per series per frame.
+    fn write_mapped_points(
+        points: &[(f64, f64)],
         x_min: f64,
         x_max: f64,
         y_min: f64,
         y_max: f64,
         plot_area: Rect,
-    ) -> Vec<Point> {
-        let points = match self.series.get(series_index) {
-            Some(series) => &series.points,
-            None => return Vec::new(),
-        };
+        out: &mut Vec<Point>,
+    ) {
+        out.clear();
         let map = |x: f64, y: f64| Self::map_to_pixel(x, y, x_min, x_max, y_min, y_max, plot_area);
         let budget = (plot_area.width as usize).saturating_mul(2).max(2);
         if points.len() <= budget {
-            return points.iter().map(|point| map(point.0, point.1)).collect();
+            out.extend(points.iter().map(|point| map(point.0, point.1)));
+            return;
         }
 
-        let mut mapped = Vec::with_capacity(budget);
         let chunk = points.len().div_ceil(budget);
         for group in points.chunks(chunk) {
             let first = group[0];
@@ -1176,9 +1192,8 @@ impl LineChart {
             }
             let mut candidates = [first, lowest, highest, last];
             candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
-            mapped.extend(candidates.iter().map(|point| map(point.0, point.1)));
+            out.extend(candidates.iter().map(|point| map(point.0, point.1)));
         }
-        mapped
     }
 
     /// Paints a small readout beside the hovered point.
@@ -1233,7 +1248,7 @@ impl LineChart {
         };
         context.fill_rect(box_rect, surface);
         context.draw_rect(box_rect, ink.with_alpha_f32(0.35));
-        context.draw_text_line(box_rect, &text, &font, ink, HorizontalAlignment::Center);
+        context.draw_text_line_cow(box_rect, &text, &font, ink, HorizontalAlignment::Center);
     }
 }
 
@@ -1801,7 +1816,16 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::<(usize, usize)>::new()));
         let sink = Arc::clone(&seen);
         lc.point_hovered.connect(move |index| sink.lock().unwrap().push(*index));
-        let points = lc.mapped_points(0, -0.2, 2.2, -0.2, 2.2, lc.last_plot_area.unwrap());
+        let mut points = Vec::new();
+        LineChart::write_mapped_points(
+            &lc.series[0].points,
+            -0.2,
+            2.2,
+            -0.2,
+            2.2,
+            lc.last_plot_area.unwrap(),
+            &mut points,
+        );
         lc.handle_event(&Event::MouseMove { pos: points[2] });
         assert_eq!(lc.hovered_point(), Some((0, 2)));
         assert_eq!(*seen.lock().unwrap(), vec![(0, 2)]);

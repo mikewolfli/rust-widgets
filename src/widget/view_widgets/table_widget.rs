@@ -154,6 +154,12 @@ pub struct TableWidget {
     delegate: Option<Arc<dyn ItemDelegate>>,
     /// The cell an in-place edit is currently open on, if any.
     editing: Option<(usize, usize)>,
+    /// Reused buffer for the cell text being painted.
+    ///
+    /// The paint path used to declare this inside `draw`, so a model that lends its cells still
+    /// grew a fresh `String` from zero every frame (measured: two allocations per frame on a
+    /// 240x120 sample table). Kept here, the capacity survives across frames.
+    cell_text: String,
     /// Emitted when selected row changes.
     pub selection_changed: Signal1<usize>,
     /// Emitted when focused row changes.
@@ -229,6 +235,7 @@ impl TableWidget {
             row_heights: HashMap::new(),
             delegate: None,
             editing: None,
+            cell_text: String::new(),
             selection_changed: Signal1::new(),
             focused_row_changed: Signal1::new(),
             scroll_row: 0,
@@ -1168,10 +1175,10 @@ impl Draw for TableWidget {
             let row_count = model.row_count();
             let col_count = model.column_count();
             let current_row = self.focused_row;
-            // Resolved once for the grid instead of twice per cell, and cell text goes through a
-            // reusable buffer so a model that can lend its cells allocates nothing per frame.
             let font = effective_font(style);
-            let mut cell_text = String::new();
+            // The capacity of this buffer survives across frames; see `TableWidget::cell_text`.
+            // It is named per use rather than held as a reference: the loop below also calls
+            // `&self` accessors, which a long-lived `&mut self.cell_text` would forbid.
             // The column offsets are accumulated once for the whole paint instead of being
             // re-summed per cell. With a single `set_column_width` override the accessor walked
             // `0..index` for every call, making one frame O(R·C²) map lookups; the accumulation
@@ -1209,30 +1216,30 @@ impl Draw for TableWidget {
                     if c < self.scroll_column {
                         continue;
                     }
-                    cell_text.clear();
+                    self.cell_text.clear();
                     let mut painted_by_delegate = false;
                     if let Some(delegate) = self.delegate.as_ref() {
                         let cell = crate::core::Rect::new(x, y, col_w, row_h as u32);
-                        let has = model.fill_data(r, c, &mut cell_text);
+                        let has = model.fill_data(r, c, &mut self.cell_text);
                         painted_by_delegate = delegate.paint(
                             context,
                             cell,
                             r,
                             c,
-                            if has { Some(cell_text.as_str()) } else { None },
+                            if has { Some(self.cell_text.as_str()) } else { None },
                         );
                     }
-                    if !painted_by_delegate && model.fill_data(r, c, &mut cell_text) {
+                    if !painted_by_delegate && model.fill_data(r, c, &mut self.cell_text) {
                         // The cell is the band: a text origin of `y + row_h / 2` would put the
                         // glyph box's *top* edge on the row's middle line and draw every label
                         // half a line low. `text_line` derives the centred line box instead, and
                         // it also bounds the label so a long cell value cannot run into the next
                         // column.
                         let cell = crate::core::Rect::new(x, y, col_w, row_h as u32);
-                        if !cell_text.is_empty() {
+                        if !self.cell_text.is_empty() {
                             context.draw_text_fitted_cow(
                                 context.text_line(cell, font),
-                                &cell_text,
+                                &self.cell_text,
                                 font,
                                 ink,
                                 HorizontalAlignment::Left,

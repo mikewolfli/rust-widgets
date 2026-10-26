@@ -352,7 +352,7 @@ fn paint_block(
             content_width,
             style.line_height as u32,
         );
-        ctx.draw_text_line(band, line, style.font, style.ink, HorizontalAlignment::Left);
+        ctx.draw_text_line_cow(band, line, style.font, style.ink, HorizontalAlignment::Left);
         *y += style.line_height;
     }
 }
@@ -418,7 +418,7 @@ fn paint_card(
     }
     if !card.title.is_empty() {
         let band = Rect::new(text_left, y, text_width, advance(&palette.title_font) + 4);
-        ctx.draw_text_line(
+        ctx.draw_text_line_cow(
             band,
             card.title,
             &palette.title_font,
@@ -447,7 +447,7 @@ fn paint_card(
             content_width,
             line_height as u32,
         );
-        ctx.draw_text_line(band, line, &palette.font, body_ink, HorizontalAlignment::Left);
+        ctx.draw_text_line_cow(band, line, &palette.font, body_ink, HorizontalAlignment::Left);
         y = y.saturating_add(line_height);
     }
 
@@ -537,7 +537,7 @@ fn paint_card(
             row.width.saturating_sub(box_side + BUTTON_GAP),
             row_h,
         );
-        ctx.draw_text_line(
+        ctx.draw_text_line_cow(
             label_band,
             label,
             &palette.font,
@@ -559,7 +559,7 @@ fn paint_card(
         };
         ctx.fill_rounded_rect(*rect, 4, fill);
         ctx.draw_rounded_rect_stroke(*rect, 4, border, 1);
-        ctx.draw_text_line(
+        ctx.draw_text_line_cow(
             *rect,
             card.buttons[index],
             &palette.font,

@@ -694,7 +694,8 @@ impl ThemeManager {
         let Some(theme) = self.current_theme() else {
             return WidgetStyle::default();
         };
-        let mut style = self.role_base_style(theme, kind_name);
+        let mut style =
+            self.role_base_style(theme, kind_name, WidgetRole::for_kind_name(kind_name));
 
         // A class-level override wins over the role default. The class is looked up
         // verbatim first, then by the role it stands for, so a theme may override either a
@@ -756,10 +757,17 @@ impl ThemeManager {
     ) -> WidgetStyle {
         let mut style = self.resolve_base_style(class_name);
         if let Some(state) = state {
-            let key = format!("{class_name}:{}", state.state_suffix());
-            if let Some(token) = self.current_theme().and_then(|t| t.overrides.styles.get(&key)) {
-                let theme = self.current_theme();
-                apply_token(&mut style, token, theme);
+            // The `"<kind>:<state>"` key is only built when there is a table to probe: an
+            // override-free theme (the common case) paid one `format!` per resolution for a
+            // lookup that could not succeed. Asking the theme once also replaces the second
+            // `current_theme()` call the arm used to make.
+            if let Some(theme) = self.current_theme() {
+                if !theme.overrides.styles.is_empty() {
+                    let key = format!("{class_name}:{}", state.state_suffix());
+                    if let Some(token) = theme.overrides.styles.get(&key) {
+                        apply_token(&mut style, token, Some(theme));
+                    }
+                }
             }
         }
         self.apply_high_contrast(&mut style);
@@ -768,10 +776,13 @@ impl ThemeManager {
 
     /// The role-default appearance for a widget kind, before any class or state overlay.
     ///
+    /// The caller passes the [`WidgetRole`] it classified the name into, so one resolution
+    /// classifies the name once even when both the base colours and the role override need it.
+    ///
     /// The name is classified through [`WidgetRole::for_kind_name`], so it must be a *kind*
     /// name; a caller holding a CSS class should use
     /// [`resolve_style_for`](Self::resolve_style_for), which keeps the two vocabularies apart.
-    fn role_base_style(&self, theme: &Theme, kind_name: &str) -> WidgetStyle {
+    fn role_base_style(&self, theme: &Theme, kind_name: &str, role: WidgetRole) -> WidgetStyle {
         // The face's material, resolved from the role table in `render::surface`.
         //
         // # Why the shadow now comes from a level rather than a literal
@@ -817,7 +828,7 @@ impl ThemeManager {
         // theme switch the stored palette is already the target while the frame should show the
         // blend. Off the transition path this is the same value the theme carries.
         let colors = self.effective_colors();
-        let (background_color, text_color, border_color) = role_colors(&colors, kind_name);
+        let (background_color, text_color, border_color) = role_colors(&colors, role);
 
         // The minimum touch target for this build's device class.
         //
@@ -891,11 +902,17 @@ impl ThemeManager {
             return WidgetStyle::default();
         };
 
-        let mut style = self.role_base_style(theme, class_name);
+        // Classified once here and passed down: the role is needed twice (for the base colours
+        // and for the role-key override), and classifying the same name twice was the second
+        // allocation this path made per resolution.
+        let role = WidgetRole::for_kind_name(class_name);
+        let mut style = self.role_base_style(theme, class_name, role);
 
-        let token = theme.overrides.styles.get(class_name).or_else(|| {
-            theme.overrides.styles.get(role_key(WidgetRole::for_kind_name(class_name)))
-        });
+        let token = theme
+            .overrides
+            .styles
+            .get(class_name)
+            .or_else(|| theme.overrides.styles.get(role_key(role)));
         if let Some(token) = token {
             apply_token(&mut style, token, Some(theme));
         }
@@ -908,9 +925,9 @@ impl ThemeManager {
 /// Split out so the classification and the colour choice are separate: the role
 /// table answers "what kind of visual treatment is this?" and this function
 /// answers "what does that treatment look like in this palette?".
-fn role_colors(colors: &Colors, class_name: &str) -> (Option<Color>, Option<Color>, Option<Color>) {
+fn role_colors(colors: &Colors, role: WidgetRole) -> (Option<Color>, Option<Color>, Option<Color>) {
     // `contrast_color` is the crate's single contrast decision; see `Color`.
-    match WidgetRole::for_kind_name(class_name) {
+    match role {
         WidgetRole::Primary => {
             (Some(colors.primary), Some(colors.primary.contrast_color()), Some(colors.primary))
         }

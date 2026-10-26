@@ -390,12 +390,15 @@ impl WidgetRole {
     /// working for a kind the library has never heard of: the caller passes the
     /// kind's name, and an unknown name gets the honest default.
     pub fn for_kind_name(kind_name: &str) -> Self {
-        let normalized: String = kind_name
-            .chars()
-            .filter(|c| !matches!(c, '_' | '-' | ' '))
-            .flat_map(char::to_lowercase)
-            .collect();
-        match normalized.as_str() {
+        // The normalisation lives in one place (the same rule `role_surface_style` applies), and
+        // the fast path keeps it off the heap: this runs once per created control and once per
+        // interaction-state change, where an owned `String` per classification was pure cost.
+        crate::widget::capability::coercion::with_normalized_key(kind_name, Self::for_normalized)
+    }
+
+    /// The role table itself, over an already-normalised kind name.
+    fn for_normalized(normalized: &str) -> Self {
+        match normalized {
             // Filled, brand-coloured actions.
             "button" | "toggle" | "togglebutton" => Self::Primary,
             // Plain text on the surface.

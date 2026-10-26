@@ -281,6 +281,13 @@ mod tests {
             | WidgetKind::DiffFileList
             | WidgetKind::MarkdownOutlinePanel
             | WidgetKind::FindBar
+            | WidgetKind::WebFindBar
+            | WidgetKind::MenuPanel
+            | WidgetKind::SpeedDial
+            | WidgetKind::SwipeActions
+            | WidgetKind::DrawerSectionHeader
+            | WidgetKind::LayerPanel
+            | WidgetKind::PlaylistPanel
             | WidgetKind::ShapeCanvas
             | WidgetKind::KanbanCardView
             | WidgetKind::KanbanColumnHeader

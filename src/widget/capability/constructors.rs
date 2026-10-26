@@ -1998,6 +1998,50 @@ pub fn create_find_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(crate::widget::special_widgets::markdown_editor::FindBar::new(geometry))
 }
 
+/// Creates the web view's find strip (`COMP-L03`).
+#[cfg(full_widgets)]
+pub fn create_web_find_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::web_widgets::find_bar::WebFindBar::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a drop-down menu panel (`COMP-A01`).
+pub fn create_menu_panel(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::MenuPanel::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a collapsed speed dial (`COMP-A02`).
+pub fn create_speed_dial(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::SpeedDial::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty swipe-action background (`COMP-A03`).
+pub fn create_swipe_actions(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    let mut widget = crate::widget::companions::SwipeActions::new();
+    widget.set_geometry(geometry);
+    Box::new(widget)
+}
+
+#[cfg(full_widgets)]
+/// Creates a drawer section heading (`COMP-A04`).
+pub fn create_drawer_section_header(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::DrawerSectionHeader::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty layer panel (`COMP-I01`).
+pub fn create_layer_panel(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::LayerPanel::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty playlist panel (`COMP-I03`).
+pub fn create_playlist_panel(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::PlaylistPanel::new(geometry))
+}
+
 #[cfg(full_widgets)]
 /// Creates an empty shape canvas (`COMP-17`).
 pub fn create_shape_canvas(geometry: Rect, _text: &str) -> Box<dyn Widget> {

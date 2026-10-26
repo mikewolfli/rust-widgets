@@ -1006,6 +1006,8 @@ pub use widget::WebEngineView;
 #[cfg(full_widgets)]
 pub use widget::WebEngineWebChannel;
 #[cfg(full_widgets)]
+pub use widget::WebFindBar;
+#[cfg(full_widgets)]
 pub use widget::WebView;
 pub use widget::Widget;
 #[cfg(widgets_unstripped)]

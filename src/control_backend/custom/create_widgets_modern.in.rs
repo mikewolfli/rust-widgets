@@ -1397,6 +1397,91 @@ macro_rules! impl_modern_widgets {
             self.mount_widget_of_kind(WidgetKind::FindBar, parent, "", x, y, width, height)
         }
 
+        fn create_web_find_bar(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::WebFindBar, parent, "", x, y, width, height)
+        }
+
+        fn create_menu_panel(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::MenuPanel, parent, "", x, y, width, height)
+        }
+
+        fn create_speed_dial(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::SpeedDial, parent, "", x, y, width, height)
+        }
+
+        fn create_swipe_actions(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::SwipeActions, parent, "", x, y, width, height)
+        }
+
+        fn create_drawer_section_header(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(
+                WidgetKind::DrawerSectionHeader,
+                parent,
+                "",
+                x,
+                y,
+                width,
+                height,
+            )
+        }
+
+        fn create_layer_panel(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::LayerPanel, parent, "", x, y, width, height)
+        }
+
+        fn create_playlist_panel(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::PlaylistPanel, parent, "", x, y, width, height)
+        }
+
         fn create_grid_view_header(
             &self,
             parent: ObjectId,

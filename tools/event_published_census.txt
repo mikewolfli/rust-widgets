@@ -65,7 +65,8 @@ dial: value_changed, slider_pressed, slider_released
 dialog: accepted, rejected, opened, closed, finished, help_requested, title_bar_action
 diff_file_list: file_selected, file_activated
 diff_viewer: compared, selection_changed, view_mode_changed, fold_changed, hunk_expanded
-divider: 
+divider:
+drawer_section_header: 
 dock_widget: dock_location_changed, features_changed, top_level_changed
 drop_zone: payload_dropped, zone_entered, zone_exited, dropped, drop_rejected
 dropdown: changed, activated, highlighted
@@ -112,6 +113,7 @@ kanban_column_header: column_renamed, column_collapsed_changed, add_card_request
 keyboard: key_pressed, enter_pressed, backspace_pressed, space_pressed, text_committed
 keyboard: key_pressed, enter_pressed, backspace_pressed, space_pressed, text_committed
 label: link_activated, link_hovered
+layer_panel: layer_selected, visibility_toggled, reorder_requested, rename_requested, remove_requested
 lcd_number: value_changed, overflow
 legend: entry_clicked, series_toggled
 line: 
@@ -138,6 +140,7 @@ mention: mention_inserted, popup_toggled, text_changed
 menu: triggered, triggered_index, about_to_show, submenu_requested, about_to_hide, tearoff_requested, action_triggered
 menu_bar: triggered, entry_hovered, triggered_entry
 menu_button: item_triggered, submenu_requested, about_to_hide, about_to_show, clicked, action_triggered
+menu_panel: item_clicked, highlighted_changed, cancelled
 message_box: button_clicked, accepted, rejected, details_toggled, focus_changed
 meter: changed
 mini_canvas: clicked, mouse_pressed, mouse_released
@@ -158,6 +161,7 @@ password_edit: text_changed, editing_finished, return_pressed, context_menu_requ
 phone_input: text_changed, editing_finished, return_pressed, context_menu_requested, cursor_position_changed, selection_changed, text_edited, undo_available, redo_available, copy_available  [alias_of=line_edit]
 pie_chart: slice_clicked, slice_hovered, slice_unhovered
 pie_menu: triggered, triggered_text, about_to_show, about_to_hide, triggered_id
+playlist_panel: track_selected, track_move_requested, track_remove_requested
 popover: about_to_show, shown, about_to_hide, dismissed
 popup_window: opened, closed, resized
 progress_bar: value_changed
@@ -195,6 +199,7 @@ slider: value_changed, slider_moved, slider_pressed, slider_released
 snackbar: action_triggered, dismissed
 spacer: 
 sparkline: value_hovered, last_value_clicked
+speed_dial: action_activated, expanded_changed
 spin_box: value_changed, editing_finished, validation_failed
 spinner: active_changed 
 splash_screen: finished, skipped, fade_out_finished
@@ -204,6 +209,7 @@ splitter: pane_layout_changed, orientation_changed, pane_layout_preview
 stacked_widget: current_changed
 status_bar: message_changed, size_grip_dragged
 stepper: value_changed
+swipe_actions: action_triggered
 swipe_to_dismiss: dismissed
 swatch: swatch_selected, swatch_activated
 switch: toggled
@@ -238,6 +244,7 @@ virtual_list: selection_changed, visible_window_changed, drag_finished, selected
 virtual_table: visible_window_changed, selection_changed, selection_set_changed
 volume_chart: bar_clicked, bar_hovered, view_changed
 web_engine_view: loading_started, loading_finished, title_changed, url_changed, error_occurred, navigation_state_changed, page_created, page_destroyed, console_message, download_requested, certificate_error, channel_message, load_progress_changed, link_hovered, render_process_crashed, js_evaluated, download_progress_changed
+web_find_bar: search_requested, next_requested, previous_requested, closed
 window: closed
 wizard_dialog: finished, canceled, step_changed, help_requested, custom_button_clicked, sidebar_page_activated
 wrap_layout: item_clicked

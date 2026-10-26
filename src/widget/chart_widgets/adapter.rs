@@ -26,7 +26,6 @@
 //! non-negative, so a chart drawn through a `RenderContext` lands on the same
 //! pixels every time rather than depending on truncation direction.
 
-use crate::compat::RefCell;
 use crate::core::{Color, Font, Point, Rect};
 use crate::render::RenderContext;
 use crate::widget::chart_widgets::types::ChartContext;
@@ -47,12 +46,6 @@ use crate::widget::chart_widgets::types::ChartContext;
 /// ```
 pub struct ChartContextAdapter<'ctx, 'backend> {
     inner: &'ctx mut RenderContext<'backend>,
-    /// `Sans` faces already built for this adapter, keyed by the size's bit pattern.
-    ///
-    /// An adapter lives for one draw call, so the cache is scoped to that call: it
-    /// removes the repeated `Font` construction while the engine walks its ticks and
-    /// legend, and it cannot go stale across frames.
-    fonts: RefCell<Vec<(u32, Font)>>,
     /// Scratch vertex buffer reused by the polygon/path conversions.
     ///
     /// `draw_polygon` and `draw_path` used to allocate a fresh `Vec<Point>` on every
@@ -64,33 +57,20 @@ pub struct ChartContextAdapter<'ctx, 'backend> {
 impl<'ctx, 'backend> ChartContextAdapter<'ctx, 'backend> {
     /// Wraps `inner` for use by the chart engine.
     pub fn new(inner: &'ctx mut RenderContext<'backend>) -> Self {
-        Self { inner, fonts: RefCell::new(Vec::new()), rounded: Vec::new() }
+        Self { inner, rounded: Vec::new() }
     }
 
-    /// Returns the `Sans` face at `size`, reusing one built earlier in this draw.
+    /// Returns the `Sans` face at `size`.
     ///
-    /// Reads use `try_borrow` so a nested draw that somehow re-enters this adapter
-    /// falls back to a fresh `Font` rather than panicking on a borrowed cell.
+    /// # Why there is no per-draw cache
+    ///
+    /// This used to memoise faces in a `RefCell<Vec<(u32, Font)>>`. The family is now
+    /// interned (`Font::simple_interned`), so a construction is a hash probe and a
+    /// refcount bump — while the cache itself allocated its `Vec` on the first push of
+    /// every draw, which a counting allocator measured as two allocations per frame
+    /// (the y and x axes) and therefore *more* than the work it saved.
     fn font_at(&self, size: f32) -> Font {
-        let key = size.to_bits();
-        if let Ok(fonts) = self.fonts.try_borrow() {
-            if let Some((_, font)) = fonts.iter().find(|(stored, _)| *stored == key) {
-                return font.clone();
-            }
-        }
-        let font = Font::simple("Sans", size);
-        if let Ok(mut fonts) = self.fonts.try_borrow_mut() {
-            if let Some((_, stored)) = fonts.iter().find(|(stored, _)| *stored == key) {
-                return stored.clone();
-            }
-            // Chart labels use a handful of sizes. A caller that asks for many
-            // distinct sizes must not grow the cache without bound, so it stops
-            // caching past this point and keeps constructing the unusual sizes.
-            if fonts.len() < 8 {
-                fonts.push((key, font.clone()));
-            }
-        }
-        font
+        Font::simple_interned("Sans", size)
     }
 
     /// Rounds a chart-space coordinate to a device pixel.

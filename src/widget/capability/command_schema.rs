@@ -14,8 +14,8 @@
 //!
 //! # Why the schema is derived, not hand-written
 //!
-//! The crate publishes **457** command instances (251 distinct names) across **240** controls. A
-//! hand-written table of 457 rows would be a second copy of a fact the dispatcher already encodes
+//! The crate publishes **465** command instances (254 distinct names) across **247** controls. A
+//! hand-written table of 465 rows would be a second copy of a fact the dispatcher already encodes
 //! — and copies drift (principle #54/#101). Instead, the schema is *derived* from the two things
 //! that already decide how a command behaves:
 //!

@@ -995,7 +995,7 @@ impl Draw for PieChart {
                     let tooltip_ink = surface.contrast_color();
                     context.fill_rect(box_rect, surface);
                     context.draw_rect(box_rect, tooltip_ink.with_alpha_f32(0.35));
-                    context.draw_text_line(
+                    context.draw_text_line_cow(
                         box_rect,
                         &text,
                         &font,

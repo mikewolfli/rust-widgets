@@ -132,13 +132,35 @@ fn every_published_command_is_dispatched_by_its_control() {
     // recorded with the fact that motivates each (a widget reference or a nested
     // structure no property value can carry, a position with no property route,
     // or a pair of writable scalars that already covers the write).
+    //
+    // The 2026-10-26 third pass registered `web_find_bar` (COMP-L03), whose
+    // capability publishes `next`/`previous`/`close` — all three dispatched by
+    // the control's `command` arms: 457 + 3 = 460. `handled == total` still
+    // holds.
+    //
+    // The same pass gave `kanban_board` its two flat record properties (`columns`,
+    // `cards`), so its `set_columns` / `set_cards` are published against them:
+    // 460 + 2 = 462. The two `add_*`/`move_*` names stay unpublished — their
+    // payloads are exactly the records those properties now carry (B26.03).
+    //
+    // `gantt_widget`'s `tasks` records property followed, with the relationship kind
+    // preserved in the `dependencies` token list (`<id>:<fts|sts|ftf>`), so
+    // `set_tasks` is published against it: 462 + 1 = 463. `handled == total` still
+    // holds.
+    //
+    // The same round promoted the six host-kind companions to first-class controls
+    // (`menu_panel`, `speed_dial`, `swipe_actions`, `drawer_section_header`,
+    // `layer_panel`, `playlist_panel`). Only the two list carriers publish a command:
+    // `layer_panel.set_entries` and `playlist_panel.set_tracks`, each naming its
+    // payload through the Records property of the same name: 463 + 2 = 465.
+    // `handled == total` still holds.
     assert_eq!(
         handled, total,
         "a control lost its `command` implementation: {handled}/{total} handled, refused: \
          {refused:?}"
     );
     assert!(
-        total >= 457,
+        total >= 465,
         "fewer commands are published than the registry declares: {total} — a capability \
          stopped advertising a list it still implements"
     );

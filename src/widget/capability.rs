@@ -801,6 +801,12 @@ pub static ALIAS_OF: &[AliasRow] = &[
         file: "src/widget/input_widgets/lineedit.rs",
     },
     AliasRow {
+        alias: "page_find_bar",
+        alias_of: "web_find_bar",
+        implementation: "WebFindBar",
+        file: "src/widget/web_widgets/find_bar.rs",
+    },
+    AliasRow {
         alias: "password_edit",
         alias_of: "line_edit",
         implementation: "LineEdit",
@@ -1186,9 +1192,10 @@ impl WidgetFactory {
     /// "`btn` is already `button`" instead of "`btn` is already `btn`" — the first tells the caller
     /// which control they collided with, which is what makes the message actionable.
     pub fn name_taken_by(&self, name: &str) -> Option<&'static str> {
-        let key = normalize_key(name);
-        let index = self.key_to_index.get(&key).copied()?;
-        self.capabilities.get(index).map(|capability| capability.canonical_name)
+        with_normalized_key(name, |key| {
+            let index = self.key_to_index.get(key).copied()?;
+            self.capabilities.get(index).map(|capability| capability.canonical_name)
+        })
     }
 
     /// Every name an extension may not use, for a caller that wants to check before building.
@@ -1209,8 +1216,10 @@ impl WidgetFactory {
         geometry: Rect,
         text: &str,
     ) -> Option<Box<dyn Widget>> {
-        let key = normalize_key(kind_or_name);
-        self.constructors.get(&key).map(|ctor| ctor(geometry, text))
+        // The normalised spelling is only a map key, so it never needs an owned `String`.
+        with_normalized_key(kind_or_name, |key| {
+            self.constructors.get(key).map(|ctor| ctor(geometry, text))
+        })
     }
 
     /// Creates a widget by `WidgetKind` using the registered canonical builder.
@@ -1226,9 +1235,10 @@ impl WidgetFactory {
 
     /// Returns capability metadata by canonical name or alias.
     pub fn capability(&self, kind_or_name: &str) -> Option<&WidgetCapability> {
-        let key = normalize_key(kind_or_name);
-        let idx = self.key_to_index.get(&key).copied()?;
-        self.capabilities.get(idx)
+        with_normalized_key(kind_or_name, |key| {
+            let idx = self.key_to_index.get(key).copied()?;
+            self.capabilities.get(idx)
+        })
     }
 
     /// The **canonical** name of whichever control answers to `kind_or_name`.
@@ -1251,15 +1261,16 @@ impl WidgetFactory {
     /// registered, so a caller can still use the return value as a map key for an
     /// unknown control without a second existence check.
     pub fn canonical_name(&self, kind_or_name: &str) -> crate::compat::String {
-        let key = normalize_key(kind_or_name);
-        match self.key_to_index.get(&key) {
+        // One owned string for the answer either way; the normalised spelling only borrows the
+        // stack buffer while the lookup runs.
+        with_normalized_key(kind_or_name, |key| match self.key_to_index.get(key) {
             Some(index) => self
                 .capabilities
                 .get(*index)
                 .map(|capability| crate::compat::String::from(capability.canonical_name))
-                .unwrap_or(key),
-            None => key,
-        }
+                .unwrap_or_else(|| crate::compat::String::from(key)),
+            None => crate::compat::String::from(key),
+        })
     }
 
     /// Every canonical name the factory can construct, sorted and deduplicated.
@@ -1277,7 +1288,9 @@ impl WidgetFactory {
             .capabilities
             .iter()
             .filter(|capability| {
-                self.constructors.contains_key(&normalize_key(capability.canonical_name))
+                with_normalized_key(capability.canonical_name, |key| {
+                    self.constructors.contains_key(key)
+                })
             })
             .map(|capability| crate::compat::String::from(capability.canonical_name))
             .collect();
@@ -1293,7 +1306,7 @@ impl WidgetFactory {
     /// registration the runtime uses, instead of keeping a parallel table of which
     /// constructors take text.
     pub fn constructor_for(&self, kind_or_name: &str) -> Option<WidgetCtor> {
-        self.constructors.get(&normalize_key(kind_or_name)).copied()
+        with_normalized_key(kind_or_name, |key| self.constructors.get(key).copied())
     }
 
     /// Whether any registered control declares `alias` among its aliases.

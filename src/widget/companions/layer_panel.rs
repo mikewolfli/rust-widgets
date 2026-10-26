@@ -60,6 +60,34 @@ impl LayerEntry {
     }
 }
 
+/// One row of the `entries` records property: a layer's identity, name and visibility.
+///
+/// The list is flat because the property vocabulary has no record-of-record kind (a `Records`
+/// field value is refused, see `records.rs`); identity is the stable `id`, never the row index.
+pub const LAYER_ENTRY_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+            crate::widget::capability::RecordField::required(
+                "name",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "visible",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+        ],
+        // Identity is the layer's numeric `id`. The schema's id machinery reads a *string* id
+        // (`RecordValue::text`), so a `UInt` id is not uniqueness-checked by the validator: the
+        // panel still addresses rows by id, and the first row with a given id wins.
+        id_field: "id",
+        ids_unique: false,
+        ids_required: false,
+    };
+
 /// Width of the visibility checkbox column.
 const LAYER_CHECK_WIDTH: i32 = 18;
 /// Width of the reorder handle column.
@@ -102,7 +130,7 @@ impl LayerPanel {
     /// Creates an empty layer panel.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::Canvas, geometry, "LayerPanel"),
+            base: BaseWidget::new(WidgetKind::LayerPanel, geometry, "LayerPanel"),
             entries: Vec::new(),
             selected_layer: None,
             show_visibility_checkboxes: true,
@@ -581,9 +609,44 @@ impl Widget for LayerPanel {
     }
 }
 
+/// One row of [`LAYER_ENTRY_SCHEMA`].
+fn layer_entry_record(entry: &LayerEntry) -> crate::widget::capability::RecordValue {
+    crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::UInt(entry.id))
+        .with("name", CapabilityValue::String(entry.name.clone()))
+        .with("visible", CapabilityValue::Bool(entry.visible))
+}
+
+/// Rebuilds one layer row from a row of [`LAYER_ENTRY_SCHEMA`].
+fn layer_entry_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<LayerEntry, CapabilityAccessError> {
+    let id = match record.get("id") {
+        Some(CapabilityValue::UInt(id)) => *id,
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let name = match record.get("name") {
+        Some(CapabilityValue::String(name)) => name.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    // An omitted `visible` is the same default `LayerEntry::new` gives a row.
+    let visible = match record.get("visible") {
+        None | Some(CapabilityValue::Null) => true,
+        Some(CapabilityValue::Bool(visible)) => *visible,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(LayerEntry { id, name, visible })
+}
+
 impl WidgetProperties for LayerPanel {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            "entries" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &LAYER_ENTRY_SCHEMA,
+                    self.entries.iter().map(layer_entry_record).collect(),
+                )))
+            }
             "entry_count" => Ok(CapabilityValue::UInt(self.entries.len() as u64)),
             "selected_layer" => Ok(match self.selected_layer {
                 Some(id) => CapabilityValue::UInt(id),
@@ -600,6 +663,27 @@ impl WidgetProperties for LayerPanel {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
+            // A full-list write: every row is validated and decoded before anything is applied, so
+            // a refused write leaves the panel unchanged (the `records` discipline).
+            "entries" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&LAYER_ENTRY_SCHEMA).map_err(|violation| {
+                    log::warn!("layer_panel.entries refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("entries"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let entries = list.items().iter().map(layer_entry_from_record).collect::<Result<
+                    Vec<_>,
+                    CapabilityAccessError,
+                >>(
+                )?;
+                self.set_entries(entries);
+                Ok(())
+            }
             // The entry list is the canvas's model, mirrored through `set_entries`.
             "entry_count" | "selected_layer" => Err(CapabilityAccessError::ReadOnlyProperty),
             "show_visibility_checkboxes" => {
@@ -623,6 +707,7 @@ impl WidgetProperties for LayerPanel {
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "entries",
             "entry_count",
             "selected_layer",
             "show_visibility_checkboxes",
@@ -639,7 +724,9 @@ impl WidgetProperties for LayerPanel {
             "select_layer" | "set_entry_visible" | "scroll_to_layer" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
-            _ => Err(CapabilityAccessError::UnknownCommand),
+            // `set_entries` (and any future `set_foo`) resolves through the property route by the
+            // `default_command` convention, so the payload it needs is the property write.
+            _ => self.default_command(name),
         }
     }
 }
@@ -722,5 +809,45 @@ mod tests {
         let expected = vec![(1u64, "base".to_string())];
         assert_eq!(*renamed.lock().expect("renamed lock"), expected);
         assert_eq!(panel.entries()[0].name, "base");
+    }
+
+    /// The layer list travels as one flat record list, so a write rebuilds it and a read reports
+    /// it back in the same order.
+    #[test]
+    fn entries_round_trip_through_the_property_route() {
+        let mut panel = panel();
+        let read = panel.get("entries").expect("entries is readable");
+        let CapabilityValue::Records(list) = read.clone() else {
+            panic!("entries must be a record list");
+        };
+        assert_eq!(list.items().len(), 3);
+        assert_eq!(list.items()[0].get("id"), Some(&CapabilityValue::UInt(1)));
+        assert_eq!(
+            list.items()[0].get("name"),
+            Some(&CapabilityValue::String("background".to_string()))
+        );
+        assert_eq!(list.items()[2].get("visible"), Some(&CapabilityValue::Bool(false)));
+        panel.set("entries", read).expect("identity write");
+        assert_eq!(panel.entries().len(), 3);
+
+        // A row missing the required `name` refuses the whole write, leaving the panel unchanged.
+        let refused = panel.set(
+            "entries",
+            CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                &LAYER_ENTRY_SCHEMA,
+                vec![crate::widget::capability::RecordValue::new()
+                    .with("id", CapabilityValue::UInt(9))],
+            )),
+        );
+        assert!(matches!(refused, Err(CapabilityAccessError::ConstraintViolation { .. })));
+        assert_eq!(panel.entries().len(), 3);
+    }
+
+    /// `set_entries` is the payload-free spelling of the property write, so a bare invocation
+    /// reports that the value is what is missing.
+    #[test]
+    fn set_entries_reports_a_missing_payload() {
+        let mut panel = panel();
+        assert_eq!(panel.command("set_entries"), Err(CapabilityAccessError::OutOfRange));
     }
 }

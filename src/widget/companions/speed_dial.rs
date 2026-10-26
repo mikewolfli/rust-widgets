@@ -18,7 +18,9 @@ use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
-use crate::widget::capability::WidgetProperties;
+use crate::widget::capability::{
+    RecordField, RecordList, RecordSchema, RecordValue, WidgetProperties,
+};
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_draw_bridge, impl_widget_property_hooks, property_names_of};
@@ -73,6 +75,23 @@ impl SpeedDialAction {
     }
 }
 
+/// One row of the `actions` records property: an action's label and its glyph.
+///
+/// The list is flat because the property vocabulary has no record-of-record kind; the activation
+/// signal reports the row's index into this list.
+pub const SPEED_DIAL_ACTION_SCHEMA: RecordSchema = RecordSchema {
+    fields: &[
+        RecordField::required("label", crate::widget::capability::PropertyValueKind::String),
+        RecordField::optional("icon_text", crate::widget::capability::PropertyValueKind::String),
+    ],
+    // An action has no id of its own: the dial addresses actions by index, and two actions may
+    // carry the same label. `label` is named as the nominal identity so the records validator has
+    // a field to read, with uniqueness and non-emptiness explicitly **not** claimed.
+    id_field: "label",
+    ids_unique: false,
+    ids_required: false,
+};
+
 /// A primary button with an expandable stack of labelled secondary actions.
 pub struct SpeedDial {
     base: BaseWidget,
@@ -93,7 +112,7 @@ impl SpeedDial {
     /// Creates a collapsed speed dial.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::FAB, geometry, "SpeedDial"),
+            base: BaseWidget::new(WidgetKind::SpeedDial, geometry, "SpeedDial"),
             actions: Vec::new(),
             expanded: false,
             direction: SpeedDialDirection::Up,
@@ -443,35 +462,33 @@ impl Widget for SpeedDial {
     }
 }
 
-/// Encodes one action as `[label, icon_text]`.
-fn action_value(action: &SpeedDialAction) -> CapabilityValue {
-    CapabilityValue::Tuple(Vec::from([
-        CapabilityValue::String(action.label.clone()),
-        CapabilityValue::String(action.icon_text.clone()),
-    ]))
+/// One row of [`SPEED_DIAL_ACTION_SCHEMA`].
+fn speed_dial_action_record(action: &SpeedDialAction) -> RecordValue {
+    let mut record =
+        RecordValue::new().with("label", CapabilityValue::String(action.label.clone()));
+    if !action.icon_text.is_empty() {
+        record = record.with("icon_text", CapabilityValue::String(action.icon_text.clone()));
+    }
+    record
 }
 
-/// Decodes the action-list property.
-fn expect_actions(value: CapabilityValue) -> Result<Vec<SpeedDialAction>, CapabilityAccessError> {
-    let CapabilityValue::Tuple(rows) = value else {
-        return Err(CapabilityAccessError::TypeMismatch);
-    };
-    let mut actions = Vec::with_capacity(rows.len());
-    for row in rows {
-        let CapabilityValue::Tuple(parts) = row else {
-            return Err(CapabilityAccessError::TypeMismatch);
-        };
-        if parts.len() != 2 {
-            return Err(CapabilityAccessError::TypeMismatch);
-        }
-        let mut parts = parts.into_iter();
-        let label = match parts.next().ok_or(CapabilityAccessError::TypeMismatch)? {
-            CapabilityValue::String(label) => label,
+/// Decodes the `actions` write into rows.
+///
+/// The whole list is decoded before `set_actions` runs, so a refused row leaves the dial unchanged.
+fn speed_dial_actions_from_records(
+    list: &RecordList,
+) -> Result<Vec<SpeedDialAction>, CapabilityAccessError> {
+    let mut actions = Vec::with_capacity(list.items().len());
+    for record in list.items() {
+        let label = match record.get("label") {
+            Some(CapabilityValue::String(label)) => label.clone(),
             _ => return Err(CapabilityAccessError::TypeMismatch),
         };
-        let icon_text = match parts.next().ok_or(CapabilityAccessError::TypeMismatch)? {
-            CapabilityValue::String(text) => text,
-            _ => return Err(CapabilityAccessError::TypeMismatch),
+        // An omitted glyph is the label-only action `SpeedDialAction::new(label, "")` makes.
+        let icon_text = match record.get("icon_text") {
+            None | Some(CapabilityValue::Null) => String::new(),
+            Some(CapabilityValue::String(text)) => text.clone(),
+            Some(_) => return Err(CapabilityAccessError::TypeMismatch),
         };
         actions.push(SpeedDialAction { label, icon_text });
     }
@@ -481,9 +498,10 @@ fn expect_actions(value: CapabilityValue) -> Result<Vec<SpeedDialAction>, Capabi
 impl WidgetProperties for SpeedDial {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "actions" => {
-                Ok(CapabilityValue::Tuple(self.actions.iter().map(action_value).collect()))
-            }
+            "actions" => Ok(CapabilityValue::Records(RecordList::from_items(
+                &SPEED_DIAL_ACTION_SCHEMA,
+                self.actions.iter().map(speed_dial_action_record).collect(),
+            ))),
             "expanded" => Ok(CapabilityValue::Bool(self.expanded)),
             "direction" => Ok(CapabilityValue::String(self.direction.as_str().to_string())),
             "spacing" => Ok(CapabilityValue::UInt(self.spacing as u64)),
@@ -495,7 +513,17 @@ impl WidgetProperties for SpeedDial {
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
             "actions" => {
-                self.set_actions(expect_actions(value)?);
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&SPEED_DIAL_ACTION_SCHEMA).map_err(|violation| {
+                    log::warn!("speed_dial.actions refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("actions"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                self.set_actions(speed_dial_actions_from_records(&list)?);
                 Ok(())
             }
             "expanded" => {

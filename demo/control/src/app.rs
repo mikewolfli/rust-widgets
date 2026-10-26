@@ -528,6 +528,38 @@ impl LayoutTrait for ControlGridLayout {
             ));
         }
     }
+
+    // The demo's grid places controls by its own slot model (bands + rows + per-slot weights),
+    // not by what each child reports it wants. It therefore has no use for the hint channel or
+    // the device context: forwarding keeps the one placement path authoritative, instead of
+    // re-deriving geometry from `ChildInfo` the slots already encode.
+    fn arrange(
+        &self,
+        rect: Rect,
+        _children: &[rust_widgets::layout::ChildInfo],
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.update(rect, out);
+    }
+
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        _children: &[rust_widgets::layout::ChildInfo],
+        _context: &rust_widgets::layout::LayoutContext,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.update(rect, out);
+    }
+
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        _context: &rust_widgets::layout::LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.update(rect, widgets);
+    }
 }
 
 /// Horizontal margin between the window edge and the grid, in pixels.
