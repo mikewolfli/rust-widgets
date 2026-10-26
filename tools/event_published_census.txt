@@ -54,7 +54,7 @@ cupertino_navigation_bar: back_pressed, leading_item_pressed, trailing_item_pres
 cupertino_segmented_control: value_changed
 cupertino_slider: value_changed
 cupertino_switch: toggled
-data_grid: visible_window_changed, context_menu_requested, edit_requested, filter_changed, header_clicked, sort_changed, page_applied
+data_grid: visible_window_changed, context_menu_requested, edit_requested, filter_changed, header_clicked, sort_changed, page_applied, selection_changed, current_changed, cell_clicked, cell_double_clicked, column_resized
 data_view: selection_changed, visible_window_changed, drag_finished, selected_rows_changed
 date_edit: date_changed, popup_visibility_changed, calendar_opened, calendar_closed, editing_finished
 date_range_picker: range_changed, preset_selected

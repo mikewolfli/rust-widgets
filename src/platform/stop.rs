@@ -179,7 +179,24 @@ mod tests {
             loop_has_ticked(),
             "the answer must describe the loop, not the thread that asked"
         );
-        assert!(take());
+        // The ask/read pair is retried: the flag is process-wide, and a loop that does not take
+        // the seam can (legitimately) consume a request between the ask and this read — measured
+        // rarely under the full suite. A `request()` that genuinely records is consumed by the
+        // immediate next read, so a regression still fails every attempt; only the race is
+        // retried away. (Every loop-driving test in the crate holds the seam lock, but the flag's
+        // contract cannot forbid a reader, so the test cannot assume one is absent.)
+        let mut taken = false;
+        for _ in 0..8 {
+            let _ = take();
+            let _ = std::thread::spawn(request)
+                .join()
+                .expect("the asking thread must not panic on a retry");
+            taken = take();
+            if taken {
+                break;
+            }
+        }
+        assert!(taken, "a request from another thread must be readable and consumable");
         assert!(!is_requested());
     }
 }

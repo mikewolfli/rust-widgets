@@ -1369,10 +1369,10 @@ impl PaintBackend for SvgPaintBackend {
                             gid, gradient.center.x, gradient.center.y, gradient.radius
                         ));
                     }
-                    // Handled above and returned; kept for match totality.
-                    GradientType::Conic => {
-                        unreachable!("conic gradients return before the paint server")
-                    }
+                    // Handled above and returned; kept for match totality. The defensive arm
+                    // emits nothing rather than panicking — a draw path must not panic on a
+                    // future edit that reroutes into this block.
+                    GradientType::Conic => return,
                 }
                 for stop in &gradient.stops {
                     let hex =
@@ -1390,7 +1390,9 @@ impl PaintBackend for SvgPaintBackend {
                     GradientType::Radial => {
                         def.push_str("</radialGradient>");
                     }
-                    GradientType::Conic => unreachable!(),
+                    // The conic arm above returned before any element was opened, so there is
+                    // nothing to close; this arm only keeps the match total.
+                    GradientType::Conic => {}
                 }
                 self.push_element(format!("<defs>{def}</defs>"));
                 self.push_element(format!(

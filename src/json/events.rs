@@ -79,33 +79,39 @@ impl EventHandlerContext {
         self
     }
 
-    /// Safely access user data as a typed reference.
+    /// Access user data as a typed reference.
     ///
-    /// Uses unsafe internally to cast the raw pointer, but presents a
-    /// safe API. Returns `None` if no user data is set or the cast fails.
+    /// The cast is unchecked: a raw `c_void` carries no type information, so there is
+    /// nothing to validate against — a mismatched `T` is undefined behaviour, not an
+    /// `Err`. The function is therefore `unsafe`, which is the honest contract; the
+    /// previous safe signature with a "returns None on cast failure" doc promised a
+    /// check that never existed.
     ///
     /// # Safety
     ///
-    /// The caller must ensure that `T` matches the type that was
-    /// originally stored via [`with_user_data`](Self::with_user_data).
-    pub fn user_data<T>(&self) -> Option<&T> {
+    /// `T` must be the type that was originally stored via
+    /// [`with_user_data`](Self::with_user_data), and the data must still be alive and
+    /// not mutably borrowed elsewhere.
+    pub unsafe fn user_data<T>(&self) -> Option<&T> {
         let ptr = self.user_data?;
-        // SAFETY: Caller guarantees type T matches the original data.
+        // SAFETY: the caller guarantees T matches the stored type and the pointee is
+        // alive and unaliased for the lifetime of &self.
         unsafe { Some(&*(ptr as *const T)) }
     }
 
-    /// Safely access user data as a typed mutable reference.
+    /// Access user data as a typed mutable reference.
     ///
-    /// Uses unsafe internally to cast the raw pointer, but presents a
-    /// safe API. Returns `None` if no user data is set or the cast fails.
+    /// See [`Self::user_data`] for why this is `unsafe`.
     ///
     /// # Safety
     ///
-    /// The caller must ensure that `T` matches the type that was
-    /// originally stored via [`with_user_data`](Self::with_user_data).
-    pub fn user_data_mut<T>(&mut self) -> Option<&mut T> {
+    /// `T` must be the type that was originally stored via
+    /// [`with_user_data`](Self::with_user_data), and the data must still be alive with
+    /// no other outstanding borrow.
+    pub unsafe fn user_data_mut<T>(&mut self) -> Option<&mut T> {
         let ptr = self.user_data?;
-        // SAFETY: Caller guarantees type T matches the original data.
+        // SAFETY: the caller guarantees T matches the stored type and the pointee is
+        // alive and exclusively borrowed for the lifetime of &mut self.
         unsafe { Some(&mut *(ptr as *mut T)) }
     }
 }
@@ -509,7 +515,8 @@ mod tests {
         let mut data: i32 = 123;
         let ctx = EventHandlerContext::new(trigger)
             .with_user_data(&mut data as *mut i32 as *mut std::ffi::c_void);
-        let retrieved: &i32 = ctx.user_data().unwrap();
+        // SAFETY: i32 was stored above and is still alive and unaliased here.
+        let retrieved: &i32 = unsafe { ctx.user_data().unwrap() };
         assert_eq!(*retrieved, 123);
     }
 
@@ -520,7 +527,8 @@ mod tests {
             kind: crate::platform::WidgetTriggerKind::Clicked,
         };
         let ctx = EventHandlerContext::new(trigger);
-        assert!(ctx.user_data::<i32>().is_none());
+        // SAFETY: no type is stored, so T can never mismatch — the None case is the point.
+        assert!(unsafe { ctx.user_data::<i32>() }.is_none());
     }
 
     #[test]
@@ -533,7 +541,8 @@ mod tests {
         let mut ctx = EventHandlerContext::new(trigger)
             .with_user_data(&mut data as *mut i32 as *mut std::ffi::c_void);
         {
-            let val: &mut i32 = ctx.user_data_mut().unwrap();
+            // SAFETY: i32 was stored above, is alive, and exclusively borrowed here.
+            let val: &mut i32 = unsafe { ctx.user_data_mut().unwrap() };
             *val = 789;
         }
         assert_eq!(data, 789);

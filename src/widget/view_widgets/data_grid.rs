@@ -2746,6 +2746,50 @@ impl Widget for DataGrid {
                     ]))
                 }))
             }
+            // The five interaction signals the control has always emitted natively; without
+            // these arms the capability surface could observe none of them (the schema gate
+            // answers `UnknownProperty` for any name absent here).
+            "selection_changed" => Some(EventSignalRef::mapped(
+                "selection_changed",
+                self.selection_changed_signal(),
+                |_v| CapabilityValue::Null,
+            )),
+            "current_changed" => Some(EventSignalRef::mapped(
+                "current_changed",
+                self.current_changed_signal(),
+                |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
+                        crate::widget::capability::CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                },
+            )),
+            "cell_clicked" => {
+                Some(EventSignalRef::mapped("cell_clicked", self.cell_clicked_signal(), |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
+                        crate::widget::capability::CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
+            "cell_double_clicked" => Some(EventSignalRef::mapped(
+                "cell_double_clicked",
+                self.cell_double_clicked_signal(),
+                |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
+                        crate::widget::capability::CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                },
+            )),
+            "column_resized" => {
+                Some(EventSignalRef::mapped("column_resized", self.column_resized_signal(), |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
+                        crate::widget::capability::CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }

@@ -1024,10 +1024,10 @@ impl WidgetProperties for WizardDialog {
     /// Runs one of the commands `wizard_dialog` publishes.
     ///
     /// `next` / `back` are payload-free navigation and map onto the widget's real
-    /// `next` / `previous`. `set_current_step` needs an index and is answered
-    /// through `go_to_step`, and the wizard has no terminal "finish" action (its
-    /// last step is simply reached), so both report `OutOfRange` for a
-    /// payload-less call rather than pretending to complete something.
+    /// `next` / `previous`, reporting `OutOfRange` when the move is refused —
+    /// the same answer `set_current_step` needs, since an index cannot reach the
+    /// payload-free command channel. `finish` runs the same path the Finish
+    /// button does: every step is marked completed and `finished` is emitted.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "next" => {
@@ -1044,7 +1044,11 @@ impl WidgetProperties for WizardDialog {
                     Err(CapabilityAccessError::OutOfRange)
                 }
             }
-            "set_current_step" | "finish" => Err(CapabilityAccessError::OutOfRange),
+            "finish" => {
+                self.do_finish();
+                Ok(())
+            }
+            "set_current_step" => Err(CapabilityAccessError::OutOfRange),
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }
@@ -1085,11 +1089,12 @@ impl Draw for WizardDialog {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.06),
         };
-        let border = style
-            .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .filter(|resolved| *resolved != surface)
-            .unwrap_or_else(|| surface.blend(&ink, 0.45));
+        let border = crate::widget::draw::border_ink(
+            style.border_color,
+            theme.as_ref().and_then(|t| t.border_color),
+            surface,
+            ink,
+        );
         // The content well and the secondary buttons are one visible step apart from the
         // frame in either appearance. A watermark is a caller-chosen tint for the well, so
         // it replaces (rather than blends with) the derived step when one is set; the

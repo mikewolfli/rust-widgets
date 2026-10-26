@@ -1227,7 +1227,8 @@ impl JsonLoader {
                 let factory = crate::json::schema_factory();
                 // The factory takes the same constructor argument the arm table reads, so a
                 // control registered with the factory but not named here starts from the same
-                // text rather than from `""` until the property pass catches up (BIND-05).
+                // text rather than from `""`; the property pass then applies the document's own
+                // value over that starting point (BIND-05, landed).
                 let text = obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
                 if let Some(widget) = factory.create(widget_type, geometry, text) {
                     return Ok(widget);

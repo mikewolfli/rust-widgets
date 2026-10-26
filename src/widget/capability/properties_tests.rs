@@ -1558,3 +1558,43 @@ fn every_declared_range_constraint_is_enforced_on_write() {
 
     assert!(checked > 0, "no capability declares a range constraint, so this test proves nothing");
 }
+
+/// B-01: the declarative grouping route is the members'.
+///
+/// `button_group` is a **non-visual handle** (the reference toolkit's `QButtonGroup`), not a
+/// constructible control, so it rightly has no factory registration. The capability surface
+/// expresses exclusivity where the toolkit's declarative model does — on the member controls,
+/// through the published `group_id` property, and the exclusivity itself lives in the shared
+/// registry. This pins that the published route really produces it, so the absence of a
+/// factory entry is an architecture statement rather than a capability gap.
+#[cfg(not(alloc_frugal))]
+#[test]
+fn the_published_group_route_keeps_radio_members_exclusive() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut first =
+        factory.create("radio_button", Rect::new(0, 0, 80, 20), "A").expect("radio_button");
+    let mut second =
+        factory.create("radio_button", Rect::new(0, 24, 80, 20), "B").expect("radio_button");
+
+    factory
+        .write_property(first.as_mut(), "group_id", CapabilityValue::String("nav".into()))
+        .expect("group_id is a published, writable property");
+    factory
+        .write_property(second.as_mut(), "group_id", CapabilityValue::String("nav".into()))
+        .expect("group_id is a published, writable property");
+
+    factory
+        .write_property(first.as_mut(), "checked", CapabilityValue::Bool(true))
+        .expect("checked is a published, writable property");
+    assert_eq!(factory.read_property(first.as_ref(), "checked"), Ok(CapabilityValue::Bool(true)));
+
+    factory
+        .write_property(second.as_mut(), "checked", CapabilityValue::Bool(true))
+        .expect("checked is a published, writable property");
+    assert_eq!(
+        factory.read_property(first.as_ref(), "checked"),
+        Ok(CapabilityValue::Bool(false)),
+        "checking the second member must release the first through the published group_id route"
+    );
+    assert_eq!(factory.read_property(second.as_ref(), "checked"), Ok(CapabilityValue::Bool(true)));
+}

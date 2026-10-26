@@ -1196,11 +1196,12 @@ impl Draw for ColorDialog {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.06),
         };
-        let border = style
-            .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .filter(|resolved| *resolved != surface)
-            .unwrap_or_else(|| surface.blend(&ink, 0.45));
+        let border = crate::widget::draw::border_ink(
+            style.border_color,
+            theme.as_ref().and_then(|t| t.border_color),
+            surface,
+            ink,
+        );
         // The title bar and the buttons are distinct bands on the panel, derived from it so
         // the three stay one visible step apart in either appearance.
         let title_bar = surface.blend(&ink, 0.08);

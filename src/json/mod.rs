@@ -18,11 +18,13 @@
 //! previous tree to compare against, so it cannot preserve a control's identity
 //! across an edit — loading the same JSON twice creates two independent trees.
 //!
-//! The reload path is [`crate::view`]: [`ViewEngine::mount`] attaches a declarative
-//! tree, and [`ViewEngine::update`] rebuilds it, diffs the result against the
-//! previous tree and applies only the differences. Editing the JSON and calling
-//! `update` therefore leaves untouched controls' focus, scroll offsets and internal
-//! state alive, which is what a designer's edit-reload loop needs.
+//! The declarative retained-tree engine is [`crate::view`]: [`ViewEngine::mount`]
+//! attaches a tree and [`ViewEngine::update`] diffs a rebuild against the previous
+//! one, leaving untouched controls' focus, scroll offsets and internal state alive —
+//! what a designer's edit-reload loop needs. The forward that routes **this**
+//! module's loader through that engine (G-406) has not landed: today the loader's
+//! own layout-registered tree is still the one production applies, and `crate::view`
+//! documents the coexistence and the removal condition for the second path.
 //!
 //! (`crate::view` is compiled for `desktop`/`tablet`/`mobile`; this module and that
 //! one share the same platform gate.)

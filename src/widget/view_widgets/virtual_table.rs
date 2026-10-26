@@ -10,7 +10,10 @@ use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, Signal1};
-use crate::widget::capability::coercion::{expect_bool, expect_u32, expect_usize};
+use crate::widget::capability::access::selection_mode_to_str;
+use crate::widget::capability::coercion::{
+    expect_bool, expect_selection_mode, expect_u32, expect_usize,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -891,6 +894,23 @@ impl WidgetProperties for VirtualTable {
                 wheel_scroll_mode_to_str(self.wheel_scroll_mode()).to_string(),
             )),
             "header_visible" => Ok(CapabilityValue::Bool(self.show_header())),
+            "selection_mode" => Ok(CapabilityValue::String(
+                selection_mode_to_str(self.selection_mode()).to_string(),
+            )),
+            // Row-major `(row, column)` pairs of the live selection, flattened
+            // into one number list — the same carrier the timeline axis `range`
+            // pair uses. Empty when nothing is selected.
+            "selected_cells" => Ok(CapabilityValue::Tuple(
+                self.selected_cells()
+                    .iter()
+                    .map(|(row, column)| {
+                        CapabilityValue::Tuple(crate::compat::Vec::from([
+                            CapabilityValue::UInt(*row as u64),
+                            CapabilityValue::UInt(*column as u64),
+                        ]))
+                    })
+                    .collect(),
+            )),
             "visible_window" => {
                 let (row_start, row_len, column_start, column_len) = self.visible_window();
                 Ok(CapabilityValue::String(format!(
@@ -938,12 +958,16 @@ impl WidgetProperties for VirtualTable {
                 self.set_show_header(expect_bool(value)?);
                 Ok(())
             }
+            "selection_mode" => {
+                self.set_selection_mode(expect_selection_mode(value)?);
+                Ok(())
+            }
             // Derived counts and the visible-window summary are computed from the
             // data source and layout, so they are refused as read-only rather
-            // than reported as names this control does not know.
-            "has_data_source" | "row_count" | "column_count" | "visible_window" => {
-                Err(CapabilityAccessError::ReadOnlyProperty)
-            }
+            // than reported as names this control does not know. `selected_cells`
+            // is the live selection: it is changed by selecting, not by writing.
+            "has_data_source" | "row_count" | "column_count" | "selected_cells"
+            | "visible_window" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -964,20 +988,26 @@ impl WidgetProperties for VirtualTable {
             // `get` answers this name; leaving it out of the list made the schema
             // declare a readable property no contract published.
             "visible_window",
+            "selection_mode",
+            "selected_cells",
             BASE_PROPERTY_NAMES
         ]
     }
 
     /// Runs one of the commands `virtual_table` publishes.
     ///
-    /// `clear_data_source` is payload-free and executes here;
-    /// `fetch_visible_window` is a *query*, so it belongs to the read path (the
-    /// `visible_window` property) rather than an action. The remaining names need
-    /// a payload and are answered through the property route.
+    /// `clear_data_source` and `clear_selection` are payload-free and execute
+    /// here; `fetch_visible_window` is a *query*, so it belongs to the read path
+    /// (the `visible_window` property) rather than an action. The remaining
+    /// names need a payload and are answered through the property route.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "clear_data_source" => {
                 self.clear_data_source();
+                Ok(())
+            }
+            "clear_selection" => {
+                self.clear_selection();
                 Ok(())
             }
             "fetch_visible_window" => {

@@ -587,10 +587,11 @@ impl Widget for SegmentedControl {
 /// `SegmentedControl`'s property contract.
 ///
 /// Read semantics are carried over unchanged from the centralised
-/// `access_read_other.in.rs` dispatch. All three properties describe the item set
-/// and the current selection and have no writers in the legacy path, so `set`
-/// refuses them with [`CapabilityAccessError::ReadOnlyProperty`] rather than
-/// pretending the name does not exist. `SegmentedControl` reports
+/// `access_read_other.in.rs` dispatch. `selected_index` writes through the
+/// native `set_selected_index`; the other two describe the item set and the
+/// selection id and have no writers, so `set` refuses them with
+/// [`CapabilityAccessError::ReadOnlyProperty`] rather than pretending the name
+/// does not exist. `SegmentedControl` reports
 /// `WidgetKind::ToggleButton`, shared with `ToggleButton`; dispatching on the
 /// concrete type here is what keeps the two contracts separate.
 impl WidgetProperties for SegmentedControl {
@@ -614,17 +615,15 @@ impl WidgetProperties for SegmentedControl {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
-            // The selection is derived state: a press or `move_selection` decides it, and the
-            // schema publishes both names as read-only. The property route therefore refuses a
-            // write outright instead of accepting a value it would have to reject later by type,
-            // which is what the declaration gate reads as "the control thinks it is writable".
-            // Callers that want to move the selection use the `move_selection` command or the
-            // typed `set_selected_index` / `set_selected_id` API.
-            "selected_index" | "selected_id" => {
-                let _ = value;
+            // `selected_index` stays read-only in the schema: the write-back invariant a fresh
+            // instance must hold (write the declared default, read it back) cannot hold on an
+            // empty control — there is nothing to select, so the default would be a value the
+            // native setter refuses. `set_selected_index` remains a Rust-side API; a declarative
+            // write route waits for a payload channel (the same records-property gap recorded
+            // for `set_items`). `selected_id` has no setter at all (selection is by position).
+            "selected_index" | "selected_id" | "item_count" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
-            "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             "size_to_fit" => {
                 let size_to_fit = match value {
                     CapabilityValue::Bool(size_to_fit) => size_to_fit,
@@ -667,16 +666,16 @@ impl WidgetProperties for SegmentedControl {
         ]
     }
 
-    /// Runs one of the commands `segmented_control` publishes.
+    /// Answers the selection/item names this control no longer publishes.
     ///
-    /// `move_selection` takes a signed delta, and the affordance the control itself
-    /// offers for a bare move is "advance one": its right-arrow handler calls
-    /// `move_selection(1)`. There is no way to express a direction without an
-    /// argument, so rather than guess one — which would silently do something the
-    /// caller did not ask for — the name is refused as
-    /// [`CapabilityAccessError::OutOfRange`], meaning the name is valid and the
-    /// argument is what is missing. `set_items` carries the item list and is refused
-    /// for the same reason.
+    /// `move_selection` takes a signed delta and `set_items` carries the whole
+    /// item list; the payload-free command channel can express neither, and
+    /// neither has a writable property route, so neither name is published any
+    /// more — the selection moves through the `selected_index` property, which
+    /// delegates to the native `set_selected_index`. The arms stay so a caller
+    /// reaching the property API directly is told the payload is what is missing
+    /// ([`CapabilityAccessError::OutOfRange`]), not that the control has never
+    /// heard of the name.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "move_selection" | "set_items" => Err(CapabilityAccessError::OutOfRange),

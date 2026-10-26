@@ -250,6 +250,8 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const SEGMENTED_CONTROL_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            // Read-only: a fresh instance has no selection, so the write-back default a
+            // writable row must have cannot exist here (see the widget's `set` doc).
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_id", PropertyValueKind::String, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -561,9 +563,10 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const KANBAN_BOARD_PROPERTIES: &[PropertySchema] = &[
-            // The columns and cards are two-level lists, written through
-            // `add_column` / `add_card`; the counts are what the property layer
-            // reports, following the same convention as `Meter` and `RadarChart`.
+            // The columns and cards are two-level lists; `add_column` / `add_card`
+            // are Rust-side APIs today with no property route, so the counts are
+            // what the property layer reports, following the same convention as
+            // `Meter` and `RadarChart`.
             PropertySchema::new("column_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("card_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("dragging_card_id", PropertyValueKind::String, true, false),

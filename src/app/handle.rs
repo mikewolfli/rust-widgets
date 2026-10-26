@@ -932,7 +932,12 @@ fn store_local_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: F) 
 
 /// Drops a stored local callback, used when the connection could not be made.
 fn remove_local_callback(widget_id: ObjectId, token: u64) {
-    LOCAL_CALLBACKS.with(|map| {
+    // `try_with`, not `with`: the binding lives inside the widget's signal slot, which can be
+    // dropped by a thread-local destructor at thread teardown. `with()` panics once the table's
+    // own destruction has begun, and a panic inside a TLS destructor aborts the whole process
+    // (the `control_click_reaches_widget_test` SIGABRT). By then there is nothing left to
+    // remove, so the error is the correct answer.
+    let _ = LOCAL_CALLBACKS.try_with(|map| {
         if let Ok(mut map) = map.try_borrow_mut() {
             map.remove(&(widget_id, token));
         }

@@ -561,16 +561,21 @@ fn extract_attr(s: &str, name: &str) -> Option<String> {
 }
 
 /// Parse an SVG color string (#RRGGBB) into normalized RGB floats (0.0-1.0).
+///
+/// The byte count alone does not make a string slice-able: `#aaa日` is 7 bytes but its
+/// sixth byte is not on a char boundary, and slicing it would panic. `ExportPage` takes
+/// arbitrary caller-supplied SVG text, so the hex check guards the slicing, not just the
+/// value (mirrors the guard `src/style/css.rs` uses for its own color parsing).
 #[cfg(not(alloc_frugal))]
 fn parse_svg_color(color: &str) -> Option<(f32, f32, f32)> {
-    if color.starts_with('#') && color.len() == 7 {
-        let r = u8::from_str_radix(&color[1..3], 16).ok()?;
-        let g = u8::from_str_radix(&color[3..5], 16).ok()?;
-        let b = u8::from_str_radix(&color[5..7], 16).ok()?;
-        Some((r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0))
-    } else {
-        None
+    let hex = color.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
     }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0))
 }
 
 /// Convert a simplified SVG path `d` string to PDF path operators.

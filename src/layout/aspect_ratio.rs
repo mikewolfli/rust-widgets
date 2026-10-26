@@ -232,6 +232,8 @@ impl Layout for AspectRatioLayout {
 }
 
 #[cfg(test)]
+// A later impl block follows the tests (layout helpers kept next to their users); the
+// lint is suppressed here for that file-shape reason, as in demo/control/src/app.rs.
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;

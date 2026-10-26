@@ -75,6 +75,9 @@ struct CvSmpTeTime {
 }
 
 /// `CVTimeStamp` in its C ABI form.
+///
+/// FFI layout struct: the Rust side reads only some fields, but dropping any field
+/// would change the struct's size and offsets against CoreVideo's ABI, hence the allow.
 #[repr(C)]
 #[derive(Clone, Copy)]
 #[allow(dead_code)]

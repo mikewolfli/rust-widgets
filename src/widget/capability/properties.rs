@@ -516,8 +516,8 @@ pub(crate) fn data_grid_capability() -> WidgetCapability {
         aliases: &[],
         properties: DATA_GRID_PROPERTIES,
         events: events_of!("data_grid"),
+        // set_data_source was published without a payload property and always failed OutOfRange; re-publish when its records properties land.
         commands: &[
-            "set_data_source",
             "clear_data_source",
             "set_scroll_row",
             "set_scroll_column",
@@ -558,6 +558,7 @@ pub(crate) fn virtual_table_capability() -> WidgetCapability {
             "set_overscan_rows",
             "set_overscan_columns",
             "fetch_visible_window",
+            "clear_selection",
         ],
     }
 }
@@ -733,7 +734,31 @@ pub(crate) fn code_editor_capability() -> WidgetCapability {
         aliases: &[],
         properties: CODE_EDITOR_PROPERTIES,
         events: events_of!("code_editor"),
-        commands: &["set_text", "append_line", "set_markers", "set_cursor"],
+        // set_markers/set_cursor/append_line were published without a payload property and always failed OutOfRange; re-publish when their records properties land.
+        commands: &[
+            "set_text",
+            "undo",
+            "redo",
+            "copy",
+            "cut",
+            "paste",
+            "select_all",
+            "find",
+            "replace",
+            "find_next",
+            "find_previous",
+            "toggle_comment",
+            "toggle_block_comment",
+            "duplicate_line",
+            "delete_line",
+            "indent",
+            "outdent",
+            "sort_lines",
+            "fold_all",
+            "unfold_all",
+            "complete",
+            "close_find",
+        ],
     }
 }
 
@@ -781,7 +806,8 @@ pub(crate) fn map_view_capability() -> WidgetCapability {
         aliases: &[],
         properties: MAP_VIEW_PROPERTIES,
         events: events_of!("map_view"),
-        commands: &["set_markers", "set_center_x", "set_center_y", "set_zoom"],
+        // set_markers was published without a payload property and always failed OutOfRange; re-publish when its records properties land.
+        commands: &["set_center_x", "set_center_y", "set_zoom"],
     }
 }
 
@@ -859,13 +885,8 @@ pub(crate) fn command_palette_capability() -> WidgetCapability {
         aliases: &["command_box"],
         properties: COMMAND_PALETTE_PROPERTIES,
         events: events_of!("command_palette"),
-        commands: &[
-            "set_entries",
-            "set_query",
-            "clear_query",
-            "move_highlight",
-            "activate_highlighted",
-        ],
+        // set_entries/move_highlight were published without a payload property and always failed OutOfRange; re-publish when their payload properties land.
+        commands: &["set_query", "clear_query", "activate_highlighted"],
     }
 }
 
@@ -1045,7 +1066,8 @@ pub(crate) fn segmented_control_capability() -> WidgetCapability {
         aliases: &[],
         properties: SEGMENTED_CONTROL_PROPERTIES,
         events: events_of!("segmented_control"),
-        commands: &["set_items", "move_selection"],
+        // set_items/move_selection were published without a payload property and always failed OutOfRange; re-publish when their payload properties land.
+        commands: &[],
     }
 }
 
@@ -1592,7 +1614,8 @@ pub(crate) fn kanban_board_capability() -> WidgetCapability {
         aliases: &["kanban", "board"],
         properties: KANBAN_BOARD_PROPERTIES,
         events: events_of!("kanban_board"),
-        commands: &["add_column", "add_card", "move_card", "cancel_drag"],
+        // add_column/add_card/move_card were published without a payload property and always failed OutOfRange; re-publish when their payload properties land.
+        commands: &["cancel_drag"],
     }
 }
 
@@ -1952,9 +1975,10 @@ pub(crate) fn wizard_dialog_capability() -> WidgetCapability {
         properties: WIZARD_DIALOG_PROPERTIES,
         events: events_of!("wizard_dialog"),
         // `set_current_step` was published against a read-only property, so its
-        // `OutOfRange` answer pointed the caller at a write the schema refuses.
-        // Navigation is fully covered by `next` / `back` / `finish`, which are the
-        // commands this control actually implements.
+        // `OutOfRange` answer pointed the caller at a write the schema refuses —
+        // it is no longer published, since an index needs a payload the command
+        // channel cannot carry. `finish` runs the same path the Finish button
+        // does: every step is marked completed and `finished` is emitted.
         commands: &["next", "back", "finish"],
     }
 }
@@ -2303,7 +2327,7 @@ pub(crate) fn carousel_capability() -> WidgetCapability {
         aliases: &["carousel_widget", "swipe_view"],
         properties: CAROUSEL_PROPERTIES,
         events: events_of!("carousel"),
-        commands: &[],
+        commands: &["next", "previous"],
     }
 }
 

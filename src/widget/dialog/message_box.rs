@@ -1240,11 +1240,12 @@ impl Draw for MessageBox {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.06),
         };
-        let border = style
-            .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .filter(|resolved| *resolved != surface)
-            .unwrap_or_else(|| surface.blend(&ink, 0.45));
+        let border = crate::widget::draw::border_ink(
+            style.border_color,
+            theme.as_ref().and_then(|t| t.border_color),
+            surface,
+            ink,
+        );
         // The title bar is a distinct band on the frame, derived from it so the two stay one
         // visible step apart in either appearance. It used to be the literal brand blue.
         let title_bar = surface.blend(&ink, 0.08);

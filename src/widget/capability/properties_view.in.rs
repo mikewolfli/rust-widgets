@@ -286,6 +286,17 @@ macro_rules! impl_properties_view {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
             PropertySchema::enumerated("wheel_scroll_mode", true, true, &["per_row", "per_page"]),
             PropertySchema::new("header_visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated(
+                "selection_mode",
+                true,
+                true,
+                // The tokens `list_view` publishes for the same `SelectionMode`
+                // type; `none` is a real, reachable state (no selection at all).
+                &["none", "single", "multi", "extended"],
+            ),
+            // Row-major `(row, column)` pairs of the live selection, flattened
+            // into one number list; read-only, written by the pointer/keyboard.
+            PropertySchema::new("selected_cells", PropertyValueKind::NumberList, true, false),
         ];
 
         #[cfg(not(alloc_frugal))]

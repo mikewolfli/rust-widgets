@@ -821,11 +821,8 @@ impl Draw for ProgressDialog {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.06),
         };
-        let border = style
-            .border_color
-            .or(theme_border)
-            .filter(|resolved| *resolved != surface)
-            .unwrap_or_else(|| surface.blend(&ink, 0.45));
+        let border =
+            crate::widget::draw::border_ink(style.border_color, theme_border, surface, ink);
         // The title bar, the progress track and the button are distinct bands on the panel,
         // derived from it so they stay one visible step apart in either appearance.
         let title_bar = surface.blend(&ink, 0.08);

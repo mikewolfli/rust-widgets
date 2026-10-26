@@ -934,6 +934,28 @@ impl WidgetProperties for Carousel {
             BASE_PROPERTY_NAMES
         ]
     }
+
+    /// Runs one of the commands `carousel` publishes.
+    ///
+    /// Both are payload-free page flips onto the widget's real `next` /
+    /// `previous`; an empty (or single-page) carousel no-ops them. The trait
+    /// default answered `UnknownCommand` for bare verbs, which `invoke_command`
+    /// reports as a registry/implementation disagreement for a name the
+    /// capability table publishes — the shape the `list_view` override
+    /// documents.
+    fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
+        match name {
+            "next" => {
+                self.next();
+                Ok(())
+            }
+            "previous" => {
+                self.previous();
+                Ok(())
+            }
+            _ => Err(CapabilityAccessError::UnknownCommand),
+        }
+    }
 }
 
 impl Carousel {

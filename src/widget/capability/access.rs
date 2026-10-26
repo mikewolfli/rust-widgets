@@ -298,6 +298,12 @@ pub fn default_widget_property_default_value(
     // control (or two sharing one schema, for `thumb_color`), so they live here as one auditable
     // table instead of being spread across the per-kind arms below.
     let contract_default = match (kind, property_name) {
+        // `virtual_table` shares `WidgetKind::Table`; `selected_cells` is declared only by its
+        // schema, so this entry serves exactly that row. The value is the flattened row-major
+        // `(row, column)` pairs of an empty selection grid.
+        (WidgetKind::Table, "selected_cells") => {
+            Some(CapabilityValue::Tuple(crate::compat::Vec::new()))
+        }
         (WidgetKind::ScrollBar, "idle_delay_ms") => Some(CapabilityValue::UInt(600)),
         (WidgetKind::ScrollBar, "idle_opacity") => Some(CapabilityValue::Float(0.35)),
         (WidgetKind::Spinner, "track_color" | "arc_color") => Some(CapabilityValue::Null),
