@@ -14,7 +14,16 @@ rust-version = "1.88"
 include = [
     "build.rs",
     "src/**/*",
-    "tests/**/*",
+    # `tests/` is **not** in the package. The published tarball has a hard size ceiling
+    # (`crates.io` rejects anything over 10 MiB with HTTP 413, and 2.9.2 measured 10.2 MiB
+    # compressed), and the integration tests are the largest tree that is not part of the
+    # crate's build surface: they are `#[cfg(...)]`-gated, use `#[path]` probes and fixtures
+    # from `tools/` and `snapshots/` that are already outside the package, and a consumer
+    # gets the same coverage from their own tests. Everything a consumer compiles — `src/`,
+    # `build.rs`, the language data, every declared target (including the two probes under
+    # `tools/`) and both READMEs — still ships, and `tools/check_declared_targets_ship.sh`
+    # holds that line. Re-adding `tests/**/*` without shrinking something else re-breaks
+    # publishing, which is the only reason this comment is next to the list.
     "benches/**/*",
     "examples/**/*",
     "include/**/*",
@@ -38,7 +47,9 @@ include = [
     "NOTICE",
     "README.md",
     "README.zh-CN.md",
-    "CHANGELOG.md",
+    # `CHANGELOG.md` is deliberately not packaged, for the same size reason as `tests/`
+    # above: the file is repository history, not a compile input, and it is 218 KB of prose
+    # that compresses to 84 KiB. The canonical copy stays in the repository.
     "clippy.toml",
     "rustfmt.toml",
 ]
