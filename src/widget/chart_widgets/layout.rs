@@ -9,7 +9,7 @@
 //! `add_widget`, `remove_widget`, `child_ids`, `has_child`, and `clear`.
 
 use crate::core::{ObjectId, Rect};
-use crate::layout::Layout;
+use crate::layout::{ChildInfo, Layout, LayoutContext};
 
 /// A layout that positions a single chart widget to fill all available space.
 ///
@@ -59,6 +59,33 @@ impl Layout for ChartLayout {
         if let Some(id) = self.chart_id {
             widgets(id, rect);
         }
+    }
+
+    // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.update(rect, widgets);
+    }
+
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        let _ = children;
+        self.update(rect, widgets);
+    }
+
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, widgets);
     }
 
     /// Return all child widget IDs managed by this layout.

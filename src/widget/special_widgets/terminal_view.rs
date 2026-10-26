@@ -1250,8 +1250,8 @@ impl EventHandler for TerminalView {
             }
             Event::KeyPress { key, modifiers } => {
                 let pressed = crate::shortcut::Key::from_key_code(*key);
+                let primary = crate::shortcut::event_carries_primary(*modifiers);
                 let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
-                let primary = modifiers.contains(crate::shortcut::Modifiers::PRIMARY);
                 let shift = modifiers.contains(crate::shortcut::Modifiers::SHIFT);
                 if primary {
                     match pressed {
@@ -1542,18 +1542,18 @@ impl Draw for TerminalView {
             .map(|token| nudge_apart(token, background))
             .unwrap_or_else(|| background.blend(&text_color, 0.6));
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             background,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );

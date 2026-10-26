@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use super::Layout;
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, Box, HashMap, Vec};
 use crate::core::{ObjectId, Rect, Size};
 use crate::widget::Widget;
@@ -785,6 +785,33 @@ impl Layout for AbsoluteLayout {
                 widgets(entry.widget_id, *child_rect);
             }
         }
+    }
+
+    // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.update(rect, widgets);
+    }
+
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        let _ = children;
+        self.update(rect, widgets);
+    }
+
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, widgets);
     }
 
     fn child_ids(&self) -> Vec<ObjectId> {

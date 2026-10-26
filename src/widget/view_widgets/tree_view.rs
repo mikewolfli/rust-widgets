@@ -1768,19 +1768,19 @@ impl Draw for TreeView {
         let selected_bg = surface.blend(&accent, 0.30);
 
         // Draw background
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             surface,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         // Draw border
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );

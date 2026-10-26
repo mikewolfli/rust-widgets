@@ -203,17 +203,16 @@ pub trait Layout {
     /// and the same workaround in `wrap` and `absolute`). This method is the channel
     /// that lets a layout do the asking, as React, SwiftUI and the platform toolkits all do.
     ///
-    /// # Why the default implementation forwards to `update`
+    /// # Why there is no default implementation
     ///
-    /// Fifteen layouts implement this trait. Requiring all of them to change at once is
-    /// the "76 mechanical migrations" shape this crate has already paid for twice; the
-    /// default keeps every existing layout working untouched, and each one can adopt the
-    /// hints when it has a reason to. A layout that ignores `children` lays out exactly
-    /// as it did before, rather than refusing to lay out at all.
-    fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
-        let _ = children;
-        self.update(rect, out);
-    }
+    /// The default used to forward to [`Layout::update`], which made the fallback chain
+    /// silent: a wrapper that forgot to forward `arrange` to its inner layout kept
+    /// "working" while every `ChildInfo` the caller passed — sizing hints, margins,
+    /// fill/stretch — was dropped on the floor (G-403). With no default, a wrapper that
+    /// misses the entry fails to compile; [`impl_layout_forward!`] generates the four
+    /// forwards for wrappers that do forward, and each solver states explicitly what it
+    /// does with the hint channel.
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect));
 
     /// [`arrange`](Self::arrange) with the device context available to it.
     ///
@@ -225,22 +224,20 @@ pub trait Layout {
     /// builder, which applies the touch floor). A default body forwards to `arrange`, so every
     /// existing implementation and caller is untouched and gets exactly its current behaviour.
     ///
-    /// # Why the default forwards rather than scaling
+    /// # Why there is no default
     ///
-    /// A layout that has not been taught about the device lays out by its nominal numbers. That is
-    /// the correct answer for it — inventing scaling in a default would apply `layout_scale` twice
-    /// to a layout whose own body already reads the context, and there is no way for this method to
-    /// tell which kind it is forwarding to.
+    /// The default forwarded to [`Layout::arrange`] with the context dropped, which is
+    /// exactly the failure mode G-403 records: a wrapper that skipped this entry silently
+    /// lost the device scale and the touch floor on the context-aware path. Requiring the
+    /// entry turns that silent loss into a compile error; [`impl_layout_forward!`]
+    /// generates the forward for wrappers that do forward.
     fn arrange_with_context(
         &self,
         rect: Rect,
         children: &[ChildInfo],
         context: &LayoutContext,
         out: &mut dyn FnMut(ObjectId, Rect),
-    ) {
-        let _ = context;
-        self.arrange(rect, children, out);
-    }
+    );
 
     /// Recompute child geometries from explicit position/size primitives.
     fn update_from_position_size(
@@ -304,18 +301,19 @@ pub trait Layout {
 
     /// Update child geometries with device-aware scaling context.
     ///
-    /// The default implementation ignores the context and delegates
-    /// to [`update`](Layout::update). Override to apply
-    /// [`LayoutContext::layout_scale`] to spacing, margins, etc.
+    /// # Why there is no default
+    ///
+    /// The default ignored the context and delegated to [`Layout::update`], so a wrapper
+    /// that forgot to forward this entry silently laid out with nominal spacing — no
+    /// `layout_scale`, no `font_scale`, no touch floor (G-403). With the entry required
+    /// the miss is a compile error, and [`impl_layout_forward!`] generates the forward
+    /// for wrappers that do forward.
     fn update_with_context(
         &self,
         rect: Rect,
         context: &LayoutContext,
         widgets: &mut dyn FnMut(ObjectId, Rect),
-    ) {
-        let _ = context;
-        self.update(rect, widgets);
-    }
+    );
 
     /// Enables downcasting from `dyn Layout` to concrete types.
     /// Required by the layout inspector for introspection.
@@ -325,4 +323,93 @@ pub trait Layout {
     /// Required for mutation access to concrete layout implementations
     /// through the trait object.
     fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+/// Generates the four execution entries of [`Layout`] for a wrapper layout that
+/// forwards to an inner layout.
+///
+/// G-403: the trait's four execution entries (`update`, `update_with_context`,
+/// `arrange`, `arrange_with_context`) have no defaults, so a wrapper that misses one
+/// fails to compile instead of silently falling back to `update` and dropping the hint
+/// channel (`ChildInfo`) and the device context. This macro is the one place the
+/// forwarding body is written.
+///
+/// The first argument is the wrapper's field holding the inner layout. The generated
+/// entries forward to it through `self.<field>`; the wrapper still implements
+/// `add_widget`, `remove_widget`, `as_any` and the rest itself.
+///
+/// The one-argument form forwards the rectangle unchanged:
+///
+/// ```ignore
+/// impl Layout for Wrapper {
+///     impl_layout_forward!(inner);
+/// }
+/// ```
+///
+/// The two-argument form passes the rectangle through the named inherent method of the
+/// wrapper first — `self.<adjust>(rect) -> Rect` — for wrappers that transform the
+/// geometry before their inner layout sees it (a `KeyboardAwareLayout` shifts it by the
+/// keyboard offset):
+///
+/// ```ignore
+/// impl Layout for Wrapper {
+///     impl_layout_forward!(inner, adjust_rect);
+/// }
+/// ```
+#[macro_export]
+macro_rules! impl_layout_forward {
+    ($field:ident) => {
+        fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+            self.$field.update(rect, widgets);
+        }
+        fn update_with_context(
+            &self,
+            rect: Rect,
+            context: &LayoutContext,
+            widgets: &mut dyn FnMut(ObjectId, Rect),
+        ) {
+            self.$field.update_with_context(rect, context, widgets);
+        }
+        fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+            self.$field.arrange(rect, children, out);
+        }
+        fn arrange_with_context(
+            &self,
+            rect: Rect,
+            children: &[ChildInfo],
+            context: &LayoutContext,
+            out: &mut dyn FnMut(ObjectId, Rect),
+        ) {
+            self.$field.arrange_with_context(rect, children, context, out);
+        }
+    };
+    ($field:ident, $adjust:ident) => {
+        fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+            let rect = self.$adjust(rect);
+            self.$field.update(rect, widgets);
+        }
+        fn update_with_context(
+            &self,
+            rect: Rect,
+            context: &LayoutContext,
+            widgets: &mut dyn FnMut(ObjectId, Rect),
+        ) {
+            let rect = self.$adjust(rect);
+            self.$field.update_with_context(rect, context, widgets);
+        }
+        fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+            let rect = self.$adjust(rect);
+            self.$field.arrange(rect, children, out);
+        }
+        fn arrange_with_context(
+            &self,
+            rect: Rect,
+            children: &[ChildInfo],
+            context: &LayoutContext,
+            out: &mut dyn FnMut(ObjectId, Rect),
+        ) {
+            let rect = self.$adjust(rect);
+            self.$field.arrange_with_context(rect, children, context, out);
+        }
+    };
 }

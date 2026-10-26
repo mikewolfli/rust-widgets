@@ -775,7 +775,7 @@ impl EventHandler for CommandPalette {
                 let _ = self.activate_highlighted();
             }
             Event::KeyPress { key, modifiers } => {
-                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let primary = crate::shortcut::event_carries_primary(*modifiers);
                 let key_value = crate::shortcut::Key::from_key_code(*key);
                 match key_value {
                     Some(crate::shortcut::Key::Up) => self.move_highlight(-1),
@@ -785,14 +785,10 @@ impl EventHandler for CommandPalette {
                     }
                     Some(crate::shortcut::Key::Escape) => self.clear_query(),
                     Some(crate::shortcut::Key::Backspace) => self.backspace_query(),
-                    Some(crate::shortcut::Key::N)
-                        if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) =>
-                    {
+                    Some(crate::shortcut::Key::N) if primary => {
                         self.move_highlight(1);
                     }
-                    Some(crate::shortcut::Key::P)
-                        if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) =>
-                    {
+                    Some(crate::shortcut::Key::P) if primary => {
                         self.move_highlight(-1);
                     }
                     _ => self.append_query_char(*key),
@@ -849,18 +845,18 @@ impl Draw for CommandPalette {
         let header_background = background.blend(&text_color, 0.06);
         let highlight = background.blend(&text_color, 0.18);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             background,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );

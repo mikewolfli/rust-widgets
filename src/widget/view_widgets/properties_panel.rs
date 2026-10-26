@@ -1377,7 +1377,13 @@ impl PropertiesPanel {
                 let y = (anchor.y + 16).clamp(geom.y, max_y);
                 let box_rect = Rect::new(x, y, width, height);
                 context.fill_rounded_rect(box_rect, 3, background.blend(&text_color, 0.18));
-                crate::widget::draw::stroke_surface_border(context, box_rect, 3, border, 1);
+                crate::widget::draw::stroke_surface_border(
+                    context,
+                    box_rect,
+                    [3, 3, 3, 3],
+                    border,
+                    1,
+                );
                 context.draw_text_fitted_cow(
                     Rect::new(
                         box_rect.x + TOOLTIP_PADDING,

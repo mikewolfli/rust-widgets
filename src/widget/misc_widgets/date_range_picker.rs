@@ -990,12 +990,12 @@ impl Draw for DateRangePicker {
             .and_then(|_| crate::style::semantic_color(crate::style::SemanticColor::Info))
             .unwrap_or(Color::BLUE);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             bg_color,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
 
@@ -1747,12 +1747,12 @@ impl Draw for RangePresetBar {
             crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(Color::BLUE);
         let font = role_font(style, 10.0);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             surface,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
 
@@ -1770,7 +1770,7 @@ impl Draw for RangePresetBar {
             };
             context.fill_rounded_rect(chip, 4, fill);
             if active {
-                crate::widget::draw::stroke_surface_border(context, chip, 4, accent, 1);
+                crate::widget::draw::stroke_surface_border(context, chip, [4, 4, 4, 4], accent, 1);
             }
             let label = crate::widget::text_utils::elide_end(
                 &self.presets[index].label,

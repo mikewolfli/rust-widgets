@@ -936,7 +936,13 @@ impl FreeformShapeWidget {
             } else {
                 // A square shape keeps the square rule; only the rounded branch above needs a
                 // radius, so this call states zero rather than re-reading the style.
-                crate::widget::draw::stroke_surface_border(context, rect, 0, sc, self.stroke_width);
+                crate::widget::draw::stroke_surface_border(
+                    context,
+                    rect,
+                    [0, 0, 0, 0],
+                    sc,
+                    self.stroke_width,
+                );
             }
         }
     }
@@ -1232,12 +1238,12 @@ impl FreeformShapeWidget {
             (false, _) => Some(fill.blend(&background, 0.5)),
         };
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             background,
             self.base.style().background_gradient.as_ref(),
             self.base.style().surface.unwrap_or_default(),
-            self.base.style().border_radius.unwrap_or(0),
+            self.base.style().resolved_corner_radii().to_array(),
             crate::core::Color::BLACK,
         );
         self.draw_filled_shape(context, fill, stroke);
@@ -1327,8 +1333,9 @@ impl crate::event::EventHandler for FreeformShapeWidget {
                 }
             }
             crate::event::Event::KeyPress { key, modifiers } => {
+                let primary = crate::shortcut::event_carries_primary(*modifiers);
                 let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
-                if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) {
+                if primary {
                     match crate::shortcut::Key::from_key_code(*key) {
                         Some(crate::shortcut::Key::Z)
                             if modifiers.contains(crate::shortcut::Modifiers::SHIFT) =>
@@ -1825,8 +1832,7 @@ impl EventHandler for ShapeCanvas {
         }
         match event {
             Event::MousePress { pos, button: 1, modifiers } if self.editable => {
-                let additive = crate::shortcut::Modifiers::from_event_bits(*modifiers)
-                    .contains(crate::shortcut::Modifiers::PRIMARY);
+                let additive = crate::shortcut::event_carries_primary(*modifiers);
                 match self.hit_test(*pos) {
                     Some(id) => {
                         if additive {
@@ -1920,18 +1926,18 @@ impl Draw for ShapeCanvas {
             .map(|colors| colors.primary)
             .unwrap_or(Color::PRIMARY);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             background,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );

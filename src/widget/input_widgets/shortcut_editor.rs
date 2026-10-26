@@ -905,12 +905,12 @@ impl Draw for ShortcutEditor {
         let header_ink = ink.blend(&panel, 0.15).legible_on(panel, 4.5);
 
         // Draw background
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             panel,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
 

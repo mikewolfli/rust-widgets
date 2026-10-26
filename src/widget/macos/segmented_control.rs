@@ -604,7 +604,7 @@ mod tests {
         recorder.end_frame();
 
         let fill_at = recorder.commands.iter().position(|command| {
-            matches!(command, RenderCommand::FillRoundedRect { radius: 4, .. })
+            matches!(command, RenderCommand::FillRoundedRect { radii: [4, 4, 4, 4], .. })
         });
         let label_at = recorder.commands.iter().position(|command| {
             matches!(command, RenderCommand::DrawText { text, .. } if text.as_ref() == "Day")

@@ -17,19 +17,19 @@ impl CodeEditor {
         let reveal = if self.config.fade_popups { self.popup_reveal } else { 1.0 };
         let face = chrome.popup_background.blend(&chrome.surface, (1.0 - reveal) * 0.9);
         let edge = chrome.popup_border.blend(&chrome.surface, (1.0 - reveal) * 0.9);
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             face,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         // The popup's edge follows its face's radius; a square outline left the corners bare.
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             edge,
             1,
         );
@@ -81,19 +81,19 @@ impl CodeEditor {
         let reveal = if self.config.fade_popups { self.popup_reveal } else { 1.0 };
         let face = chrome.popup_background.blend(&chrome.surface, (1.0 - reveal) * 0.9);
         let edge = chrome.popup_border.blend(&chrome.surface, (1.0 - reveal) * 0.9);
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             face,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         // The popup's edge follows its face's radius; a square outline left the corners bare.
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             edge,
             1,
         );

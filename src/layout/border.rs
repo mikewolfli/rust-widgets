@@ -574,6 +574,18 @@ impl Layout for BorderLayout {
         self.arrange_tracks(rect, self.spacing, self.insets(1.0), 1.0, None, widgets);
     }
 
+    // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, out);
+    }
+
     /// The hint-aware path: an edge whose recorded extent is `0` takes the largest
     /// preferred extent among the children in that region.
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {

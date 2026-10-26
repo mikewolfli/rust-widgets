@@ -1733,7 +1733,7 @@ impl EventHandler for TextEdit {
                 // below re-derives a bit.
                 let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
-                let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
+                let primary = crate::shortcut::event_carries_primary(*modifiers);
 
                 // I-121: selection and copy stay available on a read-only editor, but undo/redo
                 // must not be: the history path is still a mutation.
@@ -1969,19 +1969,19 @@ impl Draw for TextEdit {
             .unwrap_or_else(|| field.blend(&ink, 0.22));
 
         // Draw background
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             field,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         // Draw border (rounded with the fill, so the corners are not cut open)
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );

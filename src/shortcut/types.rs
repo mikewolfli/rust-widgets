@@ -849,3 +849,20 @@ impl PlatformShortcutStyle {
 pub fn format_shortcut_for_platform(shortcut: &Shortcut, style: PlatformShortcutStyle) -> String {
     style.format(shortcut)
 }
+
+/// Whether one event's modifier bits carry the host's primary accelerator.
+///
+/// [`Modifiers::PRIMARY`] is set only by the event's Command bit, so on a
+/// Desktop host (Windows/Linux) a Control press — the platform's own
+/// accelerator convention — would read as "no primary". This is the same lift
+/// [`ShortcutManager::matches_binding`] applies to keyboard chords, as a
+/// predicate for handlers that test modifier bits directly (a modified click,
+/// a chord routed to a widget) instead of going through the registry.
+pub fn event_carries_primary(modifier_bits: u32) -> bool {
+    let pressed = Modifiers::from_event_bits(modifier_bits);
+    if pressed.contains(Modifiers::PRIMARY) {
+        return true;
+    }
+    crate::platform::platform_facts().shortcut_style() == PlatformShortcutStyle::Desktop
+        && pressed.contains(Modifiers::CTRL)
+}

@@ -1158,12 +1158,12 @@ impl Draw for ToolButton {
         // the "declared but nobody consumes it" shape the census exists to catch. `tool_bar`,
         // `menu_bar` and `status_bar` are the sibling call sites in this module and all read their
         // own surface the same way.
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
             bg,
             style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
-            style.border_radius.unwrap_or(0),
+            style.resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         if hovered || pressed || self.checked {
@@ -1171,7 +1171,7 @@ impl Draw for ToolButton {
             crate::widget::draw::stroke_surface_border(
                 context,
                 Rect::new(rect.x, rect.y, rect.width, rect.height),
-                style.border_radius.unwrap_or(0),
+                style.resolved_corner_radii().to_array(),
                 accent,
                 1,
             );

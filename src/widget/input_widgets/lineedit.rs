@@ -2590,7 +2590,12 @@ impl LineEdit {
     ///
     /// Returns whether the key was consumed. A key this field does not handle leaves the
     /// event to the rest of the chain rather than being silently swallowed.
-    fn handle_key(&mut self, key: u32, modifiers: crate::shortcut::Modifiers) -> bool {
+    fn handle_key(&mut self, key: u32, modifiers: u32) -> bool {
+        // The wire bitmask answers the primary question directly — a Desktop host also
+        // accepts its Control key (see `event_carries_primary`) — while the `Modifiers`
+        // value below serves the SHIFT checks and the selection extensions.
+        let primary = crate::shortcut::event_carries_primary(modifiers);
+        let modifiers = crate::shortcut::Modifiers::from_event_bits(modifiers);
         match key {
             8 => {
                 // Backspace
@@ -2615,7 +2620,7 @@ impl LineEdit {
                 // range grows instead of collapsing to a caret (see `select_with_modifiers`).
                 // Primary (Ctrl/Cmd) steps by **word**, which is the convention every desktop
                 // text field follows; the boundary helper only walks when it is held.
-                let by_word = modifiers.contains(crate::shortcut::Modifiers::PRIMARY);
+                let by_word = primary;
                 if self.cursor_position > 0 {
                     let target = if by_word {
                         self.previous_word_boundary(self.cursor_position)
@@ -2634,7 +2639,7 @@ impl LineEdit {
             }
             39 => {
                 // Right arrow. Same contract as Left, stepping forward.
-                let by_word = modifiers.contains(crate::shortcut::Modifiers::PRIMARY);
+                let by_word = primary;
                 if self.cursor_position < self.text.len() {
                     let target = if by_word {
                         self.next_word_boundary(self.cursor_position)
@@ -2656,11 +2661,11 @@ impl LineEdit {
                 // End
                 self.select_with_modifiers(self.text.len(), modifiers);
             }
-            65 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
+            65 if primary => {
                 // Primary+A: Select all
                 self.select_all();
             }
-            86 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
+            86 if primary => {
                 // Primary+V: Paste from the platform clipboard.
                 #[cfg(not(alloc_frugal))]
                 {
@@ -2675,7 +2680,7 @@ impl LineEdit {
                     self.base.redraw_requested.emit();
                 }
             }
-            67 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
+            67 if primary => {
                 // Primary+C: Copy selection to the platform clipboard.
                 #[cfg(not(alloc_frugal))]
                 {
@@ -2687,7 +2692,7 @@ impl LineEdit {
                     self.base.redraw_requested.emit();
                 }
             }
-            88 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
+            88 if primary => {
                 // Primary+X: Copy selection, then delete it.
                 //
                 // The two halves have different conditions on purpose. What reaches the
@@ -2711,18 +2716,16 @@ impl LineEdit {
                     self.base.redraw_requested.emit();
                 }
             }
-            90 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY)
-                && modifiers.contains(crate::shortcut::Modifiers::SHIFT) =>
-            {
+            90 if primary && modifiers.contains(crate::shortcut::Modifiers::SHIFT) => {
                 // Primary+Shift+Z is the other conventional redo chord. It used to fall into the
                 // plain undo arm below, so the field undid the edit the user meant to redo; the
                 // other editable controls in this family bind it (I-01).
                 let _ = self.redo();
             }
-            90 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
+            90 if primary => {
                 let _ = self.undo();
             }
-            89 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
+            89 if primary => {
                 let _ = self.redo();
             }
             _ => {
@@ -2825,7 +2828,7 @@ impl EventHandler for LineEdit {
                 // deliberately not the injection point because a host calling it already knows the
                 // value it just wrote.
                 let revision = self.text_revision;
-                self.handle_key(*key, crate::shortcut::Modifiers::from_event_bits(*modifiers));
+                self.handle_key(*key, *modifiers);
                 self.announce_value_changed_if_revision_moved(revision);
                 self.emit_text_edited_if_revision_moved(revision);
             }
@@ -3032,12 +3035,12 @@ impl Draw for LineEdit {
         let layout = self.decoration_layout(context);
         // Draw background
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
             bg,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         // Draw border
@@ -3056,7 +3059,7 @@ impl Draw for LineEdit {
             crate::widget::draw::stroke_surface_border(
                 context,
                 Rect::new(rect.x, rect.y, rect.width, rect.height),
-                style.border_radius.unwrap_or(0),
+                style.resolved_corner_radii().to_array(),
                 border_color,
                 bw,
             );

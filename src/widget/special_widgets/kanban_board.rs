@@ -1596,8 +1596,10 @@ impl EventHandler for KanbanBoard {
                         .map(|card| card.id.clone());
                     let pressed = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                     // A modified click extends the selection instead of starting a drag, which is
-                    // how a batch of cards is gathered for one move.
-                    if pressed.contains(crate::shortcut::Modifiers::PRIMARY)
+                    // how a batch of cards is gathered for one move. The primary test goes through
+                    // the shared predicate: on a Desktop host Control is the primary accelerator,
+                    // and only the Command bit sets `Modifiers::PRIMARY` on its own.
+                    if crate::shortcut::event_carries_primary(*modifiers)
                         || pressed.contains(crate::shortcut::Modifiers::SHIFT)
                     {
                         self.focused_card = Some(position);
@@ -1789,12 +1791,12 @@ impl Draw for KanbanBoard {
             .unwrap_or(Color::BLACK);
         let background = resolved.blend(&text_color, 0.08);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             background,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
 
@@ -3076,18 +3078,18 @@ impl Draw for KanbanColumnHeader {
             .unwrap_or(Color::PRIMARY);
         let font = role_font(style, 12.0);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             surface.blend(&ink, 0.05),
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );

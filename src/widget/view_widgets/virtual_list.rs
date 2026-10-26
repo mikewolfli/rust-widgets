@@ -1028,18 +1028,18 @@ impl Draw for VirtualList {
             .unwrap_or(Color::PRIMARY);
         let selected_bg = surface.blend(&accent, 0.30);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             surface,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );
@@ -1155,7 +1155,7 @@ impl crate::event::EventHandler for VirtualList {
                 // Ctrl/Cmd+A selects the whole projection, which is the shortcut every list
                 // responds to and the one a multi-selection host expects.
                 if (mods.contains(crate::shortcut::Modifiers::CTRL)
-                    || mods.contains(crate::shortcut::Modifiers::PRIMARY))
+                    || crate::shortcut::event_carries_primary(*modifiers))
                     && crate::event::key_codes::ascii_key_code('a').is_some_and(|code| code == *key)
                 {
                     let mut rows: Vec<usize> = (0..self.row_count()).collect();

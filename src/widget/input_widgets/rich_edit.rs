@@ -1293,19 +1293,19 @@ impl Draw for RichEdit {
             .blend(&paper, 0.65);
 
         // Draw background
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             paper,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         // Draw border (rounded with the fill, so the corners are not cut open)
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             if self.read_only { border.blend(&paper, 0.50) } else { border },
             1,
         );
@@ -1538,9 +1538,7 @@ impl crate::event::EventHandler for RichEdit {
         }
         // Copying is the one edit gesture a read-only document still supports.
         if let crate::event::Event::KeyPress { key: 67, modifiers } = event {
-            if crate::shortcut::Modifiers::from_event_bits(*modifiers)
-                .contains(crate::shortcut::Modifiers::PRIMARY)
-            {
+            if crate::shortcut::event_carries_primary(*modifiers) {
                 let _ = self.copy_selection_to_clipboard();
                 return;
             }
@@ -1625,7 +1623,7 @@ impl crate::event::EventHandler for RichEdit {
                 // The event carries the framework's wire bitmask; translate it once, here.
                 let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
-                let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
+                let primary = crate::shortcut::event_carries_primary(*modifiers);
                 match *key {
                     8 if cursor > 0 => {
                         // Backspace — delete char before cursor, recorded as one splice (I-P55).

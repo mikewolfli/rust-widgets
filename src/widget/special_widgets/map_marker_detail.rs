@@ -491,7 +491,7 @@ impl Draw for MapMarkerDetail {
         crate::widget::draw::stroke_surface_border(
             context,
             window,
-            6,
+            [6, 6, 6, 6],
             surface.blend(&ink, 0.25),
             1,
         );

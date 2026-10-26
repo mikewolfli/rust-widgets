@@ -2092,12 +2092,12 @@ impl Draw for RiveWidget {
         } else {
             base_bg
         };
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             bg,
             style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
-            style.border_radius.unwrap_or(0),
+            style.resolved_corner_radii().to_array(),
             Color::BLACK,
         );
 
@@ -2106,7 +2106,7 @@ impl Draw for RiveWidget {
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border_color,
             1,
         );

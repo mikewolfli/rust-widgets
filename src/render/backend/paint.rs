@@ -541,17 +541,17 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
         RenderCommand::DrawRectStroke { rect, color, width } => {
             surface.draw_rect_with_width(*rect, *color, *width)
         }
-        RenderCommand::FillRoundedRect { rect, radius, color } => {
-            surface.fill_rounded_rect(*rect, *radius, *color)
+        RenderCommand::FillRoundedRect { rect, radii, color } => {
+            surface.fill_rounded_rect_radii(*rect, *radii, *color)
         }
-        RenderCommand::FillRoundedRectAA { rect, radius, color } => {
-            surface.fill_rounded_rect_aa(*rect, *radius, *color)
+        RenderCommand::FillRoundedRectAA { rect, radii, color } => {
+            surface.fill_rounded_rect_radii_aa(*rect, *radii, *color)
         }
-        RenderCommand::DrawRoundedRectStroke { rect, radius, color, width } => {
-            surface.draw_rounded_rect_with_width(*rect, *radius, *color, *width)
+        RenderCommand::DrawRoundedRectStroke { rect, radii, color, width } => {
+            surface.draw_rounded_rect_radii_with_width(*rect, *radii, *color, *width)
         }
-        RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width } => {
-            surface.draw_rounded_rect_aa_with_width(*rect, *radius, *color, *width)
+        RenderCommand::DrawRoundedRectStrokeAA { rect, radii, color, width } => {
+            surface.draw_rounded_rect_radii_aa_with_width(*rect, *radii, *color, *width)
         }
         RenderCommand::DrawLine { from, to, color } => surface.draw_line(*from, *to, *color),
         RenderCommand::DrawLineAA { from, to, color } => surface.draw_line_aa(*from, *to, *color),
@@ -1964,7 +1964,7 @@ mod tests {
 
         backend.execute_command(&RenderCommand::FillRoundedRect {
             rect: Rect::new(2, 2, 16, 16),
-            radius: 4,
+            radii: [4, 4, 4, 4],
             color: Color::GREEN,
         });
         backend.end_frame();

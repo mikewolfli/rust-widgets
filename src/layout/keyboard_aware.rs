@@ -176,6 +176,15 @@ impl KeyboardAwareLayout {
     pub fn into_inner(self) -> Box<dyn Layout> {
         self.inner
     }
+
+    /// Shifts a rect upward by the *animated* keyboard offset.
+    ///
+    /// The adjustment every forwarded entry applies: only the origin moves — the extent is
+    /// never touched, because the near side is the one that loses content and shrinking the
+    /// extent would trade one unusable control for another.
+    fn keyboard_adjusted_rect(&self, rect: Rect) -> Rect {
+        Rect::new(rect.x, rect.y - self.current_offset, rect.width, rect.height)
+    }
 }
 
 impl Layout for KeyboardAwareLayout {
@@ -207,45 +216,15 @@ impl Layout for KeyboardAwareLayout {
         self.inner.clear();
     }
 
-    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
-        // Shift the entire rect upward by the *animated* offset so content
-        // remains visible above the keyboard.
-        let adjusted = Rect::new(rect.x, rect.y - self.current_offset, rect.width, rect.height);
-        self.inner.update(adjusted, widgets);
-    }
-
-    fn update_with_context(
-        &self,
-        rect: Rect,
-        context: &LayoutContext,
-        widgets: &mut dyn FnMut(ObjectId, Rect),
-    ) {
-        let adjusted = Rect::new(rect.x, rect.y - self.current_offset, rect.width, rect.height);
-        self.inner.update_with_context(adjusted, context, widgets);
-    }
-
-    /// Forwards the hint channel to the inner layout, shifted like [`Self::update`].
-    ///
-    /// Both `arrange` entry points were missing, so the trait defaults fell back to
-    /// `update`/`update_with_context`: a keyboard-aware wrapper driven through the hint path
-    /// silently discarded every `ChildInfo` (sizing hints, margins, fill/stretch) and, on the
-    /// context-aware path, the device scale and touch floor as well. Each wrapper method that
-    /// the inner layout implements has to be forwarded or the wrapper is not transparent.
-    fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
-        let adjusted = Rect::new(rect.x, rect.y - self.current_offset, rect.width, rect.height);
-        self.inner.arrange(adjusted, children, out);
-    }
-
-    fn arrange_with_context(
-        &self,
-        rect: Rect,
-        children: &[ChildInfo],
-        context: &LayoutContext,
-        out: &mut dyn FnMut(ObjectId, Rect),
-    ) {
-        let adjusted = Rect::new(rect.x, rect.y - self.current_offset, rect.width, rect.height);
-        self.inner.arrange_with_context(adjusted, children, context, out);
-    }
+    // G-403: the trait's four execution entries have no defaults, so a wrapper that misses one
+    // fails to compile instead of silently falling back to `update`. Both `arrange` entries were
+    // once missing here, and the trait defaults then discarded every `ChildInfo` (sizing hints,
+    // margins, fill/stretch) and, on the context-aware path, the device scale and touch floor as
+    // well — a wrapper is only transparent if every entry the inner layout implements is
+    // forwarded. The macro is the one place the forwarding body is written; the adjustment below
+    // (shift the entire rect upward by the *animated* offset so content remains visible above the
+    // keyboard) is the only wrapper-specific part.
+    crate::impl_layout_forward!(inner, keyboard_adjusted_rect);
 }
 
 #[cfg(test)]

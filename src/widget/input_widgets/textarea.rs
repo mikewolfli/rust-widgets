@@ -1855,7 +1855,7 @@ impl EventHandler for TextArea {
                 // rest of this handler speaks `Modifiers` and nothing below re-derives a bit.
                 let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
-                let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
+                let primary = crate::shortcut::event_carries_primary(*modifiers);
 
                 // I-117: select-all and copy remain available on a read-only area; undo/redo are
                 // mutations and therefore sit behind the guard below.
@@ -2101,12 +2101,12 @@ impl Draw for TextArea {
 
         // -- Background --
         let bg = self.style().background_color.unwrap_or(Color::rgb(255, 255, 255));
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             bg,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
 
@@ -2115,7 +2115,7 @@ impl Draw for TextArea {
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );

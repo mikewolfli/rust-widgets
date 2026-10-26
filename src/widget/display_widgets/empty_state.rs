@@ -430,12 +430,12 @@ impl Draw for EmptyState {
         let action_fill = ink.blend(&surface, 0.35);
 
         // ── Background ──
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             surface,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
 

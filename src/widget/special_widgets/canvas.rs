@@ -1013,7 +1013,7 @@ impl Canvas {
 
     /// Fill a rounded rectangle.
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color) {
-        self.push_command(RenderCommand::FillRoundedRect { rect, radius, color });
+        self.push_command(RenderCommand::FillRoundedRect { rect, radii: [radius; 4], color });
         self.base.request_redraw();
     }
 
@@ -1334,12 +1334,12 @@ impl Draw for Canvas {
             .unwrap_or_else(|| background.blend(&Color::BLACK, 0.2));
 
         // Draw canvas background
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             background,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         if self.show_grid && rect.width > 0 && rect.height > 0 {
@@ -1402,7 +1402,7 @@ impl Draw for Canvas {
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );
@@ -1470,20 +1470,19 @@ impl EventHandler for Canvas {
             Event::ContextMenu { pos } => {
                 self.context_menu_requested.emit(*pos);
             }
-            Event::KeyPress { key, modifiers } => {
-                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
-                if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) {
-                    match crate::shortcut::Key::from_key_code(*key) {
-                        Some(crate::shortcut::Key::Z) => {
-                            self.undo();
-                        }
-                        Some(crate::shortcut::Key::Y) => {
-                            self.redo();
-                        }
-                        _ => {}
-                    }
+            Event::KeyPress { key, modifiers } => match crate::shortcut::Key::from_key_code(*key) {
+                Some(crate::shortcut::Key::Z)
+                    if crate::shortcut::event_carries_primary(*modifiers) =>
+                {
+                    self.undo();
                 }
-            }
+                Some(crate::shortcut::Key::Y)
+                    if crate::shortcut::event_carries_primary(*modifiers) =>
+                {
+                    self.redo();
+                }
+                _ => {}
+            },
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -1517,9 +1516,9 @@ fn transform_command(command: &RenderCommand, transform: CanvasTransform) -> Ren
         RenderCommand::DrawRect { rect, color } => {
             RenderCommand::DrawRect { rect: transform.rect(*rect), color: *color }
         }
-        RenderCommand::FillRoundedRect { rect, radius, color } => RenderCommand::FillRoundedRect {
+        RenderCommand::FillRoundedRect { rect, radii, color } => RenderCommand::FillRoundedRect {
             rect: transform.rect(*rect),
-            radius: width(*radius),
+            radii: radii.map(&width),
             color: *color,
         },
         RenderCommand::DrawLine { from, to, color } => RenderCommand::DrawLine {
@@ -1631,8 +1630,8 @@ fn snap_command(command: RenderCommand, step: i32) -> RenderCommand {
         RenderCommand::DrawRect { rect, color } => {
             RenderCommand::DrawRect { rect: snap_rect(rect, step), color }
         }
-        RenderCommand::FillRoundedRect { rect, radius, color } => {
-            RenderCommand::FillRoundedRect { rect: snap_rect(rect, step), radius, color }
+        RenderCommand::FillRoundedRect { rect, radii, color } => {
+            RenderCommand::FillRoundedRect { rect: snap_rect(rect, step), radii, color }
         }
         RenderCommand::DrawLine { from, to, color } => RenderCommand::DrawLine {
             from: snap_point(from, step),

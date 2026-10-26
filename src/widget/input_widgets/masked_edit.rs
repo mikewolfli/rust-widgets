@@ -1413,7 +1413,7 @@ impl EventHandler for MaskedEdit {
                 // nothing below re-derives a bit.
                 let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
-                let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
+                let primary = crate::shortcut::event_carries_primary(*modifiers);
 
                 if primary && *key == 65 {
                     // Primary+A: select all. Handled on the control that owns the text.

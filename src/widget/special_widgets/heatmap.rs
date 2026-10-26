@@ -1141,19 +1141,19 @@ impl Draw for Heatmap {
         let default_font = Font::default();
         let font = style.font.as_ref().unwrap_or(&default_font);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             background,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         if let Some(border_color) = style.border_color {
             crate::widget::draw::stroke_surface_border(
                 context,
                 rect,
-                self.style().border_radius.unwrap_or(0),
+                self.style().resolved_corner_radii().to_array(),
                 border_color,
                 1,
             );
@@ -1638,7 +1638,7 @@ impl EventHandler for Heatmap {
             Event::KeyPress { key, modifiers } => {
                 let pressed = crate::shortcut::Key::from_key_code(*key);
                 let pressed_modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
-                let extend = pressed_modifiers.contains(crate::shortcut::Modifiers::PRIMARY)
+                let extend = crate::shortcut::event_carries_primary(*modifiers)
                     || pressed_modifiers.contains(crate::shortcut::Modifiers::SHIFT);
                 let step = match pressed {
                     Some(crate::shortcut::Key::Left) => Some((0isize, -1isize)),

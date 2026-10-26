@@ -481,6 +481,18 @@ impl Layout for FlowLayout {
         }
     }
 
+    // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, out);
+    }
+
     /// Lays the children out from their own hints (LAY-N01).
     ///
     /// [`update`](Self::update) reads each child widget's

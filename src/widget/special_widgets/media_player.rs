@@ -1039,19 +1039,19 @@ impl Draw for MediaPlayer {
         let divider = style.border_color.unwrap_or(divider);
         let ink = style.text_color.unwrap_or(ink);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             surface,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         // Rounded to the face's radius: a square outline left the four corners unpainted.
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             divider,
             1,
         );

@@ -112,7 +112,7 @@ impl Draw for CodeEditor {
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             chrome.border,
             1,
         );

@@ -1376,8 +1376,7 @@ impl EventHandler for DiffViewer {
                 13 => {
                     self.next_change();
                 }
-                _ if crate::shortcut::Modifiers::from_event_bits(*modifiers)
-                    .contains(crate::shortcut::Modifiers::PRIMARY)
+                _ if crate::shortcut::event_carries_primary(*modifiers)
                     && crate::shortcut::Key::from_key_code(*key)
                         == Some(crate::shortcut::Key::C) =>
                 {
@@ -1474,18 +1473,18 @@ impl Draw for DiffViewer {
         let changed = crate::style::semantic_color(crate::style::SemanticColor::Warning)
             .map(|token| token.blend(&background, 0.85));
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             background,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );
@@ -2297,18 +2296,18 @@ impl Draw for DiffFileList {
         let font = effective_font(style);
 
         // A translucent accent wash so a selected row keeps its text readable.
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             background,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );

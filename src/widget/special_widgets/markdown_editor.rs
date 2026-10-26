@@ -2010,8 +2010,10 @@ impl MarkdownEditor {
     fn handle_key(&mut self, key: u32, modifiers: u32) {
         let shift = crate::shortcut::Modifiers::from_event_bits(modifiers)
             .contains(crate::shortcut::Modifiers::SHIFT);
-        let primary = crate::shortcut::Modifiers::from_event_bits(modifiers)
-            .contains(crate::shortcut::Modifiers::PRIMARY);
+        // The shared predicate, not a raw `PRIMARY` bit test: on a Desktop host
+        // Control is the primary accelerator and only the Command bit sets
+        // `Modifiers::PRIMARY` on its own.
+        let primary = crate::shortcut::event_carries_primary(modifiers);
 
         if self.find.visible {
             match key {
@@ -2374,18 +2376,18 @@ impl Draw for MarkdownEditor {
             .map(|active| active.colors.primary.legible_on(surface, 4.5))
             .unwrap_or_else(|| ink.contrast_color());
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             surface,
             style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
-            style.border_radius.unwrap_or(0),
+            style.resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );
@@ -3508,18 +3510,18 @@ impl Draw for MarkdownOutlinePanel {
             crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(Color::BLUE);
         let font = effective_font(style);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             surface,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );
@@ -4237,18 +4239,18 @@ impl Draw for FindBar {
             crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(Color::BLUE);
         let font = effective_font(style);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             surface,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );
@@ -4288,7 +4290,13 @@ impl Draw for FindBar {
         ] {
             if active {
                 context.fill_rounded_rect(box_rect, 3, surface.blend(&accent, 0.30));
-                crate::widget::draw::stroke_surface_border(context, box_rect, 3, accent, 1);
+                crate::widget::draw::stroke_surface_border(
+                    context,
+                    box_rect,
+                    [3, 3, 3, 3],
+                    accent,
+                    1,
+                );
             }
             context.draw_text(
                 Point::new(box_rect.x + 4, box_rect.y + 3),

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Form layout manager — two-column label/field row pairs.
-use super::{ChildInfo, Layout};
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, HashMap, Vec};
 use crate::core::{ObjectId, Rect};
 use crate::style::EdgeOffsets;
@@ -624,6 +624,28 @@ impl Layout for FormLayout {
             cursor_y = cursor_y.saturating_add(entry_height as i32).saturating_add(spacing);
             index = index.saturating_add(1);
         }
+    }
+
+    // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.update(rect, widgets);
+    }
+
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, out);
     }
 }
 

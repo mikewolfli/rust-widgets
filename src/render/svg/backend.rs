@@ -6,7 +6,8 @@
 #[cfg(feature = "3d")]
 use super::convert::quad_points;
 use super::convert::{
-    color_to_rgba, number_attr, outline_radius, outline_rect_attrs, point_attrs, rect_attrs,
+    color_to_rgba, number_attr, outline_radii_corners, outline_radius, outline_rect,
+    outline_rect_attrs, point_attrs, rect_attrs, rounded_rect_path,
 };
 #[cfg(test)]
 use crate::compat::Arc;
@@ -15,6 +16,7 @@ use crate::compat::{format, MiniToString, String, Vec};
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::render::core::command::{BlendMode, RenderCommand};
 use crate::render::core::types::{ShapedText, TextMetrics};
+use crate::render::pipeline::{rounded_rect_effective_radii, uniform_radii};
 use crate::render::pipeline::{sat_add_i32, sat_mul_i32, sat_neg_i32, u32_to_i32_saturating};
 use crate::render::text::{is_combining_mark, is_variation_selector};
 use crate::render::{PaintBackend, SoftwareRenderConfig};
@@ -1040,15 +1042,27 @@ impl PaintBackend for SvgPaintBackend {
                 self.emit_mesh_3d(mesh, model, camera, *viewport);
             }
 
-            RenderCommand::FillRoundedRect { rect, radius, color }
-            | RenderCommand::FillRoundedRectAA { rect, radius, color } => {
-                self.push_element(format!(
-                    r#"<rect {} rx="{}" ry="{}" fill="{}" />"#,
-                    rect_attrs(rect),
-                    radius,
-                    radius,
-                    color_to_rgba(color)
-                ));
+            RenderCommand::FillRoundedRect { rect, radii, color }
+            | RenderCommand::FillRoundedRectAA { rect, radii, color } => {
+                match uniform_radii(*radii) {
+                    // The uniform case keeps the raw single-radius element the scalar
+                    // command always emitted, byte for byte.
+                    Some(radius) => self.push_element(format!(
+                        r#"<rect {} rx="{}" ry="{}" fill="{}" />"#,
+                        rect_attrs(rect),
+                        radius,
+                        radius,
+                        color_to_rgba(color)
+                    )),
+                    None => {
+                        let resolved = rounded_rect_effective_radii(*rect, *radii);
+                        self.push_element(format!(
+                            r#"<path d="{}" fill="{}" />"#,
+                            rounded_rect_path(rect, resolved.map(f64::from)),
+                            color_to_rgba(color)
+                        ));
+                    }
+                }
             }
 
             // ── Rectangle outlines ─────────────────────────────────────
@@ -1070,16 +1084,29 @@ impl PaintBackend for SvgPaintBackend {
             }
 
             // ── Rounded rectangle outlines ─────────────────────────────
-            RenderCommand::DrawRoundedRectStroke { rect, radius, color, width }
-            | RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width } => {
-                self.push_element(format!(
-                    r#"<rect {} rx="{}" ry="{}" fill="none" stroke="{}" stroke-width="{}" />"#,
-                    outline_rect_attrs(rect, *width),
-                    number_attr(outline_radius(rect, *radius, *width)),
-                    number_attr(outline_radius(rect, *radius, *width)),
-                    color_to_rgba(color),
-                    width
-                ));
+            RenderCommand::DrawRoundedRectStroke { rect, radii, color, width }
+            | RenderCommand::DrawRoundedRectStrokeAA { rect, radii, color, width } => {
+                match uniform_radii(*radii) {
+                    Some(radius) => self.push_element(format!(
+                        r#"<rect {} rx="{}" ry="{}" fill="none" stroke="{}" stroke-width="{}" />"#,
+                        outline_rect_attrs(rect, *width),
+                        number_attr(outline_radius(rect, radius, *width)),
+                        number_attr(outline_radius(rect, radius, *width)),
+                        color_to_rgba(color),
+                        width
+                    )),
+                    None => {
+                        let resolved = rounded_rect_effective_radii(*rect, *radii);
+                        let inset = outline_rect(rect, *width);
+                        let corners = outline_radii_corners(rect, resolved, *width);
+                        self.push_element(format!(
+                            r#"<path d="{}" fill="none" stroke="{}" stroke-width="{}" />"#,
+                            rounded_rect_path(&inset, corners),
+                            color_to_rgba(color),
+                            width
+                        ));
+                    }
+                }
             }
 
             // ── Lines ──────────────────────────────────────────────────
@@ -1909,7 +1936,7 @@ mod tests {
         });
         svg.execute_command(&RenderCommand::FillRoundedRect {
             rect: Rect::new(50, 0, 50, 50),
-            radius: 5,
+            radii: [5, 5, 5, 5],
             color: Color::GREEN,
         });
         svg.execute_command(&RenderCommand::DrawRect {
@@ -1992,7 +2019,7 @@ mod tests {
         svg.begin_frame(Color::WHITE);
         svg.execute_command(&RenderCommand::DrawRoundedRectStroke {
             rect: Rect::new(10, 10, 80, 80),
-            radius: 8,
+            radii: [8, 8, 8, 8],
             color: Color::BLUE,
             width: 2,
         });
@@ -2291,10 +2318,20 @@ mod tests {
             RenderCommand::FillRect { rect, color: Color::RED },
             RenderCommand::DrawRect { rect, color: Color::GREEN },
             RenderCommand::DrawRectStroke { rect, color: Color::BLUE, width: 2 },
-            RenderCommand::FillRoundedRect { rect, radius: 6, color: Color::RED },
-            RenderCommand::FillRoundedRectAA { rect, radius: 6, color: Color::GREEN },
-            RenderCommand::DrawRoundedRectStroke { rect, radius: 6, color: Color::BLUE, width: 2 },
-            RenderCommand::DrawRoundedRectStrokeAA { rect, radius: 6, color: Color::RED, width: 2 },
+            RenderCommand::FillRoundedRect { rect, radii: [6, 6, 6, 6], color: Color::RED },
+            RenderCommand::FillRoundedRectAA { rect, radii: [6, 6, 6, 6], color: Color::GREEN },
+            RenderCommand::DrawRoundedRectStroke {
+                rect,
+                radii: [6, 6, 6, 6],
+                color: Color::BLUE,
+                width: 2,
+            },
+            RenderCommand::DrawRoundedRectStrokeAA {
+                rect,
+                radii: [6, 6, 6, 6],
+                color: Color::RED,
+                width: 2,
+            },
             RenderCommand::DrawLine { from: point, to: Point::new(80, 80), color: Color::BLUE },
             RenderCommand::DrawLineAA { from: point, to: Point::new(80, 80), color: Color::RED },
             RenderCommand::DrawLineStroke {

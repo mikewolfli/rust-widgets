@@ -6,7 +6,7 @@
 //! The child is positioned at the visual center of the parent rect. Optional
 //! width_factor and height_factor (0.0–1.0) control how much of the available
 //! space the child consumes before centering.
-use super::Layout;
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 
@@ -158,6 +158,33 @@ impl Layout for CenterLayout {
                 Rect::new(rect.x + x_offset, rect.y + y_offset, child_width, child_height);
             widgets(child_id, child_rect);
         }
+    }
+
+    // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.update(rect, widgets);
+    }
+
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        let _ = children;
+        self.update(rect, widgets);
+    }
+
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, widgets);
     }
 }
 

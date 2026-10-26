@@ -733,19 +733,19 @@ impl Draw for KeySequenceEdit {
         // error colour rather than as a second literal — the same derivation the preset theme's
         // state overlays use, and what keeps the two appearances in step when the palette moves.
         let bg = if recording { surface.blend(&error, 0.12) } else { surface };
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             bg,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         // Rounded to the face's radius: a square outline left the four corners unpainted.
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             if recording { error } else { divider },
             1,
         );

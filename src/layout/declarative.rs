@@ -616,7 +616,7 @@ pub enum LayoutKindName {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{BoxLayout, Orientation};
+    use crate::layout::{BoxLayout, LayoutContext, Orientation};
 
     fn box_layout() -> Box<dyn Layout> {
         Box::new(BoxLayout::new(Orientation::Horizontal, 0, 0))
@@ -802,6 +802,35 @@ mod tests {
             fn remove_widget(&mut self, _widget_id: ObjectId) {}
             fn update(&self, rect: Rect, out: &mut dyn FnMut(ObjectId, Rect)) {
                 out(501, rect);
+            }
+            // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+            fn update_with_context(
+                &self,
+                rect: Rect,
+                context: &LayoutContext,
+                out: &mut dyn FnMut(ObjectId, Rect),
+            ) {
+                let _ = context;
+                self.update(rect, out);
+            }
+            fn arrange(
+                &self,
+                rect: Rect,
+                children: &[ChildInfo],
+                out: &mut dyn FnMut(ObjectId, Rect),
+            ) {
+                let _ = children;
+                self.update(rect, out);
+            }
+            fn arrange_with_context(
+                &self,
+                rect: Rect,
+                children: &[ChildInfo],
+                context: &LayoutContext,
+                out: &mut dyn FnMut(ObjectId, Rect),
+            ) {
+                let _ = context;
+                self.arrange(rect, children, out);
             }
             fn as_any(&self) -> &dyn crate::compat::Any {
                 self

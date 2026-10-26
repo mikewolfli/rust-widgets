@@ -745,7 +745,8 @@ pub fn paint_active_at_weight(
     let covered_by_tofu = painted.as_ref().is_some_and(|painted| painted.source == "tofu");
     if covered_by_tofu && !cell.is_empty() && out.len() >= cell.area() {
         if let Some(face) = super::font_assets::outline_face_for(ch) {
-            if let Some(coverage) = super::raster::rasterize_face_at_weight(face, ch, cell, weight) {
+            if let Some(coverage) = super::raster::rasterize_face_at_weight(face, ch, cell, weight)
+            {
                 // The whole cell is overwritten, so the tofu bitmap `paint_active` just wrote
                 // leaves nothing behind.
                 out[..cell.area()].copy_from_slice(&coverage);

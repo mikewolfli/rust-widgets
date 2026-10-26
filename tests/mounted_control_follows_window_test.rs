@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 
 use rust_widgets::app::{App, WindowHandle};
 use rust_widgets::core::{ObjectId, Rect};
-use rust_widgets::layout::Layout;
+use rust_widgets::layout::{ChildInfo, Layout, LayoutContext};
 use rust_widgets::widget::Label;
 
 /// Records what the layout was asked to place, per window size, for one child.
@@ -58,6 +58,33 @@ impl Layout for Recorder {
             Rect::new((rect.width as i32 - 40).max(0), (rect.height as i32 - 40).max(0), 40, 40);
         widgets(child, placed);
         self.calls.lock().expect("recorder").push((rect.width, rect.height, placed));
+    }
+
+    // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.update(rect, widgets);
+    }
+
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        let _ = children;
+        self.update(rect, widgets);
+    }
+
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, widgets);
     }
 }
 

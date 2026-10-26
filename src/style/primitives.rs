@@ -327,6 +327,17 @@ impl CornerRadii {
             && self.top_left == self.bottom_right
             && self.top_left == self.bottom_left
     }
+
+    /// The four radii as the render layer's `[u32; 4]` corner order.
+    ///
+    /// The order is `[top_left, top_right, bottom_right, bottom_left]` — the same
+    /// clockwise order [`CornerRadii::new`] takes. This is the bridge the drawing
+    /// side reads the resolved shape through: a painter passes this array to
+    /// `RenderContext::fill_rounded_rect_corners` / `draw_rounded_rect_stroke_corners`
+    /// / `draw_rounded_rect_border` (STY-01).
+    pub const fn to_array(&self) -> [u32; 4] {
+        [self.top_left, self.top_right, self.bottom_right, self.bottom_left]
+    }
 }
 
 impl Default for EdgeOffsets {

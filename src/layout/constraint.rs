@@ -6,7 +6,7 @@
 //! A simplified constraint-based layout that resolves spatial relationships
 //! between widgets sequentially (not a full Cassowary solver). Each constraint
 //! references a target widget and describes how this widget relates to it.
-use super::Layout;
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, HashMap, Rc, RefCell, Vec};
 use crate::core::{ObjectId, Rect};
 
@@ -459,6 +459,33 @@ impl Layout for ConstraintLayout {
                 }
             }
         }
+    }
+
+    // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.update(rect, widgets);
+    }
+
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        let _ = children;
+        self.update(rect, widgets);
+    }
+
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, widgets);
     }
 }
 

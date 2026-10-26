@@ -179,10 +179,23 @@ fn format_margins(margins: EdgeOffsets) -> crate::compat::String {
 /// exported frame appearances paint a rounded panel face with a square border, and that is what
 /// the committed snapshots contain. A radius the caller declared explicitly (so the style is no
 /// longer theme-derived) is a statement about the shape and is honoured for the stroke too.
-fn stroke_radius(style: &crate::style::WidgetStyle) -> u32 {
+fn stroke_radii(style: &crate::style::WidgetStyle) -> [u32; 4] {
     // A theme-derived style carries the theme's own radius (`Borders::radius`). Returning 0 here
     // for theme-derived styles made the outline square while the *fill* used that same radius, so
     // the four corners showed the backdrop between the rounded fill and the square rule.
+    // Renamed from `stroke_radius` (scalar) with the STY-01 renderer: the border line now follows
+    // the resolved per-corner shape, matching the fill.
+    style.resolved_corner_radii().to_array()
+}
+
+/// The **scalar** radius the bevel arms follow.
+///
+/// The raised/sunken/win-panel bevels stroke two tones along one shared outline, which the
+/// `Bevel` primitive expresses with a single radius. A style that declares per-corner radii
+/// without the scalar keeps a square bevel — the boundary is deliberate: bevels are chrome,
+/// not the style's border line (the plain/panel arms route through `stroke_radii` and honour
+/// the resolved shape).
+fn stroke_radius(style: &crate::style::WidgetStyle) -> u32 {
     style.border_radius.unwrap_or(0)
 }
 
@@ -506,9 +519,18 @@ impl Frame {
                 // one draws the same line as a rounded stroke instead of a square rule through
                 // the middle of the corners.
                 let width = self.painted_width();
-                let radius = stroke_radius(style);
-                if width > 0 && radius > 0 {
-                    context.draw_rounded_rect_stroke(rect, radius, border, width);
+                let radii = stroke_radii(style);
+                if width > 0 && radii.iter().any(|r| *r > 0) {
+                    // The plain arm is the frame's own border line, so it is where the declared
+                    // `border-style` becomes ink: `None` suppresses the rule, `Dashed`/`Dotted`
+                    // pattern it, `Solid` (and an unset style) emit the same command as before.
+                    context.draw_rounded_rect_border(
+                        rect,
+                        radii,
+                        border,
+                        width,
+                        style.border_style.unwrap_or(crate::style::BorderStyle::Solid),
+                    );
                 } else if width > 0 {
                     context.draw_rect(rect, border);
                 }
@@ -690,20 +712,26 @@ impl Frame {
     fn draw_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
         let style = self.style();
         let bg_color = style.background_color.unwrap_or(Color::rgb(236, 233, 216));
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             bg_color,
             style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
-            style.border_radius.unwrap_or(0),
+            style.resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         let border = self.interactive_border(style.border_color.unwrap_or(Color::rgb(64, 64, 64)));
         let width = self.painted_width();
         if width > 0 {
-            let radius = stroke_radius(style);
-            if radius > 0 {
-                context.draw_rounded_rect_stroke(rect, radius, border, width);
+            let radii = stroke_radii(style);
+            if radii.iter().any(|r| *r > 0) {
+                context.draw_rounded_rect_border(
+                    rect,
+                    radii,
+                    border,
+                    width,
+                    style.border_style.unwrap_or(crate::style::BorderStyle::Solid),
+                );
             } else {
                 context.draw_rect(rect, border);
             }
@@ -714,12 +742,12 @@ impl Frame {
         // More sophisticated panel with gradient
         let style = self.style();
         let bg_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             bg_color,
             style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
-            style.border_radius.unwrap_or(0),
+            style.resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         self.draw_box_frame(context, rect);
@@ -766,12 +794,12 @@ impl Frame {
         // still wants its highlight to read as a highlight.
         let style = self.style();
         let bg_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             bg_color,
             style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
-            style.border_radius.unwrap_or(0),
+            style.resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         // Draw 3D border

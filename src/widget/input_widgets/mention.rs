@@ -1319,13 +1319,12 @@ impl EventHandler for Mention {
                 self.insert_str(text);
             }
             Event::KeyDown((key, _)) | Event::KeyPress { key, .. } => {
-                let mods = match event {
+                let primary = match event {
                     Event::KeyPress { modifiers, .. } => {
-                        crate::shortcut::Modifiers::from_event_bits(*modifiers)
+                        crate::shortcut::event_carries_primary(*modifiers)
                     }
-                    _ => crate::shortcut::Modifiers::NONE,
+                    _ => false,
                 };
-                let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
                 // I-101: clipboard and history, matching the crate's text fields.
                 if primary && (*key == 90 || *key == 122) {
                     let _ = self.undo();

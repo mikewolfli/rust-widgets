@@ -1473,6 +1473,31 @@ impl Layout for FlexLayout {
     /// `padding`/`spacing` split — instead of something every call site has to re-derive, and
     /// it is why this path can honour `justify_content` as well: the leftover room is what
     /// remains after the margins, not after the content alone.
+    /// Updates child geometry with the device context.
+    ///
+    /// # Why this forwards to the hints-aware path
+    ///
+    /// This entry cannot carry the `children` hints — its signature takes ids — so it is not
+    /// the entry the composite builder calls. Its body used to live in an inherent method
+    /// shadowing the trait entry, which is also why that copy carried `#[allow(dead_code)]`:
+    /// rustc's dead-code pass saw no static caller for it. With the trait's four execution
+    /// entries required (G-403), the body moved here — the override is the trait entry, the
+    /// shadow and its suppression are gone, and the two direct-call tests
+    /// (`flex_layout_update_with_context_scales_gap_and_padding`,
+    /// `wrap_layout_update_with_context_scales_spacing`) reach it through the trait.
+    ///
+    /// Forwarding with an empty hint list is what a caller of this entry has to give: it has
+    /// no hints to pass, and `arrange_body` already falls back to `child_sizes` — the same
+    /// pre-hints channel this entry's callers use — for exactly that case.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.arrange_body(rect, &[], context, true, widgets);
+    }
+
     fn arrange_with_context(
         &self,
         rect: Rect,
@@ -2034,53 +2059,6 @@ impl FlexLayout {
                 out(wid, child_rect);
             }
         }
-    }
-
-    /// Updates child geometry with the device context.
-    ///
-    /// # Why this now forwards to the hints-aware path
-    ///
-    /// This method cannot carry the `children` hints — its signature is the trait's and takes ids
-    /// — so it is not the entry the composite builder calls. Its body therefore used to be a second
-    /// implementation of the same arrangement: `compute_rects(content)` plus the
-    /// touch floor. Once `arrange_body` grew the same two steps (so `arrange` and
-    /// `arrange_with_context` would stop disagreeing), keeping this copy meant two solvers for one
-    /// question — and the floor existed in only one of them, which is how a composite's children
-    /// became the one place it did not apply.
-    ///
-    /// Forwarding with an empty hint list is what `Layout::arrange`'s own default does for the
-    /// reverse direction: a caller of this method has no hints to give, and `arrange_body` already
-    /// falls back to `child_sizes` — the same pre-hints channel this method's callers use — for
-    /// exactly that case.
-    ///
-    /// # Why `allow(dead_code)`
-    ///
-    /// rustc's dead-code pass sees only the *static* call graph, and this override is reached
-    /// through a trait object: [`KeyboardAwareLayout::update_with_context`](crate::layout::KeyboardAwareLayout)
-    /// forwards to its `Box<dyn Layout>` inner, which is a `FlexLayout` whenever the keyboard-aware
-    /// wrapper is built around one. Removing the override to silence the lint would silently change
-    /// behaviour on that path — the trait default forwards to [`Layout::update`], which by design
-    /// does **not** apply the touch floor — so the allow is the honest answer, and it is scoped to
-    /// this one method rather than to the module.
-    ///
-    /// The two tests that call it directly (`flex_layout_update_with_context_scales_gap_and_padding`,
-    /// `wrap_layout_update_with_context_scales_spacing`) live in `#[cfg(test)]` modules, which are a
-    /// separate compilation unit and so do not count as production callers for the lint either.
-    ///
-    /// # G-403 status
-    ///
-    /// Removing this allow needs the trait's four execution entries to be required (no default),
-    /// plus a generated forwarder, so the override becomes reachable through a statically visible
-    /// call. That edit also has to touch `src/widget/chart_widgets/layout.rs`, which is outside
-    /// this module's write scope; the suppression therefore stays until that change lands.
-    #[allow(dead_code)]
-    fn update_with_context(
-        &self,
-        rect: Rect,
-        context: &LayoutContext,
-        widgets: &mut dyn FnMut(ObjectId, Rect),
-    ) {
-        self.arrange_body(rect, &[], context, true, widgets);
     }
 }
 

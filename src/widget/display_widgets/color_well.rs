@@ -408,12 +408,12 @@ impl Draw for ColorWell {
                 .unwrap_or_else(|| border.blend(&text_color, 0.5));
             if pressed {
                 context.fill_rounded_rect(well, 2, accent.with_alpha(40));
-                crate::widget::draw::stroke_surface_border(context, well, 2, accent, 2);
+                crate::widget::draw::stroke_surface_border(context, well, [2, 2, 2, 2], accent, 2);
             } else {
                 crate::widget::draw::stroke_surface_border(
                     context,
                     well,
-                    2,
+                    [2, 2, 2, 2],
                     accent.with_alpha(160),
                     2,
                 );

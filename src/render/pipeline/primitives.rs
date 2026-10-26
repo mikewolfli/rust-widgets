@@ -11,8 +11,8 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::pipeline::pixel_ops::{
     blend_painted_glyph, circle_fill_coverage_grid, circle_stroke_coverage_grid, fill_pixels,
     inset_rect, line_stroke_coverage_grid, pixel_visible, rounded_rect_coverage,
-    rounded_rect_coverage_grid, rounded_rect_effective_radius, u32_to_i32_saturating,
-    write_pixel_with_mode, GlyphDrawConfig,
+    rounded_rect_coverage_grid, rounded_rect_effective_radii, rounded_rect_effective_radius,
+    u32_to_i32_saturating, uniform_radii, write_pixel_with_mode, GlyphDrawConfig,
 };
 use crate::render::BlendMode;
 // Imported separately because it only exists when a colour face does — see its own docs.
@@ -328,7 +328,7 @@ impl SoftwareSurface {
             let left_band_end = middle_first.saturating_sub(1).min(x1);
             if left_band_start <= left_band_end {
                 for px in left_band_start..=left_band_end {
-                    let coverage = rounded_rect_coverage(px, py, rect, effective_radius);
+                    let coverage = rounded_rect_coverage(px, py, rect, [effective_radius; 4]);
                     if coverage > 0.0 {
                         blend_pixel_clipped!(
                             blend, clip, frame, size.width, px, py, color, coverage
@@ -358,7 +358,7 @@ impl SoftwareSurface {
             let right_band_end = x1.min(reach_last);
             if right_band_start <= right_band_end {
                 for px in right_band_start..=right_band_end {
-                    let coverage = rounded_rect_coverage(px, py, rect, effective_radius);
+                    let coverage = rounded_rect_coverage(px, py, rect, [effective_radius; 4]);
                     if coverage > 0.0 {
                         blend_pixel_clipped!(
                             blend, clip, frame, size.width, px, py, color, coverage
@@ -387,7 +387,7 @@ impl SoftwareSurface {
         for py in y0..=y1 {
             for px in x0..=x1 {
                 let coverage =
-                    rounded_rect_coverage_grid(px, py, rect, effective_radius, sample_grid);
+                    rounded_rect_coverage_grid(px, py, rect, [effective_radius; 4], sample_grid);
                 if coverage > 0.0 {
                     blend_pixel_clipped!(
                         self.blend_mode,
@@ -429,12 +429,12 @@ impl SoftwareSurface {
         let inner_radius = effective_radius.saturating_sub(stroke_width);
         for py in y0..=y1 {
             for px in x0..=x1 {
-                let outer_coverage = rounded_rect_coverage(px, py, rect, effective_radius);
+                let outer_coverage = rounded_rect_coverage(px, py, rect, [effective_radius; 4]);
                 if outer_coverage <= 0.0 {
                     continue;
                 }
                 let inner_coverage = if has_inner {
-                    rounded_rect_coverage(px, py, inner, inner_radius)
+                    rounded_rect_coverage(px, py, inner, [inner_radius; 4])
                 } else {
                     0.0
                 };
@@ -482,12 +482,152 @@ impl SoftwareSurface {
         for py in y0..=y1 {
             for px in x0..=x1 {
                 let outer_coverage =
-                    rounded_rect_coverage_grid(px, py, rect, effective_radius, sample_grid);
+                    rounded_rect_coverage_grid(px, py, rect, [effective_radius; 4], sample_grid);
                 if outer_coverage <= 0.0 {
                     continue;
                 }
                 let inner_coverage = if has_inner {
-                    rounded_rect_coverage_grid(px, py, inner, inner_radius, sample_grid)
+                    rounded_rect_coverage_grid(px, py, inner, [inner_radius; 4], sample_grid)
+                } else {
+                    0.0
+                };
+                let stroke_coverage = (outer_coverage - inner_coverage).clamp(0.0, 1.0);
+                if stroke_coverage > 0.0 {
+                    blend_pixel_clipped!(
+                        self.blend_mode,
+                        clip,
+                        frame,
+                        size.width,
+                        px,
+                        py,
+                        color,
+                        stroke_coverage
+                    );
+                }
+            }
+        }
+    }
+    /// Fills a rounded rectangle whose corners may differ.
+    ///
+    /// STY-01: four equal radii are the historical [`Self::fill_rounded_rect`]
+    /// byte-for-byte (the band-optimized solver runs unchanged); distinct corners
+    /// take the per-pixel coverage path with the same 2×2 sampler the uniform
+    /// corner bands use.
+    pub fn fill_rounded_rect_radii(&mut self, rect: Rect, radii: [u32; 4], color: Color) {
+        match uniform_radii(radii) {
+            Some(radius) => self.fill_rounded_rect(rect, radius, color),
+            None => self.fill_radii_sampled(rect, radii, color, 2),
+        }
+    }
+    /// Anti-aliased [`Self::fill_rounded_rect_radii`].
+    pub fn fill_rounded_rect_radii_aa(&mut self, rect: Rect, radii: [u32; 4], color: Color) {
+        match uniform_radii(radii) {
+            Some(radius) => self.fill_rounded_rect_aa(rect, radius, color),
+            None => {
+                let grid = self.aa_samples_per_axis;
+                self.fill_radii_sampled(rect, radii, color, grid);
+            }
+        }
+    }
+    /// The per-pixel body shared by the non-uniform fill paths.
+    fn fill_radii_sampled(&mut self, rect: Rect, radii: [u32; 4], color: Color, grid: u8) {
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let size = self.buffer.size();
+        let width = size.width as i32;
+        let height = size.height as i32;
+        let clip = self.current_clip();
+        let frame = self.buffer.back_mut();
+        let x0 = rect.x.max(0);
+        let y0 = rect.y.max(0);
+        let x1 = (rect.right() - 1).min(width - 1);
+        let y1 = (rect.bottom() - 1).min(height - 1);
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                let coverage = rounded_rect_coverage_grid(px, py, rect, radii, grid);
+                if coverage > 0.0 {
+                    blend_pixel_clipped!(
+                        self.blend_mode,
+                        clip,
+                        frame,
+                        size.width,
+                        px,
+                        py,
+                        color,
+                        coverage
+                    );
+                }
+            }
+        }
+    }
+    /// Strokes a rounded rectangle whose corners may differ.
+    ///
+    /// Four equal radii are the historical [`Self::draw_rounded_rect_with_width`]
+    /// byte-for-byte; distinct corners resolve their radii per CSS
+    /// `border-radius` on the outer rect and inset each corner by the stroke
+    /// width for the inner shape, matching the uniform inner-radius arithmetic.
+    pub fn draw_rounded_rect_radii_with_width(
+        &mut self,
+        rect: Rect,
+        radii: [u32; 4],
+        color: Color,
+        stroke_width: u32,
+    ) {
+        match uniform_radii(radii) {
+            Some(radius) => self.draw_rounded_rect_with_width(rect, radius, color, stroke_width),
+            None => self.stroke_radii_sampled(rect, radii, color, stroke_width, 2),
+        }
+    }
+    /// Anti-aliased [`Self::draw_rounded_rect_radii_with_width`].
+    pub fn draw_rounded_rect_radii_aa_with_width(
+        &mut self,
+        rect: Rect,
+        radii: [u32; 4],
+        color: Color,
+        stroke_width: u32,
+    ) {
+        match uniform_radii(radii) {
+            Some(radius) => self.draw_rounded_rect_aa_with_width(rect, radius, color, stroke_width),
+            None => {
+                let grid = self.aa_samples_per_axis;
+                self.stroke_radii_sampled(rect, radii, color, stroke_width, grid);
+            }
+        }
+    }
+    /// The per-pixel body shared by the non-uniform stroke paths.
+    fn stroke_radii_sampled(
+        &mut self,
+        rect: Rect,
+        radii: [u32; 4],
+        color: Color,
+        stroke_width: u32,
+        grid: u8,
+    ) {
+        if stroke_width == 0 || rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let size = self.buffer.size();
+        let width = size.width as i32;
+        let height = size.height as i32;
+        let clip = self.current_clip();
+        let frame = self.buffer.back_mut();
+        let x0 = rect.x.max(0);
+        let y0 = rect.y.max(0);
+        let x1 = (rect.right() - 1).min(width - 1);
+        let y1 = (rect.bottom() - 1).min(height - 1);
+        let inner = inset_rect(rect, stroke_width as i32);
+        let has_inner = inner.width > 0 && inner.height > 0;
+        let inner_radii =
+            rounded_rect_effective_radii(rect, radii).map(|r| r.saturating_sub(stroke_width));
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                let outer_coverage = rounded_rect_coverage_grid(px, py, rect, radii, grid);
+                if outer_coverage <= 0.0 {
+                    continue;
+                }
+                let inner_coverage = if has_inner {
+                    rounded_rect_coverage_grid(px, py, inner, inner_radii, grid)
                 } else {
                     0.0
                 };
@@ -2077,8 +2217,8 @@ mod tests {
                 let effective = rounded_rect_effective_radius(rect, radius);
                 for py in 0..height as i32 {
                     for px in 0..width as i32 {
-                        let expected =
-                            (rounded_rect_coverage(px, py, rect, effective) * 255.0).round() as u8;
+                        let expected = (rounded_rect_coverage(px, py, rect, [effective; 4]) * 255.0)
+                            .round() as u8;
                         let index = (py as usize * (width + 4) as usize + px as usize) * 4;
                         let actual = produced[index];
                         assert!(

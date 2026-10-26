@@ -549,12 +549,12 @@ fn scene_composition_supports_rounded_rect_commands() {
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::FillRoundedRect {
         rect: Rect { x: 3, y: 3, width: 8, height: 8 },
-        radius: 3,
+        radii: [3, 3, 3, 3],
         color: Color::rgba(71, 72, 73, 255),
     });
     layer.push(RenderCommand::DrawRoundedRectStroke {
         rect: Rect { x: 3, y: 3, width: 8, height: 8 },
-        radius: 3,
+        radii: [3, 3, 3, 3],
         color: Color::rgba(81, 82, 83, 255),
         width: 2,
     });
@@ -700,7 +700,7 @@ fn scene_compose_with_temporary_config_restores_backend_state() {
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::FillRoundedRectAA {
         rect: Rect { x: 3, y: 3, width: 10, height: 10 },
-        radius: 4,
+        radii: [4, 4, 4, 4],
         color: Color::rgba(100, 110, 120, 255),
     });
     scene.add_layer(layer);
@@ -719,7 +719,7 @@ fn scene_compose_with_temporary_config_changes_aa_output() {
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::FillRoundedRectAA {
         rect: Rect { x: 3, y: 3, width: 10, height: 10 },
-        radius: 4,
+        radii: [4, 4, 4, 4],
         color: Color::rgba(150, 151, 152, 255),
     });
     scene.add_layer(layer);
@@ -879,7 +879,7 @@ fn scene_composition_supports_aa_stroke_rounded_rect_command() {
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::DrawRoundedRectStrokeAA {
         rect: Rect { x: 3, y: 3, width: 10, height: 10 },
-        radius: 4,
+        radii: [4, 4, 4, 4],
         color: Color::rgba(240, 241, 242, 255),
         width: 2,
     });
@@ -898,7 +898,7 @@ fn scene_composition_supports_aa_fill_rounded_rect_command() {
     let mut layer = SceneLayer::new(0);
     layer.push(RenderCommand::FillRoundedRectAA {
         rect: Rect { x: 3, y: 3, width: 10, height: 10 },
-        radius: 4,
+        radii: [4, 4, 4, 4],
         color: Color::rgba(120, 130, 140, 255),
     });
     scene.add_layer(layer);
@@ -1164,7 +1164,7 @@ fn scene_layer_accepts_host_navigation_command_types() {
     });
     layer.push(RenderCommand::FillRoundedRect {
         rect: Rect::new(170, 24, 90, 70),
-        radius: 4,
+        radii: [4, 4, 4, 4],
         color: Color::rgba(220, 225, 235, 255),
     });
     let mut draw_text_count = 0usize;
@@ -1427,4 +1427,185 @@ fn bevel_stroke_inner_clamps_huge_width_without_panicking() {
     }
     backend.end_frame();
     assert_eq!(backend.frame_rgba().len(), 32 * 32 * 4);
+}
+
+// ── STY-01: per-corner radii and the border-style semantics ─────────────────
+
+mod corner_and_border_style_tests {
+    use super::*;
+    use crate::render::RenderContext;
+    use crate::widget::macos::test_support::Recorder;
+
+    #[test]
+    fn non_uniform_fill_rounds_only_the_declared_corner() {
+        let mut surface = SoftwareSurface::new(Size { width: 20, height: 20 }, 1.0);
+        surface.begin_frame(Color::BLACK);
+        surface.fill_rounded_rect_radii(
+            Rect { x: 0, y: 0, width: 20, height: 20 },
+            [6, 0, 0, 0],
+            Color::rgba(61, 62, 63, 255),
+        );
+        surface.end_frame();
+        let rgba = surface.frame_rgba();
+        let at = |x: i32, y: i32| -> [u8; 4] {
+            let idx = ((y as usize * 20) + x as usize) * 4;
+            [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]]
+        };
+        // Inside the top-left arc: (2, 2) sits on the quarter disc of radius 6 centred at (6, 6).
+        assert_eq!(at(2, 2), [61, 62, 63, 255]);
+        // Outside that arc but inside the rect: a uniform radius-6 fill would also skip it,
+        // which is exactly the point — the top-left corner is genuinely rounded.
+        assert_eq!(at(1, 1), [0, 0, 0, 255]);
+        // The other corners carry radius 0, so their rects fill fully.
+        assert_eq!(at(18, 1), [61, 62, 63, 255]);
+        assert_eq!(at(1, 18), [61, 62, 63, 255]);
+        assert_eq!(at(18, 18), [61, 62, 63, 255]);
+    }
+
+    #[test]
+    fn non_uniform_stroke_follows_the_per_corner_outline() {
+        let mut surface = SoftwareSurface::new(Size { width: 20, height: 20 }, 1.0);
+        surface.begin_frame(Color::BLACK);
+        surface.draw_rounded_rect_radii_with_width(
+            Rect { x: 2, y: 2, width: 16, height: 16 },
+            [6, 0, 0, 0],
+            Color::rgba(81, 82, 83, 255),
+            2,
+        );
+        surface.end_frame();
+        let rgba = surface.frame_rgba();
+        let at = |x: i32, y: i32| -> [u8; 4] {
+            let idx = ((y as usize * 20) + x as usize) * 4;
+            [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]]
+        };
+        // The top rule runs the straight section inset by the 6 px top-left arc.
+        assert_eq!(at(10, 2), [81, 82, 83, 255]);
+        // The left rule starts below the arc: at y = 2 the outline is on the arc, not the rule.
+        assert_eq!(at(2, 12), [81, 82, 83, 255]);
+        // Straight rules with square corners paint at the full edges.
+        assert_eq!(at(17, 10), [81, 82, 83, 255]);
+        assert_eq!(at(10, 17), [81, 82, 83, 255]);
+    }
+
+    #[test]
+    fn border_style_none_draws_nothing() {
+        let mut recorder = Recorder::new(40, 40);
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            context.draw_rounded_rect_border(
+                Rect::new(4, 4, 32, 32),
+                [6, 6, 6, 6],
+                Color::RED,
+                2,
+                crate::style::BorderStyle::None,
+            );
+        }
+        recorder.end_frame();
+        assert!(
+            recorder.commands.is_empty(),
+            "a none border is suppressed even with width and colour set"
+        );
+    }
+
+    #[test]
+    fn border_style_solid_matches_the_plain_stroke() {
+        let mut recorder = Recorder::new(40, 40);
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            context.draw_rounded_rect_border(
+                Rect::new(4, 4, 32, 32),
+                [6, 6, 6, 6],
+                Color::RED,
+                2,
+                crate::style::BorderStyle::Solid,
+            );
+            context.draw_rounded_rect_stroke(Rect::new(4, 4, 32, 32), 6, Color::RED, 2);
+        }
+        recorder.end_frame();
+        assert_eq!(recorder.commands.len(), 2);
+        assert_eq!(
+            format!("{:?}", recorder.commands[0]),
+            format!("{:?}", recorder.commands[1]),
+            "the solid border is the plain stroke command"
+        );
+    }
+
+    #[test]
+    fn border_style_dashed_emits_edge_dash_segments() {
+        let mut recorder = Recorder::new(60, 60);
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            context.draw_rounded_rect_border(
+                Rect::new(0, 0, 60, 60),
+                [0, 0, 0, 0],
+                Color::RED,
+                1,
+                crate::style::BorderStyle::Dashed,
+            );
+        }
+        recorder.end_frame();
+        let dashes: Vec<_> = recorder
+            .commands
+            .iter()
+            .filter(|command| matches!(command, RenderCommand::DrawLineStroke { .. }))
+            .collect();
+        assert!(
+            dashes.len() >= 4,
+            "every edge carries at least one dash: got {} commands",
+            recorder.commands.len()
+        );
+        // Dash: 3 * width with a gap of 2 — a 60 px edge holds more than one dash, so gaps exist.
+        assert!(dashes.len() < 240, "dashes are patterned, not a solid rule");
+    }
+
+    #[test]
+    fn border_style_dotted_emits_round_dots() {
+        let mut recorder = Recorder::new(40, 40);
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            context.draw_rounded_rect_border(
+                Rect::new(0, 0, 40, 40),
+                [0, 0, 0, 0],
+                Color::RED,
+                2,
+                crate::style::BorderStyle::Dotted,
+            );
+        }
+        recorder.end_frame();
+        let dots = recorder
+            .commands
+            .iter()
+            .filter(|command| matches!(command, RenderCommand::FillCircle { .. }))
+            .count();
+        assert!(dots >= 8, "every edge carries dots: got {dots}");
+        assert!(
+            recorder
+                .commands
+                .iter()
+                .all(|command| !matches!(command, RenderCommand::DrawRoundedRectStroke { .. })),
+            "a dotted border never emits a solid stroke"
+        );
+    }
+
+    #[test]
+    fn a_zero_width_border_draws_nothing() {
+        let mut recorder = Recorder::new(40, 40);
+        recorder.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut recorder);
+            context.draw_rounded_rect_border(
+                Rect::new(4, 4, 32, 32),
+                [6, 6, 6, 6],
+                Color::RED,
+                0,
+                crate::style::BorderStyle::Solid,
+            );
+        }
+        recorder.end_frame();
+        assert!(recorder.commands.is_empty());
+    }
 }

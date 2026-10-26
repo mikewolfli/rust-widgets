@@ -117,7 +117,7 @@ pub(crate) fn generation() -> u64 {
     if GENERATION.load(Ordering::SeqCst) == 0 {
         // First read from the GTK main thread installs the watch. A read from any other thread
         // cannot touch GTK and simply observes whatever the main thread installed (P-202).
-        let _ = with_clipboard(|clipboard| watch_owner_change(clipboard));
+        let _ = with_clipboard(watch_owner_change);
     }
     GENERATION.load(Ordering::SeqCst)
 }

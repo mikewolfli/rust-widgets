@@ -1506,8 +1506,8 @@ impl ComboBox {
     /// type-ahead mode.
     fn handle_editing_key(&mut self, key: u32, modifiers: u32) -> bool {
         use crate::shortcut::Modifiers;
+        let primary = crate::shortcut::event_carries_primary(modifiers);
         let modifiers = Modifiers::from_event_bits(modifiers);
-        let primary = modifiers.contains(Modifiers::PRIMARY);
         let shift = modifiers.contains(Modifiers::SHIFT);
         let caret_keys = !self.open;
         match key {
@@ -2178,12 +2178,12 @@ impl Draw for ComboBox {
         };
         // The field's own face, through the shared helper so a declared `background_gradient` paints
         // (the solid `bg` stays the fallback, exactly as `background_color` does for a button).
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             band,
             bg,
             style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
-            style.border_radius.unwrap_or(0),
+            style.resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         // Draw border
@@ -2191,7 +2191,7 @@ impl Draw for ComboBox {
             crate::widget::draw::stroke_surface_border(
                 context,
                 band,
-                style.border_radius.unwrap_or(0),
+                style.resolved_corner_radii().to_array(),
                 border_color,
                 1,
             );

@@ -943,12 +943,12 @@ impl Draw for Action {
         }
 
         if self.base.is_hovered() {
-            context.face_with_gradient(
+            context.face_with_gradient_corners(
                 rect,
                 highlight,
                 self.style().background_gradient.as_ref(),
                 self.style().surface.unwrap_or_default(),
-                self.style().border_radius.unwrap_or(0),
+                self.style().resolved_corner_radii().to_array(),
                 Color::BLACK,
             );
         }
@@ -1362,18 +1362,21 @@ mod tests {
             f.fetch_add(1, Ordering::SeqCst);
         });
 
-        // 83 is 'S'; bit 3 is the primary accelerator in the event convention.
+        // 83 is 'S'. The chord uses the host's own primary-accelerator bits: bit 3 (Command)
+        // is only the primary convention on a Mac-style host, where a Desktop host answers to
+        // Control — hard-coding one convention made this test platform-biased.
+        let primary = crate::widget::input_widgets::shortcut_editor::primary_modifier_event_bits();
         a.handle_event(&Event::KeyPress { key: 83, modifiers: 0 });
         assert_eq!(fired.load(Ordering::SeqCst), 0, "the modifier is part of the chord");
-        a.handle_event(&Event::KeyPress { key: 83, modifiers: 0b1000 });
+        a.handle_event(&Event::KeyPress { key: 83, modifiers: primary });
         assert_eq!(fired.load(Ordering::SeqCst), 1, "the primary+S chord must fire");
-        a.handle_event(&Event::KeyPress { key: 84, modifiers: 0b1000 });
+        a.handle_event(&Event::KeyPress { key: 84, modifiers: primary });
         assert_eq!(fired.load(Ordering::SeqCst), 1, "a different key must not fire");
 
         a.clear_shortcut_key();
         assert!(a.shortcut_key().is_none());
         assert!(a.shortcut().is_empty());
-        a.handle_event(&Event::KeyPress { key: 83, modifiers: 0b1000 });
+        a.handle_event(&Event::KeyPress { key: 83, modifiers: primary });
         assert_eq!(fired.load(Ordering::SeqCst), 1, "a cleared binding stops firing");
     }
 

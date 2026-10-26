@@ -594,12 +594,12 @@ impl Draw for AppBar {
                 crate::widget::BaseWidget::disabled_ink_weight(),
             )
         };
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             background,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
 

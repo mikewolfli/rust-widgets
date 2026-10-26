@@ -991,12 +991,12 @@ impl Draw for Carousel {
             // theme and on a dark one, while the border keeps the control's extent visible.
             let (panel, mark, border) = self.chrome_colors(&theme);
             let interior = panel.blend(&mark, 0.08);
-            context.face_with_gradient(
+            context.face_with_gradient_corners(
                 rect,
                 border,
                 self.style().background_gradient.as_ref(),
                 self.style().surface.unwrap_or_default(),
-                self.style().border_radius.unwrap_or(0),
+                self.style().resolved_corner_radii().to_array(),
                 Color::BLACK,
             );
             let inner = Rect::new(

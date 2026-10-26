@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Stack layout manager — shows one child page at a time.
-use super::Layout;
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 /// Stack layout that shows one child page at a time.
@@ -184,6 +184,30 @@ impl Layout for StackLayout {
                 }
             }
         }
+    }
+    // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.update(rect, widgets);
+    }
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        let _ = children;
+        self.update(rect, widgets);
+    }
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, widgets);
     }
     fn child_ids(&self) -> Vec<ObjectId> {
         self.items.clone()

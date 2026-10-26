@@ -1222,12 +1222,12 @@ impl Draw for Pagination {
         let font = effective_font(style);
         let font = if style.font.is_some() { font } else { &fallback_font };
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             background,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
 
@@ -1330,7 +1330,7 @@ impl Draw for Pagination {
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             outline,
             1,
         );

@@ -69,6 +69,76 @@ pub fn outline_radius(rect: &Rect, radius: u32, width: u32) -> f64 {
     (radius as f64 - width as f64 / 2.0).max(0.0)
 }
 
+/// The per-corner form of [`outline_radius`] (STY-01).
+///
+/// Same arithmetic per corner, so a non-uniform outline emits the same ring the
+/// raster backends draw: each corner's radius inset by half the stroke width on
+/// the inset rectangle, or the resolved radius unchanged when the outline could
+/// not be inset.
+pub fn outline_radii_corners(rect: &Rect, radii: [u32; 4], width: u32) -> [f64; 4] {
+    if !can_inset(rect, width) {
+        return [radii[0] as f64, radii[1] as f64, radii[2] as f64, radii[3] as f64];
+    }
+    let half = width as f64 / 2.0;
+    radii.map(|r| (r as f64 - half).max(0.0))
+}
+
+/// The inset rectangle [`outline_rect_attrs`] positions, for paths that need the
+/// same geometry as numbers rather than as attributes.
+pub fn outline_rect(rect: &Rect, width: u32) -> Rect {
+    if !can_inset(rect, width) {
+        return *rect;
+    }
+    let half = width as f64 / 2.0;
+    Rect {
+        x: rect.x + half as i32,
+        y: rect.y + half as i32,
+        width: rect.width.saturating_sub(width),
+        height: rect.height.saturating_sub(width),
+    }
+}
+
+/// Formats a rounded rectangle as an SVG `d` attribute (STY-01).
+///
+/// `radii` are the four corner radii **already resolved for `rect`** (the CSS
+/// proportional fit), in `[top_left, top_right, bottom_right, bottom_left]`
+/// order. A zero-radius corner emits a line segment rather than a zero-radius
+/// arc, which the SVG spec would treat as a line anyway. This is the per-corner
+/// counterpart of the `<rect rx ry>` form the uniform emission uses; the
+/// uniform case never routes here, so every SVG string a uniform radius ever
+/// produced is unchanged.
+pub fn rounded_rect_path(rect: &Rect, radii: [f64; 4]) -> String {
+    let (tl, tr, br, bl) = (radii[0], radii[1], radii[2], radii[3]);
+    let x = rect.x as f64;
+    let y = rect.y as f64;
+    let right = x + rect.width as f64;
+    let bottom = y + rect.height as f64;
+    let corner = |radius: f64, vx: f64, vy: f64| {
+        if radius <= 0.0 {
+            format!("L {},{} ", number_attr(vx), number_attr(vy))
+        } else {
+            format!(
+                "A {},{} 0 0 1 {},{} ",
+                number_attr(radius),
+                number_attr(radius),
+                number_attr(vx),
+                number_attr(vy)
+            )
+        }
+    };
+    let mut d = format!("M {},{} ", number_attr(x + tl), number_attr(y));
+    d.push_str(&format!("H {} ", number_attr(right - tr)));
+    d.push_str(&corner(tr, right, y + tr));
+    d.push_str(&format!("V {} ", number_attr(bottom - br)));
+    d.push_str(&corner(br, right - br, bottom));
+    d.push_str(&format!("H {} ", number_attr(x + bl)));
+    d.push_str(&corner(bl, x, bottom - bl));
+    d.push_str(&format!("V {} ", number_attr(y + tl)));
+    d.push_str(&corner(tl, x + tl, y));
+    d.push('Z');
+    d
+}
+
 /// Whether a stroke of `width` fits inside `rect` with room to spare on both axes.
 fn can_inset(rect: &Rect, width: u32) -> bool {
     width > 0 && rect.width > width * 2 && rect.height > width * 2

@@ -1028,6 +1028,100 @@ pub(crate) fn line_stroke_coverage_grid(
 pub(crate) fn rounded_rect_effective_radius(rect: Rect, radius: u32) -> u32 {
     radius.min(rect.width / 2).min(rect.height / 2)
 }
+/// The single radius the four corners share, when they do.
+///
+/// STY-01: corner geometry now arrives as `[top_left, top_right, bottom_right,
+/// bottom_left]`; every path that only understands one radius goes through this
+/// predicate so the uniform case keeps the exact arithmetic it always had.
+pub(crate) fn uniform_radii(radii: [u32; 4]) -> Option<u32> {
+    (radii[0] == radii[1] && radii[1] == radii[2] && radii[2] == radii[3]).then_some(radii[0])
+}
+/// Per-corner radii resolved the way CSS `border-radius` resolves them.
+///
+/// When the two radii meeting at one edge sum past that edge's length, every
+/// radius is scaled by the largest factor that makes them fit — which also caps
+/// each radius at half the edge it sits on, so the shape never degenerates. A
+/// zero-sized edge zeroes its corners. Order is `[top_left, top_right,
+/// bottom_right, bottom_left]`, matching [`CornerRadii`](crate::style::CornerRadii)'s
+/// field order.
+pub(crate) fn rounded_rect_effective_radii(rect: Rect, radii: [u32; 4]) -> [u32; 4] {
+    if rect.width == 0 || rect.height == 0 {
+        return [0; 4];
+    }
+    // Integer arithmetic throughout: a candidate is `radius * edge / adjacent_sum`,
+    // and the smallest candidate wins. For four equal radii this is exactly the
+    // legacy clamp — `r * edge / (2 * r)` truncates to `edge / 2`, the same
+    // integer division `rounded_rect_effective_radius` performs — so the uniform
+    // shape never moves by a pixel even if this function is reached with one.
+    let original = [radii[0] as u64, radii[1] as u64, radii[2] as u64, radii[3] as u64];
+    let w = rect.width as u64;
+    let h = rect.height as u64;
+    let mut resolved = original;
+    for (sum, edge) in [
+        (original[0] + original[1], w),
+        (original[1] + original[2], h),
+        (original[2] + original[3], w),
+        (original[3] + original[0], h),
+    ] {
+        if sum > edge {
+            for (slot, radius) in resolved.iter_mut().zip(original) {
+                let scaled = radius * edge / sum;
+                if scaled < *slot {
+                    *slot = scaled;
+                }
+            }
+        }
+    }
+    resolved.map(|r| r as u32)
+}
+/// The per-corner inside test, mirroring [`point_in_rounded_rect_f32`] for
+/// corners that differ.
+///
+/// A sample sits in a corner zone when it is past that corner's radius on both
+/// axes; the zone test is the same quarter-disc equation the uniform test uses,
+/// with the corner's own radius. Adjacent corner zones cannot overlap because
+/// the resolved radii satisfy the CSS fit per edge, so first match wins is
+/// exact, not a tie-break.
+pub(crate) fn point_in_rounded_rect_corners_f32(
+    px: f32,
+    py: f32,
+    rect: Rect,
+    radii: [u32; 4],
+) -> bool {
+    if rect.width == 0 || rect.height == 0 {
+        return false;
+    }
+    let left = rect.x as f32;
+    let top = rect.y as f32;
+    let right = left + rect.width as f32;
+    let bottom = top + rect.height as f32;
+    if px < left || px >= right || py < top || py >= bottom {
+        return false;
+    }
+    let [tl, tr, br, bl] = rounded_rect_effective_radii(rect, radii);
+    let (tl, tr, br, bl) = (tl as f32, tr as f32, br as f32, bl as f32);
+    if tl > 0.0 && px < left + tl && py < top + tl {
+        let dx = px - (left + tl);
+        let dy = py - (top + tl);
+        return dx * dx + dy * dy <= tl * tl;
+    }
+    if tr > 0.0 && px >= right - tr && py < top + tr {
+        let dx = px - (right - tr);
+        let dy = py - (top + tr);
+        return dx * dx + dy * dy <= tr * tr;
+    }
+    if br > 0.0 && px >= right - br && py >= bottom - br {
+        let dx = px - (right - br);
+        let dy = py - (bottom - br);
+        return dx * dx + dy * dy <= br * br;
+    }
+    if bl > 0.0 && px < left + bl && py >= bottom - bl {
+        let dx = px - (left + bl);
+        let dy = py - (bottom - bl);
+        return dx * dx + dy * dy <= bl * bl;
+    }
+    true
+}
 pub(crate) fn inset_rect(rect: Rect, inset: i32) -> Rect {
     let x = rect.x + inset;
     let y = rect.y + inset;
@@ -1071,14 +1165,14 @@ pub(crate) fn point_in_rounded_rect_f32(px: f32, py: f32, rect: Rect, radius: u3
     let dy = py - cy;
     dx * dx + dy * dy <= r * r
 }
-pub(crate) fn rounded_rect_coverage(px: i32, py: i32, rect: Rect, radius: u32) -> f32 {
-    rounded_rect_coverage_grid(px, py, rect, radius, 2)
+pub(crate) fn rounded_rect_coverage(px: i32, py: i32, rect: Rect, radii: [u32; 4]) -> f32 {
+    rounded_rect_coverage_grid(px, py, rect, radii, 2)
 }
 pub(crate) fn rounded_rect_coverage_grid(
     px: i32,
     py: i32,
     rect: Rect,
-    radius: u32,
+    radii: [u32; 4],
     grid: u8,
 ) -> f32 {
     let sample_count = grid.clamp(1, 8) as u32;
@@ -1086,9 +1180,16 @@ pub(crate) fn rounded_rect_coverage_grid(
     let total = sample_count * sample_count;
     for sy in 0..sample_count {
         for sx in 0..sample_count {
-            let sample_x = (sx as f32 + 0.5) / sample_count as f32;
-            let sample_y = (sy as f32 + 0.5) / sample_count as f32;
-            if point_in_rounded_rect_f32(px as f32 + sample_x, py as f32 + sample_y, rect, radius) {
+            let sample_x = px as f32 + (sx as f32 + 0.5) / sample_count as f32;
+            let sample_y = py as f32 + (sy as f32 + 0.5) / sample_count as f32;
+            // The uniform case keeps the historical single-radius test so every
+            // frame a uniform radius ever produced stays byte-for-byte; only a
+            // genuinely per-corner shape takes the new arithmetic.
+            let inside = match uniform_radii(radii) {
+                Some(radius) => point_in_rounded_rect_f32(sample_x, sample_y, rect, radius),
+                None => point_in_rounded_rect_corners_f32(sample_x, sample_y, rect, radii),
+            };
+            if inside {
                 covered += 1;
             }
         }
@@ -1186,5 +1287,81 @@ mod text_coverage_tests {
         assert_eq!(text::source_for('\u{0416}'), None, "Cyrillic is not in the CJK subset");
         assert_eq!(text::source_for('\u{0627}'), None, "Arabic is not in the CJK subset");
         assert_eq!(text::source_for('\u{1f600}'), None, "emoji is not in the CJK subset");
+    }
+}
+
+// ── STY-01: per-corner coverage ──────────────────────────────────────────────
+
+#[cfg(test)]
+mod corner_coverage_tests {
+    use super::*;
+
+    /// A uniform radii array must take the identical arithmetic the scalar test has always
+    /// run: every frame a uniform radius ever produced stays byte-for-byte.
+    #[test]
+    fn uniform_input_matches_the_legacy_point_test() {
+        let rects = [
+            Rect { x: 0, y: 0, width: 1, height: 1 },
+            Rect { x: 2, y: 3, width: 8, height: 8 },
+            Rect { x: -2, y: 5, width: 33, height: 17 },
+            Rect { x: 0, y: 0, width: 60, height: 40 },
+        ];
+        for rect in rects {
+            for radius in [0u32, 1, 3, 6, 17, 1000] {
+                for py in (rect.y - 1)..(rect.y + rect.height as i32 + 1) {
+                    for px in (rect.x - 1)..(rect.x + rect.width as i32 + 1) {
+                        let legacy = point_in_rounded_rect_f32(
+                            px as f32 + 0.25,
+                            py as f32 + 0.75,
+                            rect,
+                            radius,
+                        );
+                        let corners = point_in_rounded_rect_corners_f32(
+                            px as f32 + 0.25,
+                            py as f32 + 0.75,
+                            rect,
+                            [radius; 4],
+                        );
+                        assert_eq!(
+                            legacy, corners,
+                            "rect {rect:?} radius {radius} diverged at ({px},{py})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// CSS `border-radius`: adjacent radii that overrun their edge are scaled down by the
+    /// same factor until they fit, which also caps a radius at half the edge.
+    #[test]
+    fn overrunning_corners_are_scaled_down_proportionally() {
+        // 15 + 15 > 20: the factor 20/30 shrinks both top radii to 10.
+        let resolved = rounded_rect_effective_radii(Rect::new(0, 0, 20, 40), [15, 15, 0, 0]);
+        assert_eq!(resolved, [10, 10, 0, 0]);
+        // A single oversized corner is capped by the tightest edge it sits on:
+        // top factor 20/40, left factor 10/40 — the global factor 0.25 shrinks
+        // the corner to 10, per the CSS fit rule.
+        let capped = rounded_rect_effective_radii(Rect::new(0, 0, 20, 10), [40, 0, 0, 0]);
+        assert_eq!(capped, [10, 0, 0, 0]);
+        // A zero-sized edge zeroes its corners.
+        let empty = rounded_rect_effective_radii(Rect::new(0, 0, 0, 10), [8, 8, 8, 8]);
+        assert_eq!(empty, [0; 4]);
+    }
+
+    /// The per-corner zones: only the declared corners round, and a pixel inside the rect
+    /// but outside a rounded corner's quarter disc is coverage 0.
+    #[test]
+    fn only_declared_corners_round() {
+        let rect = Rect::new(0, 0, 40, 40);
+        let radii = [10, 0, 0, 0];
+        // Inside the top-left quarter disc (centre (10, 10), radius 10).
+        assert!(point_in_rounded_rect_corners_f32(4.0, 4.0, rect, radii));
+        // Same offset from the top-right corner, which carries radius 0: inside the rect.
+        assert!(point_in_rounded_rect_corners_f32(36.0, 4.0, rect, radii));
+        // Outside the top-left disc but inside the rect: not covered.
+        assert!(!point_in_rounded_rect_corners_f32(1.0, 1.0, rect, radii));
+        // Centre is always inside.
+        assert!(point_in_rounded_rect_corners_f32(20.0, 20.0, rect, radii));
     }
 }

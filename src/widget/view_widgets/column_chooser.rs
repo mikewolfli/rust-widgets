@@ -190,7 +190,7 @@ impl Draw for ColumnChooser {
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            4,
+            [4, 4, 4, 4],
             palette.as_ref().map(|colors| colors.outline_variant).unwrap_or(ink),
             1,
         );

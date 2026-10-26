@@ -1380,12 +1380,12 @@ impl Draw for ScrollBar {
         let slider_border_color = faded(slider_border_color);
         let arrow_color = faded(arrow_color);
         // Draw background (the trough)
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
             trough,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         // Draw border, rounded to the trough's own face: a square 1 px stroke over the pill
@@ -1393,7 +1393,7 @@ impl Draw for ScrollBar {
         crate::widget::draw::stroke_surface_border(
             context,
             Rect::new(rect.x, rect.y, rect.width, rect.height),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             style.border_color.unwrap_or_else(|| trough.contrast_color().with_alpha(80)),
             1,
         );

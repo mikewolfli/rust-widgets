@@ -768,19 +768,19 @@ impl Draw for InplaceEditor {
         if self.is_editing {
             // Draw editing mode
             let style = self.base.style();
-            context.face_with_gradient(
+            context.face_with_gradient_corners(
                 rect,
                 surface,
                 style.background_gradient.as_ref(),
                 style.surface.unwrap_or_default(),
-                style.border_radius.unwrap_or(0),
+                style.resolved_corner_radii().to_array(),
                 Color::BLACK,
             );
             // The focus ring follows the field's radius: a square 2 px ring left the corners bare.
             crate::widget::draw::stroke_surface_border(
                 context,
                 rect,
-                style.border_radius.unwrap_or(0),
+                style.resolved_corner_radii().to_array(),
                 accent,
                 2,
             );
@@ -847,19 +847,19 @@ impl Draw for InplaceEditor {
         } else {
             // Draw display mode
             let style = self.base.style();
-            context.face_with_gradient(
+            context.face_with_gradient_corners(
                 rect,
                 surface,
                 style.background_gradient.as_ref(),
                 style.surface.unwrap_or_default(),
-                style.border_radius.unwrap_or(0),
+                style.resolved_corner_radii().to_array(),
                 Color::BLACK,
             );
             // Rounded like the field's face, so the outline closes at all four corners.
             crate::widget::draw::stroke_surface_border(
                 context,
                 rect,
-                style.border_radius.unwrap_or(0),
+                style.resolved_corner_radii().to_array(),
                 border,
                 1,
             );

@@ -723,7 +723,7 @@ impl EventHandler for SegmentedControl {
             }
             Event::KeyPress { key, modifiers } => {
                 let pressed = crate::shortcut::Key::from_key_code(*key);
-                let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let primary = crate::shortcut::event_carries_primary(*modifiers);
                 match pressed {
                     Some(crate::shortcut::Key::Left) => self.move_selection(-1),
                     Some(crate::shortcut::Key::Right) => self.move_selection(1),
@@ -741,19 +741,14 @@ impl EventHandler for SegmentedControl {
                             let _ = self.set_selected_index(last);
                         }
                     }
-                    Some(crate::shortcut::Key::Up)
-                        if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) =>
-                    {
+                    Some(crate::shortcut::Key::Up) if primary => {
                         if let Some(first) =
                             (0..self.items.len()).find(|index| self.item_enabled(*index))
                         {
                             let _ = self.set_selected_index(first);
                         }
                     }
-                    Some(crate::shortcut::Key::Down)
-                        if modifiers.contains(crate::shortcut::Modifiers::PRIMARY)
-                            && !self.items.is_empty() =>
-                    {
+                    Some(crate::shortcut::Key::Down) if primary && !self.items.is_empty() => {
                         if let Some(last) =
                             (0..self.items.len()).rev().find(|index| self.item_enabled(*index))
                         {

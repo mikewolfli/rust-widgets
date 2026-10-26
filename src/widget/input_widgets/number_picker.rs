@@ -789,12 +789,12 @@ impl Draw for NumberPicker {
         // even the 3:1 large-text floor, on the one row the control exists to show.
         let selected_text_color = selected_color.contrast_color();
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             background,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
 
@@ -876,7 +876,7 @@ impl Draw for NumberPicker {
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            style.border_radius.unwrap_or(0),
+            style.resolved_corner_radii().to_array(),
             style.border_color.unwrap_or(Color::rgb(200, 200, 200)),
             1,
         );

@@ -1696,12 +1696,12 @@ impl Draw for GridTableWidget {
         let outer_border = surface.blend(&ink, 0.35);
 
         // Background
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             surface,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
 
@@ -1723,7 +1723,7 @@ impl Draw for GridTableWidget {
             crate::widget::draw::stroke_surface_border(
                 context,
                 rect,
-                self.style().border_radius.unwrap_or(0),
+                self.style().resolved_corner_radii().to_array(),
                 grid_color,
                 1,
             );
@@ -1918,7 +1918,7 @@ impl Draw for GridTableWidget {
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             outer_border,
             1,
         );

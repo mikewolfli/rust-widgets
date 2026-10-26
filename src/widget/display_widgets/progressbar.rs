@@ -772,7 +772,7 @@ impl Draw for ProgressBar {
             crate::widget::draw::stroke_surface_border(
                 context,
                 bar_rect,
-                bar_height / 2,
+                [bar_height / 2; 4],
                 border_color,
                 1,
             );

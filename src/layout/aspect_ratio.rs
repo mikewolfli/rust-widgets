@@ -6,7 +6,7 @@
 //! The child is sized to fit within the parent while maintaining the given
 //! aspect ratio (width / height). When `respect_parent` is true, the child's
 //! size is bounded by the parent dimensions so it never exceeds them.
-use super::Layout;
+use super::{ChildInfo, Layout, LayoutContext};
 use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 
@@ -201,6 +201,33 @@ impl Layout for AspectRatioLayout {
             let child_rect = self.compute_child_rect(rect);
             widgets(child_id, child_rect);
         }
+    }
+
+    // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.update(rect, widgets);
+    }
+
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        let _ = children;
+        self.update(rect, widgets);
+    }
+
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, widgets);
     }
 }
 

@@ -4,6 +4,7 @@
 //! Grid layout manager — arranges items in a fixed row/column grid.
 use super::ChildInfo;
 use super::Layout;
+use super::LayoutContext;
 use crate::compat::{vec, Any, Arc, HashMap, RefCell, Vec};
 use crate::core::{Alignment, ObjectId, Rect};
 use crate::style::EdgeOffsets;
@@ -1188,6 +1189,28 @@ impl Layout for GridLayout {
     }
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         self.place(rect, None, None, widgets);
+    }
+
+    // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.update(rect, widgets);
+    }
+
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, out);
     }
 
     /// The hint-aware path: a column's size hint becomes a floor under its stretched share,

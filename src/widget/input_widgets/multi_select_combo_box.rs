@@ -933,7 +933,7 @@ impl EventHandler for MultiSelectComboBox {
                 }
                 let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 if (mods.contains(crate::shortcut::Modifiers::CTRL)
-                    || mods.contains(crate::shortcut::Modifiers::PRIMARY))
+                    || crate::shortcut::event_carries_primary(*modifiers))
                     && (*key == 65 || *key == 97)
                 {
                     // The two table-wide actions: Primary+A selects every enabled row and

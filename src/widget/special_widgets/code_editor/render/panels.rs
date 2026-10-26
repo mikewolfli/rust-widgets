@@ -111,19 +111,19 @@ impl CodeEditor {
                 // would round the surface a document is read on. `0` here was a literal standing in
                 // for "this is not the editor's own face", which is why the resolved radius is the
                 // honest value to pass — a theme that rounds its tabs says so once, in `borders`.
-                context.face_with_gradient(
+                context.face_with_gradient_corners(
                     tab_rect,
                     chrome.surface,
                     self.style().background_gradient.as_ref(),
                     self.style().surface.unwrap_or_default(),
-                    self.style().border_radius.unwrap_or(0),
+                    self.style().resolved_corner_radii().to_array(),
                     Color::BLACK,
                 );
                 // Rounded like the tab's face: a square outline left the corners outside it.
                 crate::widget::draw::stroke_surface_border(
                     context,
                     tab_rect,
-                    self.style().border_radius.unwrap_or(0),
+                    self.style().resolved_corner_radii().to_array(),
                     chrome.border,
                     1,
                 );
@@ -138,9 +138,9 @@ impl CodeEditor {
                 // when clicked, which is the only affordance that says "this is
                 // clickable" on a strip whose active tab is the one with the frame.
                 if hovered {
-                    context.fill_rounded_rect(
+                    context.fill_rounded_rect_corners(
                         tab_rect,
-                        self.style().border_radius.unwrap_or(0),
+                        self.style().resolved_corner_radii().to_array(),
                         chrome.surface.blend(&chrome.ink, 0.04),
                     );
                 }

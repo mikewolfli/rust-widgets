@@ -309,14 +309,17 @@ pub enum RenderCommand {
         /// Stroke width in pixels; a zero width draws nothing.
         width: u32,
     },
-    /// Fill the rectangle `rect` with `color`, rounding each corner to
-    /// `radius` pixels. The effective radius is clamped to half the shorter
-    /// side, so the shape never degenerates.
+    /// Fill the rectangle `rect` with `color`, rounding the corners to
+    /// `radii` pixels. The effective radii are resolved per CSS
+    /// `border-radius` (proportional scaling when adjacent corners overrun an
+    /// edge), so the shape never degenerates; four equal values behave exactly
+    /// as the historical single `radius` did.
     FillRoundedRect {
         /// Region to fill in logical pixels.
         rect: Rect,
-        /// Corner radius in pixels, clamped to half the shorter side.
-        radius: u32,
+        /// Per-corner radii in pixels, ordered top-left, top-right,
+        /// bottom-right, bottom-left (STY-01).
+        radii: [u32; 4],
         /// Fill color.
         color: Color,
     },
@@ -327,8 +330,9 @@ pub enum RenderCommand {
     FillRoundedRectAA {
         /// Region to fill in logical pixels.
         rect: Rect,
-        /// Corner radius in pixels, clamped to half the shorter side.
-        radius: u32,
+        /// Per-corner radii in pixels, ordered top-left, top-right,
+        /// bottom-right, bottom-left (STY-01).
+        radii: [u32; 4],
         /// Fill color.
         color: Color,
     },
@@ -339,8 +343,9 @@ pub enum RenderCommand {
     DrawRoundedRectStroke {
         /// Rectangle to outline in logical pixels.
         rect: Rect,
-        /// Outer corner radius in pixels.
-        radius: u32,
+        /// Outer per-corner radii in pixels, ordered top-left, top-right,
+        /// bottom-right, bottom-left (STY-01).
+        radii: [u32; 4],
         /// Stroke color.
         color: Color,
         /// Stroke width in pixels; a zero width draws nothing.
@@ -352,8 +357,9 @@ pub enum RenderCommand {
     DrawRoundedRectStrokeAA {
         /// Rectangle to outline in logical pixels.
         rect: Rect,
-        /// Outer corner radius in pixels.
-        radius: u32,
+        /// Outer per-corner radii in pixels, ordered top-left, top-right,
+        /// bottom-right, bottom-left (STY-01).
+        radii: [u32; 4],
         /// Stroke color.
         color: Color,
         /// Stroke width in pixels; a zero width draws nothing.

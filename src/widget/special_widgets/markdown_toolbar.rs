@@ -329,18 +329,18 @@ impl Draw for MarkdownToolbar {
             crate::style::semantic_color(crate::style::SemanticColor::Info).unwrap_or(Color::BLUE);
         let font = effective_font(style);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             surface,
             style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
-            style.border_radius.unwrap_or(0),
+            style.resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );

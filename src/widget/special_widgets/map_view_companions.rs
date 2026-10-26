@@ -506,7 +506,7 @@ impl Draw for TileLoader {
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );
@@ -776,7 +776,7 @@ impl Draw for ZoomControl {
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );
@@ -791,7 +791,13 @@ impl Draw for ZoomControl {
                 Color::BLACK,
             );
             // Rounded to the button's own face radius: a square outline left the corners bare.
-            crate::widget::draw::stroke_surface_border(context, button_rect, 2, border, 1);
+            crate::widget::draw::stroke_surface_border(
+                context,
+                button_rect,
+                [2, 2, 2, 2],
+                border,
+                1,
+            );
             let label = match button {
                 ZoomButton::Out => "-",
                 ZoomButton::Reset => "1:1",
@@ -1095,9 +1101,12 @@ impl Draw for ScaleBar {
         if self.style == ScaleBarStyle::Boxed {
             context.face_with_gradient(rect, surface, None, Default::default(), 3, Color::BLACK);
             crate::widget::draw::stroke_surface_border(
-                context, rect,
+                context,
+                rect,
                 // The fill above is the companion's 3 px arc; the outline follows it.
-                3, border, 1,
+                [3, 3, 3, 3],
+                border,
+                1,
             );
         }
         let width = self.bar_pixels();

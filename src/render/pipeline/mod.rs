@@ -48,3 +48,4 @@ pub(crate) use pixel_ops::{sat_add_i32, sat_mul_i32, sat_neg_i32, u32_to_i32_sat
 
 // The glyph geometry both renderers read.
 pub(crate) use pixel_ops::glyph_rects;
+pub(crate) use pixel_ops::{rounded_rect_effective_radii, uniform_radii};

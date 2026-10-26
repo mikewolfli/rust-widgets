@@ -861,18 +861,18 @@ impl Draw for EmojiPicker {
         // resolved ink rather than a fixed colour.
         let (panel, ink, border, field, strip) = self.chrome_colors();
         let style = self.base.style();
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             panel,
             style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
-            style.border_radius.unwrap_or(0),
+            style.resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );
@@ -994,12 +994,12 @@ impl EmojiPicker {
     fn draw_tabs(&self, context: &mut RenderContext, strip_bg: Color, ink: Color, panel: Color) {
         let rect = self.geometry();
         let strip = Rect::new(rect.x, rect.y + SEARCH_HEIGHT as i32, rect.width, TAB_HEIGHT);
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             strip,
             strip_bg,
             self.base.style().background_gradient.as_ref(),
             self.base.style().surface.unwrap_or_default(),
-            self.base.style().border_radius.unwrap_or(0),
+            self.base.style().resolved_corner_radii().to_array(),
             crate::core::Color::BLACK,
         );
         // Resolved once per frame, outside the loop: only one tab is active, but the

@@ -1302,7 +1302,8 @@ impl EventHandler for TabView {
             {
                 use crate::shortcut::Modifiers;
                 let mods = Modifiers::from_event_bits(*modifiers);
-                let ctrl = mods.contains(Modifiers::CTRL) || mods.contains(Modifiers::PRIMARY);
+                let ctrl = mods.contains(Modifiers::CTRL)
+                    || crate::shortcut::event_carries_primary(*modifiers);
                 if ctrl && self.tabs.len() > 1 {
                     let shift = mods.contains(Modifiers::SHIFT);
                     let forward = match *key {

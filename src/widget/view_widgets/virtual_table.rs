@@ -1149,18 +1149,18 @@ impl Draw for VirtualTable {
         let accent = palette.as_ref().map(|colors| colors.primary).unwrap_or(Color::PRIMARY);
         let hovered_bg = surface.blend(&accent, 0.12);
 
-        context.face_with_gradient(
+        context.face_with_gradient_corners(
             rect,
             surface,
             self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             Color::BLACK,
         );
         crate::widget::draw::stroke_surface_border(
             context,
             rect,
-            self.style().border_radius.unwrap_or(0),
+            self.style().resolved_corner_radii().to_array(),
             border,
             1,
         );

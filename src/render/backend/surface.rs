@@ -1348,7 +1348,17 @@ impl<'a> RenderContext<'a> {
     /// the shorter side of `rect`.
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: u32, color: Color) {
         let rect = self.offset_rect(rect);
-        self.dispatch_owned(RenderCommand::FillRoundedRect { rect, radius, color });
+        self.dispatch_owned(RenderCommand::FillRoundedRect { rect, radii: [radius; 4], color });
+    }
+
+    /// [`Self::fill_rounded_rect`] with per-corner radii (STY-01).
+    ///
+    /// `radii` is ordered `[top_left, top_right, bottom_right, bottom_left]`,
+    /// matching [`crate::style::CornerRadii`]'s field order. Four equal values
+    /// produce exactly the command the scalar method emits.
+    pub fn fill_rounded_rect_corners(&mut self, rect: Rect, radii: [u32; 4], color: Color) {
+        let rect = self.offset_rect(rect);
+        self.dispatch_owned(RenderCommand::FillRoundedRect { rect, radii, color });
     }
 
     /// Paints a control's own **face**: its shadow, then its fill.
@@ -1392,6 +1402,23 @@ impl<'a> RenderContext<'a> {
         shadow_tint: Color,
     ) {
         self.face_with_gradient(rect, fill, None, surface, radius, shadow_tint);
+    }
+
+    /// [`Self::face`] with per-corner radii (STY-01).
+    ///
+    /// `radii` is ordered `[top_left, top_right, bottom_right, bottom_left]`,
+    /// matching [`crate::style::CornerRadii`] — pass
+    /// `style.resolved_corner_radii().to_array()`. Four equal values emit exactly
+    /// the command [`Self::face`] emits.
+    pub fn face_corners(
+        &mut self,
+        rect: Rect,
+        fill: Color,
+        surface: crate::render::SurfaceStyle,
+        radii: [u32; 4],
+        shadow_tint: Color,
+    ) {
+        self.face_with_gradient_corners(rect, fill, None, surface, radii, shadow_tint);
     }
 
     /// [`Self::face`], but the fill is a `gradient` when the style declares one.
@@ -1442,6 +1469,25 @@ impl<'a> RenderContext<'a> {
         radius: u32,
         shadow_tint: Color,
     ) {
+        self.face_with_gradient_corners(rect, fill, gradient, surface, [radius; 4], shadow_tint);
+    }
+
+    /// [`Self::face_with_gradient`] with per-corner radii (STY-01).
+    ///
+    /// The one-line face replacement for a control whose style can express
+    /// distinct corners: pass `style.resolved_corner_radii().to_array()` and the
+    /// face, its rounded fill and its shadow all follow the resolved shape. Four
+    /// equal values emit exactly the commands the scalar form has always emitted,
+    /// byte for byte.
+    pub fn face_with_gradient_corners(
+        &mut self,
+        rect: Rect,
+        fill: Color,
+        gradient: Option<&crate::style::Gradient>,
+        surface: crate::render::SurfaceStyle,
+        radii: [u32; 4],
+        shadow_tint: Color,
+    ) {
         // 1. The shadow, behind the face. `draws_shadow` is false at `Elevation::Flat`, so a face
         //    on the flat preset emits nothing here.
         if let Some(shadow) = surface.shadow(shadow_tint) {
@@ -1454,8 +1500,8 @@ impl<'a> RenderContext<'a> {
         match gradient {
             Some(gradient) => self.fill_gradient(rect, gradient),
             None => {
-                if radius > 0 {
-                    self.fill_rounded_rect(rect, radius, materialised);
+                if radii.iter().any(|r| *r > 0) {
+                    self.fill_rounded_rect_corners(rect, radii, materialised);
                 } else {
                     self.fill_rect(rect, materialised);
                 }
@@ -1468,7 +1514,13 @@ impl<'a> RenderContext<'a> {
     /// configured `aa_samples_per_axis` grid.
     pub fn fill_rounded_rect_aa(&mut self, rect: Rect, radius: u32, color: Color) {
         let rect = self.offset_rect(rect);
-        self.dispatch_owned(RenderCommand::FillRoundedRectAA { rect, radius, color });
+        self.dispatch_owned(RenderCommand::FillRoundedRectAA { rect, radii: [radius; 4], color });
+    }
+
+    /// Anti-aliased [`Self::fill_rounded_rect_corners`].
+    pub fn fill_rounded_rect_corners_aa(&mut self, rect: Rect, radii: [u32; 4], color: Color) {
+        let rect = self.offset_rect(rect);
+        self.dispatch_owned(RenderCommand::FillRoundedRectAA { rect, radii, color });
     }
     /// Strokes the rounded-rectangle outline of `rect` in `color` with the
     /// given `width` in pixels.
@@ -1477,7 +1529,24 @@ impl<'a> RenderContext<'a> {
     /// [`RenderContext::draw_rounded_rect_stroke_aa`] for smoother edges.
     pub fn draw_rounded_rect_stroke(&mut self, rect: Rect, radius: u32, color: Color, width: u32) {
         let rect = self.offset_rect(rect);
-        self.dispatch_owned(RenderCommand::DrawRoundedRectStroke { rect, radius, color, width });
+        self.dispatch_owned(RenderCommand::DrawRoundedRectStroke {
+            rect,
+            radii: [radius; 4],
+            color,
+            width,
+        });
+    }
+
+    /// [`Self::draw_rounded_rect_stroke`] with per-corner radii (STY-01).
+    pub fn draw_rounded_rect_stroke_corners(
+        &mut self,
+        rect: Rect,
+        radii: [u32; 4],
+        color: Color,
+        width: u32,
+    ) {
+        let rect = self.offset_rect(rect);
+        self.dispatch_owned(RenderCommand::DrawRoundedRectStroke { rect, radii, color, width });
     }
     /// Anti-aliased equivalent of
     /// [`RenderContext::draw_rounded_rect_stroke`].
@@ -1489,7 +1558,131 @@ impl<'a> RenderContext<'a> {
         width: u32,
     ) {
         let rect = self.offset_rect(rect);
-        self.dispatch_owned(RenderCommand::DrawRoundedRectStrokeAA { rect, radius, color, width });
+        self.dispatch_owned(RenderCommand::DrawRoundedRectStrokeAA {
+            rect,
+            radii: [radius; 4],
+            color,
+            width,
+        });
+    }
+
+    /// Anti-aliased [`Self::draw_rounded_rect_stroke_corners`].
+    pub fn draw_rounded_rect_stroke_corners_aa(
+        &mut self,
+        rect: Rect,
+        radii: [u32; 4],
+        color: Color,
+        width: u32,
+    ) {
+        let rect = self.offset_rect(rect);
+        self.dispatch_owned(RenderCommand::DrawRoundedRectStrokeAA { rect, radii, color, width });
+    }
+
+    /// Draws the border a style declares, honouring its line style (G-404/STY-01).
+    ///
+    /// This is the one entry a control's own border painting should use: it is
+    /// where `border-style` becomes ink. `Solid` is the historical stroke;
+    /// `None` draws nothing even when a width and colour are set — the
+    /// semantics [`crate::style::BorderStyle::None`]'s doc has always promised;
+    /// `Dashed` and `Dotted` run the pattern along each edge's **straight**
+    /// section only, leaving rounded corner arcs unstroked (a dashed arc needs
+    /// an arc primitive the command set does not have — the boundary is
+    /// deliberate and tested, not an oversight). A zero-width border draws
+    /// nothing, as everywhere else.
+    ///
+    /// The pattern periods follow the reference toolkits' defaults: a dash is
+    /// three times the width with a gap of two; a dot's diameter is the width
+    /// and dots sit three radii apart, centre to centre.
+    pub fn draw_rounded_rect_border(
+        &mut self,
+        rect: Rect,
+        radii: [u32; 4],
+        color: Color,
+        width: u32,
+        style: crate::style::BorderStyle,
+    ) {
+        use crate::style::BorderStyle;
+        if width == 0 {
+            return;
+        }
+        let rect = self.offset_rect(rect);
+        match style {
+            BorderStyle::None => {}
+            BorderStyle::Solid => {
+                self.dispatch_owned(RenderCommand::DrawRoundedRectStroke {
+                    rect,
+                    radii,
+                    color,
+                    width,
+                });
+            }
+            BorderStyle::Dashed => self.draw_edge_pattern(rect, radii, color, width, true),
+            BorderStyle::Dotted => self.draw_edge_pattern(rect, radii, color, width, false),
+        }
+    }
+
+    /// The dash/dot worker behind [`Self::draw_rounded_rect_border`].
+    ///
+    /// Walks each edge's straight section — inset by the corner radii the CSS
+    /// resolution produces — emitting [`RenderCommand::DrawLineStroke`] dashes
+    /// or [`RenderCommand::FillCircle`] dots. `dashes` picks the pattern. The
+    /// rect is already offset, so the commands are dispatched directly rather
+    /// than through the offset-applying helpers.
+    fn draw_edge_pattern(
+        &mut self,
+        rect: Rect,
+        radii: [u32; 4],
+        color: Color,
+        width: u32,
+        dashes: bool,
+    ) {
+        use crate::render::pipeline::rounded_rect_effective_radii;
+        let [tl, tr, br, bl] = rounded_rect_effective_radii(rect, radii);
+        let left = rect.x;
+        let top = rect.y;
+        let right = rect.x + rect.width as i32;
+        let bottom = rect.y + rect.height as i32;
+        let (mark, gap) = if dashes {
+            ((width * 3).max(1) as i64, (width * 2).max(1) as i64)
+        } else {
+            (0, ((width / 2).max(1) * 3) as i64)
+        };
+        let edges = [
+            ((left + tl as i32, top), (right - tr as i32, top)),
+            ((right, top + tr as i32), (right, bottom - br as i32)),
+            ((left + bl as i32, bottom), (right - br as i32, bottom)),
+            ((left, top + tl as i32), (left, bottom - bl as i32)),
+        ];
+        for (from, to) in edges {
+            let (dx, dy) = ((to.0 - from.0) as i64, (to.1 - from.1) as i64);
+            let length = dx.abs().max(dy.abs());
+            if length <= 0 {
+                continue;
+            }
+            let point_at = |t: i64| {
+                Point::new(from.0 + (dx * t / length) as i32, from.1 + (dy * t / length) as i32)
+            };
+            let mut position = 0i64;
+            while position < length {
+                if dashes {
+                    let end = (position + mark).min(length);
+                    self.dispatch_owned(RenderCommand::DrawLineStroke {
+                        from: point_at(position),
+                        to: point_at(end),
+                        color,
+                        width,
+                    });
+                    position = end + gap;
+                } else {
+                    self.dispatch_owned(RenderCommand::FillCircle {
+                        center: point_at(position),
+                        radius: (width / 2).max(1),
+                        color,
+                    });
+                    position += gap;
+                }
+            }
+        }
     }
     /// Draws a one-pixel-wide, non-anti-aliased line from `from` to `to` in
     /// `color`.

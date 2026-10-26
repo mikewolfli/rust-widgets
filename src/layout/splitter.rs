@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Splitter layout manager — distributes space by pane ratios.
-use super::{Layout, Orientation};
+use super::{ChildInfo, Layout, LayoutContext, Orientation};
 use crate::compat::{Any, Vec};
 use crate::core::{ObjectId, Rect};
 
@@ -362,6 +362,33 @@ impl Layout for SplitterLayout {
                 Orientation::Vertical => cursor_y += (major + effective_spacing) as i32,
             }
         }
+    }
+
+    // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.update(rect, widgets);
+    }
+
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        let _ = children;
+        self.update(rect, widgets);
+    }
+
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, widgets);
     }
 }
 
