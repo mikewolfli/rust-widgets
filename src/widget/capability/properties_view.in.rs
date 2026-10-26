@@ -120,6 +120,9 @@ macro_rules! impl_properties_view {
         // `dismissed` is read-only state the user drives by clicking.
         #[cfg(not(alloc_frugal))]
         pub(crate) const BANNER_PROPERTIES: &[PropertySchema] = &[
+            // The action labels as a `StringList` (BLUE26 B26.09): `set_actions` takes a list the
+            // property API cannot carry, so the list itself is the property.
+            PropertySchema::new("actions", PropertyValueKind::StringList, true, true),
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::enumerated(
                 "severity",
@@ -386,6 +389,14 @@ macro_rules! impl_properties_view {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const PROPERTY_GRID_PROPERTIES: &[PropertySchema] = &[
+            // The rows as records (BLUE26 B26.09): `add_property` and `set_value` take arguments
+            // the property API cannot carry, so the list itself is the property.
+            PropertySchema::records(
+                "properties",
+                true,
+                true,
+                &crate::widget::view_widgets::property_grid::PROPERTY_ITEM_SCHEMA,
+            ),
             PropertySchema::new("property_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -426,6 +437,8 @@ macro_rules! impl_properties_view {
             PropertySchema::new("subtitle", PropertyValueKind::String, true, true),
             PropertySchema::new("progress", PropertyValueKind::Float, true, true),
             PropertySchema::new("skippable", PropertyValueKind::Bool, true, true),
+            // The optional logo descriptor; `Null` restores the default accent block.
+            PropertySchema::new("logo", PropertyValueKind::IconSpec, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

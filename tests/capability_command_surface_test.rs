@@ -115,13 +115,30 @@ fn every_published_command_is_dispatched_by_its_control() {
     // have no overlay API), so they were removed from the tables rather than left
     // as actions nobody could obtain. 496 is that corrected total, not a
     // regression: `handled == total` is still asserted below.
+    //
+    // The 2026-10-26 registry audit lowered it again, by the same logic: 108
+    // published names (across 62 capabilities) had no payload property behind
+    // them and their arms refused every invocation, so the published list
+    // promised actions no invocation could perform. Eight were re-published
+    // after triage gave their arms real, payload-free behaviour; the rest stay
+    // unpublished until their payload properties land, and every removal
+    // carries an `Audit 20261026` note in the registry. 427 is that corrected
+    // total, not a regression: `handled == total` still holds.
+    //
+    // The follow-up round landed the payload channels the audit deferred: the
+    // records/StringList/NumberList properties (and a few writable scalars) that
+    // the withdrawn `set_*` names point at now exist, and 30 names were
+    // re-published against them — 427 + 30 = 457. The remaining withdrawals are
+    // recorded with the fact that motivates each (a widget reference or a nested
+    // structure no property value can carry, a position with no property route,
+    // or a pair of writable scalars that already covers the write).
     assert_eq!(
         handled, total,
         "a control lost its `command` implementation: {handled}/{total} handled, refused: \
          {refused:?}"
     );
     assert!(
-        total >= 496,
+        total >= 457,
         "fewer commands are published than the registry declares: {total} — a capability \
          stopped advertising a list it still implements"
     );

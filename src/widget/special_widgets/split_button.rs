@@ -99,6 +99,106 @@ impl SplitAction {
     }
 }
 
+/// The declared shape of one split-menu action, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `actions` property, and the control owns both ends of it: the
+/// field names are [`SplitAction`]'s own fields. `id` and `label` are required because
+/// [`SplitAction::new`] requires them; the rest are optional because a row that omits them
+/// describes the ordinary action. The icon travels as its [`IconName`] token, the same spelling
+/// the `icon` property accepts.
+pub const SPLIT_ACTION_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "label",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "separator_above",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "enabled",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "checked",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "shortcut",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`SPLIT_ACTION_SCHEMA`].
+fn split_action_record(action: &SplitAction) -> crate::widget::capability::RecordValue {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(action.id.clone()))
+        .with("label", CapabilityValue::String(action.label.clone()))
+        .with("separator_above", CapabilityValue::Bool(action.separator_above))
+        .with("enabled", CapabilityValue::Bool(action.enabled))
+        .with("checked", CapabilityValue::Bool(action.checked));
+    if let Some(icon) = action.icon {
+        record = record.with("icon", CapabilityValue::String(icon.as_str().to_string()));
+    }
+    if let Some(shortcut) = &action.shortcut {
+        record = record.with("shortcut", CapabilityValue::String(shortcut.clone()));
+    }
+    record
+}
+
+/// Rebuilds one [`SplitAction`] from a row of [`SPLIT_ACTION_SCHEMA`].
+fn split_action_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<SplitAction, CapabilityAccessError> {
+    let id = match record.get("id") {
+        Some(CapabilityValue::String(id)) => id.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let label = match record.get("label") {
+        Some(CapabilityValue::String(label)) => label.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let bool_field = |name: &str, default: bool| match record.get(name) {
+        None | Some(CapabilityValue::Null) => Ok(default),
+        Some(CapabilityValue::Bool(flag)) => Ok(*flag),
+        Some(_) => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let icon = match record.get("icon") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::String(token)) => {
+            Some(IconName::from_name(token).ok_or(CapabilityAccessError::OutOfRange)?)
+        }
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let shortcut = match record.get("shortcut") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::String(shortcut)) => Some(shortcut.clone()),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+
+    let mut action = SplitAction::new(id, label);
+    action.icon = icon;
+    action.separator_above = bool_field("separator_above", false)?;
+    action.enabled = bool_field("enabled", true)?;
+    action.checked = bool_field("checked", false)?;
+    action.shortcut = shortcut;
+    Ok(action)
+}
+
 /// Where a split button's drop-down opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PopupDirection {
@@ -798,6 +898,15 @@ impl Widget for SplitButton {
 impl WidgetProperties for SplitButton {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The whole action list as records (BLUE26 B26.09): `add_action` takes the action to
+            // add, which the bare command channel cannot carry, so the list is the property and
+            // `set_actions` is its published command form.
+            "actions" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &SPLIT_ACTION_SCHEMA,
+                    self.actions.iter().map(split_action_record).collect::<Vec<_>>(),
+                )))
+            }
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "action_count" => Ok(CapabilityValue::UInt(self.actions().len() as u64)),
             "menu_open" => Ok(CapabilityValue::Bool(self.menu_open())),
@@ -821,6 +930,27 @@ impl WidgetProperties for SplitButton {
                 Ok(())
             }
             "action_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // A whole-list replacement through the control's own `set_actions`, which also resets
+            // the primary action the same way it does for any other caller.
+            "actions" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&SPLIT_ACTION_SCHEMA).map_err(|violation| {
+                    log::warn!("split_button.actions refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("actions"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let actions = list.items().iter().map(split_action_from_record).collect::<Result<
+                    Vec<_>,
+                    CapabilityAccessError,
+                >>(
+                )?;
+                self.set_actions(actions);
+                Ok(())
+            }
             "menu_open" => {
                 if expect_bool(value)? {
                     self.open_menu();
@@ -861,6 +991,7 @@ impl WidgetProperties for SplitButton {
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "actions",
             "text",
             "action_count",
             "menu_open",
@@ -898,6 +1029,7 @@ impl WidgetProperties for SplitButton {
                 }
             }
             "add_action" => Err(CapabilityAccessError::OutOfRange),
+            "set_actions" => Err(CapabilityAccessError::OutOfRange),
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.

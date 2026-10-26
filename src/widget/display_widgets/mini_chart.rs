@@ -58,6 +58,54 @@ pub struct DataPoint {
     pub value: u32,
 }
 
+/// The declared shape of one chart data point, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `data` property, and the control owns both ends of it: the field
+/// names are [`DataPoint`]'s own fields. Both are required because a point with no label cannot be
+/// drawn at a position and one with no value has nothing to plot.
+pub const MINI_CHART_DATA_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "label",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "value",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+        ],
+        // A point has no separate identity: its label is what a document spells it by, and two
+        // points may legitimately share a label (the categorical-index form does not).
+        id_field: "label",
+        ids_unique: false,
+        ids_required: false,
+    };
+
+/// One row of [`MINI_CHART_DATA_SCHEMA`].
+fn mini_chart_point_record(point: &DataPoint) -> crate::widget::capability::RecordValue {
+    crate::widget::capability::RecordValue::new()
+        .with("label", CapabilityValue::String(point.label.clone()))
+        .with("value", CapabilityValue::UInt(u64::from(point.value)))
+}
+
+/// Rebuilds one [`DataPoint`] from a row of [`MINI_CHART_DATA_SCHEMA`].
+fn mini_chart_point_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<DataPoint, CapabilityAccessError> {
+    let label = match record.get("label") {
+        Some(CapabilityValue::String(label)) => label.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let value = match record.get("value") {
+        Some(CapabilityValue::UInt(value)) => {
+            u32::try_from(*value).map_err(|_| CapabilityAccessError::TypeMismatch)?
+        }
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(DataPoint { label, value })
+}
+
 impl DataPoint {
     /// Creates a new data point.
     ///
@@ -504,6 +552,17 @@ impl Widget for MiniChart {
 impl WidgetProperties for MiniChart {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The series as records (BLUE26 B26.09): `set_data` takes a list the bare command
+            // channel cannot carry, so the list is the property and `set_data` is its published
+            // command form.
+            "data" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &MINI_CHART_DATA_SCHEMA,
+                    self.data.iter().map(mini_chart_point_record).collect::<Vec<_>>(),
+                )))
+            }
+            "min_value" => Ok(CapabilityValue::UInt(u64::from(self.min_value))),
+            "max_value" => Ok(CapabilityValue::UInt(u64::from(self.max_value))),
             "chart_type" => {
                 let s = match self.chart_type() {
                     ChartType::Line => "line",
@@ -527,22 +586,65 @@ impl WidgetProperties for MiniChart {
                 self.set_chart_type(ct);
                 Ok(())
             }
+            // Writing one bound must not invert the range, so the value is combined with the
+            // *other* live bound rather than stored blind — the same rule the timeline viewport
+            // follows.
+            "min_value" => {
+                let min = match value {
+                    CapabilityValue::UInt(min) => {
+                        u32::try_from(min).map_err(|_| CapabilityAccessError::TypeMismatch)?
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                let max = self.max_value;
+                self.set_range(min, max);
+                Ok(())
+            }
+            "max_value" => {
+                let max = match value {
+                    CapabilityValue::UInt(max) => {
+                        u32::try_from(max).map_err(|_| CapabilityAccessError::TypeMismatch)?
+                    }
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                let min = self.min_value;
+                self.set_range(min, max);
+                Ok(())
+            }
+            "data" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&MINI_CHART_DATA_SCHEMA).map_err(|violation| {
+                    log::warn!("mini_chart.data refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("data"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let data = list.items().iter().map(mini_chart_point_from_record).collect::<Result<
+                    Vec<_>,
+                    CapabilityAccessError,
+                >>(
+                )?;
+                self.set_data(data);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["chart_type", BASE_PROPERTY_NAMES]
+        property_names_of!["data", "min_value", "max_value", "chart_type", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `mini_chart` publishes.
     ///
-    /// All three assign state — the style, the series and the axis bounds — so each
-    /// needs an argument a command carries none of. They are refused as
-    /// [`CapabilityAccessError::OutOfRange`] rather than reported unknown: `chart_type`
-    /// travels through `set("chart_type", ..)`, while `set_data` and `set_range` have
-    /// no property equivalent yet, so a caller reading `OutOfRange` knows the name was
-    /// recognised and the payload is what is missing.
+    /// All three assign state — the style, the series and the axis bounds. `set_data` carries its
+    /// series through the `data` records property (B26.03) and is therefore published; `set_range`
+    /// stays unpublished because its name resolves to no property — the two bounds travel through
+    /// the writable `min_value` / `max_value` scalars, each of which calls `set_range` with the
+    /// other live bound. `set_chart_type` travels through `set("chart_type", ..)`.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "set_chart_type" | "set_data" | "set_range" => Err(CapabilityAccessError::OutOfRange),

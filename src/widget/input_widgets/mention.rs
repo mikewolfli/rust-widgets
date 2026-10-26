@@ -64,6 +64,62 @@ pub struct MentionCandidate {
     pub description: String,
 }
 
+/// The declared shape of one mention candidate, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `candidates` property, and the control owns both ends of it: the
+/// field names are [`MentionCandidate`]'s own fields. `id` is required because it is what a
+/// completed mention resolves to, `display` because it is what the popup draws and inserts;
+/// `description` is optional because a candidate with no secondary line is the normal case.
+pub const MENTION_CANDIDATE_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "display",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "description",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`MENTION_CANDIDATE_SCHEMA`].
+fn mention_candidate_record(
+    candidate: &MentionCandidate,
+) -> crate::widget::capability::RecordValue {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(candidate.id.clone()))
+        .with("display", CapabilityValue::String(candidate.display.clone()));
+    if !candidate.description.is_empty() {
+        record = record.with("description", CapabilityValue::String(candidate.description.clone()));
+    }
+    record
+}
+
+/// Rebuilds one [`MentionCandidate`] from a row of [`MENTION_CANDIDATE_SCHEMA`].
+fn mention_candidate_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<MentionCandidate, CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let description = match record.get("description") {
+        None | Some(CapabilityValue::Null) => String::new(),
+        Some(CapabilityValue::String(description)) => description.clone(),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(MentionCandidate { id: text("id")?, display: text("display")?, description })
+}
+
 impl MentionCandidate {
     /// Creates a candidate with `id` and `display`, and no description.
     pub fn new(id: impl Into<String>, display: impl Into<String>) -> Self {
@@ -914,6 +970,15 @@ impl Widget for Mention {
 impl WidgetProperties for Mention {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The candidate list as records (BLUE26 B26.09): `set_candidates` takes a list the bare
+            // command channel cannot carry, so the list is the property and `set_candidates` is
+            // its published command form.
+            "candidates" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &MENTION_CANDIDATE_SCHEMA,
+                    self.candidates().iter().map(mention_candidate_record).collect::<Vec<_>>(),
+                )))
+            }
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "trigger" => Ok(CapabilityValue::String(self.trigger().to_string())),
             "candidate_count" => Ok(CapabilityValue::UInt(self.candidates().len() as u64)),
@@ -955,6 +1020,27 @@ impl WidgetProperties for Mention {
                 // popup whose query does not exist. `open_popup` is the real entry.
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
+            // A whole-list replacement through the control's own `set_candidates`, which
+            // re-derives visibility and completion rather than leaving a second copy to go stale.
+            "candidates" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&MENTION_CANDIDATE_SCHEMA).map_err(|violation| {
+                    log::warn!("mention.candidates refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("candidates"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let candidates = list
+                    .items()
+                    .iter()
+                    .map(mention_candidate_from_record)
+                    .collect::<Result<Vec<_>, CapabilityAccessError>>()?;
+                self.set_candidates(candidates);
+                Ok(())
+            }
             "max_visible" => {
                 self.set_max_visible(expect_usize(value)?);
                 Ok(())
@@ -974,6 +1060,7 @@ impl WidgetProperties for Mention {
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `MENTION_PROPERTIES`.
         property_names_of![
+            "candidates",
             "text",
             "trigger",
             "candidate_count",
@@ -994,16 +1081,24 @@ impl WidgetProperties for Mention {
     /// fresh control that leaves the popup open, and answers `Ok(())`.
     ///
     /// `complete` picks a candidate by index, so a bare command has no candidate to
-    /// commit; `set_candidates` and `set_trigger` assign state and need a payload. All
-    /// three are answered through the property route — `candidate_count` and `trigger`
-    /// are published scalars, and completion is driven by the popup's own selection.
+    /// commit; `set_candidates` carries its list through the `candidates` records
+    /// property (B26.03), and `set_trigger` through the writable `trigger` property.
+    /// Both therefore report `OutOfRange` for a bare invocation — the payload is what
+    /// is missing, not the command.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "open_popup" => {
                 self.open_popup();
                 Ok(())
             }
-            "set_candidates" | "set_trigger" | "complete" => Err(CapabilityAccessError::OutOfRange),
+            "set_candidates" | "set_trigger" => Err(CapabilityAccessError::OutOfRange),
+            // `complete` needs a candidate, so the command completes the highlighted one and
+            // refuses when nothing is highlighted — the same answer the control's own key
+            // path gives.
+            "complete" => match self.highlighted() {
+                Some(index) if self.complete(index).is_some() => Ok(()),
+                _ => Err(CapabilityAccessError::OutOfRange),
+            },
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }
@@ -1689,6 +1784,19 @@ mod tests {
         m.handle_event(&Event::KeyDown((40, 0))); // highlight the second
         m.handle_event(&Event::KeyDown((13, 0)));
         assert_eq!(m.text(), "@Alicia");
+    }
+
+    #[test]
+    fn the_complete_command_uses_the_highlight_and_refuses_without_one() {
+        let mut m = mention();
+        // Nothing highlighted yet: the command answers the same refusal the key path gives.
+        assert_eq!(m.command("complete"), Err(CapabilityAccessError::OutOfRange));
+
+        type_text(&mut m, "@");
+        assert_eq!(m.highlighted(), Some(0));
+        assert_eq!(m.command("complete"), Ok(()));
+        assert_eq!(m.text(), "@Alice");
+        assert!(!m.is_popup_open(), "completing closes the popup");
     }
 
     #[test]

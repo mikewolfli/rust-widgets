@@ -100,7 +100,10 @@ pub(crate) fn slider_capability() -> WidgetCapability {
         aliases: &[],
         properties: SLIDER_PROPERTIES,
         events: events_of!("slider"),
-        commands: &["set_range", "set_value", "set_slider_position"],
+        // Audit 20261026: `set_range` stays unpublished — the range is the writable
+        // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
+        // (principle #18).
+        commands: &["set_value", "set_slider_position"],
     }
 }
 
@@ -111,7 +114,10 @@ pub(crate) fn progress_bar_capability() -> WidgetCapability {
         aliases: &[],
         properties: PROGRESS_BAR_PROPERTIES,
         events: events_of!("progress_bar"),
-        commands: &["set_range", "set_value", "set_orientation"],
+        // Audit 20261026: `set_range` stays unpublished — the range is the writable
+        // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
+        // (principle #18).
+        commands: &["set_value", "set_orientation"],
     }
 }
 
@@ -122,7 +128,10 @@ pub(crate) fn scroll_bar_capability() -> WidgetCapability {
         aliases: &[],
         properties: SCROLL_BAR_PROPERTIES,
         events: events_of!("scroll_bar"),
-        commands: &["set_range", "set_value", "set_steps", "set_orientation"],
+        // Audit 20261026: `set_range` and `set_steps` stay unpublished — the range is the writable
+        // `minimum`/`maximum` pair and the steps are the writable `single_step`/`page_step` pair,
+        // so both writes are reachable through the property route (principle #18).
+        commands: &["set_value", "set_orientation"],
     }
 }
 
@@ -133,7 +142,10 @@ pub(crate) fn list_box_capability() -> WidgetCapability {
         aliases: &[],
         properties: LIST_BOX_PROPERTIES,
         events: events_of!("list_box"),
-        commands: &["add_item", "remove_item", "clear", "clear_selection", "set_selection_mode"],
+        // Audit 20261026: `add_item`, `remove_item` stay unpublished — each takes a payload the bare
+        // command channel cannot carry. `set_items` is the published form of a whole-list write:
+        // its value travels through the `items` StringList property (B26.03).
+        commands: &["clear", "clear_selection", "set_selection_mode", "set_items"],
     }
 }
 
@@ -144,7 +156,10 @@ pub(crate) fn spin_box_capability() -> WidgetCapability {
         aliases: &[],
         properties: SPIN_BOX_PROPERTIES,
         events: events_of!("spin_box"),
-        commands: &["set_range", "set_value", "step_up", "step_down"],
+        // Audit 20261026: `set_range` stays unpublished — the range is the writable
+        // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
+        // (principle #18).
+        commands: &["set_value", "step_up", "step_down"],
     }
 }
 
@@ -167,7 +182,10 @@ pub(crate) fn dial_capability() -> WidgetCapability {
         aliases: &["knob"],
         properties: DIAL_PROPERTIES,
         events: events_of!("dial"),
-        commands: &["set_range", "set_value", "set_wrapping"],
+        // Audit 20261026: `set_range` stays unpublished — the range is the writable
+        // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
+        // (principle #18).
+        commands: &["set_value", "set_wrapping"],
     }
 }
 
@@ -307,7 +325,11 @@ pub(crate) fn tool_box_capability() -> WidgetCapability {
         aliases: &[],
         properties: TOOL_BOX_PROPERTIES,
         events: events_of!("tool_box"),
-        commands: &["add_item", "remove_item", "set_current_index", "set_orientation"],
+        // Audit 20261026: `add_item`, `remove_item` stay unpublished — each item carries the
+        // `ObjectId` of the page widget it shows, and no property value can carry a widget
+        // reference; `item_count`/`current_index` report the list's shape instead (principle
+        // #18).
+        commands: &["set_current_index", "set_orientation"],
     }
 }
 
@@ -329,7 +351,10 @@ pub(crate) fn tab_bar_capability() -> WidgetCapability {
         aliases: &[],
         properties: TAB_BAR_PROPERTIES,
         events: events_of!("tab_bar"),
-        commands: &["add_tab", "remove_tab", "set_current_index", "set_closable", "set_movable"],
+        // Audit 20261026: `add_tab`, `remove_tab` stay unpublished — each takes a payload the bare
+        // command channel cannot carry. `set_tabs` is the published form of a whole-strip write:
+        // its rows travel through the `tabs` records property (B26.03).
+        commands: &["set_current_index", "set_closable", "set_movable", "set_tabs"],
     }
 }
 
@@ -341,7 +366,10 @@ pub(crate) fn calendar_capability() -> WidgetCapability {
         aliases: &["date_calendar"],
         properties: CALENDAR_PROPERTIES,
         events: events_of!("calendar"),
-        commands: &["set_selected_date", "set_date_range", "set_first_day_of_week", "show_today"],
+        // Audit 20261026: `set_date_range` stays unpublished — the range is the writable
+        // `minimum_date`/`maximum_date` pair, so a whole-range write is reachable through the
+        // property route (principle #18).
+        commands: &["set_selected_date", "set_first_day_of_week", "show_today"],
     }
 }
 
@@ -516,7 +544,11 @@ pub(crate) fn data_grid_capability() -> WidgetCapability {
         aliases: &[],
         properties: DATA_GRID_PROPERTIES,
         events: events_of!("data_grid"),
-        // set_data_source was published without a payload property and always failed OutOfRange; re-publish when its records properties land.
+        // Audit 20261026: `select_all` is payload-free and runs the control's real
+        // `select_all`, so it is published here rather than left as a name no arm answered.
+        // `set_data_source` binds an `Arc<dyn IncrementalTableDataSource>`, which no property value
+        // can carry; `set_current_cell` / `move_current_cell` name a position and the published
+        // `current_cell` is read-only, so all three stay unpublished.
         commands: &[
             "clear_data_source",
             "set_scroll_row",
@@ -524,6 +556,7 @@ pub(crate) fn data_grid_capability() -> WidgetCapability {
             "set_row_height",
             "set_column_width",
             "set_frozen_columns",
+            "select_all",
         ],
     }
 }
@@ -536,7 +569,11 @@ pub(crate) fn tree_table_capability() -> WidgetCapability {
         aliases: &[],
         properties: TREE_TABLE_PROPERTIES,
         events: events_of!("tree_table"),
-        commands: &["set_model", "clear_model", "expand_row", "collapse_row", "select_row"],
+        // Audit 20261026: `select_row` stays unpublished — the writable `selected_row` property is
+        // the same assignment (principle #18). `set_model` binds an `Arc<dyn ...>` model, which no
+        // property value can carry; `expand_row`/`collapse_row` name a row and the table publishes
+        // no expandable-row property, so all three stay unpublished.
+        commands: &["clear_model"],
     }
 }
 
@@ -548,8 +585,10 @@ pub(crate) fn virtual_table_capability() -> WidgetCapability {
         aliases: &[],
         properties: VIRTUAL_TABLE_PROPERTIES,
         events: events_of!("virtual_table"),
+        // Audit 20261026: `set_data_source` binds an `Arc<dyn ...>` source no property value can
+        // carry, and `select_cell` names a position while the table publishes only scroll offsets
+        // (no cell-selection property), so both stay unpublished (principle #18).
         commands: &[
-            "set_data_source",
             "clear_data_source",
             "set_scroll_row",
             "set_scroll_column",
@@ -622,7 +661,11 @@ pub(crate) fn menu_capability() -> WidgetCapability {
         aliases: &[],
         properties: MENU_PROPERTIES,
         events: events_of!("menu"),
-        commands: &["clear", "add_action", "add_separator"],
+        // Audit 20261026: `add_action` stays unpublished — it takes a label the bare command
+        // channel cannot carry. `set_items` is the published form of a whole-list write: its rows
+        // travel through the `items` records property (B26.03). `add_separator` stays published —
+        // its arm runs the control's zero-argument builder.
+        commands: &["clear", "add_separator", "set_items"],
     }
 }
 
@@ -644,7 +687,11 @@ pub(crate) fn context_menu_capability() -> WidgetCapability {
         aliases: &["context_actions"],
         properties: MENU_PROPERTIES,
         events: events_of!("menu"),
-        commands: &["clear", "add_action", "add_separator"],
+        // Audit 20261026: `add_action` stays unpublished — it takes a label the bare command
+        // channel cannot carry. `set_items` is the published form of a whole-list write: its rows
+        // travel through the `items` records property (B26.03). `add_separator` stays published —
+        // the arm is shared with `menu`.
+        commands: &["clear", "add_separator", "set_items"],
     }
 }
 
@@ -656,7 +703,10 @@ pub(crate) fn menu_bar_capability() -> WidgetCapability {
         aliases: &[],
         properties: MENU_BAR_PROPERTIES,
         events: events_of!("menu_bar"),
-        commands: &["clear", "add_menu", "remove_menu"],
+        // Audit 20261026: `add_menu`, `remove_menu` stay unpublished — each takes a payload the
+        // bare command channel cannot carry. `set_entries` is the published form of a whole-bar
+        // write: its rows travel through the `entries` records property (B26.03).
+        commands: &["clear", "set_entries"],
     }
 }
 
@@ -668,7 +718,11 @@ pub(crate) fn tool_bar_capability() -> WidgetCapability {
         aliases: &[],
         properties: TOOL_BAR_PROPERTIES,
         events: events_of!("tool_bar"),
-        commands: &["clear", "add_action", "add_separator"],
+        // Audit 20261026: `add_action` stays unpublished — it takes an id and a label the bare
+        // command channel cannot carry. `set_items` is the published form of a whole-strip write:
+        // its rows travel through the `items` records property (B26.03). `add_separator` stays
+        // published — its arm runs the control's zero-argument builder.
+        commands: &["clear", "add_separator", "set_items"],
     }
 }
 
@@ -680,7 +734,11 @@ pub(crate) fn ribbon_bar_capability() -> WidgetCapability {
         aliases: &["ribbon"],
         properties: RIBBON_BAR_PROPERTIES,
         events: events_of!("ribbon_bar"),
-        commands: &["add_tab", "add_group", "add_item", "add_large_item", "clear"],
+        // Audit 20261026: `add_tab` stays unpublished — it takes a title the bare command channel
+        // cannot carry; `tabs` is the published property and `set_tabs` its command form
+        // (B26.03). `add_group`, `add_item`, `add_large_item` stay unpublished: they address a
+        // position inside a tab/group nesting a flat property cannot express.
+        commands: &["clear", "set_tabs"],
     }
 }
 
@@ -696,7 +754,10 @@ pub(crate) fn color_picker_capability() -> WidgetCapability {
         aliases: &[],
         properties: COLOR_PICKER_PROPERTIES,
         events: events_of!("color_picker"),
-        commands: &["set_hex", "apply_preset"],
+        // Audit 20261026: `set_hex` and `apply_preset` stay unpublished — the writable `hex_rgba`
+        // property is the colour write, and a preset is applied by writing that property to the
+        // preset's value, so both are reachable through the property route (principle #18).
+        commands: &[],
     }
 }
 
@@ -722,7 +783,11 @@ pub(crate) fn color_dialog_capability() -> WidgetCapability {
         aliases: &["colour_dialog"],
         properties: COLOR_DIALOG_PROPERTIES,
         events: events_of!("color_dialog"),
-        commands: &["set_hex", "apply_preset"],
+        // Audit 20261026: `set_hex` and `apply_preset` stay unpublished — the dialog publishes the
+        // writable `hex_rgba` and `preset_index` properties, which are exactly the colour and the
+        // preset a caller writes, so both names are reachable through the property route
+        // (principle #18).
+        commands: &[],
     }
 }
 
@@ -734,9 +799,15 @@ pub(crate) fn code_editor_capability() -> WidgetCapability {
         aliases: &[],
         properties: CODE_EDITOR_PROPERTIES,
         events: events_of!("code_editor"),
-        // set_markers/set_cursor/append_line were published without a payload property and always failed OutOfRange; re-publish when their records properties land.
+        // set_markers now carries its list through the `markers` records property, and the caret is
+        // writable through `cursor_line` / `cursor_column` (B26.03). `append_line` has no property
+        // route (the document is the writable `text`), and `set_cursor` names no `cursor` property
+        // — its two components are the honest route.
         commands: &[
             "set_text",
+            "set_markers",
+            "set_cursor_line",
+            "set_cursor_column",
             "undo",
             "redo",
             "copy",
@@ -770,7 +841,12 @@ pub(crate) fn gantt_widget_capability() -> WidgetCapability {
         aliases: &["gantt"],
         properties: GANTT_WIDGET_PROPERTIES,
         events: events_of!("gantt_widget"),
-        commands: &["set_tasks", "zoom", "set_viewport", "select_task"],
+        // Audit 20261026: `set_viewport` stays unpublished — the viewport is the writable
+        // `viewport_start`/`viewport_end` pair (principle #18). `set_tasks` cannot be a property:
+        // a task carries typed `dependencies` (a nested structure no record field can hold) and
+        // dropping it would silently erase schedule links. `select_task` names a task while
+        // `selected_id` is read-only. Both stay unpublished.
+        commands: &["zoom"],
     }
 }
 
@@ -782,7 +858,11 @@ pub(crate) fn terminal_view_capability() -> WidgetCapability {
         aliases: &["terminal"],
         properties: TERMINAL_VIEW_PROPERTIES,
         events: events_of!("terminal_view"),
-        commands: &["append_output", "submit"],
+        // Audit 20261026: `append_output` stays unpublished — output is an append-only stream and
+        // the control publishes only its line count (`output_line_count`), with no property that
+        // carries the buffer itself; the control's own `append_output` API is the write path
+        // (principle #18).
+        commands: &["submit"],
     }
 }
 
@@ -794,7 +874,11 @@ pub(crate) fn snackbar_capability() -> WidgetCapability {
         aliases: &["toast_bar"],
         properties: SNACKBAR_PROPERTIES,
         events: events_of!("snackbar"),
-        commands: &["show", "show_with_action", "dismiss"],
+        // Audit 20261026: `show` stays unpublished — the snackbar publishes the writable `message`
+        // and `visible` properties, and that pair is exactly what `show` assigns (principle #18).
+        // `show_with_action` additionally takes an action label, and `action_label` is read-only,
+        // so it has no complete property route and also stays unpublished.
+        commands: &["dismiss"],
     }
 }
 
@@ -806,8 +890,9 @@ pub(crate) fn map_view_capability() -> WidgetCapability {
         aliases: &[],
         properties: MAP_VIEW_PROPERTIES,
         events: events_of!("map_view"),
-        // set_markers was published without a payload property and always failed OutOfRange; re-publish when its records properties land.
-        commands: &["set_center_x", "set_center_y", "set_zoom"],
+        // set_markers now carries its list through the `markers` records property (B26.03); the
+        // bare command reports the value is what is missing.
+        commands: &["set_center_x", "set_center_y", "set_zoom", "set_markers"],
     }
 }
 
@@ -819,7 +904,9 @@ pub(crate) fn media_player_capability() -> WidgetCapability {
         aliases: &[],
         properties: MEDIA_PLAYER_PROPERTIES,
         events: events_of!("media_player"),
-        commands: &["set_source", "clear_source", "play", "pause", "seek_to", "set_volume"],
+        // Audit 20261026: `seek_to` stays unpublished — the position is the writable
+        // `position_ms` property, so a seek is that property's write (principle #18).
+        commands: &["set_source", "clear_source", "play", "pause", "set_volume"],
     }
 }
 
@@ -831,7 +918,10 @@ pub(crate) fn breadcrumb_capability() -> WidgetCapability {
         aliases: &["nav_breadcrumb"],
         properties: BREADCRUMB_PROPERTIES,
         events: events_of!("breadcrumb"),
-        commands: &["set_segments", "push_segment", "clear_segments"],
+        // Audit 20261026: `push_segment` stays unpublished — the whole trail is the writable
+        // `segments` records property and `set_segments` is its published command form, so an
+        // appended segment is a whole-trail write (principle #18).
+        commands: &["set_segments", "clear_segments"],
     }
 }
 
@@ -873,7 +963,12 @@ pub(crate) fn timeline_widget_capability() -> WidgetCapability {
         aliases: &["timeline", "timeline_view"],
         properties: TIMELINE_WIDGET_PROPERTIES,
         events: events_of!("timeline_widget"),
-        commands: &["set_items", "set_viewport", "zoom", "select_index"],
+        // Audit 20261026: `set_items` is published now that the `items` records property is its
+        // payload channel (B26.03). `set_viewport` stays unpublished: the name does not resolve to
+        // a `viewport` property — the two bounds are the writable `viewport_start` /
+        // `viewport_end` properties, which is the honest route. `select_index` names a position
+        // with no property route.
+        commands: &["zoom", "set_items"],
     }
 }
 
@@ -885,8 +980,9 @@ pub(crate) fn command_palette_capability() -> WidgetCapability {
         aliases: &["command_box"],
         properties: COMMAND_PALETTE_PROPERTIES,
         events: events_of!("command_palette"),
-        // set_entries/move_highlight were published without a payload property and always failed OutOfRange; re-publish when their payload properties land.
-        commands: &["set_query", "clear_query", "activate_highlighted"],
+        // set_entries now carries its list through the `entries` records property (B26.03);
+        // move_highlight takes a signed delta with no property route, so it stays unpublished.
+        commands: &["set_query", "clear_query", "activate_highlighted", "set_entries"],
     }
 }
 
@@ -898,14 +994,11 @@ pub(crate) fn notification_center_capability() -> WidgetCapability {
         aliases: &["notifications"],
         properties: NOTIFICATION_CENTER_PROPERTIES,
         events: events_of!("notification_center"),
-        commands: &[
-            "push",
-            "clear",
-            "set_read",
-            "mark_all_read",
-            "select_index",
-            "activate_selected",
-        ],
+        // Audit 20261026: `push` and `set_read` stay unpublished — their payloads are an item and
+        // an id+flag, neither of which the bare command channel can carry; the `items` records
+        // property is that payload channel (B26.03), and `set_items` is its published command
+        // form. `select_index` names a position with no property route.
+        commands: &["clear", "mark_all_read", "activate_selected", "set_items"],
     }
 }
 
@@ -917,7 +1010,11 @@ pub(crate) fn diff_viewer_capability() -> WidgetCapability {
         aliases: &["diff"],
         properties: DIFF_VIEWER_PROPERTIES,
         events: events_of!("diff_viewer"),
-        commands: &["set_texts", "select_index"],
+        // Audit 20261026: `set_texts` stays unpublished because its name resolves to no property —
+        // the two writable properties `left_text` / `right_text` each write through `set_texts`
+        // and recompute the diff, so the pair is the honest route (principle #18). `select_index`
+        // names a line with no property route; `selected_index` is read-only.
+        commands: &[],
     }
 }
 
@@ -929,7 +1026,11 @@ pub(crate) fn markdown_editor_capability() -> WidgetCapability {
         aliases: &["md_editor"],
         properties: MARKDOWN_EDITOR_PROPERTIES,
         events: events_of!("markdown_editor"),
-        commands: &["set_text", "append_line", "toggle_preview_mode", "set_preview_mode", "undo"],
+        // Audit 20261026: `append_line` stays unpublished — the document is the writable `text`
+        // property, so an appended line is a whole-document write; there is no separate line
+        // buffer property (principle #18). `undo` stays published — its arm runs the control's
+        // real undo stack.
+        commands: &["set_text", "toggle_preview_mode", "set_preview_mode", "undo"],
     }
 }
 
@@ -941,7 +1042,11 @@ pub(crate) fn toast_stack_capability() -> WidgetCapability {
         aliases: &["toasts"],
         properties: TOAST_STACK_PROPERTIES,
         events: events_of!("toast_stack"),
-        commands: &["push", "clear", "select_index", "activate_selected", "dismiss_selected"],
+        // Audit 20261026: `push` and `select_index` stay unpublished — a toast is a whole item the
+        // stack owns and the stack publishes neither an item list nor a writable selection
+        // (`toast_count` / `selected_id` are read-only); the control's own API is the write path
+        // (principle #18).
+        commands: &["clear", "activate_selected", "dismiss_selected"],
     }
 }
 
@@ -969,7 +1074,10 @@ pub(crate) fn banner_capability() -> WidgetCapability {
         aliases: &["notice"],
         properties: BANNER_PROPERTIES,
         events: events_of!("banner"),
-        commands: &["dismiss", "show", "set_actions", "activate_action"],
+        // Audit 20261026: `set_actions` is published now that the `actions` StringList property is
+        // its payload channel (B26.03). `show` stays published — it is payload-free and runs the
+        // control's real `show`.
+        commands: &["dismiss", "show", "activate_action", "set_actions"],
     }
 }
 
@@ -996,7 +1104,9 @@ pub(crate) fn splash_screen_capability() -> WidgetCapability {
         // interaction: `finished` when initialisation completes, `skipped` when the
         // user takes the optional skip affordance.
         events: events_of!("splash_screen"),
-        commands: &["finish", "set_progress", "set_title"],
+        // `set_logo` carries its descriptor through the writable `logo` property, so the command
+        // form is the payload-free half (B26.03).
+        commands: &["finish", "set_progress", "set_title", "set_logo"],
     }
 }
 
@@ -1020,7 +1130,10 @@ pub(crate) fn number_picker_capability() -> WidgetCapability {
         aliases: &["picker"],
         properties: NUMBER_PICKER_PROPERTIES,
         events: events_of!("number_picker"),
-        commands: &["scroll_rows", "set_value", "set_range", "set_step"],
+        // Audit 20261026: `set_range` stays unpublished — the range is the writable
+        // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
+        // (principle #18).
+        commands: &["scroll_rows", "set_value", "set_step"],
     }
 }
 
@@ -1032,14 +1145,10 @@ pub(crate) fn grid_table_capability() -> WidgetCapability {
         aliases: &[],
         properties: GRID_TABLE_WIDGET_PROPERTIES,
         events: events_of!("grid_table"),
-        commands: &[
-            "set_data_source",
-            "clear_data_source",
-            "set_scroll_row",
-            "set_scroll_column",
-            "toggle_sort_column",
-            "clear_selection",
-        ],
+        // Audit 20261026: `set_data_source` binds an `Arc<dyn IncrementalTableDataSource>` no
+        // property value can carry; `toggle_sort_column` names a column and the table's sort state
+        // is published as read-only derived names, so both stay unpublished (principle #18).
+        commands: &["clear_data_source", "set_scroll_row", "set_scroll_column", "clear_selection"],
     }
 }
 
@@ -1051,7 +1160,11 @@ pub(crate) fn split_button_capability() -> WidgetCapability {
         aliases: &[],
         properties: SPLIT_BUTTON_PROPERTIES,
         events: events_of!("split_button"),
-        commands: &["add_action", "open_menu", "close_menu", "trigger_primary"],
+        // Audit 20261026: `add_action` stays unpublished — it takes an action the bare command
+        // channel cannot carry. `set_actions` is the published form of a whole-list write: its
+        // rows travel through the `actions` records property (B26.03). `trigger_primary` stays
+        // published — its arm runs the control's real primary trigger.
+        commands: &["open_menu", "close_menu", "trigger_primary", "set_actions"],
     }
 }
 
@@ -1066,8 +1179,11 @@ pub(crate) fn segmented_control_capability() -> WidgetCapability {
         aliases: &[],
         properties: SEGMENTED_CONTROL_PROPERTIES,
         events: events_of!("segmented_control"),
-        // set_items/move_selection were published without a payload property and always failed OutOfRange; re-publish when their payload properties land.
-        commands: &[],
+        // set_items carries its payload through the `items` records property (B26.03): the bare
+        // command reports that a value is what is missing, and write_property("items", ...) is
+        // where the list actually goes. move_selection takes a signed delta and has no property
+        // route, so it stays unpublished.
+        commands: &["set_items"],
     }
 }
 
@@ -1084,7 +1200,11 @@ pub(crate) fn chip_capability() -> WidgetCapability {
         aliases: &["chips"],
         properties: CHIP_PROPERTIES,
         events: events_of!("chip"),
-        commands: &["set_items", "toggle_index", "move_focus"],
+        // Audit 20261026: `toggle_index` and `move_focus` stay unpublished — each takes a payload
+        // (an index, a signed delta) the bare command channel cannot carry; a selection toggle is
+        // expressed by writing the whole `items` list with `selected` flipped, and the keyboard
+        // focus by writing `focused_index`, whose `set_focused_index` command form is published.
+        commands: &["set_items", "set_focused_index"],
     }
 }
 
@@ -1153,7 +1273,10 @@ pub(crate) fn font_dialog_capability() -> WidgetCapability {
         aliases: &[],
         properties: FONT_DIALOG_PROPERTIES,
         events: events_of!("font_dialog"),
-        commands: &["set_current_font", "accept", "reject"],
+        // Audit 20261026: `set_current_font` stays unpublished — the selected font is a `Font`
+        // value and the dialog publishes no property that carries one (only the option bits); the
+        // control's own `set_current_font` API is the write path (principle #18).
+        commands: &["accept", "reject"],
     }
 }
 
@@ -1177,7 +1300,10 @@ pub(crate) fn progress_dialog_capability() -> WidgetCapability {
         aliases: &[],
         properties: PROGRESS_DIALOG_PROPERTIES,
         events: events_of!("progress_dialog"),
-        commands: &["set_value", "set_range", "set_title", "set_label_text"],
+        // Audit 20261026: `set_range` stays unpublished — the range is the writable
+        // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
+        // (principle #18).
+        commands: &["set_value", "set_title", "set_label_text"],
     }
 }
 
@@ -1189,7 +1315,9 @@ pub(crate) fn popup_window_capability() -> WidgetCapability {
         aliases: &["popup"],
         properties: POPUP_WINDOW_PROPERTIES,
         events: events_of!("popup_window"),
-        commands: &["set_content_widget"],
+        // Audit 20261026: `set_content_widget` stays unpublished — its payload is an `ObjectId` of
+        // a mounted widget and no property value can carry a widget reference (principle #18).
+        commands: &[],
     }
 }
 
@@ -1235,9 +1363,10 @@ pub(crate) fn tab_widget_capability() -> WidgetCapability {
         aliases: &[],
         properties: TAB_WIDGET_PROPERTIES,
         events: events_of!("tab_widget"),
+        // Audit 20261026: `add_tab`, `remove_tab` stay unpublished — a tab carries the page widget
+        // it shows, and no property value can carry a widget reference; `tab_count` and the
+        // text/current-index properties report the strip instead (principle #18).
         commands: &[
-            "add_tab",
-            "remove_tab",
             "set_current_index",
             "set_closable",
             "set_movable",
@@ -1255,7 +1384,10 @@ pub(crate) fn stacked_widget_capability() -> WidgetCapability {
         aliases: &["stacked"],
         properties: STACKED_WIDGET_PROPERTIES,
         events: events_of!("stacked_widget"),
-        commands: &["add_widget", "remove_widget", "set_current_index"],
+        // Audit 20261026: `add_widget`, `remove_widget` stay unpublished — each names a mounted
+        // widget (or the `ObjectId` of one), and no property value can carry a widget reference;
+        // `current_index` is the writable position property (principle #18).
+        commands: &["set_current_index"],
     }
 }
 
@@ -1279,7 +1411,10 @@ pub(crate) fn dock_widget_capability() -> WidgetCapability {
         aliases: &["dock"],
         properties: DOCK_WIDGET_PROPERTIES,
         events: events_of!("dock_widget"),
-        commands: &["set_title", "set_floating", "set_features", "set_allowed_areas"],
+        // Audit 20261026: `set_features`, `set_allowed_areas` stay unpublished — each assigns a
+        // bit-flag set (`DockFeatures` / `DockAreas`) and the control publishes no property that
+        // carries one; the control's own setters are the write path (principle #18).
+        commands: &["set_title", "set_floating"],
     }
 }
 
@@ -1291,7 +1426,12 @@ pub(crate) fn mdi_area_capability() -> WidgetCapability {
         aliases: &["mdi"],
         properties: MDI_AREA_PROPERTIES,
         events: events_of!("mdi_area"),
-        commands: &["add_subwindow", "remove_subwindow", "set_view_mode", "activate_subwindow"],
+        // Audit 20261026: `add_subwindow`, `remove_subwindow`, `activate_subwindow`
+        // stay unpublished — a sub-window is a mounted widget (or its index) and the control
+        // publishes `active_subwindow` as read-only; `set_view_mode` stays published — the
+        // property route runs the control's real `set_view_mode` (principle #18).
+        // writes the control's real view mode.
+        commands: &["set_view_mode"],
     }
 }
 
@@ -1340,7 +1480,10 @@ pub(crate) fn web_view_capability() -> WidgetCapability {
         aliases: &["webview", "web_view"],
         properties: WEB_VIEW_PROPERTIES,
         events: events_of!("web_engine_view"),
-        commands: &["set_url", "load_url", "reload", "go_back", "go_forward", "stop"],
+        // Audit 20261026: `load_url` stays unpublished — the address is the writable `url`
+        // property and `set_url` is its published command form, so loading a page is a property
+        // write (principle #18).
+        commands: &["set_url", "reload", "go_back", "go_forward", "stop"],
     }
 }
 
@@ -1353,7 +1496,11 @@ pub(crate) fn pie_menu_capability() -> WidgetCapability {
         aliases: &["radial_menu"],
         properties: PIE_MENU_PROPERTIES,
         events: events_of!("pie_menu"),
-        commands: &["add_item", "remove_item", "set_radius", "set_current_index"],
+        // Audit 20261026: `add_item`, `remove_item` stay unpublished — each takes a payload the bare
+        // command channel cannot carry, and a whole-list write covers the same ground. `set_items`
+        // is the published form of that write: its value travels through the `items` records
+        // property (B26.03).
+        commands: &["set_radius", "set_current_index", "set_items"],
     }
 }
 
@@ -1380,7 +1527,10 @@ pub(crate) fn arc_capability() -> WidgetCapability {
         aliases: &["arc_widget"],
         properties: ARC_PROPERTIES,
         events: events_of!("arc"),
-        commands: &["set_value", "set_range"],
+        // Audit 20261026: `set_range` stays unpublished — the range is the writable
+        // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
+        // (principle #18).
+        commands: &["set_value"],
     }
 }
 
@@ -1413,7 +1563,10 @@ pub(crate) fn dropdown_capability() -> WidgetCapability {
         aliases: &["dropdown_widget", "combo"],
         properties: DROPDOWN_PROPERTIES,
         events: events_of!("dropdown"),
-        commands: &["set_items", "set_selected_index", "set_expanded", "toggle"],
+        // Audit 20261026: `set_items` is published again now that the `items` StringList property
+        // is its payload channel (B26.03): the bare command reports that a value is missing, and
+        // write_property("items", [...]) is where the list goes.
+        commands: &["set_selected_index", "set_expanded", "toggle", "set_items"],
     }
 }
 
@@ -1496,7 +1649,11 @@ pub(crate) fn meter_capability() -> WidgetCapability {
         aliases: &["meter_widget"],
         properties: METER_PROPERTIES,
         events: events_of!("meter"),
-        commands: &["set_value", "set_range"],
+        // Audit 20261026: `set_range` stays unpublished — the range is the writable
+        // `minimum`/`maximum` pair, so a whole-range write is reachable through the property route
+        // (principle #18).
+        // command arm stays as a defensive refusal.
+        commands: &["set_value"],
     }
 }
 
@@ -1512,7 +1669,11 @@ pub(crate) fn radar_chart_capability() -> WidgetCapability {
         aliases: &["radar", "spider_chart"],
         properties: RADAR_CHART_PROPERTIES,
         events: events_of!("radar_chart"),
-        commands: &["set_axes", "set_series", "add_series"],
+        // Audit 20261026: `set_axes`, `set_series`, `add_series` stay unpublished — a series carries
+        // a numeric sample list and an axis carries a label list, and the chart publishes only the
+        // writable `series_names` StringList plus derived counts; the sample matrix has no property
+        // carrier (principle #18).
+        commands: &[],
     }
 }
 
@@ -1532,7 +1693,11 @@ pub(crate) fn heatmap_capability() -> WidgetCapability {
         aliases: &["heatmap_chart"],
         properties: HEATMAP_PROPERTIES,
         events: events_of!("heatmap"),
-        commands: &["set_data", "set_cell", "clear"],
+        // Audit 20261026: `set_data`, `set_cell` stay unpublished — the matrix is a nested numeric
+        // grid with no property carrier (a `NumberList` is flat), and `set_cell` names a position
+        // while the published cell properties are the scale and viewport, not a cell value
+        // (principle #18).
+        commands: &["clear"],
     }
 }
 
@@ -1549,7 +1714,12 @@ pub(crate) fn mention_capability() -> WidgetCapability {
         aliases: &["mention_edit", "at_mention"],
         properties: MENTION_PROPERTIES,
         events: events_of!("mention"),
-        commands: &["set_candidates", "set_trigger", "complete", "open_popup"],
+        // Audit 20261026: `set_candidates` is published now that the `candidates` records property
+        // is its payload channel (B26.03). `set_trigger` was already published and the `trigger`
+        // property is writable, so the earlier note that claimed it was withdrawn was wrong;
+        // `complete` stays published — its arm completes the highlighted candidate and refuses
+        // when nothing is highlighted.
+        commands: &["set_trigger", "open_popup", "complete", "set_candidates"],
     }
 }
 
@@ -1565,7 +1735,10 @@ pub(crate) fn emoji_picker_capability() -> WidgetCapability {
         aliases: &["emoji"],
         properties: EMOJI_PICKER_PROPERTIES,
         events: events_of!("emoji_picker"),
-        commands: &["set_glyphs", "set_categories", "set_search", "choose"],
+        // Audit 20261026: `set_glyphs` and `set_categories` are published again now that the
+        // `glyphs` records and `categories` StringList properties are their payload channels
+        // (B26.03). `choose` takes a glyph id and has no property route, so it stays unpublished.
+        commands: &["set_search", "set_glyphs", "set_categories"],
     }
 }
 
@@ -1582,7 +1755,12 @@ pub(crate) fn query_builder_capability() -> WidgetCapability {
         aliases: &["filter_builder"],
         properties: QUERY_BUILDER_PROPERTIES,
         events: events_of!("query_builder"),
-        commands: &["set_fields", "add_row", "remove_row", "toggle_conjunction"],
+        // Audit 20261026: `set_fields` and `set_rows` are published now that the `fields` / `rows`
+        // records properties are their payload channels (B26.03). `add_row` and `remove_row` stay
+        // unpublished — their payloads are a field index and a row index, and a whole-list write
+        // covers both. `toggle_conjunction` stays published — its arm runs the control's real
+        // toggle.
+        commands: &["toggle_conjunction", "set_fields", "set_rows"],
     }
 }
 
@@ -1598,7 +1776,11 @@ pub(crate) fn cascader_capability() -> WidgetCapability {
         aliases: &["cascade", "multi_level_select"],
         properties: CASCADER_PROPERTIES,
         events: events_of!("cascader"),
-        commands: &["set_options", "set_selected_path", "expand", "collapse"],
+        // Audit 20261026: `set_selected_path` is published now that the `selected_path`
+        // NumberList property is its payload channel (B26.03). `set_options` stays unpublished:
+        // an option carries `children`, and a record field cannot carry a nested record list, so
+        // the tree has no property route.
+        commands: &["expand", "collapse", "set_selected_path"],
     }
 }
 
@@ -1626,7 +1808,10 @@ pub(crate) fn mini_chart_capability() -> WidgetCapability {
         aliases: &["mini_chart_widget"],
         properties: MINI_CHART_PROPERTIES,
         events: events_of!("mini_chart"),
-        commands: &["set_chart_type", "set_data", "set_range"],
+        // Audit 20261026: `set_data` is published now that the `data` records property is its
+        // payload channel (B26.03). `set_range` stays unpublished: its name resolves to no
+        // property — the two bounds travel through the writable `min_value` / `max_value` scalars.
+        commands: &["set_chart_type", "set_data"],
     }
 }
 
@@ -1637,7 +1822,11 @@ pub(crate) fn image_view_capability() -> WidgetCapability {
         aliases: &["image_viewer"],
         properties: IMAGE_VIEW_PROPERTIES,
         events: events_of!("image_view"),
-        commands: &["set_image", "set_scaled"],
+        // Audit 20261026: `set_image` stays unpublished — its payload is a decoded image and the
+        // control publishes only the view state (`scaled`, rotation, zoom, pan), with no property
+        // that carries the image itself; the control's own `set_image` API is the write path
+        // (principle #18).
+        commands: &["set_scaled"],
     }
 }
 
@@ -1648,7 +1837,11 @@ pub(crate) fn mini_canvas_capability() -> WidgetCapability {
         aliases: &[],
         properties: MINI_CANVAS_PROPERTIES,
         events: events_of!("mini_canvas"),
-        commands: &["fill_rect", "draw_rect", "draw_line", "fill_circle", "clear"],
+        // Audit 20261026: `fill_rect`, `draw_rect`, `draw_line`, `fill_circle` stay unpublished —
+        // each appends a drawing instruction (a rectangle, a segment, a circle) and the control
+        // publishes no property that carries one; the control's own drawing API is the write path
+        // (principle #18).
+        commands: &["clear"],
     }
 }
 
@@ -1672,7 +1865,11 @@ pub(crate) fn canvas_capability() -> WidgetCapability {
         aliases: &["canvas_widget", "drawing_surface"],
         properties: CANVAS_PROPERTIES,
         events: events_of!("canvas"),
-        commands: &["set_zoom", "set_center", "clear"],
+        // Audit 20261026: `set_zoom`, `set_center` stay unpublished — this control is a
+        // command-recording drawing surface that replays `RenderCommand`s, not a pan/zoom view;
+        // its published state is the queued-command count, so neither name has a property carrier
+        // here (principle #18).
+        commands: &["clear"],
     }
 }
 
@@ -1890,7 +2087,11 @@ pub(crate) fn tag_input_capability() -> WidgetCapability {
         aliases: &["tag_editor", "chip_input"],
         properties: TAG_INPUT_PROPERTIES,
         events: events_of!("tag_input"),
-        commands: &["add_tag", "remove_tag", "set_placeholder"],
+        // Audit 20261026: `add_tag`, `remove_tag` stay unpublished — each takes a label or an
+        // index the bare command channel cannot carry; the whole committed list is the writable
+        // `items` records property, so the two are reachable as a whole-list write (principle
+        // #18).
+        commands: &["set_placeholder"],
     }
 }
 
@@ -2053,7 +2254,11 @@ pub(crate) fn navigation_stack_capability() -> WidgetCapability {
         // `navigation_changed` carries a `NavigationEvent`; `page_changed` was
         // advertised but never emitted by this widget.
         events: events_of!("navigation_stack"),
-        commands: &["push", "pop", "set_current_page"],
+        // Audit 20261026: `push` stays unpublished — a page is a mounted widget and no property
+        // value can carry a widget reference; the control's own `push` API is the write path
+        // (principle #18).
+        // command arm stays as a defensive refusal.
+        commands: &["pop", "set_current_page"],
     }
 }
 
@@ -2128,7 +2333,10 @@ pub(crate) fn popover_capability() -> WidgetCapability {
         aliases: &["popover_widget", "popup_card"],
         properties: POPOVER_PROPERTIES,
         events: events_of!("popover"),
-        commands: &["set_visible", "set_text"],
+        // Audit 20261026: `set_text` stays unpublished — the popover's `text` property is
+        // deliberately read-only (it mirrors the installed content widget), and the documented
+        // write path is the control's own `set_content` (principle #18).
+        commands: &["set_visible"],
     }
 }
 
@@ -2169,7 +2377,10 @@ pub(crate) fn range_slider_capability() -> WidgetCapability {
         aliases: &["dual_slider"],
         properties: RANGE_SLIDER_PROPERTIES,
         events: events_of!("range_slider"),
-        commands: &["set_lower", "set_upper", "set_range"],
+        // Audit 20261026: `set_range` stays unpublished — the range is the writable
+        // `min_value`/`max_value` pair, so a whole-range write is reachable through the property
+        // route (principle #18).
+        commands: &["set_lower", "set_upper"],
     }
 }
 
@@ -2501,7 +2712,12 @@ pub(crate) fn depth_chart_capability() -> WidgetCapability {
         // `add_overlay` was advertised but only `CandlestickChart` implements
         // it; the other finance views have no overlay API, so naming it here
         // promised an action that could not be obtained (principle #18).
-        commands: &["set_series"],
+        // Audit 20261026: `set_series` stays unpublished — a depth series is a nested
+        // price/volume list with no property carrier; the published names are the display knobs
+        // (`depth`, colours) the view does carry (principle #18).
+        // Mutations go through the property route or the widget's own API; the
+        // command arm stays as a defensive refusal.
+        commands: &[],
     }
 }
 
@@ -2516,7 +2732,12 @@ pub(crate) fn order_book_capability() -> WidgetCapability {
         // `add_overlay` was advertised but only `CandlestickChart` implements
         // it; the other finance views have no overlay API, so naming it here
         // promised an action that could not be obtained (principle #18).
-        commands: &["set_series"],
+        // Audit 20261026: `set_series` stays unpublished — an order book is a nested price/size
+        // list with no property carrier; the published names are the display knobs the view does
+        // carry (principle #18).
+        // Mutations go through the property route or the widget's own API; the
+        // command arm stays as a defensive refusal.
+        commands: &[],
     }
 }
 
@@ -2531,7 +2752,12 @@ pub(crate) fn quote_board_capability() -> WidgetCapability {
         // `add_overlay` was advertised but only `CandlestickChart` implements
         // it; the other finance views have no overlay API, so naming it here
         // promised an action that could not be obtained (principle #18).
-        commands: &["set_series"],
+        // Audit 20261026: `set_series` stays unpublished — a quote board is a row list with no
+        // property carrier; the published names are the sort and display controls it does carry
+        // (principle #18).
+        // Mutations go through the property route or the widget's own API; the
+        // command arm stays as a defensive refusal.
+        commands: &[],
     }
 }
 
@@ -2722,7 +2948,11 @@ pub(crate) fn property_grid_capability() -> WidgetCapability {
         aliases: &["inspector"],
         properties: PROPERTY_GRID_PROPERTIES,
         events: events_of!("property_grid"),
-        commands: &["add_property", "set_value", "clear", "set_selected_index"],
+        // Audit 20261026: `set_properties` is published now that the `properties` records property
+        // is its payload channel (B26.03). `add_property` and `set_value` stay unpublished — their
+        // payloads (a row, an index+value) have no property route of their own; a whole-list write
+        // covers both.
+        commands: &["clear", "set_selected_index", "set_properties"],
     }
 }
 

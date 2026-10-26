@@ -168,6 +168,165 @@ impl QueryBuilderRow {
     }
 }
 
+/// The declared shape of one filter field, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `fields` property. `column` and `label` are required because
+/// [`FilterField`] is meaningless without them; `operators` is the per-field menu, carried as a
+/// `StringList` of [`FilterOperator`] tokens (an empty list means the universal `contains`
+/// default, which is what [`FilterField::default_operator`] already answers).
+pub const FILTER_FIELD_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "column",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+            crate::widget::capability::RecordField::required(
+                "label",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "operators",
+                crate::widget::capability::PropertyValueKind::StringList,
+            ),
+        ],
+        id_field: "label",
+        ids_unique: false,
+        ids_required: false,
+    };
+
+/// The declared shape of one filter row, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `rows` property. `field` and `operator` are required because a
+/// row that names neither filters on nothing; `operand`, `negated` and `group` are optional
+/// because a freshly added row has none of them.
+pub const QUERY_ROW_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "field",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+            crate::widget::capability::RecordField::required(
+                "operator",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "operand",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "negated",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "group",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+        ],
+        // A row has no identity of its own; `field` is the only stable name a document spells it
+        // by, and two rows may filter on the same field.
+        id_field: "field",
+        ids_unique: false,
+        ids_required: false,
+    };
+
+/// One row of [`FILTER_FIELD_SCHEMA`].
+fn filter_field_record(field: &FilterField) -> crate::widget::capability::RecordValue {
+    crate::widget::capability::RecordValue::new()
+        .with("column", CapabilityValue::UInt(field.column as u64))
+        .with("label", CapabilityValue::String(field.label.clone()))
+        .with(
+            "operators",
+            CapabilityValue::Tuple(
+                field
+                    .operators
+                    .iter()
+                    .map(|operator| CapabilityValue::String(operator.as_str().to_string()))
+                    .collect(),
+            ),
+        )
+}
+
+/// Rebuilds one [`FilterField`] from a row of [`FILTER_FIELD_SCHEMA`].
+fn filter_field_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<FilterField, CapabilityAccessError> {
+    let column = match record.get("column") {
+        Some(CapabilityValue::UInt(column)) => {
+            usize::try_from(*column).map_err(|_| CapabilityAccessError::TypeMismatch)?
+        }
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let label = match record.get("label") {
+        Some(CapabilityValue::String(label)) => label.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let operators = match record.get("operators") {
+        None | Some(CapabilityValue::Null) => Vec::new(),
+        Some(CapabilityValue::Tuple(items)) => items
+            .iter()
+            .map(|item| match item {
+                CapabilityValue::String(token) => {
+                    FilterOperator::from_name(token).ok_or(CapabilityAccessError::OutOfRange)
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            })
+            .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(FilterField { column, label, operators })
+}
+
+/// One row of [`QUERY_ROW_SCHEMA`].
+fn query_row_record(row: &QueryBuilderRow) -> crate::widget::capability::RecordValue {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("field", CapabilityValue::UInt(row.field as u64))
+        .with("operator", CapabilityValue::String(row.operator.as_str().to_string()))
+        .with("operand", CapabilityValue::String(row.operand.clone()))
+        .with("negated", CapabilityValue::Bool(row.negated));
+    if let Some(group) = row.group {
+        record = record.with("group", CapabilityValue::UInt(group as u64));
+    }
+    record
+}
+
+/// Rebuilds one [`QueryBuilderRow`] from a row of [`QUERY_ROW_SCHEMA`].
+fn query_row_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<QueryBuilderRow, CapabilityAccessError> {
+    let field = match record.get("field") {
+        Some(CapabilityValue::UInt(field)) => {
+            usize::try_from(*field).map_err(|_| CapabilityAccessError::TypeMismatch)?
+        }
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let operator = match record.get("operator") {
+        Some(CapabilityValue::String(token)) => {
+            FilterOperator::from_name(token).ok_or(CapabilityAccessError::OutOfRange)?
+        }
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let operand = match record.get("operand") {
+        None | Some(CapabilityValue::Null) => String::new(),
+        Some(CapabilityValue::String(operand)) => operand.clone(),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let negated = match record.get("negated") {
+        None | Some(CapabilityValue::Null) => false,
+        Some(CapabilityValue::Bool(flag)) => *flag,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let group = match record.get("group") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::UInt(group)) => {
+            Some(usize::try_from(*group).map_err(|_| CapabilityAccessError::TypeMismatch)?)
+        }
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(QueryBuilderRow { field, operator, operand, negated, group })
+}
+
 /// A nested scope inside the builder.
 ///
 /// A group is a set of rows and child groups combined with their own conjunction, and
@@ -1111,6 +1270,21 @@ impl Widget for QueryBuilder {
 impl WidgetProperties for QueryBuilder {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The two lists as records (BLUE26 B26.09): `set_fields`, `add_row` and `remove_row`
+            // take arguments the bare command channel cannot carry, so each list is a property
+            // and `set_fields` / `set_rows` are the published command forms.
+            "fields" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &FILTER_FIELD_SCHEMA,
+                    self.fields().iter().map(filter_field_record).collect::<Vec<_>>(),
+                )))
+            }
+            "rows" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &QUERY_ROW_SCHEMA,
+                    self.rows().iter().map(query_row_record).collect::<Vec<_>>(),
+                )))
+            }
             "row_count" => Ok(CapabilityValue::UInt(self.row_count() as u64)),
             "incomplete_row_count" => {
                 Ok(CapabilityValue::UInt(self.incomplete_rows().len() as u64))
@@ -1166,6 +1340,60 @@ impl WidgetProperties for QueryBuilder {
                 self.set_commit_delay_ms(u32::try_from(delay).unwrap_or(u32::MAX));
                 Ok(())
             }
+            "fields" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&FILTER_FIELD_SCHEMA).map_err(|violation| {
+                    log::warn!("query_builder.fields refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("fields"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut fields = Vec::with_capacity(list.len());
+                for record in list.items() {
+                    fields.push(filter_field_from_record(record)?);
+                }
+                // `set_fields` is the control's own write path: rows whose field index no longer
+                // exists are dropped rather than left pointing at a different column.
+                self.set_fields(fields);
+                Ok(())
+            }
+            "rows" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&QUERY_ROW_SCHEMA).map_err(|violation| {
+                    log::warn!("query_builder.rows refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("rows"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut rows = Vec::with_capacity(list.len());
+                for record in list.items() {
+                    rows.push(query_row_from_record(record)?);
+                }
+                // A row that names no field would filter on nothing (the rule `add_row`
+                // enforces), so the whole update is refused before anything is replaced.
+                for row in &rows {
+                    if row.field >= self.fields.len() {
+                        return Err(CapabilityAccessError::ConstraintViolation {
+                            property: crate::compat::String::from("rows"),
+                            reason: crate::compat::format!(
+                                "field {} names no declared field",
+                                row.field
+                            ),
+                        });
+                    }
+                }
+                self.rows = rows;
+                // The cursor must not keep naming a row of the replaced list.
+                self.clear_active_row();
+                self.notify_rows_changed();
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1173,6 +1401,8 @@ impl WidgetProperties for QueryBuilder {
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `QUERY_BUILDER_PROPERTIES`.
         property_names_of![
+            "fields",
+            "rows",
             "row_count",
             "incomplete_row_count",
             "field_count",
@@ -1187,16 +1417,22 @@ impl WidgetProperties for QueryBuilder {
 
     /// Runs one of the commands `query_builder` publishes.
     ///
-    /// All four mutate a row and need the caller to name it: `add_row` takes the
-    /// field, `remove_row` the index, and `toggle_conjunction` the conjunction to
-    /// switch to (the widget has `set_conjunction`, but a bare call cannot guess
-    /// which of the two the caller means). `set_fields` similarly takes the
-    /// fields list, so every name here is answered as needing a payload rather
-    /// than being called unknown.
+    /// `set_fields`, `add_row` and `remove_row` mutate a row and need the caller
+    /// to name it: `add_row` takes the field, `remove_row` the index, and
+    /// `set_fields` the fields list. The `fields` and `rows` records properties
+    /// are their payload channels (B26.03), and `set_fields` / `set_rows` are the
+    /// published whole-list forms. `toggle_conjunction` is payload-free and runs
+    /// the control's own flip.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
-            "set_fields" | "add_row" | "remove_row" | "toggle_conjunction" => {
+            "set_fields" | "add_row" | "remove_row" | "set_rows" => {
                 Err(CapabilityAccessError::OutOfRange)
+            }
+            // `toggle_conjunction` is a payload-free flip of the rows' AND/OR, so the command
+            // runs the control's own toggle instead of refusing a call it can honor.
+            "toggle_conjunction" => {
+                self.toggle_conjunction();
+                Ok(())
             }
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
@@ -1896,6 +2132,15 @@ mod tests {
         assert_eq!(b.conjunction(), FilterConjunction::Or);
         b.set_conjunction(FilterConjunction::Or);
         assert_eq!(b.conjunction(), FilterConjunction::Or, "setting the same value is a no-op");
+    }
+
+    #[test]
+    fn the_toggle_conjunction_command_flips_through_the_command_channel() {
+        let mut b = builder();
+        assert_eq!(b.command("toggle_conjunction"), Ok(()));
+        assert_eq!(b.conjunction(), FilterConjunction::Or);
+        assert_eq!(b.command("toggle_conjunction"), Ok(()));
+        assert_eq!(b.conjunction(), FilterConjunction::And);
     }
 
     // ── The produced expression ──────────────────────────────────────────────

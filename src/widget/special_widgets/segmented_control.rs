@@ -51,6 +51,85 @@ impl SegmentItem {
     }
 }
 
+/// The declared shape of one segment item, as a record (BLUE26 B26.09).
+///
+/// # Why the control declares this itself
+///
+/// This is the row shape of the `items` property, and the control owns both ends of it: the field
+/// names are [`SegmentItem`]'s own field names, and `id` is the identity a selection is held by. A
+/// table elsewhere would be a second declaration of the struct.
+///
+/// `id` and `label` are required because [`SegmentItem::new`] requires them; `icon_source` is
+/// optional because a segment with no icon is the normal case.
+pub const SEGMENT_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "label",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon_source",
+                crate::widget::capability::PropertyValueKind::IconSpec,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`SEGMENT_ITEM_SCHEMA`].
+fn segment_item_record(
+    item: &SegmentItem,
+) -> Result<crate::widget::capability::RecordValue, CapabilityAccessError> {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(item.id.clone()))
+        .with("label", CapabilityValue::String(item.label.clone()));
+    match &item.icon {
+        // A segment with no icon is the normal case, and "no `icon_source` field" is how a
+        // document says so; the `set` half reads the missing field the same way.
+        None => {}
+        Some(IconSource::Builtin(name)) => {
+            record = record.with(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(*name)),
+            );
+        }
+        // A borrowed static geometry has no document representation, so this read refuses it
+        // rather than leaving the field out — which would be indistinguishable from "no icon".
+        Some(IconSource::StaticGeometry(_)) => {
+            return Err(CapabilityAccessError::IconSourceNotPersistable)
+        }
+    }
+    Ok(record)
+}
+
+/// Rebuilds one [`SegmentItem`] from a row of [`SEGMENT_ITEM_SCHEMA`].
+fn segment_item_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<SegmentItem, CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let icon = match record.get("icon_source") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name))) => {
+            Some(IconSource::Builtin(*name))
+        }
+        // A resource descriptor needs the host's resolver, which a property write does not have.
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+            ..
+        })) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(SegmentItem { id: text("id")?, label: text("label")?, icon })
+}
+
 /// Single-selection segmented control.
 pub struct SegmentedControl {
     base: BaseWidget,
@@ -597,6 +676,18 @@ impl Widget for SegmentedControl {
 impl WidgetProperties for SegmentedControl {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The item list is a *property*, not only a command (BLUE26 B26.09): a JSON
+            // document's `"items": [...]` travels through this arm and the write below, which is
+            // the payload channel the bare `set_items` command never had.
+            "items" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &SEGMENT_ITEM_SCHEMA,
+                    self.items()
+                        .iter()
+                        .map(segment_item_record)
+                        .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+                )))
+            }
             "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
             "selected_index" => match self.selected_index() {
                 Some(index) => Ok(CapabilityValue::UInt(index as u64)),
@@ -615,12 +706,37 @@ impl WidgetProperties for SegmentedControl {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
+            "items" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                // Checked in full **before** anything is replaced, so a refused update leaves the
+                // live items untouched rather than half-swapped.
+                list.validate_against(&SEGMENT_ITEM_SCHEMA).map_err(|violation| {
+                    log::warn!("segmented_control.items refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("items"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let items = list.items().iter().map(segment_item_from_record).collect::<Result<
+                    Vec<_>,
+                    CapabilityAccessError,
+                >>(
+                )?;
+                // The control's own writer clears the per-item disabled flags and the selection,
+                // which is the normalisation a whole-list replacement owes; the property write
+                // delegates rather than restating it.
+                self.set_items(items);
+                Ok(())
+            }
             // `selected_index` stays read-only in the schema: the write-back invariant a fresh
             // instance must hold (write the declared default, read it back) cannot hold on an
             // empty control — there is nothing to select, so the default would be a value the
             // native setter refuses. `set_selected_index` remains a Rust-side API; a declarative
-            // write route waits for a payload channel (the same records-property gap recorded
-            // for `set_items`). `selected_id` has no setter at all (selection is by position).
+            // write route would have to answer the same empty-control question `set_items` did not
+            // have to (see the widget's `set` doc). `selected_id` has no setter at all (selection
+            // is by position).
             "selected_index" | "selected_id" | "item_count" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
@@ -656,6 +772,7 @@ impl WidgetProperties for SegmentedControl {
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "items",
             "item_count",
             "selected_index",
             "selected_id",
@@ -666,16 +783,15 @@ impl WidgetProperties for SegmentedControl {
         ]
     }
 
-    /// Answers the selection/item names this control no longer publishes.
+    /// Answers the selection/item names this control does not publish through the bare command
+    /// channel.
     ///
-    /// `move_selection` takes a signed delta and `set_items` carries the whole
-    /// item list; the payload-free command channel can express neither, and
-    /// neither has a writable property route, so neither name is published any
-    /// more — the selection moves through the `selected_index` property, which
-    /// delegates to the native `set_selected_index`. The arms stay so a caller
-    /// reaching the property API directly is told the payload is what is missing
-    /// ([`CapabilityAccessError::OutOfRange`]), not that the control has never
-    /// heard of the name.
+    /// `move_selection` takes a signed delta; the payload-free command channel cannot express it,
+    /// and no writable property names a relative focus move. `set_items` carries the whole item
+    /// list through the **`items` property** instead — the B26.03 division where a value-carrying
+    /// operation is a property write and the command form is the no-argument half. The arms stay so
+    /// a caller reaching the command API directly is told the payload is what is missing
+    /// ([`CapabilityAccessError::OutOfRange`]), not that the control has never heard of the name.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "move_selection" | "set_items" => Err(CapabilityAccessError::OutOfRange),
@@ -1441,6 +1557,117 @@ mod tests {
             painted_inset > 4,
             "a label {painted_inset} px from its edge is hugging it, which is the defect"
         );
+    }
+
+    /// `items` round-trips through the record property, including a persistable icon.
+    ///
+    /// This is the write channel the bare `set_items` command never had (B26.03): a document spells
+    /// the segment list as records, and reading it back answers the same list.
+    #[test]
+    fn items_round_trip_through_the_record_property() {
+        use crate::widget::capability::{RecordValue, EMPTY_RECORD_SCHEMA};
+        use crate::widget::icon_source::IconSpec;
+        use crate::widget::IconName;
+
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 240, 120));
+        let records = vec![
+            RecordValue::new()
+                .with("id", CapabilityValue::String(String::from("overview")))
+                .with("label", CapabilityValue::String(String::from("Overview"))),
+            RecordValue::new()
+                .with("id", CapabilityValue::String(String::from("details")))
+                .with("label", CapabilityValue::String(String::from("Details")))
+                .with("icon_source", CapabilityValue::IconSpec(IconSpec::Builtin(IconName::Info))),
+        ];
+        let list = crate::widget::capability::RecordList::from_items(&EMPTY_RECORD_SCHEMA, records);
+        control
+            .set("items", CapabilityValue::Records(list))
+            .expect("a well-formed list is accepted");
+
+        assert_eq!(control.items().len(), 2);
+        assert_eq!(control.items()[1].label, "Details");
+        assert_eq!(control.items()[1].icon, Some(IconSource::Builtin(IconName::Info)));
+
+        let CapabilityValue::Records(read_back) =
+            control.get("items").expect("the list reads back")
+        else {
+            panic!("`items` must read as a record list");
+        };
+        assert_eq!(read_back.len(), 2);
+        assert!(matches!(
+            read_back.items()[1].get("icon_source"),
+            Some(CapabilityValue::IconSpec(IconSpec::Builtin(IconName::Info)))
+        ));
+    }
+
+    /// A malformed list is refused **and the live items are untouched**.
+    ///
+    /// The whole list is checked before anything is replaced, so a refused update needs no rollback.
+    #[test]
+    fn a_malformed_item_list_is_refused_and_changes_nothing() {
+        use crate::widget::capability::{RecordList, RecordValue, EMPTY_RECORD_SCHEMA};
+
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 240, 120));
+        control.set_items(sample_items());
+        let before = control.items().to_vec();
+
+        // Each entry below breaks exactly one rule of `SEGMENT_ITEM_SCHEMA`.
+        let broken: Vec<(&str, Vec<RecordValue>)> = vec![
+            (
+                "missing label",
+                vec![RecordValue::new().with("id", CapabilityValue::String(String::from("a")))],
+            ),
+            (
+                "unknown field",
+                vec![RecordValue::new()
+                    .with("id", CapabilityValue::String(String::from("a")))
+                    .with("label", CapabilityValue::String(String::from("A")))
+                    .with("weight", CapabilityValue::UInt(1))],
+            ),
+            (
+                "duplicate id",
+                vec![
+                    RecordValue::new()
+                        .with("id", CapabilityValue::String(String::from("a")))
+                        .with("label", CapabilityValue::String(String::from("A"))),
+                    RecordValue::new()
+                        .with("id", CapabilityValue::String(String::from("a")))
+                        .with("label", CapabilityValue::String(String::from("B"))),
+                ],
+            ),
+        ];
+
+        for (reason, records) in broken {
+            let list = RecordList::from_items(&EMPTY_RECORD_SCHEMA, records);
+            let result = control.set("items", CapabilityValue::Records(list));
+            assert!(
+                matches!(result, Err(CapabilityAccessError::ConstraintViolation { .. })),
+                "{reason} must be refused with a pointable constraint violation (got {result:?})"
+            );
+            assert_eq!(control.items(), before.as_slice(), "{reason} must change nothing");
+        }
+    }
+
+    /// `items` is part of the published contract, declared with its record schema.
+    #[test]
+    fn the_items_property_is_published_with_its_record_schema() {
+        let control = SegmentedControl::new(Rect::new(0, 0, 240, 120));
+        assert!(
+            WidgetProperties::property_names(&control).contains(&"items"),
+            "the published contract must name `items`, not only the `set_items` command"
+        );
+        let schema = crate::widget::capability::SEGMENTED_CONTROL_PROPERTIES
+            .iter()
+            .find(|schema| schema.name == "items")
+            .expect("`items` is declared by the capability table");
+        assert_eq!(schema.value_kind, crate::widget::capability::PropertyValueKind::Records);
+        assert!(schema.readable && schema.writable);
+        let record_schema = schema.record_schema.expect("a `Records` schema names its shape");
+        assert_eq!(record_schema.id_field, "id");
+        assert_eq!(record_schema.names(), vec!["id", "label", "icon_source"]);
+        assert!(record_schema.ids_unique && record_schema.ids_required);
+        // The control itself carries the same schema, so the two cannot drift.
+        assert_eq!(record_schema, &SEGMENT_ITEM_SCHEMA);
     }
 
     #[test]

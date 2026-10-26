@@ -976,6 +976,15 @@ impl Widget for Cascader {
 impl WidgetProperties for Cascader {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The committed path as indices (BLUE26 B26.09): `set_selected_path` takes a sequence
+            // the bare command channel cannot carry, so the sequence is the property and
+            // `set_selected_path` is its published command form.
+            "selected_path" => Ok(CapabilityValue::Tuple(
+                self.selected_path()
+                    .iter()
+                    .map(|index| CapabilityValue::UInt(*index as u64))
+                    .collect(),
+            )),
             "value" => Ok(CapabilityValue::String(self.display_text())),
             "depth" => Ok(CapabilityValue::UInt(self.selected_path.len() as u64)),
             "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
@@ -1013,6 +1022,37 @@ impl WidgetProperties for Cascader {
             // The value is a path, which is a sequence; it is written through
             // `set_selected_path` so an invalid path is refused rather than encoded.
             "value" | "depth" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "selected_path" => {
+                let CapabilityValue::Tuple(items) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                let path = items
+                    .iter()
+                    .map(|item| match item {
+                        CapabilityValue::UInt(index) => {
+                            usize::try_from(*index).map_err(|_| CapabilityAccessError::OutOfRange)
+                        }
+                        CapabilityValue::Int(index) if *index >= 0 => Ok(*index as usize),
+                        _ => Err(CapabilityAccessError::TypeMismatch),
+                    })
+                    .collect::<Result<Vec<_>, CapabilityAccessError>>()?;
+                // A path that names no leaf is refused, not silently clamped: committing a
+                // half-made choice is the one thing a cascader must not do. An **empty** path is
+                // the declared default (nothing selected), so it clears the selection rather than
+                // being refused.
+                if path.is_empty() {
+                    self.clear_selected();
+                    return Ok(());
+                }
+                if self.set_selected_path(path) {
+                    Ok(())
+                } else {
+                    Err(CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("selected_path"),
+                        reason: crate::compat::String::from("path does not name a leaf"),
+                    })
+                }
+            }
             "filter" => Err(CapabilityAccessError::ReadOnlyProperty),
             "max_visible" => {
                 match value {
@@ -1033,6 +1073,7 @@ impl WidgetProperties for Cascader {
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `CASCADER_PROPERTIES`.
         property_names_of![
+            "selected_path",
             "value",
             "depth",
             "expanded",
@@ -1052,7 +1093,9 @@ impl WidgetProperties for Cascader {
     /// path and discard the browsed path respectively, and both short-circuit on the
     /// state they are already in. `set_options` and `set_selected_path` assign state —
     /// a tree and an index path — and need a payload, so they are answered through the
-    /// property route.
+    /// property route. The tree itself has no property: an option carries `children`, and a
+    /// record field cannot carry a nested record list (`value_matches_kind` refuses it), so
+    /// `set_options` stays unpublished and the control's own API is the tree's write path.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "expand" => {
@@ -1063,7 +1106,11 @@ impl WidgetProperties for Cascader {
                 self.collapse();
                 Ok(())
             }
-            "set_options" | "set_selected_path" => Err(CapabilityAccessError::OutOfRange),
+            "set_options" | "set_selected_path" => {
+                // `set_selected_path` carries its sequence through the `selected_path` property
+                // (B26.03); `set_options` has no property route (the tree is nested).
+                Err(CapabilityAccessError::OutOfRange)
+            }
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }

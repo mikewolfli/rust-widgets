@@ -41,10 +41,20 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const CODE_EDITOR_PROPERTIES: &[PropertySchema] = &[
+            // The diagnostic markers as records (BLUE26 B26.09): `set_markers` takes a list the
+            // property API could not carry, so the list itself is the property.
+            PropertySchema::records(
+                "markers",
+                true,
+                true,
+                &crate::widget::special_widgets::code_editor::DIAGNOSTIC_MARKER_SCHEMA,
+            ),
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("line_count", PropertyValueKind::UInt, true, false),
-            PropertySchema::new("cursor_line", PropertyValueKind::UInt, true, false),
-            PropertySchema::new("cursor_column", PropertyValueKind::UInt, true, false),
+            // The caret is writable state: a document may place it, and each component's
+            // setter supplies the other live one to the control's own `set_cursor`.
+            PropertySchema::new("cursor_line", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("cursor_column", PropertyValueKind::UInt, true, true),
             PropertySchema::new("marker_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -104,6 +114,14 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const MAP_VIEW_PROPERTIES: &[PropertySchema] = &[
+            // The marker list as records (BLUE26 B26.09): `set_markers` takes a list the property
+            // API could not carry, so the list itself is the property.
+            PropertySchema::records(
+                "markers",
+                true,
+                true,
+                &crate::widget::special_widgets::map_view::MAP_MARKER_SCHEMA,
+            ),
             PropertySchema::new("center_x", PropertyValueKind::Float, true, true),
             PropertySchema::new("center_y", PropertyValueKind::Float, true, true),
             PropertySchema::new("zoom", PropertyValueKind::Float, true, true),
@@ -234,6 +252,14 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const SPLIT_BUTTON_PROPERTIES: &[PropertySchema] = &[
+            // The action list as records (BLUE26 B26.09): `add_action` takes an action the
+            // property API cannot carry, so the list itself is the property.
+            PropertySchema::records(
+                "actions",
+                true,
+                true,
+                &crate::widget::special_widgets::split_button::SPLIT_ACTION_SCHEMA,
+            ),
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("action_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("menu_open", PropertyValueKind::Bool, true, true),
@@ -249,6 +275,15 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const SEGMENTED_CONTROL_PROPERTIES: &[PropertySchema] = &[
+            // The item list is a *property*, not only a command (BLUE26 B26.09): a document's
+            // `"items": [...]` had nowhere to go while `set_items` could only be called with a Rust
+            // argument the property API could not carry.
+            PropertySchema::records(
+                "items",
+                true,
+                true,
+                &crate::widget::special_widgets::segmented_control::SEGMENT_ITEM_SCHEMA,
+            ),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             // Read-only: a fresh instance has no selection, so the write-back default a
             // writable row must have cannot exist here (see the widget's `set` doc).
@@ -277,7 +312,7 @@ macro_rules! impl_properties_other {
             ),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("multi_select", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("focused_index", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("focused_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("selected_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -293,6 +328,14 @@ macro_rules! impl_properties_other {
         // assignment a caller can undo by writing a different number.
         #[cfg(not(alloc_frugal))]
         pub(crate) const TIMELINE_WIDGET_PROPERTIES: &[PropertySchema] = &[
+            // The item list as records (BLUE26 B26.09): `set_items` takes a list the property API
+            // cannot carry, so the list itself is the property.
+            PropertySchema::records(
+                "items",
+                true,
+                true,
+                &crate::widget::special_widgets::timeline_widget::TIMELINE_ITEM_SCHEMA,
+            ),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, false),
             PropertySchema::new("viewport_start", PropertyValueKind::Int, true, true),
@@ -308,10 +351,16 @@ macro_rules! impl_properties_other {
 
         // `CommandPalette` is a queryable command list: the filtered result set,
         // not the raw entry list, is what a consumer can act on, so it publishes
-        // the filter state rather than the entries themselves (those are added
-        // through `set_entries`).
+        // the filter state **and the entry list itself** as records (BLUE26 B26.09) —
+        // `set_entries` takes a list the property API could not carry.
         #[cfg(not(alloc_frugal))]
         pub(crate) const COMMAND_PALETTE_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::records(
+                "entries",
+                true,
+                true,
+                &crate::widget::special_widgets::command_palette::COMMAND_ENTRY_SCHEMA,
+            ),
             PropertySchema::new("query", PropertyValueKind::String, true, true),
             PropertySchema::new("entry_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("filtered_count", PropertyValueKind::UInt, true, false),
@@ -324,11 +373,17 @@ macro_rules! impl_properties_other {
             PropertySchema::new("group_by_category", PropertyValueKind::Bool, true, true),
         ];
 
-        // `NotificationCenter` publishes its unread state and selection. The item
-        // list itself is reachable through `push` / `clear` / `set_read`; these
-        // names report the derived state a badge or list header needs.
+        // `NotificationCenter` publishes its unread state and selection, and the item list as
+        // records (BLUE26 B26.09) — `push` / `set_read` take arguments the bare command channel
+        // cannot carry, and a whole-list write covers both.
         #[cfg(not(alloc_frugal))]
         pub(crate) const NOTIFICATION_CENTER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::records(
+                "items",
+                true,
+                true,
+                &crate::widget::special_widgets::notification_center::NOTIFICATION_ITEM_SCHEMA,
+            ),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("unread_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, false),
@@ -481,8 +536,15 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const MENTION_PROPERTIES: &[PropertySchema] = &[
-            // The candidates and the text are written through `set_candidates` /
-            // `set_text`; the counts and the trigger are what the property layer
+            // The candidate list as records (BLUE26 B26.09): `set_candidates` takes a list the
+            // property API cannot carry, so the list itself is the property.
+            PropertySchema::records(
+                "candidates",
+                true,
+                true,
+                &crate::widget::input_widgets::mention::MENTION_CANDIDATE_SCHEMA,
+            ),
+            // The text and the trigger are written directly; the counts are what the property layer
             // reports. Same convention as the other list-valued controls.
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("trigger", PropertyValueKind::String, true, true),
@@ -505,6 +567,17 @@ macro_rules! impl_properties_other {
         pub(crate) const EMOJI_PICKER_PROPERTIES: &[PropertySchema] = &[
             // D-05: how many recently used glyphs are kept.
             PropertySchema::new("recent_capacity", PropertyValueKind::UInt, true, true),
+            // The glyph table and the category tabs are properties, not only commands (BLUE26
+            // B26.09): `set_glyphs`/`set_categories` take arguments the property API cannot carry.
+            PropertySchema::records(
+                "glyphs",
+                true,
+                true,
+                &crate::widget::display_widgets::emoji_picker::EMOJI_GLYPH_SCHEMA,
+            ),
+            // Category names are the caller's own taxonomy and may repeat no more than a
+            // positional string list can, so the tab order travels as a `StringList`.
+            PropertySchema::new("categories", PropertyValueKind::StringList, true, true),
             // The glyph table is written through `set_glyphs`; the counts and the
             // two editable scalars are what the property layer reports. Same
             // convention as the other list-valued controls.
@@ -522,9 +595,21 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const QUERY_BUILDER_PROPERTIES: &[PropertySchema] = &[
-            // The fields and rows are lists, written through `set_fields` /
-            // `add_row` and the per-row setters; the counts are what the property
-            // layer reports. Same convention as `Meter`/`RadarChart`/`KanbanBoard`.
+            // The fields and the rows as records (BLUE26 B26.09); the counts are what the property
+            // layer reports. `set_fields` / `add_row` / `remove_row` take arguments the property
+            // API cannot carry, so each list itself is the property.
+            PropertySchema::records(
+                "fields",
+                true,
+                true,
+                &crate::widget::view_widgets::query_builder::FILTER_FIELD_SCHEMA,
+            ),
+            PropertySchema::records(
+                "rows",
+                true,
+                true,
+                &crate::widget::view_widgets::query_builder::QUERY_ROW_SCHEMA,
+            ),
             PropertySchema::new("row_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("incomplete_row_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("field_count", PropertyValueKind::UInt, true, false),
@@ -541,10 +626,12 @@ macro_rules! impl_properties_other {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const CASCADER_PROPERTIES: &[PropertySchema] = &[
-            // The selected path is a sequence, written through `set_selected_path`;
-            // what the property layer reports is the joined text, the derived depth,
-            // and the three scalar display switches. Same convention as `Meter`,
-            // `RadarChart` and `KanbanBoard`.
+            // The committed path as an index sequence (BLUE26 B26.09): `set_selected_path` takes a
+            // list the property API cannot carry, so the sequence itself is the property.
+            PropertySchema::new("selected_path", PropertyValueKind::NumberList, true, true),
+            // The selected path is a sequence, written through `set_selected_path`; what the
+            // property layer reports is the joined text, the derived depth, and the three scalar
+            // display switches.
             PropertySchema::new("value", PropertyValueKind::String, true, false),
             // I-11: the empty-state text the control paints when no path is chosen.
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
@@ -643,6 +730,17 @@ macro_rules! impl_properties_other {
         ];
 
         pub(crate) const MINI_CHART_PROPERTIES: &[PropertySchema] = &[
+            // The series as records (BLUE26 B26.09) and the two axis bounds as scalars: `set_data`
+            // and `set_range` take arguments the property API cannot carry, so the values
+            // themselves are the properties.
+            PropertySchema::records(
+                "data",
+                true,
+                true,
+                &crate::widget::display_widgets::mini_chart::MINI_CHART_DATA_SCHEMA,
+            ),
+            PropertySchema::new("min_value", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("max_value", PropertyValueKind::UInt, true, true),
             // `MiniChart` supports a strict subset of `Chart`'s types: its own `set`
             // arm accepts only `line` and `bar`, so publishing `pie`/`scatter` here
             // would advertise values the control refuses.

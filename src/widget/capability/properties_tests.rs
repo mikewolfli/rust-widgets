@@ -1314,71 +1314,64 @@ fn a_hyphenated_command_reaches_the_same_command_as_its_published_spelling() {
     );
 }
 
-/// B26.03: a composite payload whose parts are published properties must take its **arity and
-/// element kind from that control**, not from a table-wide guess.
+/// B26.03: a published `set_*` command takes its **parameter and kind from the control's own
+/// property declaration**, and no published `set_*` command is anything but that.
 ///
 /// # What this caught
 ///
-/// The table described `set_range` as `(Float, Float)` for every control. Seven of its eleven
-/// publishers take `i32` (`slider`, `dial`, `scroll_bar`, `spin_box`, `progress_bar`,
-/// `progress_dialog`, `number_picker`) and two take `u32` (`arc`, `meter`), so the schema told a
-/// designer to wire a float to a control that refuses one. `set_viewport` was described as four
-/// floats while both controls that publish it take `(i64, i64)`, and `set_steps` as a float list
-/// while `scroll_bar`'s payload is its `single_step`/`page_step` pair.
-///
-/// The shapes here are asserted against the controls' own setters (`slider::set_range(i32, i32)`,
-/// `arc::set_range(u32, u32)`, `gantt_widget::set_viewport(i64, i64)`), so a change to either side
-/// fails rather than drifting.
+/// The schema once carried a second table of "composite setters" (`set_range`, `set_viewport`,
+/// `set_steps`, `set_cursor`, `set_cell`, …) describing payloads that were pairs or lists rather
+/// than one property. Every one of those commands was published **without** a payload property: the
+/// dispatcher answered `OutOfRange` to every invocation while the schema described a shape nothing
+/// could deliver — `set_range` as `(Float, Float)` although seven of its eleven publishers take
+/// `i32` and two take `u32`, `set_viewport` as four floats where both publishers take `(i64, i64)`.
+/// The commands are unpublished (principle #18) and the table is gone; the invariant that replaces
+/// it is absolute — a published `set_*` command names a property of its control, and its schema is
+/// that property's declared kind, so a validator can never be told a shape the dispatcher does not
+/// answer.
 #[test]
-fn a_composite_payload_takes_its_shape_from_the_control() {
-    use crate::widget::capability::command_schema::command_schema;
-    use crate::widget::capability::{CommandSignature, PropertyValueKind};
+fn a_published_set_command_takes_its_shape_from_the_control() {
+    use crate::widget::capability::command_schema::{command_schema, CommandSignature};
 
     let factory = WidgetFactory::new_with_defaults();
-    let shape = |control: &str, command: &str| {
-        let capability = factory.capability(control).expect("the control is registered");
-        let schema =
-            command_schema(command, capability.properties).expect("the command is described");
-        match schema.signature {
-            CommandSignature::Composite { arity, element, .. } => (arity, element),
-            other => panic!("`{command}` on {control} is not composite: {other:?}"),
+    let mut checked = 0usize;
+    for capability in factory.capabilities() {
+        for command in capability.commands {
+            let Some(property) = command.strip_prefix("set_") else { continue };
+            checked += 1;
+            let schema = command_schema(command, capability.properties).unwrap_or_else(|| {
+                panic!(
+                    "`{command}` on {} is published but described by nothing",
+                    capability.canonical_name
+                )
+            });
+            match schema.signature {
+                CommandSignature::OneValue { parameter, kind } => {
+                    assert_eq!(
+                        parameter, property,
+                        "`{command}` on {} must name its own property",
+                        capability.canonical_name
+                    );
+                    let declared = capability
+                        .properties
+                        .iter()
+                        .find(|schema| schema.name == property)
+                        .expect("the property the schema names is declared");
+                    assert_eq!(
+                        kind, declared.value_kind,
+                        "`{command}` on {} must take the declared kind of `{property}`",
+                        capability.canonical_name
+                    );
+                }
+                other => panic!(
+                    "`{command}` on {} is not the property route: {other:?}",
+                    capability.canonical_name
+                ),
+            }
         }
-    };
+    }
 
-    // The `i32` setters: the pair is `Int`.
-    for control in
-        ["slider", "dial", "scroll_bar", "progress_bar", "progress_dialog", "number_picker"]
-    {
-        assert_eq!(
-            shape(control, "set_range"),
-            (Some(2), Some(PropertyValueKind::Int)),
-            "`{control}::set_range` takes two `i32`"
-        );
-    }
-    // The `u32` setters, which a table-wide `Float` could never express.
-    for control in ["arc", "meter"] {
-        assert_eq!(
-            shape(control, "set_range"),
-            (Some(2), Some(PropertyValueKind::UInt)),
-            "`{control}::set_range` takes two `u32`"
-        );
-    }
-    // The float pair.
-    assert_eq!(shape("range_slider", "set_range"), (Some(2), Some(PropertyValueKind::Float)));
-    // Two values, not the four the table claimed.
-    for control in ["gantt_widget", "timeline_widget"] {
-        assert_eq!(
-            shape(control, "set_viewport"),
-            (Some(2), Some(PropertyValueKind::Int)),
-            "`{control}::set_viewport` takes two `i64`"
-        );
-    }
-    assert_eq!(shape("scroll_bar", "set_steps"), (Some(2), Some(PropertyValueKind::Int)));
-    assert_eq!(shape("code_editor", "set_cursor"), (Some(2), Some(PropertyValueKind::UInt)));
-
-    // A payload with no property counterpart keeps the table's answer, so the derivation refines
-    // the table rather than replacing it.
-    assert_eq!(shape("heatmap", "set_cell"), (Some(3), None));
+    assert!(checked > 0, "no published setter, so this test proves nothing");
 }
 
 /// B26.03: every published command must have a derivable typed schema.

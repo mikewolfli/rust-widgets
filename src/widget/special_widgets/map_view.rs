@@ -150,6 +150,124 @@ impl MapMarker {
     }
 }
 
+/// The declared shape of one map marker, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `markers` property, and the control owns both ends of it: the
+/// field names are [`MapMarker`]'s own fields plus [`MarkerStyle`]'s. `id`, `label`, `x` and `y`
+/// are required because [`MapMarker::new`] requires them; the style fields are optional because a
+/// marker with no style uses [`MarkerStyle::default`].
+pub const MAP_MARKER_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "label",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "x",
+                crate::widget::capability::PropertyValueKind::Float,
+            ),
+            crate::widget::capability::RecordField::required(
+                "y",
+                crate::widget::capability::PropertyValueKind::Float,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "color",
+                crate::widget::capability::PropertyValueKind::Color,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "size",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon_source",
+                crate::widget::capability::PropertyValueKind::IconSpec,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`MAP_MARKER_SCHEMA`]; refuses a source with no document form.
+fn map_marker_record(
+    marker: &MapMarker,
+) -> Result<crate::widget::capability::RecordValue, CapabilityAccessError> {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(marker.id.clone()))
+        .with("label", CapabilityValue::String(marker.label.clone()))
+        .with("x", CapabilityValue::Float(f64::from(marker.x)))
+        .with("y", CapabilityValue::Float(f64::from(marker.y)))
+        .with("color", CapabilityValue::Color(marker.style.color))
+        .with("size", CapabilityValue::UInt(u64::from(marker.style.size)));
+    match marker.style.icon {
+        None => {}
+        Some(crate::widget::IconSource::Builtin(name)) => {
+            record = record.with(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)),
+            );
+        }
+        // A borrowed static geometry has no document form, so the read refuses rather than
+        // reporting the row as icon-less.
+        Some(crate::widget::IconSource::StaticGeometry(_)) => {
+            return Err(CapabilityAccessError::IconSourceNotPersistable)
+        }
+    }
+    Ok(record)
+}
+
+/// Rebuilds one [`MapMarker`] from a row of [`MAP_MARKER_SCHEMA`].
+fn map_marker_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<MapMarker, CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let number = |name: &str| match record.get(name) {
+        Some(CapabilityValue::Float(value)) => Ok(*value as f32),
+        Some(CapabilityValue::Int(value)) => Ok(*value as f32),
+        Some(CapabilityValue::UInt(value)) => Ok(*value as f32),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let mut style = MarkerStyle::default();
+    match record.get("color") {
+        None | Some(CapabilityValue::Null) => {}
+        Some(CapabilityValue::Color(color)) => style.color = *color,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    }
+    match record.get("size") {
+        None | Some(CapabilityValue::Null) => {}
+        Some(CapabilityValue::UInt(size)) => {
+            style.size = u32::try_from(*size).map_err(|_| CapabilityAccessError::TypeMismatch)?;
+        }
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    }
+    match record.get("icon_source") {
+        None | Some(CapabilityValue::Null) => {}
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name))) => {
+            style.icon = Some(crate::widget::IconSource::Builtin(*name));
+        }
+        // A resource descriptor needs the host's resolver, which a property write does not have.
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+            ..
+        })) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    }
+    Ok(MapMarker {
+        id: text("id")?,
+        label: text("label")?,
+        x: number("x")?,
+        y: number("y")?,
+        style,
+    })
+}
+
 /// One painted cluster: the marker indices it groups and the point it is drawn at.
 #[derive(Clone)]
 struct MapCluster {
@@ -1160,6 +1278,18 @@ impl Widget for MapView {
 impl WidgetProperties for MapView {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The whole marker list as records (BLUE26 B26.09): `set_markers` takes a list the bare
+            // command channel cannot carry, so the list is the property and `set_markers` is its
+            // published command form.
+            "markers" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &MAP_MARKER_SCHEMA,
+                    self.markers()
+                        .iter()
+                        .map(map_marker_record)
+                        .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+                )))
+            }
             "center_x" => Ok(CapabilityValue::Float(self.center().0 as f64)),
             "center_y" => Ok(CapabilityValue::Float(self.center().1 as f64)),
             "zoom" => Ok(CapabilityValue::Float(self.zoom() as f64)),
@@ -1205,12 +1335,34 @@ impl WidgetProperties for MapView {
             // list, so they are refused as read-only rather than reported as names
             // this control does not know.
             "marker_count" | "selected_marker_id" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // A whole-list replacement through the control's own `set_markers`, which bumps the
+            // marker revision for the changed signal.
+            "markers" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&MAP_MARKER_SCHEMA).map_err(|violation| {
+                    log::warn!("map_view.markers refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("markers"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let markers = list.items().iter().map(map_marker_from_record).collect::<Result<
+                    Vec<_>,
+                    CapabilityAccessError,
+                >>(
+                )?;
+                self.set_markers(markers);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "markers",
             "center_x",
             "center_y",
             "zoom",
@@ -1221,14 +1373,11 @@ impl WidgetProperties for MapView {
         ]
     }
 
-    /// Reports the one published command that names no property.
+    /// Reports the one published command that names its payload through a property.
     ///
-    /// `set_markers` replaces the whole marker list through [`Self::set_markers`].
-    /// `marker_count` is the read-only view of that list and is deliberately not
-    /// writable (setting it would not say *which* markers to remove), so the default
-    /// `set_foo` convention could not resolve `markers` to a property and reported the
-    /// command unknown. `OutOfRange` is the accurate answer: the command is real and
-    /// its payload is a marker list, which is not a [`CapabilityValue`].
+    /// `set_markers` replaces the whole marker list through [`Self::set_markers`]; the list
+    /// travels through the `markers` records property (B26.03), so a bare invocation reports
+    /// that the value is what is missing.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "set_markers" => Err(CapabilityAccessError::OutOfRange),
@@ -2134,5 +2283,58 @@ mod tests {
 
         map.set_map_controls_visible(false);
         assert!(!map.map_controls_visible());
+    }
+
+    /// `markers` round-trips through the record property, including the style fields.
+    ///
+    /// This is the payload channel `set_markers` never had (B26.03).
+    #[test]
+    fn markers_round_trip_through_the_property() {
+        use crate::widget::capability::{RecordList, RecordValue, EMPTY_RECORD_SCHEMA};
+
+        let mut map = MapView::new(Rect::new(0, 0, 320, 240));
+        let list = RecordList::from_items(
+            &EMPTY_RECORD_SCHEMA,
+            vec![
+                RecordValue::new()
+                    .with("id", CapabilityValue::String(String::from("a")))
+                    .with("label", CapabilityValue::String(String::from("Alpha")))
+                    .with("x", CapabilityValue::Float(12.5))
+                    .with("y", CapabilityValue::Float(-3.0))
+                    .with("size", CapabilityValue::UInt(18)),
+                RecordValue::new()
+                    .with("id", CapabilityValue::String(String::from("b")))
+                    .with("label", CapabilityValue::String(String::from("Beta")))
+                    .with("x", CapabilityValue::Float(1.0))
+                    .with("y", CapabilityValue::Float(2.0))
+                    .with("color", CapabilityValue::Color(Color::rgb(10, 20, 30))),
+            ],
+        );
+        map.set("markers", CapabilityValue::Records(list)).expect("well-formed markers");
+
+        assert_eq!(map.markers().len(), 2);
+        assert_eq!(map.markers()[0].label, "Alpha");
+        assert_eq!(map.markers()[0].style.size, 18);
+        assert_eq!(map.markers()[1].style.color, Color::rgb(10, 20, 30));
+
+        let CapabilityValue::Records(read_back) = map.get("markers").expect("reads back") else {
+            panic!("`markers` must read as a record list");
+        };
+        assert_eq!(read_back.len(), 2);
+        assert!(matches!(
+            read_back.items()[0].get("x"),
+            Some(CapabilityValue::Float(x)) if (*x - 12.5).abs() < f64::EPSILON
+        ));
+
+        // A malformed row is refused and changes nothing.
+        let broken = RecordList::from_items(
+            &EMPTY_RECORD_SCHEMA,
+            vec![RecordValue::new().with("id", CapabilityValue::String(String::from("a")))],
+        );
+        assert!(matches!(
+            map.set("markers", CapabilityValue::Records(broken)),
+            Err(CapabilityAccessError::ConstraintViolation { .. })
+        ));
+        assert_eq!(map.markers().len(), 2, "a refused write changes nothing");
     }
 }

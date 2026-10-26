@@ -77,6 +77,106 @@ impl NotificationItem {
     }
 }
 
+/// The declared token for a notification level, matching the `level_filter` vocabulary.
+fn notification_level_token(level: NotificationLevel) -> &'static str {
+    match level {
+        NotificationLevel::Info => "info",
+        NotificationLevel::Warning => "warning",
+        NotificationLevel::Error => "error",
+    }
+}
+
+/// Parses a level token; `None` for an unrecognised spelling.
+fn notification_level_from_token(token: &str) -> Option<NotificationLevel> {
+    match token.to_ascii_lowercase().as_str() {
+        "info" => Some(NotificationLevel::Info),
+        "warning" => Some(NotificationLevel::Warning),
+        "error" => Some(NotificationLevel::Error),
+        _ => None,
+    }
+}
+
+/// The declared shape of one notification row, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `items` property, and the control owns both ends of it: the field
+/// names are [`NotificationItem`]'s own fields. `id`, `title` and `message` are required because
+/// [`NotificationItem::new`] requires them; `level`, `read` and `timestamp_ms` are optional
+/// because a row that omits them describes an unread information item with no timestamp.
+pub const NOTIFICATION_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "title",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "message",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "level",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "read",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "timestamp_ms",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`NOTIFICATION_ITEM_SCHEMA`].
+fn notification_item_record(item: &NotificationItem) -> crate::widget::capability::RecordValue {
+    crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(item.id.clone()))
+        .with("title", CapabilityValue::String(item.title.clone()))
+        .with("message", CapabilityValue::String(item.message.clone()))
+        .with("level", CapabilityValue::String(notification_level_token(item.level).to_string()))
+        .with("read", CapabilityValue::Bool(item.read))
+        .with("timestamp_ms", CapabilityValue::UInt(item.timestamp_ms))
+}
+
+/// Rebuilds one [`NotificationItem`] from a row of [`NOTIFICATION_ITEM_SCHEMA`].
+fn notification_item_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<NotificationItem, CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let level = match record.get("level") {
+        None | Some(CapabilityValue::Null) => NotificationLevel::Info,
+        Some(CapabilityValue::String(token)) => {
+            notification_level_from_token(token).ok_or(CapabilityAccessError::OutOfRange)?
+        }
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let read = match record.get("read") {
+        None | Some(CapabilityValue::Null) => false,
+        Some(CapabilityValue::Bool(flag)) => *flag,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let timestamp_ms = match record.get("timestamp_ms") {
+        None | Some(CapabilityValue::Null) => 0,
+        Some(CapabilityValue::UInt(timestamp)) => *timestamp,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let mut item = NotificationItem::new(text("id")?, text("title")?, text("message")?, level);
+    item.read = read;
+    item.timestamp_ms = timestamp_ms;
+    Ok(item)
+}
+
 /// Notification list center with unread management.
 pub struct NotificationCenter {
     base: BaseWidget,
@@ -689,6 +789,15 @@ impl Widget for NotificationCenter {
 impl WidgetProperties for NotificationCenter {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The whole list as records (BLUE26 B26.09): `push` takes an item and `set_read` an
+            // id + flag, neither of which the bare command channel can carry; a whole-list write
+            // covers both.
+            "items" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &NOTIFICATION_ITEM_SCHEMA,
+                    self.items().iter().map(notification_item_record).collect::<Vec<_>>(),
+                )))
+            }
             "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
             "unread_count" => Ok(CapabilityValue::UInt(self.unread_count() as u64)),
             "selected_index" => {
@@ -747,12 +856,37 @@ impl WidgetProperties for NotificationCenter {
             "item_count" | "unread_count" | "selected_index" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
+            // A whole-list replacement. Checked in full before anything is replaced, then applied
+            // through the control's own item vector so the unread count and selection derivation
+            // stay the control's business.
+            "items" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&NOTIFICATION_ITEM_SCHEMA).map_err(|violation| {
+                    log::warn!("notification_center.items refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("items"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut items = Vec::with_capacity(list.len());
+                for record in list.items() {
+                    items.push(notification_item_from_record(record)?);
+                }
+                self.clear();
+                for item in items {
+                    self.push(item);
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "items",
             "item_count",
             "unread_count",
             "selected_index",
@@ -768,8 +902,10 @@ impl WidgetProperties for NotificationCenter {
     /// `clear` and `mark_all_read` are payload-free and map onto the widget's
     /// real methods. `activate_selected` reports `OutOfRange` when nothing is
     /// selected, because then there is no notification to activate. `push` needs
-    /// a whole `NotificationItem`, `set_read` an id and a flag, and
-    /// `select_index` an index, so those are answered as needing a payload.
+    /// a whole `NotificationItem` and `set_read` an id and a flag; the `items`
+    /// records property is their payload channel (B26.03), and `set_items` is its
+    /// published command form. `select_index` names a position with no property
+    /// route, so it stays unpublished.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "clear" => {
@@ -787,7 +923,9 @@ impl WidgetProperties for NotificationCenter {
                     Err(CapabilityAccessError::OutOfRange)
                 }
             }
-            "push" | "set_read" | "select_index" => Err(CapabilityAccessError::OutOfRange),
+            "push" | "set_read" | "select_index" | "set_items" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }

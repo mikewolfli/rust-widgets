@@ -72,8 +72,12 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
-            PropertySchema::enumerated("mode", true, true, &["exclusive", "non_exclusive", "popup"]),
+            PropertySchema::enumerated(
+                "mode",
+                true,
+                true,
+                &["exclusive", "non_exclusive", "popup"],
+            ),
         ];
 
         pub(crate) const SCROLL_AREA_PROPERTIES: &[PropertySchema] = &[
@@ -144,7 +148,6 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("document_mode", PropertyValueKind::Bool, true, true),
         ];
 
@@ -197,7 +200,9 @@ macro_rules! impl_properties_container {
             // it does not switch between list layouts — so the schema was describing the wrong
             // control entirely. `MdiArea`'s own comment above its reader already said "the two
             // the reader produces"; the table had not been brought in line.
-            PropertySchema::enumerated("view_mode", true, false, &["sub_window_view", "tabbed"]),
+            // Writable since the audit: the control has a real `set_view_mode` (the entry
+            // point Qt's `QMdiArea::setViewMode` answers), so the property route runs it.
+            PropertySchema::enumerated("view_mode", true, true, &["sub_window_view", "tabbed"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -224,7 +229,6 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("item_spacing", PropertyValueKind::UInt, true, true),
         ];
 
@@ -285,7 +289,6 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
@@ -300,7 +303,6 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
@@ -329,7 +331,6 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
@@ -344,7 +345,6 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
@@ -361,7 +361,6 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
@@ -375,7 +374,6 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
@@ -390,7 +388,6 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
@@ -403,7 +400,6 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 
@@ -418,7 +414,6 @@ macro_rules! impl_properties_container {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-        
             PropertySchema::new("widget", PropertyValueKind::UInt, true, true),
         ];
 

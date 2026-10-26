@@ -141,6 +141,130 @@ impl PropertyItem {
     }
 }
 
+/// The published token for a row's editor kind.
+fn property_item_kind_token(kind: &PropertyItemKind) -> &'static str {
+    match kind {
+        PropertyItemKind::Text => "text",
+        PropertyItemKind::Number => "number",
+        PropertyItemKind::Bool => "bool",
+        PropertyItemKind::Color => "color",
+        PropertyItemKind::Choice(_) => "choice",
+        PropertyItemKind::File => "file",
+    }
+}
+
+/// The declared shape of one property row, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `properties` property, and the control owns both ends of it: the
+/// field names are [`PropertyItem`]'s own fields. `name` and `value` are required because
+/// [`PropertyItem::new`] requires them; the rest are optional because a row that omits them is an
+/// editable text property with no category. `kind` is the editor token and `choices` carries a
+/// [`PropertyItemKind::Choice`]'s option list (the only kind with a payload).
+pub const PROPERTY_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "name",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "value",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "editable",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "kind",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "choices",
+                crate::widget::capability::PropertyValueKind::StringList,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "category",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+        ],
+        // A row has no separate identity field; its name is what a document spells it by, and two
+        // rows may legitimately share a name across categories.
+        id_field: "name",
+        ids_unique: false,
+        ids_required: false,
+    };
+
+/// One row of [`PROPERTY_ITEM_SCHEMA`].
+fn property_item_record(item: &PropertyItem) -> crate::widget::capability::RecordValue {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("name", CapabilityValue::String(item.name.clone()))
+        .with("value", CapabilityValue::String(item.value.clone()))
+        .with("editable", CapabilityValue::Bool(item.editable))
+        .with("kind", CapabilityValue::String(property_item_kind_token(&item.kind).to_string()));
+    if let PropertyItemKind::Choice(choices) = &item.kind {
+        record = record.with(
+            "choices",
+            CapabilityValue::Tuple(
+                choices.iter().map(|choice| CapabilityValue::String(choice.clone())).collect(),
+            ),
+        );
+    }
+    if let Some(category) = &item.category {
+        record = record.with("category", CapabilityValue::String(category.clone()));
+    }
+    record
+}
+
+/// Rebuilds one [`PropertyItem`] from a row of [`PROPERTY_ITEM_SCHEMA`].
+fn property_item_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<PropertyItem, CapabilityAccessError> {
+    let name = match record.get("name") {
+        Some(CapabilityValue::String(name)) => name.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let value = match record.get("value") {
+        Some(CapabilityValue::String(value)) => value.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let editable = match record.get("editable") {
+        None | Some(CapabilityValue::Null) => true,
+        Some(CapabilityValue::Bool(flag)) => *flag,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let choices = match record.get("choices") {
+        None | Some(CapabilityValue::Null) => Vec::new(),
+        Some(CapabilityValue::Tuple(items)) => items
+            .iter()
+            .map(|item| match item {
+                CapabilityValue::String(choice) => Ok(choice.clone()),
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            })
+            .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let kind = match record.get("kind") {
+        None | Some(CapabilityValue::Null) => PropertyItemKind::Text,
+        Some(CapabilityValue::String(token)) => match token.as_str() {
+            "text" => PropertyItemKind::Text,
+            "number" => PropertyItemKind::Number,
+            "bool" => PropertyItemKind::Bool,
+            "color" => PropertyItemKind::Color,
+            "choice" => PropertyItemKind::Choice(choices),
+            "file" => PropertyItemKind::File,
+            _ => return Err(CapabilityAccessError::OutOfRange),
+        },
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let category = match record.get("category") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::String(category)) => Some(category.clone()),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(PropertyItem { name, value, editable, kind, category })
+}
+
 /// One painted line of the property grid: a group header or a property row (V-17).
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PropertyRow {
@@ -639,6 +763,15 @@ impl Widget for PropertyGrid {
 impl WidgetProperties for PropertyGrid {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The whole row list as records (BLUE26 B26.09): `add_property` and `set_value` take
+            // arguments the bare command channel cannot carry, so the list is the property and
+            // `set_properties` is its published command form.
+            "properties" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &PROPERTY_ITEM_SCHEMA,
+                    self.properties.iter().map(property_item_record).collect::<Vec<_>>(),
+                )))
+            }
             "property_count" => Ok(CapabilityValue::UInt(self.property_count() as u64)),
             "selected_index" => match self.selected_index() {
                 Some(idx) => Ok(CapabilityValue::UInt(idx as u64)),
@@ -658,27 +791,53 @@ impl WidgetProperties for PropertyGrid {
                 Ok(())
             }
             "property_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // A whole-list replacement through the control's own `clear` + `add_property_item`,
+            // so the grouping revision is invalidated in one place.
+            "properties" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&PROPERTY_ITEM_SCHEMA).map_err(|violation| {
+                    log::warn!("property_grid.properties refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("properties"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut items = Vec::with_capacity(list.len());
+                for record in list.items() {
+                    items.push(property_item_from_record(record)?);
+                }
+                self.clear();
+                for item in items {
+                    self.add_property_item(item);
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["property_count", "selected_index", BASE_PROPERTY_NAMES]
+        property_names_of!["properties", "property_count", "selected_index", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `property_grid` publishes.
     ///
     /// `clear` is the one genuine zero-argument action here: it drops every
     /// property and resets the selection, which is exactly what
-    /// [`PropertyGrid::clear`] does. `add_property` takes the row to add, so a
-    /// payload-less call is refused as [`CapabilityAccessError::OutOfRange`].
+    /// [`PropertyGrid::clear`] does. `add_property` takes the row to add and
+    /// `set_value` an index+value; the `properties` records property is their
+    /// payload channel (B26.03), and `set_properties` is its published command form.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "clear" => {
                 self.clear();
                 Ok(())
             }
-            "add_property" => Err(CapabilityAccessError::OutOfRange),
+            "add_property" | "set_value" | "set_properties" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.

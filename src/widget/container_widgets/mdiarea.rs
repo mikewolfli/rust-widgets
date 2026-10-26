@@ -7,6 +7,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
+use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -1223,10 +1224,21 @@ impl WidgetProperties for MdiArea {
 
     fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
         match name {
-            // All three are read-only in the old dispatch: the reader serves them
-            // and the writer has no arm, so the contract says so explicitly.
-            "subwindow_count" | "active_subwindow" | "view_mode" => {
-                Err(CapabilityAccessError::ReadOnlyProperty)
+            // Two are read-only: the reader serves them and the writer refuses, so
+            // the contract says so explicitly.
+            "subwindow_count" | "active_subwindow" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // The view mode is a real setter on the control (`set_view_mode`, the entry point
+            // Qt's `QMdiArea::setViewMode` answers), so the property route runs it rather than
+            // refusing a write the control knows how to honor.
+            "view_mode" => {
+                let token = expect_string(value)?;
+                let mode = match token.as_str() {
+                    "sub_window_view" => ViewMode::SubWindowView,
+                    "tabbed" => ViewMode::TabbedView,
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_view_mode(mode);
+                Ok(())
             }
             _ => base_property_set(self, name, value),
         }
@@ -1234,9 +1246,9 @@ impl WidgetProperties for MdiArea {
 
     /// Returns the names this control serves through the property contract.
     ///
-    /// Only what `get` answers: `MDI_AREA_PROPERTIES` marks all three
-    /// non-readable, and the old reader nevertheless served all three, so the
-    /// readable set — not the schema flag — is what callers can actually use.
+    /// Every name the reader answers is listed, including the two the writer
+    /// refuses: the readable set — not the schema flag — is what callers can
+    /// actually use.
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of!["subwindow_count", "active_subwindow", "view_mode", BASE_PROPERTY_NAMES]
     }
@@ -1991,6 +2003,30 @@ mod tests {
         assert_eq!(area.geometry(), Rect::new(0, 0, 600, 400));
         assert_eq!(area.kind(), WidgetKind::MdiArea);
         assert!(area.registry().is_none(), "registry should be None by default");
+    }
+
+    /// The view mode is a real setter on the control, so a document can switch
+    /// the area between sub-window and tabbed presentation through the property
+    /// route.
+    #[test]
+    fn the_view_mode_is_reachable_through_the_property_route() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        assert_eq!(area.view_mode(), ViewMode::SubWindowView, "default view mode");
+
+        area.set("view_mode", CapabilityValue::String("tabbed".to_string())).expect("writable");
+        assert_eq!(area.view_mode(), ViewMode::TabbedView);
+        assert_eq!(
+            area.get("view_mode").expect("readable"),
+            CapabilityValue::String("tabbed".to_string())
+        );
+
+        // A token the control cannot parse is refused rather than guessed.
+        assert_eq!(
+            area.set("view_mode", CapabilityValue::String("split".to_string())),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
+        // The published command name needs its value through the property route.
+        assert_eq!(area.command("set_view_mode"), Err(CapabilityAccessError::OutOfRange));
     }
 
     // ── 2. Adding sub-windows ─────────────────────────────────────────────

@@ -432,6 +432,126 @@ impl DiagnosticMarker {
     }
 }
 
+/// The published token for a marker severity.
+pub(crate) fn marker_severity_token(severity: MarkerSeverity) -> &'static str {
+    match severity {
+        MarkerSeverity::Info => "info",
+        MarkerSeverity::Warning => "warning",
+        MarkerSeverity::Error => "error",
+    }
+}
+
+/// Parses a marker severity token; `None` for an unrecognised spelling.
+pub(crate) fn marker_severity_from_token(token: &str) -> Option<MarkerSeverity> {
+    match token.to_ascii_lowercase().as_str() {
+        "info" => Some(MarkerSeverity::Info),
+        "warning" => Some(MarkerSeverity::Warning),
+        "error" => Some(MarkerSeverity::Error),
+        _ => None,
+    }
+}
+
+/// The declared shape of one diagnostic marker, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `markers` property, and the control owns both ends of it: the
+/// field names are [`DiagnosticMarker`]'s own fields. `line`, `message` and `severity` are
+/// required because [`DiagnosticMarker::new`] requires them; the two column fields are optional
+/// because a whole-line marker is the ordinary case.
+pub const DIAGNOSTIC_MARKER_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "line",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+            crate::widget::capability::RecordField::required(
+                "message",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "severity",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "column",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "end_column",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+        ],
+        // A marker has no identity of its own; its line is the only stable name a document
+        // spells it by, and several markers may share a line.
+        id_field: "line",
+        ids_unique: false,
+        ids_required: false,
+    };
+
+/// One row of [`DIAGNOSTIC_MARKER_SCHEMA`].
+pub(crate) fn diagnostic_marker_record(
+    marker: &DiagnosticMarker,
+) -> crate::widget::capability::RecordValue {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("line", crate::widget::capability::CapabilityValue::UInt(marker.line as u64))
+        .with("message", crate::widget::capability::CapabilityValue::String(marker.message.clone()))
+        .with(
+            "severity",
+            crate::widget::capability::CapabilityValue::String(
+                marker_severity_token(marker.severity).to_string(),
+            ),
+        );
+    if let Some(column) = marker.column {
+        record =
+            record.with("column", crate::widget::capability::CapabilityValue::UInt(column as u64));
+    }
+    if let Some(end_column) = marker.end_column {
+        record = record.with(
+            "end_column",
+            crate::widget::capability::CapabilityValue::UInt(end_column as u64),
+        );
+    }
+    record
+}
+
+/// Rebuilds one [`DiagnosticMarker`] from a row of [`DIAGNOSTIC_MARKER_SCHEMA`].
+pub(crate) fn diagnostic_marker_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<DiagnosticMarker, crate::widget::capability::CapabilityAccessError> {
+    use crate::widget::capability::{CapabilityAccessError, CapabilityValue};
+    let line = match record.get("line") {
+        Some(CapabilityValue::UInt(line)) => {
+            usize::try_from(*line).map_err(|_| CapabilityAccessError::TypeMismatch)?
+        }
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let message = match record.get("message") {
+        Some(CapabilityValue::String(message)) => message.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let severity = match record.get("severity") {
+        Some(CapabilityValue::String(token)) => {
+            marker_severity_from_token(token).ok_or(CapabilityAccessError::OutOfRange)?
+        }
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let column = match record.get("column") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::UInt(column)) => {
+            Some(usize::try_from(*column).map_err(|_| CapabilityAccessError::TypeMismatch)?)
+        }
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let end_column = match record.get("end_column") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::UInt(column)) => {
+            Some(usize::try_from(*column).map_err(|_| CapabilityAccessError::TypeMismatch)?)
+        }
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(DiagnosticMarker { line, message, severity, column, end_column })
+}
+
 // ── Buffers, folds, visual rows ──────────────────────────────────────────────
 
 /// A multi-buffer editor tab.

@@ -1962,6 +1962,12 @@ impl Widget for RibbonBar {
 impl WidgetProperties for RibbonBar {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The tab titles as a `StringList` (BLUE26 B26.09): `add_tab` takes a title the bare
+            // command channel cannot carry, so the list is the property and `set_tabs` is its
+            // published command form.
+            "tabs" => Ok(CapabilityValue::Tuple(
+                self.tabs.iter().map(|title| CapabilityValue::String(title.clone())).collect(),
+            )),
             "tab_count" => Ok(CapabilityValue::UInt(self.tab_count() as u64)),
             "current_tab" => Ok(CapabilityValue::UInt(self.current_tab() as u64)),
             "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
@@ -2021,12 +2027,25 @@ impl WidgetProperties for RibbonBar {
                 Ok(())
             }
             "tab_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // A whole-tab replacement. The control's `clear` + `add_tab` is the path, so every
+            // rebuilt tab starts with an **empty** group list — a title list cannot express groups,
+            // and the alternative (keeping stale groups under renamed tabs) would report content
+            // the document never declared.
+            "tabs" => {
+                let titles = expect_string_list(value)?;
+                self.clear();
+                for title in titles {
+                    self.add_tab(title);
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "tabs",
             "tab_count",
             "current_tab",
             "expanded",
@@ -2051,7 +2070,7 @@ impl WidgetProperties for RibbonBar {
                 self.clear();
                 Ok(())
             }
-            "add_tab" | "add_group" | "add_item" | "add_large_item" => {
+            "add_tab" | "add_group" | "add_item" | "add_large_item" | "set_tabs" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
             // Any other `set_foo` name carries its value through the property route,

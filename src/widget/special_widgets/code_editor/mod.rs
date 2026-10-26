@@ -124,3 +124,7 @@ pub use types::{
     DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT_RATIO, DEFAULT_TAB_WIDTH,
     MAX_COMPLETIONS, MIN_TOUCH_TARGET, SCALE_REDUCED_LINES, SCALE_VIEW_ONLY_LINES,
 };
+
+/// The `markers` property's record schema, re-exported so the capability table can name it
+/// (the `types` module itself stays private).
+pub(crate) use types::DIAGNOSTIC_MARKER_SCHEMA;

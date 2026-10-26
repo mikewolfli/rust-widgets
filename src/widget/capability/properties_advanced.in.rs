@@ -13,6 +13,15 @@ macro_rules! impl_properties_advanced {
     () => {
         #[cfg(not(alloc_frugal))]
         pub(crate) const TAB_BAR_PROPERTIES: &[PropertySchema] = &[
+            // The whole strip as records (BLUE26 B26.09): `add_tab`/`remove_tab` take arguments the
+            // property API cannot carry, so the list itself is the property and `set_tabs` is its
+            // published command form.
+            PropertySchema::records(
+                "tabs",
+                true,
+                true,
+                &crate::widget::advanced_widgets::tab_bar::TAB_BAR_TAB_SCHEMA,
+            ),
             PropertySchema::new("tab_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("current_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("closable", PropertyValueKind::Bool, true, true),
@@ -69,7 +78,12 @@ macro_rules! impl_properties_advanced {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-            PropertySchema::enumerated("calendar_first_day", true, true, &["mon","tue","wed","thu","fri","sat","sun"]),
+            PropertySchema::enumerated(
+                "calendar_first_day",
+                true,
+                true,
+                &["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            ),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -89,6 +103,10 @@ macro_rules! impl_properties_advanced {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const RIBBON_BAR_PROPERTIES: &[PropertySchema] = &[
+            // The tab titles as a `StringList` (BLUE26 B26.09): `add_tab` takes a title the
+            // property API cannot carry, so the list itself is the property. A title list cannot
+            // express groups or items, which stay on the control's own API.
+            PropertySchema::new("tabs", PropertyValueKind::StringList, true, true),
             PropertySchema::new("tab_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("current_tab", PropertyValueKind::UInt, true, true),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
@@ -103,13 +121,15 @@ macro_rules! impl_properties_advanced {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const PIE_MENU_PROPERTIES: &[PropertySchema] = &[
-            // The rows are published so a document can read each item's identity and typed icon; the
-            // write side is refused because a row cannot express the recomputed slice angles or
-            // guarantee a unique id (see `PIE_MENU_ITEM_SCHEMA`).
+            // The rows are published so a document can read each item's identity and typed icon, and
+            // **written** through the same arm: a write rebuilds the flat top-level ring through
+            // the control's own `add_existing_item`, which recomputes the slice angles and advances
+            // the id counter past a pinned id. A row cannot carry a child ring (a record field has
+            // no nested-list kind), so submenu rings are outside this channel.
             PropertySchema::records(
                 "items",
                 true,
-                false,
+                true,
                 &crate::widget::advanced_widgets::pie_menu::PIE_MENU_ITEM_SCHEMA,
             ),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
@@ -134,7 +154,12 @@ macro_rules! impl_properties_advanced {
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
-            PropertySchema::enumerated("calendar_first_day", true, true, &["mon","tue","wed","thu","fri","sat","sun"]),
+            PropertySchema::enumerated(
+                "calendar_first_day",
+                true,
+                true,
+                &["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            ),
         ];
     };
 }

@@ -387,6 +387,150 @@ impl MenuEntry {
     }
 }
 
+/// The declared shape of one menu row, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `items` property, and the control owns both ends of it: the field
+/// names are [`MenuEntry`]'s own accessors. `text` is required because [`MenuEntry::new`] requires
+/// it; the rest are optional because a row that omits them describes the ordinary entry. Nested
+/// `submenu` children have **no** representation: a record field cannot carry a nested record list
+/// (`value_matches_kind` refuses it), so `has_submenu` declares the indicator while the panel's
+/// rows are outside this channel.
+pub const MENU_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "text",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "shortcut",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "checkable",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "checked",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "enabled",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "separator",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "has_submenu",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "section",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "tooltip",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "action_id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon_source",
+                crate::widget::capability::PropertyValueKind::IconSpec,
+            ),
+        ],
+        // A plain row's meaning is its text; there is no separate id. Two rows may share a label,
+        // so the identity field is `text` with the uniqueness rule off.
+        id_field: "text",
+        ids_unique: false,
+        ids_required: false,
+    };
+
+/// One row of [`MENU_ITEM_SCHEMA`]; refuses a source with no document form.
+fn menu_entry_record(
+    entry: &MenuEntry,
+) -> Result<crate::widget::capability::RecordValue, CapabilityAccessError> {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("text", CapabilityValue::String(entry.text.clone()))
+        .with("shortcut", CapabilityValue::String(entry.shortcut.clone()))
+        .with("checkable", CapabilityValue::Bool(entry.checkable))
+        .with("checked", CapabilityValue::Bool(entry.checked))
+        .with("enabled", CapabilityValue::Bool(entry.enabled))
+        .with("separator", CapabilityValue::Bool(entry.separator))
+        .with("has_submenu", CapabilityValue::Bool(entry.has_submenu))
+        .with("section", CapabilityValue::Bool(entry.section))
+        .with("tooltip", CapabilityValue::String(entry.tooltip.clone()));
+    if let Some(action_id) = &entry.action_id {
+        record = record.with("action_id", CapabilityValue::String(action_id.clone()));
+    }
+    match entry.icon {
+        None => {}
+        Some(IconSource::Builtin(name)) => {
+            record = record.with(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)),
+            );
+        }
+        // A borrowed static geometry has no document form, so the read refuses rather than
+        // reporting the row as icon-less.
+        Some(IconSource::StaticGeometry(_)) => {
+            return Err(CapabilityAccessError::IconSourceNotPersistable)
+        }
+    }
+    Ok(record)
+}
+
+/// Rebuilds one [`MenuEntry`] from a row of [`MENU_ITEM_SCHEMA`].
+fn menu_entry_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<MenuEntry, CapabilityAccessError> {
+    let text = match record.get("text") {
+        Some(CapabilityValue::String(text)) => text.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let string_field = |name: &str| match record.get(name) {
+        None | Some(CapabilityValue::Null) => Ok(String::new()),
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        Some(_) => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let bool_field = |name: &str, default: bool| match record.get(name) {
+        None | Some(CapabilityValue::Null) => Ok(default),
+        Some(CapabilityValue::Bool(flag)) => Ok(*flag),
+        Some(_) => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let icon_source = match record.get("icon_source") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name))) => {
+            Some(IconSource::Builtin(*name))
+        }
+        // A resource descriptor needs the host's resolver, which a property write does not have.
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+            ..
+        })) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+
+    let mut entry = MenuEntry::new(text);
+    entry.shortcut = string_field("shortcut")?;
+    entry.checkable = bool_field("checkable", false)?;
+    entry.checked = bool_field("checked", false)?;
+    entry.enabled = bool_field("enabled", true)?;
+    entry.separator = bool_field("separator", false)?;
+    entry.has_submenu = bool_field("has_submenu", false)?;
+    entry.section = bool_field("section", false)?;
+    entry.tooltip = string_field("tooltip")?;
+    let action_id = string_field("action_id")?;
+    if !action_id.is_empty() {
+        entry.set_action_id(action_id);
+    }
+    entry.set_icon(icon_source);
+    Ok(entry)
+}
+
 // A hover source adapter is not needed: [`MenuEntry`] stores its hint directly.
 
 /// The facts [`Menu::popup_height`] is a pure function of.
@@ -2325,6 +2469,18 @@ impl Widget for Menu {
 impl WidgetProperties for Menu {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The whole entry list as records (BLUE26 B26.09): `add_action`/`add_separator` take
+            // arguments the bare command channel cannot carry, so the list is the property and
+            // `set_items` is its published command form.
+            "items" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &MENU_ITEM_SCHEMA,
+                    self.items
+                        .iter()
+                        .map(menu_entry_record)
+                        .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+                )))
+            }
             "title" => Ok(CapabilityValue::String(self.title().to_string())),
             "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
             "hovered_index" => match self.hovered_index() {
@@ -2361,12 +2517,37 @@ impl WidgetProperties for Menu {
             }
             "hovered_index" => Err(CapabilityAccessError::ReadOnlyProperty),
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // A whole-menu replacement. Checked in full before anything is replaced, then rebuilt
+            // through the control's own `clear` + `add_item`, so the row-touch bookkeeping that
+            // every mutation needs is kept in one place.
+            "items" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&MENU_ITEM_SCHEMA).map_err(|violation| {
+                    log::warn!("menu.items refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("items"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut entries = Vec::with_capacity(list.len());
+                for record in list.items() {
+                    entries.push(menu_entry_from_record(record)?);
+                }
+                self.clear();
+                for entry in entries {
+                    self.add_item(entry);
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "items",
             "title",
             "item_count",
             "hovered_index",
@@ -2391,7 +2572,14 @@ impl WidgetProperties for Menu {
                 self.clear();
                 Ok(())
             }
-            "add_action" | "add_separator" => Err(CapabilityAccessError::OutOfRange),
+            "add_action" => Err(CapabilityAccessError::OutOfRange),
+            "set_items" => Err(CapabilityAccessError::OutOfRange),
+            // `add_separator` takes no argument, so the command appends one through the
+            // control's own builder instead of refusing a call it can honor.
+            "add_separator" => {
+                self.add_separator();
+                Ok(())
+            }
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
@@ -3218,6 +3406,19 @@ mod tests {
         menu.add_separator();
         menu.add_action("Paste");
         menu
+    }
+
+    #[test]
+    fn the_add_separator_command_appends_through_the_command_channel() {
+        let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+        menu.add_action("Open");
+        assert!(menu.command("add_separator").is_ok());
+        assert!(
+            menu.items().last().expect("an entry was appended").is_separator(),
+            "the command appends the control's own separator"
+        );
+        // The payload-bearing sibling still needs its list.
+        assert_eq!(menu.command("add_action"), Err(CapabilityAccessError::OutOfRange));
     }
 
     /// A context menu must appear where the pointer was, and report that origin.

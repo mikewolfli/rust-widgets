@@ -237,6 +237,104 @@ impl TabBarTab {
     }
 }
 
+/// The declared shape of one tab row, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `tabs` property, and the control owns both ends of it: the field
+/// names are [`TabBarTab`]'s own accessors. `title` is required because [`TabBarTab::new`]
+/// requires it; the rest are optional because a document that omits them describes the ordinary
+/// tab. The legacy `icon` image slot has no document form (a decoded image is not a property
+/// value); a typed `icon_source` is the persistable spelling.
+pub const TAB_BAR_TAB_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "title",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "tooltip",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "enabled",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon_source",
+                crate::widget::capability::PropertyValueKind::IconSpec,
+            ),
+        ],
+        // A tab has no separate identity field. Its title is what a caller addresses it by in a
+        // document (and two tabs may legitimately share a title), so the row is keyed by `title`
+        // with the uniqueness rule off — the shape a positional list with a label would have.
+        id_field: "title",
+        ids_unique: false,
+        ids_required: false,
+    };
+
+/// One row of [`TAB_BAR_TAB_SCHEMA`]; refuses a source with no document form.
+fn tab_bar_tab_record(
+    tab: &TabBarTab,
+) -> Result<crate::widget::capability::RecordValue, CapabilityAccessError> {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("title", CapabilityValue::String(tab.title().to_string()))
+        .with("enabled", CapabilityValue::Bool(tab.is_enabled()));
+    if !tab.tooltip().is_empty() {
+        record = record.with("tooltip", CapabilityValue::String(tab.tooltip().to_string()));
+    }
+    match tab.icon_source() {
+        None => {}
+        Some(IconSource::Builtin(name)) => {
+            record = record.with(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)),
+            );
+        }
+        // A borrowed static geometry has no document form, so the read refuses rather than
+        // reporting the row as icon-less.
+        Some(IconSource::StaticGeometry(_)) => {
+            return Err(CapabilityAccessError::IconSourceNotPersistable)
+        }
+    }
+    Ok(record)
+}
+
+/// Rebuilds one [`TabBarTab`] from a row of [`TAB_BAR_TAB_SCHEMA`].
+fn tab_bar_tab_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<TabBarTab, CapabilityAccessError> {
+    let title = match record.get("title") {
+        Some(CapabilityValue::String(title)) => title.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let tooltip = match record.get("tooltip") {
+        None | Some(CapabilityValue::Null) => String::new(),
+        Some(CapabilityValue::String(tooltip)) => tooltip.clone(),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let enabled = match record.get("enabled") {
+        None | Some(CapabilityValue::Null) => true,
+        Some(CapabilityValue::Bool(flag)) => *flag,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let icon_source = match record.get("icon_source") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name))) => {
+            Some(IconSource::Builtin(*name))
+        }
+        // A resource descriptor needs the host's resolver, which a property write does not have.
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+            ..
+        })) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let mut tab = TabBarTab::new(title);
+    tab.set_tooltip(tooltip);
+    tab.set_enabled(enabled);
+    tab.set_icon_source(icon_source);
+    Ok(tab)
+}
+
 /// How a tab title that does not fit its tab is handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TabElideMode {
@@ -1643,6 +1741,18 @@ impl Widget for TabBar {
 impl WidgetProperties for TabBar {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The whole tab strip as records (BLUE26 B26.09): `add_tab` / `remove_tab` take
+            // arguments the bare command channel cannot carry, so the list itself is the property
+            // and `set_tabs` is its published command form.
+            "tabs" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &TAB_BAR_TAB_SCHEMA,
+                    self.tabs
+                        .iter()
+                        .map(tab_bar_tab_record)
+                        .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+                )))
+            }
             "tab_count" => Ok(CapabilityValue::UInt(self.tab_count() as u64)),
             "current_index" => match self.current_index() {
                 Some(idx) => Ok(CapabilityValue::UInt(idx as u64)),
@@ -1693,6 +1803,36 @@ impl WidgetProperties for TabBar {
                 self.set_direction(expect_text_direction(value)?);
                 Ok(())
             }
+            // A whole-strip replacement. Checked in full before anything is replaced, then rebuilt
+            // through the control's own `clear` + `add_tab`, so the current-index reset is the one
+            // `clear` owns rather than a second spelling of it.
+            "tabs" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&TAB_BAR_TAB_SCHEMA).map_err(|violation| {
+                    log::warn!("tab_bar.tabs refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("tabs"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut tabs = Vec::with_capacity(list.len());
+                for record in list.items() {
+                    tabs.push(tab_bar_tab_from_record(record)?);
+                }
+                self.clear();
+                for tab in tabs {
+                    let index = self.add_tab(tab.title().to_string());
+                    if let Some(target) = self.tabs.get_mut(index) {
+                        target.set_tooltip(tab.tooltip().to_string());
+                        target.set_enabled(tab.is_enabled());
+                        target.set_icon_source(tab.icon_source());
+                    }
+                }
+                self.base.request_redraw();
+                Ok(())
+            }
             "tab_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
@@ -1700,6 +1840,7 @@ impl WidgetProperties for TabBar {
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "tabs",
             "tab_count",
             "current_index",
             "closable",
@@ -1716,10 +1857,11 @@ impl WidgetProperties for TabBar {
     /// `add_tab` takes the new tab's title and `remove_tab` takes the index to
     /// remove, so neither can complete without a payload: they are refused as
     /// [`CapabilityAccessError::OutOfRange`], meaning the name is valid and the
-    /// argument is what is missing.
+    /// argument is what is missing. `set_tabs` is the published whole-strip form:
+    /// its rows travel through the `tabs` property (B26.03).
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
-            "add_tab" | "remove_tab" => Err(CapabilityAccessError::OutOfRange),
+            "add_tab" | "remove_tab" | "set_tabs" => Err(CapabilityAccessError::OutOfRange),
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
@@ -2802,5 +2944,97 @@ mod tests {
         bar.set_elide_mode(TabElideMode::Right);
         let right = bar.fitted_title(0, tab_rect, &mut measure).into_owned();
         assert!(right.starts_with("rep"));
+    }
+
+    /// `tabs` round-trips through the record property, including the per-tab fields.
+    ///
+    /// This is the payload channel `add_tab`/`remove_tab` never had (B26.03).
+    #[test]
+    fn tabs_round_trip_through_the_property() {
+        use crate::widget::capability::{RecordList, RecordValue, EMPTY_RECORD_SCHEMA};
+
+        let mut bar = TabBar::new(Rect::new(0, 0, 320, 32));
+        let list = RecordList::from_items(
+            &EMPTY_RECORD_SCHEMA,
+            vec![
+                RecordValue::new()
+                    .with("title", CapabilityValue::String(String::from("General")))
+                    .with("tooltip", CapabilityValue::String(String::from("General settings"))),
+                RecordValue::new()
+                    .with("title", CapabilityValue::String(String::from("Advanced")))
+                    .with("enabled", CapabilityValue::Bool(false)),
+            ],
+        );
+        bar.set("tabs", CapabilityValue::Records(list)).expect("a well-formed strip is accepted");
+
+        assert_eq!(bar.tab_count(), 2);
+        assert_eq!(bar.tab_text(0), Some("General"));
+        assert_eq!(bar.tab(0).expect("present").tooltip(), "General settings");
+        assert_eq!(bar.tab_enabled(1), Some(false));
+
+        let CapabilityValue::Records(read_back) = bar.get("tabs").expect("the strip reads back")
+        else {
+            panic!("`tabs` must read as a record list");
+        };
+        assert_eq!(read_back.len(), 2);
+        assert!(matches!(
+            read_back.items()[0].get("tooltip"),
+            Some(CapabilityValue::String(tooltip)) if tooltip == "General settings"
+        ));
+        assert!(matches!(read_back.items()[1].get("enabled"), Some(CapabilityValue::Bool(false))));
+    }
+
+    /// A malformed strip is refused and changes nothing.
+    #[test]
+    fn a_malformed_tab_list_is_refused_and_changes_nothing() {
+        use crate::widget::capability::{RecordList, RecordValue, EMPTY_RECORD_SCHEMA};
+
+        let mut bar = TabBar::new(Rect::new(0, 0, 320, 32));
+        bar.add_tab(String::from("Existing"));
+        let before: Vec<String> =
+            (0..bar.tab_count()).filter_map(|i| bar.tab_text(i).map(String::from)).collect();
+
+        let broken = vec![
+            (
+                "missing title",
+                vec![RecordValue::new().with("enabled", CapabilityValue::Bool(true))],
+            ),
+            (
+                "unknown field",
+                vec![RecordValue::new()
+                    .with("title", CapabilityValue::String(String::from("A")))
+                    .with("badge", CapabilityValue::UInt(1))],
+            ),
+        ];
+
+        for (reason, records) in broken {
+            let list = RecordList::from_items(&EMPTY_RECORD_SCHEMA, records);
+            let result = bar.set("tabs", CapabilityValue::Records(list));
+            assert!(
+                matches!(result, Err(CapabilityAccessError::ConstraintViolation { .. })),
+                "{reason} must be refused with a pointable constraint violation (got {result:?})"
+            );
+            let after: Vec<String> =
+                (0..bar.tab_count()).filter_map(|i| bar.tab_text(i).map(String::from)).collect();
+            assert_eq!(after, before, "{reason} must change nothing");
+        }
+    }
+
+    /// `tabs` is published as a writable record property with its schema.
+    #[test]
+    fn the_tabs_property_is_published_with_its_record_schema() {
+        let bar = TabBar::new(Rect::new(0, 0, 320, 32));
+        assert!(WidgetProperties::property_names(&bar).contains(&"tabs"));
+        let schema = crate::widget::capability::TAB_BAR_PROPERTIES
+            .iter()
+            .find(|schema| schema.name == "tabs")
+            .expect("`tabs` is declared by the capability table");
+        assert_eq!(schema.value_kind, crate::widget::capability::PropertyValueKind::Records);
+        assert!(schema.readable && schema.writable);
+        let record_schema = schema.record_schema.expect("a `Records` schema names its shape");
+        assert_eq!(record_schema.id_field, "title");
+        assert_eq!(record_schema.names(), vec!["title", "tooltip", "enabled", "icon_source"]);
+        assert!(!record_schema.ids_unique && !record_schema.ids_required);
+        assert_eq!(record_schema, &TAB_BAR_TAB_SCHEMA);
     }
 }

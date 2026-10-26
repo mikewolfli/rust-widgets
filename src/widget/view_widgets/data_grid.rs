@@ -2940,6 +2940,12 @@ impl WidgetProperties for DataGrid {
                 self.clear_data_source();
                 Ok(())
             }
+            // `select_all` takes every cell of the current behaviour, so it is one of the
+            // payload-free commands the arm can honour outright.
+            "select_all" => {
+                self.select_all();
+                Ok(())
+            }
             "set_data_source" | "set_scroll_row" | "set_scroll_column" | "set_row_height"
             | "set_column_width" | "set_frozen_columns" => Err(CapabilityAccessError::OutOfRange),
             _ => Err(CapabilityAccessError::UnknownCommand),

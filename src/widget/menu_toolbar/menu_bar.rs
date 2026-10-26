@@ -132,6 +132,103 @@ impl WidgetProperties for EntryTooltipSource<'_> {
     }
 }
 
+/// The declared shape of one menu-bar row, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `entries` property, and the control owns both ends of it: the
+/// field names are [`MenuBarEntry`]'s own accessors. `title` is required because
+/// [`MenuBarEntry::new`] requires it; the rest are optional because a row that omits them
+/// describes an ordinary entry.
+pub const MENU_BAR_ENTRY_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "title",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "enabled",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "tooltip",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon_source",
+                crate::widget::capability::PropertyValueKind::IconSpec,
+            ),
+        ],
+        // An entry has no separate identity field; its title is what a document addresses it by,
+        // and two entries may legitimately share a title.
+        id_field: "title",
+        ids_unique: false,
+        ids_required: false,
+    };
+
+/// One row of [`MENU_BAR_ENTRY_SCHEMA`]; refuses a source with no document form.
+fn menu_bar_entry_record(
+    entry: &MenuBarEntry,
+) -> Result<crate::widget::capability::RecordValue, CapabilityAccessError> {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("title", CapabilityValue::String(entry.title.clone()))
+        .with("enabled", CapabilityValue::Bool(entry.enabled));
+    if !entry.tooltip.is_empty() {
+        record = record.with("tooltip", CapabilityValue::String(entry.tooltip.clone()));
+    }
+    match entry.icon {
+        None => {}
+        Some(IconSource::Builtin(name)) => {
+            record = record.with(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)),
+            );
+        }
+        // A borrowed static geometry has no document form, so the read refuses rather than
+        // reporting the row as icon-less.
+        Some(IconSource::StaticGeometry(_)) => {
+            return Err(CapabilityAccessError::IconSourceNotPersistable)
+        }
+    }
+    Ok(record)
+}
+
+/// Rebuilds one [`MenuBarEntry`] from a row of [`MENU_BAR_ENTRY_SCHEMA`].
+fn menu_bar_entry_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<MenuBarEntry, CapabilityAccessError> {
+    let title = match record.get("title") {
+        Some(CapabilityValue::String(title)) => title.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let enabled = match record.get("enabled") {
+        None | Some(CapabilityValue::Null) => true,
+        Some(CapabilityValue::Bool(flag)) => *flag,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let tooltip = match record.get("tooltip") {
+        None | Some(CapabilityValue::Null) => String::new(),
+        Some(CapabilityValue::String(tooltip)) => tooltip.clone(),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let icon = match record.get("icon_source") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name))) => {
+            Some(IconSource::Builtin(*name))
+        }
+        // A resource descriptor needs the host's resolver, which a property write does not have.
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+            ..
+        })) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+
+    let mut entry = MenuBarEntry::new(title);
+    entry.enabled = enabled;
+    entry.set_tooltip(tooltip);
+    entry.set_icon(icon);
+    Ok(entry)
+}
+
 impl MenuBarEntry {
     /// Creates an enabled entry with the given title.
     pub fn new(title: impl Into<String>) -> Self {
@@ -920,6 +1017,18 @@ impl Widget for MenuBar {
 impl WidgetProperties for MenuBar {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The whole bar as records (BLUE26 B26.09): `add_menu`/`remove_menu` take arguments
+            // the bare command channel cannot carry, so the list is the property and `set_entries`
+            // is its published command form.
+            "entries" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &MENU_BAR_ENTRY_SCHEMA,
+                    self.entries
+                        .iter()
+                        .map(menu_bar_entry_record)
+                        .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+                )))
+            }
             "entry_count" => Ok(CapabilityValue::UInt(self.entries().len() as u64)),
             "active_index" => match self.active_index() {
                 Some(idx) => Ok(CapabilityValue::UInt(idx as u64)),
@@ -940,12 +1049,45 @@ impl WidgetProperties for MenuBar {
             "entry_count" | "active_index" | "hovered_index" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
+            // A whole-bar replacement. Checked in full before anything is replaced, then rebuilt
+            // through the control's own `clear` + `add_menu`, so the cursor reset that `clear`
+            // owns is kept in one place.
+            "entries" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&MENU_BAR_ENTRY_SCHEMA).map_err(|violation| {
+                    log::warn!("menu_bar.entries refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("entries"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut entries = Vec::with_capacity(list.len());
+                for record in list.items() {
+                    entries.push(menu_bar_entry_from_record(record)?);
+                }
+                self.clear();
+                for entry in entries {
+                    let index = self.add_menu(entry.title.clone());
+                    if let Some(target) = self.entries.get_mut(index) {
+                        *target = entry;
+                    }
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["entry_count", "active_index", "hovered_index", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "entries",
+            "entry_count",
+            "active_index",
+            "hovered_index",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `menu_bar` publishes.
@@ -962,7 +1104,7 @@ impl WidgetProperties for MenuBar {
                 self.clear();
                 Ok(())
             }
-            "add_menu" | "remove_menu" => Err(CapabilityAccessError::OutOfRange),
+            "add_menu" | "remove_menu" | "set_entries" => Err(CapabilityAccessError::OutOfRange),
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.

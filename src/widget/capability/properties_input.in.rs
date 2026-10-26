@@ -83,6 +83,11 @@ macro_rules! impl_properties_input {
         ];
 
         pub(crate) const LIST_BOX_PROPERTIES: &[PropertySchema] = &[
+            // The row labels are a *property*, not only commands (BLUE26 B26.09): `add_item` /
+            // `remove_item` take arguments the property API cannot carry, so a document could not
+            // spell the list. Rows may repeat a label, and the per-row meta is not part of the
+            // label list, so this is a `StringList` rather than `Records`.
+            PropertySchema::new("items", PropertyValueKind::StringList, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::enumerated(
                 "selection_mode",
@@ -358,6 +363,11 @@ macro_rules! impl_properties_input {
         ];
 
         pub(crate) const DROPDOWN_PROPERTIES: &[PropertySchema] = &[
+            // The row labels are a *property*, not only a command (BLUE26 B26.09): `text` is the
+            // selected row and `item_count` is how many there are, but a document could not spell
+            // the list itself while `set_items` took an argument the property API could not carry.
+            // Entries may repeat, so it is a `StringList` rather than `Records`.
+            PropertySchema::new("items", PropertyValueKind::StringList, true, true),
             PropertySchema::new("text", PropertyValueKind::String, true, false),
             // Shown while nothing is selected (I-09): the control answers it, so the schema must
             // declare it or the two tables disagree about which properties exist.

@@ -47,7 +47,7 @@ use crate::event::wheel::WheelScroll;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::widget::capability::coercion::{expect_string, expect_usize};
+use crate::widget::capability::coercion::{expect_string, expect_string_list, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -118,6 +118,82 @@ impl EmojiGlyph {
             || self.id.to_lowercase().contains(&needle)
             || self.keywords.iter().any(|keyword| keyword.to_lowercase().contains(&needle))
     }
+}
+
+/// The declared shape of one emoji glyph, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `glyphs` property, and the control owns both ends of it: the
+/// field names are [`EmojiGlyph`]'s own fields. `id`, `symbol` and `category` are required
+/// because [`EmojiGlyph::new`] requires them; `keywords` is the search vocabulary and is
+/// optional because a glyph with none is the normal case.
+pub const EMOJI_GLYPH_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "symbol",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "category",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "keywords",
+                crate::widget::capability::PropertyValueKind::StringList,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`EMOJI_GLYPH_SCHEMA`].
+fn emoji_glyph_record(glyph: &EmojiGlyph) -> crate::widget::capability::RecordValue {
+    crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(glyph.id.clone()))
+        .with("symbol", CapabilityValue::String(glyph.symbol.clone()))
+        .with("category", CapabilityValue::String(glyph.category.clone()))
+        .with(
+            "keywords",
+            CapabilityValue::Tuple(
+                glyph
+                    .keywords
+                    .iter()
+                    .map(|keyword| CapabilityValue::String(keyword.clone()))
+                    .collect(),
+            ),
+        )
+}
+
+/// Rebuilds one [`EmojiGlyph`] from a row of [`EMOJI_GLYPH_SCHEMA`].
+fn emoji_glyph_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<EmojiGlyph, CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let keywords = match record.get("keywords") {
+        None | Some(CapabilityValue::Null) => Vec::new(),
+        Some(CapabilityValue::Tuple(items)) => items
+            .iter()
+            .map(|item| match item {
+                CapabilityValue::String(keyword) => Ok(keyword.clone()),
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            })
+            .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(EmojiGlyph {
+        id: text("id")?,
+        symbol: text("symbol")?,
+        category: text("category")?,
+        keywords,
+    })
 }
 
 /// The height of the search box, the tab strip, and one grid cell.
@@ -778,6 +854,20 @@ impl Widget for EmojiPicker {
 impl WidgetProperties for EmojiPicker {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The glyph table and the category tabs as properties (BLUE26 B26.09):
+            // `set_glyphs`/`set_categories` take lists the bare command channel cannot carry.
+            "glyphs" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &EMOJI_GLYPH_SCHEMA,
+                    self.glyphs().iter().map(emoji_glyph_record).collect::<Vec<_>>(),
+                )))
+            }
+            "categories" => Ok(CapabilityValue::Tuple(
+                self.categories()
+                    .iter()
+                    .map(|category| CapabilityValue::String(category.clone()))
+                    .collect(),
+            )),
             "glyph_count" => Ok(CapabilityValue::UInt(self.glyphs().len() as u64)),
             "visible_glyph_count" => Ok(CapabilityValue::UInt(self.visible_len() as u64)),
             "tab_count" => Ok(CapabilityValue::UInt(self.tabs().len() as u64)),
@@ -809,6 +899,32 @@ impl WidgetProperties for EmojiPicker {
                 self.set_recent_capacity(expect_usize(value)?);
                 Ok(())
             }
+            // Whole-list writes through the control's own setters, which rebuild the derived
+            // lookup/recent state rather than leaving a second copy to go stale.
+            "glyphs" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&EMOJI_GLYPH_SCHEMA).map_err(|violation| {
+                    log::warn!("emoji_picker.glyphs refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("glyphs"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let glyphs = list.items().iter().map(emoji_glyph_from_record).collect::<Result<
+                    Vec<_>,
+                    CapabilityAccessError,
+                >>(
+                )?;
+                self.set_glyphs(glyphs);
+                Ok(())
+            }
+            "categories" => {
+                let tokens = expect_string_list(value)?;
+                self.set_categories(tokens);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -816,6 +932,8 @@ impl WidgetProperties for EmojiPicker {
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `EMOJI_PICKER_PROPERTIES`.
         property_names_of![
+            "glyphs",
+            "categories",
             "glyph_count",
             "visible_glyph_count",
             "tab_count",
@@ -832,11 +950,9 @@ impl WidgetProperties for EmojiPicker {
     /// `choose` takes the *id* of the glyph to pick, so a bare invocation has
     /// nothing to choose — answering [`CapabilityAccessError::OutOfRange`] says the
     /// name is right and the payload is missing, rather than `UnknownCommand`,
-    /// which would deny a command the control really has. `set_glyphs`,
-    /// `set_categories` and `set_search` are payload-carrying writes for the same
-    /// reason (the trait default would already say `OutOfRange` for the three
-    /// `set_*` names; they are listed here so the published set is answered in one
-    /// place).
+    /// which would deny a command the control really has. `set_glyphs` and
+    /// `set_categories` carry their lists through the `glyphs` / `categories`
+    /// properties (B26.03); `choose` has no property route and stays unpublished.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "choose" | "set_glyphs" | "set_categories" | "set_search" => {

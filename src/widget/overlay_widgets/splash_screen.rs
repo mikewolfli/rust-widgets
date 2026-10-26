@@ -445,6 +445,19 @@ impl WidgetProperties for SplashScreen {
                 None => Ok(CapabilityValue::Null),
             },
             "skippable" => Ok(CapabilityValue::Bool(self.skippable)),
+            // The optional logo, as the same structured descriptor a button publishes. `Null`
+            // means "no logo", which is the accent-filled block the control paints by default.
+            "logo" => match self.logo {
+                None => Ok(CapabilityValue::Null),
+                Some(crate::widget::IconSource::Builtin(name)) => Ok(CapabilityValue::IconSpec(
+                    crate::widget::icon_source::IconSpec::Builtin(name),
+                )),
+                // A borrowed static geometry has no document form, so the read refuses rather
+                // than reporting the logo as absent.
+                Some(crate::widget::IconSource::StaticGeometry(_)) => {
+                    Err(CapabilityAccessError::IconSourceNotPersistable)
+                }
+            },
             _ => base_property_get(self, name),
         }
     }
@@ -475,12 +488,35 @@ impl WidgetProperties for SplashScreen {
                 self.set_skippable(expect_bool(value)?);
                 Ok(())
             }
+            "logo" => match value {
+                CapabilityValue::Null => {
+                    self.set_logo(None);
+                    Ok(())
+                }
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)) => {
+                    self.set_logo(Some(crate::widget::IconSource::Builtin(name)));
+                    Ok(())
+                }
+                // A resource descriptor needs the host's resolver, which a property write does not
+                // have.
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                    ..
+                }) => Err(CapabilityAccessError::ResourceResolutionRequired),
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "subtitle", "progress", "skippable", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "title",
+            "subtitle",
+            "progress",
+            "skippable",
+            "logo",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `splash_screen` publishes.
@@ -495,7 +531,7 @@ impl WidgetProperties for SplashScreen {
                 self.finish();
                 Ok(())
             }
-            "set_progress" | "set_title" => Err(CapabilityAccessError::OutOfRange),
+            "set_progress" | "set_title" | "set_logo" => Err(CapabilityAccessError::OutOfRange),
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }

@@ -25,7 +25,7 @@ use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::{expect_bool, expect_string};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_string_list};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -492,6 +492,13 @@ impl Widget for Banner {
 impl WidgetProperties for Banner {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The action labels as a positional list (BLUE26 B26.09): `set_actions` takes a list
+            // the bare command channel cannot carry, so the list is the property and
+            // `set_actions` is its published command form. Labels may repeat, so it is a
+            // `StringList` rather than `Records`.
+            "actions" => Ok(CapabilityValue::Tuple(
+                self.actions.iter().map(|action| CapabilityValue::String(action.clone())).collect(),
+            )),
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "severity" => Ok(CapabilityValue::String(self.severity().token().to_string())),
             "dismissible" => Ok(CapabilityValue::Bool(self.dismissible())),
@@ -518,6 +525,10 @@ impl WidgetProperties for Banner {
                 self.set_dismissible(expect_bool(value)?);
                 Ok(())
             }
+            "actions" => {
+                self.set_actions(expect_string_list(value)?);
+                Ok(())
+            }
             // A record of what the user did, and a derived count.
             "dismissed" | "action_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -526,6 +537,7 @@ impl WidgetProperties for Banner {
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "actions",
             "text",
             "severity",
             "dismissible",
@@ -541,8 +553,9 @@ impl WidgetProperties for Banner {
     /// for a new message. `dismiss` runs the real `dismiss`, which reports
     /// `false` when the banner is already acknowledged or offers no dismiss
     /// affordance, so that case is answered as needing one rather than as a
-    /// successful acknowledgement. `set_actions` and `activate_action` need the
-    /// labels and the action index respectively.
+    /// successful acknowledgement. `set_actions` carries its labels through the
+    /// `actions` StringList property (B26.03); `activate_action` acts on the
+    /// published payload-free rule.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "show" => {
@@ -797,6 +810,35 @@ mod tests {
 
     fn banner() -> Banner {
         Banner::new(Rect::new(0, 0, 400, 48))
+    }
+
+    /// `actions` round-trips through the `StringList` property.
+    ///
+    /// This is the payload channel `set_actions` never had (B26.03).
+    #[test]
+    fn actions_round_trip_through_the_property() {
+        let mut banner = banner();
+        banner
+            .set(
+                "actions",
+                CapabilityValue::Tuple(vec![
+                    CapabilityValue::String(String::from("Retry")),
+                    CapabilityValue::String(String::from("Dismiss")),
+                ]),
+            )
+            .expect("a label list is accepted");
+        assert_eq!(banner.actions(), &["Retry", "Dismiss"]);
+        assert_eq!(
+            banner.get("actions"),
+            Ok(CapabilityValue::Tuple(vec![
+                CapabilityValue::String(String::from("Retry")),
+                CapabilityValue::String(String::from("Dismiss")),
+            ]))
+        );
+        assert_eq!(
+            banner.set("actions", CapabilityValue::String(String::from("Retry"))),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
     }
 
     /// A collection point for signal payloads, so a test can assert on what a

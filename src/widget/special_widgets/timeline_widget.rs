@@ -29,6 +29,65 @@ pub struct TimelineItem {
     pub end: i64,
 }
 
+/// The declared shape of one timeline entry, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `items` property, and the control owns both ends of it: the field
+/// names are [`TimelineItem`]'s own fields. Every field is required because every one of them is
+/// what the bar is laid out and drawn from.
+pub const TIMELINE_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "label",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "start",
+                crate::widget::capability::PropertyValueKind::Int,
+            ),
+            crate::widget::capability::RecordField::required(
+                "end",
+                crate::widget::capability::PropertyValueKind::Int,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`TIMELINE_ITEM_SCHEMA`].
+fn timeline_item_record(item: &TimelineItem) -> crate::widget::capability::RecordValue {
+    crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(item.id.clone()))
+        .with("label", CapabilityValue::String(item.label.clone()))
+        .with("start", CapabilityValue::Int(item.start))
+        .with("end", CapabilityValue::Int(item.end))
+}
+
+/// Rebuilds one [`TimelineItem`] from a row of [`TIMELINE_ITEM_SCHEMA`].
+fn timeline_item_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<TimelineItem, CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let number = |name: &str| match record.get(name) {
+        Some(CapabilityValue::Int(value)) => Ok(*value),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(TimelineItem {
+        id: text("id")?,
+        label: text("label")?,
+        start: number("start")?,
+        end: number("end")?,
+    })
+}
+
 /// How items are assigned to rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimelineLaneMode {
@@ -697,6 +756,15 @@ impl Widget for TimelineWidget {
 impl WidgetProperties for TimelineWidget {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The whole item list as records (BLUE26 B26.09): `set_items` takes a list the bare
+            // command channel cannot carry, so the list is the property and `set_items` is its
+            // published command form.
+            "items" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &TIMELINE_ITEM_SCHEMA,
+                    self.items().iter().map(timeline_item_record).collect::<Vec<_>>(),
+                )))
+            }
             "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
             "selected_index" => match self.selected_index() {
                 Some(index) => Ok(CapabilityValue::UInt(index as u64)),
@@ -759,12 +827,34 @@ impl WidgetProperties for TimelineWidget {
                 Ok(())
             }
             "item_count" | "selected_index" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // A whole-list replacement through the control's own `set_items`, which clears the
+            // selection and bumps the layout revision.
+            "items" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&TIMELINE_ITEM_SCHEMA).map_err(|violation| {
+                    log::warn!("timeline_widget.items refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("items"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let items = list.items().iter().map(timeline_item_from_record).collect::<Result<
+                    Vec<_>,
+                    CapabilityAccessError,
+                >>(
+                )?;
+                self.set_items(items);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "items",
             "item_count",
             "selected_index",
             "viewport_start",

@@ -471,6 +471,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::ListBox => match property_name {
+            // A fresh list box has no rows; the empty list is what a dropped binding resets to.
+            "items" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "item_count" => CapabilityValue::UInt(0),
             "selection_mode" => CapabilityValue::String("single".to_string()),
             "current_row" => CapabilityValue::Null,
@@ -628,8 +630,15 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::TabBar => match property_name {
+            // A fresh strip has no tabs; the empty list of the declared schema is what a dropped
+            // binding resets to (`Null` would be a value the property's schema refuses).
+            "tabs" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::advanced_widgets::tab_bar::TAB_BAR_TAB_SCHEMA,
+            )),
             "tab_count" => CapabilityValue::UInt(0),
-            "current_index" => CapabilityValue::UInt(0),
+            // A freshly built strip has no tabs, so no tab is selected: `Null` is the honest
+            // default, and writing it clears the index.
+            "current_index" => CapabilityValue::Null,
             "closable" => CapabilityValue::Bool(false),
             "movable" => CapabilityValue::Bool(false),
             "tab_min_width" => CapabilityValue::UInt(40),
@@ -704,6 +713,12 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::ListView => match property_name {
+            // `notification_center` is served by this kind; a fresh center has no rows. The empty
+            // list of the declared schema is what a dropped binding resets to. (A plain `ListView`
+            // has no `items` property, so this answer is never reached for it.)
+            "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::notification_center::NOTIFICATION_ITEM_SCHEMA,
+            )),
             "icon_visible_in_list_mode" => CapabilityValue::Bool(false),
             "has_model" => CapabilityValue::Bool(false),
             "row_count" => CapabilityValue::UInt(0),
@@ -714,6 +729,11 @@ pub fn default_widget_property_default_value(
             // (`command_palette`, `notification_center`). Defaults are keyed by
             // kind, so the arm must answer for every capability that reports it;
             // each control's own `get` answers its real value.
+            // `command_palette` shares this kind; a fresh palette has no entries. The empty list
+            // of the declared schema is what a dropped binding resets to.
+            "entries" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::command_palette::COMMAND_ENTRY_SCHEMA,
+            )),
             "query" => CapabilityValue::String(String::new()),
             "entry_count" => CapabilityValue::UInt(0),
             "filtered_count" => CapabilityValue::UInt(0),
@@ -860,6 +880,9 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Banner => match property_name {
+            // A fresh banner has no action buttons; the empty list is what a dropped binding
+            // resets to.
+            "actions" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "text" => CapabilityValue::String(String::new()),
             "severity" => CapabilityValue::String("info".to_string()),
             "dismissible" => CapabilityValue::Bool(true),
@@ -922,6 +945,8 @@ pub fn default_widget_property_default_value(
             // `Null` is the indeterminate state, matching `SplashScreen::new`.
             "progress" => CapabilityValue::Null,
             "skippable" => CapabilityValue::Bool(false),
+            // No logo is the default accent block `SplashScreen::new` paints.
+            "logo" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::Pagination => match property_name {
@@ -936,6 +961,11 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Menu => match property_name {
+            // A fresh menu has no rows; the empty list of the declared schema is what a dropped
+            // binding resets to (`Null` would be a value the property's schema refuses).
+            "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::menu_toolbar::menu::MENU_ITEM_SCHEMA,
+            )),
             "title" => CapabilityValue::String(String::new()),
             "item_count" => CapabilityValue::UInt(0),
             "hovered_index" => CapabilityValue::Null,
@@ -947,12 +977,22 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::MenuBar => match property_name {
+            // A fresh bar has no entries; the empty list of the declared schema is what a dropped
+            // binding resets to.
+            "entries" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::menu_toolbar::menu_bar::MENU_BAR_ENTRY_SCHEMA,
+            )),
             "entry_count" => CapabilityValue::UInt(0),
             "active_index" => CapabilityValue::Null,
             "hovered_index" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::ToolBar => match property_name {
+            // A fresh strip has no items; the empty list of the declared schema is what a dropped
+            // binding resets to.
+            "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::menu_toolbar::tool_bar::TOOL_BAR_ITEM_SCHEMA,
+            )),
             "orientation" => CapabilityValue::String("horizontal".to_string()),
             "icon_size" => CapabilityValue::Float(24.0),
             "movable" => CapabilityValue::Bool(true),
@@ -966,6 +1006,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::RibbonBar => match property_name {
+            // A fresh ribbon has no tabs; the empty list is what a dropped binding resets to.
+            "tabs" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "tab_count" => CapabilityValue::UInt(0),
             "current_tab" => CapabilityValue::UInt(0),
             "expanded" => CapabilityValue::Bool(true),
@@ -1006,6 +1048,13 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::RichEdit => match property_name {
+            // `rich_edit` and `code_editor` share this kind; a fresh editor has no diagnostic
+            // markers, and the empty list of the declared schema is what a dropped binding resets
+            // to. (A plain `RichEdit` has no `markers` property, so this answer is never reached
+            // for it.)
+            "markers" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::code_editor::DIAGNOSTIC_MARKER_SCHEMA,
+            )),
             "text" => CapabilityValue::String(String::new()),
             "line_count" => CapabilityValue::UInt(0),
             "cursor_line" => CapabilityValue::UInt(0),
@@ -1034,6 +1083,12 @@ pub fn default_widget_property_default_value(
             "selected_marker_id" => CapabilityValue::Null,
             "viewport_start" => CapabilityValue::Int(0),
             "viewport_end" => CapabilityValue::Int(100),
+            // `timeline_widget` shares this kind; its item list is records of the declared schema
+            // and the empty list is what a dropped binding resets to. (No other Chart-kind
+            // capability declares an `items` property, so this answer is never reached for them.)
+            "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::timeline_widget::TIMELINE_ITEM_SCHEMA,
+            )),
             // `timeline_widget` shares this kind; see the `ListView` note above.
             "item_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
@@ -1074,6 +1129,12 @@ pub fn default_widget_property_default_value(
         WidgetKind::Canvas => match property_name {
             // `canvas`
             "command_count" => CapabilityValue::UInt(0),
+            // `map_view` — a fresh map has no markers; the empty list is what a dropped binding
+            // resets to. (A plain `Canvas` has no `markers` property, so this answer is never
+            // reached for it.)
+            "markers" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::map_view::MAP_MARKER_SCHEMA,
+            )),
             // `map_view`
             "center_x" => CapabilityValue::Float(0.0),
             "center_y" => CapabilityValue::Float(0.0),
@@ -1193,6 +1254,11 @@ pub fn default_widget_property_default_value(
         // collision hides — neither control declares the other's properties, but the shared arm
         // made `capability_by_kind` unable to say which was which.
         WidgetKind::SegmentedControl => match property_name {
+            // A fresh control has no segments, and the empty list of the declared schema is what a
+            // dropped binding resets to (`Null` would be a value the property's schema refuses).
+            "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::segmented_control::SEGMENT_ITEM_SCHEMA,
+            )),
             "item_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
             "selected_id" => CapabilityValue::Null,
@@ -1276,6 +1342,8 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Dropdown => match property_name {
+            // A fresh dropdown has no rows; the empty list is what a dropped binding resets to.
+            "items" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "text" => CapabilityValue::String(String::new()),
             "selected_index" => CapabilityValue::UInt(0),
             "item_count" => CapabilityValue::UInt(0),
@@ -1384,6 +1452,9 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Cascader => match property_name {
+            // Nothing is selected on a fresh control; the empty index sequence is what a dropped
+            // binding resets to.
+            "selected_path" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "value" => CapabilityValue::String(String::new()),
             "depth" => CapabilityValue::UInt(0),
             // Mirrors `Cascader::new`.
@@ -1395,6 +1466,14 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::QueryBuilder => match property_name {
+            // A fresh builder has neither fields nor rows; the empty lists of the declared schemas
+            // are what a dropped binding resets to.
+            "fields" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::view_widgets::query_builder::FILTER_FIELD_SCHEMA,
+            )),
+            "rows" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::view_widgets::query_builder::QUERY_ROW_SCHEMA,
+            )),
             "live_update" => CapabilityValue::Bool(true),
             "commit_delay_ms" => CapabilityValue::UInt(300),
             "has_pending_commit" => CapabilityValue::Bool(false),
@@ -1407,6 +1486,12 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::EmojiPicker => match property_name {
+            // A fresh picker has no glyphs and no tabs; the empty values are what a dropped
+            // binding resets to.
+            "glyphs" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::display_widgets::emoji_picker::EMOJI_GLYPH_SCHEMA,
+            )),
+            "categories" => CapabilityValue::Tuple(crate::compat::Vec::new()),
             "glyph_count" => CapabilityValue::UInt(0),
             "visible_glyph_count" => CapabilityValue::UInt(0),
             "tab_count" => CapabilityValue::UInt(0),
@@ -1417,6 +1502,11 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::Mention => match property_name {
+            // A fresh control has no candidates; the empty list of the declared schema is what a
+            // dropped binding resets to.
+            "candidates" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::input_widgets::mention::MENTION_CANDIDATE_SCHEMA,
+            )),
             "text" => CapabilityValue::String(String::new()),
             // Mirrors `Mention::new`.
             "trigger" => CapabilityValue::String("@".to_string()),
@@ -1431,6 +1521,14 @@ pub fn default_widget_property_default_value(
             _ => return None,
         },
         WidgetKind::MiniChart => match property_name {
+            // A fresh chart has no samples; the empty list of the declared schema is what a dropped
+            // binding resets to.
+            "data" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::display_widgets::mini_chart::MINI_CHART_DATA_SCHEMA,
+            )),
+            // Mirrors `MiniChart::new`'s axis bounds.
+            "min_value" => CapabilityValue::UInt(0),
+            "max_value" => CapabilityValue::UInt(100),
             "chart_type" => CapabilityValue::String("line".to_string()),
             _ => return None,
         },
@@ -2026,6 +2124,11 @@ pub fn default_widget_property_default_value(
 
         // ── New widgets (menu/toolbar) ───────────────────────────
         WidgetKind::ToolButton => match property_name {
+            // A fresh split button has no actions; the empty list of the declared schema is what a
+            // dropped binding resets to.
+            "actions" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::split_button::SPLIT_ACTION_SCHEMA,
+            )),
             "text" => CapabilityValue::String(String::new()),
             "checked" => CapabilityValue::Bool(false),
             "icon_source" => CapabilityValue::Null,
@@ -2162,6 +2265,11 @@ pub fn default_widget_property_default_value(
 
         // ── New widgets (view / property) ───────────────────────────
         WidgetKind::PropertyGrid => match property_name {
+            // A fresh grid has no rows; the empty list of the declared schema is what a dropped
+            // binding resets to.
+            "properties" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::view_widgets::property_grid::PROPERTY_ITEM_SCHEMA,
+            )),
             "property_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
             _ => return None,

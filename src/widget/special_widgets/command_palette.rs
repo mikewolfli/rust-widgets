@@ -29,6 +29,95 @@ pub struct CommandEntry {
     pub shortcut: Option<String>,
 }
 
+/// The declared shape of one palette entry, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `entries` property, and the control owns both ends of it: the
+/// field names are [`CommandEntry`]'s own fields. `id` and `title` are required because
+/// [`CommandEntry::new`] requires them; `category`, `keywords` and `shortcut` are optional
+/// because an entry that omits them is the ordinary command.
+pub const COMMAND_ENTRY_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "title",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "category",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "keywords",
+                crate::widget::capability::PropertyValueKind::StringList,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "shortcut",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+        ],
+        id_field: "id",
+        ids_unique: true,
+        ids_required: true,
+    };
+
+/// One row of [`COMMAND_ENTRY_SCHEMA`].
+fn command_entry_record(entry: &CommandEntry) -> crate::widget::capability::RecordValue {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(entry.id.clone()))
+        .with("title", CapabilityValue::String(entry.title.clone()))
+        .with("category", CapabilityValue::String(entry.category.clone()))
+        .with(
+            "keywords",
+            CapabilityValue::Tuple(
+                entry
+                    .keywords
+                    .iter()
+                    .map(|keyword| CapabilityValue::String(keyword.clone()))
+                    .collect(),
+            ),
+        );
+    if let Some(shortcut) = &entry.shortcut {
+        record = record.with("shortcut", CapabilityValue::String(shortcut.clone()));
+    }
+    record
+}
+
+/// Rebuilds one [`CommandEntry`] from a row of [`COMMAND_ENTRY_SCHEMA`].
+fn command_entry_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<CommandEntry, CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let category = match record.get("category") {
+        None | Some(CapabilityValue::Null) => String::new(),
+        Some(CapabilityValue::String(category)) => category.clone(),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let keywords = match record.get("keywords") {
+        None | Some(CapabilityValue::Null) => Vec::new(),
+        Some(CapabilityValue::Tuple(items)) => items
+            .iter()
+            .map(|item| match item {
+                CapabilityValue::String(keyword) => Ok(keyword.clone()),
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            })
+            .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let shortcut = match record.get("shortcut") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::String(shortcut)) => Some(shortcut.clone()),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(CommandEntry { id: text("id")?, title: text("title")?, category, keywords, shortcut })
+}
+
 impl CommandEntry {
     /// Creates a command entry with id and title.
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
@@ -673,6 +762,15 @@ impl Widget for CommandPalette {
 impl WidgetProperties for CommandPalette {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The whole entry list as records (BLUE26 B26.09): `set_entries` takes a list the bare
+            // command channel cannot carry, so the list is the property and `set_entries` is its
+            // published command form.
+            "entries" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &COMMAND_ENTRY_SCHEMA,
+                    self.entries().iter().map(command_entry_record).collect::<Vec<_>>(),
+                )))
+            }
             "query" => Ok(CapabilityValue::String(self.query().to_string())),
             "entry_count" => Ok(CapabilityValue::UInt(self.entries().len() as u64)),
             "filtered_count" => Ok(CapabilityValue::UInt(self.filtered_count() as u64)),
@@ -714,12 +812,34 @@ impl WidgetProperties for CommandPalette {
             "entry_count" | "filtered_count" | "highlighted_index" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
             }
+            // A whole-list replacement through the control's own `set_entries`, which keeps the
+            // query and re-filters.
+            "entries" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&COMMAND_ENTRY_SCHEMA).map_err(|violation| {
+                    log::warn!("command_palette.entries refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("entries"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let entries = list.items().iter().map(command_entry_from_record).collect::<Result<
+                    Vec<_>,
+                    CapabilityAccessError,
+                >>(
+                )?;
+                self.set_entries(entries);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "entries",
             "query",
             "entry_count",
             "filtered_count",
@@ -737,8 +857,9 @@ impl WidgetProperties for CommandPalette {
     /// palette that has been cleared or filtered down to nothing has none, so that
     /// case reports [`CapabilityAccessError::OutOfRange`] — the same "nothing to act
     /// on" answer used elsewhere in the crate rather than a success for a command that
-    /// ran nothing. `move_highlight` takes a signed delta whose direction cannot be
-    /// inferred, and the `set_*` names carry their values.
+    /// ran nothing. `set_entries` carries its list through the `entries` records
+    /// property (B26.03); `move_highlight` takes a signed delta whose direction cannot
+    /// be inferred and has no property route.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "clear_query" => {

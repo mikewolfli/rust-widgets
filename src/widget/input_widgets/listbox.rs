@@ -10,8 +10,8 @@ use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 
 use crate::widget::capability::coercion::{
-    expect_f32, expect_horizontal_alignment, expect_list_box_selection_mode, expect_usize,
-    horizontal_alignment_to_str,
+    expect_f32, expect_horizontal_alignment, expect_list_box_selection_mode, expect_string_list,
+    expect_usize, horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -1396,6 +1396,9 @@ impl DropTarget for ListBox {
 impl WidgetProperties for ListBox {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            "items" => Ok(CapabilityValue::Tuple(
+                self.items().iter().map(|item| CapabilityValue::String(item.clone())).collect(),
+            )),
             "item_count" => Ok(CapabilityValue::UInt(self.count() as u64)),
             "selection_mode" => Ok(CapabilityValue::String(
                 list_box_selection_mode_to_str(self.selection_mode()).to_string(),
@@ -1460,6 +1463,15 @@ impl WidgetProperties for ListBox {
                 self.set_alignment(expect_horizontal_alignment(value)?);
                 Ok(())
             }
+            // A whole-list replacement: the control's own `clear` + `add_items` is the path, so the
+            // per-row meta is reset to its default exactly as `add_items` does, and the row caches
+            // are invalidated in one place rather than restated here.
+            "items" => {
+                let items = expect_string_list(value)?;
+                self.clear();
+                self.add_items(items);
+                Ok(())
+            }
             // `item_count`, `selected_count`, `selected_indices`, `hovered_row` and `font_size`
             // are derived from the item list, the selection or the row height.
             "item_count" | "selected_count" | "selected_indices" | "hovered_row" | "font_size" => {
@@ -1472,6 +1484,7 @@ impl WidgetProperties for ListBox {
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `LIST_BOX_PROPERTIES`.
         property_names_of![
+            "items",
             "item_count",
             "selection_mode",
             "current_row",
@@ -1489,8 +1502,9 @@ impl WidgetProperties for ListBox {
     ///
     /// `clear` and `clear_selection` are payload-free and operate on live state,
     /// so they execute here. `add_item` / `remove_item` need text or an index and
-    /// `set_selection_mode` needs a mode; those are answered through the property
-    /// route, so a payload-less call reports `OutOfRange` as elsewhere.
+    /// `set_selection_mode` needs a mode; `set_items` carries a list. `set_items`
+    /// travels through the `items` property (B26.03); the other three have no
+    /// property route, so a payload-less call reports `OutOfRange` as elsewhere.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "clear" => {
@@ -1501,7 +1515,7 @@ impl WidgetProperties for ListBox {
                 self.clear_selection();
                 Ok(())
             }
-            "add_item" | "remove_item" | "set_selection_mode" => {
+            "add_item" | "remove_item" | "set_selection_mode" | "set_items" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
             _ => Err(CapabilityAccessError::UnknownCommand),
@@ -2692,5 +2706,41 @@ mod tests {
         list.handle_event(&Event::KeyPress { key: 113, modifiers: 0 }); // F2
         assert_eq!(requested.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(list.item(1), Some("Item 1"), "the label is the host's to change");
+    }
+
+    /// `items` round-trips through the `StringList` property.
+    ///
+    /// This is the payload channel `add_item`/`remove_item` never had (B26.03): a document spells the
+    /// whole row list and reads it back unchanged.
+    #[test]
+    fn items_round_trip_through_the_property() {
+        let mut list = listbox_with(2);
+        assert_eq!(
+            list.get("items").unwrap(),
+            CapabilityValue::Tuple(vec![
+                CapabilityValue::String("Item 0".to_string()),
+                CapabilityValue::String("Item 1".to_string()),
+            ])
+        );
+
+        list.set(
+            "items",
+            CapabilityValue::Tuple(vec![
+                CapabilityValue::String("First".to_string()),
+                CapabilityValue::String("First".to_string()),
+                CapabilityValue::String("Third".to_string()),
+            ]),
+        )
+        .unwrap();
+        // Duplicate labels are legal; the list is positional, which is why it is not `Records`.
+        assert_eq!(list.items(), &["First", "First", "Third"]);
+        assert_eq!(list.get("item_count").unwrap(), CapabilityValue::UInt(3));
+
+        // A non-list value is a type mismatch, not a silently coerced single row.
+        assert_eq!(
+            list.set("items", CapabilityValue::String("First".to_string())),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
+        assert_eq!(list.items().len(), 3, "a refused write changes nothing");
     }
 }

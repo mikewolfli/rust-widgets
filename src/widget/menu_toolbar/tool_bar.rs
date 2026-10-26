@@ -128,6 +128,159 @@ pub struct ToolBarItem {
     /// Keeping it as an item is what makes it addressable by index and by `save_state`.
     line_break: bool,
 }
+/// The declared shape of one toolbar row, as a record (BLUE26 B26.09).
+///
+/// This is the row shape of the `items` property, and the control owns both ends of it: the field
+/// names are [`ToolBarItem`]'s own accessors. `id` is required because it is what
+/// `action_triggered` carries; `text` is optional because a separator has none.
+pub const TOOL_BAR_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "id",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "text",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "tooltip",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "checkable",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "checked",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "enabled",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "separator",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon_source",
+                crate::widget::capability::PropertyValueKind::IconSpec,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "icon_size",
+                crate::widget::capability::PropertyValueKind::UInt,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "line_break",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
+        ],
+        // A separator carries the empty id, so the id must be allowed to be empty; uniqueness is
+        // still enforced for non-empty ids (two actions may not share one).
+        id_field: "id",
+        ids_unique: true,
+        ids_required: false,
+    };
+
+/// One row of [`TOOL_BAR_ITEM_SCHEMA`]; refuses a source with no document form.
+fn tool_bar_item_record(
+    item: &ToolBarItem,
+) -> Result<crate::widget::capability::RecordValue, CapabilityAccessError> {
+    let mut record = crate::widget::capability::RecordValue::new()
+        .with("id", CapabilityValue::String(item.id().to_string()))
+        .with("text", CapabilityValue::String(item.text().to_string()))
+        .with("tooltip", CapabilityValue::String(item.tooltip().to_string()))
+        .with("checkable", CapabilityValue::Bool(item.is_checkable()))
+        .with("checked", CapabilityValue::Bool(item.is_checked()))
+        .with("enabled", CapabilityValue::Bool(item.is_enabled()))
+        .with("separator", CapabilityValue::Bool(item.is_separator()))
+        .with("line_break", CapabilityValue::Bool(item.is_line_break()));
+    if let Some(icon) = item.icon.as_deref() {
+        record = record.with("icon", CapabilityValue::String(icon.to_string()));
+    }
+    if let Some(size) = item.icon_size() {
+        record = record.with("icon_size", CapabilityValue::UInt(u64::from(size)));
+    }
+    match item.icon_source() {
+        None => {}
+        Some(IconSource::Builtin(name)) => {
+            record = record.with(
+                "icon_source",
+                CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)),
+            );
+        }
+        // A borrowed static geometry has no document form, so the read refuses rather than
+        // reporting the row as icon-less.
+        Some(IconSource::StaticGeometry(_)) => {
+            return Err(CapabilityAccessError::IconSourceNotPersistable)
+        }
+    }
+    Ok(record)
+}
+
+/// Rebuilds one [`ToolBarItem`] from a row of [`TOOL_BAR_ITEM_SCHEMA`].
+fn tool_bar_item_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<ToolBarItem, CapabilityAccessError> {
+    let string_field = |name: &str| match record.get(name) {
+        None | Some(CapabilityValue::Null) => Ok(String::new()),
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        Some(_) => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let bool_field = |name: &str, default: bool| match record.get(name) {
+        None | Some(CapabilityValue::Null) => Ok(default),
+        Some(CapabilityValue::Bool(flag)) => Ok(*flag),
+        Some(_) => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let icon_size = match record.get("icon_size") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::UInt(size)) => {
+            Some(u32::try_from(*size).map_err(|_| CapabilityAccessError::TypeMismatch)?)
+        }
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let icon_source = match record.get("icon_source") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name))) => {
+            Some(IconSource::Builtin(*name))
+        }
+        // A resource descriptor needs the host's resolver, which a property write does not have.
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+            ..
+        })) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+
+    let id = match record.get("id") {
+        Some(CapabilityValue::String(id)) => id.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let text = string_field("text")?;
+    let mut item = ToolBarItem::new(id, text);
+    item.set_tooltip(string_field("tooltip")?);
+    item.set_checkable(bool_field("checkable", false)?);
+    item.set_checked(bool_field("checked", false)?);
+    item.set_enabled(bool_field("enabled", true)?);
+    item.set_separator(bool_field("separator", false)?);
+    // `line_break` and the text-icon slot have no setter of their own (the constructors
+    // `line_break()` / `separator()` are the control's public spellings), so the row writes the
+    // fields directly — this is the same module that owns them.
+    item.line_break = bool_field("line_break", false)?;
+    let icon = string_field("icon")?;
+    if !icon.is_empty() {
+        item.icon = Some(icon);
+    }
+    item.set_icon_size(icon_size);
+    item.set_icon_source(icon_source);
+    Ok(item)
+}
+
 impl ToolBarItem {
     /// Creates an enabled, unchecked, non-separator item.
     ///
@@ -1555,6 +1708,18 @@ impl Widget for ToolBar {
 impl WidgetProperties for ToolBar {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The whole strip as records (BLUE26 B26.09): `add_action`/`add_separator` take
+            // arguments the bare command channel cannot carry, so the list is the property and
+            // `set_items` is its published command form.
+            "items" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &TOOL_BAR_ITEM_SCHEMA,
+                    self.items
+                        .iter()
+                        .map(tool_bar_item_record)
+                        .collect::<Result<Vec<_>, CapabilityAccessError>>()?,
+                )))
+            }
             "orientation" => Ok(CapabilityValue::String(
                 tool_bar_orientation_to_str(self.orientation()).to_string(),
             )),
@@ -1587,12 +1752,40 @@ impl WidgetProperties for ToolBar {
             // Derived from the item list, which is mutated through `add_action` /
             // `add_separator` rather than by assigning a count.
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // A whole-strip replacement. Checked in full before anything is replaced, then rebuilt
+            // through the control's own `clear` + `add_action`, so the overflow clamp and the
+            // action-link bookkeeping stay in one place.
+            "items" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&TOOL_BAR_ITEM_SCHEMA).map_err(|violation| {
+                    log::warn!("tool_bar.items refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("items"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut items = Vec::with_capacity(list.len());
+                for record in list.items() {
+                    items.push(tool_bar_item_from_record(record)?);
+                }
+                self.clear();
+                for item in items {
+                    let index = self.add_action(item.id().to_string(), item.text().to_string());
+                    if let Some(target) = self.items.get_mut(index) {
+                        *target = item;
+                    }
+                }
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
+            "items",
             "orientation",
             "icon_size",
             "movable",
@@ -1616,7 +1809,14 @@ impl WidgetProperties for ToolBar {
                 self.clear();
                 Ok(())
             }
-            "add_action" | "add_separator" => Err(CapabilityAccessError::OutOfRange),
+            "add_action" => Err(CapabilityAccessError::OutOfRange),
+            "set_items" => Err(CapabilityAccessError::OutOfRange),
+            // `add_separator` takes no argument, so the command appends one through the
+            // control's own builder instead of refusing a call it can honor.
+            "add_separator" => {
+                self.add_separator();
+                Ok(())
+            }
             // Any other `set_foo` name carries its value through the property route,
             // so the shared default reports that a payload is needed rather than
             // claiming the control has never heard of it.
@@ -2078,6 +2278,19 @@ mod tests {
     /// asserts the sequence directly: each item's leading edge is the previous one's trailing edge
     /// plus the toolbar's own spacing, so an item that grew (a wider icon) moves every later one
     /// rather than overlapping it.
+    #[test]
+    fn the_add_separator_command_appends_through_the_command_channel() {
+        let mut tool_bar = ToolBar::new(Rect::new(0, 0, 240, 36));
+        tool_bar.add_action("save", "Save");
+        assert!(tool_bar.command("add_separator").is_ok());
+        assert!(
+            tool_bar.items().last().expect("an item was appended").is_separator(),
+            "the command appends the control's own separator"
+        );
+        // The payload-bearing sibling still needs its action list.
+        assert_eq!(tool_bar.command("add_action"), Err(CapabilityAccessError::OutOfRange));
+    }
+
     #[test]
     fn the_items_tile_the_strip_in_sequence() {
         // The band is the strip's own height, clamped to whatever the control was given: a census

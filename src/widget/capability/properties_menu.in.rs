@@ -29,6 +29,14 @@ macro_rules! impl_properties_menu {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const MENU_PROPERTIES: &[PropertySchema] = &[
+            // The entry list as records (BLUE26 B26.09): `add_action`/`add_separator` take
+            // arguments the property API cannot carry, so the list itself is the property.
+            PropertySchema::records(
+                "items",
+                true,
+                true,
+                &crate::widget::menu_toolbar::menu::MENU_ITEM_SCHEMA,
+            ),
             PropertySchema::new("title", PropertyValueKind::String, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("hovered_index", PropertyValueKind::UInt, true, false),
@@ -47,6 +55,14 @@ macro_rules! impl_properties_menu {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const MENU_BAR_PROPERTIES: &[PropertySchema] = &[
+            // The entries as records (BLUE26 B26.09): `add_menu`/`remove_menu` take arguments the
+            // property API cannot carry, so the list itself is the property.
+            PropertySchema::records(
+                "entries",
+                true,
+                true,
+                &crate::widget::menu_toolbar::menu_bar::MENU_BAR_ENTRY_SCHEMA,
+            ),
             PropertySchema::new("entry_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("active_index", PropertyValueKind::UInt, true, false),
             PropertySchema::new("hovered_index", PropertyValueKind::UInt, true, false),
@@ -58,6 +74,14 @@ macro_rules! impl_properties_menu {
 
         #[cfg(not(alloc_frugal))]
         pub(crate) const TOOL_BAR_PROPERTIES: &[PropertySchema] = &[
+            // The items as records (BLUE26 B26.09): `add_action`/`add_separator` take arguments
+            // the property API cannot carry, so the list itself is the property.
+            PropertySchema::records(
+                "items",
+                true,
+                true,
+                &crate::widget::menu_toolbar::tool_bar::TOOL_BAR_ITEM_SCHEMA,
+            ),
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
             PropertySchema::new("icon_size", PropertyValueKind::Float, true, true),
             PropertySchema::new("movable", PropertyValueKind::Bool, true, true),

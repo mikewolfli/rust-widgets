@@ -60,10 +60,25 @@ pub const PIE_MENU_ITEM_SCHEMA: crate::widget::capability::RecordSchema =
                 "enabled",
                 crate::widget::capability::PropertyValueKind::Bool,
             ),
+            // The shortcut label painted near the wedge's outer edge; absent means none.
+            crate::widget::capability::RecordField::optional(
+                "shortcut",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            // Whether the slot is a gap rather than a choice.
+            crate::widget::capability::RecordField::optional(
+                "separator",
+                crate::widget::capability::PropertyValueKind::Bool,
+            ),
         ],
         id_field: "id",
-        ids_unique: true,
-        ids_required: true,
+        // `id` is a `UInt`, and the list's identity rules read text only (`RecordValue::text`
+        // answers "" for a non-text field), so an enforced-unique rule here would report every
+        // row as an empty id. Uniqueness is enforced by the control's own `add_item_with_id`,
+        // which refuses a duplicate with `DuplicateItemId`; the write path maps that refusal to a
+        // constraint violation.
+        ids_unique: false,
+        ids_required: false,
     };
 
 /// One row of [`PIE_MENU_ITEM_SCHEMA`]; refuses a source with no document form.
@@ -91,7 +106,74 @@ fn pie_menu_item_record(
             return Err(CapabilityAccessError::IconSourceNotPersistable)
         }
     }
+    if let Some(shortcut) = item.shortcut() {
+        record = record.with("shortcut", CapabilityValue::String(shortcut.to_string()));
+    }
+    if item.is_separator() {
+        record = record.with("separator", CapabilityValue::Bool(true));
+    }
     Ok(record)
+}
+
+/// Rebuilds one [`PieMenuItem`] from a row of [`PIE_MENU_ITEM_SCHEMA`].
+///
+/// Child rings are **not** part of the schema: a record field cannot carry a nested record list
+/// (`value_matches_kind` refuses it), so a write rebuilds the flat top-level ring and the rows it
+/// declares carry no children — the same "the document is authoritative" rule a chip's omitted
+/// icon follows. A caller that needs nested rings keeps using the control's own API.
+fn pie_menu_item_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<PieMenuItem, CapabilityAccessError> {
+    let id = match record.get("id") {
+        Some(CapabilityValue::UInt(id)) => *id,
+        // `Int` is accepted as well: a JSON reader may hand an integral number either way.
+        Some(CapabilityValue::Int(id)) if *id >= 0 => *id as u64,
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let text = match record.get("text") {
+        Some(CapabilityValue::String(text)) => text.clone(),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let icon = match record.get("icon") {
+        None | Some(CapabilityValue::Null) => String::new(),
+        Some(CapabilityValue::String(icon)) => icon.clone(),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let enabled = match record.get("enabled") {
+        None | Some(CapabilityValue::Null) => true,
+        Some(CapabilityValue::Bool(flag)) => *flag,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let icon_source = match record.get("icon_source") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name))) => {
+            Some(IconSource::Builtin(*name))
+        }
+        // A resource descriptor needs the host's resolver, which a property write does not have.
+        Some(CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+            ..
+        })) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let shortcut = match record.get("shortcut") {
+        None | Some(CapabilityValue::Null) => None,
+        Some(CapabilityValue::String(shortcut)) => Some(shortcut.clone()),
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    let separator = match record.get("separator") {
+        None | Some(CapabilityValue::Null) => false,
+        Some(CapabilityValue::Bool(flag)) => *flag,
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+
+    let mut item = PieMenuItem::new(text);
+    item.id = id;
+    item.set_icon_text(icon);
+    item.set_icon_source(icon_source);
+    item.set_enabled(enabled);
+    item.set_shortcut(shortcut);
+    item.set_separator(separator);
+    Ok(item)
 }
 
 /// A single item in a `PieMenu`.
@@ -1260,10 +1342,50 @@ impl WidgetProperties for PieMenu {
             }
             // Derived from the item vector, so there is nothing to assign.
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
-            // The rows carry identity and recomputed slice angles, so a write would have to invent
-            // both. Refused with the standard read-only error; the control's own API is the write
-            // path. See `PIE_MENU_ITEM_SCHEMA`.
-            "items" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // The rows carry identity and recomputed slice angles. The write rebuilds the flat
+            // top-level ring through `add_existing_item`, which owns both normalisations — the id
+            // counter skips a pinned id, and the angles are recomputed — rather than restating
+            // either here. A row cannot express a child ring (`value_matches_kind` refuses a
+            // nested record list), so a write declares the top level and any existing submenu
+            // rings are replaced along with the rows they hung from.
+            "items" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                // Checked in full before anything is replaced, so a refused update leaves the live
+                // items untouched rather than half-swapped.
+                list.validate_against(&PIE_MENU_ITEM_SCHEMA).map_err(|violation| {
+                    log::warn!("pie_menu.items refused: {violation}");
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("items"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let mut items = Vec::with_capacity(list.len());
+                for record in list.items() {
+                    items.push(pie_menu_item_from_record(record)?);
+                }
+                // Uniqueness is the list's rule and the schema cannot express it for a `UInt`
+                // identity (its id reader is text-only), so it is enforced here before the swap.
+                let mut seen = Vec::new();
+                for item in &items {
+                    if item.id() != 0 && seen.contains(&item.id()) {
+                        return Err(CapabilityAccessError::ConstraintViolation {
+                            property: crate::compat::String::from("items"),
+                            reason: crate::compat::format!("duplicate id {} in items", item.id()),
+                        });
+                    }
+                    seen.push(item.id());
+                }
+                self.items.clear();
+                for item in items {
+                    self.add_existing_item(item);
+                }
+                self.hovered_index = None;
+                self.submenu_path.clear();
+                self.base.request_redraw();
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1289,7 +1411,7 @@ impl WidgetProperties for PieMenu {
     /// selects the item at that index, which likewise cannot be guessed.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
-            "add_item" | "remove_item" | "set_radius" | "set_current_index" => {
+            "add_item" | "remove_item" | "set_radius" | "set_current_index" | "set_items" => {
                 Err(CapabilityAccessError::OutOfRange)
             }
             _ => Err(CapabilityAccessError::UnknownCommand),
@@ -1750,22 +1872,17 @@ mod tests {
         );
     }
 
-    /// The row list is read-only: writing it would have to invent slice angles and could collide
-    /// two items on one id.
+    /// The row list is writable: the write rebuilds the ring through `add_existing_item`, which
+    /// recomputes the slice angles and advances the id counter past a pinned id.
     #[test]
-    fn the_items_record_is_read_only() {
-        use crate::widget::capability::{
-            widget_property_get, widget_property_set, CapabilityAccessError,
-        };
+    fn the_items_record_is_writable() {
+        use crate::widget::capability::{widget_property_get, widget_property_set};
 
         let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
         menu.add_item("Cut");
         let rows = widget_property_get(&menu, "items").expect("`items` is readable");
-        assert_eq!(
-            widget_property_set(&mut menu, "items", rows),
-            Err(CapabilityAccessError::ReadOnlyProperty)
-        );
-        assert_eq!(menu.item_count(), 1, "a refused write changes nothing");
+        assert_eq!(widget_property_set(&mut menu, "items", rows), Ok(()));
+        assert_eq!(menu.item_count(), 1);
     }
 
     /// The row survives the JSON round trip the designer performs: rows -> document -> rows.
@@ -2788,5 +2905,124 @@ mod tests {
         assert_eq!(menu.submenu_depth(), 1, "Escape unwinds one ring at a time");
         menu.close_submenu();
         assert_eq!(menu.submenu_depth(), 0);
+    }
+
+    /// `items` round-trips through the record property, including the fields the control owns.
+    ///
+    /// This is the payload channel `add_item`/`remove_item` never had (B26.03): a document spells
+    /// the whole ring, and the control's own `add_existing_item` recomputes the angles and advances
+    /// the id counter past a pinned id.
+    #[test]
+    fn items_round_trip_through_the_property() {
+        use crate::widget::capability::{RecordList, RecordValue, EMPTY_RECORD_SCHEMA};
+
+        let mut menu = PieMenu::new(Point::new(80, 80), 70.0);
+        let list = RecordList::from_items(
+            &EMPTY_RECORD_SCHEMA,
+            vec![
+                RecordValue::new()
+                    .with("id", CapabilityValue::UInt(7))
+                    .with("text", CapabilityValue::String(String::from("Copy")))
+                    .with("shortcut", CapabilityValue::String(String::from("Ctrl+C"))),
+                RecordValue::new()
+                    .with("id", CapabilityValue::UInt(8))
+                    .with("text", CapabilityValue::String(String::from("Paste")))
+                    .with("enabled", CapabilityValue::Bool(false)),
+                RecordValue::new()
+                    .with("id", CapabilityValue::UInt(9))
+                    .with("text", CapabilityValue::String(String::new()))
+                    .with("separator", CapabilityValue::Bool(true)),
+            ],
+        );
+        menu.set("items", CapabilityValue::Records(list)).expect("a well-formed ring is accepted");
+
+        assert_eq!(menu.item_count(), 3);
+        assert_eq!(menu.items()[0].id(), 7);
+        assert_eq!(menu.items()[0].shortcut(), Some("Ctrl+C"));
+        assert!(!menu.items()[1].is_enabled());
+        assert!(menu.items()[2].is_separator());
+        // The write goes through the control's own normalisation, so the ring is evenly divided.
+        assert!(menu.items()[0].angle_end() > menu.items()[0].angle_start());
+        // A pinned id pushes the auto-assignment counter past it.
+        assert_ne!(menu.add_item("Later"), 7);
+        assert_ne!(menu.add_item("Later still"), 9);
+
+        let CapabilityValue::Records(read_back) = menu.get("items").expect("the ring reads back")
+        else {
+            panic!("`items` must read as a record list");
+        };
+        assert_eq!(read_back.len(), 5);
+        assert!(matches!(
+            read_back.items()[0].get("shortcut"),
+            Some(CapabilityValue::String(shortcut)) if shortcut == "Ctrl+C"
+        ));
+        assert!(matches!(read_back.items()[2].get("separator"), Some(CapabilityValue::Bool(true))));
+    }
+
+    /// A malformed or duplicate-id list is refused **and the live ring is untouched**.
+    #[test]
+    fn a_malformed_item_list_is_refused_and_changes_nothing() {
+        use crate::widget::capability::{RecordList, RecordValue, EMPTY_RECORD_SCHEMA};
+
+        let mut menu = PieMenu::new(Point::new(80, 80), 70.0);
+        menu.add_item("Existing");
+        let before: Vec<String> = menu.items().iter().map(|item| item.text().to_string()).collect();
+
+        let broken = vec![
+            ("missing text", vec![RecordValue::new().with("id", CapabilityValue::UInt(1))]),
+            (
+                "unknown field",
+                vec![RecordValue::new()
+                    .with("id", CapabilityValue::UInt(1))
+                    .with("text", CapabilityValue::String(String::from("A")))
+                    .with("weight", CapabilityValue::UInt(1))],
+            ),
+            (
+                "duplicate id",
+                vec![
+                    RecordValue::new()
+                        .with("id", CapabilityValue::UInt(1))
+                        .with("text", CapabilityValue::String(String::from("A"))),
+                    RecordValue::new()
+                        .with("id", CapabilityValue::UInt(1))
+                        .with("text", CapabilityValue::String(String::from("B"))),
+                ],
+            ),
+        ];
+
+        for (reason, records) in broken {
+            let list = RecordList::from_items(&EMPTY_RECORD_SCHEMA, records);
+            let result = menu.set("items", CapabilityValue::Records(list));
+            assert!(
+                matches!(result, Err(CapabilityAccessError::ConstraintViolation { .. })),
+                "{reason} must be refused with a pointable constraint violation (got {result:?})"
+            );
+            let after: Vec<String> =
+                menu.items().iter().map(|item| item.text().to_string()).collect();
+            assert_eq!(after, before, "{reason} must change nothing");
+        }
+    }
+
+    /// `items` is published as a writable record property with its schema.
+    #[test]
+    fn the_items_property_is_published_with_its_record_schema() {
+        let menu = PieMenu::new(Point::new(80, 80), 70.0);
+        assert!(WidgetProperties::property_names(&menu).contains(&"items"));
+        let schema = crate::widget::capability::PIE_MENU_PROPERTIES
+            .iter()
+            .find(|schema| schema.name == "items")
+            .expect("`items` is declared by the capability table");
+        assert_eq!(schema.value_kind, crate::widget::capability::PropertyValueKind::Records);
+        assert!(schema.readable && schema.writable);
+        let record_schema = schema.record_schema.expect("a `Records` schema names its shape");
+        assert_eq!(record_schema.id_field, "id");
+        assert_eq!(
+            record_schema.names(),
+            vec!["id", "text", "icon", "icon_source", "enabled", "shortcut", "separator"]
+        );
+        // The identity field is a `UInt`; the list-level unique/required rules read text only, so
+        // the control enforces uniqueness itself and the schema does not claim otherwise.
+        assert!(!record_schema.ids_unique && !record_schema.ids_required);
+        assert_eq!(record_schema, &PIE_MENU_ITEM_SCHEMA);
     }
 }

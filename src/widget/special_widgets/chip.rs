@@ -8,7 +8,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::{MotionSlot, PropertyDriver};
-use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -605,6 +605,29 @@ impl Chip {
         self.focused_index.filter(|index| *index < self.items.len())
     }
 
+    /// Sets the focused chip index.
+    ///
+    /// A disabled chip is not a focus stop (see [`Chip::move_focus`]) and an out-of-range index
+    /// names nothing, so both are refused rather than clamped: a property write that silently
+    /// landed somewhere else would read back a focus the caller never asked for.
+    pub fn set_focused_index(&mut self, index: usize) -> bool {
+        match self.items.get(index) {
+            Some(item) if item.enabled => {
+                self.focused_index = Some(index);
+                self.base.request_redraw();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Clears the focused chip index.
+    pub fn clear_focused_index(&mut self) {
+        if self.focused_index.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
     /// Returns ids of selected chips.
     pub fn selected_ids(&self) -> Vec<&str> {
         self.items.iter().filter(|item| item.selected).map(|item| item.id.as_str()).collect()
@@ -1170,9 +1193,24 @@ impl WidgetProperties for Chip {
                 Ok(())
             }
             // Derived from the item list and the live selection.
-            "item_count" | "focused_index" | "selected_count" => {
-                Err(CapabilityAccessError::ReadOnlyProperty)
-            }
+            "item_count" | "selected_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // The keyboard focus is state a document may declare. `set_focused_index` refuses a
+            // disabled or out-of-range stop, which is why a failed write is `OutOfRange` rather
+            // than a success that read back differently.
+            "focused_index" => match value {
+                CapabilityValue::Null => {
+                    self.clear_focused_index();
+                    Ok(())
+                }
+                other => {
+                    let index = expect_usize(other)?;
+                    if self.set_focused_index(index) {
+                        Ok(())
+                    } else {
+                        Err(CapabilityAccessError::OutOfRange)
+                    }
+                }
+            },
             _ => base_property_set(self, name, value),
         }
     }
@@ -1205,7 +1243,9 @@ impl WidgetProperties for Chip {
     /// capability's `items` property is what it should read instead.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
-            "toggle_index" | "move_focus" | "set_items" => Err(CapabilityAccessError::OutOfRange),
+            "toggle_index" | "move_focus" | "set_items" | "set_focused_index" => {
+                Err(CapabilityAccessError::OutOfRange)
+            }
             _ => Err(CapabilityAccessError::UnknownCommand),
         }
     }
@@ -2244,6 +2284,46 @@ mod tests {
         assert!(record_schema.ids_unique && record_schema.ids_required);
         // The control itself carries the same schema, so the two cannot drift.
         assert_eq!(record_schema, &CHIP_ITEM_SCHEMA);
+    }
+
+    /// The keyboard focus is writable through the published property, and a refused write is
+    /// reported rather than silently clamped.
+    #[test]
+    fn focused_index_round_trips_and_refuses_an_invalid_stop() {
+        let mut chip = Chip::new(Rect::new(0, 0, 300, 36));
+        // A control with no chips has no focus stop.
+        assert_eq!(chip.get("focused_index").unwrap(), CapabilityValue::Null);
+        chip.set_items(vec![
+            ChipItem::new("a", "A"),
+            ChipItem::new("b", "B"),
+            ChipItem::new("c", "C"),
+        ]);
+        // `set_items` rests the focus on the first stop, so that is the live value.
+        assert_eq!(chip.get("focused_index").unwrap(), CapabilityValue::UInt(0));
+
+        chip.set("focused_index", CapabilityValue::UInt(1)).unwrap();
+        assert_eq!(chip.focused_index(), Some(1));
+        assert_eq!(chip.get("focused_index").unwrap(), CapabilityValue::UInt(1));
+
+        // A disabled chip is not a focus stop, and an out-of-range index names nothing.
+        let mut items = chip.items().to_vec();
+        items[2].enabled = false;
+        chip.set_items(items);
+        // `set_items` rests the focus on the first stop; move it away so the refusals below are
+        // about the rejected index rather than about the current one.
+        chip.set("focused_index", CapabilityValue::UInt(1)).unwrap();
+        assert_eq!(
+            chip.set("focused_index", CapabilityValue::UInt(2)),
+            Err(CapabilityAccessError::OutOfRange)
+        );
+        assert_eq!(
+            chip.set("focused_index", CapabilityValue::UInt(99)),
+            Err(CapabilityAccessError::OutOfRange)
+        );
+        assert_eq!(chip.focused_index(), Some(1), "a refused write changes nothing");
+
+        chip.set("focused_index", CapabilityValue::Null).unwrap();
+        assert_eq!(chip.focused_index(), None);
     }
 
     // ── D09-CTRL-02: the chip box is measured with the shared text ruler ──

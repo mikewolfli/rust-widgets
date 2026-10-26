@@ -17,7 +17,7 @@ use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_horizontal_alignment, expect_string, expect_usize,
+    expect_bool, expect_horizontal_alignment, expect_string, expect_string_list, expect_usize,
     horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -755,6 +755,9 @@ impl Widget for Dropdown {
 impl WidgetProperties for Dropdown {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            "items" => Ok(CapabilityValue::Tuple(
+                self.items().iter().map(|item| CapabilityValue::String(item.clone())).collect(),
+            )),
             "text" => match self.selected_text() {
                 Some(text) => Ok(CapabilityValue::String(text.to_string())),
                 None => Ok(CapabilityValue::String(String::new())),
@@ -808,6 +811,10 @@ impl WidgetProperties for Dropdown {
             }
             // `text` follows the selection and `item_count` the item list.
             "text" | "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "items" => {
+                self.set_items(expect_string_list(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -815,6 +822,7 @@ impl WidgetProperties for Dropdown {
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `DROPDOWN_PROPERTIES`.
         property_names_of![
+            "items",
             "text",
             "selected_index",
             "item_count",
@@ -831,8 +839,9 @@ impl WidgetProperties for Dropdown {
     ///
     /// `toggle` flips the expanded state through the control's own `toggle()`, so the
     /// flag and the redraw request stay in one place. `set_items`,
-    /// `set_selected_index` and `set_expanded` assign state and need a payload, so they
-    /// are answered through the property route.
+    /// `set_selected_index` and `set_expanded` assign state and need a payload; `set_items`
+    /// carries its list through the `items` property (B26.03), and the other two are
+    /// answered through the property route.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         match name {
             "toggle" => {
@@ -1684,5 +1693,40 @@ mod tests {
         // The offset is clamped to what the window can show rather than stored raw.
         dropdown.set("scroll_offset", CapabilityValue::UInt(99)).unwrap();
         assert_eq!(dropdown.scroll_offset(), 6);
+    }
+
+    /// `items` round-trips through the `StringList` property.
+    ///
+    /// This is the payload channel the bare `set_items` command never had (B26.03): the name is
+    /// published again, the value travels through the property, and a read answers what was written.
+    #[test]
+    fn items_round_trip_through_the_property() {
+        let mut dropdown = make_dropdown();
+        assert_eq!(
+            dropdown.get("items").unwrap(),
+            CapabilityValue::Tuple(vec![
+                CapabilityValue::String("Option A".to_string()),
+                CapabilityValue::String("Option B".to_string()),
+                CapabilityValue::String("Option C".to_string()),
+            ])
+        );
+
+        dropdown
+            .set(
+                "items",
+                CapabilityValue::Tuple(vec![
+                    CapabilityValue::String("First".to_string()),
+                    CapabilityValue::String("Second".to_string()),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(dropdown.items(), &["First", "Second"]);
+        assert_eq!(dropdown.get("item_count").unwrap(), CapabilityValue::UInt(2));
+
+        // A non-list value is a type mismatch, not a silently coerced single row.
+        assert_eq!(
+            dropdown.set("items", CapabilityValue::String("First".to_string())),
+            Err(CapabilityAccessError::TypeMismatch)
+        );
     }
 }

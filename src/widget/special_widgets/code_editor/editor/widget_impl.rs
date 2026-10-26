@@ -259,6 +259,18 @@ impl Widget for CodeEditor {
 impl WidgetProperties for CodeEditor {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
+            // The diagnostic markers as records (BLUE26 B26.09): `set_markers` takes a list the
+            // bare command channel cannot carry, so the list is the property and `set_markers` is
+            // its published command form.
+            "markers" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &super::super::types::DIAGNOSTIC_MARKER_SCHEMA,
+                    self.markers()
+                        .iter()
+                        .map(super::super::types::diagnostic_marker_record)
+                        .collect::<Vec<_>>(),
+                )))
+            }
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "line_count" => Ok(CapabilityValue::UInt(self.line_count() as u64)),
             "cursor_line" => Ok(CapabilityValue::UInt(self.cursor().0 as u64)),
@@ -280,8 +292,46 @@ impl WidgetProperties for CodeEditor {
             }
             // Position, size and diagnostic count are derived from the buffer and
             // the caret.
-            "line_count" | "cursor_line" | "cursor_column" | "marker_count" | "undo_depth" => {
+            "line_count" | "marker_count" | "undo_depth" => {
                 Err(CapabilityAccessError::ReadOnlyProperty)
+            }
+            // The caret is a real piece of state a document may place. Writing one
+            // component satisfies the native `set_cursor` with the *other* live
+            // component, so the write never resets the axis it did not name.
+            "cursor_line" => {
+                let line = crate::widget::capability::coercion::expect_usize(value)?;
+                let (_, column) = self.cursor();
+                self.set_cursor(line, column, false);
+                Ok(())
+            }
+            "cursor_column" => {
+                let column = crate::widget::capability::coercion::expect_usize(value)?;
+                let (line, _) = self.cursor();
+                self.set_cursor(line, column, false);
+                Ok(())
+            }
+            // A whole-list replacement through the control's own `set_markers`, which recomputes
+            // the gutter/status layout.
+            "markers" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&super::super::types::DIAGNOSTIC_MARKER_SCHEMA).map_err(
+                    |violation| {
+                        log::warn!("code_editor.markers refused: {violation}");
+                        CapabilityAccessError::ConstraintViolation {
+                            property: crate::compat::String::from("markers"),
+                            reason: crate::compat::format!("{violation}"),
+                        }
+                    },
+                )?;
+                let markers = list
+                    .items()
+                    .iter()
+                    .map(super::super::types::diagnostic_marker_from_record)
+                    .collect::<Result<Vec<_>, CapabilityAccessError>>()?;
+                self.set_markers(markers);
+                Ok(())
             }
             "undo_stack_limit" => {
                 let limit = crate::widget::capability::coercion::expect_usize(value)?;
@@ -308,6 +358,7 @@ impl WidgetProperties for CodeEditor {
         // a promise the caller cannot keep, and the bidirectional schema test
         // rejects exactly that.
         property_names_of![
+            "markers",
             "text",
             "line_count",
             "cursor_line",
@@ -327,9 +378,11 @@ impl WidgetProperties for CodeEditor {
     /// undo stack is empty or the editor is read-only, which is the "could not
     /// handle it" case, so it is answered with
     /// [`CapabilityAccessError::OutOfRange`] rather than a success that did
-    /// nothing. `append_line` takes the line to append and `set_text` / `set_cursor`
-    /// assign state through the property route, so those are refused the same way
-    /// — the names are right and the payload is what is missing.
+    /// nothing. `append_line` takes the line to append and has no property route
+    /// (the document is the writable `text` property); `set_text` / `set_markers`
+    /// carry their values through the `text` / `markers` properties (B26.03); the
+    /// caret travels through `cursor_line` / `cursor_column`, so `set_cursor` has no
+    /// `cursor` property to resolve and stays refused.
     fn command(&mut self, name: &str) -> Result<(), CapabilityAccessError> {
         let handled = match name {
             "undo" => self.undo(),
