@@ -817,7 +817,7 @@ impl GroupAvatar {
     /// Capped at [`dimensions::AVATAR_SIZE`] because [`Avatar`]'s draw path uses its hint as the
     /// painted disc, so a larger slot would not paint a larger avatar.
     fn avatar_side(&self) -> u32 {
-        self.geometry().height.min(dimensions::AVATAR_SIZE).max(1)
+        self.geometry().height.clamp(1, dimensions::AVATAR_SIZE)
     }
 
     /// The step between adjacent origins, resolving the default overlap.

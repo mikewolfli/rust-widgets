@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Splitter layout manager — distributes space by pane ratios.
+use super::types::ChildPlacements;
 use super::{ChildInfo, Layout, LayoutContext, Orientation};
 use crate::compat::{Any, Cell, Rc, RefCell, Vec};
 use crate::core::{ObjectId, Rect};
@@ -24,7 +25,7 @@ pub struct SplitterLayout {
     /// pane allocation (G-158). Only [`Layout::update`] — the nominal path — populates it,
     /// so a cached answer is byte-identical to the trait default's update-and-capture; a
     /// rect mismatch falls back to that same capture. Every mutator clears it.
-    last_layout: RefCell<Option<(Rect, Rc<Vec<(ObjectId, Rect)>>)>>,
+    last_layout: RefCell<Option<(Rect, Rc<ChildPlacements>)>>,
     /// The version of every input the solve reads (C-017).
     ///
     /// Bumped by every mutator through [`Self::invalidate_last_layout`], so a cache entry is a
@@ -35,8 +36,16 @@ pub struct SplitterLayout {
     /// A drag emits several queries per pointer sample — `place_panes`, the divider geometry and
     /// the maximum-convergence check — all asking for the same arrangement. The first one solves
     /// and the rest replay this vector instead of re-running the allocation.
-    layout_cache: RefCell<Option<(u64, Rect, Rc<Vec<(ObjectId, Rect)>>)>>,
+    layout_cache: RefCell<Option<SplitterCacheEntry>>,
 }
+
+/// The cached arrangement of a splitter pass: the configuration version it was solved for, the
+/// rectangle it was solved in, and the pane boxes.
+///
+/// One name for the tuple because it appears three times (the field, the hit test and the store)
+/// and because a bare `(u64, Rect, Rc<Vec<(ObjectId, Rect)>>)` is a `clippy::type_complexity`
+/// finding at every one of them.
+type SplitterCacheEntry = (u64, Rect, Rc<ChildPlacements>);
 
 impl SplitterLayout {
     /// Drops the cached nominal layout; every mutator calls it (LAY-005, C-017).

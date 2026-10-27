@@ -6,6 +6,14 @@
 use crate::compat::{vec, Any, Vec};
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::layout::hints::ChildInfo;
+
+/// The placements a layout pass produced: every child's box, in pass order.
+///
+/// Written once because six layouts cache exactly this shape (`border`, `constraint`, `form`,
+/// `wrap`, and `splitter`'s two caches). Spelling `Vec<(ObjectId, Rect)>` at each site was six
+/// chances to drift and a `clippy::type_complexity` finding at every one; the name is also what a
+/// reader needs — "the placements", not "a vector of pairs".
+pub(crate) type ChildPlacements = Vec<(ObjectId, Rect)>;
 /// How a layout item reacts to the space its parent offers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizePolicy {

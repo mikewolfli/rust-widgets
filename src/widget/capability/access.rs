@@ -617,10 +617,13 @@ pub fn default_widget_property_default_value(
             "edges" => {
                 let mut edges = crate::compat::Vec::new();
                 for edge in ["left", "right", "top", "bottom"] {
-                    let mut spec = crate::compat::Vec::new();
-                    spec.push(CapabilityValue::String(String::from(edge)));
-                    spec.push(CapabilityValue::String(String::from(edge)));
-                    spec.push(CapabilityValue::Bool(true));
+                    // One spec per edge, built in place: a vector created and then pushed into is
+                    // the shape `clippy::vec_init_then_push` flags.
+                    let spec = crate::compat::Vec::from([
+                        CapabilityValue::String(String::from(edge)),
+                        CapabilityValue::String(String::from(edge)),
+                        CapabilityValue::Bool(true),
+                    ]);
                     edges.push(CapabilityValue::Tuple(spec));
                 }
                 CapabilityValue::Tuple(edges)

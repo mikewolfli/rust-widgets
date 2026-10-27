@@ -235,7 +235,7 @@ impl ValidationBubble {
         let line_height = font.effective_line_height().max(1.0) as u32;
         let geometry = self.geometry();
         let width = self.anchor.map(|anchor| anchor.width).unwrap_or(geometry.width);
-        let lines = self.wrapped_lines(&font, width).len().max(1) as u32;
+        let lines = self.wrapped_lines(font, width).len().max(1) as u32;
         let height = line_height.saturating_mul(lines).saturating_add(BUBBLE_PAD_V as u32 * 2);
         let (x, y) = match self.anchor {
             Some(anchor) => {

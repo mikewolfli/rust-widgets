@@ -362,8 +362,15 @@ pub struct Canvas {
     /// Bumped whenever the visible command set changes; keys the hit-test index (SP-111).
     hit_revision: u64,
     /// The `(flattened index, logical bounds)` rows of every visible command.
-    hit_cache: RefCell<Option<(u64, Vec<(usize, Rect)>)>>,
+    hit_cache: RefCell<Option<CanvasHitCache>>,
 }
+
+/// The hit-test index: the command-set revision it was built for, and `(flattened index,
+/// bounds)` per visible command.
+///
+/// Named for the same reason as `ChildPlacements`: the tuple is written twice (the field and the
+/// rebuild) and a bare `(u64, Vec<(usize, Rect)>)` is a `clippy::type_complexity` finding.
+type CanvasHitCache = (u64, Vec<(usize, Rect)>);
 
 impl Canvas {
     /// Creates a new canvas widget with the given geometry.

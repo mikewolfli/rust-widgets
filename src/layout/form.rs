@@ -3,6 +3,7 @@
 
 //! Form layout manager — two-column label/field row pairs.
 use super::{ChildInfo, Layout, LayoutContext};
+use super::types::ChildPlacements;
 use crate::compat::{Any, HashMap, RefCell, Vec};
 use crate::core::{ObjectId, Rect};
 use crate::style::EdgeOffsets;
@@ -99,7 +100,7 @@ pub struct FormLayout {
     /// solve (G-158). Only [`Layout::update`] — the nominal path — populates it, so a cached
     /// answer is byte-identical to the trait default's update-and-capture; a rect mismatch
     /// falls back to that same capture. Every mutator clears it.
-    last_layout: RefCell<Option<(Rect, Vec<(ObjectId, Rect)>)>>,
+    last_layout: RefCell<Option<(Rect, ChildPlacements)>>,
 }
 
 impl FormLayout {

@@ -1102,8 +1102,8 @@ mod tests {
         let shifted =
             system_time_of_day_in(ClockTimeSource::Utc, Some(60)).expect("utc is readable");
         assert_eq!(
-            (u32::from(base.0) * 60 + base.1 + 60) % (24 * 60),
-            u32::from(shifted.0) * 60 + shifted.1,
+            (base.0 * 60 + base.1 + 60) % (24 * 60),
+            shifted.0 * 60 + shifted.1,
             "one hour east is one hour later"
         );
     }

@@ -22,6 +22,13 @@ use crate::render::text::{is_combining_mark, is_variation_selector};
 use crate::render::{PaintBackend, SoftwareRenderConfig};
 use crate::style::gradient::GradientType;
 
+/// One glyph's clip vertices, as `(x, y)` pairs.
+///
+/// Named because the thread-local below holds two of them: a bare `(Vec<(f32, f32)>, Vec<(f32,
+/// f32)>)` is a `clippy::type_complexity` finding and says nothing about what the pair means
+/// (contour vertices, then the clip helpers' scratch).
+type ClipVertexBuffer = Vec<(f32, f32)>;
+
 #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 thread_local! {
     /// Reusable clip vertex buffers for [`SvgPaintBackend::append_outline`], in the same
@@ -29,7 +36,7 @@ thread_local! {
     /// instead of two per glyph, so a batch text export no longer amplifies the allocation
     /// count (G-022). Both are cleared before every use — one per contour, the other by the
     /// clip helpers that overwrite it — so no vertex of a previous glyph is ever read.
-    static GLYPH_CLIP_BUFFERS: core::cell::RefCell<(Vec<(f32, f32)>, Vec<(f32, f32)>)> =
+    static GLYPH_CLIP_BUFFERS: core::cell::RefCell<(ClipVertexBuffer, ClipVertexBuffer)> =
         const { core::cell::RefCell::new((Vec::new(), Vec::new())) };
 }
 

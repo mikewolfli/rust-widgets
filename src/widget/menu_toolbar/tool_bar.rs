@@ -1728,7 +1728,7 @@ impl ToolBar {
         if self.collapsed {
             // A collapsed strip keeps the list's indices but offers no box, which is
             // the same representation a scrolled-out item uses.
-            return core::iter::repeat(Rect::new(0, 0, 0, 0)).take(self.items.len()).collect();
+            return std::iter::repeat_n(Rect::new(0, 0, 0, 0), self.items.len()).collect();
         }
         let horizontal = self.orientation == ToolBarOrientation::Horizontal;
         let inset = dimensions::TOOLBAR_ITEM_INSET as i32;

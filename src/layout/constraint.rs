@@ -7,6 +7,7 @@
 //! between widgets sequentially (not a full Cassowary solver). Each constraint
 //! references a target widget and describes how this widget relates to it.
 use super::{ChildInfo, Layout, LayoutContext};
+use super::types::ChildPlacements;
 use crate::compat::{Any, HashMap, Rc, RefCell, Vec};
 use crate::core::{ObjectId, Rect};
 
@@ -102,7 +103,7 @@ pub struct ConstraintLayout {
     /// it, so a cached answer is byte-identical to the trait default's update-and-capture; a
     /// rect mismatch falls back to that same capture. Every mutator clears it, through
     /// [`Self::invalidate_order`] for constraint changes and directly for child-list ones.
-    last_layout: RefCell<Option<(Rect, Vec<(ObjectId, Rect)>)>>,
+    last_layout: RefCell<Option<(Rect, ChildPlacements)>>,
 }
 
 impl ConstraintLayout {

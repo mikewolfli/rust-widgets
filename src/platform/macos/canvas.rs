@@ -1832,7 +1832,7 @@ extern "C" fn drain_triggers_impl(_this: &Object, _cmd: Sel, timer: id) {
         // animated frame moves it back to the display deadline.
         retarget_heartbeat_in(
             timer,
-            Duration::from_millis(crate::platform::types::IDLE_FRAME_INTERVAL_MS as u64),
+            Duration::from_millis(crate::platform::types::IDLE_FRAME_INTERVAL_MS),
         );
     }
 }

@@ -247,9 +247,7 @@ mod sys {
             }
             *slot = Some(created as usize);
         }
-        let Some(raw) = *slot else {
-            return None;
-        };
+        let raw = (*slot)?;
         Some(body(raw as *mut OhPasteboard))
     }
 

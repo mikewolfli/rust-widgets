@@ -1355,9 +1355,7 @@ impl RadarChart {
     /// The vertex nearest `pos`, within a pointer-sized tolerance.
     fn vertex_at(&self, pos: Point) -> Option<(usize, usize)> {
         let (center, radius) = self.geometry_center_radius()?;
-        if self.data_max().is_none() {
-            return None;
-        }
+        self.data_max()?;
         if !self.base.contains_point_with_touch_expansion(pos) {
             return None;
         }

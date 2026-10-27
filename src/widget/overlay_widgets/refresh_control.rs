@@ -766,11 +766,10 @@ impl EventHandler for RefreshControl {
             // A pointer that leaves during a pull ends the gesture where it last was: past the
             // threshold the refresh triggers, below it the band springs back. Without this arm
             // the drag stayed live and a later unrelated move kept pulling (OV-008).
-            Event::MouseLeave { .. } => {
-                if self.drag_origin_y.take().is_some() {
+            Event::MouseLeave { .. }
+                if self.drag_origin_y.take().is_some() => {
                     self.end_pull();
                 }
-            }
             _ => { /* Other events need no control-specific handling */ }
         }
     }

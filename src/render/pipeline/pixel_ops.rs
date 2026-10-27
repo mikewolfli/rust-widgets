@@ -1640,7 +1640,7 @@ mod glyph_blend_clip_tests {
                 }
                 let (cx, cy) = (x + px, y + py);
                 let on_canvas = cx >= 0 && cy >= 0 && cx < CANVAS as i32 && cy < CANVAS as i32;
-                let visible = clip.map_or(true, |(cl, ct, cw, ch)| {
+                let visible = clip.is_none_or(|(cl, ct, cw, ch)| {
                     cx >= cl
                         && cy >= ct
                         && cx < cl.saturating_add(cw as i32)
@@ -1732,7 +1732,7 @@ mod glyph_blend_clip_tests {
         // One ink pixel at source (1, 1); everything else is zero coverage and must skip the
         // blend even where the clip admits the pixel.
         let mut coverage = vec![0u8; 4 * 10];
-        coverage[1 * 4 + 1] = 255;
+        coverage[5] = 255;
         assert_ink_matches(None, 2, 2, false, &coverage, 4, 10);
         assert_ink_matches(Some((3, 3, 1, 1)), 2, 2, false, &coverage, 4, 10);
     }

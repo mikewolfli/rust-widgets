@@ -51,8 +51,10 @@ const HEADER_MENU_MIN_WIDTH: u32 = 168;
 
 /// The sort a column is currently under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum SortState {
     /// The column is not part of the sort.
+    #[default]
     None,
     /// The column sorts ascending.
     Asc,
@@ -60,11 +62,6 @@ pub enum SortState {
     Desc,
 }
 
-impl Default for SortState {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 impl SortState {
     /// The token used by the property contract and the sort signal.

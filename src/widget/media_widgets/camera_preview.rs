@@ -1404,6 +1404,6 @@ mod tests {
         assert!(preview.tick(50), "the second half presents");
         assert_eq!(preview.frame().map(|frame| frame.pts_ms), Some(7));
         assert_eq!(presented.load(std::sync::atomic::Ordering::SeqCst), 7);
-        assert!(preview.is_animating() == false, "nothing waits after the present");
+        assert!(!preview.is_animating(), "nothing waits after the present");
     }
 }

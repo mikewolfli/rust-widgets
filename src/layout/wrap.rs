@@ -12,6 +12,7 @@
 //! The two layouts keep their own size sources and configuration surfaces, but not two
 //! algorithms — see LAY-N08.
 use super::{ChildInfo, Layout, LayoutContext};
+use super::types::ChildPlacements;
 use crate::compat::{Any, RefCell, Vec};
 use crate::core::{ObjectId, Rect, Size, TextDirection};
 
@@ -65,7 +66,7 @@ pub struct WrapLayout {
     /// line-breaking solve (G-158). Only [`Layout::update`] — the nominal path — populates
     /// it, so a cached answer is byte-identical to the trait default's update-and-capture;
     /// a rect mismatch falls back to that same capture. Every mutator clears it.
-    last_layout: RefCell<Option<(Rect, Vec<(ObjectId, Rect)>)>>,
+    last_layout: RefCell<Option<(Rect, ChildPlacements)>>,
 }
 
 impl Default for WrapLayout {

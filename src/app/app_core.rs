@@ -440,9 +440,11 @@ pub enum ApplicationEvent {
     },
 }
 
+/// The process-wide subscriber list; named so the `static` declaration stays readable.
+type ApplicationListeners = Vec<Box<dyn FnMut(&ApplicationEvent) + Send>>;
+
 /// Application-level listeners, process-wide because the facts are.
-static APPLICATION_LISTENERS: OnceLock<Mutex<Vec<Box<dyn FnMut(&ApplicationEvent) + Send>>>> =
-    OnceLock::new();
+static APPLICATION_LISTENERS: OnceLock<Mutex<ApplicationListeners>> = OnceLock::new();
 
 /// Subscribes `listener` to application-level events, returning the new subscription count.
 ///

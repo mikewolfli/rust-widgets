@@ -297,8 +297,9 @@ mod tests {
         ));
         // A single tap's own travel (`TapGesture`) uses the bound itself, so the pair bound is
         // wider by exactly the factor: a distance between the two is *not* a pair under the tap
-        // bound but is under the pair bound.
-        assert!(BOUND < BOUND * DOUBLE_TAP_SEPARATION_FACTOR);
+        // bound but is under the pair bound. Checked at compile time so the assumption cannot
+        // drift with the constants.
+        const { assert!(BOUND < BOUND * DOUBLE_TAP_SEPARATION_FACTOR) };
         assert!(is_double_click_pair(
             (Point::new(0, 0), 0),
             (Point::new((BOUND + 1.0) as i32, 0), 100),

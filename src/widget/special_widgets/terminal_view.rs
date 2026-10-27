@@ -955,7 +955,7 @@ impl TerminalView {
             self.lines.push(String::new());
         }
         if first == 0 && last >= screen.cells.len() {
-            self.lines = screen.to_lines();
+            self.lines = screen.render_lines();
             return;
         }
         for row in first..last.min(screen.cells.len()) {
@@ -965,7 +965,7 @@ impl TerminalView {
                 }
             }
         }
-        // Trailing empty rows are not part of the buffer, exactly as `to_lines` drops them.
+        // Trailing empty rows are not part of the buffer, exactly as `render_lines` drops them.
         while self.lines.len() > 1 && self.lines.last().is_some_and(|line| line.is_empty()) {
             self.lines.pop();
         }
@@ -2222,7 +2222,11 @@ impl ScreenBuffer {
     }
 
     /// The grid as text lines with SGR sequences, ready for the line pipeline.
-    fn to_lines(&mut self) -> Vec<String> {
+    ///
+    /// Named `render_lines` rather than `to_lines` because it mutates the grid: it resets the
+    /// per-row materialisation counter and `to_*` on a `&mut self` receiver reads as a cheap
+    /// conversion, which this is not.
+    fn render_lines(&mut self) -> Vec<String> {
         let mut lines: Vec<String> =
             (0..self.cells.len()).filter_map(|row| self.row_text(row)).collect();
         while lines.len() > 1 && lines.last().is_some_and(|line| line.is_empty()) {
@@ -2485,7 +2489,7 @@ fn ensure_output_rows(
             parse_output_line(line, char_widths, context, font, width, wrap, palette);
         let painted = rows.len();
         cache.rows.extend(rows);
-        cache.origins.extend(core::iter::repeat(index).take(painted));
+        cache.origins.extend(std::iter::repeat_n(index, painted));
         cache.plain.push(plain);
         cache.sources.push(line.clone());
         cache.row_starts.push(cache.rows.len());

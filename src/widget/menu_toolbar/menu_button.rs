@@ -291,6 +291,10 @@ pub(crate) fn draw_menu_panel_with_branches(
 /// A scrolled panel passes a window instead of the whole list; the row boxes are
 /// derived from the panel and the window's first index, so the pointer hit test
 /// and the painter read the same positions (M-013).
+// Ten arguments, and each is a fact the row painter cannot derive: the panel's box, the rows,
+// the visible window, the icon sources and the resolved text/style values. A struct would be a
+// type used once, which is the shape the parameter list already is.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_menu_panel_range(
     context: &mut RenderContext,
     panel: Rect,

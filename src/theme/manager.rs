@@ -1107,11 +1107,15 @@ fn apply_token_as_child(
     token: &super::ThemeStyleToken,
     theme: Option<&Theme>,
 ) {
-    let mut overlay = WidgetStyle::default();
-    overlay.padding = style.padding;
-    overlay.margin = style.margin;
-    overlay.spacing = style.spacing;
-    overlay.shadow = style.shadow.clone();
+    // A `Default::default()` with fields written straight after it is one initializer, which the
+    // compiler can then see whole (`clippy::field_reassign_with_default`).
+    let mut overlay = WidgetStyle {
+        padding: style.padding,
+        margin: style.margin,
+        spacing: style.spacing,
+        shadow: style.shadow.clone(),
+        ..WidgetStyle::default()
+    };
     // A surface token is applied *onto* the resolved face (see `apply_surface_token`), so the
     // overlay must start from the base face; otherwise the token machinery writes an identity
     // `solid` surface for every state, discarding the role's bevel and elevation.

@@ -429,6 +429,12 @@ impl EventHandler for FindReplaceBar {
 }
 
 /// Paints one text field.
+///
+/// Nine arguments is the honest shape here: a field is painted from its rectangle, its text, its
+/// placeholder, its focus state and four resolved theme colours, and bundling them into a struct
+/// would add a type with no other user. The same allowance `android/platform_impl.rs` records for
+/// its multi-argument creators.
+#[allow(clippy::too_many_arguments)]
 fn paint_field(
     context: &mut RenderContext,
     rect: Rect,

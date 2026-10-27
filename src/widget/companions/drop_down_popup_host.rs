@@ -73,20 +73,17 @@ pub enum Direction {
 
 /// Where a pop-up is placed relative to its anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PopupPlacement {
     /// Always open below the anchor, then clamp into the viewport.
     Below,
     /// Always open above the anchor, then clamp into the viewport.
     Above,
     /// Open below when it fits, otherwise above when that side has more room.
+    #[default]
     Automatic,
 }
 
-impl Default for PopupPlacement {
-    fn default() -> Self {
-        Self::Automatic
-    }
-}
 
 impl PopupPlacement {
     /// The token used by the property contract.

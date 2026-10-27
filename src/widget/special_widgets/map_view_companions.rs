@@ -592,6 +592,12 @@ struct ZoomPanBinding {
     _scope: ConnectionScope,
 }
 
+/// The measured boxes of the three zoom labels, keyed by the font they were measured with.
+///
+/// `clippy::type_complexity` flags the tuple inline; naming it keeps the field and the cache
+/// update readable without changing layout.
+type MapMetricsCache = (crate::core::Font, [(u32, u32); 3]);
+
 /// A three-button zoom strip: `-`, `1:1`, `+`.
 ///
 /// The control owns a zoom level and reports every committed change through
@@ -608,7 +614,7 @@ pub struct ZoomControl {
     ///
     /// The three labels are static strings, so their sizes change only when the font does; the
     /// draw used to measure all three on every frame.
-    metrics_cache: core::cell::RefCell<Option<(crate::core::Font, [(u32, u32); 3])>>,
+    metrics_cache: core::cell::RefCell<Option<MapMetricsCache>>,
     /// Emitted with the new level after a change.
     pub zoom_requested: Signal1<f32>,
 }

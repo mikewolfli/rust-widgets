@@ -173,7 +173,7 @@ pub struct VirtualTable {
     /// The inputs `sort_order` was built from.
     sort_order_key: Option<TableSortKey>,
     /// Window cache used while a sorted projection is active (rows are not contiguous).
-    sorted_window_cache: Option<(u64, (usize, usize, usize, usize), Arc<Vec<CachedRow>>)>,
+    sorted_window_cache: Option<SortedWindowCache>,
     /// Whether odd rows receive the alternating wash (V-013). Off by default.
     alternating_rows: bool,
     /// Emitted with `(column, descending)` when a header click changes the sort (V-013).
@@ -181,6 +181,13 @@ pub struct VirtualTable {
     /// Emitted when the context menu is requested at a point (V-013).
     pub context_menu_requested: Signal1<Point>,
 }
+
+/// The sorted projection's window cache: the sort revision, the four window bounds, and the rows
+/// that window produced.
+///
+/// Named because the tuple is four components plus two generic carriers — a
+/// `clippy::type_complexity` finding, and unreadable at the assignment site without the name.
+type SortedWindowCache = (u64, (usize, usize, usize, usize), Arc<Vec<CachedRow>>);
 
 impl VirtualTable {
     /// Creates empty virtual table.

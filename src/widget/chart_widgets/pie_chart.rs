@@ -1252,8 +1252,8 @@ impl Draw for PieChart {
                     let raw = Rect::new(
                         label_x,
                         label_y,
-                        metrics.width.max(1) as u32,
-                        metrics.height.max(1) as u32,
+                        metrics.width.max(1),
+                        metrics.height.max(1),
                     );
                     let row_height = metrics.height.max(1) as i32 + 2;
                     if let Some(bounds) = place_label(raw, &occupied_labels, rect, row_height) {

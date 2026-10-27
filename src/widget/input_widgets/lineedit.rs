@@ -2328,7 +2328,7 @@ impl LineEdit {
             let mut cache = self.mask_cache.borrow_mut();
             if cache.0 != count {
                 cache.1.clear();
-                cache.1.extend(core::iter::repeat('*').take(count));
+                cache.1.extend(std::iter::repeat_n('*', count));
                 cache.0 = count;
             }
         }

@@ -57,20 +57,15 @@ const PALETTE_INSET: u32 = 12;
 const PALETTE_DEFAULT_ROWS: usize = 10;
 
 /// Which surface contributed an entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PaletteSource {
     /// The code or markdown editor.
     Editor,
     /// The terminal view.
     Terminal,
     /// The application shell itself.
+    #[default]
     Host,
-}
-
-impl Default for PaletteSource {
-    fn default() -> Self {
-        Self::Host
-    }
 }
 
 impl PaletteSource {
@@ -293,7 +288,7 @@ impl CommandPaletteHost {
     /// The entries that match the current query, in source order.
     pub fn visible_entries(&self) -> Vec<&PaletteEntryRef> {
         let needle = self.filter.trim();
-        self.entries.iter().filter(|entry| entry_matches(*entry, needle)).collect()
+        self.entries.iter().filter(|entry| entry_matches(entry, needle)).collect()
     }
 
     /// The selected entry, when the filtered list is not empty.
@@ -349,7 +344,7 @@ impl CommandPaletteHost {
     /// The number of entries matching the current query.
     fn visible_count(&self) -> usize {
         let needle = self.filter.trim();
-        self.entries.iter().filter(|entry| entry_matches(*entry, needle)).count()
+        self.entries.iter().filter(|entry| entry_matches(entry, needle)).count()
     }
 
     /// The index in `entries` of the selected match.
@@ -358,7 +353,7 @@ impl CommandPaletteHost {
         self.entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| entry_matches(*entry, needle))
+            .filter(|(_, entry)| entry_matches(entry, needle))
             .nth(self.selected_index)
             .map(|(index, _)| index)
     }
@@ -543,7 +538,7 @@ impl Draw for CommandPaletteHost {
             for (match_index, entry) in self
                 .entries
                 .iter()
-                .filter(|entry| entry_matches(*entry, needle))
+                .filter(|entry| entry_matches(entry, needle))
                 .enumerate()
                 .skip(self.scroll_offset)
                 .take(visible)
@@ -620,7 +615,7 @@ impl Widget for CommandPaletteHost {
         &mut self.base
     }
     fn size_hint(&self) -> Size {
-        let rows = self.visible_count().min(PALETTE_DEFAULT_ROWS).max(1) as u32;
+        let rows = self.visible_count().clamp(1, PALETTE_DEFAULT_ROWS) as u32;
         Size::new(480, PALETTE_HEADER_HEIGHT + rows * PALETTE_ROW_HEIGHT)
     }
     impl_draw_bridge!();

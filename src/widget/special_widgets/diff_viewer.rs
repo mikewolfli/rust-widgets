@@ -238,7 +238,7 @@ pub struct DiffViewer {
     /// The language the highlighter tokenises when [`Self::syntax_highlight`] is on.
     language: LanguageId,
     /// Highlight spans for both sides of every line, built once per text change.
-    syntax_spans: Option<(LanguageId, Vec<(Vec<TokenSpan>, Vec<TokenSpan>)>)>,
+    syntax_spans: Option<SyntaxSpanTable>,
     /// Whether [`Self::syntax_spans`] must be rebuilt before the next use.
     syntax_dirty: bool,
     /// Emitted after compare. Payload is changed-lines count.
@@ -297,6 +297,11 @@ struct DisplayRow {
 
 /// The measured inline-run widths for each display row and font size.
 type SpanWidths = HashMap<(usize, u32), ((i32, u32), (i32, u32))>;
+
+/// Highlight spans for one line, per side: `(old side runs, new side runs)`.
+type LineSyntaxSpans = (Vec<TokenSpan>, Vec<TokenSpan>);
+/// The whole document's highlight result: the language it was built for and one entry per line.
+type SyntaxSpanTable = (LanguageId, Vec<LineSyntaxSpans>);
 
 impl DiffViewer {
     /// Creates empty diff viewer.

@@ -383,7 +383,9 @@ mod tests {
     #[test]
     fn the_default_capacity_is_the_configured_bound() {
         use crate::undo::{UndoStack, DEFAULT_UNDO_CAPACITY};
-        assert!(DEFAULT_UNDO_CAPACITY >= 1000);
+        // Checked at compile time: the constant pair below (capacity vs. the documented minimum)
+        // is what I-002 promises, so a drifting constant should fail the build, not a test run.
+        const { assert!(DEFAULT_UNDO_CAPACITY >= 1000) };
         let stack = UndoStack::new();
         assert!(!stack.can_undo());
     }

@@ -4254,7 +4254,7 @@ mod tests {
             }
             backend.end_frame();
             let frame = backend.frame_rgba();
-            frame.chunks_exact(4).filter(|px| *px != [255, 255, 255, 255]).count()
+            frame.as_chunks::<4>().0.iter().filter(|px| **px != [255, 255, 255, 255]).count()
         };
         assert!(ink(true) < ink(false), "dashes must leave gaps the solid stroke fills");
         assert!(ink(true) > 0, "dashes must still carry ink");
@@ -4264,7 +4264,7 @@ mod tests {
 
     /// Counts non-white pixels, i.e. everything either text or a rule drew.
     fn opaque_ink(frame: &[u8]) -> usize {
-        frame.chunks_exact(4).filter(|px| *px != [255, 255, 255, 255]).count()
+        frame.as_chunks::<4>().0.iter().filter(|px| **px != [255, 255, 255, 255]).count()
     }
 
     /// An underline draws a rule below the baseline that plain text (without

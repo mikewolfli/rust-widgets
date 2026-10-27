@@ -2574,7 +2574,7 @@ mod tests {
 
         icon.set_icon_rotation(0.0);
         icon.set_icon_flip(true, false);
-        assert_eq!(icon.icon_transform().flip_horizontal, true);
+        assert!(icon.icon_transform().flip_horizontal);
         let mirrored = crate::widget::svg::render_to_svg(&mut icon);
         assert_ne!(plain, mirrored, "a mirror must change the geometry");
 

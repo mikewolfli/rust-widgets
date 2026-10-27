@@ -753,7 +753,7 @@ impl DateRangePicker {
     /// Hovering after a start date previews the second endpoint, in either direction; once an end
     /// exists the range is committed and there is nothing left to preview. This is the semantic
     /// the hover arm's own comment promises and the draw previously did not paint (MISC-07).
-    fn hover_preview_range(&self) -> Option<((i32, u32, u32), (i32, u32, u32))> {
+    fn hover_preview_range(&self) -> Option<(Date, Date)> {
         let start = self.start_date?;
         if self.end_date.is_some() {
             return None;

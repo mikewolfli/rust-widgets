@@ -623,7 +623,7 @@ pub(crate) fn drain_pending_theme_restyle() {
         // An id that is gone (destroyed between the notification and this drain) or that belongs
         // to another thread's registry resolves to nothing here and is skipped — which is
         // precisely the set the previous full walk used to restyle.
-        with_widget_mut(id, |widget| crate::theme::apply_active_theme(widget));
+        with_widget_mut(id, crate::theme::apply_active_theme);
     }
 }
 
@@ -5580,11 +5580,7 @@ fn take_layer_buffer(len: usize) -> Vec<u8> {
                 buffer.resize(len, 0);
                 buffer
             }
-            None => {
-                let mut fresh = Vec::new();
-                fresh.resize(len, 0);
-                fresh
-            }
+            None => vec![0; len],
         }
     })
 }

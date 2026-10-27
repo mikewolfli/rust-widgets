@@ -102,9 +102,9 @@ pub(crate) fn find_in(
             }
             if options.whole_word {
                 let before_ok =
-                    haystack[..start].chars().next_back().map_or(true, |ch| !is_word_char(ch));
+                    haystack[..start].chars().next_back().is_none_or(|ch| !is_word_char(ch));
                 let after_ok =
-                    haystack[found_end..].chars().next().map_or(true, |ch| !is_word_char(ch));
+                    haystack[found_end..].chars().next().is_none_or(|ch| !is_word_char(ch));
                 if !before_ok || !after_ok {
                     continue;
                 }

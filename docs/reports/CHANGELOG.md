@@ -5,6 +5,49 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.9.4 (2026-10-28) — build-matrix and lint-closure round
+
+Second round over `docs/issues/issue-20261026.md`. 2.9.3 fixed hot paths; this round made the
+matrix that proves them: every device profile now compiles *and* runs its tests, the second macOS
+backend builds, and `clippy` is clean under `--all-targets -- -D warnings`. Per-item evidence is
+in `docs/log/log-20261027-1.md` (§15–§18).
+
+### Build matrix
+
+- `tools/check_profile_builds.sh` builds and tests `desktop`, `tablet`, `mobile`, `embedded` and
+  `mini`, plus `--features macos` on Darwin, and fails on the first profile that does not.
+- `mini` compiles again: `MaskEngine` is its own un-gated module
+  (`widget/input_widgets/mask_engine.rs`), `input_companions` is split into a portable half and a
+  `rich_edit`-only half that is gated where it is used, and the `label` mnemonic no longer reaches
+  for `widget::runtime`.
+- `mini`'s test target compiles as well (18 errors: bare `Vec`/`Box` in test modules, and the
+  tests that mount controls into a registry are now gated to the profiles that have one).
+- `tablet` no longer gates `AxisConfig`/`AxisScale` on the `chart` feature that its own struct
+  fields always need; `mobile` and `embedded` stop assuming a native shell for the cross-thread
+  stop seam.
+
+### Platform
+
+- New `src/platform/screen_sample.rs`. A screen sample used to come back as *transparent black*
+  when the compositor returned a premultiplied-zero pixel, which an eyedropper then treated as a
+  real colour; `presentable()` maps `alpha == 0` to `None`, and both macOS backends call it.
+- The `macos` (objc2) backend is fixed and now provides SP-119 `sample_screen_pixel` and
+  `pointer_position`: `NSAppearanceName*` reads are wrapped in `unsafe`, and the run-loop test
+  takes the serial test seam it was silently stealing from a sibling test.
+
+### Widgets
+
+- `ScrollArea::ensure_widget_visible` resolves the "content is the root node" case before the
+  registry lookup: a root-node rectangle needs no registry, so the path no longer fails in
+  profiles that have none.
+
+### Lints
+
+- `cargo clippy --lib` and `cargo clippy --all-targets` are clean (53 → 0 for `--lib`). Complex
+  types were **named** (`ChildPlacements`, `MapMetricsCache`, `ApplicationListeners`, …) rather
+  than silenced with `#[allow]`; the few `too_many_arguments` allows that remain carry a comment
+  explaining why the parameter list is the API.
+
 ## 2.9.3 (2026-10-27) — hot-path allocation and cache-lookup round
 
 First implementation round over `docs/issues/issue-20261026.md`, in the report's own order

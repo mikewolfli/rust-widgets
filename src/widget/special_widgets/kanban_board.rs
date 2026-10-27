@@ -2505,8 +2505,9 @@ impl KanbanBoard {
         // everything outside it anyway, so walking the whole list made a long column pay per card
         // per frame for marks that could not reach the screen.
         let (first_card, last_card) = self.visible_card_range(index);
-        for card_index in first_card..last_card {
-            let card = &cards[card_index];
+        // `enumerate` over the window gives the card's own index without indexing the slice: the
+        // `for i in first..last { &cards[i] }` form is what `clippy::needless_range_loop` flags.
+        for (card_index, card) in cards.iter().enumerate().take(last_card).skip(first_card) {
             let position = CardPosition { column: index, card: card_index };
             let Some(card_rect) = self.card_rect(position) else {
                 continue;

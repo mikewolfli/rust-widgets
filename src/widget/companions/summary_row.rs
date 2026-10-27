@@ -283,7 +283,6 @@ impl EventHandler for SummaryRow {
         // guard keeps a disabled row from receiving even that bookkeeping.
         self.base.handle_event(event);
         if !self.base.is_enabled() {
-            return;
         }
     }
 }

@@ -598,7 +598,7 @@ impl Platform for AndroidPlatform {
             log::debug!(
                 "[android] create_file_dialog: built without `android-jni`; there is no picker"
             );
-            return 0;
+            0
         }
         #[cfg(feature = "android-jni")]
         {

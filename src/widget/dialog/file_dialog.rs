@@ -754,7 +754,7 @@ impl FileDialog {
         let filter = self.name_filters.get(self.current_filter).cloned();
         self.entries.retain(|entry| {
             entry.is_directory
-                || filter.as_ref().map_or(true, |filter| filter_accepts(filter, &entry.name))
+                || filter.as_ref().is_none_or(|filter| filter_accepts(filter, &entry.name))
         });
         self.selected_rows.clear();
         self.scroll = 0;

@@ -651,10 +651,9 @@ mod tests {
         assert!(manager.show_now(7), "the registration is presentable");
         let plain = render_to_svg(&mut manager);
 
-        let mut spans = Vec::new();
         // A colour, not a weight: the bundled face has no bold cut, so a bold run can paint
         // identically to the plain label and the test would pass for the wrong reason.
-        spans.push(TooltipSpan::new("Alpha").with_color(crate::core::Color::rgb(255, 0, 0)));
+        let spans = vec![TooltipSpan::new("Alpha").with_color(crate::core::Color::rgb(255, 0, 0))];
         manager.renderer().set_spans(spans);
         assert_eq!(manager.renderer().spans().len(), 1, "the run reached the renderer");
         let rich = render_to_svg(&mut manager);

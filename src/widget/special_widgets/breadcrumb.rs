@@ -423,7 +423,7 @@ impl Breadcrumb {
         }
         let rows = hidden.min((available / Self::OVERFLOW_ROW_HEIGHT).max(1) as usize);
         let height = (rows as u32) * Self::OVERFLOW_ROW_HEIGHT + Self::OVERFLOW_PADDING * 2;
-        let width = band.width.min(240).max(80);
+        let width = band.width.clamp(80, 240);
         Some(Rect::new(band.x, top, width, height.min(available)))
     }
 

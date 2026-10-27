@@ -359,21 +359,6 @@ impl EventHandler for MarkdownToolbar {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// SP-022: the toolbar's published action event resolves to its signal.
-    #[test]
-    fn action_triggered_is_reachable_through_the_capability_event() {
-        let toolbar = MarkdownToolbar::new(Rect::new(0, 0, 240, 28));
-        let resolved =
-            toolbar.event_signal_dyn("action_triggered").expect("the published event must resolve");
-        assert_eq!(resolved.name(), "action_triggered");
-        assert!(toolbar.event_signal_dyn("no_such_event").is_none());
-    }
-}
-
 impl Draw for MarkdownToolbar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
@@ -428,11 +413,26 @@ impl Draw for MarkdownToolbar {
             let text = &labels[index];
             context.draw_text_fitted_cow(
                 cell,
-                &text,
+                text,
                 font,
                 if self.hovered == Some(index) { ink } else { ink.blend(&surface, 0.15) },
                 HorizontalAlignment::Center,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SP-022: the toolbar's published action event resolves to its signal.
+    #[test]
+    fn action_triggered_is_reachable_through_the_capability_event() {
+        let toolbar = MarkdownToolbar::new(Rect::new(0, 0, 240, 28));
+        let resolved =
+            toolbar.event_signal_dyn("action_triggered").expect("the published event must resolve");
+        assert_eq!(resolved.name(), "action_triggered");
+        assert!(toolbar.event_signal_dyn("no_such_event").is_none());
     }
 }

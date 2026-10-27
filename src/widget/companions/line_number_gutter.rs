@@ -38,18 +38,15 @@ const MARKER_BAR_WIDTH: u32 = 3;
 
 /// Which edge a number is aligned to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum LineNumberAlign {
     /// Numbers hug the left edge, as in a log with a leading timestamp column.
     Left,
     /// Numbers hug the right edge, the usual code-editor gutter.
+    #[default]
     Right,
 }
 
-impl Default for LineNumberAlign {
-    fn default() -> Self {
-        Self::Right
-    }
-}
 
 impl LineNumberAlign {
     /// The token used by the property contract.

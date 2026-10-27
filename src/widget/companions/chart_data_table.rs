@@ -117,11 +117,8 @@ impl ChartDataTable {
     /// Both axes are rendered as text, so a non-finite value is preserved rather than silently
     /// dropped. All series start visible.
     pub fn set_from_series(&mut self, series: &[(String, Vec<(f64, f64)>)]) {
-        let mut headers = Vec::with_capacity(3);
-        headers.push(String::from("Series"));
-        headers.push(String::from("X"));
-        headers.push(String::from("Y"));
-        self.headers = headers;
+        // Built in place: a vector created and then pushed into is `clippy::vec_init_then_push`.
+        self.headers = Vec::from([String::from("Series"), String::from("X"), String::from("Y")]);
 
         let mut rows = Vec::new();
         let mut row_series = Vec::new();

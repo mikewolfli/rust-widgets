@@ -45,8 +45,10 @@ const ICON_BADGE: i32 = 32;
 
 /// The four states a list surface can be in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ListState {
     /// Nothing has been asked for yet; the host paints nothing.
+    #[default]
     Idle,
     /// A refresh is in flight; the host paints skeleton rows.
     Loading,
@@ -56,11 +58,6 @@ pub enum ListState {
     Error,
 }
 
-impl Default for ListState {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
 
 impl ListState {
     /// The token used by the property contract.

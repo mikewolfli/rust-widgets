@@ -171,7 +171,7 @@ impl ActionManager {
             // W-P05: the chord leaves through the reverse index (the forward-index check keeps
             // the removal exact), and the filtered binding list re-derives the host index.
             if let Some(chord) = self.action_to_chord.remove(id) {
-                if self.shortcut_to_action.get(&chord).map_or(false, |bound| bound == id) {
+                if self.shortcut_to_action.get(&chord).is_some_and(|bound| bound == id) {
                     self.shortcut_to_action.remove(&chord);
                 }
             }
@@ -305,7 +305,7 @@ impl ActionManager {
     fn set_chord(&mut self, chord: String, action_id: String) {
         if let Some(previous) = self.shortcut_to_action.insert(chord.clone(), action_id.clone()) {
             if previous != action_id
-                && self.action_to_chord.get(&previous).map_or(false, |bound| *bound == chord)
+                && self.action_to_chord.get(&previous).is_some_and(|bound| *bound == chord)
             {
                 self.action_to_chord.remove(&previous);
             }
@@ -347,7 +347,7 @@ impl ActionManager {
     /// exact even if the two tables were ever to disagree about which chord the action holds.
     fn release_shortcuts_for(&mut self, action_id: &str) {
         if let Some(chord) = self.action_to_chord.remove(action_id) {
-            if self.shortcut_to_action.get(&chord).map_or(false, |bound| bound == action_id) {
+            if self.shortcut_to_action.get(&chord).is_some_and(|bound| bound == action_id) {
                 self.shortcut_to_action.remove(&chord);
             }
         }
