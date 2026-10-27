@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::{Legend, LegendEntry};
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -111,6 +112,10 @@ pub struct PieChart {
     legend_scroll: usize,
     /// The legend column's clickable rows from the last paint.
     last_legend_area: Option<LegendArea>,
+    /// An attached standard legend; when set it replaces the self-drawn column.
+    legend: Option<Legend>,
+    /// Toggles queued by the attached legend's `series_toggled` signal.
+    legend_events: crate::compat::Arc<crate::compat::Mutex<crate::compat::Vec<(usize, bool)>>>,
     /// The last pointer position, used to decide whether a wheel belongs to the legend.
     last_pointer: Option<Point>,
     /// Emitted with `(slice, visible)` after a legend click or [`Self::set_series_visible`].
@@ -151,6 +156,10 @@ impl PieChart {
             from_values: Vec::new(),
             legend_scroll: 0,
             last_legend_area: None,
+            legend: None,
+            legend_events: crate::compat::Arc::new(crate::compat::Mutex::new(
+                crate::compat::Vec::new(),
+            )),
             last_pointer: None,
             series_toggled: Signal1::new(),
             slice_hovered: Signal1::new(),
@@ -171,6 +180,7 @@ impl PieChart {
         self.sync_explode_progress();
         self.install_transition(from);
         self.revalidate_hover();
+        self.sync_legend();
         self.base.request_redraw();
     }
 
@@ -180,6 +190,7 @@ impl PieChart {
         self.angles_dirty = true;
         self.sync_explode_progress();
         self.clear_transition();
+        self.sync_legend();
         self.base.request_redraw();
     }
 
@@ -192,6 +203,7 @@ impl PieChart {
             self.sync_explode_progress();
             self.clear_transition();
             self.revalidate_hover();
+            self.sync_legend();
             self.base.request_redraw();
             true
         } else {
@@ -208,6 +220,7 @@ impl PieChart {
         self.clear_transition();
         self.legend_scroll = 0;
         self.revalidate_hover();
+        self.sync_legend();
         self.base.request_redraw();
     }
 
@@ -292,9 +305,83 @@ impl PieChart {
         slice.visible = visible;
         self.angles_dirty = true;
         self.revalidate_hover();
+        self.sync_legend();
         self.series_toggled.emit((index, visible));
         self.base.request_redraw();
         true
+    }
+
+    /// Mounts `legend` as this chart's legend, or restores the self-drawn column with `None`.
+    ///
+    /// The attached legend is checkable, and its `series_toggled` signal drives
+    /// [`Self::set_series_visible`]. While one is attached the chart paints it and skips its own
+    /// column; the self-drawn path is unchanged when no legend is attached.
+    pub fn set_legend(&mut self, legend: Option<Legend>) {
+        crate::compat::lock(&self.legend_events).clear();
+        let mut legend = legend;
+        if let Some(attached) = legend.as_mut() {
+            attached.set_checkable(true);
+            let events = crate::compat::Arc::clone(&self.legend_events);
+            attached.series_toggled.connect(move |value| {
+                crate::compat::lock(&events).push(*value);
+            });
+        }
+        self.legend = legend;
+        self.sync_legend();
+        self.base.request_redraw();
+    }
+
+    /// The attached standard legend, when one is mounted.
+    pub fn legend(&self) -> Option<&Legend> {
+        self.legend.as_ref()
+    }
+
+    /// The attached standard legend mutably, when one is mounted.
+    pub fn legend_mut(&mut self) -> Option<&mut Legend> {
+        self.legend.as_mut()
+    }
+
+    /// The entries the attached legend should show for the current slices.
+    fn legend_entries(&self) -> crate::compat::Vec<LegendEntry> {
+        self.slices
+            .iter()
+            .enumerate()
+            .map(|(index, slice)| {
+                LegendEntry::new(slice.label.clone(), slice.color)
+                    .with_visible(self.is_series_visible(index))
+            })
+            .collect()
+    }
+
+    /// Brings the attached legend's rows in line with the chart's slices and visibility.
+    fn sync_legend(&mut self) {
+        // A toggle made on the companion programmatically (not through the chart's event path)
+        // is queued by the same slot; apply it before overwriting the companion's rows.
+        self.drain_legend_toggles();
+        let desired = self.legend_entries();
+        if let Some(legend) = self.legend.as_mut() {
+            if legend.entries() != desired.as_slice() {
+                legend.set_entries(desired);
+            }
+        }
+    }
+
+    /// Applies toggles the attached legend reported through `series_toggled`.
+    fn drain_legend_toggles(&mut self) {
+        let pending = {
+            let mut events = crate::compat::lock(&self.legend_events);
+            core::mem::take(&mut *events)
+        };
+        for (index, visible) in pending {
+            let _ = self.set_series_visible(index, visible);
+        }
+    }
+
+    /// Whether the attached legend owns `pos`.
+    fn legend_owns(&self, pos: Point) -> bool {
+        self.legend
+            .as_ref()
+            .is_some_and(|legend| legend.is_visible() && legend.geometry().contains_point(pos))
     }
 
     /// The first legend row currently drawn.
@@ -304,6 +391,9 @@ impl PieChart {
 
     /// The slice index of the legend row under `pos`, when the legend is shown.
     fn legend_entry_at(&self, pos: Point) -> Option<usize> {
+        if self.legend.is_some() {
+            return None;
+        }
         let area = self.last_legend_area?;
         if pos.x < area.x
             || pos.x >= area.x + area.width
@@ -1054,6 +1144,7 @@ impl WidgetProperties for PieChart {
 
 impl Draw for PieChart {
     fn draw(&mut self, context: &mut RenderContext) {
+        self.sync_legend();
         let rect = self.base.geometry();
         if rect.width == 0 || rect.height == 0 {
             return;
@@ -1278,7 +1369,7 @@ impl Draw for PieChart {
         }
 
         // ── Legend column (CH-02) ──
-        if self.show_legend {
+        if self.show_legend && self.legend.is_none() {
             let geometry = self.plot_geometry();
             let legend_x = geometry.x + geometry.width as i32 + 8;
             let font = role_font(self.base.style(), 10.0);
@@ -1368,6 +1459,13 @@ impl Draw for PieChart {
                 HorizontalAlignment::Left,
             );
         }
+
+        // ── Attached standard legend ──
+        if let Some(legend) = self.legend.as_mut() {
+            if legend.is_visible() {
+                legend.draw(context);
+            }
+        }
     }
 }
 
@@ -1375,6 +1473,21 @@ impl EventHandler for PieChart {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
+            return;
+        }
+        // A mounted legend owns its rectangle: forward the pointer there, apply the toggles its
+        // `series_toggled` queued, and keep the pie's slice hit path out of the same press.
+        let over_legend = match event {
+            Event::MouseMove { pos } | Event::MousePress { pos, .. } => self.legend_owns(*pos),
+            _ => false,
+        };
+        if let Some(legend) = self.legend.as_mut() {
+            if over_legend || !matches!(event, Event::MouseMove { .. } | Event::MousePress { .. }) {
+                legend.handle_event(event);
+            }
+        }
+        self.drain_legend_toggles();
+        if over_legend {
             return;
         }
         match event {
@@ -1780,5 +1893,21 @@ mod tests {
         let scrolled = pc.legend_scroll_offset();
         pc.handle_event(&Event::wheel(0, 1, 0));
         assert!(pc.legend_scroll_offset() < scrolled, "the wheel scrolls back");
+    }
+
+    /// Chapter-3 gap 8: a mounted standard legend toggles a slice through the chart's existing
+    /// visibility path, and its own entry follows it.
+    #[test]
+    fn an_attached_legend_toggle_hides_the_slice() {
+        let mut pc = PieChart::new(Rect::new(0, 0, 320, 240));
+        pc.set_slices(vec![
+            PieSlice::new("Alpha", 1.0, Color::PRIMARY),
+            PieSlice::new("Beta", 2.0, Color::rgb(0, 180, 90)),
+        ]);
+        pc.set_legend(Some(crate::widget::companions::Legend::new(Rect::new(0, 0, 120, 60))));
+        assert_eq!(pc.legend().expect("attached").entries().len(), 2);
+        pc.handle_event(&Event::mouse_press(10, 10, 1));
+        assert!(!pc.is_series_visible(0));
+        assert!(!pc.legend().expect("attached").entries()[0].visible);
     }
 }

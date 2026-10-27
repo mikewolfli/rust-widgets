@@ -104,7 +104,7 @@ impl WaylandIme {
             cursor_position: cursor,
             selection_length: end.saturating_sub(cursor),
         };
-        let _ = crate::platform::ime::deliver_composition(widget, &composition);
+        let _ = crate::platform::ime::deliver_composition_owned(widget, composition);
     }
 
     /// A `commit_string` event arrived: deliver it to the focused widget.

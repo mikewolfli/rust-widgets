@@ -19,7 +19,7 @@
 //! stated as "the value takes what the indicator does not", which makes "the value yields to the
 //! indicator" true by construction rather than by two subtractions that happen to agree.
 
-use crate::compat::{Instant, Rc, RefCell, String, ToString, Vec};
+use crate::compat::{HashMap, Instant, Rc, RefCell, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{wheel::WheelScroll, Event, EventHandler};
 use crate::render::RenderContext;
@@ -32,6 +32,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::input_widgets::suggestion_popup::{MatchMode, PopupItem, SuggestionPopup};
 use crate::widget::metrics::{
     active_profile, dimensions, effective_font, estimate_text_width, focus_ring_color,
     profile_metrics, ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
@@ -226,6 +227,175 @@ impl IndicatorGeometry {
         ]
     }
 }
+
+// ─────────────────── Shared drop-down window (I-133) ───────────────────
+
+/// The fixed-height row window both `ComboBox` and `Dropdown` paint below their field.
+///
+/// # Why this is extracted
+///
+/// The two controls were two implementations of one popup: both clamped a scroll offset against
+/// a row cap, both kept a selected row inside the painted window, both mapped a row index to a
+/// rectangle in that window, and both resolved a pointer to a row through the same arithmetic.
+/// The copies drifted the moment one of them gained a rule the other did not, so the kernel is
+/// stated once here and both controls call it (I-133).
+///
+/// # What is *not* shared
+///
+/// The decorated row itself, the collapsed field and the popup anchor stay with each control:
+/// a combo box hangs its list from the field band and paints icons/hints, while a dropdown hangs
+/// it from the control's own bottom edge. Those are appearance facts, not window facts.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PopupWindow {
+    /// First painted row.
+    offset: usize,
+    /// How many rows are painted at once, or `None` for "all of them".
+    max_visible: Option<usize>,
+}
+
+impl PopupWindow {
+    /// A window showing every row from the top.
+    pub(crate) const fn new() -> Self {
+        Self { offset: 0, max_visible: None }
+    }
+
+    /// The first painted row.
+    pub(crate) fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// The row cap, or `None` when the list is uncapped.
+    pub(crate) fn max_visible(&self) -> Option<usize> {
+        self.max_visible
+    }
+
+    /// Sets the row cap; `None` restores an uncapped list.
+    pub(crate) fn set_max_visible(&mut self, max_visible: Option<usize>) {
+        self.max_visible = max_visible.map(|value| value.max(1));
+    }
+
+    /// How many rows one page holds for a list of `rows` rows.
+    pub(crate) fn page_size(&self, rows: usize) -> usize {
+        self.max_visible.map(|max| max.max(1)).unwrap_or(rows).max(1)
+    }
+
+    /// The painted row count for a list of `rows` rows.
+    pub(crate) fn window_rows(&self, rows: usize) -> usize {
+        self.page_size(rows).min(rows)
+    }
+
+    /// `offset` clamped so the window stays inside a list of `rows` rows.
+    pub(crate) fn clamp_offset(&self, rows: usize) -> usize {
+        let page = self.page_size(rows);
+        self.offset.min(rows.saturating_sub(page.min(rows)))
+    }
+
+    /// Sets the first painted row, clamped to the rows that exist; returns whether it moved.
+    pub(crate) fn set_offset(&mut self, offset: usize, rows: usize) -> bool {
+        let next = offset.min(rows.saturating_sub(self.page_size(rows).min(rows)));
+        if self.offset == next {
+            return false;
+        }
+        self.offset = next;
+        true
+    }
+
+    /// Moves the window so `index` is inside it, moving as little as it takes.
+    pub(crate) fn ensure_visible(&mut self, index: usize, rows: usize) {
+        if rows == 0 {
+            self.offset = 0;
+            return;
+        }
+        let page = self.page_size(rows);
+        if index < self.offset {
+            self.offset = index;
+        } else if index >= self.offset + page {
+            self.offset = index + 1 - page;
+        }
+        self.offset = self.clamp_offset(rows);
+    }
+
+    /// The rows currently inside the window: `start..end`.
+    pub(crate) fn visible_range(&self, rows: usize) -> (usize, usize) {
+        let start = self.clamp_offset(rows);
+        (start, (start + self.page_size(rows)).min(rows))
+    }
+
+    /// The rectangle of `row` inside `list`, where `row` is relative to the first painted row.
+    pub(crate) fn row_box(list: Rect, row_height: u32, row: usize) -> Rect {
+        Rect::new(
+            list.x,
+            list.y + (row_height.saturating_mul(row as u32)) as i32,
+            list.width,
+            row_height,
+        )
+    }
+
+    /// The rectangle of a list of `rows` rows, anchored at `list`.
+    pub(crate) fn window_rect(list: Rect, row_height: u32, rows: usize) -> Rect {
+        Rect::new(list.x, list.y, list.width, row_height.saturating_mul(rows as u32))
+    }
+
+    /// The row under `pos` in a list of `rows` rows, or `None` when the point misses it.
+    pub(crate) fn row_at(
+        &self,
+        pos: Point,
+        list: Rect,
+        row_height: u32,
+        rows: usize,
+    ) -> Option<usize> {
+        let hit = Self::window_rect(list, row_height, self.window_rows(rows).max(1));
+        if !hit.contains_point(pos) {
+            return None;
+        }
+        let row_height = row_height.max(1) as i32;
+        let row = (pos.y - list.y) / row_height;
+        if row < 0 {
+            return None;
+        }
+        let index = self.offset() + row as usize;
+        (index < rows).then_some(index)
+    }
+}
+
+/// The first enabled row at or after `start` whose label begins with `prefix`, wrapping once.
+///
+/// Both controls' type-ahead read this: the prefix is folded once and compared byte-wise, so a
+/// keystroke does not allocate a lowercased copy of every label (I-P05, I-133).
+pub(crate) fn prefix_row(
+    labels: &[String],
+    prefix: &str,
+    start: usize,
+    is_enabled: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    let needle = crate::widget::input_widgets::text_match::fold(prefix);
+    let count = labels.len();
+    if count == 0 {
+        return None;
+    }
+    (0..count).map(|offset| (start + offset) % count).find(|&index| {
+        is_enabled(index)
+            && crate::widget::input_widgets::text_match::starts_with(&labels[index], &needle)
+    })
+}
+
+/// The nearest enabled row strictly before or after `from`.
+///
+/// This is the arrow-key step both controls use while their list is open: a disabled row is not a
+/// navigation target, so the mark skips it instead of stopping on a row a press would refuse.
+pub(crate) fn neighbour_row(
+    count: usize,
+    from: usize,
+    forward: bool,
+    is_enabled: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    if forward {
+        (from.saturating_add(1)..count).find(|&index| is_enabled(index))
+    } else {
+        (0..from.min(count)).rev().find(|&index| is_enabled(index))
+    }
+}
+
 /// A completion provider: given the typed prefix, returns candidate strings.
 pub type ComboBoxCompleter = Rc<dyn Fn(&str) -> Vec<String>>;
 
@@ -392,13 +562,6 @@ pub struct ComboBox {
     /// The highlight is what tells a user which row a click will take, so it is derived from the
     /// same row geometry the draw uses rather than from a second calculation in `handle_event`.
     hovered_item: Option<usize>,
-    /// The first item the list is scrolled to.
-    ///
-    /// The list shows `max_visible_items` rows starting here, so a list longer than the window is
-    /// reachable by keyboard even though the rows that fit on screen never change height. It is
-    /// clamped against the item count on every read, so removing items cannot leave the list
-    /// scrolled past its own end.
-    first_visible_item: usize,
     /// Emitted with the new index after `current_index` changes, including when
     /// it is cleared to `None`. An out-of-range index is ignored (and emits
     /// nothing); re-applying the same value emits nothing.
@@ -464,6 +627,33 @@ pub struct ComboBox {
     size_hint_cache: RefCell<Option<SizeHintCache>>,
     /// Memoised advances of the row icons, parallel to `item_meta`.
     icon_advance_cache: RefCell<Option<IconAdvanceCache>>,
+    /// Memoised first-row index for every label, keyed by the item revision.
+    ///
+    /// An editable box re-derives its selection from the typed value on every keystroke. Scanning
+    /// [`Self::items`] for the label made that O(n) per key; this map is rebuilt only when the item
+    /// list itself changes ([`Self::item_revision`]), so typing costs one hash lookup instead.
+    label_index: RefCell<Option<LabelIndex>>,
+    /// The candidate-list engine the open list is painted from (I-129).
+    ///
+    /// The popup owns the filtered rows, the painted window, the hit test and the highlight. This
+    /// control keeps its own item storage and paints the decorated rows, so its public item API
+    /// and its icons are unchanged; the popup is told which rows exist and which one is marked.
+    popup: SuggestionPopup,
+    /// Bumped whenever the popup's candidate rows change.
+    ///
+    /// The popup's rows are rebuilt only when this revision moves, so a repaint cannot turn into
+    /// a per-frame list copy.
+    popup_revision: u64,
+    /// The revision the popup's row list currently reflects.
+    popup_synced_revision: u64,
+}
+
+/// First-row index for every label, matching `Iterator::position`'s first-match semantics.
+struct LabelIndex {
+    revision: u64,
+    /// The first row carrying each label. Disabled rows stay in the map; the enabled check is
+    /// applied to the first match at lookup time, exactly as the scan's `.filter()` did.
+    first: HashMap<String, usize>,
 }
 
 /// Memoised widest-item width, keyed by the item revision and the font.
@@ -483,6 +673,65 @@ struct IconAdvanceCache {
     advances: Vec<Option<i32>>,
 }
 impl ComboBox {
+    /// The rectangle the open list hangs from: the field band's bottom edge.
+    ///
+    /// The popup uses an anchor rather than a stored list rectangle so the list follows the field
+    /// when the control is laid out again; an anchor of zero height at the band's bottom is the
+    /// "directly below the field" rule this control has always documented.
+    fn popup_anchor(&self) -> Rect {
+        let band = self.field_band();
+        Rect::new(band.x, band.y + band.height as i32, band.width, 0)
+    }
+
+    /// The rows the open list offers: the completer's candidates when it has any, the items
+    /// otherwise.
+    ///
+    /// The popup is handed descriptions rather than indices so its filter, window and hit test
+    /// run over the same rows the control paints; the control still owns the labels it draws.
+    fn popup_rows(&self) -> Vec<PopupItem> {
+        if self.showing_completions() {
+            return self.completions.iter().map(PopupItem::new).collect();
+        }
+        self.items
+            .iter()
+            .enumerate()
+            .map(|(index, label)| PopupItem {
+                label: label.clone(),
+                icon: None,
+                hint: String::new(),
+                enabled: self.is_item_enabled(index),
+            })
+            .collect()
+    }
+
+    /// Brings the popup engine's rows, metrics and anchor up to date.
+    ///
+    /// Every popup read (paint, hit test, keyboard scroll) goes through the engine, so this is the
+    /// one sync point. It is idempotent and allocation-free once the row revision and the
+    /// geometry have settled, which is what makes it safe to call at the start of a frame.
+    fn sync_popup(&mut self) {
+        if self.popup.max_visible() != self.max_visible_items {
+            self.popup.set_max_visible(self.max_visible_items);
+        }
+        if self.popup.row_height() != dimensions::MENU_ROW_HEIGHT {
+            self.popup.set_row_height(dimensions::MENU_ROW_HEIGHT);
+        }
+        self.popup.set_anchor(self.popup_anchor());
+        if self.popup_revision != self.popup_synced_revision {
+            // Replacing the row list re-derives the window; keep the offset the user had, clamped
+            // to the new rows, so an item edit does not send a scrolled list back to its top.
+            let offset = self.popup.scroll_offset();
+            let rows = self.popup_rows();
+            self.popup.set_match_mode(MatchMode::Prefix);
+            self.popup.set_popup_items(rows);
+            self.popup.set_scroll_offset(offset);
+            self.popup_synced_revision = self.popup_revision;
+        }
+        // The popup's highlight is this control's pointer highlight. Its rows are item rows
+        // (there is no filter here), so the row index and the item index are the same number.
+        self.popup.set_selected_index(self.hovered_item);
+    }
+
     /// The band the control actually paints: full width, one field tall, centred.
     ///
     /// # Why the control is not its own rectangle
@@ -545,7 +794,7 @@ impl ComboBox {
 
     /// Creates an empty combo box with geometry.
     pub fn new(geometry: Rect) -> Self {
-        Self {
+        let mut combo = Self {
             base: BaseWidget::new(WidgetKind::ComboBox, geometry, "ComboBox"),
             items: Vec::new(),
             current_index: None,
@@ -555,7 +804,6 @@ impl ComboBox {
             alignment: crate::core::Alignment::Left,
             open: false,
             hovered_item: None,
-            first_visible_item: 0,
             current_index_changed: Signal1::new(),
             current_text_changed: Signal1::new(),
             activated: Signal1::new(),
@@ -576,7 +824,13 @@ impl ComboBox {
             item_revision: 0,
             size_hint_cache: RefCell::new(None),
             icon_advance_cache: RefCell::new(None),
-        }
+            label_index: RefCell::new(None),
+            popup: SuggestionPopup::new(geometry),
+            popup_revision: 0,
+            popup_synced_revision: u64::MAX,
+        };
+        combo.sync_popup();
+        combo
     }
 
     /// Compatibility spelling of [`Self::current_index_changed`] (W-20).
@@ -589,6 +843,42 @@ impl ComboBox {
     /// Bumped whenever `items` or `item_meta` changes, so the derived caches invalidate.
     fn invalidate_item_caches(&mut self) {
         self.item_revision = self.item_revision.wrapping_add(1);
+        // The popup's row list is derived from the items, so it is stale as of now (I-129).
+        self.popup_revision = self.popup_revision.wrapping_add(1);
+        self.sync_popup();
+    }
+
+    /// The first row whose label is exactly `label`, when that row is enabled.
+    ///
+    /// This is the keystroke hot path for an editable box. The label map is keyed by
+    /// [`Self::item_revision`], so it is rebuilt only when the item list changes; a keystroke is
+    /// one hash lookup plus the enabled check instead of an O(n) label scan (I-102).
+    ///
+    /// The first-match rule is preserved: the map holds the *first* row for a label, and a
+    /// disabled first row yields `None` rather than falling through to a later duplicate — the
+    /// same result as `iter().position(..).filter(..)`.
+    fn find_label(&self, label: &str) -> Option<usize> {
+        let stale = match self.label_index.try_borrow() {
+            Ok(cache) => cache.as_ref().is_none_or(|cache| cache.revision != self.item_revision),
+            Err(_) => false,
+        };
+        if stale {
+            if let Ok(mut cache) = self.label_index.try_borrow_mut() {
+                if cache.as_ref().is_none_or(|cache| cache.revision != self.item_revision) {
+                    let mut first = HashMap::new();
+                    for (index, item) in self.items.iter().enumerate() {
+                        first.entry(item.clone()).or_insert(index);
+                    }
+                    *cache = Some(LabelIndex { revision: self.item_revision, first });
+                }
+            }
+        }
+        let index = self
+            .label_index
+            .try_borrow()
+            .ok()
+            .and_then(|cache| cache.as_ref().and_then(|cache| cache.first.get(label).copied()));
+        index.filter(|index| self.is_item_enabled(*index))
     }
 
     /// The widest item's measured width, memoised for the current items and font.
@@ -764,6 +1054,8 @@ impl ComboBox {
                 return;
             }
             meta.enabled = enabled;
+            self.popup_revision = self.popup_revision.wrapping_add(1);
+            self.sync_popup();
             self.base.request_redraw();
         }
     }
@@ -817,32 +1109,25 @@ impl ComboBox {
     }
 
     fn refresh_completions(&mut self) {
-        self.completions = match &self.completer {
-            Some(completer) => {
-                let base = self.current_text();
-                completer(&base)
-            }
+        // Borrow the live value rather than cloning it into a temporary: the completer takes
+        // `&str`, and this runs on every keystroke (I-102).
+        let computed = match &self.completer {
+            Some(completer) => completer(self.displayed_text()),
             None => Vec::new(),
         };
+        self.completions = computed;
+        // The open list shows candidate rows instead of items while completions exist, so the
+        // candidate set is a source change for the popup too (I-129).
+        self.popup_revision = self.popup_revision.wrapping_add(1);
+        self.sync_popup();
     }
 
     /// Selects the first row at or after `start` whose label begins with `prefix`.
     ///
-    /// The prefix is folded once and each label compared byte-wise, instead of allocating a
-    /// lowercased copy of every row (I-P05).
+    /// The search is the shared kernel's, so this control's type-ahead and `Dropdown`'s cannot
+    /// disagree about folding or about which rows count as targets (I-P05, I-133).
     fn find_prefix(&self, prefix: &str, start: usize) -> Option<usize> {
-        let needle = crate::widget::input_widgets::text_match::fold(prefix);
-        let count = self.items.len();
-        if count == 0 {
-            return None;
-        }
-        (0..count).map(|offset| (start + offset) % count).find(|&index| {
-            self.is_item_enabled(index)
-                && crate::widget::input_widgets::text_match::starts_with(
-                    &self.items[index],
-                    &needle,
-                )
-        })
+        prefix_row(&self.items, prefix, start, |index| self.is_item_enabled(index))
     }
     /// Inserts an item at specified position.
     ///
@@ -1003,11 +1288,9 @@ impl ComboBox {
     /// **same** label, when there is one. Emitting the index and the text together is what keeps
     /// a host that mirrors the value from seeing two disagreeing facts.
     fn sync_editor_selection(&mut self) {
-        let index = self
-            .items
-            .iter()
-            .position(|item| item == self.editor.text())
-            .filter(|index| self.is_item_enabled(*index));
+        // One hash lookup in the incrementally maintained label map, not an O(n) scan of the
+        // candidate list, and no cloned copy of the editor text (I-102).
+        let index = self.find_label(self.editor.text());
         if self.current_index != index {
             self.current_index = index;
             self.current_index_changed.emit(index);
@@ -1209,6 +1492,7 @@ impl ComboBox {
         let seed =
             self.current_index.and_then(|idx| self.items.get(idx)).cloned().unwrap_or_default();
         self.editor.set_text(seed, false);
+        self.popup_revision = self.popup_revision.wrapping_add(1);
         self.base.request_redraw();
     }
     /// Returns maximum number of visible items in dropdown.
@@ -1228,8 +1512,12 @@ impl ComboBox {
         if self.max_visible_items == max {
             return;
         }
+        // Keep the window where the user left it; changing the cap re-clamps it rather than
+        // sending the list back to its first row.
+        let offset = self.popup.scroll_offset();
         self.max_visible_items = max;
-        self.first_visible_item = self.first_visible_item();
+        self.popup.set_max_visible(max);
+        self.popup.set_scroll_offset(offset);
         self.base.request_redraw();
     }
 
@@ -1249,7 +1537,12 @@ impl ComboBox {
             return;
         }
         self.open = open;
+        // Which source the rows come from depends on whether the list is open (completions are
+        // only candidates while it is), so a toggle is a row revision even when the items did not
+        // change.
+        self.popup_revision = self.popup_revision.wrapping_add(1);
         if open {
+            self.sync_popup();
             self.scroll_to_current();
             self.reveal_progress = 0.0;
             // The list owns the press that dismisses it, even when that press lands on a
@@ -1260,6 +1553,7 @@ impl ComboBox {
             self.hovered_item = None;
             #[cfg(not(alloc_frugal))]
             crate::widget::runtime::clear_popup_grab_for(self.id());
+            self.sync_popup();
         }
         self.popup_visibility_changed.emit(open);
         self.base.request_redraw();
@@ -1275,17 +1569,17 @@ impl ComboBox {
     /// Never more than the items there are, so a two-item list does not leave eight rows of empty
     /// space under it, and never zero, so an empty list still has a box to draw its "empty" row in.
     fn visible_item_count(&self) -> usize {
-        self.max_visible_items.max(1).min(self.popup_len().max(1))
+        // An empty list still owns one row, which is where it paints its "no items" message.
+        self.popup.window_rows().max(1)
     }
 
     /// The first item the list's window shows, clamped to the rows that exist.
     ///
-    /// Read through this rather than the field directly, so removing items or shrinking
-    /// `max_visible_items` cannot leave the window scrolled past its own end -- which would show an
-    /// empty list that still claims to be open.
+    /// The offset lives in the popup engine, which clamps it on every write, so removing items or
+    /// shrinking `max_visible_items` cannot leave the window scrolled past its own end -- which
+    /// would show an empty list that still claims to be open.
     fn first_visible_item(&self) -> usize {
-        let last_first = self.popup_len().saturating_sub(self.visible_item_count());
-        self.first_visible_item.min(last_first)
+        self.popup.scroll_offset()
     }
 
     /// The list's box: as wide as the field, as tall as its visible rows, below the field.
@@ -1302,14 +1596,9 @@ impl ComboBox {
     /// (`max_visible_items` and the shared row metric). A stored third number would be a third answer
     /// to one question.
     fn list_rect(&self) -> Rect {
-        let band = self.field_band();
-        let rows = self.visible_item_count();
-        Rect::new(
-            band.x,
-            band.y + band.height as i32,
-            band.width,
-            dimensions::MENU_ROW_HEIGHT * rows as u32,
-        )
+        // The popup sizes the window from its anchor (the band's bottom edge) and its row height,
+        // so this control and `Dropdown` share one "rows x row height below the field" rule.
+        self.popup.popup_rect()
     }
 
     /// The box of the item at `index`, or `None` when the list's window does not show it.
@@ -1322,39 +1611,20 @@ impl ComboBox {
         if !self.open {
             return None;
         }
-        let offset = index.checked_sub(self.first_visible_item())?;
-        if offset >= self.visible_item_count() {
-            return None;
-        }
-        let list = self.list_rect();
-        Some(Rect::new(
-            list.x,
-            list.y + (dimensions::MENU_ROW_HEIGHT * offset as u32) as i32,
-            list.width,
-            dimensions::MENU_ROW_HEIGHT,
-        ))
+        // `row_rect` is indexed in painted-row space: it answers `None` for a row outside the
+        // window and maps the rest from the same offset `item_at_point` reads.
+        self.popup.row_rect(index)
     }
 
     /// The item index a point falls on, if the list is open and the point is on a shown row.
     ///
-    /// Built on [`Self::item_rect`] rather than recomputing the rows, so the two directions cannot
-    /// disagree about where row 0 begins.
+    /// Built on the popup's row map rather than recomputing the rows, so the two directions
+    /// cannot disagree about where row 0 begins.
     fn item_at_point(&self, point: Point) -> Option<usize> {
-        if !self.open || !self.list_rect().contains_point(point) {
+        if !self.open {
             return None;
         }
-        // The row index is solved from the pointer's offset: the rows are a fixed height, so one
-        // division answers what the previous row-by-row `item_rect` scan recomputed per row
-        // (I-P09).
-        let offset = point.y - self.list_rect().y;
-        if offset < 0 {
-            return None;
-        }
-        let row = (offset as u32 / dimensions::MENU_ROW_HEIGHT) as usize;
-        if row >= self.visible_item_count() {
-            return None;
-        }
-        let index = self.first_visible_item() + row;
+        let index = self.popup.window_row_at(point)?;
         if index >= self.popup_len() {
             return None;
         }
@@ -1371,13 +1641,7 @@ impl ComboBox {
     /// A window that jumped as far as it could on every step would make arrowing down a long list
     /// flicker; moving by one row when the selection leaves the window is what a list does.
     fn scroll_to(&mut self, index: usize) {
-        let count = self.visible_item_count();
-        if index < self.first_visible_item {
-            self.first_visible_item = index;
-        } else if index >= self.first_visible_item + count {
-            self.first_visible_item = index + 1 - count;
-        }
-        self.first_visible_item = self.first_visible_item();
+        self.popup.scroll_into_view(index);
     }
 
     /// Scrolls the window so the chosen item is shown.
@@ -1387,10 +1651,9 @@ impl ComboBox {
             // would make the user re-find the value the field already displays, and would make
             // `max_visible_items` irrelevant for every selection past the first window.
             let count = self.visible_item_count();
-            self.first_visible_item = index.saturating_sub(count / 2);
-            self.first_visible_item = self.first_visible_item();
+            self.popup.set_scroll_offset(index.saturating_sub(count / 2));
         } else {
-            self.first_visible_item = 0;
+            self.popup.set_scroll_offset(0);
         }
     }
 
@@ -1404,6 +1667,10 @@ impl ComboBox {
             return false;
         }
         self.hovered_item = hovered;
+        // The popup owns the painted highlight, so the control's pointer state is mirrored into
+        // it whenever it moves. Row indices and item indices are the same number here because
+        // the list has no filter of its own.
+        self.popup.set_selected_index(hovered);
         if let Some(index) = hovered {
             self.highlighted.emit(index);
         }
@@ -1605,6 +1872,12 @@ impl Widget for ComboBox {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// Keeps the popup's anchor on the field when the control is laid out again.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.sync_popup();
     }
 
     /// The field **and** the open list accept the pointer.
@@ -1909,6 +2182,9 @@ impl EventHandler for ComboBox {
         if !self.base.is_enabled() {
             return;
         }
+        // The popup's rows, row cap and anchor are read by the hit test and the navigation below,
+        // so they are brought up to date before this event consults them.
+        self.sync_popup();
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 // A row of the open list takes priority: it is drawn over the field, so a press
@@ -2174,6 +2450,9 @@ impl EventHandler for ComboBox {
 }
 impl Draw for ComboBox {
     fn draw(&mut self, context: &mut RenderContext) {
+        // The list is painted from the popup's window and row boxes, so its rows, cap, anchor and
+        // highlight are synchronised once at the top of the frame (I-129).
+        self.sync_popup();
         let style = self.style();
 
         // ── The band actually painted ──
@@ -2375,7 +2654,7 @@ impl Draw for ComboBox {
                     // The highlight is two facts at two weights: a row the pointer is over is a
                     // pointer position, and the row the field currently holds is a committed value.
                     // Painting them the same would lose "which one am I already on".
-                    if self.hovered_item == Some(index) {
+                    if self.popup.selected_index() == Some(index) {
                         context
                             .fill_rect(row, bg.blend(&text_color, 0.18).with_alpha(reveal_alpha));
                     } else if self.current_index == Some(index) {
@@ -3407,5 +3686,38 @@ mod tests {
             after_first,
             "hovering the same row is not a change"
         );
+    }
+
+    /// Typing reuses the label index instead of rescanning the candidate list (I-102).
+    #[test]
+    fn an_editable_keystroke_reuses_the_label_index() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.add_items(vec!["alpha".to_string(), "beta".to_string(), "alpha".to_string()]);
+        cb.set_editable(true);
+        assert_eq!(cb.find_label("beta"), Some(1));
+        let revision = cb.label_index.borrow().as_ref().map(|cache| cache.revision);
+        assert_eq!(revision, Some(cb.item_revision), "the map is seeded for the current items");
+
+        cb.handle_event(&Event::key_press(97, 0)); // 'a'
+        cb.handle_event(&Event::text_input("lpha"));
+
+        assert_eq!(cb.current_index(), Some(0), "the first duplicate wins");
+        assert_eq!(cb.current_text(), "alpha");
+        assert_eq!(
+            cb.label_index.borrow().as_ref().map(|cache| cache.revision),
+            Some(cb.item_revision),
+            "a keystroke must not rebuild the label index"
+        );
+    }
+
+    /// The map must keep the old first-match-then-enabled rule for duplicate labels.
+    #[test]
+    fn a_disabled_first_duplicate_does_not_fall_through_to_a_later_copy() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.add_items(vec!["dup".to_string(), "dup".to_string()]);
+        cb.set_item_enabled(0, false);
+        assert_eq!(cb.find_label("dup"), None);
+        cb.set_item_enabled(0, true);
+        assert_eq!(cb.find_label("dup"), Some(0));
     }
 }

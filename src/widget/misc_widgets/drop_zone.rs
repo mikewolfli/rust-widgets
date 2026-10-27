@@ -448,6 +448,19 @@ impl DropZone {
 
     /// The file names a payload contributes.
     fn payload_files(payload: &DragPayload) -> Vec<String> {
+        // A multi-item drag carries every file it took; the old code read only the primary
+        // fields, so a drop of five files recorded one (MISC-009). The primary fields still
+        // cover the single-item case and a host that never fills `items`.
+        if !payload.items.is_empty() {
+            return payload
+                .items
+                .iter()
+                .filter_map(|item| {
+                    let name = if item.label.is_empty() { &item.item_id } else { &item.label };
+                    (!name.is_empty()).then(|| name.clone())
+                })
+                .collect();
+        }
         let name = if payload.label.is_empty() { &payload.item_id } else { &payload.label };
         if name.is_empty() {
             Vec::new()
@@ -1086,6 +1099,32 @@ mod tests {
         z.on_drop(&DragPayload::new("text/plain", "three.txt"), Point::new(0, 0));
         z.clear_dropped_files();
         assert!(z.dropped_files().is_empty());
+    }
+
+    /// A multi-item payload records every item, not only the primary one (MISC-009).
+    #[test]
+    fn a_multi_item_payload_records_every_file() {
+        use crate::event::dnd::DragItem;
+
+        let mut z = DropZone::new(Rect::new(0, 0, 200, 120), "file");
+        let payload = DragPayload::new("file", "a.txt").with_label("a.txt").with_items(vec![
+            DragItem::new("file", "b.txt").with_label("b.txt"),
+            DragItem::new("file", "c.txt").with_label("c.txt"),
+        ]);
+        z.on_drop(&payload, Point::new(0, 0));
+        assert_eq!(
+            z.dropped_files(),
+            &["b.txt".to_string(), "c.txt".to_string()],
+            "the list is the drag's items, not just its primary item"
+        );
+    }
+
+    /// A payload with no `items` list still records its primary name (the old behaviour).
+    #[test]
+    fn a_single_item_payload_still_records_its_primary_name() {
+        let mut z = DropZone::new(Rect::new(0, 0, 200, 120), "file");
+        z.on_drop(&DragPayload::new("file", "only.txt").with_label("only.txt"), Point::new(0, 0));
+        assert_eq!(z.dropped_files(), &["only.txt".to_string()]);
     }
 
     /// The well names what landed, folding several files into `first +N` (MISC-10).

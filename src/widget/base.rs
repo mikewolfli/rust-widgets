@@ -1153,6 +1153,16 @@ impl BaseWidget {
     pub fn key_up_signal(&self) -> &Signal1<(u32, u32)> {
         &self.key_up
     }
+    /// The published event names every control inherits from its base state (W-302).
+    ///
+    /// These are the base signals that are also published capability events: a control resolves
+    /// them by name through [`Widget::event_signal_dyn`] without declaring a signal of its own.
+    /// The list lives beside the signals so the trait's default arm and the signals it returns
+    /// cannot name different sets.
+    ///
+    /// [`Widget::event_signal_dyn`]: crate::widget::Widget::event_signal_dyn
+    pub const PUBLISHED_EVENTS: &'static [&'static str] = &["focus_gained", "focus_lost"];
+
     /// The focus-gained signal. Same signal as the public `focus_gained` field.
     pub fn focus_gained_signal(&self) -> &GenericSignal {
         &self.focus_gained
@@ -1283,6 +1293,19 @@ impl BaseWidget {
         self.ever_requested_redraw.set(true);
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::mark_widget_damage(self.id(), self.geometry());
+        self.redraw_requested.emit();
+    }
+
+    /// Requests a repaint of `rect`, in the same coordinates [`Self::geometry`] uses.
+    ///
+    /// The damage tracker unions this rectangle with the control's other damage, so a control
+    /// that changes one cell repaints that cell rather than the whole surface (ADV-001).
+    /// [`Self::request_redraw`] remains the whole-widget entry, and the two share the flag and
+    /// the signal so an observer cannot tell which form asked.
+    pub fn request_redraw_in(&self, rect: Rect) {
+        self.ever_requested_redraw.set(true);
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::mark_widget_damage(self.id(), rect);
         self.redraw_requested.emit();
     }
 

@@ -7,11 +7,11 @@
 //! removing them, clearing the history, and selecting a color via click.
 //! Hovering over a swatch emits a preview signal.
 
-use crate::compat::{OnceLock, VecDeque};
+use crate::compat::{lock, Arc, Mutex, OnceLock, Vec, VecDeque};
 use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -69,6 +69,11 @@ pub struct ColorHistory {
     /// it is only materialised when a caller actually reads the list, and painting reads it
     /// once per frame through the same cached slice.
     colors_slice: OnceLock<Vec<Color>>,
+    /// Colours a paired `ColorWell` committed that this band has not absorbed yet (D-026).
+    ///
+    /// A widget cannot hold a borrow of another, so the well writes into this shared queue and
+    /// the band drains it on the next paint or interaction.
+    pending_commits: Option<Arc<Mutex<Vec<Color>>>>,
     max_colors: usize,
     selected_index: Option<usize>,
     hovered_index: Option<usize>,
@@ -105,6 +110,7 @@ impl ColorHistory {
             base: BaseWidget::new(WidgetKind::ColorHistory, geometry, "ColorHistory"),
             colors: VecDeque::new(),
             colors_slice: OnceLock::new(),
+            pending_commits: None,
             max_colors: 20,
             selected_index: None,
             hovered_index: None,
@@ -115,6 +121,42 @@ impl ColorHistory {
             context_menu_requested: Signal1::new(),
             checkerboard: None,
         }
+    }
+
+    /// Accepts the commit stream of a paired `ColorWell` (D-026).
+    ///
+    /// The well keeps the write end; this control drains the queue through
+    /// [`Self::sync_committed_colors`], which the paint and event paths already call, so a host
+    /// only has to attach the pair once. The returned signal is this control's own redraw
+    /// request: the well emits it after a commit so the band repaints even when the commit did
+    /// not come from a press.
+    pub(crate) fn accept_color_commits(
+        &mut self,
+        commits: Arc<Mutex<Vec<Color>>>,
+    ) -> GenericSignal {
+        self.pending_commits = Some(commits);
+        self.base.request_redraw();
+        self.base.redraw_requested_signal().clone()
+    }
+
+    /// Absorbs every colour a paired well has committed since the last call.
+    ///
+    /// Returns the number of commits consumed. [`Self::add_color`] still owns the rules — a
+    /// repeated newest colour is skipped and capacity eviction applies — so a commit is a normal
+    /// history entry rather than a second insertion path.
+    pub fn sync_committed_colors(&mut self) -> usize {
+        let Some(queue) = self.pending_commits.as_ref() else {
+            return 0;
+        };
+        let commits: Vec<Color> = {
+            let mut guard = lock(queue);
+            core::mem::take(&mut *guard)
+        };
+        let count = commits.len();
+        for color in commits {
+            self.add_color(color);
+        }
+        count
     }
 
     /// Adds a color to the history. If at capacity, removes the oldest color.
@@ -439,6 +481,9 @@ impl WidgetProperties for ColorHistory {
 
 impl Draw for ColorHistory {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Absorb colours a paired well committed since the previous frame, so the band the
+        // reader sees already includes them (D-026).
+        self.sync_committed_colors();
         let rect = self.geometry();
 
         // Draw background.
@@ -563,6 +608,9 @@ impl EventHandler for ColorHistory {
         if !self.base.is_enabled() {
             return;
         }
+        // A commit may land between two frames; absorbing it here keeps the swatch a press
+        // resolves against the same list the reader sees (D-026).
+        self.sync_committed_colors();
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 if let Some(index) = self.swatch_at(pos.x, pos.y) {

@@ -16,7 +16,7 @@
 //! added. Until then it is reachable as
 //! `crate::widget::display_widgets::tag_group::TagGroup`.
 
-use crate::compat::{Arc, Cell, RefCell, String, Vec};
+use crate::compat::{Arc, RefCell, String, Vec};
 use crate::core::{Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -111,7 +111,7 @@ impl TagGroup {
             selection_changed: GenericSignal::new(),
             layout_cache: RefCell::new(None),
             #[cfg(test)]
-            layout_epoch: Cell::new(0),
+            layout_epoch: core::cell::Cell::new(0),
         }
     }
 

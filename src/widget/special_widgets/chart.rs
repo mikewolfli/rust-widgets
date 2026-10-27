@@ -10,6 +10,7 @@ use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::{ChartTooltip, Legend, LegendEntry};
 use crate::widget::metrics::{effective_font, role_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -198,6 +199,20 @@ pub struct ChartWidget {
     hovered_legend: Option<usize>,
     /// Whether the host paints the hover read-out with its own tooltip control.
     hover_readout_external: bool,
+    /// An attached standard legend; when set it replaces the self-drawn rows.
+    ///
+    /// `None` keeps the historical self-drawn path byte-identical. A mounted legend is checkable
+    /// and its `series_toggled` signal drives [`Self::set_series_visible`].
+    legend: Option<Legend>,
+    /// Toggles queued by the attached legend's `series_toggled` signal.
+    ///
+    /// The slot cannot borrow the chart (signals are `'static`), so it records the toggles and
+    /// the next event drains them into the chart's own visibility state.
+    legend_events: crate::compat::Arc<crate::compat::Mutex<crate::compat::Vec<(usize, bool)>>>,
+    /// An attached tooltip that paints the hover read-out at [`Self::hover_anchor`].
+    ///
+    /// `None` is the default: the chart keeps its inline bubble and no tooltip is created.
+    chart_tooltip: Option<ChartTooltip>,
     /// Emitted when a data point is clicked.
     pub data_point_clicked: Signal1<usize>,
     /// Emitted when pointer hover enters a data point bucket.
@@ -250,6 +265,11 @@ impl ChartWidget {
             legend_hits: Vec::new(),
             hovered_legend: None,
             hover_readout_external: false,
+            legend: None,
+            legend_events: crate::compat::Arc::new(crate::compat::Mutex::new(
+                crate::compat::Vec::new(),
+            )),
+            chart_tooltip: None,
             data_point_clicked: Signal1::new(),
             data_point_hovered: Signal1::new(),
             data_point_unhovered: Signal1::new(),
@@ -318,6 +338,7 @@ impl ChartWidget {
         self.data_generation = self.data_generation.wrapping_add(1);
         self.restart_reveal();
         self.revalidate_hover();
+        self.sync_legend();
         self.base.request_redraw();
     }
 
@@ -333,6 +354,7 @@ impl ChartWidget {
         self.data_generation = self.data_generation.wrapping_add(1);
         self.restart_reveal();
         self.revalidate_hover();
+        self.sync_legend();
         self.base.request_redraw();
     }
 
@@ -421,6 +443,7 @@ impl ChartWidget {
         }
         self.series_names = names;
         self.names_generation = self.names_generation.wrapping_add(1);
+        self.sync_legend();
         self.base.request_redraw();
     }
 
@@ -530,6 +553,7 @@ impl ChartWidget {
         }
         self.series_visible[index] = visible;
         self.visibility_generation = self.visibility_generation.wrapping_add(1);
+        self.sync_legend();
         self.series_toggled.emit((index, visible));
         self.base.request_redraw();
         true
@@ -552,6 +576,123 @@ impl ChartWidget {
         }
         self.hover_readout_external = external;
         self.base.request_redraw();
+    }
+
+    /// Mounts `legend` as this chart's legend, or restores the self-drawn rows with `None`.
+    ///
+    /// The attached legend is made checkable, and its `series_toggled` signal is wired to the
+    /// chart's existing [`Self::set_series_visible`], so a click on the standard companion hides
+    /// the same series the self-drawn row would. While a legend is attached the chart paints it
+    /// and skips its own rows; with no legend attached the historical self-drawn path is used
+    /// unchanged.
+    pub fn set_legend(&mut self, legend: Option<Legend>) {
+        crate::compat::lock(&self.legend_events).clear();
+        let mut legend = legend;
+        if let Some(attached) = legend.as_mut() {
+            attached.set_checkable(true);
+            let events = crate::compat::Arc::clone(&self.legend_events);
+            attached.series_toggled.connect(move |value| {
+                crate::compat::lock(&events).push(*value);
+            });
+        }
+        self.legend = legend;
+        self.sync_legend();
+        self.base.request_redraw();
+    }
+
+    /// The attached standard legend, when one is mounted.
+    pub fn legend(&self) -> Option<&Legend> {
+        self.legend.as_ref()
+    }
+
+    /// The attached standard legend mutably, when one is mounted.
+    pub fn legend_mut(&mut self) -> Option<&mut Legend> {
+        self.legend.as_mut()
+    }
+
+    /// Attaches a standard tooltip that paints the hover read-out at [`Self::hover_anchor`].
+    ///
+    /// `None` is the default and paints nothing: the chart's inline bubble remains the only
+    /// read-out unless the caller explicitly attaches a tooltip. Once attached, the tooltip is
+    /// driven by the same hover state as the inline bubble and the inline bubble steps aside so
+    /// the two cannot both paint.
+    pub fn set_chart_tooltip(&mut self, tooltip: Option<ChartTooltip>) {
+        let mut tooltip = tooltip;
+        if let Some(attached) = tooltip.as_mut() {
+            attached.base_mut().set_geometry(self.geometry());
+        }
+        self.chart_tooltip = tooltip;
+        self.sync_chart_tooltip();
+        self.base.request_redraw();
+    }
+
+    /// The attached standard tooltip, when one is mounted.
+    pub fn chart_tooltip(&self) -> Option<&ChartTooltip> {
+        self.chart_tooltip.as_ref()
+    }
+
+    /// The attached standard tooltip mutably, when one is mounted.
+    pub fn chart_tooltip_mut(&mut self) -> Option<&mut ChartTooltip> {
+        self.chart_tooltip.as_mut()
+    }
+
+    /// The entries the attached legend should show for the current series.
+    fn legend_entries(&self) -> crate::compat::Vec<LegendEntry> {
+        (0..self.series.len())
+            .map(|index| {
+                let label = match self.series_names.get(index) {
+                    Some(name) => name.clone(),
+                    None => format!("Series {}", index + 1),
+                };
+                LegendEntry::new(label, Self::series_color(index))
+                    .with_visible(self.is_series_visible(index))
+            })
+            .collect()
+    }
+
+    /// Brings the attached legend's rows in line with the chart's series and visibility.
+    ///
+    /// `set_entries` only runs when something actually differs, so a still frame with an attached
+    /// legend does not request a redraw of its own every paint.
+    fn sync_legend(&mut self) {
+        // A toggle made on the companion programmatically (not through the chart's event path)
+        // is queued by the same slot; apply it before overwriting the companion's rows.
+        self.drain_legend_toggles();
+        let desired = self.legend_entries();
+        if let Some(legend) = self.legend.as_mut() {
+            if legend.entries() != desired.as_slice() {
+                legend.set_entries(desired);
+            }
+        }
+    }
+
+    /// Applies toggles the attached legend reported through `series_toggled`.
+    fn drain_legend_toggles(&mut self) {
+        let pending = {
+            let mut events = crate::compat::lock(&self.legend_events);
+            core::mem::take(&mut *events)
+        };
+        for (index, visible) in pending {
+            let _ = self.set_series_visible(index, visible);
+        }
+    }
+
+    /// Whether the attached legend owns `pos`.
+    fn legend_owns(&self, pos: Point) -> bool {
+        self.legend
+            .as_ref()
+            .is_some_and(|legend| legend.is_visible() && legend.geometry().contains_point(pos))
+    }
+
+    /// Paints or withdraws the attached tooltip to match the current hover.
+    fn sync_chart_tooltip(&mut self) {
+        let anchor = self.hover_anchor();
+        if let Some(tooltip) = self.chart_tooltip.as_mut() {
+            match anchor {
+                Some((point, lines)) => tooltip.show_at(point, lines),
+                None => tooltip.hide(),
+            }
+        }
     }
 
     /// The hovered bucket's anchor and suggested tooltip content, for an external read-out.
@@ -617,6 +758,7 @@ impl ChartWidget {
             self.hovered_index = None;
             self.data_point_unhovered.emit(0);
         }
+        self.sync_chart_tooltip();
     }
 
     /// Maps a pointer position to the index of the point under it.
@@ -1015,10 +1157,13 @@ fn expect_chart_type(value: CapabilityValue) -> Result<ChartType, CapabilityAcce
 
 impl Draw for ChartWidget {
     fn draw(&mut self, context: &mut RenderContext) {
+        // The attached legend is a standard control: keep its rows aligned with the series before
+        // either the self-drawn path or the attached control is painted.
+        self.sync_legend();
         let rect = self.base.geometry();
         // The legend's measured labels are rebuilt before the style borrow is taken, because the
         // refresh needs the widget mutably and resolving the style borrows it.
-        if self.show_legend && self.series.len() > 1 {
+        if self.show_legend && self.series.len() > 1 && self.legend.is_none() {
             self.refresh_legend(context);
         }
         // The plot panel is a surface, so it resolves like every other control's: the
@@ -1184,7 +1329,7 @@ impl Draw for ChartWidget {
         // is the only way a multi-series chart identifies which line is which. A row is also the
         // toggle for its series: the label widths are measured once per name list, not per frame.
         self.legend_hits.clear();
-        if self.show_legend && self.series.len() > 1 {
+        if self.show_legend && self.series.len() > 1 && self.legend.is_none() {
             let font = effective_font(style);
             let line_height = context.measure_text("M", font).height.max(1) as i32 + 4;
             let mut y = rect.y + 8;
@@ -1234,7 +1379,7 @@ impl Draw for ChartWidget {
         // The text and its size are cached against the hovered index and the data/label
         // generations, so a still frame with the pointer parked on a bucket formats and measures
         // nothing.
-        if self.show_tooltip && !self.hover_readout_external {
+        if self.show_tooltip && !self.hover_readout_external && self.chart_tooltip.is_none() {
             if let Some(index) = self.hovered_index {
                 if let Some(value) = self.hovered_value() {
                     let generation = self
@@ -1273,6 +1418,23 @@ impl Draw for ChartWidget {
                         );
                     }
                 }
+            }
+        }
+
+        // ── Attached companions ──
+        //
+        // A mounted legend replaces the self-drawn rows above; its own geometry is where the
+        // caller put it, so a host can place the standard control beside the chart. The tooltip
+        // paints only while it is visible, which keeps an idle chart from growing an empty bubble.
+        if let Some(legend) = self.legend.as_mut() {
+            if legend.is_visible() {
+                legend.draw(context);
+            }
+        }
+        if let Some(tooltip) = self.chart_tooltip.as_mut() {
+            tooltip.base_mut().set_geometry(rect);
+            if tooltip.is_visible() {
+                tooltip.draw(context);
             }
         }
     }
@@ -2367,6 +2529,22 @@ impl EventHandler for ChartWidget {
         if !self.base.is_enabled() {
             return;
         }
+        // A mounted legend is the hit-test and selection path for its rectangle. Its own
+        // `series_toggled` is queued by the slot `set_legend` installed, then drained into the
+        // chart's existing visibility so both controls cannot disagree.
+        let over_legend = match event {
+            Event::MouseMove { pos } | Event::MousePress { pos, .. } => self.legend_owns(*pos),
+            _ => false,
+        };
+        if let Some(legend) = self.legend.as_mut() {
+            if over_legend || !matches!(event, Event::MouseMove { .. } | Event::MousePress { .. }) {
+                legend.handle_event(event);
+            }
+        }
+        self.drain_legend_toggles();
+        if over_legend {
+            return;
+        }
         match event {
             Event::MouseMove { pos } => {
                 // The legend rows are controls: hovering one highlights it, and a press toggles its
@@ -2396,6 +2574,7 @@ impl EventHandler for ChartWidget {
                     }
                     self.base.request_redraw();
                 }
+                self.sync_chart_tooltip();
             }
             Event::MouseLeave { .. } => {
                 // Without this arm `hovered_index` was only ever set, never cleared — the
@@ -2406,6 +2585,7 @@ impl EventHandler for ChartWidget {
                     self.data_point_unhovered.emit(previous);
                     self.base.request_redraw();
                 }
+                self.sync_chart_tooltip();
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(true);
@@ -2473,268 +2653,12 @@ impl EventHandler for ChartWidget {
 
 /// A pair of axis-aligned reference lines drawn at a chart's hovered datum.
 ///
-/// The chart publishes `data_point_hovered` / `data_point_unhovered` and this control consumes
-/// them: a host calls [`Self::show_at`] on entry and [`Self::hide`] on exit. It deliberately does
-/// not own the chart — one crosshair can serve several charts, and a chart that reached into an
-/// overlay would be a second hit-testing path for the same datum.
-///
-/// # Why the position is absolute
-///
-/// The overlay is given the chart's rectangle, so its position is in the same coordinates the
-/// chart reported. That is what lets one control serve a chart mounted anywhere without the host
-/// converting coordinates twice.
-pub struct ChartCrosshair {
-    base: BaseWidget,
-    position: Option<Point>,
-    snap_to_data_point: bool,
-    show_x: bool,
-    show_y: bool,
-    follow_pointer: bool,
-    /// Emitted with the anchor when the crosshair moves.
-    pub position_changed: Signal1<Point>,
-}
-
-impl ChartCrosshair {
-    /// Creates a hidden crosshair with both reference lines enabled.
-    pub fn new(geometry: Rect) -> Self {
-        Self {
-            base: BaseWidget::new(WidgetKind::ChartTooltip, geometry, "ChartCrosshair"),
-            position: None,
-            snap_to_data_point: true,
-            show_x: true,
-            show_y: true,
-            follow_pointer: true,
-            position_changed: Signal1::new(),
-        }
-    }
-
-    /// The anchor, or `None` when the crosshair is hidden.
-    pub fn position(&self) -> Option<Point> {
-        self.position
-    }
-
-    /// Moves the anchor, or hides the crosshair with `None`.
-    pub fn set_position(&mut self, position: Option<Point>) {
-        if self.position == position {
-            return;
-        }
-        self.position = position;
-        if let Some(position) = position {
-            self.position_changed.emit(position);
-        }
-        self.base.request_redraw();
-    }
-
-    /// Shows the crosshair at `point`.
-    pub fn show_at(&mut self, point: Point) {
-        self.set_position(Some(point));
-    }
-
-    /// Hides the crosshair without discarding its settings.
-    pub fn hide(&mut self) {
-        self.set_position(None);
-    }
-
-    /// Whether the crosshair is visible.
-    pub fn is_visible(&self) -> bool {
-        self.position.is_some()
-    }
-
-    /// Whether the anchor is snapped to a datum's column.
-    pub fn snap_to_data_point(&self) -> bool {
-        self.snap_to_data_point
-    }
-
-    /// Enables or disables datum snapping.
-    ///
-    /// A host that supplies an already-snapped anchor (the chart's own bucket centre) is unaffected;
-    /// the flag is for a host that drives the overlay from raw pointer motion.
-    pub fn set_snap_to_data_point(&mut self, snap: bool) {
-        self.snap_to_data_point = snap;
-    }
-
-    /// Which reference lines are painted, as `(x, y)`.
-    pub fn show_axes(&self) -> (bool, bool) {
-        (self.show_x, self.show_y)
-    }
-
-    /// Enables or disables each reference line independently.
-    pub fn set_show_axes(&mut self, show_x: bool, show_y: bool) {
-        if self.show_x == show_x && self.show_y == show_y {
-            return;
-        }
-        self.show_x = show_x;
-        self.show_y = show_y;
-        self.base.request_redraw();
-    }
-
-    /// Whether the anchor follows pointer motion between hovers.
-    pub fn follow_pointer(&self) -> bool {
-        self.follow_pointer
-    }
-
-    /// Enables or disables pointer following.
-    pub fn set_follow_pointer(&mut self, follow_pointer: bool) {
-        self.follow_pointer = follow_pointer;
-    }
-}
-
-impl Widget for ChartCrosshair {
-    fn base(&self) -> &BaseWidget {
-        &self.base
-    }
-
-    fn base_mut(&mut self) -> &mut BaseWidget {
-        &mut self.base
-    }
-
-    fn set_state_theme_hook(&mut self) {
-        crate::style::reapply_active_theme_state(self);
-    }
-
-    fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(240, 160)
-    }
-
-    impl_draw_bridge!();
-    impl_widget_property_hooks!();
-}
-
-impl EventHandler for ChartCrosshair {
-    fn handle_event(&mut self, event: &Event) {
-        self.base.handle_event(event);
-        match event {
-            Event::MouseMove { pos } | Event::PointerMove { pos, .. } => {
-                if self.follow_pointer && self.position.is_some() {
-                    self.set_position(Some(*pos));
-                }
-            }
-            Event::MouseLeave { .. } => {
-                if self.follow_pointer {
-                    self.hide();
-                }
-            }
-            Event::KeyPress { key: 27, .. } => self.hide(),
-            _ => {}
-        }
-    }
-}
-
-impl Draw for ChartCrosshair {
-    fn draw(&mut self, context: &mut RenderContext) {
-        let Some(position) = self.position else {
-            return;
-        };
-        let rect = self.geometry();
-        if !rect.contains_point(position) {
-            return;
-        }
-        // The lines take the theme's outline colour, which is the role a gridline/driver line
-        // already uses; a crosshair is chrome over data, not a datum of its own.
-        let color = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.outline_variant)
-            .unwrap_or_else(|| Color::BLACK.with_alpha(120));
-        if self.show_x {
-            context.draw_line(
-                Point::new(position.x, rect.y),
-                Point::new(position.x, rect.y + rect.height as i32),
-                color,
-            );
-        }
-        if self.show_y {
-            context.draw_line(
-                Point::new(rect.x, position.y),
-                Point::new(rect.x + rect.width as i32, position.y),
-                color,
-            );
-        }
-    }
-}
-
-impl WidgetProperties for ChartCrosshair {
-    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
-        match name {
-            // `Null` is the published spelling of "hidden": a point a designer can express, rather
-            // than a separate visibility flag that could disagree with it.
-            "position" => Ok(match self.position {
-                Some(point) => CapabilityValue::Tuple(crate::compat::Vec::from([
-                    CapabilityValue::Int(i64::from(point.x)),
-                    CapabilityValue::Int(i64::from(point.y)),
-                ])),
-                None => CapabilityValue::Null,
-            }),
-            "snap_to_data_point" => Ok(CapabilityValue::Bool(self.snap_to_data_point)),
-            "show_x" => Ok(CapabilityValue::Bool(self.show_x)),
-            "show_y" => Ok(CapabilityValue::Bool(self.show_y)),
-            "follow_pointer" => Ok(CapabilityValue::Bool(self.follow_pointer)),
-            _ => base_property_get(self, name),
-        }
-    }
-
-    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
-        match name {
-            "position" => {
-                let position = match value {
-                    CapabilityValue::Null => None,
-                    CapabilityValue::Tuple(items) if items.len() == 2 => {
-                        let mut items = items.into_iter();
-                        let x = match items.next() {
-                            Some(CapabilityValue::Int(x)) => x as i32,
-                            _ => return Err(CapabilityAccessError::TypeMismatch),
-                        };
-                        let y = match items.next() {
-                            Some(CapabilityValue::Int(y)) => y as i32,
-                            _ => return Err(CapabilityAccessError::TypeMismatch),
-                        };
-                        Some(Point::new(x, y))
-                    }
-                    _ => return Err(CapabilityAccessError::TypeMismatch),
-                };
-                self.set_position(position);
-                Ok(())
-            }
-            "snap_to_data_point" => {
-                let snap = match value {
-                    CapabilityValue::Bool(snap) => snap,
-                    _ => return Err(CapabilityAccessError::TypeMismatch),
-                };
-                self.set_snap_to_data_point(snap);
-                Ok(())
-            }
-            "show_x" | "show_y" => {
-                let CapabilityValue::Bool(flag) = value else {
-                    return Err(CapabilityAccessError::TypeMismatch);
-                };
-                if name == "show_x" {
-                    self.set_show_axes(flag, self.show_y);
-                } else {
-                    self.set_show_axes(self.show_x, flag);
-                }
-                Ok(())
-            }
-            "follow_pointer" => {
-                let CapabilityValue::Bool(follow) = value else {
-                    return Err(CapabilityAccessError::TypeMismatch);
-                };
-                self.set_follow_pointer(follow);
-                Ok(())
-            }
-            _ => base_property_set(self, name, value),
-        }
-    }
-
-    fn property_names(&self) -> &'static [&'static str] {
-        property_names_of![
-            "position",
-            "snap_to_data_point",
-            "show_x",
-            "show_y",
-            "follow_pointer",
-            BASE_PROPERTY_NAMES
-        ]
-    }
-}
+/// This is the companion kernel itself, re-exported under the spelling the embedded chart
+/// control historically published. There is deliberately only one implementation: the
+/// `special_widgets::chart` copy used a different `WidgetKind` and a separate draw/hit path, so
+/// the two could drift apart. Both paths now paint the same lines and report through the same
+/// signals.
+pub use crate::widget::chart_widgets::chart_crosshair::ChartCrosshair;
 
 #[cfg(test)]
 mod tests {
@@ -3365,5 +3289,36 @@ mod issue_2_8_tests {
             key,
             "new data is a new projection"
         );
+    }
+
+    /// Chapter-3 gap 8: a mounted standard legend is the selection path, and its toggle hides
+    /// the series through the chart's existing visibility.
+    #[test]
+    fn an_attached_legend_toggle_hides_the_series() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 320, 200));
+        chart.set_series(vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+        chart.set_series_names(vec!["alpha".to_string(), "beta".to_string()]);
+        chart.set_legend(Some(crate::widget::companions::Legend::new(Rect::new(0, 0, 120, 60))));
+        assert_eq!(chart.legend().expect("attached").entries().len(), 2);
+        // The first row starts at the legend's top inset.
+        chart.handle_event(&Event::mouse_press(10, 10, 1));
+        assert!(!chart.is_series_visible(0));
+        assert!(!chart.legend().expect("attached").entries()[0].visible);
+    }
+
+    /// Chapter-3 gap 10: an attached tooltip is driven by the existing hover anchor. With no
+    /// attachment the chart paints no tooltip at all, which is the default.
+    #[test]
+    fn an_attached_tooltip_follows_the_hover_and_leave() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 100));
+        chart.set_data(vec![10.0, 20.0, 30.0, 40.0]);
+        assert!(chart.chart_tooltip().is_none());
+        chart.set_chart_tooltip(Some(crate::widget::companions::ChartTooltip::new(Rect::new(
+            0, 0, 200, 100,
+        ))));
+        chart.handle_event(&Event::mouse_move(120, 50));
+        assert!(chart.chart_tooltip().expect("attached").is_visible());
+        chart.handle_event(&Event::mouse_leave(200, 100));
+        assert!(!chart.chart_tooltip().expect("attached").is_visible());
     }
 }

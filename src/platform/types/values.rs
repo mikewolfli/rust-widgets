@@ -104,16 +104,72 @@ pub(crate) enum MousePhase {
 /// the rest.
 #[allow(dead_code)]
 pub(crate) fn unix_print_clients_available() -> bool {
-    // The answer is fixed for the life of the process (either the client is on `PATH` or it is
-    // not), and each check spawns two child processes. `PrintDialog` asks this before offering
-    // the action, so caching turns a per-dialog spawn into one probe per process.
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
+    // The answer is fixed for the life of the process (either a client is on `PATH` or it is not),
+    // and each check spawns up to two child processes (G-603). The probe therefore runs on its own
+    // thread and publishes the answer here; a UI thread that asks never waits for a spooler.
+    static AVAILABLE: OnceLock<PrintProbe> = OnceLock::new();
+    let probe = AVAILABLE.get_or_init(PrintProbe::default);
+    probe.start(|| {
         ["lp", "lpr"].iter().any(|cmd| {
             // Any `ExitStatus` at all proves the executable exists and ran.
             std::process::Command::new(cmd).arg("--help").output().is_ok()
         })
-    })
+    });
+    probe.available()
+}
+
+/// A capability probe whose answer arrives after the question.
+///
+/// # Why the answer is published through an atomic instead of returned from the thread
+///
+/// [`Platform::has_print_support`](crate::platform::Platform::has_print_support) is a synchronous
+/// query, so it cannot wait for a child process. The probe is started once, on a worker thread,
+/// and the boolean is published here. A caller that asks before the worker finishes gets `false`
+/// — the honest "nothing has proved the capability" answer — and the next query sees the result,
+/// because the answer cannot change again for the life of the process.
+///
+/// `started` is an `AtomicBool` rather than a `OnceLock` body so a second caller never blocks on
+/// the first: it either starts the worker or reads the published value, never a lock held across
+/// a child process.
+#[derive(Default)]
+struct PrintProbe {
+    started: core::sync::atomic::AtomicBool,
+    available: core::sync::atomic::AtomicBool,
+}
+
+impl PrintProbe {
+    /// Starts `probe` on a worker thread unless it already ran.
+    ///
+    /// `&'static self` because the worker outlives the call and reads the published flag through
+    /// this reference; every caller holds the value in a process-lifetime `OnceLock`.
+    fn start(&'static self, probe: impl FnOnce() -> bool + Send + 'static) {
+        use core::sync::atomic::Ordering;
+        if self.started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let available = &self.available;
+        std::thread::spawn(move || {
+            available.store(probe(), Ordering::Release);
+        });
+    }
+
+    /// The published answer, or `false` while the probe is still running.
+    fn available(&self) -> bool {
+        self.available.load(core::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// Starts the print probes at startup, so a dialog opened later sees a settled answer.
+///
+/// [`crate::platform::runtime::init`] calls this once. Asking lazily from a print dialog would
+/// work, but the first ask would then still be answered from "not proved yet" — and a host that
+/// offers a print action at startup would hide it for that first moment.
+pub(crate) fn warm_print_probes() {
+    if cfg!(target_os = "windows") {
+        let _ = windows_shell_spawnable();
+    } else if cfg!(unix_desktop) {
+        let _ = unix_print_clients_available();
+    }
 }
 
 /// Whether the Windows print submission path can be reached from this process.
@@ -130,16 +186,18 @@ pub(crate) fn unix_print_clients_available() -> bool {
 /// goes unused on the rest, so the gate expression is not duplicated here.
 #[allow(dead_code)]
 pub(crate) fn windows_shell_spawnable() -> bool {
-    // `is_ok()` means the process was created. That is the whole claim. Cached for the same
-    // reason as the unix probe: the capability cannot change while the process runs, and each
-    // check starts `powershell`.
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
+    // `is_ok()` means the process was created. That is the whole claim. Run on a worker thread
+    // for the same reason as the unix probe: the capability cannot change while the process runs,
+    // and each check starts `powershell`, which must not be on the UI thread (G-603).
+    static AVAILABLE: OnceLock<PrintProbe> = OnceLock::new();
+    let probe = AVAILABLE.get_or_init(PrintProbe::default);
+    probe.start(|| {
         std::process::Command::new("powershell")
             .args(["-NoProfile", "-Command", "exit 0"])
             .output()
             .is_ok()
-    })
+    });
+    probe.available()
 }
 
 // ── Kernel-adaptive probes ──
@@ -752,27 +810,31 @@ pub struct WindowAttributes {
     pub size: Option<(u32, u32)>,
     /// Minimum client size, when the backend can constrain it.
     pub min_size: Option<(u32, u32)>,
-    /// Maximum client size. No `Platform` method exists yet, so this is always reported unsupported.
+    /// Maximum client size, when the backend can constrain it.
     pub max_size: Option<(u32, u32)>,
     /// Whether the user may resize the window.
     pub resizable: Option<bool>,
     /// Whether the OS draws a title bar and border.
     pub decorations: Option<bool>,
-    /// Whether the window content is transparent. Backend support is platform-specific.
+    /// Whether the window content is transparent. Backend support is platform-specific; see
+    /// [`Platform::set_window_transparent`](crate::platform::Platform::set_window_transparent).
     pub transparent: Option<bool>,
     /// Whether the window is shown at creation. `None` keeps the historical hidden-until-`show`
     /// behaviour documented on [`crate::create_window`].
     pub visible: Option<bool>,
-    /// Whether the window stays above other windows. Backend support is platform-specific.
+    /// Whether the window stays above other windows. Backend support is platform-specific; see
+    /// [`Platform::set_window_always_on_top`](crate::platform::Platform::set_window_always_on_top).
     pub always_on_top: Option<bool>,
     /// Start fullscreen.
     pub fullscreen: Option<bool>,
     /// Start maximised.
     pub maximized: Option<bool>,
     /// Preferred light/dark appearance (`Some(true)` = dark), when the backend supports a
-    /// per-window override.
+    /// per-window override; see
+    /// [`Platform::set_window_preferred_theme`](crate::platform::Platform::set_window_preferred_theme).
     pub preferred_theme: Option<bool>,
-    /// Whether the OS may include the window in screenshots/recordings.
+    /// Whether the OS may include the window in screenshots/recordings; see
+    /// [`Platform::set_window_content_protected`](crate::platform::Platform::set_window_content_protected).
     pub content_protected: Option<bool>,
     /// Icon file path, when the backend has a per-window icon concept.
     pub window_icon: Option<String>,

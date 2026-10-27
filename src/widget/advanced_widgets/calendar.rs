@@ -501,11 +501,17 @@ impl Calendar {
     /// than a signal that only fires when someone remembers to emit it.
     fn show_page(&mut self, date: chrono::NaiveDate) {
         let before = (self.display_month.year(), self.display_month.month());
+        let menus_open = self.month_menu_open || self.year_menu_open;
         self.display_month = date;
         let after = (date.year(), date.month());
         self.month_menu_open = false;
         self.year_menu_open = false;
-        self.base.request_redraw();
+        // A selection that stays on the same page damages only the cells whose wash changed
+        // (ADV-001); the caller adds those. A page change, or a menu that has to close, still
+        // needs the whole control.
+        if before != after || menus_open {
+            self.base.request_redraw();
+        }
         if before != after {
             if self.page_animation {
                 // Start a fresh reveal for the new page. The driver settles at 1, so a
@@ -529,6 +535,7 @@ impl Calendar {
             return;
         }
         self.selected_date = date;
+        let previous = self.selected_dates.clone();
         match self.selection_mode {
             CalendarSelectionMode::Single => {
                 self.selected_dates.clear();
@@ -552,7 +559,22 @@ impl Calendar {
         }
         self.show_page(date);
         self.selection_changed.emit(date);
-        self.base.request_redraw();
+        self.damage_dates(previous.iter().chain(self.selected_dates.iter()).copied());
+    }
+
+    /// Damages the cells showing `dates`, falling back to the whole control when one is off the
+    /// displayed page.
+    fn damage_dates(&self, dates: impl IntoIterator<Item = chrono::NaiveDate>) {
+        let mut off_page = false;
+        for date in dates {
+            match self.date_cell_rect(date) {
+                Some(rect) => self.base.request_redraw_in(rect),
+                None => off_page = true,
+            }
+        }
+        if off_page {
+            self.base.request_redraw();
+        }
     }
     /// Returns minimum date.
     pub fn minimum_date(&self) -> chrono::NaiveDate {
@@ -786,13 +808,15 @@ impl Calendar {
             CalendarSelectionMode::Multi => {
                 if let Ok(index) = self.selected_dates.binary_search(&date) {
                     self.selected_dates.remove(index);
+                    let mut affected = vec![date];
                     if self.selected_date == date {
                         if let Some(first) = self.selected_dates.first().copied() {
                             self.selected_date = first;
+                            affected.push(first);
                         }
                     }
                     self.selection_changed.emit(date);
-                    self.base.request_redraw();
+                    self.damage_dates(affected);
                 } else {
                     self.set_selected_date(date);
                 }
@@ -1169,6 +1193,32 @@ impl Calendar {
         Rect::new(self.geometry().x, grid.y, self.vertical_header_width(), grid.height)
     }
 
+    /// The cell rectangle showing `date`, when it is in the displayed month.
+    ///
+    /// The inverse of [`Self::date_at_position`], used to damage only the cell a hover or a
+    /// selection changed (ADV-001). A date outside the displayed month has no cell here, which
+    /// is the honest answer rather than a rectangle from the neighbouring page.
+    fn date_cell_rect(&self, date: chrono::NaiveDate) -> Option<Rect> {
+        if date.year() != self.display_month.year() || date.month() != self.display_month.month() {
+            return None;
+        }
+        let grid = self.grid_rect();
+        if grid.width == 0 || grid.height == 0 {
+            return None;
+        }
+        let cell_w = (grid.width / 7).max(1) as i32;
+        let cell_h = (grid.height / 6).max(1) as i32;
+        let index = self.leading_blank_count() as i32 + date.day() as i32 - 1;
+        if index < 0 {
+            return None;
+        }
+        let (row, col) = (index / 7, index % 7);
+        if row >= 6 {
+            return None;
+        }
+        Some(Rect::new(grid.x + col * cell_w, grid.y + row * cell_h, cell_w as u32, cell_h as u32))
+    }
+
     /// Compute the number of leading blank cells before day 1 of the displayed month.
     fn leading_blank_count(&self) -> u32 {
         let first = match self.display_month.with_day(1) {
@@ -1515,13 +1565,25 @@ impl EventHandler for Calendar {
             Event::MouseMove { pos } => {
                 let next = self.date_at_position(*pos);
                 if next != self.hovered_date {
+                    let previous = self.hovered_date;
                     self.hovered_date = next;
-                    self.base.request_redraw();
+                    // Hover is a cell-local affordance, so only the two cells whose wash changed
+                    // are damaged (ADV-001). A date with no cell on this page falls back to the
+                    // whole control rather than leaving a stale highlight.
+                    for date in [previous, next].into_iter().flatten() {
+                        match self.date_cell_rect(date) {
+                            Some(rect) => self.base.request_redraw_in(rect),
+                            None => self.base.request_redraw(),
+                        }
+                    }
                 }
             }
             Event::MouseLeave { .. } => {
-                if self.hovered_date.take().is_some() {
-                    self.base.request_redraw();
+                if let Some(date) = self.hovered_date.take() {
+                    match self.date_cell_rect(date) {
+                        Some(rect) => self.base.request_redraw_in(rect),
+                        None => self.base.request_redraw(),
+                    }
                 }
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
@@ -2949,6 +3011,29 @@ mod tests {
         );
         cal.handle_event(&Event::MouseLeave { pos });
         assert_eq!(cal.hovered_date, None, "leaving the control clears the highlight");
+    }
+
+    /// ADV-001: a date maps back to exactly the cell the pointer path maps from it.
+    #[test]
+    fn a_date_maps_back_to_its_cell_rectangle() {
+        let mut cal = Calendar::new(Rect::new(0, 0, 280, 240));
+        cal.set_display_month(NaiveDate::from_ymd_opt(2026, 3, 1).unwrap());
+        let date = NaiveDate::from_ymd_opt(2026, 3, 12).unwrap();
+        let rect = cal.date_cell_rect(date).expect("the 12th is on the March page");
+        let grid = cal.grid_rect();
+        let cell_w = (grid.width / 7).max(1) as i32;
+        let cell_h = (grid.height / 6).max(1) as i32;
+        assert_eq!(rect.width as i32, cell_w);
+        assert_eq!(rect.height as i32, cell_h);
+        assert_eq!(
+            cal.date_at_position(Point::new(rect.x + cell_w / 2, rect.y + cell_h / 2)),
+            Some(date),
+            "the damage rectangle must cover the cell the hit test names"
+        );
+        assert!(
+            cal.date_cell_rect(NaiveDate::from_ymd_opt(2026, 4, 12).unwrap()).is_none(),
+            "another month has no cell on this page"
+        );
     }
 
     /// A per-date ink and a page reveal are both opt-in and reach the painter.

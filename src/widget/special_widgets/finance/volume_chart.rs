@@ -18,7 +18,9 @@
 //! [`PlotArea::index_axis`] with the same count, so the alignment is arithmetic rather
 //! than a convention two widgets must keep.
 
-use crate::core::{Color, Rect};
+use alloc::vec::Vec;
+
+use crate::core::{Color, Point, Rect};
 use crate::event::EventHandler;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -211,6 +213,42 @@ impl VolumeChart {
             }),
             TooltipLine::colored(alloc::format!("vol {:.0}", bar.volume), self.bar_color(index)),
         ]
+    }
+
+    /// The hovered bar's anchor and suggested tooltip content, for an external read-out.
+    ///
+    /// The anchor is the top centre of the bar the pointer is over, so a companion bubble
+    /// appears beside the datum rather than at a fixed corner (gap 10).
+    pub fn hover_anchor(&self) -> Option<(Point, Vec<crate::widget::companions::TooltipLine>)> {
+        let index = self.hovered_index?;
+        let (start, end) = self.view_bounds();
+        if index < start || index >= end {
+            return None;
+        }
+        let bars = self.series.bars();
+        let visible = bars.get(start..end)?;
+        if visible.is_empty() {
+            return None;
+        }
+        let max_volume = visible
+            .iter()
+            .filter(|bar| bar.volume.is_finite())
+            .map(|bar| bar.volume)
+            .fold(0.0f64, f64::max);
+        let bar = bars.get(index)?;
+        if max_volume <= 0.0 || !bar.volume.is_finite() || bar.volume <= 0.0 {
+            return None;
+        }
+        let area = self.plot_area();
+        if area.rect.width == 0 || area.rect.height == 0 {
+            return None;
+        }
+        let index_axis = area.index_axis(visible.len().max(1));
+        let x = index_axis.center_for(index - start);
+        let usable_height = (area.rect.height as f64 * self.headroom).max(1.0);
+        let height = (bar.volume / max_volume * usable_height).round().max(1.0) as i32;
+        let y = area.bottom() - height;
+        Some((Point::new(x, y), self.hovered_summary()))
     }
 
     /// The plot area for this control's geometry.

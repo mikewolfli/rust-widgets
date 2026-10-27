@@ -87,8 +87,22 @@ pub trait ImeBridge: Send + Sync {
 /// (rules #41/#53: an absent capability is a runtime answer, not an API fork).
 #[cfg(not(alloc_frugal))]
 pub fn deliver_composition(widget_id: ObjectId, composition: &ImeComposition) -> bool {
+    deliver_composition_owned(widget_id, composition.clone())
+}
+
+/// [`deliver_composition`] taking the composition by value.
+///
+/// # Why the owned form exists (G-606)
+///
+/// Every backend builds a fresh composition from the OS string it just read, so moving that value
+/// into the event is its natural ownership. The borrowed entry has to clone for a caller that
+/// still holds the value; a backend that does not need the value afterwards was paying that clone
+/// on every preedit frame for nothing. Keeping both entries means the clone happens only where
+/// the borrow really is required.
+#[cfg(not(alloc_frugal))]
+pub fn deliver_composition_owned(widget_id: ObjectId, composition: ImeComposition) -> bool {
     let event = crate::event::Event::ImePreedit {
-        text: composition.text.clone(),
+        text: composition.text,
         cursor: composition.cursor_position,
     };
     let delivered = crate::widget::runtime::dispatch_event(widget_id, &event);
@@ -96,11 +110,10 @@ pub fn deliver_composition(widget_id: ObjectId, composition: &ImeComposition) ->
         // The control's own handler has stored the composition by now, so an observer sees the
         // same state the control does. This is the host-facing half: without it a host could
         // only observe the *committed* text and had no way to log or assert a preedit frame.
-        crate::widget::runtime::notify_ime_preedit(
-            widget_id,
-            &composition.text,
-            composition.cursor_position,
-        );
+        // Reading the text back out of the event is what avoids a second copy of it.
+        if let crate::event::Event::ImePreedit { text, cursor } = &event {
+            crate::widget::runtime::notify_ime_preedit(widget_id, text, *cursor);
+        }
     }
     delivered
 }
@@ -109,6 +122,12 @@ pub fn deliver_composition(widget_id: ObjectId, composition: &ImeComposition) ->
 /// IME, so nothing is delivered. See that function for why this is a body and not a signature.
 #[cfg(alloc_frugal)]
 pub fn deliver_composition(_widget_id: ObjectId, _composition: &ImeComposition) -> bool {
+    false
+}
+
+/// [`deliver_composition_owned`] for an allocation-frugal build. See that function.
+#[cfg(alloc_frugal)]
+pub fn deliver_composition_owned(_widget_id: ObjectId, _composition: ImeComposition) -> bool {
     false
 }
 

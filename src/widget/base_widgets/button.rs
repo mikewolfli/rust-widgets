@@ -4553,6 +4553,9 @@ mod tests {
         assert!(button.is_menu_open(), "the delayed popup opens while the button is held");
     }
 
+    /// Gated with [`Button::is_menu_open`]: the assertion *is* the popup timer, which only exists
+    /// in a build that carries the menu machinery.
+    #[cfg(full_widgets)]
     #[test]
     fn a_button_without_a_menu_never_arms_the_popup_timer() {
         let mut button = make_button();

@@ -34,7 +34,7 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use crate::core::{Color, HorizontalAlignment, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::EventHandler;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -673,6 +673,30 @@ impl CandlestickChart {
             color,
         ));
         lines
+    }
+
+    /// The hovered bar's anchor and suggested tooltip content, for an external read-out.
+    ///
+    /// The same `(Point, lines)` shape
+    /// [`LineChart::hover_anchor`](crate::widget::chart_widgets::line_chart::LineChart::hover_anchor)
+    /// publishes, so one `ChartTooltip` can serve every chart in the family (gap 10).
+    pub fn hover_anchor(&self) -> Option<(Point, Vec<crate::widget::companions::TooltipLine>)> {
+        let index = self.hovered_index?;
+        let bar = self.series.bars().get(index)?;
+        let (start, end) = self.view_bounds();
+        if index < start || index >= end {
+            return None;
+        }
+        let area = self.plot_area();
+        if area.rect.width == 0 || area.rect.height == 0 {
+            return None;
+        }
+        let index_axis = area.index_axis(end.saturating_sub(start).max(1));
+        let x = index_axis.center_for(index - start);
+        let (low, high) = self.effective_price_extent();
+        let price = self.hovered_price.unwrap_or(bar.close);
+        let y = area.price_axis(low, high).y_for(price);
+        Some((Point::new(x, y), self.hovered_summary()))
     }
 
     /// The plot area for this control's current geometry.

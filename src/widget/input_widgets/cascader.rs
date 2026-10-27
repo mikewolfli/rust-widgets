@@ -227,6 +227,19 @@ pub struct Cascader {
     /// (`0, 1` where the node at `1` still has children) is a *navigation* position,
     /// not a value, and is kept in [`Self::expanded_path`] instead.
     selected_path: Vec<usize>,
+    /// Whether a value is a *set* of leaf paths rather than exactly one path (I-122).
+    ///
+    /// Off by default, so an existing caller keeps the original single-select control:
+    /// activating a leaf replaces [`Self::selected_path`] and closes the overlay. On,
+    /// activating a leaf toggles its membership in [`Self::selected_paths`] and touches
+    /// neither the committed path nor the overlay.
+    multi_select: bool,
+    /// The paths toggled on in multi-select mode, in the order they were added (I-122).
+    ///
+    /// Every entry names an enabled leaf at the time it was written. The set is expressed
+    /// in the same index coordinates as [`Self::selected_path`], so replacing the tree
+    /// re-validates it the same way the single path is re-validated.
+    selected_paths: Vec<Vec<usize>>,
     /// The path currently being browsed while the picker is open.
     ///
     /// Separate from `selected_path` so that closing the overlay without choosing
@@ -241,7 +254,17 @@ pub struct Cascader {
     /// The filter text, when filtering is on.
     filter: String,
     /// Emitted when the committed selection changes, with the selected path.
+    ///
+    /// Its payload and its emission points are unchanged by multi-select mode: a toggle
+    /// only touches [`Self::selected_paths`], so a single-select subscriber never sees a
+    /// payload it did not ask for.
     pub selection_changed: Signal1<Vec<usize>>,
+    /// Emitted when the multi-select set changes, with every selected path (I-122).
+    ///
+    /// Deliberately a second signal rather than a change to `selection_changed`: the two
+    /// carry different shapes, and widening the existing payload would break every
+    /// single-select subscriber.
+    pub selection_set_changed: Signal1<Vec<Vec<usize>>>,
     /// Emitted with the branch path when the user opens a level whose children are
     /// loaded on demand (I-121).
     pub load_requested: Signal1<Vec<usize>>,
@@ -299,12 +322,15 @@ impl Cascader {
             base: BaseWidget::new(WidgetKind::Cascader, geometry, "Cascader"),
             options: Vec::new(),
             selected_path: Vec::new(),
+            multi_select: false,
+            selected_paths: Vec::new(),
             expanded_path: Vec::new(),
             expanded: false,
             separator: "/".to_string(),
             filterable: false,
             filter: String::new(),
             selection_changed: Signal1::new(),
+            selection_set_changed: Signal1::new(),
             load_requested: Signal1::new(),
             display_cache: RefCell::new(None),
             max_visible: None,
@@ -440,6 +466,24 @@ impl Cascader {
         if !self.selected_path.is_empty() && self.resolve(&self.selected_path).is_none() {
             self.selected_path.clear();
         }
+        // The set is expressed in the same index coordinates, so a new tree can make an entry
+        // address a different node (or turn a former leaf into a branch). Re-resolve every entry
+        // and drop the ones that no longer name an enabled leaf, which is the same answer the
+        // single path gets above.
+        let previously_selected = self.selected_paths.len();
+        let selected = core::mem::take(&mut self.selected_paths);
+        let mut kept = Vec::with_capacity(selected.len());
+        for path in selected {
+            if self.resolve(&path).is_some_and(|option| option.is_leaf() && option.is_enabled()) {
+                kept.push(path);
+            }
+        }
+        self.selected_paths = kept;
+        if self.selected_paths.len() != previously_selected {
+            // A subscriber that still held the old set would otherwise be stale: the caller
+            // replaced the tree, but the *selection* is what this signal reports.
+            self.selection_set_changed.emit(self.selected_paths.clone());
+        }
         self.base.request_redraw();
     }
 
@@ -451,6 +495,91 @@ impl Cascader {
     /// The committed selection, as one index per level.
     pub fn selected_path(&self) -> &[usize] {
         &self.selected_path
+    }
+
+    /// Whether activating a leaf toggles it in [`Self::selected_paths`] instead of
+    /// replacing [`Self::selected_path`] (I-122).
+    pub fn is_multi_select(&self) -> bool {
+        self.multi_select
+    }
+
+    /// Turns the opt-in multi-select mode on or off (I-122).
+    ///
+    /// `false` is the default and reproduces the original single-path behaviour exactly.
+    /// The set is **kept** when the mode is turned off, so switching modes back and forth
+    /// does not discard picks the user made; a caller that wants a clean slate writes an
+    /// empty list through [`Self::set_selected_paths`].
+    ///
+    /// The committed single path and the set are independent: entering the mode does not
+    /// seed the set from the current value, and leaving it does not restore the set into
+    /// the value. That keeps a mode switch from silently rewriting either one.
+    pub fn set_multi_select(&mut self, multi_select: bool) {
+        if self.multi_select == multi_select {
+            return;
+        }
+        self.multi_select = multi_select;
+        self.base.request_redraw();
+    }
+
+    /// The paths toggled on in multi-select mode, in the order they were added (I-122).
+    pub fn selected_paths(&self) -> &[Vec<usize>] {
+        &self.selected_paths
+    }
+
+    /// Replaces the whole multi-select set (I-122), returning whether every path was accepted.
+    ///
+    /// A write is **atomic**: if any entry is empty, does not resolve, or does not name an
+    /// enabled leaf, nothing is changed and `false` is returned. Committing a branch as a
+    /// value is the one thing a cascader must not do, and a partial write would leave the
+    /// caller unsure which entries landed.
+    ///
+    /// Duplicate paths collapse to their first occurrence, because a set cannot hold the
+    /// same value twice and the caller's order is the only meaningful one.
+    ///
+    /// Emits [`Self::selection_set_changed`] once when the resulting set differs from the
+    /// current one; rewriting the same set is not a change.
+    pub fn set_selected_paths(&mut self, paths: Vec<Vec<usize>>) -> bool {
+        let mut accepted: Vec<Vec<usize>> = Vec::with_capacity(paths.len());
+        for path in paths {
+            let Some(option) = self.resolve(&path) else {
+                return false;
+            };
+            // A disabled leaf is not selectable by any route, including a programmatic one.
+            if !option.is_leaf() || !option.is_enabled() {
+                return false;
+            }
+            if !accepted.contains(&path) {
+                accepted.push(path);
+            }
+        }
+        if accepted == self.selected_paths {
+            return true;
+        }
+        self.selected_paths = accepted;
+        self.selection_set_changed.emit(self.selected_paths.clone());
+        self.base.request_redraw();
+        true
+    }
+
+    /// Adds or removes one leaf path in the multi-select set (I-122).
+    ///
+    /// The single emission point for a user-driven toggle, which is what keeps the signal
+    /// at exactly one per activation however the row was reached (click, Enter or Right).
+    fn toggle_selected_path(&mut self, path: Vec<usize>) {
+        if !self.is_leaf_path(&path) {
+            return;
+        }
+        if self.resolve(&path).is_some_and(|option| !option.is_enabled()) {
+            return;
+        }
+        let existing = self.selected_paths.iter().position(|selected| *selected == path);
+        if let Some(position) = existing {
+            self.selected_paths.remove(position);
+        } else {
+            self.selected_paths.push(path);
+        }
+        self.selection_set_changed.emit(self.selected_paths.clone());
+        self.base.request_redraw();
     }
 
     /// Sets the separator used when the path is rendered as text.
@@ -780,14 +909,27 @@ impl Cascader {
     }
 
     /// Clears the committed selection.
+    ///
+    /// In multi-select mode this also empties the set, because the set *is* the control's
+    /// value there; a caller that left it behind would see picks on screen after asking for
+    /// "none". Each signal fires only for the state that actually changed, so single-select
+    /// behaviour (and the single-select signal) is unchanged.
     pub fn clear_selected(&mut self) {
-        if self.selected_path.is_empty() {
-            return;
+        let mut changed = false;
+        if !self.selected_path.is_empty() {
+            self.selected_path.clear();
+            *self.display_cache.borrow_mut() = None;
+            self.selection_changed.emit(Vec::new());
+            changed = true;
         }
-        self.selected_path.clear();
-        *self.display_cache.borrow_mut() = None;
-        self.selection_changed.emit(Vec::new());
-        self.base.request_redraw();
+        if self.multi_select && !self.selected_paths.is_empty() {
+            self.selected_paths.clear();
+            self.selection_set_changed.emit(Vec::new());
+            changed = true;
+        }
+        if changed {
+            self.base.request_redraw();
+        }
     }
 
     /// The labels along the selected path, outermost first.
@@ -891,8 +1033,9 @@ impl Cascader {
 
     /// Chooses the row at `level`, index `option_index`.
     ///
-    /// A branch extends the browsed path and reveals the next level; a leaf commits
-    /// the path and closes. That single rule is what makes one click mean both
+    /// A branch extends the browsed path and reveals the next level. A leaf commits the path
+    /// and closes in single-select mode, and toggles its membership in the set without
+    /// closing in multi-select mode. That single rule is what makes one click mean both
     /// "go deeper" and "pick this", depending on what was clicked.
     fn choose(&mut self, level: usize, option_index: usize) {
         let Some(option) = self.siblings_at(level).and_then(|s| s.get(option_index)) else {
@@ -903,6 +1046,16 @@ impl Cascader {
         }
         let is_loading = option.is_loading();
         let is_leaf = option.is_leaf();
+        if is_leaf && self.multi_select {
+            // Only leaves differ in multi-select mode. The browsed path stays where it is (a
+            // leaf has no next level to reveal) and the overlay stays open, so several leaves
+            // of the same level can be toggled in one visit.
+            let mut path = self.expanded_path.clone();
+            path.truncate(level);
+            path.push(option_index);
+            self.toggle_selected_path(path);
+            return;
+        }
         // Truncate to this level, then push, so choosing from an earlier level
         // discards the deeper path rather than appending to it.
         self.expanded_path.truncate(level);
@@ -916,7 +1069,8 @@ impl Cascader {
             self.set_selected_path(path);
         } else {
             // A branch still marked `Loading` has no children yet; the host is asked to
-            // supply them for exactly this path (I-121).
+            // supply them for exactly this path (I-121). A branch only ever navigates, in
+            // both modes.
             if is_loading {
                 self.load_requested.emit(self.expanded_path.clone());
             }
@@ -976,6 +1130,35 @@ impl Widget for Cascader {
                     CapabilityValue::Tuple(items)
                 }))
             }
+            "load_requested" => {
+                Some(EventSignalRef::mapped("load_requested", &self.load_requested, |v| {
+                    // The declared shape is `ListScalar` of `UInt`, so the requested path is
+                    // delivered as the index sequence rather than its `Debug` spelling.
+                    let mut items = crate::compat::Vec::with_capacity(v.len());
+                    for index in v.iter() {
+                        items.push(CapabilityValue::UInt(*index as u64));
+                    }
+                    CapabilityValue::Tuple(items)
+                }))
+            }
+            "selection_set_changed" => Some(EventSignalRef::mapped(
+                "selection_set_changed",
+                &self.selection_set_changed,
+                |paths| {
+                    // A list of index paths; each path is a `Tuple` of `UInt`, and the whole
+                    // selection is a `Tuple` of those. `Mixed` is the honest shape because no
+                    // tuple-of-lists shape exists.
+                    let mut selected = crate::compat::Vec::with_capacity(paths.len());
+                    for path in paths.iter() {
+                        let mut items = crate::compat::Vec::with_capacity(path.len());
+                        for index in path.iter() {
+                            items.push(CapabilityValue::UInt(*index as u64));
+                        }
+                        selected.push(CapabilityValue::Tuple(items));
+                    }
+                    CapabilityValue::Tuple(selected)
+                },
+            )),
             _ => None,
         }
     }
@@ -1298,6 +1481,8 @@ impl Cascader {
         // The index the **committed** path points at on this level, if any: reopening the list used
         // to lose the branch the user had already chosen (I-12).
         let committed = self.selected_path.get(level).copied();
+        // The prefix every row of this level shares in multi-select set coordinates.
+        let level_prefix: &[usize] = self.expanded_path.get(..level).unwrap_or(&[]);
 
         for (row, &option_index) in visible.iter().enumerate() {
             let Some(option) = siblings.get(option_index) else {
@@ -1310,7 +1495,18 @@ impl Cascader {
                 ROW_HEIGHT,
             );
             let highlighted = option_index == current.unwrap_or(usize::MAX);
-            let chosen = committed == Some(option_index);
+            // Single-select marks the row the committed path names. Multi-select marks every
+            // row whose full path is in the set, which is the visible feedback a toggle has.
+            // The comparison borrows both sides, so marking adds no per-frame allocation.
+            let chosen = if self.multi_select {
+                self.selected_paths.iter().any(|selected| {
+                    selected.len() == level + 1
+                        && selected[level] == option_index
+                        && selected.get(..level) == Some(level_prefix)
+                })
+            } else {
+                committed == Some(option_index)
+            };
             if highlighted {
                 // The row the path points at is highlighted, which is how the user
                 // sees which branch the next column belongs to. The fill is the accent, so the
@@ -1493,11 +1689,16 @@ impl EventHandler for Cascader {
                     }
                 }
                 13 => {
-                    // Enter commits the browsed path when it ends on a leaf.
+                    // Enter activates the browsed path when it ends on a leaf: it commits and
+                    // closes in single-select mode, and toggles the path in the set without
+                    // closing in multi-select mode — the same rule a leaf click follows.
                     let path = self.expanded_path.clone();
-                    if !path.is_empty() && self.is_leaf_path(&path) && self.set_selected_path(path)
-                    {
-                        self.collapse();
+                    if !path.is_empty() && self.is_leaf_path(&path) {
+                        if self.multi_select {
+                            self.toggle_selected_path(path);
+                        } else if self.set_selected_path(path) {
+                            self.collapse();
+                        }
                     }
                 }
                 36 => self.move_browsed(
@@ -2500,5 +2701,147 @@ mod tests {
         c.tick(16);
         c.tick(200);
         assert_eq!(c.scroll_offset(0), 1);
+    }
+
+    // ── Multi-select (I-122) ────────────────────────────────────────────────
+
+    /// Every set emission seen by the recorder, in order.
+    type RecordedSets = std::sync::Arc<std::sync::Mutex<Vec<Vec<Vec<usize>>>>>;
+
+    /// Records every `selection_set_changed` emission, so "once per toggle" is observable.
+    fn record_set_changes(c: &mut Cascader) -> RecordedSets {
+        let seen: RecordedSets = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        c.selection_set_changed.connect(move |paths| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push((*paths).clone());
+            }
+        });
+        seen
+    }
+
+    /// Walks to the leaf at `[0, 0, 0]`'s column, leaving the path on the district branch.
+    fn browse_to_the_last_column(c: &mut Cascader) {
+        for level in 0..3 {
+            assert!(c.choose_at(level, 0), "level {level} is a branch and navigates");
+        }
+    }
+
+    #[test]
+    fn multi_select_toggles_a_leaf_and_untoggles_it() {
+        let mut c = cascader();
+        c.set_multi_select(true);
+        assert!(c.is_multi_select());
+        c.expand();
+        let seen = record_set_changes(&mut c);
+
+        browse_to_the_last_column(&mut c);
+        assert!(c.choose_at(3, 0), "the leaf toggles on");
+        assert_eq!(c.selected_paths(), &[vec![0, 0, 0, 0]]);
+        assert!(c.is_expanded(), "multi-select keeps the overlay open");
+        assert!(c.selected_path().is_empty(), "the single-select value is not replaced");
+        assert_eq!(c.expanded_path, vec![0, 0, 0], "a leaf adds no column");
+
+        assert!(c.choose_at(3, 1), "a second leaf toggles on");
+        assert_eq!(c.selected_paths(), &[vec![0, 0, 0, 0], vec![0, 0, 0, 1]]);
+
+        assert!(c.choose_at(3, 0), "the first leaf toggles off");
+        assert_eq!(c.selected_paths(), &[vec![0, 0, 0, 1]]);
+
+        assert_eq!(
+            *seen.lock().expect("signal lock poisoned"),
+            vec![
+                vec![vec![0, 0, 0, 0]],
+                vec![vec![0, 0, 0, 0], vec![0, 0, 0, 1]],
+                vec![vec![0, 0, 0, 1]],
+            ],
+            "one emission per toggle, each carrying the whole set"
+        );
+    }
+
+    #[test]
+    fn multi_select_branch_rows_only_navigate() {
+        let mut c = cascader();
+        c.set_multi_select(true);
+        c.expand();
+        let seen = record_set_changes(&mut c);
+
+        assert!(c.choose_at(0, 0), "a province is a branch");
+        assert!(c.choose_at(1, 1), "a city is a branch");
+        assert!(c.choose_at(2, 0), "a district is a branch");
+        assert_eq!(c.expanded_path, vec![0, 1, 0], "each branch walked one level");
+        assert!(c.is_expanded());
+        assert!(c.selected_paths().is_empty(), "a branch is not a value in the set");
+        assert!(c.selected_path().is_empty());
+        assert!(
+            seen.lock().expect("signal lock poisoned").is_empty(),
+            "navigation must not emit a set change"
+        );
+
+        assert!(c.choose_at(0, 1), "choosing another branch keeps the overlay open");
+        assert_eq!(c.expanded_path, vec![1], "the deeper path was discarded");
+        assert!(c.selected_paths().is_empty());
+    }
+
+    #[test]
+    fn single_select_mode_is_the_unchanged_default() {
+        let mut c = cascader();
+        assert!(!c.is_multi_select());
+        assert!(c.selected_paths().is_empty());
+        let seen = record_set_changes(&mut c);
+
+        c.expand();
+        browse_to_the_last_column(&mut c);
+        assert!(c.choose_at(3, 0));
+
+        assert!(!c.is_expanded(), "single-select still commits and closes");
+        assert_eq!(c.selected_path(), &[0, 0, 0, 0]);
+        assert!(c.selected_paths().is_empty(), "the set is unused in single-select");
+        assert!(seen.lock().expect("signal lock poisoned").is_empty());
+    }
+
+    #[test]
+    fn set_selected_paths_replaces_the_set_atomically() {
+        let mut c = cascader();
+        c.set_multi_select(true);
+
+        // Duplicates collapse to their first occurrence; the caller's order is kept.
+        assert!(c.set_selected_paths(vec![vec![0, 0, 0, 1], vec![1, 0, 0, 0], vec![0, 0, 0, 1],]));
+        assert_eq!(c.selected_paths(), &[vec![0, 0, 0, 1], vec![1, 0, 0, 0]]);
+
+        // Any non-leaf entry refuses the whole write, leaving the previous set untouched.
+        assert!(!c.set_selected_paths(vec![vec![0, 0, 0, 0], vec![0]]));
+        assert_eq!(c.selected_paths(), &[vec![0, 0, 0, 1], vec![1, 0, 0, 0]]);
+        assert!(!c.set_selected_paths(vec![vec![9]]));
+        assert_eq!(c.selected_paths(), &[vec![0, 0, 0, 1], vec![1, 0, 0, 0]]);
+
+        // An empty list clears the set.
+        assert!(c.set_selected_paths(Vec::new()));
+        assert!(c.selected_paths().is_empty());
+    }
+
+    #[test]
+    fn set_options_prunes_paths_that_no_longer_resolve() {
+        let mut c = cascader();
+        c.set_multi_select(true);
+        assert!(c.set_selected_paths(vec![vec![0, 0, 0, 0]]));
+        // The replacement tree has no level 1 at all, so the stored indices would address
+        // a different node; dropping the entry is the only answer that cannot lie.
+        c.set_options(vec![CascaderOption::branch("only", "Only", Vec::new())]);
+        assert!(c.selected_paths().is_empty());
+    }
+
+    #[test]
+    fn clear_selected_empties_the_set_in_multi_select_mode() {
+        let mut c = cascader();
+        c.set_multi_select(true);
+        assert!(c.set_selected_paths(vec![vec![0, 0, 0, 0], vec![0, 0, 0, 1]]));
+        let seen = record_set_changes(&mut c);
+        c.clear_selected();
+        assert!(c.selected_paths().is_empty());
+        assert_eq!(*seen.lock().expect("signal lock poisoned"), vec![Vec::<Vec<usize>>::new()]);
+        // Clearing an already-empty set is not a change.
+        c.clear_selected();
+        assert_eq!(seen.lock().expect("signal lock poisoned").len(), 1);
     }
 }

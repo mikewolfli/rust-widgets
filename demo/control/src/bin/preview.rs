@@ -15,7 +15,6 @@
 //! cargo run --manifest-path demo/control/Cargo.toml --bin preview
 //! ```
 
-use std::fs;
 use std::path::PathBuf;
 
 /// The demo's window size, matching `build_window`.
@@ -24,36 +23,17 @@ const HEIGHT: u32 = 760;
 
 fn main() {
     let dir = PathBuf::from("target/demo-preview");
-    if let Err(error) = fs::create_dir_all(&dir) {
-        eprintln!("[preview] could not create {}: {error}", dir.display());
-        std::process::exit(1);
-    }
-
-    for (dark, suffix) in [(true, "dark"), (false, "light")] {
-        let Some(frame) = control_demo::app::render_offscreen(dark, WIDTH, HEIGHT) else {
-            eprintln!("[preview] the demo produced no frame for the {suffix} appearance");
-            std::process::exit(1);
-        };
-        let expected = (WIDTH as usize) * (HEIGHT as usize) * 4;
-        if frame.len() != expected {
-            eprintln!(
-                "[preview] expected {expected} bytes of RGBA for {suffix}, got {}",
-                frame.len()
-            );
+    match preview_common::write_previews(&dir, WIDTH, HEIGHT, "control-demo", |dark| {
+        control_demo::app::render_offscreen(dark, WIDTH, HEIGHT)
+    }) {
+        Ok(written) => {
+            for path in written {
+                println!("wrote {path} ({WIDTH}x{HEIGHT})");
+            }
+        }
+        Err(error) => {
+            eprintln!("[preview] {error}");
             std::process::exit(1);
         }
-
-        let mut ppm = Vec::with_capacity((WIDTH as usize) * (HEIGHT as usize) * 3 + 32);
-        ppm.extend_from_slice(format!("P6\n{WIDTH} {HEIGHT}\n255\n").as_bytes());
-        for pixel in frame.as_chunks::<4>().0 {
-            ppm.extend_from_slice(&pixel[..3]);
-        }
-
-        let path = dir.join(format!("control-demo-{suffix}.ppm"));
-        if let Err(error) = fs::write(&path, &ppm) {
-            eprintln!("[preview] could not write {}: {error}", path.display());
-            std::process::exit(1);
-        }
-        println!("wrote {} ({WIDTH}x{HEIGHT})", path.display());
     }
 }

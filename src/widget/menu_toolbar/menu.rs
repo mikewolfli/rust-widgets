@@ -653,6 +653,8 @@ pub struct Menu {
     base: BaseWidget,
     title: String,
     items: Vec<MenuEntry>,
+    /// An optional flat panel mirroring the top-level rows (gap 5).
+    panel: Option<crate::widget::companions::MenuPanel>,
     hovered_index: Option<usize>,
     /// Screen position the popup was opened at, for diagnostics and tests.
     invoker_position: Option<Point>,
@@ -813,6 +815,7 @@ impl Menu {
             base: BaseWidget::new(WidgetKind::Menu, geometry, "Menu"),
             title: title.into(),
             items: Vec::new(),
+            panel: None,
             hovered_index: None,
             invoker_position: None,
             viewport: None,
@@ -1461,19 +1464,78 @@ impl Menu {
     /// Marks the cached row boxes stale. Every mutation of `items` must call this.
     fn touch_items(&mut self) {
         self.items_version = self.items_version.wrapping_add(1);
+        self.sync_panel();
+    }
+
+    /// Attaches a flat `MenuPanel` mirroring this menu's top-level rows.
+    ///
+    /// Returns whether a panel is attached afterwards. The panel is a *view* of the menu's model:
+    /// it is refilled on every item mutation, so a context menu and an externally placed panel
+    /// cannot show different rows (gap 5). A separator and a section caption become a disabled
+    /// row, because the panel's model has no separator kind and dropping them would shift every
+    /// later row's index relative to the menu's.
+    pub fn attach_panel(&mut self, panel: Option<crate::widget::companions::MenuPanel>) -> bool {
+        self.panel = panel;
+        self.sync_panel();
+        self.panel.is_some()
+    }
+
+    /// The attached flat panel, if any.
+    pub fn panel(&self) -> Option<&crate::widget::companions::MenuPanel> {
+        self.panel.as_ref()
+    }
+
+    /// The attached flat panel for editing, if any.
+    pub fn panel_mut(&mut self) -> Option<&mut crate::widget::companions::MenuPanel> {
+        self.panel.as_mut()
+    }
+
+    /// Refills the attached panel from the menu's own rows.
+    fn sync_panel(&mut self) {
+        use crate::widget::companions::MenuPanelItem;
+
+        if self.panel.is_none() {
+            return;
+        }
+        let items: Vec<MenuPanelItem> = self
+            .items
+            .iter()
+            .filter(|item| !item.is_separator())
+            .map(|item| {
+                let icon = match item.icon() {
+                    Some(crate::widget::IconSource::Builtin(name)) => {
+                        Some(name.as_str().to_string())
+                    }
+                    _ => None,
+                };
+                let mut row = MenuPanelItem::new(item.text());
+                row.icon = icon;
+                row.enabled = item.is_enabled() && !item.is_section();
+                row
+            })
+            .collect();
+        if let Some(panel) = self.panel.as_mut() {
+            panel.set_items(items);
+        }
     }
     /// Enables or disables the entry at `index`.
     ///
     /// An out-of-range index is ignored silently; read [`Menu::item_enabled`]
     /// afterwards to confirm the change took effect.
     pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
+        let mut changed = false;
         if let Some(item) = self.items.get_mut(index) {
             if item.is_enabled() != enabled {
                 item.set_enabled(enabled);
-                // A state change that is not repainted is invisible until something else
-                // happens to damage the popup (M-002).
-                self.base.request_redraw();
+                changed = true;
             }
+        }
+        if changed {
+            // A state change that is not repainted is invisible until something else
+            // happens to damage the popup (M-002), and an attached panel is a second view of
+            // the same row.
+            self.base.request_redraw();
+            self.sync_panel();
         }
     }
     /// Returns enabled state for item at index.
@@ -1487,12 +1549,16 @@ impl Menu {
     /// Does nothing, silently, when the index is out of range **or** when the
     /// entry is not checkable — see [`MenuEntry::set_checkable`].
     pub fn set_item_checked(&mut self, index: usize, checked: bool) {
+        let mut changed = false;
         if let Some(item) = self.items.get_mut(index) {
             if item.is_checkable() && item.is_checked() != checked {
                 item.set_checked(checked);
-                // The tick is drawn from the entry, so the popup must repaint (M-002).
-                self.base.request_redraw();
+                changed = true;
             }
+        }
+        if changed {
+            // The tick is drawn from the entry, so the popup must repaint (M-002).
+            self.base.request_redraw();
         }
     }
     /// Returns checked state for item at index.
@@ -4314,6 +4380,30 @@ mod tests {
         menu.handle_event(&Event::KeyPress { key: 79, modifiers: 0b0100 });
         assert_eq!(chosen.load(Ordering::SeqCst), 1, "Alt+O must run the &Open entry");
         assert!(!menu.is_visible());
+    }
+
+    /// Gap 5: the flat panel mirrors the menu's rows and follows every mutation.
+    #[test]
+    fn an_attached_panel_mirrors_the_menu_rows() {
+        use crate::widget::companions::MenuPanel;
+
+        let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+        assert!(menu.attach_panel(Some(MenuPanel::new(Rect::new(0, 0, 120, 160)))));
+        menu.add_action("Open");
+        menu.add_separator();
+        menu.add_action("Close");
+        {
+            let panel = menu.panel().expect("attached");
+            assert_eq!(panel.items().len(), 2, "the separator is not a row");
+            assert_eq!(panel.items()[0].text, "Open");
+            assert_eq!(panel.items()[1].text, "Close");
+        }
+
+        menu.set_item_enabled(0, false);
+        assert!(!menu.panel().expect("attached").items()[0].enabled);
+
+        menu.clear();
+        assert!(menu.panel().expect("attached").items().is_empty());
     }
 
     /// A section caption is painted but never highlighted or chosen.

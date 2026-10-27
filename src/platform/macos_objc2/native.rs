@@ -35,9 +35,10 @@ use objc2_app_kit::{
     NSAccessibilityRadioButtonRole, NSAccessibilityRole, NSAccessibilitySliderRole,
     NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSAccessibilityTableRole,
     NSAccessibilityTextFieldRole, NSAccessibilityUnknownRole, NSAccessibilityWindowRole,
-    NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType,
-    NSColor, NSColorSpace, NSCursor, NSEventMask, NSScreen, NSTrackingArea, NSTrackingAreaOptions,
-    NSView, NSWindow, NSWindowStyleMask, NSWorkspace,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication,
+    NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSColorSpace, NSCursor,
+    NSEventMask, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
+    NSWindowSharingType, NSWindowStyleMask, NSWorkspace,
 };
 // Named only by the input handlers and the blit, both of which are `widgets_unstripped` code.
 #[cfg(widgets_unstripped)]
@@ -540,6 +541,72 @@ pub(crate) fn window_min_size(window_id: u64) -> Option<(u32, u32)> {
     } else {
         None
     }
+}
+
+/// Applies a maximum content size through AppKit.
+pub(crate) fn set_window_max_size(window_id: u64, width: u32, height: u32) -> bool {
+    let Some(window) = window_ref(window_id) else {
+        return false;
+    };
+    window.setContentMaxSize(NSSize::new(width as f64, height as f64));
+    true
+}
+
+/// Makes the window non-opaque with a clear background, or restores the normal pair.
+pub(crate) fn set_window_transparent(window_id: u64, transparent: bool) -> bool {
+    let Some(window) = window_ref(window_id) else {
+        return false;
+    };
+    window.setOpaque(!transparent);
+    let background =
+        if transparent { NSColor::clearColor() } else { NSColor::windowBackgroundColor() };
+    window.setBackgroundColor(Some(&background));
+    true
+}
+
+/// Sets the AppKit window level to floating (always on top) or normal.
+pub(crate) fn set_window_always_on_top(window_id: u64, on: bool) -> bool {
+    let Some(window) = window_ref(window_id) else {
+        return false;
+    };
+    window.setLevel(if on {
+        objc2_app_kit::NSFloatingWindowLevel
+    } else {
+        objc2_app_kit::NSNormalWindowLevel
+    });
+    true
+}
+
+/// Sets the window's `NSAppearance` to Aqua or Dark Aqua.
+pub(crate) fn set_window_preferred_theme(window_id: u64, dark: bool) -> bool {
+    let Some(window) = window_ref(window_id) else {
+        return false;
+    };
+    // SAFETY: both names are AppKit's own statics, live for the process lifetime. objc2 marks the
+    // read unsafe because the `extern static`'s type is not checked by the linker — it is not a
+    // value that can change, so reading it cannot race.
+    let name = unsafe {
+        if dark {
+            objc2_app_kit::NSAppearanceNameDarkAqua
+        } else {
+            objc2_app_kit::NSAppearanceNameAqua
+        }
+    };
+    let Some(appearance) = NSAppearance::appearanceNamed(name) else {
+        return false;
+    };
+    window.setAppearance(Some(&appearance));
+    true
+}
+
+/// Excludes the window from screen capture with `NSWindowSharingNone`.
+pub(crate) fn set_window_content_protected(window_id: u64, protected: bool) -> bool {
+    let Some(window) = window_ref(window_id) else {
+        return false;
+    };
+    let sharing = if protected { NSWindowSharingType::None } else { NSWindowSharingType::ReadOnly };
+    window.setSharingType(sharing);
+    true
 }
 
 /// The window's content size in logical pixels, read from its content view.
@@ -1484,10 +1551,12 @@ impl RustWidgetsObjc2CanvasView {
             let Some(widget_id) = self.widget_target() else {
                 return;
             };
-            let key = event.keyCode() as u32;
-            let modifiers = crate::platform::macos::accelerator::map_modifiers(
-                event.modifierFlags().bits() as u64,
-            );
+            // One read feeds the shared translation in `platform::macos::accelerator`; the cocoa
+            // canvas calls the same function through `platform::macos::types`, so a key is
+            // classified identically on both macOS backends (P-304).
+            let translated_key = translate_key_event(event);
+            let key = u32::from(translated_key.appkit_key_code);
+            let modifiers = translated_key.modifiers;
             if release {
                 // A release produces no text, so `KeyRelease` is the only event it can be.
                 let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
@@ -1500,8 +1569,8 @@ impl RustWidgetsObjc2CanvasView {
                 return;
             }
             // Printable characters travel as `TextInput` so the widget's text path runs;
-            // non-printing keys travel as `KeyPress` with their hardware key code.
-            let translated = if let Some(text) = printable_characters(event) {
+            // non-printing keys travel as `KeyPress`.
+            let translated = if let Some(text) = translated_key.text {
                 Event::TextInput { text }
             } else {
                 Event::KeyPress { key, modifiers }
@@ -1577,17 +1646,21 @@ fn text_of(object: &AnyObject) -> Option<crate::compat::String> {
     None
 }
 
-/// Reads the printable characters of a key event, or `None` when it has none.
+/// Reads the AppKit values a key event exposes and hands them to the shared translation.
+///
+/// The conversion itself lives in [`crate::platform::macos::accelerator::translate_key`], which
+/// the cocoa canvas calls through `macos::types::translate_key_event`. Only the read differs
+/// between the backends, because each uses its own binding of `NSEvent`.
 #[cfg(widgets_unstripped)]
-fn printable_characters(event: &NSEvent) -> Option<crate::compat::String> {
-    let characters = event.characters()?;
-    let text = characters.to_string();
-    let printable: crate::compat::String = text.chars().filter(|ch| !ch.is_control()).collect();
-    if printable.is_empty() {
-        None
-    } else {
-        Some(printable)
-    }
+fn translate_key_event(event: &NSEvent) -> crate::platform::macos::accelerator::TranslatedKey {
+    let characters = event.characters().map(|text| text.to_string());
+    let ignored = event.charactersIgnoringModifiers().map(|text| text.to_string());
+    crate::platform::macos::accelerator::translate_key(
+        event.keyCode(),
+        event.modifierFlags().bits() as u64,
+        characters.as_deref(),
+        ignored.as_deref(),
+    )
 }
 
 /// Blits a top-down, straight-alpha RGBA frame into a CoreGraphics context.
@@ -1703,6 +1776,85 @@ fn blit_rgba(context: &CGContext, width: u32, height: u32, frame: &[u8]) -> bool
         CGContext::draw_image(Some(context), rect, Some(&image));
     }
     true
+}
+
+// ---------------------------------------------------------------------------
+// Screen sampling (SP-119)
+// ---------------------------------------------------------------------------
+
+/// Samples one screen pixel at global `(x, y)`, top-down `(r, g, b, a)` (SP-119).
+///
+/// # Why this is `#[allow(deprecated)]`
+///
+/// `CGWindowListCreateImage` is deprecated in favour of ScreenCaptureKit, which needs a capture
+/// session, a delegate and a run loop turn before it yields a frame. An eyedropper reads one pixel
+/// on demand, synchronously, from the pointer's own thread; a session per sample would be the wrong
+/// shape for it. The call still works and still returns null without the Screen Recording grant,
+/// which is the `None` this returns.
+///
+/// # Why the pixel is drawn into a 1×1 bitmap first
+///
+/// The snapshot's own byte layout is not part of its contract. Drawing it into a bitmap this
+/// function owns makes the read deterministic: `PremultipliedLast | Order32Big` is R, G, B, A in
+/// memory, the same pairing the blit uses, so an eyedropper and a frame read agree on channel order.
+#[cfg(widgets_unstripped)]
+#[allow(deprecated)]
+pub(crate) fn sample_screen_pixel(x: f64, y: f64) -> Option<(u8, u8, u8, u8)> {
+    use objc2_core_graphics::{
+        kCGNullWindowID, CGBitmapContextCreate, CGBitmapContextGetData, CGColorSpace, CGContext,
+        CGImageAlphaInfo, CGImageByteOrderInfo, CGInterpolationQuality, CGWindowImageOption,
+        CGWindowListCreateImage, CGWindowListOption,
+    };
+
+    let bounds = NSRect::new(objc2_foundation::NSPoint::new(x, y), NSSize::new(1.0, 1.0));
+    let image = CGWindowListCreateImage(
+        bounds,
+        CGWindowListOption::OptionOnScreenOnly,
+        kCGNullWindowID,
+        CGWindowImageOption::Default,
+    )?;
+    let color_space = CGColorSpace::new_device_rgb()?;
+    let bitmap_info = CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0;
+    // SAFETY: null asks CoreGraphics to allocate the storage; the sizes describe the 1×1 buffer
+    // this function then reads, and the colour space is live for the call.
+    let bitmap = unsafe {
+        CGBitmapContextCreate(std::ptr::null_mut(), 1, 1, 8, 4, Some(&color_space), bitmap_info)
+    }?;
+    // SAFETY: `bitmap` is live, `image` came from CoreGraphics, and the destination is the
+    // bitmap's own 1×1 box.
+    unsafe {
+        CGContext::set_interpolation_quality(Some(&bitmap), CGInterpolationQuality::None);
+        CGContext::draw_image(
+            Some(&bitmap),
+            NSRect::new(objc2_foundation::NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0)),
+            Some(&image),
+        );
+    }
+    let data = unsafe { CGBitmapContextGetData(Some(&bitmap)) } as *const u8;
+    if data.is_null() {
+        return None;
+    }
+    // SAFETY: the context is 1×1 with four bytes per pixel, so four bytes are readable from the
+    // storage the call returned, and `bitmap` keeps that storage alive for this read.
+    let pixel = unsafe { std::slice::from_raw_parts(data, 4) };
+    // The rule for turning four bytes into an answer is shared with the cocoa backend; see
+    // `platform::screen_sample` for why an alpha-zero read is an absence rather than a colour.
+    crate::platform::screen_sample::presentable((pixel[0], pixel[1], pixel[2], pixel[3]))
+}
+
+/// The pointer's position in the global display space (SP-119).
+///
+/// `CGEventGetLocation` answers in the same space [`sample_screen_pixel`] reads (top-left origin of
+/// the primary display, y down), so the two can be combined directly. `NSEvent.mouseLocation`
+/// would not: it is bottom-left relative to the primary screen and would need a flip the caller
+/// cannot see.
+#[cfg(widgets_unstripped)]
+pub(crate) fn pointer_position() -> Option<(f64, f64)> {
+    use objc2_core_graphics::CGEvent;
+
+    let event = CGEvent::new(None)?;
+    let location = CGEvent::location(Some(&event));
+    Some((location.x, location.y))
 }
 
 // ---------------------------------------------------------------------------

@@ -223,7 +223,9 @@ fn json_raw_field<'a>(text: &'a str, field: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compat::Vec;
+    // `mini` is `no_std`, so `to_string` needs the trait named; it lives here rather than at
+    // module scope because only the tests use it (a non-test build would report it unused).
+    use crate::compat::{MiniToString, Vec};
     use crate::shortcut::Key;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};

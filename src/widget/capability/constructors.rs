@@ -540,6 +540,20 @@ pub fn create_markdown_editor(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates a markdown formatting strip with the default action set (SP-022). `text` is applied
+/// as the control's label.
+///
+/// `MarkdownToolbar` lives beside `MarkdownEditor` rather than in this module's import list, so
+/// the path is spelled out — the same way the outline panel and find bar beside it are built.
+pub fn create_markdown_toolbar(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(
+        geometry,
+        text,
+        Box::new(crate::widget::special_widgets::markdown_editor::MarkdownToolbar::new(geometry)),
+    )
+}
+
+#[cfg(full_widgets)]
 /// Creates an empty toast stack. `text` is applied as the control's label.
 pub fn create_toast_stack(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(ToastStack::new(geometry)))
@@ -907,6 +921,17 @@ pub fn create_dock_widget(geometry: Rect, text: &str) -> Box<dyn Widget> {
 }
 
 #[cfg(full_widgets)]
+/// Creates the constructible control of the dock family for the `dock_area` capability (C-001).
+///
+/// `DockArea` is a layout owner rather than a `Widget` — it arranges dock widgets that live in a
+/// registry and therefore has no constructor of its own. The capability row exists for the host
+/// events the area publishes; the control the factory can build for that family is the dock
+/// widget, so this delegates to [`create_dock_widget`] instead of inventing a second type.
+pub fn create_dock_area(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    create_dock_widget(geometry, text)
+}
+
+#[cfg(full_widgets)]
 /// Creates a multiple-document interface area with no child windows. `text` is
 /// applied as the control's label.
 pub fn create_mdi_area(geometry: Rect, text: &str) -> Box<dyn Widget> {
@@ -1103,6 +1128,44 @@ pub fn create_color_well(geometry: Rect, text: &str) -> Box<dyn Widget> {
 /// label.
 pub fn create_tag_input(geometry: Rect, text: &str) -> Box<dyn Widget> {
     label(geometry, text, Box::new(TagInput::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a grid status strip (COMP-A23). `text` is applied as its explicit summary.
+pub fn create_grid_status_bar(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::companions::GridStatusBar::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty group avatar (MISC-010). `text` is applied as its label.
+pub fn create_group_avatar(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::misc_widgets::avatar::GroupAvatar::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates the unified dropdown popup host (COMP-A21).
+pub fn create_drop_down_popup_host(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::companions::DropDownPopupHost::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates the command palette host (COMP-A30).
+pub fn create_command_palette_host(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::companions::CommandPaletteHost::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates the header menu (COMP-A32).
+pub fn create_header_menu(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::companions::HeaderMenu::new(geometry)))
+}
+
+#[cfg(full_widgets)]
+/// Creates a chip input: a text line whose committed tokens become chips (SP-121).
+///
+/// `text` is applied as the control's label, the same convention every `create_*` entry uses.
+pub fn create_chip_input(geometry: Rect, text: &str) -> Box<dyn Widget> {
+    label(geometry, text, Box::new(crate::widget::special_widgets::chip::ChipInput::new(geometry)))
 }
 
 #[cfg(full_widgets)]
@@ -2070,4 +2133,63 @@ pub fn create_range_preset_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
 /// Creates an empty shared table header (`COMP-20`).
 pub fn create_grid_view_header(geometry: Rect, _text: &str) -> Box<dyn Widget> {
     Box::new(crate::widget::view_widgets::data_grid::GridViewHeader::new(geometry))
+}
+
+// ── Editor/chart/data companion overlays (COMP-21..29) ──
+//
+// Each overlay is constructible by its own name so a document can place the partner directly.
+// They all report the kind of the control they precede, which the capability tie-break resolves.
+
+#[cfg(full_widgets)]
+/// Creates an empty line-number rail starting at document line 1 (`COMP-21`).
+pub fn create_line_number_gutter(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::LineNumberGutter::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a closed find/replace strip (`COMP-22`).
+pub fn create_find_replace_bar(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::FindReplaceBar::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an idle list-state host with no empty or error content (`COMP-23`).
+pub fn create_list_state_host(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::ListStateHost::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty aggregate row (`COMP-24`).
+pub fn create_summary_row(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::SummaryRow::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a zoom strip at 100% (`COMP-25`).
+pub fn create_zoom_strip(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::ZoomStrip::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty axis picker with all four edge descriptors (`COMP-26`).
+pub fn create_axis_picker(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::AxisPicker::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an empty chart data table in preview mode (`COMP-27`).
+pub fn create_chart_data_table(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::ChartDataTable::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates a mark layer showing January 2026 (`COMP-28`).
+pub fn create_calendar_mark_layer(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::CalendarMarkLayer::new(geometry))
+}
+
+#[cfg(full_widgets)]
+/// Creates an inactive drag-ghost layer (`COMP-29`).
+pub fn create_drag_ghost_layer(geometry: Rect, _text: &str) -> Box<dyn Widget> {
+    Box::new(crate::widget::companions::DragGhostLayer::new(geometry))
 }

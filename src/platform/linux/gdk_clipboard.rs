@@ -37,6 +37,46 @@
 use crate::compat::String;
 use crate::platform::clipboard::{ClipboardContent, RichClipboardBackend};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+/// How long a clipboard read may wait for the selection's owner.
+///
+/// GDK's `wait_for_text`/`wait_for_contents` run a nested main loop with no bound: a wedged
+/// selection owner freezes the caller for as long as it stays wedged (G-602). A paste is a user
+/// action, so this backend waits the same short budget the Wayland backend uses and then answers
+/// honestly rather than blocking the UI thread.
+const CLIPBOARD_WAIT: Duration = Duration::from_millis(16);
+
+/// Runs the default GLib context until `slot` is filled or [`CLIPBOARD_WAIT`] expires.
+///
+/// This is the bounded form of the nested loop `wait_for_*` runs: the request is queued with
+/// `request_*`, and only the events that can carry its answer are pumped here. A callback that
+/// arrives after the deadline still runs later against its own `Rc`, so nothing is left dangling;
+/// the answer is simply not observed by this call.
+fn wait_for<T>(slot: &Rc<RefCell<Option<T>>>) -> Option<T> {
+    let context = gtk::glib::MainContext::default();
+    let deadline = Instant::now() + CLIPBOARD_WAIT;
+    loop {
+        if let Some(value) = slot.borrow_mut().take() {
+            return Some(value);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        while context.pending() {
+            let _ = context.iteration(false);
+            if slot.borrow().is_some() {
+                break;
+            }
+        }
+        if slot.borrow().is_some() {
+            continue;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
 
 /// The MIME type a plain-text payload is published under.
 const PLAIN_TEXT: &str = "text/plain";
@@ -124,25 +164,17 @@ pub(crate) fn generation() -> u64 {
 
 /// Puts `text` on the display clipboard as plain text.
 ///
-/// The answer is a **read-back**: `gtk_clipboard_set_text` returns nothing, and a clipboard the
-/// display refused (or a nested main loop that never got the selection) would otherwise be
-/// reported as a successful write. GDK owns the selection here, so the read does not need another
-/// process to answer it.
+/// `gtk_clipboard_set_text` returns nothing, so the write is reported as **accepted**: GDK holds
+/// the selection after the call, and `store()` hands it to the clipboard manager. The former
+/// confirmation was a synchronous `wait_for_text()`, a nested main loop with no bound that could
+/// freeze the caller on a wedged selection owner (G-602); that read-back is gone. A caller that
+/// wants the value reads it through [`text`], which waits at most [`CLIPBOARD_WAIT`].
 ///
-/// # Why the empty string is confirmed the other way round
+/// # Empty string
 ///
 /// GDK has no "empty string" selection: `set_text("")` leaves the clipboard holding **no text**,
-/// and `wait_for_text()` then answers `None` — the same answer `clear()` gives. Measured on a live
-/// display during this round (GTK 3, quartz backend):
-///
-/// ```text
-/// after set_text("something"): Some("something")
-/// after set_text(""):          None
-/// after clear():               None
-/// ```
-///
-/// So for `""` the confirmation is "there is now no text", which is what the caller asked for.
-/// Comparing the string back in that case would report a successful write as a failure.
+/// so a later [`text`] answers `None` — the same answer `clear()` gives. The write still reports
+/// `true` because the selection was offered; the value being empty is not a failure.
 pub(crate) fn set_text(text: &str) -> bool {
     with_clipboard(|clipboard| {
         clipboard.set_text(text);
@@ -150,17 +182,30 @@ pub(crate) fn set_text(text: &str) -> bool {
         // Without it the text vanishes on exit, which is not what a user who pressed Ctrl+C
         // expects — and on a session with no manager it is a no-op, not a failure.
         clipboard.store();
-        match clipboard.wait_for_text() {
-            Some(stored) => stored.as_str() == text,
-            None => text.is_empty(),
-        }
+        // # Why the write is no longer confirmed by a read-back
+        //
+        // `gtk_clipboard_set_text` returns nothing, so the old evidence was a synchronous
+        // `wait_for_text()` — a nested main loop that can wait forever on a wedged selection
+        // owner (G-602). The write is now reported as accepted (the selection was offered) and
+        // the caller can read it back through [`text`], which is bounded. Reporting `false` on a
+        // timeout would claim a failure that did not happen; reporting `true` for an offered
+        // selection is the same contract the Wayland backend publishes.
+        true
     })
     .unwrap_or(false)
 }
 
 /// The display clipboard's plain text, or `None` when it holds none.
 pub(crate) fn text() -> Option<String> {
-    with_clipboard(|clipboard| clipboard.wait_for_text().map(|text| text.to_string())).flatten()
+    with_clipboard(|clipboard| {
+        let slot = Rc::new(RefCell::new(None));
+        let answer = Rc::clone(&slot);
+        clipboard.request_text(move |_clipboard, text| {
+            *answer.borrow_mut() = Some(text.map(|text| text.to_string()));
+        });
+        wait_for(&slot).flatten()
+    })
+    .flatten()
 }
 
 /// Publishes `html` (with `plain` as the fallback representation) on the display clipboard.
@@ -179,14 +224,16 @@ pub(crate) fn text() -> Option<String> {
 ///
 /// # The verified boundary
 ///
-/// The plain channel is verified end-to-end (see the module tests and `status.md`); the **markup**
-/// channel is not. On the one host where GDK could be run against a live display during this
-/// round (GTK 3 on macOS, whose quartz backend maps selections onto `NSPasteboard`), a
-/// `SelectionData::set` for a non-text target came back **empty** on the reading side: GDK's
-/// quartz backend serves only UTF8_STRING from owner-provided data. `SelectionData::set` with
-/// format 8 and the requested target is the documented mechanism on X11 and XWayland, which is
-/// what this backend targets, but this crate has no X11 host in its gate suite, so the markup arm
-/// is reported here as *unverified on this host* rather than claimed.
+/// The write is reported by `set_with_data`, which answers whether the selection was offered.
+/// The old read-back that tried to prove delivery ran a nested main loop with no bound, so it is
+/// gone (G-602); a caller that needs the bytes reads them through the bounded [`html`].
+///
+/// The **markup** channel's delivery is still unverified on a live X11 host: on the one host where
+/// GDK could be run against a live display during an earlier round (GTK 3 on macOS, whose quartz
+/// backend maps selections onto `NSPasteboard`), a `SelectionData::set` for a non-text target came
+/// back empty on the reading side, because that backend serves only UTF8_STRING from
+/// owner-provided data. `SelectionData::set` with format 8 and the requested target is the
+/// documented mechanism on X11 and XWayland, which is what this backend targets.
 pub(crate) fn set_html(html: &str, plain: &str) -> bool {
     let html_owned: String = html.into();
     let plain_owned: String = plain.into();
@@ -221,30 +268,25 @@ pub(crate) fn set_html(html: &str, plain: &str) -> bool {
     })
     .unwrap_or(false);
 
-    if !owned {
-        return false;
-    }
-    // The read-back is the evidence: `set_with_data` only says the selection was offered.
-    let markup = self::html().is_some_and(|stored| stored == html);
-    if !markup {
-        log::warn!(
-            "[linux clipboard] the text/html target did not come back from the display; the \
-             plain-text channel is what a receiver will read"
-        );
-    }
-    markup || text().is_some_and(|stored| stored == plain)
+    // `set_with_data` reports whether the selection was offered; the read-back that used to
+    // confirm it ran a nested main loop with no bound (G-602), so the offered selection is the
+    // answer here and a caller that needs the bytes reads them through the bounded [`html`].
+    owned
 }
 
 /// The display clipboard's HTML, or `None` when it holds none.
 pub(crate) fn html() -> Option<String> {
     with_clipboard(|clipboard| {
         // Interned inside the guard for the reason given in `set_html`.
-        let selection = clipboard.wait_for_contents(&gtk::gdk::Atom::intern(HTML))?;
-        let bytes = selection.data();
-        if bytes.is_empty() {
-            return None;
-        }
-        String::from_utf8(bytes).ok()
+        let atom = gtk::gdk::Atom::intern(HTML);
+        let slot = Rc::new(RefCell::new(None));
+        let answer = Rc::clone(&slot);
+        clipboard.request_contents(&atom, move |_clipboard, selection| {
+            let bytes = selection.data();
+            *answer.borrow_mut() =
+                Some(if bytes.is_empty() { None } else { String::from_utf8(bytes).ok() });
+        });
+        wait_for(&slot).flatten()
     })
     .flatten()
 }
@@ -269,7 +311,15 @@ pub(crate) fn has_format(content_type: &str) -> bool {
 /// there" rather than "the payload is non-empty".
 fn holds_target(content_type: &str) -> bool {
     with_clipboard(|clipboard| {
-        clipboard.wait_for_contents(&gtk::gdk::Atom::intern(content_type)).is_some()
+        let atom = gtk::gdk::Atom::intern(content_type);
+        // The callback firing is the evidence that the target is offered; the payload itself is
+        // irrelevant to the question and reading it could block on a large transfer.
+        let slot = Rc::new(RefCell::new(None));
+        let answer = Rc::clone(&slot);
+        clipboard.request_contents(&atom, move |_clipboard, _selection| {
+            *answer.borrow_mut() = Some(true);
+        });
+        wait_for(&slot).unwrap_or(false)
     })
     .unwrap_or(false)
 }
@@ -278,8 +328,9 @@ fn holds_target(content_type: &str) -> bool {
 ///
 /// This is the generic form of [`set_html`]: the type is interned as its own selection target and
 /// served from an owner callback, which is the documented X11/XWayland mechanism for any MIME type.
-/// The write is confirmed by reading the target back (the same evidence rule `set_html` follows),
-/// because `set_with_data` only reports that the selection was *offered*.
+/// `set_with_data` reports whether the selection was offered; the former read-back ran an
+/// unbounded nested loop and is gone (G-602). A caller that needs the bytes reads them through
+/// the bounded [`typed`].
 ///
 /// # The verified boundary
 ///
@@ -288,7 +339,6 @@ fn holds_target(content_type: &str) -> bool {
 /// reported as *verified where a display serves it* (the `MockClipboard` round-trip) and otherwise
 /// as *unverified on this host* rather than claimed.
 pub(crate) fn set_typed(content_type: &str, data: &[u8]) -> bool {
-    let type_owned: String = content_type.into();
     let data_owned = data.to_vec();
     let offered = with_clipboard(|clipboard| {
         // Interned inside the guard for the reason `set_html` records: `gdk_atom_intern` asserts
@@ -308,27 +358,22 @@ pub(crate) fn set_typed(content_type: &str, data: &[u8]) -> bool {
     })
     .unwrap_or(false);
 
-    if !offered {
-        return false;
-    }
-    // The read-back is the evidence, exactly as `set_html` obtains it.
-    let stored = typed(content_type);
-    if stored.as_deref() != Some(data) {
-        log::warn!(
-            "[linux clipboard] the '{type_owned}' target did not come back from the display; the \
-             write is reported as refused rather than pretended"
-        );
-        return false;
-    }
-    true
+    // See `set_html`: the offered selection is the answer, and the former read-back ran an
+    // unbounded nested loop (G-602).
+    offered
 }
 
 /// The bytes the display clipboard holds under `content_type`, or `None` when it holds none.
 pub(crate) fn typed(content_type: &str) -> Option<Vec<u8>> {
     with_clipboard(|clipboard| {
         // Interned inside the guard for the reason `set_html` records.
-        let selection = clipboard.wait_for_contents(&gtk::gdk::Atom::intern(content_type))?;
-        Some(selection.data())
+        let atom = gtk::gdk::Atom::intern(content_type);
+        let slot = Rc::new(RefCell::new(None));
+        let answer = Rc::clone(&slot);
+        clipboard.request_contents(&atom, move |_clipboard, selection| {
+            *answer.borrow_mut() = Some(selection.data());
+        });
+        wait_for(&slot)
     })
     .flatten()
 }

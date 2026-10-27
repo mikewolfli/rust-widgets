@@ -3,17 +3,18 @@
 
 //! Map companion controls (COMP-13): tile loading, zoom strip, scale bar and compass.
 
-use crate::compat::HashMap;
+use crate::compat::{lock, Arc, HashMap, Mutex};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{GenericSignal, Signal1};
+use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::widget::capability::coercion::{
     expect_bool, expect_f32, expect_f64, expect_string, expect_u32,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::ZoomPanController;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -569,6 +570,28 @@ pub enum ZoomButton {
     In,
 }
 
+/// The live link between a [`ZoomControl`] and a [`ZoomPanController`] (chapter 3, gap 12).
+///
+/// A widget cannot hold a borrow of another, so the controller's `zoom_changed` slot parks the
+/// latest level in a shared cell and [`ZoomControl::poll_zoom_pan`] applies it on the next paint
+/// or interaction. A strip has no pan, so only the level is mirrored.
+///
+/// # Why the target range is shared
+///
+/// The controller's range is captured when the strip is attached, but the strip's own range can
+/// still move through [`ZoomControl::set_min`]/[`ZoomControl::set_max`]. The conversion therefore
+/// reads the strip's bounds from this cell on every report instead of freezing them at attach
+/// time, so a resized range does not turn later conversions into a clamp against a stale end.
+struct ZoomPanBinding {
+    /// The latest level the controller reported, already mapped, or `None` when nothing is
+    /// pending.
+    zoom: Arc<Mutex<Option<f32>>>,
+    /// The strip range the controller's levels are converted into.
+    target: Arc<Mutex<(f32, f32)>>,
+    /// The subscription, dropped with the binding so a detached strip leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
 /// A three-button zoom strip: `-`, `1:1`, `+`.
 ///
 /// The control owns a zoom level and reports every committed change through
@@ -579,6 +602,8 @@ pub struct ZoomControl {
     zoom_level: f32,
     min: f32,
     max: f32,
+    /// The zoom/pan controller this strip follows, when one is attached (chapter 3, gap 12).
+    zoom_pan: Option<ZoomPanBinding>,
     /// The measured label boxes, keyed by the resolved font (SP-120).
     ///
     /// The three labels are static strings, so their sizes change only when the font does; the
@@ -596,8 +621,86 @@ impl ZoomControl {
             zoom_level: 1.0,
             min: 0.25,
             max: 8.0,
+            zoom_pan: None,
             metrics_cache: core::cell::RefCell::new(None),
             zoom_requested: Signal1::new(),
+        }
+    }
+
+    /// Follows `controller`'s zoom level (chapter 3, gap 12).
+    ///
+    /// The binding is one-way, controller → strip: the controller is the authority for the level
+    /// and this strip mirrors it through [`Self::poll_zoom_pan`], which the paint and event paths
+    /// call. Standalone behaviour is unchanged — with no controller attached the strip is driven
+    /// only by its own buttons and wheel, exactly as before. Attaching replaces any previous
+    /// controller, so calling this twice leaves one subscription rather than two.
+    ///
+    /// # Range
+    ///
+    /// The two controls disagree about the range: the controller accepts `0.05 ..= 32.0` around
+    /// its `1.0`, this strip `0.25 ..= 8.0` around the same anchor. Every controller level is
+    /// therefore converted with [`ZoomPanController::map_zoom_to_range`], which keeps `1:1` at
+    /// `1:1` and rescales each side of it logarithmically, so the controller's ends reach the
+    /// strip's ends instead of being flattened by a clamp. The controller's range is captured at
+    /// attach time — a widget cannot hold a borrow of another and so is never told that the
+    /// controller's range moved — while the strip's own range stays live.
+    pub fn attach_zoom_pan(&mut self, controller: &ZoomPanController) {
+        let zoom = Arc::new(Mutex::new(None));
+        let target = Arc::new(Mutex::new((self.min, self.max)));
+        let scope = ConnectionScope::new();
+        let source = controller.zoom_range();
+        let redraw = self.base.redraw_requested_signal().clone();
+
+        let sink = Arc::clone(&zoom);
+        let target_sink = Arc::clone(&target);
+        controller.zoom_changed.connect_scoped(&scope, move |level| {
+            let range = *lock(&target_sink);
+            *lock(&sink) = Some(ZoomPanController::map_zoom_to_range(*level, source, range));
+            // A controller gesture redraws the strip, so the poll that applies it happens next
+            // frame rather than on whatever event arrives afterwards.
+            redraw.emit();
+        });
+
+        self.zoom_pan = Some(ZoomPanBinding { zoom, target, _scope: scope });
+        // Adopt the controller's current level now, so attaching does not wait for the next
+        // controller gesture before the two agree.
+        let range = (self.min, self.max);
+        let mapped = ZoomPanController::map_zoom_to_range(controller.zoom_level(), source, range);
+        self.set_zoom(mapped);
+    }
+
+    /// Stops following the attached controller; the last applied level stays.
+    pub fn detach_zoom_pan(&mut self) {
+        if self.zoom_pan.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ZoomPanController`] is attached.
+    pub fn is_zoom_pan_attached(&self) -> bool {
+        self.zoom_pan.is_some()
+    }
+
+    /// Applies the level the attached controller reported since the last poll.
+    ///
+    /// Called from `draw` and `handle_event`, so a controller gesture is reflected by the next
+    /// frame. Returns whether a level was pending. The value goes through [`Self::set_zoom`], so
+    /// `zoom_requested` fires for a controller-driven change too: a host that refetches tiles on
+    /// that signal needs no second subscription. A host that forwards `zoom_requested` back into
+    /// the controller cannot loop, because `set_zoom` refuses an unchanged level.
+    pub fn poll_zoom_pan(&mut self) -> bool {
+        let level = {
+            let Some(binding) = self.zoom_pan.as_ref() else {
+                return false;
+            };
+            lock(&binding.zoom).take()
+        };
+        match level {
+            Some(level) => {
+                let _ = self.set_zoom(level);
+                true
+            }
+            None => false,
         }
     }
 
@@ -660,6 +763,7 @@ impl ZoomControl {
         }
         self.min = min;
         self.zoom_level = self.zoom_level.clamp(self.min, self.max);
+        self.refresh_zoom_pan_target();
         self.base.request_redraw();
     }
 
@@ -674,7 +778,16 @@ impl ZoomControl {
         }
         self.max = max;
         self.zoom_level = self.zoom_level.clamp(self.min, self.max);
+        self.refresh_zoom_pan_target();
         self.base.request_redraw();
+    }
+
+    /// Publishes the strip's current bounds to an attached controller link, so a later report is
+    /// converted into the range the strip actually shows.
+    fn refresh_zoom_pan_target(&self) {
+        if let Some(binding) = self.zoom_pan.as_ref() {
+            *lock(&binding.target) = (self.min, self.max);
+        }
     }
 
     /// The rectangle one button occupies.
@@ -772,6 +885,9 @@ impl WidgetProperties for ZoomControl {
 
 impl EventHandler for ZoomControl {
     fn handle_event(&mut self, event: &Event) {
+        // A controller report is a shared-cell write, so it is drained before routing: the frame
+        // that follows already shows the level the controller reported (chapter 3, gap 12).
+        self.poll_zoom_pan();
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
@@ -803,6 +919,9 @@ impl EventHandler for ZoomControl {
 
 impl Draw for ZoomControl {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Drain a level the bound controller reported, so the paint shows the state the controller
+        // is in rather than the one from before its gesture (chapter 3, gap 12).
+        self.poll_zoom_pan();
         let rect = self.geometry();
         let style = self.base.style();
         let (surface, border, ink) = companion_palette(style, "zoom_control");
@@ -1443,5 +1562,45 @@ mod tests {
             first,
             "a still zoom strip re-measured its labels"
         );
+    }
+
+    /// Chapter 3, gap 12: a controller level and a fit reach the strip through the documented
+    /// range conversion, and detaching stops the wiring.
+    #[test]
+    fn a_controller_zoom_and_fit_reach_the_zoom_strip() {
+        use crate::core::Size;
+        use crate::widget::companions::ZoomPanController;
+
+        let mut strip = ZoomControl::new(Rect::new(0, 0, 96, 28));
+        let mut controller = ZoomPanController::new(Rect::new(0, 0, 200, 100));
+        // A 50 px wide picture in a 200 px viewport fits at 4.0.
+        controller.set_content_size(Size::new(50, 25));
+
+        strip.attach_zoom_pan(&controller);
+        assert!(strip.is_zoom_pan_attached());
+
+        let source = controller.zoom_range();
+        let target = (strip.min(), strip.max());
+        assert!(
+            (ZoomPanController::map_zoom_to_range(1.0, source, target) - 1.0).abs() < 1e-6,
+            "the shared 1:1 anchor is preserved"
+        );
+
+        controller.set_zoom_level(2.0);
+        assert!(strip.poll_zoom_pan(), "the reported level is drained");
+        let expected = ZoomPanController::map_zoom_to_range(2.0, source, target);
+        assert!((strip.zoom_level() - expected).abs() < 1e-5, "the controller level is mapped");
+        assert!(!strip.poll_zoom_pan(), "a drained slot reports nothing on the next poll");
+
+        controller.fit_to_width();
+        assert!(strip.poll_zoom_pan(), "a fit is reported like any other change");
+        let fitted = ZoomPanController::map_zoom_to_range(4.0, source, target);
+        assert!((strip.zoom_level() - fitted).abs() < 1e-5, "fit width drives the strip");
+
+        strip.detach_zoom_pan();
+        assert!(!strip.is_zoom_pan_attached());
+        controller.set_zoom_level(8.0);
+        assert!(!strip.poll_zoom_pan(), "a detached controller reports nothing");
+        assert!((strip.zoom_level() - fitted).abs() < 1e-5, "the last applied level stays");
     }
 }

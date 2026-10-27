@@ -41,16 +41,10 @@
 /// So the default is to refuse and say how to allow it, and the answer is a deliberate act rather
 /// than a side effect of running `cargo run --example`.
 #[cfg(all(unix_desktop, feature = "gtk-native"))]
-fn gui_probe_allowed() -> bool {
-    if std::env::var("RW_GUI_PROBE_OK").ok().as_deref() == Some("1") {
-        return true;
-    }
-    println!(
-        "this probe opens real windows on the desktop it runs on; set RW_GUI_PROBE_OK=1 to stage \
-         it (and prefer a machine whose screen nobody is using)"
-    );
-    false
-}
+#[path = "common/gui_probe.rs"]
+mod gui_probe;
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+use gui_probe::gui_probe_allowed;
 
 #[cfg(all(
     not(alloc_frugal),

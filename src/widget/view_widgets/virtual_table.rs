@@ -1340,6 +1340,23 @@ impl Widget for VirtualTable {
                     )
                 },
             )),
+            "context_menu_requested" => Some(EventSignalRef::mapped(
+                "context_menu_requested",
+                &self.context_menu_requested,
+                // The `Point` has no property kind of its own; the published payload is its
+                // `"x,y"` spelling, not a second numeric carrier.
+                |v| CapabilityValue::String(format!("{v:?}")),
+            )),
+            "sort_changed" => {
+                Some(EventSignalRef::mapped("sort_changed", &self.sort_changed, |v| {
+                    // The declared shape is `Mixed`, so the column and the direction arrive as a
+                    // structured pair rather than its `Debug` spelling.
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::Bool(v.1),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }

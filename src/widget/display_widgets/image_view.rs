@@ -2,17 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 //! ImageView widget — displays an Image as a widget (BLUE13 R2.12).
+#[cfg(full_widgets)]
+use crate::compat::{lock, Arc, Mutex};
 use crate::compat::{String, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::image::decoder::{decode_async, ImageDecodeJob};
 use crate::image::{Image, ImageFormat};
 use crate::render::RenderContext;
+#[cfg(full_widgets)]
+use crate::signal::ConnectionScope;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+#[cfg(full_widgets)]
+use crate::widget::companions::ZoomPanController;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -408,6 +414,22 @@ impl ImageAlignment {
     }
 }
 
+/// The live link between an [`ImageView`] and a [`ZoomPanController`] (chapter 3, gap 12).
+///
+/// A widget cannot hold a borrow of another, so the controller's `zoom_changed`/`pan_changed`
+/// slots park the latest values in shared cells and [`ImageView::poll_zoom_pan`] applies them on
+/// the next paint or interaction. That is the same host-free shape the data grid uses for its
+/// companion bindings.
+#[cfg(full_widgets)]
+struct ZoomPanBinding {
+    /// The latest level the controller reported, or `None` when nothing is pending.
+    zoom: Arc<Mutex<Option<f32>>>,
+    /// The latest pan the controller reported, or `None` when nothing is pending.
+    pan: Arc<Mutex<Option<Point>>>,
+    /// The subscriptions, dropped with the binding so a detached view leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
 /// Widget that displays an Image.
 pub struct ImageView {
     base: BaseWidget,
@@ -450,6 +472,9 @@ pub struct ImageView {
     zoom_level: f32,
     /// The view's pan, in pixels, applied after zoom. Defaults to the origin.
     pan_offset: Point,
+    /// The zoom/pan controller this view follows, when one is attached (chapter 3, gap 12).
+    #[cfg(full_widgets)]
+    zoom_pan: Option<ZoomPanBinding>,
     /// Emitted whenever [`ImageView::zoom_level`] or [`ImageView::pan_offset`] changes.
     ///
     /// The payload is the same `(f32, Point)` pair a `ZoomPanController` produces, so the two can
@@ -485,6 +510,8 @@ impl ImageView {
             flip_vertical: false,
             zoom_level: 1.0,
             pan_offset: Point::new(0, 0),
+            #[cfg(full_widgets)]
+            zoom_pan: None,
             view_changed: Signal1::new(),
             image_changed: GenericSignal::new(),
             load_failed: Signal1::new(),
@@ -606,6 +633,96 @@ impl ImageView {
             return;
         }
         self.view_changed.emit((self.zoom_level, self.pan_offset));
+    }
+
+    /// Follows `controller`'s zoom and pan (chapter 3, gap 12).
+    ///
+    /// The binding is one-way, controller → view: the controller is the authority for the
+    /// transform and this view mirrors it through [`Self::poll_zoom_pan`], which the paint and
+    /// event paths call. Standalone behaviour is unchanged — with no controller attached the view
+    /// is driven only by its own setters and gestures, exactly as before. Attaching replaces any
+    /// previous controller, so calling this twice leaves one subscription rather than two.
+    ///
+    /// # Range
+    ///
+    /// Both ends express zoom as a factor whose `1.0` is the unzoomed layout, so the level maps
+    /// across unchanged. The controller accepts `0.05 ..= 32.0` while this view accepts
+    /// `0.05 ..= 20.0`, so a level above `20.0` arrives as `20.0`: [`Self::set_zoom_level`]'s own
+    /// clamp is the narrowing conversion, and nothing here silently rescales the picture. The pan
+    /// maps unchanged too — both ends are pixels.
+    ///
+    /// A gesture on the view itself is not pushed back into the controller, because a widget
+    /// cannot hold a borrow of another; a host that wants both directions forwards
+    /// [`Self::view_changed`] to the controller (or re-attaches).
+    #[cfg(full_widgets)]
+    pub fn attach_zoom_pan(&mut self, controller: &ZoomPanController) {
+        let zoom = Arc::new(Mutex::new(None));
+        let pan = Arc::new(Mutex::new(None));
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+
+        let zoom_sink = Arc::clone(&zoom);
+        let zoom_redraw = redraw.clone();
+        controller.zoom_changed.connect_scoped(&scope, move |level| {
+            *lock(&zoom_sink) = Some(*level);
+            // A controller gesture redraws the view, so the poll that applies it happens next
+            // frame rather than on whatever event arrives afterwards.
+            zoom_redraw.emit();
+        });
+        let pan_sink = Arc::clone(&pan);
+        controller.pan_changed.connect_scoped(&scope, move |offset| {
+            *lock(&pan_sink) = Some(*offset);
+            redraw.emit();
+        });
+
+        self.zoom_pan = Some(ZoomPanBinding { zoom, pan, _scope: scope });
+        // Adopt the controller's current transform now, so attaching does not wait for the next
+        // controller gesture before the two agree.
+        self.apply_controller_view(controller.zoom_level(), controller.pan_offset());
+    }
+
+    /// Stops following the attached controller; the last applied transform stays.
+    #[cfg(full_widgets)]
+    pub fn detach_zoom_pan(&mut self) {
+        if self.zoom_pan.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ZoomPanController`] is attached.
+    #[cfg(full_widgets)]
+    pub fn is_zoom_pan_attached(&self) -> bool {
+        self.zoom_pan.is_some()
+    }
+
+    /// Applies the zoom and pan the attached controller reported since the last poll.
+    ///
+    /// Called from `draw` and `handle_event`, so a controller gesture is reflected by the next
+    /// frame. Returns whether anything was pending; a reported value is applied even when it
+    /// already matches, which keeps this a drain rather than a change detector.
+    #[cfg(full_widgets)]
+    pub fn poll_zoom_pan(&mut self) -> bool {
+        let (zoom, pan) = {
+            let Some(binding) = self.zoom_pan.as_ref() else {
+                return false;
+            };
+            (lock(&binding.zoom).take(), lock(&binding.pan).take())
+        };
+        if let Some(zoom) = zoom {
+            self.set_zoom_level(zoom);
+        }
+        if let Some(pan) = pan {
+            self.set_pan_offset(pan);
+        }
+        zoom.is_some() || pan.is_some()
+    }
+
+    /// Writes a controller transform through the view's own setters, so clamps and the
+    /// `view_changed` announcement are the same as a host-driven write.
+    #[cfg(full_widgets)]
+    fn apply_controller_view(&mut self, zoom: f32, pan: Point) {
+        self.set_zoom_level(zoom);
+        self.set_pan_offset(pan);
     }
 
     /// The zoom that fits the oriented image inside the control's content box.
@@ -1214,6 +1331,10 @@ impl WidgetProperties for ImageView {
 
 impl EventHandler for ImageView {
     fn handle_event(&mut self, event: &Event) {
+        // A controller gesture is a shared-cell write, so it is drained before routing: the frame
+        // that follows already shows the transform the controller reported (chapter 3, gap 12).
+        #[cfg(full_widgets)]
+        self.poll_zoom_pan();
         self.base.handle_event(event);
         // A double click is the gesture a host uses to open a viewer or replace the picture. It
         // is reported only when it lands on the control and the control is enabled. It is also
@@ -1284,6 +1405,10 @@ impl EventHandler for ImageView {
 
 impl Draw for ImageView {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Drain a transform the bound controller reported, so the paint shows the state the
+        // controller is in rather than the one from before its gesture (chapter 3, gap 12).
+        #[cfg(full_widgets)]
+        self.poll_zoom_pan();
         let rect = self.geometry();
         if rect.width == 0 || rect.height == 0 {
             return;
@@ -1808,5 +1933,41 @@ mod tests {
         // The asynchronous entry point reads the same path and fails the same way.
         assert!(view.load_path_async(missing).is_err());
         assert!(!view.is_loading());
+    }
+
+    /// Chapter 3, gap 12: a controller zoom and fit reach the view, and detaching stops it.
+    #[cfg(full_widgets)]
+    #[test]
+    fn a_controller_zoom_and_fit_reach_the_view() {
+        use crate::widget::companions::ZoomPanController;
+
+        let mut view = ImageView::new(Image::new(), Rect::new(0, 0, 200, 100));
+        let mut controller = ZoomPanController::new(Rect::new(0, 0, 200, 100));
+        // A 50 px wide picture in a 200 px viewport fits at 4.0.
+        controller.set_content_size(Size::new(50, 25));
+
+        view.attach_zoom_pan(&controller);
+        assert!(view.is_zoom_pan_attached());
+        assert_eq!(view.zoom_level(), 1.0, "attaching adopts the controller's 1:1 view");
+
+        controller.set_zoom_level(2.0);
+        assert!(view.poll_zoom_pan(), "the reported level is drained");
+        assert!((view.zoom_level() - 2.0).abs() < 1e-6, "the controller zoom reaches the view");
+        assert!(!view.poll_zoom_pan(), "a drained slot reports nothing on the next poll");
+
+        controller.set_pan_offset(Point::new(12, -4));
+        assert!(view.poll_zoom_pan());
+        assert_eq!(view.pan_offset(), Point::new(12, -4), "the controller pan reaches the view");
+
+        controller.fit_to_width();
+        assert!(view.poll_zoom_pan(), "a fit is reported like any other change");
+        assert!((view.zoom_level() - 4.0).abs() < 1e-6, "fit width drives the view's zoom");
+        assert_eq!(view.pan_offset(), Point::new(0, 0), "fit recentres the pan as well");
+
+        view.detach_zoom_pan();
+        assert!(!view.is_zoom_pan_attached());
+        controller.set_zoom_level(3.0);
+        assert!(!view.poll_zoom_pan(), "a detached controller reports nothing");
+        assert!((view.zoom_level() - 4.0).abs() < 1e-6, "the last applied transform stays");
     }
 }

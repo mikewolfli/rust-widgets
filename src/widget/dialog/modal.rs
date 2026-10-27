@@ -282,6 +282,22 @@ pub(crate) fn draw_modal_scrim_scaled(
     parent: Option<ObjectId>,
     strength: f32,
 ) {
+    draw_modal_scrim_tinted(context, modal, control, parent, strength, None);
+}
+
+/// Paints the modal scrim in `tint`, or in the theme's `Scrim` role when `tint` is `None`.
+///
+/// `ModalHost` keeps its `scrim_color` property, so it paints through this entry rather than the
+/// theme-only one. Both entries share the same stack, which is what stops a host and a dialog
+/// from each dimming the page once (DLG-001).
+pub(crate) fn draw_modal_scrim_tinted(
+    context: &mut RenderContext,
+    modal: ObjectId,
+    control: Rect,
+    parent: Option<ObjectId>,
+    strength: f32,
+    tint: Option<Color>,
+) {
     let strength = strength.clamp(0.0, 1.0);
     if strength <= 0.0 {
         pop_modal_layer(modal);
@@ -294,10 +310,18 @@ pub(crate) fn draw_modal_scrim_scaled(
     if !claim_scrim(modal) {
         return;
     }
-    let scrim = crate::style::layer_color(crate::style::LayerColor::Scrim)
-        .unwrap_or_else(|| Color::BLACK.with_alpha(82));
+    let scrim = tint.unwrap_or_else(|| {
+        crate::style::layer_color(crate::style::LayerColor::Scrim)
+            .unwrap_or_else(|| Color::BLACK.with_alpha(82))
+    });
     let scrim = scrim.with_alpha((scrim.a as f32 * strength) as u8);
     context.fill_rect(page, scrim);
+}
+
+/// The scrim owners, bottom first. Test-only: production code only needs "am I the owner".
+#[cfg(test)]
+pub(crate) fn scrim_stack_snapshot() -> Vec<ObjectId> {
+    SCRIM_STACK.with(|stack| stack.borrow().clone())
 }
 
 /// How small a revealing modal is at the instant it appears: 0.92 of its settled size.
@@ -391,6 +415,25 @@ mod tests {
         pop_modal_layer(TOP);
         pop_modal_layer(BOTTOM);
         assert!(SCRIM_STACK.with(|stack| stack.borrow().is_empty()));
+    }
+
+    /// A window host and the dialog it hosts must not each paint the page plane.
+    ///
+    /// The host registers its own id when it paints; a dialog registered underneath it must stop
+    /// painting, and must take the plane back when the host stops (DLG-001).
+    #[test]
+    fn a_host_and_its_dialog_share_one_owner() {
+        const HOST: ObjectId = 0xC1;
+        const DIALOG: ObjectId = 0xC2;
+
+        push_modal_layer(DIALOG);
+        push_modal_layer(HOST);
+        assert!(!claim_scrim(DIALOG), "the dialog must not paint under the host's plane");
+        assert!(claim_scrim(HOST), "the host owns the one plane");
+
+        pop_modal_layer(HOST);
+        assert!(claim_scrim(DIALOG), "the dialog owns the plane once the host stops painting");
+        pop_modal_layer(DIALOG);
     }
 
     /// An unmounted control has no root, so its own rectangle is the page it dims.

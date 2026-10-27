@@ -46,7 +46,7 @@ pub mod types;
 pub mod wheel;
 // Re-export public types
 pub use capture::PointerCaptureManager;
-pub use dnd::{DragPayload, DragSession, DropEffect, DropTarget};
+pub use dnd::{DragItem, DragPayload, DragSession, DropEffect, DropTarget};
 pub use double_click::DoubleClickTracker;
 pub use event_queue::{EventQueue, EventSender};
 pub use focus::FocusManager;

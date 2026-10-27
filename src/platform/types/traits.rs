@@ -104,6 +104,16 @@ pub trait Platform: Send + Sync {
     fn dpi_scale_factor(&self) -> f32 {
         1.0
     }
+
+    /// The DPI scale factor of the display a specific window is on.
+    ///
+    /// The default delegates to [`Self::dpi_scale_factor`], which is the honest answer for a
+    /// backend whose scale is a single host-wide value. A backend that can resolve a window's own
+    /// monitor (Win32's `GetDpiForWindow`) overrides this so a window dragged across a mixed-DPI
+    /// desktop reports the monitor it is actually on rather than the primary monitor's scale.
+    fn dpi_scale_factor_for_window(&self, _window_id: ObjectId) -> f32 {
+        self.dpi_scale_factor()
+    }
     /// The displays this host can place windows on, in the backend's own order.
     ///
     /// # What an empty list means
@@ -381,6 +391,31 @@ pub trait Platform: Send + Sync {
         false
     }
 
+    /// The pointer's position in the host's global screen space, when the backend can report it.
+    ///
+    /// `None` is the honest default: a backend whose compositor does not expose a global pointer
+    /// (Wayland hands a client no pointer position it did not receive itself) says so rather than
+    /// guessing from the last motion event over one of its own windows. The coordinate space is
+    /// the same one [`Self::sample_screen_color`] reads, so the two answers can be combined — that
+    /// is what a full-screen eyedropper needs (SP-119).
+    fn global_pointer_position(&self) -> Option<crate::core::Point> {
+        None
+    }
+
+    /// The colour of the screen at `position`, when the backend can read it.
+    ///
+    /// `position` is in the same global screen space as [`Self::global_pointer_position`].
+    ///
+    /// `None` means "this backend cannot answer", which is the default and the whole contract:
+    /// a host that has not been granted screen-capture permission, a compositor that never hands
+    /// out another application's pixels, and a backend with no screen at all all answer the same
+    /// way, and a caller must fall back to sampling its own painted surface. Returning a made-up
+    /// colour would be worse than the absence, because a picker would silently hand the user a
+    /// value no pixel on screen has.
+    fn sample_screen_color(&self, _position: crate::core::Point) -> Option<crate::core::Color> {
+        None
+    }
+
     /// The installed font families this host can render with.
     ///
     /// An empty list is the honest default: a backend that has not bound an enumeration API reports
@@ -412,8 +447,10 @@ pub trait Platform: Send + Sync {
     /// Windows reads `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\
     /// AppsUseLightTheme`, macOS reads `NSApplication.effectiveAppearance` on the main thread (both
     /// the cocoa and objc2 backends), the UIKit backend reads
-    /// `UITraitCollection.currentTraitCollection().userInterfaceStyle`, and Android reads
-    /// `Configuration.uiMode`. GTK/X11, Wayland, Redox, HarmonyOS and the Web backend answer `None`.
+    /// `UITraitCollection.currentTraitCollection().userInterfaceStyle`, Android reads
+    /// `Configuration.uiMode`, GTK/X11 reads `gtk-application-prefer-dark-theme`, and Wayland reads
+    /// the XDG portal's `org.freedesktop.appearance` key. Redox, HarmonyOS and the Web backend
+    /// answer `None`.
     fn system_theme(&self) -> Option<bool> {
         None
     }
@@ -1025,9 +1062,10 @@ pub trait Platform: Send + Sync {
     /// Applies the attributes to an existing window, returning the ones this backend refused.
     ///
     /// Every attribute goes through the trait method that already owns that fact, so there is one
-    /// implementation per attribute rather than a second one here. Attributes with no method —
-    /// maximum size, transparency, always-on-top, per-window theme, content protection — are named
-    /// as unsupported. That list is the honest answer until a backend adds a real method.
+    /// implementation per attribute rather than a second one here. A backend that cannot express
+    /// an attribute natively keeps the trait default (`false`) and the attribute is named in the
+    /// returned list; that is the explicit unsupported answer rather than a silently dropped
+    /// request.
     fn apply_window_attributes(
         &self,
         window: ObjectId,
@@ -1039,8 +1077,10 @@ pub trait Platform: Send + Sync {
                 unsupported.push("min_size");
             }
         }
-        if attributes.max_size.is_some() {
-            unsupported.push("max_size");
+        if let Some((width, height)) = attributes.max_size {
+            if !self.set_window_max_size(window, width, height) {
+                unsupported.push("max_size");
+            }
         }
         for (value, flag, name) in [
             (attributes.resizable, WindowStateFlag::Resizable, "resizable"),
@@ -1054,17 +1094,25 @@ pub trait Platform: Send + Sync {
                 }
             }
         }
-        if attributes.transparent.is_some() {
-            unsupported.push("transparent");
+        if let Some(on) = attributes.transparent {
+            if !self.set_window_transparent(window, on) {
+                unsupported.push("transparent");
+            }
         }
-        if attributes.always_on_top.is_some() {
-            unsupported.push("always_on_top");
+        if let Some(on) = attributes.always_on_top {
+            if !self.set_window_always_on_top(window, on) {
+                unsupported.push("always_on_top");
+            }
         }
-        if attributes.preferred_theme.is_some() {
-            unsupported.push("preferred_theme");
+        if let Some(dark) = attributes.preferred_theme {
+            if !self.set_window_preferred_theme(window, dark) {
+                unsupported.push("preferred_theme");
+            }
         }
-        if attributes.content_protected.is_some() {
-            unsupported.push("content_protected");
+        if let Some(protected) = attributes.content_protected {
+            if !self.set_window_content_protected(window, protected) {
+                unsupported.push("content_protected");
+            }
         }
         if let Some(path) = attributes.window_icon.as_deref() {
             if !self.set_window_icon(window, path) {
@@ -2058,6 +2106,52 @@ pub trait Platform: Send + Sync {
     /// from a real request.
     fn window_min_size(&self, _widget_id: ObjectId) -> Option<(u32, u32)> {
         None
+    }
+
+    /// Set a window's maximum content size.
+    ///
+    /// Win32 consumes the value in its `WM_GETMINMAXINFO` handler (`ptMaxTrackSize`), AppKit uses
+    /// `setContentMaxSize:`, and GTK applies it through `set_geometry_hints` with `MAX_SIZE`.
+    /// Returns `false` when the id is not a window, the window is state-only, or the backend has no
+    /// native constraint mechanism.
+    fn set_window_max_size(&self, _widget_id: ObjectId, _width: u32, _height: u32) -> bool {
+        false
+    }
+
+    /// Make a window's content transparent (or restore it to opaque).
+    ///
+    /// Win32 adds `WS_EX_LAYERED` and lets the DWM composite the window; AppKit clears
+    /// `isOpaque` and the background colour; GTK applies a fully transparent opacity and paints
+    /// the window itself. Returns `false` where the toolkit has no window-transparency concept.
+    fn set_window_transparent(&self, _widget_id: ObjectId, _transparent: bool) -> bool {
+        false
+    }
+
+    /// Keep a window above ordinary windows (or return it to the normal level).
+    ///
+    /// Win32 uses `SetWindowPos` with `HWND_TOPMOST`, AppKit sets the window level to
+    /// `NSFloatingWindowLevel`, and GTK calls `set_keep_above`.
+    fn set_window_always_on_top(&self, _widget_id: ObjectId, _on: bool) -> bool {
+        false
+    }
+
+    /// Ask the OS to render one window in a light or dark appearance.
+    ///
+    /// Windows writes `DWMWA_USE_IMMERSIVE_DARK_MODE`, AppKit sets the window's `NSAppearance`,
+    /// and GTK sets `gtk-application-prefer-dark-theme` on the shared `GtkSettings` (GTK 3 has no
+    /// per-window appearance, so this is the application-wide preference). Returns `false` where
+    /// no such control exists.
+    fn set_window_preferred_theme(&self, _widget_id: ObjectId, _dark: bool) -> bool {
+        false
+    }
+
+    /// Exclude a window from screen capture (or allow it again).
+    ///
+    /// Win32 uses `SetWindowDisplayAffinity` with `WDA_EXCLUDEFROMCAPTURE`, and AppKit uses
+    /// `setSharingType:` with `NSWindowSharingNone`. GTK/X11 and Wayland expose no equivalent, so
+    /// those backends keep the `false` default.
+    fn set_window_content_protected(&self, _widget_id: ObjectId, _protected: bool) -> bool {
+        false
     }
 
     /// Set a window's icon from a file path.

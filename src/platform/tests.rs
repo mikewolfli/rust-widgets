@@ -295,10 +295,18 @@ fn unix_print_probe_detects_cups_client_despite_nonzero_version_exit() {
     let lp_exists = std::process::Command::new("lp").arg("--help").output().is_ok();
     let lpr_exists = std::process::Command::new("lpr").arg("--help").output().is_ok();
     if lp_exists || lpr_exists {
-        assert!(
-            crate::platform::types::unix_print_clients_available(),
-            "a spooler client exists on PATH but was reported missing"
-        );
+        // The probe runs on a worker thread so a UI thread never waits for a spooler (G-603),
+        // so the answer arrives shortly after the question. Poll for it within a bound wide
+        // enough for two child processes to start, and fail only when it never arrives.
+        let mut detected = false;
+        for _ in 0..300 {
+            if crate::platform::types::unix_print_clients_available() {
+                detected = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(detected, "a spooler client exists on PATH but was reported missing");
     }
 }
 
@@ -740,6 +748,18 @@ fn loop_seam_serial_guard() -> std::sync::MutexGuard<'static, ()> {
 /// backend needs for the request to have a reader: a loop that drives frames and stops when asked.
 /// The real-toolkit run is `examples/probe_cross_thread_quit.rs`, which stages the same shape on a
 /// live GTK session.
+///
+/// # Why this is staged only in a profile with a native-toolkit default backend
+///
+/// The seam here is `quit()` → the **process-default** backend cannot perform the stop off-thread →
+/// the request is recorded → the loop's own frame tick reads it. Only a native-toolkit backend
+/// answers `false` at that middle step. A state backend (and `StubPlatform`) answers `true` —
+/// correctly, because the loop *it* drives is its own — so no request is recorded and the staged
+/// loop is never signalled. Rather than sniff a backend name, the profiles that resolve to a
+/// state/stub default are named: `mini` (`alloc_frugal`), `embedded` (`embedded_surface`),
+/// `tablet` and `mobile` build no native shell. `desktop` stages it, and so does
+/// `examples/probe_cross_thread_quit.rs` on a live GTK session.
+#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
 #[test]
 fn a_request_from_another_thread_ends_a_running_loop() {
     use std::sync::mpsc;
@@ -800,6 +820,10 @@ fn a_request_from_another_thread_ends_a_running_loop() {
 /// thread that owns the loop (a toolkit may only be touched there), and the call reported that a
 /// loop would run it. The delay is a lower bound by contract, so the test asserts "not before"
 /// rather than a precise instant.
+///
+/// Gated with [`a_request_from_another_thread_ends_a_running_loop`]: it stages the same
+/// \"process-default backend records the request\" step.
+#[cfg(not(any(alloc_frugal, embedded_surface, feature = "tablet", feature = "mobile")))]
 #[test]
 fn work_scheduled_from_another_thread_runs_on_the_loops_thread() {
     use std::sync::atomic::AtomicU64;
@@ -977,5 +1001,25 @@ fn the_filter_variant_reports_unsupported_when_there_is_no_picker() {
     assert_eq!(
         stub.choose_path_with_filters(PathPurpose::OpenFile, "choose", &[]),
         Err(PathPickerError::Unsupported)
+    );
+}
+
+/// The screen-sampling contract answers "cannot read this pixel" by default (SP-119).
+///
+/// A backend that never bound a sampling API must say so, so an eyedropper falls back to its own
+/// painted surface instead of being handed a colour that no pixel on screen has. The stub backend
+/// stands in for such a backend here: it has no screen at all.
+#[test]
+fn screen_sampling_reports_an_honest_absence_by_default() {
+    let stub = StubPlatform::new("no-screen", PlatformFamily::Desktop);
+    assert_eq!(
+        stub.global_pointer_position(),
+        None,
+        "a backend with no global pointer must not invent a position"
+    );
+    assert_eq!(
+        stub.sample_screen_color(crate::core::Point::new(3, 4)),
+        None,
+        "a backend that cannot sample must answer None, not black"
     );
 }

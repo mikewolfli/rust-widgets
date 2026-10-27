@@ -68,6 +68,8 @@ macro_rules! impl_properties_media {
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
             PropertySchema::new("looping", PropertyValueKind::Bool, true, true),
+            // The host's own buffer-starvation report; see `VideoPlayer::set_buffering` (MW-003).
+            PropertySchema::new("buffering", PropertyValueKind::Bool, true, true),
             PropertySchema::new("pipeline", PropertyValueKind::String, true, false),
         ];
 

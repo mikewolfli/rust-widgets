@@ -271,6 +271,42 @@ impl Platform for MacOSObjc2Platform {
         }
     }
 
+    /// The pointer's position in the global display space (SP-119).
+    ///
+    /// The objc2 backend answers this and [`Self::sample_screen_color`] through the same
+    /// CoreGraphics calls the `cocoa-legacy` backend uses, so an eyedropper behaves identically
+    /// whichever macOS backend the build selected.
+    fn global_pointer_position(&self) -> Option<crate::core::Point> {
+        #[cfg(all(target_os = "macos", feature = "macos", widgets_unstripped))]
+        {
+            let (x, y) = super::native::pointer_position()?;
+            Some(crate::core::Point::from_f32(x as f32, y as f32))
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos", widgets_unstripped)))]
+        {
+            None
+        }
+    }
+
+    /// The colour of one screen pixel at global `position` (SP-119).
+    ///
+    /// `None` when the pixel cannot be read: no Screen Recording grant, a point outside every
+    /// display, or a build without the CoreGraphics module. A caller that receives `None` falls
+    /// back to sampling its own painted surface, which is a real value.
+    fn sample_screen_color(&self, position: crate::core::Point) -> Option<crate::core::Color> {
+        #[cfg(all(target_os = "macos", feature = "macos", widgets_unstripped))]
+        {
+            let (r, g, b, a) =
+                super::native::sample_screen_pixel(position.x as f64, position.y as f64)?;
+            Some(crate::core::Color::rgba(r, g, b, a))
+        }
+        #[cfg(not(all(target_os = "macos", feature = "macos", widgets_unstripped)))]
+        {
+            let _ = position;
+            None
+        }
+    }
+
     /// Whether this backend paces frames against CoreVideo's presentation clock.
     ///
     /// Answered from the display link `init` starts. A host where CoreVideo could not start, and
@@ -406,6 +442,75 @@ impl Platform for MacOSObjc2Platform {
             }
         }
         self.state.window_min_size(window_id)
+    }
+
+    /// Applies a maximum content size through `NSWindow.setContentMaxSize:`.
+    fn set_window_max_size(&self, window_id: u64, width: u32, height: u32) -> bool {
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if super::native::set_window_max_size(host, width, height) {
+                self.state.set_window_max_size(window_id, width, height);
+                return true;
+            }
+        }
+        self.state.set_window_max_size(window_id, width, height)
+    }
+
+    /// Toggles `isOpaque` and the window background colour through AppKit.
+    fn set_window_transparent(&self, window_id: u64, transparent: bool) -> bool {
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        let _ = (window_id, transparent);
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if super::native::set_window_transparent(host, transparent) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Moves the window to `NSFloatingWindowLevel` (or back to normal).
+    fn set_window_always_on_top(&self, window_id: u64, on: bool) -> bool {
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        let _ = (window_id, on);
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if super::native::set_window_always_on_top(host, on) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Sets the window's `NSAppearance` to Aqua or Dark Aqua.
+    fn set_window_preferred_theme(&self, window_id: u64, dark: bool) -> bool {
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        let _ = (window_id, dark);
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if super::native::set_window_preferred_theme(host, dark) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Applies `NSWindowSharingNone` through AppKit.
+    fn set_window_content_protected(&self, window_id: u64, protected: bool) -> bool {
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        let _ = (window_id, protected);
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            let host = resolve_host(window_id);
+            if super::native::set_window_content_protected(host, protected) {
+                return true;
+            }
+        }
+        false
     }
 
     /// AppKit window icons are a bundle-level fact, not a per-window one.
@@ -1002,9 +1107,54 @@ impl Platform for MacOSObjc2Platform {
     }
 
     // ---- Window creation ----
+    // Create a new window with the given title and geometry; this is the entry point for
+    // window lifecycle parity tests.
+    /// This preview backend presents no native picker, so the creator answers the same `0` the
+    /// `file_dialog: false` capability states (P-204).
+    fn create_file_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        let _ = (parent, x, y, width, height);
+        log::debug!(
+            "[macos-objc2] create_file_dialog: no native picker in this backend; returning 0"
+        );
+        0
+    }
+
+    /// Message boxes are painted by the library; this backend creates no native one.
+    #[allow(clippy::too_many_arguments)]
+    fn create_message_box(
+        &self,
+        parent: u64,
+        title: &str,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        let _ = (parent, title, text, x, y, width, height);
+        log::debug!("[macos-objc2] create_message_box: no native message-box control; returning 0");
+        0
+    }
+
+    /// Colour choosers are painted by the library; this backend creates no native one.
+    fn create_color_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        let _ = (parent, x, y, width, height);
+        log::debug!(
+            "[macos-objc2] create_color_dialog: no native colour-dialog control; returning 0"
+        );
+        0
+    }
+
+    /// Font choosers are painted by the library; this backend creates no native one.
+    fn create_font_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        let _ = (parent, x, y, width, height);
+        log::debug!("[macos-objc2] create_font_dialog: no native font-dialog control; returning 0");
+        0
+    }
+
     /// Create a new window with the given title and geometry.
-    /// This is the entry point for window lifecycle parity tests.
-    /// Returns a unique window id.
+    ///
+    /// Returns a unique window id; this is the entry point for window lifecycle parity tests.
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         // Insert window widget into backend state
         let id = self.insert_widget(MacObjc2HandleKind::Window, title, x, y, width, height);

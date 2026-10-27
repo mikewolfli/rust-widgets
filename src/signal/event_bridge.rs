@@ -1100,8 +1100,8 @@ mod tests {
 
         assert_eq!(
             binder.unwired_events_for(&player),
-            Some(4),
-            "the shortfall is this control's own (7 published - 3 wired), not `WebEngineView`'s \
+            Some(5),
+            "the shortfall is this control's own (8 published - 3 wired), not `WebEngineView`'s \
              extra names folded in through a shared `WidgetKind`"
         );
         // The larger sibling is still fully wired; neither answer may be read off the other.

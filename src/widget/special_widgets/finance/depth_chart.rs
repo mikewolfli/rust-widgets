@@ -21,7 +21,7 @@
 
 use alloc::vec::Vec;
 
-use crate::core::{Color, HorizontalAlignment, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -154,6 +154,33 @@ impl DepthChart {
             return (low - magnitude, high + magnitude);
         }
         (low, high)
+    }
+
+    /// The hovered level's anchor and suggested tooltip content, for an external read-out.
+    ///
+    /// The anchor is the curve point under the pointer, computed by the same mapping the painter
+    /// and hit test use (gap 10).
+    pub fn hover_anchor(&self) -> Option<(Point, Vec<crate::widget::companions::TooltipLine>)> {
+        let level = self.hovered_level?;
+        let area = self.plot_area();
+        if area.rect.width == 0 || area.rect.height == 0 {
+            return None;
+        }
+        let (low, high) = self.price_bounds();
+        if !low.is_finite() || !high.is_finite() || high <= low {
+            return None;
+        }
+        let point = self.curve_cache.iter().find(|point| point.price == level)?;
+        let max = self.max_cumulative();
+        if max <= 0.0 {
+            return None;
+        }
+        let fraction = ((level - low) / (high - low)).clamp(0.0, 1.0);
+        let x = area.rect.x + (fraction * area.rect.width as f64).round() as i32;
+        let y = area.bottom()
+            - ((point.cumulative_quantity / max).clamp(0.0, 1.0) * area.rect.height as f64).round()
+                as i32;
+        Some((Point::new(x, y), self.hovered_summary()))
     }
 
     /// The plot area for this control's geometry.

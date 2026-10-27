@@ -63,8 +63,39 @@
 //! assert_eq!(effect, DropEffect::Move);
 //! ```
 
-use crate::compat::String;
+use crate::compat::{String, Vec};
 use crate::core::{ObjectId, Point};
+
+/// One item in a multi-item drag.
+///
+/// # Why the extra list rather than a second `DragPayload`
+///
+/// A multi-file drop is one gesture over several files, not several gestures: the target sees
+/// one hover, one commit and one `DropEffect`. Carrying a second payload would make the target
+/// answer twice for one action. The primary fields (`type_id`/`item_id`/`label`) keep describing
+/// the item the drag started from, and this list carries the rest (MISC-009).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DragItem {
+    /// The item's kind, the same discriminator [`DragPayload::type_id`] carries.
+    pub type_id: String,
+    /// A stable identifier for the item, unique within its type.
+    pub item_id: String,
+    /// A human-readable label, for a preview or an announcement.
+    pub label: String,
+}
+
+impl DragItem {
+    /// Creates an item with a type and an id, and no label.
+    pub fn new(type_id: impl Into<String>, item_id: impl Into<String>) -> Self {
+        Self { type_id: type_id.into(), item_id: item_id.into(), label: String::new() }
+    }
+
+    /// Sets the item's human-readable label.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
+    }
+}
 
 /// What a drag carries.
 ///
@@ -121,6 +152,12 @@ pub struct DragPayload {
     /// thing that crosses between the two controls, so the id travels with it. Targets that do not
     /// understand the field ignore it.
     pub attached: Option<ObjectId>,
+    /// The additional items a multi-item drag carries (MISC-009).
+    ///
+    /// Empty means "one item", described by the primary fields above; a target that never reads
+    /// this list keeps the behaviour it had before the field existed. A host dragging several
+    /// files fills it and a target that understands it can process the whole set.
+    pub items: Vec<DragItem>,
 }
 
 impl DragPayload {
@@ -133,6 +170,32 @@ impl DragPayload {
             origin: Point::new(0, 0),
             source: None,
             attached: None,
+            items: Vec::new(),
+        }
+    }
+
+    /// Replaces the additional items this drag carries.
+    ///
+    /// The primary `item_id`/`label` stay as they are: a target that does not understand the
+    /// list still sees the item the user started the drag on.
+    pub fn with_items(mut self, items: Vec<DragItem>) -> Self {
+        self.items = items;
+        self
+    }
+
+    /// Every item this drag carries, primary first.
+    ///
+    /// When no additional items were supplied this answers a one-element list built from the
+    /// primary fields, so a caller never has to branch on "is this a multi-item drag".
+    pub fn all_items(&self) -> Vec<DragItem> {
+        if self.items.is_empty() {
+            vec![DragItem {
+                type_id: self.type_id.clone(),
+                item_id: self.item_id.clone(),
+                label: self.label.clone(),
+            }]
+        } else {
+            self.items.clone()
         }
     }
 
@@ -546,6 +609,16 @@ mod tests {
         assert!(payload.is_type("card"));
         assert!(!payload.is_type("tab"));
         assert_eq!(payload.label, "Fix the parser");
+    }
+
+    /// MISC-009: a single-item payload still answers a one-element item list.
+    #[test]
+    fn a_payload_without_extra_items_reports_its_primary_item() {
+        let items = card().all_items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].type_id, "card");
+        assert_eq!(items[0].item_id, "task-1");
+        assert_eq!(items[0].label, "Fix the parser");
     }
 
     #[test]

@@ -11,13 +11,16 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+use crate::widget::input_widgets::input_companions::swipe_kernel::{
+    SwipeCommit, SwipeKernel, SwipeSettle,
+};
 
 /// Combined trait for widgets that can both be managed and drawn.
 pub trait WidgetDraw: Widget + Draw {}
@@ -53,8 +56,14 @@ impl SwipeDirection {
 pub struct SwipeToDismiss {
     base: BaseWidget,
     child: Option<Box<dyn WidgetDraw>>,
-    /// Distance in pixels the user must swipe to trigger dismissal.
-    dismiss_threshold: f32,
+    /// The shared swipe model: threshold, damping, flick rule and the settle that springs a
+    /// failed swipe back (COMP-A03).
+    ///
+    /// The distance a release must travel, the resistance an over-drag meets, the velocity a
+    /// flick is measured at and the commit decision all live in the shared `SwipeKernel`
+    /// (`input_companions::swipe_kernel`), the same model `SwipeActions` runs — so the two
+    /// controls cannot disagree about what the same drag means.
+    gesture: SwipeKernel,
     /// Current horizontal swipe offset in pixels.
     swipe_offset: f32,
     /// X position where the active drag began, in the widget's coordinate space.
@@ -88,7 +97,7 @@ pub struct SwipeToDismiss {
     /// row was released at, so a swipe below the threshold returns over frames instead of
     /// snapping to zero in one. At rest it is exactly zero, which is what keeps the settled
     /// picture unchanged.
-    settle: PropertyDriver,
+    settle: SwipeSettle,
     /// Estimated pointer velocity of the current swipe, in pixels per millisecond.
     velocity: f32,
     /// The previous pointer x during a drag, used to estimate velocity.
@@ -121,7 +130,7 @@ impl SwipeToDismiss {
         Self {
             base,
             child: None,
-            dismiss_threshold: 100.0,
+            gesture: SwipeKernel::new(100.0),
             swipe_offset: 0.0,
             drag_origin_x: None,
             is_dismissed: false,
@@ -129,7 +138,7 @@ impl SwipeToDismiss {
             action_text: "Delete".to_string(),
             leading_action_text: None,
             trailing_action_text: None,
-            settle: PropertyDriver::at(0.0, MotionSlot::Normal),
+            settle: SwipeSettle::new(),
             velocity: 0.0,
             last_x: None,
             threshold_armed: false,
@@ -220,20 +229,16 @@ impl SwipeToDismiss {
     /// negative one would make the comparison meaningless; both fall back to the nearest legal
     /// value, which [`Self::dismiss_threshold`] reports.
     pub fn set_dismiss_threshold(&mut self, threshold: f32) {
-        if !threshold.is_finite() {
-            return;
+        // The kernel owns the clamp and the non-finite guard, so every control that runs the
+        // same gesture answers a bad write the same way.
+        if self.gesture.set_threshold(threshold) {
+            self.base.request_redraw();
         }
-        let threshold = threshold.max(1.0);
-        if (self.dismiss_threshold - threshold).abs() < f32::EPSILON {
-            return;
-        }
-        self.dismiss_threshold = threshold;
-        self.base.request_redraw();
     }
 
     /// Returns the dismiss threshold.
     pub fn dismiss_threshold(&self) -> f32 {
-        self.dismiss_threshold
+        self.gesture.threshold()
     }
 
     /// Returns the current swipe offset.
@@ -364,19 +369,18 @@ impl SwipeToDismiss {
     /// that never moved more than two pixels is a tap, so the child receives it — which is what
     /// makes a button inside the row clickable again.
     fn commit_swipe_offset(&mut self, offset: f32, tap: Option<&Event>) {
-        let flick_floor = (self.dismiss_threshold * 0.25).clamp(1.0, 40.0);
-        let flicked = self.velocity.abs() > 0.5 && offset.abs() >= flick_floor;
-        let committed = offset.abs() >= self.dismiss_threshold || flicked;
+        // Distance **or** a flick commits; the kernel is the one place that says so, so this
+        // control and `SwipeActions` cannot drift apart on what the same release means.
+        let decision = self.gesture.decision(offset, self.velocity);
+        let committed = decision == SwipeCommit::Commit;
         // The drawn offset starts where the gesture left it and then moves on: either the
         // departure (when committed) or the spring-back (when not).
-        self.settle.jump_to(offset);
+        self.settle.release(offset, decision);
         self.swipe_offset = 0.0;
         if committed {
             self.is_dismissed = true;
             self.exit.set_target(1.0);
             self.dismissed.emit(());
-        } else {
-            self.settle.set_target(0.0);
         }
         if offset.abs() < 2.0 {
             if let Some(event) = tap {
@@ -402,26 +406,20 @@ impl SwipeToDismiss {
         let Some(origin) = self.drag_origin_x else {
             return;
         };
-        // Velocity is estimated against a nominal 16 ms frame: the platform event carries no
-        // timestamp, and the exact wall-clock rate does not matter for the "was this a flick"
-        // decision.
+        // Velocity is estimated by the kernel against a nominal 16 ms frame: the platform event
+        // carries no timestamp, and the exact wall-clock rate does not matter for the "was this
+        // a flick" decision.
         if let Some(last) = self.last_x {
-            self.velocity = (x - last) / 16.0;
+            self.velocity = SwipeKernel::velocity(last, x);
         }
         self.last_x = Some(x);
         let raw = x - origin;
         // Rubber-band damping past the threshold: a swipe may not drag the row arbitrarily far,
         // and the extra distance past the commit point costs more than the distance before it.
-        let magnitude = raw.abs();
-        self.swipe_offset = if magnitude <= self.dismiss_threshold {
-            raw
-        } else {
-            let sign = raw.signum();
-            sign * (self.dismiss_threshold + (magnitude - self.dismiss_threshold) * 0.35)
-        };
+        self.swipe_offset = self.gesture.damp(raw);
         // Report the *edge* into the armed state once per crossing (OV-007). The direction is the
         // side the row is travelling toward, which is also the side whose action label is shown.
-        let armed = self.swipe_offset.abs() >= self.dismiss_threshold;
+        let armed = self.gesture.crosses(self.swipe_offset);
         if armed != self.threshold_armed {
             self.threshold_armed = armed;
             if armed {
@@ -542,6 +540,11 @@ impl Widget for SwipeToDismiss {
             "dismissed" => Some(EventSignalRef::mapped("dismissed", &self.dismissed, |_| {
                 CapabilityValue::Null
             })),
+            "threshold_crossed" => Some(EventSignalRef::mapped(
+                "threshold_crossed",
+                &self.threshold_crossed,
+                |direction| CapabilityValue::String(direction.as_str().to_string()),
+            )),
             _ => None,
         }
     }
@@ -752,9 +755,10 @@ impl EventHandler for SwipeToDismiss {
                         if let Some(background) = self.actions_background.as_deref_mut() {
                             background.action_triggered.emit((side, index));
                         }
-                        self.settle.jump_to(offset);
+                        // The action owns the release, so the wrapper springs its residual back
+                        // through the shared settle.
+                        self.settle.release(offset, SwipeCommit::Rebound);
                         self.swipe_offset = 0.0;
-                        self.settle.set_target(0.0);
                         self.velocity = 0.0;
                         self.threshold_armed = false;
                         self.base.request_redraw();
@@ -1149,6 +1153,51 @@ mod tests {
         assert_eq!(sw.action_label(-10.0), "Archive");
         assert_eq!(sw.action_label(10.0), "Delete");
         assert_eq!(sw.action_text(), "Fallback");
+    }
+
+    /// The same drag makes the same threshold decision in both swipe controls (Gap 6).
+    ///
+    /// `SwipeActions` and `SwipeToDismiss` are two presentations of one gesture, so they share
+    /// one kernel. This drives the wrapper with real pointer events and asks the background what
+    /// the identical release means: a distance that dismisses here must expose the whole action
+    /// set there, and one that rebounds here must rebound there.
+    #[test]
+    fn the_same_drag_makes_the_same_threshold_decision_in_both_swipe_controls() {
+        use crate::widget::input_widgets::input_companions::swipe_kernel::SwipeCommit;
+
+        let mut background = crate::widget::companions::SwipeActions::new();
+        background.set_geometry(Rect::new(0, 0, 300, 60));
+        background.set_max_reveal_width(100);
+
+        let origin = 280.0f32;
+        for distance in [20.0f32, 80.0, 99.0, 100.0, 120.0, 260.0] {
+            let mut row = SwipeToDismiss::new(Rect::new(0, 0, 300, 50));
+            row.set_dismiss_threshold(100.0);
+            row.handle_event(&Event::MousePress {
+                pos: Point::new(origin as i32, 25),
+                button: 1,
+                modifiers: 0,
+            });
+            let x = origin - distance;
+            row.handle_event(&Event::MouseMove { pos: Point::new(x as i32, 25) });
+            // A second identical sample makes this a slow drag: the first sample alone is a flick
+            // by construction, which would commit every case and prove nothing about distance.
+            row.handle_event(&Event::MouseMove { pos: Point::new(x as i32, 25) });
+
+            let decision = background.gesture_decision(row.swipe_offset(), 0.0);
+            row.handle_event(&Event::MouseRelease { pos: Point::new(x as i32, 25), button: 1 });
+
+            assert_eq!(
+                decision == SwipeCommit::Commit,
+                row.is_dismissed(),
+                "a {distance} px drag must mean the same thing to both controls"
+            );
+            assert_eq!(
+                row.dismiss_threshold(),
+                background.gesture_threshold(),
+                "both controls were configured with the same threshold"
+            );
+        }
     }
 
     #[cfg(feature = "touch")]

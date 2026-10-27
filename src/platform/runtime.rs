@@ -485,6 +485,9 @@ pub fn with_platform<R>(platform: &'static dyn Platform, f: impl FnOnce() -> R) 
 /// Initializes the platform backend.
 #[cfg(not(alloc_frugal))]
 pub fn init() {
+    // Capability probes that spawn a child process run on their own threads (G-603); start them
+    // here so a print dialog opened later reads a settled answer instead of starting the probe.
+    crate::platform::types::warm_print_probes();
     get_platform().init();
 }
 

@@ -339,10 +339,9 @@ impl JsonTriggerMarker {
 
     /// Whether this marker has any published equivalent at all.
     ///
-    /// The compatibility route is allowed to carry an intent with no published name —
-    /// double-click and focus currently have none — but that fact is now explicit, so a gate can
-    /// require a *new* marker without a counterpart to be recorded here rather than inferred from
-    /// silence.
+    /// The compatibility route may carry an intent with no published name, but that fact is
+    /// explicit: a gate can require a *new* marker without a counterpart to be recorded here
+    /// rather than inferred from silence. Every shipped marker currently has one.
     pub fn is_publishable(self) -> bool {
         self.published_counterpart().is_some()
     }
@@ -462,17 +461,20 @@ pub const EVENTS_KEY: &str = "events";
 /// distinguish a second click (the canvas and the image view; the grid/table/tree publish their own
 /// `cell_double_clicked` / `node_double_clicked` spellings and are not the same intent).
 ///
-/// # Why the focus rows are `None` (W-05)
+/// # Why the focus rows name `focus_gained` / `focus_lost` (W-302)
 ///
-/// The capability census contains no per-control "this control gained focus" event. The two names
-/// that mention focus are different intents: `focus_changed` is a **dialog's** report that keyboard
-/// focus moved between its own children (its payload is the focused child's id), and
-/// `window_focus_changed` is a window-chrome report that the whole window gained or lost focus.
-/// Wiring `on_focus` to either would run the handler on the wrong event while telling it the
-/// control had gained focus — the exact defect this table exists to prevent — so the rows stay
-/// `None` and the intent travels on the widget's own focus signals instead
-/// ([`JsonTriggerMarker::base_signal`]). That is also why these keys are *not* refused: `None` here
-/// means "no published spelling", not "no channel".
+/// Focus moved between the two routes historically. The two names that mention focus are different
+/// intents: `focus_changed` is a **dialog's** report that keyboard focus moved between its own
+/// children (its payload is the focused child's id), and `window_focus_changed` is a window-chrome
+/// report that the whole window gained or lost focus. Wiring `on_focus` to either would run the
+/// handler on the wrong event while telling it the control had gained focus.
+///
+/// `focus_gained` / `focus_lost` are the control's *own* events: `BaseWidget` emits them from its
+/// focus handler for every control, and [`find_event_schema`](crate::widget::capability::find_event_schema)
+/// accepts them for every capability through one shared table. They are therefore a published
+/// spelling now, and the marker binds through the base signal first
+/// ([`JsonTriggerMarker::base_signal`]) — the published name adds the declarative route without
+/// changing which signal fires.
 ///
 /// The initial prose version of this table stated the correspondence only in words, so a new marker
 /// could quietly be added with no published route and nothing would notice.
@@ -487,8 +489,8 @@ pub const MARKER_PUBLISHED_EVENTS: &[(JsonTriggerMarker, Option<&'static str>)] 
     (JsonTriggerMarker::SelectionChanged, Some("selection_changed")),
     (JsonTriggerMarker::Closed, Some("closed")),
     (JsonTriggerMarker::DoubleClicked, Some("double_clicked")),
-    (JsonTriggerMarker::FocusGained, None),
-    (JsonTriggerMarker::FocusLost, None),
+    (JsonTriggerMarker::FocusGained, Some("focus_gained")),
+    (JsonTriggerMarker::FocusLost, Some("focus_lost")),
 ];
 
 /// Every marker that has no published counterpart.
@@ -497,8 +499,9 @@ pub const MARKER_PUBLISHED_EVENTS: &[(JsonTriggerMarker, Option<&'static str>)] 
 /// [`MARKER_KEYS`] without a row in `MARKER_PUBLISHED_EVENTS` is absent from the table rather
 /// than silently "unpublished", and a marker whose row is `None` is recorded here.
 ///
-/// `None` means "no published spelling", **not** "no channel": the two focus markers are carried
-/// by the widget's own focus signals (`JsonTriggerMarker::base_signal`) and are routable.
+/// `None` means "no published spelling", **not** "no channel": a marker can still be carried by
+/// the widget's own signals (`JsonTriggerMarker::base_signal`). Every shipped marker has a
+/// published name, so this iterator is empty today; it stays as the gate's hook for a new one.
 pub fn markers_without_published_counterpart() -> impl Iterator<Item = JsonTriggerMarker> {
     MARKER_PUBLISHED_EVENTS.iter().filter_map(|(marker, name)| name.is_none().then_some(*marker))
 }
@@ -837,6 +840,19 @@ mod tests {
         // what they meant; the name is what refuses the binding.
         assert!(matches!(marker, JsonTriggerMarker::Clicked));
         assert!(!bind_published_event(0u64, "button", "no_such_event", "on_typo"));
+    }
+
+    /// W-302: every shipped marker has a published spelling, including the two focus intents.
+    #[test]
+    fn every_marker_has_a_published_counterpart() {
+        for (marker, name) in MARKER_PUBLISHED_EVENTS {
+            assert!(name.is_some(), "`{marker:?}` must name a published event");
+            assert_eq!(marker.published_counterpart(), *name);
+            assert!(marker.is_publishable());
+        }
+        assert_eq!(JsonTriggerMarker::FocusGained.published_counterpart(), Some("focus_gained"));
+        assert_eq!(JsonTriggerMarker::FocusLost.published_counterpart(), Some("focus_lost"));
+        assert_eq!(markers_without_published_counterpart().count(), 0);
     }
 
     #[test]

@@ -25,12 +25,12 @@
 //! Exit codes: `0` = every check held, `1` = a check failed, `2` = this host cannot stage it (no
 //! display, or one of `python3`/`wmctrl`/`xwininfo`/`xprop` missing — the line says which).
 
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn main() {
     staged()
 }
 
-#[cfg(not(all(not(alloc_frugal), unix_desktop, feature = "gtk-native")))]
+#[cfg(not(gtk_probe))]
 fn main() {
     println!(
         "probe_keyboard_focus: this build has no X11 session to ask (`--features \
@@ -39,19 +39,13 @@ fn main() {
 }
 
 /// Whether the operator has allowed this probe to open real windows and inject input.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
-fn gui_probe_allowed() -> bool {
-    if std::env::var("RW_GUI_PROBE_OK").ok().as_deref() == Some("1") {
-        return true;
-    }
-    println!(
-        "this probe opens a real window and injects pointer/key events on the desktop it runs on; \
-         set RW_GUI_PROBE_OK=1 to stage it (and prefer a machine whose screen nobody is using)"
-    );
-    false
-}
+#[cfg(gtk_probe)]
+#[path = "common/gui_probe.rs"]
+mod gui_probe;
+#[cfg(gtk_probe)]
+use gui_probe::gui_probe_allowed;
 
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn staged() {
     use rust_widgets::app::WidgetHandle;
     use std::process::Command;
@@ -265,12 +259,12 @@ fn staged() {
 /// A stale file (a probe killed with `SIGKILL`) is reclaimed when its recorded pid no longer
 /// exists under `/proc`; this example only builds on Linux, so that is a local check rather
 /// than an OS assumption in library code.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 struct ProbeLock {
     path: std::path::PathBuf,
 }
 
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 impl ProbeLock {
     fn acquire() -> Self {
         use std::io::Write;
@@ -314,7 +308,7 @@ impl ProbeLock {
     }
 }
 
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 impl Drop for ProbeLock {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
@@ -322,7 +316,7 @@ impl Drop for ProbeLock {
 }
 
 /// Whether `tool` resolves on `PATH` (used to turn a failed `--help` into a host limitation).
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn which(tool: &str) -> bool {
     std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).any(|directory| directory.join(tool).is_file()))

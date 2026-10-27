@@ -183,6 +183,20 @@ use crate::widget::macos::{
 use crate::widget::menu_toolbar::tool_bar::ToolBar;
 #[cfg(full_widgets)]
 use crate::widget::window::Window;
+// The companion overlays that declare the kind of the control they partner (`COMP-21..29`).
+// `Panel`, `Table`, `Slider`, `SearchBar` and `EmptyState` each gain at least one capability from
+// this set, so every name needs a row in the concrete-type tie-break below.
+#[cfg(full_widgets)]
+use crate::widget::companions::{
+    AxisPicker, CalendarMarkLayer, ChartDataTable, DragGhostLayer, FindReplaceBar,
+    LineNumberGutter, ListStateHost, SummaryRow, ZoomStrip,
+};
+#[cfg(full_widgets)]
+use crate::widget::display_widgets::empty_state::EmptyState;
+#[cfg(full_widgets)]
+use crate::widget::display_widgets::slider::Slider;
+#[cfg(full_widgets)]
+use crate::widget::input_widgets::search_bar::SearchBar;
 
 /// Shared capability value and error types (`CapabilityValue`,
 /// `CapabilityAccessError`, …) exchanged through the property contract below.
@@ -241,12 +255,28 @@ pub(crate) fn kind_canonical_name(kind: crate::widget::WidgetKind) -> alloc::str
     name
 }
 
+/// Events every control inherits from [`BaseWidget`](crate::widget::BaseWidget).
+///
+/// # Why one shared table instead of two rows in every capability
+///
+/// Focus is emitted by `BaseWidget::handle_event` for every control the runtime routes focus to,
+/// so it is the same two unit events for all of them. Writing those names into 180 capability
+/// tables would be 360 copies of one fact, and the event census would then have to be edited to
+/// add a focus event to a new control — a step a later control would forget (W-302). The lookup
+/// consults this table after the capability's own list, so a control that ever needs to spell a
+/// focus event differently still wins with its own row.
+static BASE_EVENT_SCHEMAS: &[EventSchema] =
+    &[EventSchema::unit("focus_gained"), EventSchema::unit("focus_lost")];
+
 /// Finds the event schema `name` refers to on `capability`, using the same normalisation as every
 /// other name lookup (`"value-changed"` and `"value_changed"` are the same event).
 ///
 /// One implementation instead of four: the JSON binding, the JSON loader's publication check, the
 /// designer generator and `connect_event` each used to spell the same `normalize_key` comparison.
 /// An exact match is tried first, so the common already-canonical spelling allocates nothing.
+///
+/// A capability's own list is consulted first; [`BASE_EVENT_SCHEMAS`] then supplies the focus
+/// events every control inherits from [`BaseWidget`](crate::widget::BaseWidget).
 pub fn find_event_schema<'a>(
     capability: &'a WidgetCapability,
     name: &str,
@@ -255,6 +285,11 @@ pub fn find_event_schema<'a>(
         return Some(schema);
     }
     if let Some(schema) = capability.events.iter().find(|schema| same_key(schema.name, name)) {
+        return Some(schema);
+    }
+    // Inherited base-widget events: subscribed through the control's own `event_signal_dyn` arms
+    // (the `Widget` trait's default answers both focus names from `BaseWidget`).
+    if let Some(schema) = BASE_EVENT_SCHEMAS.iter().find(|schema| same_key(schema.name, name)) {
         return Some(schema);
     }
     // Compatibility aliases (W-19/W-20/W-21): a spelling that differs by more than separators
@@ -1345,7 +1380,10 @@ impl WidgetFactory {
     /// kind's own name; a specialised control is reachable by its own name through
     /// [`Self::capability`] instead. When no name matches (a kind whose entry is
     /// named differently on purpose), the first registration is the fallback, which
-    /// preserves the previous behaviour for the unambiguous majority.
+    /// preserves the previous behaviour for the unambiguous majority. The one exception is
+    /// `WidgetKind::Panel`: its only rows are companion overlays, its representative `panel`
+    /// belongs to `WidgetKind::GroupBox`, and a first-registration answer would name one overlay
+    /// for all four, so the answer there is `None` and callers use the kind's alias name.
     pub fn capability_by_kind(&self, kind: WidgetKind) -> Option<&WidgetCapability> {
         let indices = self.kind_to_index.get(&kind)?;
         // Compare through a per-thread scratch buffer: this used to allocate a `String` on every
@@ -1355,7 +1393,21 @@ impl WidgetFactory {
                 .iter()
                 .filter_map(|index| self.capabilities.get(*index))
                 .find(|capability| capability.canonical_name == expected)
-                .or_else(|| self.capabilities.get(indices[0]))
+                // A kind whose own name has no capability falls back to its first entry. That is
+                // wrong for `WidgetKind::Panel`: four companion overlays now declare the kind, so
+                // "first" would name one overlay as the representative of all four — and make
+                // `create_by_kind(Panel)` build a line-number rail instead of a plain panel.
+                // `Panel` is the one kind whose representative belongs to another kind (`panel`
+                // is a `GroupBox` capability); `factory_name_for_kind` already reaches it through
+                // the alias table, and `create_by_kind` falls back to that name path. Answering
+                // `None` keeps both halves on the plain panel row rather than a sibling.
+                .or_else(|| {
+                    if kind == WidgetKind::Panel {
+                        None
+                    } else {
+                        self.capabilities.get(indices[0])
+                    }
+                })
         })
     }
 
@@ -1905,6 +1957,19 @@ impl WidgetFactory {
             "mac_source_list" => self::coercion::widget_as::<MacSourceList>(widget).is_some(),
             // `WidgetKind::TextEdit`
             "text_edit" => self::coercion::widget_as::<TextEdit>(widget).is_some(),
+            // `WidgetKind::DockWidget`. `dock_area` is the host-area spelling of the same
+            // concrete dock control, so one row answers both names.
+            "dock_widget" | "dock_area" => self::coercion::widget_as::<
+                crate::widget::container_widgets::dockwidget::DockWidget,
+            >(widget)
+            .is_some(),
+            // SP-121: the chip input shares `WidgetKind::TextEdit`; without its own row it
+            // would inherit the plain editor's schema and its four published events could not
+            // be addressed from a live instance.
+            "chip_input" => {
+                self::coercion::widget_as::<crate::widget::special_widgets::chip::ChipInput>(widget)
+                    .is_some()
+            }
             "terminal_view" => self::coercion::widget_as::<TerminalView>(widget).is_some(),
             // `WidgetKind::RichEdit`
             "rich_edit" => self::coercion::widget_as::<RichEdit>(widget).is_some(),
@@ -1912,6 +1977,33 @@ impl WidgetFactory {
             "markdown_editor" => self::coercion::widget_as::<MarkdownEditor>(widget).is_some(),
             // `WidgetKind::StatusBar`
             "status_bar" => self::coercion::widget_as::<StatusBar>(widget).is_some(),
+            // COMP-A23: the grid status strip shares `WidgetKind::StatusBar` with the message
+            // bar; its own row keeps each control on its own schema.
+            "grid_status_bar" | "table_status_bar" => {
+                self::coercion::widget_as::<crate::widget::companions::GridStatusBar>(widget)
+                    .is_some()
+            }
+            "group_avatar" => self::coercion::widget_as::<
+                crate::widget::misc_widgets::avatar::GroupAvatar,
+            >(widget)
+            .is_some(),
+            // MISC-010 added a second Avatar-kind capability, so the single avatar now needs its
+            // own concrete row as well.
+            "avatar" => {
+                self::coercion::widget_as::<crate::widget::misc_widgets::avatar::Avatar>(widget)
+                    .is_some()
+            }
+            "drop_down_popup_host" => {
+                self::coercion::widget_as::<crate::widget::companions::DropDownPopupHost>(widget)
+                    .is_some()
+            }
+            "command_palette_host" => {
+                self::coercion::widget_as::<crate::widget::companions::CommandPaletteHost>(widget)
+                    .is_some()
+            }
+            "header_menu" => {
+                self::coercion::widget_as::<crate::widget::companions::HeaderMenu>(widget).is_some()
+            }
             "snackbar" => self::coercion::widget_as::<Snackbar>(widget).is_some(),
             // `WidgetKind::Canvas`
             "canvas" => self::coercion::widget_as::<Canvas>(widget).is_some(),
@@ -1942,6 +2034,14 @@ impl WidgetFactory {
             // same kind; each name is keyed to its own type so neither can claim the other.
             "tool_bar" => self::coercion::widget_as::<ToolBar>(widget).is_some(),
             "mac_toolbar" => self::coercion::widget_as::<MacToolbar>(widget).is_some(),
+            // SP-022: the markdown toolbar shares `WidgetKind::ToolBar` with the plain toolbar
+            // and the macOS strip. Without this row it inherits another control's schema (or an
+            // empty one), so its own `action_triggered` capability cannot be addressed from a
+            // live instance.
+            "markdown_toolbar" | "md_toolbar" => self::coercion::widget_as::<
+                crate::widget::special_widgets::markdown_editor::MarkdownToolbar,
+            >(widget)
+            .is_some(),
             // `WidgetKind::Stepper`. Same arrangement for the desktop stepper.
             "stepper" => self::coercion::widget_as::<Stepper>(widget).is_some(),
             "mac_stepper" => self::coercion::widget_as::<MacStepper>(widget).is_some(),
@@ -1952,6 +2052,28 @@ impl WidgetFactory {
             // `WidgetKind::PopupWindow`
             "popup_window" => self::coercion::widget_as::<PopupWindow>(widget).is_some(),
             "toast_stack" => self::coercion::widget_as::<ToastStack>(widget).is_some(),
+            // ── Companion overlays (COMP-21..29) ──
+            //
+            // Each of these reports the kind of the control it partners, so the kind alone can
+            // never say which control a mounted widget is. `Panel` gains four rows
+            // (`line_number_gutter`, `axis_picker`, `calendar_mark_layer`, `drag_ghost_layer`),
+            // `Table` two (`summary_row`, `chart_data_table`), and `Slider`, `SearchBar` and
+            // `EmptyState` one each — which also gives the base control of those three kinds a
+            // row it needs now that its kind group is no longer a single entry.
+            "line_number_gutter" => self::coercion::widget_as::<LineNumberGutter>(widget).is_some(),
+            "axis_picker" => self::coercion::widget_as::<AxisPicker>(widget).is_some(),
+            "calendar_mark_layer" => {
+                self::coercion::widget_as::<CalendarMarkLayer>(widget).is_some()
+            }
+            "drag_ghost_layer" => self::coercion::widget_as::<DragGhostLayer>(widget).is_some(),
+            "summary_row" => self::coercion::widget_as::<SummaryRow>(widget).is_some(),
+            "chart_data_table" => self::coercion::widget_as::<ChartDataTable>(widget).is_some(),
+            "slider" => self::coercion::widget_as::<Slider>(widget).is_some(),
+            "zoom_strip" => self::coercion::widget_as::<ZoomStrip>(widget).is_some(),
+            "search_bar" => self::coercion::widget_as::<SearchBar>(widget).is_some(),
+            "find_replace_bar" => self::coercion::widget_as::<FindReplaceBar>(widget).is_some(),
+            "empty_state" => self::coercion::widget_as::<EmptyState>(widget).is_some(),
+            "list_state_host" => self::coercion::widget_as::<ListStateHost>(widget).is_some(),
             // A name this table does not know is not evidence of a match.
             _ => false,
         }
@@ -1969,6 +2091,15 @@ impl WidgetFactory {
         let Some(property) = find_property(capability, property_name) else {
             return Err(CapabilityAccessError::UnknownProperty);
         };
+
+        // A shared kind cannot name two record schemas at once; these two companions are
+        // answered by canonical name before the kind-keyed table is read.
+        #[cfg(all(not(alloc_frugal), full_widgets))]
+        if let Some(value) =
+            access::default_named_property_value(capability.canonical_name, property.name)
+        {
+            return Ok(value);
+        }
 
         self.schema_default_value(capability.kind, property.name)
             .ok_or(CapabilityAccessError::UnsupportedOnWidget)

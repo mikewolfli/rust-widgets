@@ -23,6 +23,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::input_widgets::combobox::{neighbour_row, prefix_row, PopupWindow};
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -204,10 +205,13 @@ pub struct Dropdown {
     pub highlighted: Signal1<usize>,
     /// The row `highlighted` last named, or `None` when nothing is marked.
     highlighted_index: Option<usize>,
-    /// Maximum number of rows the expanded list shows at once. `None` shows them all.
-    max_visible: Option<usize>,
-    /// Index of the first row painted in the popup.
-    scroll_offset: usize,
+    /// Maximum number of rows the expanded list shows at once, and the first painted row.
+    ///
+    /// The cap and the offset are the shared drop-down window kernel (`PopupWindow` in
+    /// `combobox`), which is the same arithmetic a combo box's list uses.
+    /// Keeping them here as one value is what makes "dropdown is a light-weight combo box" a
+    /// statement about the code rather than about the pixels (I-133).
+    window: PopupWindow,
     /// Prefix typed since the last navigation, for first-letter selection.
     type_ahead: String,
     /// The text painted when nothing is selected (I-09).
@@ -240,8 +244,7 @@ impl Dropdown {
             activated: Signal1::new(),
             highlighted: Signal1::new(),
             highlighted_index: None,
-            max_visible: None,
-            scroll_offset: 0,
+            window: PopupWindow::new(),
             type_ahead: String::new(),
             placeholder: String::from("(Select)"),
             expanded_selection: None,
@@ -316,7 +319,7 @@ impl Dropdown {
         self.items = new_items.into_iter().map(DropdownItem::new).collect();
         self.sync_labels();
         self.selected_index = 0;
-        self.scroll_offset = 0;
+        self.window.set_offset(0, self.items.len());
         self.highlighted_index = None;
         self.changed.emit();
         self.base.request_redraw();
@@ -337,7 +340,7 @@ impl Dropdown {
         if had_items && index <= self.selected_index {
             self.selected_index += 1;
         }
-        self.scroll_offset = self.clamp_scroll(self.scroll_offset);
+        self.window.set_offset(self.window.offset(), self.items.len());
         self.base.request_redraw();
     }
 
@@ -361,7 +364,7 @@ impl Dropdown {
             self.selected_index = self.selected_index.min(self.items.len().saturating_sub(1));
             selection_moved = true;
         }
-        self.scroll_offset = self.clamp_scroll(self.scroll_offset);
+        self.window.set_offset(self.window.offset(), self.items.len());
         self.highlighted_index = None;
         if selection_moved {
             self.changed.emit();
@@ -532,10 +535,11 @@ impl Dropdown {
     fn item_rect(&self, index: usize) -> Rect {
         let geo = self.geometry();
         // `index` is a row in the model; the paint stacks visible rows from the scroll
-        // offset, so this maps it into the window the popup actually shows.
-        let row = index.saturating_sub(self.clamp_scroll(self.scroll_offset));
-        let item_y = geo.y + geo.height as i32 + (row as u32 * ITEM_HEIGHT) as i32;
-        Rect::new(geo.x, item_y, geo.width, ITEM_HEIGHT)
+        // offset, so this maps it into the window the popup actually shows. The list's origin
+        // is the control's bottom edge (a dropdown's popup is not part of its field band).
+        let list = Rect::new(geo.x, geo.y + geo.height as i32, geo.width, 0);
+        let row = index.saturating_sub(self.window.clamp_offset(self.items.len()));
+        PopupWindow::row_box(list, ITEM_HEIGHT, row)
     }
 
     /// Determine which list item (if any) a point falls on.
@@ -543,13 +547,14 @@ impl Dropdown {
         if !self.expanded {
             return None;
         }
-        let (start, end) = self.visible_range();
-        (start..end).find(|&index| self.item_rect(index).contains_point(pos))
+        let geo = self.geometry();
+        let list = Rect::new(geo.x, geo.y + geo.height as i32, geo.width, 0);
+        self.window.row_at(pos, list, ITEM_HEIGHT, self.items.len())
     }
 
     /// The maximum number of rows the popup shows at once.
     pub fn max_visible(&self) -> Option<usize> {
-        self.max_visible
+        self.window.max_visible()
     }
 
     /// Caps the number of rows the popup paints.
@@ -558,53 +563,35 @@ impl Dropdown {
     /// popup with no rows reads as a glitch rather than as a setting.
     pub fn set_max_visible(&mut self, max_visible: Option<usize>) {
         let max_visible = max_visible.map(|value| value.max(1));
-        if self.max_visible == max_visible {
+        if self.window.max_visible() == max_visible {
             return;
         }
-        self.max_visible = max_visible;
+        self.window.set_max_visible(max_visible);
         self.ensure_selected_visible();
         self.base.request_redraw();
     }
 
     /// Index of the first row painted in the popup.
     pub fn scroll_offset(&self) -> usize {
-        self.scroll_offset
+        self.window.offset()
     }
 
     /// Sets the first painted row, clamped so the popup stays full when it can.
     pub fn set_scroll_offset(&mut self, offset: usize) {
-        let next = self.clamp_scroll(offset);
-        if self.scroll_offset == next {
+        if !self.window.set_offset(offset, self.items.len()) {
             return;
         }
-        self.scroll_offset = next;
         self.base.request_redraw();
     }
 
     /// Number of rows the popup shows at once.
     pub fn page_size(&self) -> usize {
-        self.max_visible.unwrap_or(self.items.len()).max(1)
-    }
-
-    fn clamp_scroll(&self, offset: usize) -> usize {
-        let page = self.page_size();
-        let max_offset = self.items.len().saturating_sub(page.min(self.items.len()));
-        offset.min(max_offset)
+        self.window.page_size(self.items.len())
     }
 
     /// Scrolls the popup so `index` is inside the visible window.
     fn ensure_row_visible(&mut self, index: usize) {
-        if self.items.is_empty() {
-            self.scroll_offset = 0;
-            return;
-        }
-        let page = self.page_size();
-        if index < self.scroll_offset {
-            self.scroll_offset = index;
-        } else if index >= self.scroll_offset + page {
-            self.scroll_offset = index + 1 - page;
-        }
-        self.scroll_offset = self.clamp_scroll(self.scroll_offset);
+        self.window.ensure_visible(index, self.items.len());
     }
 
     /// Scrolls the popup so the selected row is inside the visible window.
@@ -624,37 +611,21 @@ impl Dropdown {
 
     /// Rows currently inside the popup window.
     fn visible_range(&self) -> (usize, usize) {
-        let start = self.clamp_scroll(self.scroll_offset);
-        let end = (start + self.page_size()).min(self.items.len());
-        (start, end)
+        self.window.visible_range(self.items.len())
     }
 
     /// Selects the first enabled row at or after `start` whose label begins with `prefix`.
     ///
     /// The prefix is folded once and each label compared byte-wise, instead of allocating a
-    /// lowercased copy of every row (I-P05).
+    /// lowercased copy of every row (I-P05). The search itself is the shared kernel's, so a
+    /// dropdown and a combo box type-ahead cannot disagree about what prefix matching means.
     fn find_prefix(&self, prefix: &str, start: usize) -> Option<usize> {
-        let needle = crate::widget::input_widgets::text_match::fold(prefix);
-        let count = self.items.len();
-        if count == 0 {
-            return None;
-        }
-        (0..count).map(|offset| (start + offset) % count).find(|&index| {
-            self.is_item_enabled(index)
-                && crate::widget::input_widgets::text_match::starts_with(
-                    &self.items[index].text,
-                    &needle,
-                )
-        })
+        prefix_row(&self.labels, prefix, start, |index| self.is_item_enabled(index))
     }
 
     /// The nearest enabled row before or after `from`, or `None` when there is none.
     fn neighbour_enabled(&self, from: usize, forward: bool) -> Option<usize> {
-        if forward {
-            (from.saturating_add(1)..self.items.len()).find(|&index| self.is_item_enabled(index))
-        } else {
-            (0..from.min(self.items.len())).rev().find(|&index| self.is_item_enabled(index))
-        }
+        neighbour_row(self.items.len(), from, forward, |index| self.is_item_enabled(index))
     }
     /// The row the popup currently marks, falling back to the committed selection.
     fn marked_row(&self) -> usize {
@@ -1019,7 +990,7 @@ impl EventHandler for Dropdown {
                 if self.expanded {
                     let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
                     if scroll.lines_y != 0 {
-                        let offset = (self.scroll_offset as i32 + scroll.lines_y).max(0) as usize;
+                        let offset = (self.scroll_offset() as i32 + scroll.lines_y).max(0) as usize;
                         self.set_scroll_offset(offset);
                     }
                 } else {
@@ -1206,7 +1177,7 @@ impl Draw for Dropdown {
 
         // A capped popup shows a thin thumb, so a window of a longer list cannot look like
         // the whole list.
-        if self.max_visible.is_some() && self.items.len() > self.page_size() {
+        if self.window.max_visible().is_some() && self.items.len() > self.page_size() {
             let page = self.page_size();
             let track_top = self.item_rect(first).y;
             let track_height = (page * ITEM_HEIGHT as usize) as i32;
@@ -1214,7 +1185,7 @@ impl Draw for Dropdown {
                 ((track_height as usize * page) / self.items.len().max(1)).max(8) as i32;
             let max_offset = self.items.len().saturating_sub(page).max(1);
             let thumb_top = track_top
-                + ((track_height - thumb_height) * self.scroll_offset as i32 / max_offset as i32);
+                + ((track_height - thumb_height) * self.scroll_offset() as i32 / max_offset as i32);
             context.fill_rect(
                 Rect::new(geo.x + geo.width as i32 - 4, thumb_top, 3, thumb_height as u32),
                 list_border,

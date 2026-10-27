@@ -1652,10 +1652,17 @@ impl EventHandler for Label {
                 if let (Some(mnemonic), Some(buddy)) = (self.mnemonic, self.buddy) {
                     let pressed = char::from_u32(*key);
                     if pressed.is_some_and(|pressed| pressed.eq_ignore_ascii_case(&mnemonic)) {
+                        // The `mini`/`embedded` profiles have no `widget::runtime`, so there is no
+                        // focus manager to hand the mnemonic to. The comparison still runs and the
+                        // branch is the same shape; only the effect is absent, because the profile
+                        // genuinely has no global focus — an honest absence, not a second API.
+                        #[cfg(not(alloc_frugal))]
                         let _ = crate::widget::runtime::focus_widget_with_reason(
                             buddy,
                             crate::event::FocusReason::Shortcut,
                         );
+                        #[cfg(alloc_frugal)]
+                        let _ = buddy;
                     }
                 }
             }
@@ -2867,6 +2874,11 @@ mod tests {
     }
 
     /// A buddy binding plus a mnemonic gives the label the keyboard route it lacked.
+    ///
+    /// Gated on `not(alloc_frugal)`: the route *is* the focus manager, and a build without
+    /// `widget::runtime` has none to move. The label's own half (`buddy`/`mnemonic` accessors) is
+    /// exercised by the accessor test above, which runs in every profile.
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn a_mnemonic_focuses_the_buddy() {
         use crate::widget::runtime;

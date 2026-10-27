@@ -5,7 +5,7 @@
 
 #![allow(deprecated)] // Cocoa 0.24 fallback; remove when objc2 backend fully replaces cocoa
 
-use crate::compat::{HashMap, Mutex, String};
+use crate::compat::{HashMap, Mutex, OnceLock, String};
 use crate::core::ObjectId;
 use crate::platform::accessibility::macos::MacOSAccessibilityBridge;
 use crate::platform::state::BackendState;
@@ -22,6 +22,11 @@ use objc::{class, msg_send, sel, sel_impl};
 pub(crate) enum HandleKind {
     /// Top-level NSWindow.
     Window,
+    /// A logical file-chooser control.
+    ///
+    /// The native panel is `Platform::choose_path`; the library paints the chooser itself, so this
+    /// kind records the handle without a per-window AppKit object.
+    FileDialog,
     /// A self-drawn widget mounted into a window (see `macos/canvas.rs`).
     ///
     /// Absent from `mini`/`embedded` because that is where `canvas.rs` — its only
@@ -43,8 +48,6 @@ pub struct MacOSPlatform {
     pub(crate) state: BackendState<HandleKind>,
     /// Logical id -> native handle mapping.
     pub(crate) handles: Mutex<HashMap<ObjectId, CocoaHandle>>,
-    /// Platform IME bridge for text input method integration.
-    pub(crate) ime_bridge: crate::platform::ime_macos::MacOsImeBridge,
     /// Platform rich clipboard backend.
     pub(crate) clipboard: crate::platform::clipboard_native::macos::MacOsClipboard,
     /// Platform accessibility bridge for NSAccessibility notifications.
@@ -54,22 +57,73 @@ pub struct MacOSPlatform {
     pub(crate) menu_item_shortcuts: Mutex<HashMap<ObjectId, String>>,
 }
 
-/// Translates an AppKit `NSEvent` key event into `(key_code, widget_modifiers)`.
+/// The one `MacOsImeBridge` this backend uses.
+///
+/// # Why this is a process-wide value and not a field on `MacOSPlatform`
+///
+/// The canvas view's `NSTextInputClient` callbacks are free functions registered on an
+/// Objective-C class; they have no handle on the `MacOSPlatform` instance that mounted them.
+/// `Platform::ime_bridge()` is what the widget runtime notifies of focus, so the bridge the
+/// runtime focuses and the bridge the callbacks update must be the same object — a second
+/// instance would record composition the focused control never sees, which is exactly the
+/// declaration-without-implementation gap this closes (P-202).
+///
+/// A single bridge matches AppKit's own model: one `NSTextInputContext` exists per
+/// application, not per view (the objc2 backend records the same reasoning).
+pub(crate) fn ime_bridge() -> &'static crate::platform::ime_macos::MacOsImeBridge {
+    static BRIDGE: OnceLock<crate::platform::ime_macos::MacOsImeBridge> = OnceLock::new();
+    BRIDGE.get_or_init(crate::platform::ime_macos::MacOsImeBridge::new)
+}
+
+/// Translates an AppKit `NSEvent` key event into the facts both macOS canvases need.
+///
+/// Reads the four values AppKit exposes (`keyCode`, `modifierFlags`, `characters` and
+/// `charactersIgnoringModifiers`) and hands them to
+/// [`super::accelerator::translate_key`], which owns the conversion. Keeping the read here is
+/// what lets the objc2 canvas use the same conversion without depending on `cocoa`.
 ///
 /// # Safety
 ///
-/// `event` must be a live `NSEvent` instance, or `nil` (yielding `(0, 0)`).
+/// `event` must be a live `NSEvent` instance, or `nil` (yielding an all-zero translation).
 ///
 /// Gated with `canvas.rs`: it is the only caller, and `mini`/`embedded` have no
 /// self-drawn canvas for a key event to arrive through.
 #[cfg(all(target_os = "macos", widgets_unstripped))]
-pub(crate) unsafe fn translate_key_event(event: id) -> (u32, u32) {
+pub(crate) unsafe fn translate_key_event(event: id) -> super::accelerator::TranslatedKey {
     if event == nil {
-        return (0, 0);
+        return super::accelerator::translate_key(0, 0, None, None);
     }
     let key_code: u16 = msg_send![event, keyCode];
     let flags: u64 = msg_send![event, modifierFlags];
-    super::accelerator::map_key_modifiers(flags, key_code)
+    let characters = event_characters(event, false);
+    let ignored = event_characters(event, true);
+    super::accelerator::translate_key(key_code, flags, characters.as_deref(), ignored.as_deref())
+}
+
+/// Reads the event's `NSString` characters as an owned string.
+///
+/// `ignoring_modifiers` selects `charactersIgnoringModifiers` instead of `characters`; the
+/// selector is chosen by a boolean because `msg_send!` resolves a selector at compile time. The
+/// control-character filter lives in [`super::accelerator::translate_key`], so both canvases
+/// apply it once.
+///
+/// # Safety
+/// `event` must be a live key `NSEvent` on the main thread.
+#[cfg(all(target_os = "macos", widgets_unstripped))]
+unsafe fn event_characters(event: id, ignoring_modifiers: bool) -> Option<String> {
+    let characters: id = if ignoring_modifiers {
+        msg_send![event, charactersIgnoringModifiers]
+    } else {
+        msg_send![event, characters]
+    };
+    if characters == nil {
+        return None;
+    }
+    let utf8: *const std::os::raw::c_char = msg_send![characters, UTF8String];
+    if utf8.is_null() {
+        return None;
+    }
+    Some(std::ffi::CStr::from_ptr(utf8).to_string_lossy().into_owned())
 }
 
 /// Returns `true` when the caller is running on the AppKit main thread.
@@ -96,7 +150,6 @@ impl MacOSPlatform {
         Self {
             state: BackendState::new(),
             handles: Mutex::new(HashMap::new()),
-            ime_bridge: crate::platform::ime_macos::MacOsImeBridge::new(),
             clipboard: crate::platform::clipboard_native::macos::MacOsClipboard,
             a11y_bridge: MacOSAccessibilityBridge::new(),
             menu_item_shortcuts: Mutex::new(HashMap::new()),

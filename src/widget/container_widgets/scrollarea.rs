@@ -1202,20 +1202,16 @@ impl ScrollArea {
         // The content root's rectangle comes from this control's own placement derivation:
         // the host may not have registered a runtime entry for it, and its box is the
         // content frame rather than anything the runtime could answer.
+        //
+        // Checked **before** the profile split, so the root arm is one definition in every
+        // profile: a `mini`/`embedded` build has no registry to look a descendant up in, but the
+        // root needs none — its rectangle is `content_size`, computed here.
+        if Some(widget_id) == self.widget {
+            self.ensure_visible(Rect::new(0, 0, self.content_size.width, self.content_size.height));
+            return true;
+        }
         #[cfg(not(alloc_frugal))]
         {
-            // The content root is laid out into the viewport when it is resizable, so its
-            // rectangle cannot say how much content there is. Its extent is the declared content
-            // size, and revealing the root means the minimal scroll to that extent's far corner.
-            if Some(widget_id) == self.widget {
-                self.ensure_visible(Rect::new(
-                    0,
-                    0,
-                    self.content_size.width,
-                    self.content_size.height,
-                ));
-                return true;
-            }
             let Some((x, y, width, height)) = crate::widget_geometry(widget_id) else {
                 return false;
             };
@@ -1235,6 +1231,10 @@ impl ScrollArea {
         }
         #[cfg(alloc_frugal)]
         {
+            // A descendant's box lives in the runtime registry, which this profile does not
+            // compile; answering `false` is the honest "could not be brought into view" rather
+            // than guessing an offset. The content root is answered above.
+            let _ = widget_id;
             false
         }
     }
@@ -2232,6 +2232,10 @@ mod tests {
     }
 
     /// C-015: an unset content extent follows the mounted child's size hint.
+    ///
+    /// Gated on `not(alloc_frugal)`: it mounts a control, and the `mini`/`embedded` profiles have
+    /// no registry to mount into.
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn the_content_size_follows_the_mounted_child_hint() {
         use crate::widget::base_widgets::label::Label;

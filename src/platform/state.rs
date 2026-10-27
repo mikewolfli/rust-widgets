@@ -130,6 +130,10 @@ pub struct WindowStateRecord {
     /// Minimum content size. `None` until the caller sets one, so a read can tell
     /// "no explicit constraint" from a real request.
     pub min_size: Option<(u32, u32)>,
+    /// Maximum content size. `None` until the caller sets one, which is the
+    /// documented "no explicit constraint" state rather than a made-up `(0, 0)`.
+    #[cfg_attr(all(feature = "serde", widgets_unstripped), serde(default))]
+    pub max_size: Option<(u32, u32)>,
     /// Icon path supplied to `set_window_icon`. `None` until set.
     pub icon: Option<String>,
 }
@@ -149,6 +153,7 @@ impl WindowStateRecord {
             resizable: true,
             decorated: true,
             min_size: None,
+            max_size: None,
             icon: None,
         }
     }
@@ -789,6 +794,25 @@ where
             .get(&widget_id)
             .and_then(|widget| widget.window_state.as_ref())
             .and_then(|state| state.min_size)
+    }
+
+    /// Store a window's maximum content size, returning `false` for a non-window.
+    pub fn set_window_max_size(&self, widget_id: ObjectId, width: u32, height: u32) -> bool {
+        if let Some(widget) = lock(&self.widgets).get_mut(&widget_id) {
+            if let Some(state) = widget.window_state.as_mut() {
+                state.max_size = Some((width, height));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Read a window's maximum content size, or `None` when it has none.
+    pub fn window_max_size(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
+        lock(&self.widgets)
+            .get(&widget_id)
+            .and_then(|widget| widget.window_state.as_ref())
+            .and_then(|state| state.max_size)
     }
 
     /// Store a window's icon path, returning `false` for a non-window.

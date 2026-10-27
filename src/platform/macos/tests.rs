@@ -142,3 +142,20 @@ fn config_dir_uses_application_support_not_xdg() {
     );
     assert!(!text.contains("/.config/"), "macOS must not use the Linux XDG path: {text}");
 }
+
+/// Screen sampling answers an honest absence for a point no display covers (SP-119).
+///
+/// The sibling assertion for the objc2 backend is
+/// `platform::macos_objc2::tests::objc2_screen_sampling_answers_an_honest_absence_off_screen`;
+/// both implementations share the rule in `platform::screen_sample`, and this pins the cocoa side
+/// of it. A real pixel read needs the Screen Recording grant, so a colour cannot be asserted — but
+/// a point outside every display has no pixel, and `rgba(0, 0, 0, 0)` is not one.
+#[test]
+fn macos_screen_sampling_answers_an_honest_absence_off_screen() {
+    let platform = MacOSPlatform::new();
+    assert_eq!(
+        platform.sample_screen_color(crate::core::Point::new(-100_000, -100_000)),
+        None,
+        "a point outside every display has no pixel, so the read must report absence"
+    );
+}

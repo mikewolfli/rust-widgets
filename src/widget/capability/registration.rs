@@ -117,6 +117,12 @@ impl WidgetFactory {
             self.register(split_button_capability(), create_split_button);
             self.register(segmented_control_capability(), create_segmented_control);
             self.register(chip_capability(), create_chip);
+            self.register(chip_input_capability(), create_chip_input);
+            self.register(grid_status_bar_capability(), create_grid_status_bar);
+            self.register(group_avatar_capability(), create_group_avatar);
+            self.register(drop_down_popup_host_capability(), create_drop_down_popup_host);
+            self.register(command_palette_host_capability(), create_command_palette_host);
+            self.register(header_menu_capability(), create_header_menu);
             self.register(grid_capability(), create_grid);
             // Controls that existed with a complete implementation but were never
             // registered. Without these rows the factory could not construct them by
@@ -127,6 +133,7 @@ impl WidgetFactory {
             self.register(notification_center_capability(), create_notification_center);
             self.register(diff_viewer_capability(), create_diff_viewer);
             self.register(markdown_editor_capability(), create_markdown_editor);
+            self.register(markdown_toolbar_capability(), create_markdown_toolbar);
             self.register(toast_stack_capability(), create_toast_stack);
             // `grid_table` was found by the registration-fidelity gate rather than by
             // hand: `GridTableWidget` is a complete virtualised table that had no
@@ -148,6 +155,9 @@ impl WidgetFactory {
             self.register(stacked_widget_capability(), create_stacked_widget);
             self.register(collapsible_pane_capability(), create_collapsible_pane);
             self.register(dock_widget_capability(), create_dock_widget);
+            // The dock area's host events (C-001). `DockArea` has no `WidgetKind`, so its event
+            // surface is registered here beside the dock widget the factory can build.
+            self.register(dock_area_capability(), create_dock_area);
             self.register(mdi_area_capability(), create_mdi_area);
 
             // ── Text widget ───────────────────────────────────────────
@@ -319,6 +329,22 @@ impl WidgetFactory {
             self.register(kanban_column_header_capability(), create_kanban_column_header);
             self.register(range_preset_bar_capability(), create_range_preset_bar);
             self.register(grid_view_header_capability(), create_grid_view_header);
+
+            // ── Editor/chart/data companion overlays (COMP-21..29) ──
+            //
+            // Like the companions above, each is a first-class control with its own capability.
+            // They report the kind of the control they partner (`Panel`, `Table`, `Slider`,
+            // `SearchBar`, `EmptyState`), so the concrete-type tie-break in
+            // `WidgetFactory::widget_matches_capability` carries one row per name.
+            self.register(line_number_gutter_capability(), create_line_number_gutter);
+            self.register(find_replace_bar_capability(), create_find_replace_bar);
+            self.register(list_state_host_capability(), create_list_state_host);
+            self.register(summary_row_capability(), create_summary_row);
+            self.register(zoom_strip_capability(), create_zoom_strip);
+            self.register(axis_picker_capability(), create_axis_picker);
+            self.register(chart_data_table_capability(), create_chart_data_table);
+            self.register(calendar_mark_layer_capability(), create_calendar_mark_layer);
+            self.register(drag_ghost_layer_capability(), create_drag_ghost_layer);
         }
     }
 }

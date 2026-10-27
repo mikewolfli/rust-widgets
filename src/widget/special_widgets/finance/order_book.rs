@@ -373,6 +373,36 @@ impl OrderBookWidget {
         ]
     }
 
+    /// The hovered row's anchor and suggested tooltip content, for an external read-out.
+    ///
+    /// The row's centre, computed from the same `side_order`/depth window the painter walks, so
+    /// the bubble lands on the row the host is reading (gap 10).
+    pub fn hover_anchor(&self) -> Option<(Point, Vec<crate::widget::companions::TooltipLine>)> {
+        let (side, index) = self.hovered?;
+        let geometry = self.base.geometry();
+        if geometry.width == 0 || geometry.height == 0 {
+            return None;
+        }
+        let upper = self.first_side();
+        let (upper_start, upper_levels) = self.level_window(upper);
+        let row = if side == upper {
+            let offset = index.checked_sub(upper_start)?;
+            upper_levels.len().checked_sub(1 + offset)?
+        } else {
+            let lower = self.second_side();
+            let (lower_start, lower_levels) = self.level_window(lower);
+            let offset = index.checked_sub(lower_start)?;
+            if offset >= lower_levels.len() {
+                return None;
+            }
+            upper_levels.len() + offset
+        };
+        let row_height = self.row_height();
+        let x = geometry.x + geometry.width as i32 / 2;
+        let y = geometry.y + row as i32 * row_height + row_height / 2;
+        Some((Point::new(x, y), self.hovered_summary()))
+    }
+
     /// The tooltip text for one absolute level index, for region-based hover.
     ///
     /// `TooltipManager` registers text by a key; a ladder row has no widget id, so the

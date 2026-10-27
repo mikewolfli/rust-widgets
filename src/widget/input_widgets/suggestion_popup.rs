@@ -50,6 +50,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::input_widgets::combobox::PopupWindow;
 use crate::widget::input_widgets::popup_support::{
     expect_rect, expect_strings, rect_value, row_height_for, strings_value,
 };
@@ -158,12 +159,14 @@ pub struct SuggestionPopup {
     viewport: Option<Rect>,
     /// Whether the popup may flip above the anchor when the viewport has no room below it.
     flip_allowed: bool,
-    max_visible: usize,
+    /// The painted row window: row cap and first painted row.
+    ///
+    /// This is the same kernel a combo box and a dropdown use for their own lists
+    /// ([`PopupWindow`]), so "which rows are painted and how they scroll" is answered once.
+    window: PopupWindow,
     /// A caller-chosen row height, or `None` to derive it from the font.
     row_height: Option<u32>,
     selected_index: Option<usize>,
-    /// First painted row within `visible`; keeps the highlight inside the painted window.
-    scroll_offset: usize,
     filter: String,
     match_mode: MatchMode,
     empty_text: String,
@@ -192,10 +195,13 @@ impl SuggestionPopup {
             anchor: None,
             viewport: None,
             flip_allowed: true,
-            max_visible: DEFAULT_MAX_VISIBLE,
+            window: {
+                let mut window = PopupWindow::new();
+                window.set_max_visible(Some(DEFAULT_MAX_VISIBLE));
+                window
+            },
             row_height: None,
             selected_index: None,
-            scroll_offset: 0,
             filter: String::new(),
             match_mode: MatchMode::Prefix,
             empty_text: String::from("(No matches)"),
@@ -277,22 +283,22 @@ impl SuggestionPopup {
     /// Caps how many rows are painted at once.
     pub fn set_max_visible(&mut self, max_visible: usize) {
         let max_visible = max_visible.max(1);
-        if self.max_visible == max_visible {
+        if self.max_visible() == max_visible {
             return;
         }
-        self.max_visible = max_visible;
+        self.window.set_max_visible(Some(max_visible));
         self.scroll_to_highlight();
         self.base.request_redraw();
     }
 
     /// How many rows are painted at once.
     pub fn max_visible(&self) -> usize {
-        self.max_visible
+        self.window.max_visible().unwrap_or(DEFAULT_MAX_VISIBLE)
     }
 
     /// Sets the row cap and the row height together.
     pub fn set_metrics(&mut self, max_visible: usize, row_height: u32) {
-        self.max_visible = max_visible.max(1);
+        self.window.set_max_visible(Some(max_visible.max(1)));
         self.row_height = Some(row_height.max(1));
         self.scroll_to_highlight();
         self.base.request_redraw();
@@ -324,9 +330,9 @@ impl SuggestionPopup {
             return;
         }
         self.filter = text.to_string();
-        self.scroll_offset = 0;
         self.refresh_visible();
         self.selected_index = self.visible.first().map(|_| 0);
+        self.window.set_offset(0, self.visible.len());
         self.scroll_to_highlight();
         self.base.request_redraw();
     }
@@ -358,7 +364,67 @@ impl SuggestionPopup {
 
     /// The first painted row within the filtered rows.
     pub fn scroll_offset(&self) -> usize {
-        self.scroll_offset
+        self.window.offset()
+    }
+
+    /// The candidate indices that pass the filter, in painted row order.
+    ///
+    /// A hosting control keeps its own candidate source (a combo box's items or completer rows,
+    /// a tag field's suggestions), so it needs the original index of each painted row rather than
+    /// a copy of the labels. Exposing the map is what lets the host paint from its own storage
+    /// while the filter and window stay here (I-129).
+    pub(crate) fn visible_indices(&self) -> &[usize] {
+        &self.visible
+    }
+
+    /// How many rows the painted window holds.
+    ///
+    /// This is the row count [`Self::row_rect`], [`Self::draw`] and the hit test share; a host
+    /// that paints with its own colours still asks the popup which rows are in the window.
+    pub(crate) fn window_rows(&self) -> usize {
+        self.window_count()
+    }
+
+    /// Sets the first painted row from outside the popup's own navigation.
+    ///
+    /// A hosting combo box opens its list centred on the selected row, which is a window rule the
+    /// popup's two-stage navigation does not need. The offset is still clamped to the rows that
+    /// exist, so a host cannot scroll the window past its own end.
+    pub(crate) fn set_scroll_offset(&mut self, offset: usize) {
+        if self.window.set_offset(offset, self.visible.len()) {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Scrolls the painted window the minimum amount that shows `row`.
+    ///
+    /// The same rule [`Self::scroll_to_highlight`] applies, exposed for hosts that own the
+    /// highlight in their own model (an editable combo box keeps an item index, not a row index).
+    pub(crate) fn scroll_into_view(&mut self, row: usize) {
+        let before = self.window.offset();
+        self.window.ensure_visible(row, self.visible.len());
+        if self.window.offset() != before {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The painted row under `pos`, whether or not this widget is the shown popup.
+    ///
+    /// A hosting control owns the open flag and the popup grab (the popup is mounted beside the
+    /// field rather than replacing its event handling), so it needs the row mapping without
+    /// [`Self::show`] being called on an unregistered widget.
+    pub(crate) fn window_row_at(&self, pos: Point) -> Option<usize> {
+        let popup = self.popup_rect();
+        if !popup.contains_point(pos) {
+            return None;
+        }
+        let row_height = self.row_height().max(1) as i32;
+        let window_row = ((pos.y - popup.y) / row_height) as usize;
+        if window_row >= self.window_count() {
+            return None;
+        }
+        let row = self.window.offset() + window_row;
+        (row < self.visible.len()).then_some(row)
     }
 
     /// Moves the highlight by `delta` rows within the filtered rows.
@@ -387,16 +453,10 @@ impl SuggestionPopup {
     /// Scrolls the painted window so the highlight stays inside it.
     pub fn scroll_to_highlight(&mut self) {
         let Some(highlight) = self.selected_index else {
-            self.scroll_offset = 0;
+            self.set_scroll_offset(0);
             return;
         };
-        if highlight < self.scroll_offset {
-            self.scroll_offset = highlight;
-        } else if highlight >= self.scroll_offset + self.max_visible {
-            self.scroll_offset = highlight + 1 - self.max_visible;
-        }
-        let max_offset = self.visible.len().saturating_sub(self.max_visible);
-        self.scroll_offset = self.scroll_offset.min(max_offset);
+        self.scroll_into_view(highlight);
     }
 
     /// Takes the highlighted row: emits `suggestion_committed`, hides, and reports whether a row
@@ -519,11 +579,12 @@ impl SuggestionPopup {
 
     /// The box of one filtered row, when that row is inside the painted window.
     pub fn row_rect(&self, row: usize) -> Option<Rect> {
-        if row < self.scroll_offset || row >= self.scroll_offset + self.window_count() {
+        let start = self.window.offset();
+        if row < start || row >= start + self.window_count() {
             return None;
         }
         let popup = self.popup_rect();
-        let offset = (row - self.scroll_offset) as i32 * self.row_height() as i32;
+        let offset = (row - start) as i32 * self.row_height() as i32;
         Some(Rect::new(popup.x, popup.y + offset, popup.width, self.row_height()))
     }
 
@@ -532,22 +593,12 @@ impl SuggestionPopup {
         if !self.shown {
             return None;
         }
-        let popup = self.popup_rect();
-        if !popup.contains_point(pos) {
-            return None;
-        }
-        let row_height = self.row_height().max(1) as i32;
-        let window_row = ((pos.y - popup.y) / row_height) as usize;
-        if window_row >= self.window_count() {
-            return None;
-        }
-        let row = self.scroll_offset + window_row;
-        (row < self.visible.len()).then_some(row)
+        self.window_row_at(pos)
     }
 
     /// How many rows the painted window holds.
     fn window_count(&self) -> usize {
-        self.visible.len().min(self.max_visible)
+        self.window.window_rows(self.visible.len())
     }
 
     /// The described row at `index` in `items`.
@@ -579,7 +630,12 @@ impl SuggestionPopup {
             return false;
         }
         self.selected_index = next;
-        self.scroll_to_highlight();
+        // Clearing the mark is not a scroll request: a host that moves the pointer off the rows
+        // (or closes its list) must not send the window back to its first row. A filter that
+        // leaves no rows still resets the offset through `refresh_visible` -> `scroll_to_highlight`.
+        if next.is_some() {
+            self.scroll_to_highlight();
+        }
         if let Some(index) = next {
             self.suggestion_highlighted.emit(index);
             self.highlight_changed.emit(index);
@@ -715,7 +771,7 @@ impl Draw for SuggestionPopup {
         // which is indexed in filtered-row space, so scrolling cannot paint one row and hit-test
         // another.
         for window_row in 0..self.window_count() {
-            let row = self.scroll_offset + window_row;
+            let row = self.window.offset() + window_row;
             let Some(rect) = self.row_rect(row) else { continue };
             let Some(&item_index) = self.visible.get(row) else { continue };
             let Some(label) = self.items.get(item_index) else { continue };
@@ -816,7 +872,7 @@ impl WidgetProperties for SuggestionPopup {
                 Some(anchor) => Ok(rect_value(anchor)),
                 None => Ok(CapabilityValue::Null),
             },
-            "max_visible" => Ok(CapabilityValue::UInt(self.max_visible as u64)),
+            "max_visible" => Ok(CapabilityValue::UInt(self.max_visible() as u64)),
             "row_height" => Ok(CapabilityValue::UInt(u64::from(self.row_height()))),
             "selected_index" => match self.selected_index {
                 Some(index) => Ok(CapabilityValue::UInt(index as u64)),

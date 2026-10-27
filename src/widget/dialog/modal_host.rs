@@ -69,6 +69,10 @@ impl ModalHost {
             self.stack.remove(position);
         }
         self.stack.push(id);
+        // Register the modal in the shared scrim stack, not just this host's list. A dialog that
+        // is opened through the host must be visible to the same ownership rule a dialog that
+        // paints itself uses, otherwise the two planes know nothing about each other (DLG-001).
+        super::modal::push_modal_layer(id);
         self.modal_changed.emit(self.stack.len());
         self.base.request_redraw();
     }
@@ -76,6 +80,7 @@ impl ModalHost {
     /// Pops the top modal, returning it.
     pub fn pop(&mut self) -> Option<ObjectId> {
         let popped = self.stack.pop()?;
+        super::modal::pop_modal_layer(popped);
         self.modal_changed.emit(self.stack.len());
         self.base.request_redraw();
         Some(popped)
@@ -87,6 +92,7 @@ impl ModalHost {
             return false;
         };
         self.stack.remove(position);
+        super::modal::pop_modal_layer(id);
         self.modal_changed.emit(self.stack.len());
         self.base.request_redraw();
         true
@@ -246,24 +252,44 @@ impl ModalHost {
 
 impl Draw for ModalHost {
     fn draw(&mut self, context: &mut RenderContext) {
-        if self.stack.is_empty() || !self.scrim_enabled {
-            return;
-        }
+        let owner = self.base.id();
         let rect = self.base.geometry();
-        if rect.width == 0 || rect.height == 0 {
+        if self.stack.is_empty() || !self.scrim_enabled || rect.width == 0 || rect.height == 0 {
+            // Release the plane so the modal below the host (or a separately opened dialog) can
+            // own it. Leaving the host registered would keep a hidden host as the top owner.
+            super::modal::pop_modal_layer(owner);
             return;
         }
-        let color = self.scrim_color.unwrap_or_else(|| {
-            crate::style::layer_color(crate::style::LayerColor::Scrim)
-                .unwrap_or(Color::rgba(0, 0, 0, 82))
-        });
-        context.fill_rect(rect, color);
+        // The host paints the one page plane on behalf of its modal stack, through the same
+        // registry the standalone dialogs use. Whichever of the host and a dialog is higher in
+        // that registry paints, so the page is never dimmed twice (DLG-001).
+        super::modal::draw_modal_scrim_tinted(
+            context,
+            owner,
+            rect,
+            self.base.parent(),
+            1.0,
+            self.scrim_color,
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The host's stack and the shared scrim registry must move together (DLG-001).
+    #[test]
+    fn pushing_and_popping_a_modal_updates_the_shared_scrim_stack() {
+        let mut host = ModalHost::new(Rect::new(0, 0, 400, 300));
+        host.push(11);
+        host.push(12);
+        assert_eq!(super::super::modal::scrim_stack_snapshot(), vec![11, 12]);
+        host.pop();
+        assert_eq!(super::super::modal::scrim_stack_snapshot(), vec![11]);
+        host.remove(11);
+        assert!(super::super::modal::scrim_stack_snapshot().is_empty());
+    }
 
     #[test]
     fn a_repeated_push_raises_one_entry_instead_of_duplicating_it() {

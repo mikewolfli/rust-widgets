@@ -319,8 +319,13 @@ pub(crate) fn mount_canvas(
             note_canvas_redraw(id);
             return glib::Propagation::Stop;
         }
-        let translated = if let Some(text) = printable_text(event) {
-            Event::TextInput { text }
+        if let Some(ch) = printable_char(event) {
+            // A printable character is the hot path, so it travels through the pooled
+            // single-character entry instead of building a `String` per keystroke (G-606).
+            if forward_text_char(id, ch) {
+                widget.queue_draw();
+                note_canvas_redraw(id);
+            }
         } else {
             // The control layer matches the framework's logical key codes (Return 13,
             // Escape 27, Backspace 8, arrows 37..40 — see `crate::event::key_codes`),
@@ -329,11 +334,10 @@ pub(crate) fn mount_canvas(
             // worked only because it took the `TextInput` branch above.
             let modifiers = modifier_bits(event);
             let key = logical_key(*event.keyval(), is_control_chord(modifiers));
-            Event::KeyPress { key, modifiers }
-        };
-        if forward_key_to_platform(id, &translated) {
-            widget.queue_draw();
-            note_canvas_redraw(id);
+            if forward_key_to_platform(id, &Event::KeyPress { key, modifiers }) {
+                widget.queue_draw();
+                note_canvas_redraw(id);
+            }
         }
         glib::Propagation::Proceed
     });
@@ -567,46 +571,82 @@ pub(crate) fn blit_rgba(context: &cairo::Context, width: u32, height: u32, frame
     }
 
     // Cairo wants BGRA on little-endian; the frame is RGBA, so swap while copying.
-    let mut buffer = vec![0u8; (stride * height as i32) as usize];
-    for y in 0..height as usize {
-        let row = y * stride as usize;
-        for x in 0..width as usize {
-            let source = (y * width as usize + x) * 4;
-            let target = row + x * 4;
-            buffer[target] = frame[source + 2];
-            buffer[target + 1] = frame[source + 1];
-            buffer[target + 2] = frame[source];
-            buffer[target + 3] = 255;
+    // The image surface is retained per thread and only recreated when the frame size changes
+    // (G-601): the previous form allocated a whole-window buffer and a new surface every frame.
+    BLIT_SURFACE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let stale =
+            slot.as_ref().is_none_or(|(surface, cached_width, cached_height, cached_stride)| {
+                *cached_width != width as i32
+                    || *cached_height != height as i32
+                    || *cached_stride != stride
+                    || surface.width() != width as i32
+                    || surface.height() != height as i32
+            });
+        if stale {
+            *slot = match cairo::ImageSurface::create(
+                cairo::Format::Rgb24,
+                width as i32,
+                height as i32,
+            ) {
+                Ok(surface) => Some((surface, width as i32, height as i32, stride)),
+                Err(error) => {
+                    log::error!(
+                        "[linux] canvas: cairo could not create the frame surface: {error}"
+                    );
+                    return;
+                }
+            };
         }
-    }
-
-    let surface = match cairo::ImageSurface::create_for_data(
-        buffer,
-        cairo::Format::Rgb24,
-        width as i32,
-        height as i32,
-        stride,
-    ) {
-        Ok(surface) => surface,
-        Err(error) => {
-            log::error!("[linux] canvas: cairo could not wrap the frame: {error}");
+        let Some((surface, ..)) = slot.as_mut() else {
+            return;
+        };
+        {
+            let mut data = match surface.data() {
+                Ok(data) => data,
+                Err(error) => {
+                    log::error!(
+                        "[linux] canvas: cairo could not borrow the frame surface: {error}"
+                    );
+                    return;
+                }
+            };
+            let data: &mut [u8] = &mut data;
+            for y in 0..height as usize {
+                let row = y * stride as usize;
+                let source_row = y * width as usize * 4;
+                for x in 0..width as usize {
+                    let source = source_row + x * 4;
+                    let target = row + x * 4;
+                    data[target] = frame[source + 2];
+                    data[target + 1] = frame[source + 1];
+                    data[target + 2] = frame[source];
+                    data[target + 3] = 255;
+                }
+            }
+        }
+        // The data copy above is top-down; cairo's origin is top-left too, so no
+        // transform is needed beyond painting at the origin.
+        // Both cairo calls can fail, and a failed blit leaves the window showing the
+        // previous frame. Report it the same way the surface-creation failure above is
+        // reported; a bad frame is abandoned rather than terminating the event loop.
+        if let Err(error) = context.set_source_surface(&*surface, 0.0, 0.0) {
+            log::error!("[linux] canvas: cairo could not set the frame surface: {error}");
             return;
         }
-    };
-    // The data copy above is top-down; cairo's origin is top-left too, so no
-    // transform is needed beyond painting at the origin.
-    // Both cairo calls can fail, and a failed blit leaves the window showing the
-    // previous frame. Report it the same way the surface-wrapping failure above is
-    // reported; a bad frame is abandoned rather than terminating the event loop.
-    if let Err(error) = context.set_source_surface(&surface, 0.0, 0.0) {
-        log::error!("[linux] canvas: cairo could not set the frame surface: {error}");
-        surface.finish();
-        return;
-    }
-    if let Err(error) = context.paint() {
-        log::error!("[linux] canvas: cairo blit failed: {error}");
-    }
-    surface.finish();
+        if let Err(error) = context.paint() {
+            log::error!("[linux] canvas: cairo blit failed: {error}");
+        }
+    });
+}
+
+thread_local! {
+    /// The reusable cairo image surface behind [`blit_rgba`] (G-601).
+    ///
+    /// Recreated only when the window size or stride changes, so an ordinary repaint copies
+    /// pixels into storage that already exists instead of allocating a whole frame first.
+    static BLIT_SURFACE: RefCell<Option<(cairo::ImageSurface, i32, i32, i32)>> =
+        const { RefCell::new(None) };
 }
 
 /// Returns the printable characters of a GTK key event, when it produced any.
@@ -614,6 +654,14 @@ pub(crate) fn blit_rgba(context: &cairo::Context, width: u32, height: u32, frame
 /// Control characters are excluded: Enter, Tab and Escape are meaningful as
 /// `KeyPress` and the widget maps them to editing commands there.
 pub(crate) fn printable_text(event: &gdk::EventKey) -> Option<String> {
+    printable_char(event).map(|ch| ch.to_string())
+}
+
+/// The printable character `event` committed, if any.
+///
+/// The single-character form of [`printable_text`], for callers that deliver the character
+/// through the pooled text-input entry (G-606) and so never build the owned `String` at all.
+pub(crate) fn printable_char(event: &gdk::EventKey) -> Option<char> {
     // A control chord is a command, not content. Without this test `Ctrl+C` produced the
     // printable `c` and a field inserted it instead of copying: the keyval is `c` whether or not
     // Control is held, so the modifier state is the only thing that can tell the two apart.
@@ -629,7 +677,7 @@ pub(crate) fn printable_text(event: &gdk::EventKey) -> Option<String> {
     if ch.is_control() {
         return None;
     }
-    Some(ch.to_string())
+    Some(ch)
 }
 
 /// Translates GTK modifier state into the widget-layer bitfield.
@@ -889,6 +937,16 @@ fn forward_key_to_platform(id: ObjectId, event: &Event) -> bool {
     }
 }
 
+/// [`forward_key_to_platform`] for a single committed character (G-606).
+///
+/// Keys follow focus, exactly as the event form does; the only difference is that the payload
+/// comes from the reused buffer in [`crate::widget::runtime::dispatch_text_char`] rather than
+/// from a `String` built for this keystroke.
+fn forward_text_char(id: ObjectId, ch: char) -> bool {
+    let target = crate::widget::runtime::focused_widget().unwrap_or(id);
+    crate::widget::runtime::dispatch_text_char(target, ch)
+}
+
 /// Grants GTK keyboard focus to `area` when the widget is enabled.
 ///
 /// A disabled widget must not take the keyboard: GTK would then swallow the key
@@ -979,7 +1037,7 @@ impl ImeContext {
                     cursor_position: cursor.max(0) as usize,
                     selection_length: 0,
                 };
-                let _ = crate::platform::ime::deliver_composition(widget, &composition);
+                let _ = crate::platform::ime::deliver_composition_owned(widget, composition);
             });
             // A withdrawn composition clears the preview; without this an input method that ends a
             // session without committing would leave the underlined text painted forever.
@@ -990,9 +1048,9 @@ impl ImeContext {
                 if !control_accepts_ime(widget) {
                     return;
                 }
-                let _ = crate::platform::ime::deliver_composition(
+                let _ = crate::platform::ime::deliver_composition_owned(
                     widget,
-                    &crate::platform::ime::ImeComposition::default(),
+                    crate::platform::ime::ImeComposition::default(),
                 );
             });
             context.connect_commit(|_, text| {
@@ -1004,9 +1062,9 @@ impl ImeContext {
                 }
                 // Clear the preview before the text arrives, so a field that paints both cannot show
                 // the committed string and its own stale composition at the same time.
-                let _ = crate::platform::ime::deliver_composition(
+                let _ = crate::platform::ime::deliver_composition_owned(
                     widget,
-                    &crate::platform::ime::ImeComposition::default(),
+                    crate::platform::ime::ImeComposition::default(),
                 );
                 let _ = crate::platform::ime::deliver_commit(widget, text);
             });

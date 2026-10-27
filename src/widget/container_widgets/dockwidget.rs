@@ -966,6 +966,13 @@ impl Widget for DockWidget {
                     CapabilityValue::Bool(*v)
                 }))
             }
+            // The event notification reports the request's current answer. A subscriber that
+            // needs to veto subscribes to the signal itself, where the `CloseRequest` is mutable.
+            "about_to_close" => {
+                Some(EventSignalRef::mapped("about_to_close", &self.about_to_close, |request| {
+                    CapabilityValue::Bool(request.is_allowed())
+                }))
+            }
             _ => None,
         }
     }
@@ -1481,12 +1488,12 @@ const DOCK_AREA_STATE_VERSION_FLAT: u8 = 1;
 ///
 /// # Events and the capability registry
 ///
-/// `DockArea` is not a `WidgetKind`, so it has no capability
-/// record and no published event schema. [`Self::active_dock_changed`,
-/// `Self::dock_removed`] and [`Self::layout_changed`] are host-facing Rust signals on this
-/// owner, not a second list for [`DockWidget`]'s three published events
-/// (`dock_location_changed`, `features_changed`, `top_level_changed`). A host that owns the
-/// area connects them directly; a designer sees only the `DockWidget` control.
+/// `DockArea` is not a `WidgetKind`, so it has no capability record under its own kind.
+/// [`Self::active_dock_changed`], [`Self::dock_removed`] and [`Self::layout_changed`] are
+/// published by the `dock_area` capability row (C-001), which shares the dock family's kind and
+/// property schema because the constructible member of that family is [`DockWidget`]. The names
+/// are resolved by [`Self::event_signal_dyn`] below, so a host that owns the area can subscribe
+/// through the capability layer instead of reaching for the concrete signals.
 pub struct DockArea {
     /// The whole surface, including the bands and the centre.
     area: Rect,
@@ -1541,11 +1548,10 @@ type LayoutCache = RefCell<Option<(u64, Rc<Vec<(ObjectId, Rect, bool)>>)>>;
 impl DockArea {
     /// The event names this owner publishes (C-001).
     ///
-    /// `DockArea` is not a `WidgetKind`, so it has no capability record of its own. These are the
-    /// three host-facing signals its methods emit; the names are exposed through
-    /// [`Self::event_signal_dyn`] so a host can subscribe by name, the same route sibling controls
-    /// use. Their rows in the capability event schema are owned by the capability layer and are
-    /// recorded as a remaining gap.
+    /// `DockArea` is not a `WidgetKind`, so its events travel on the `dock_area` capability row
+    /// rather than a row of their own. These are the three host-facing signals its methods emit;
+    /// the names are resolved by [`Self::event_signal_dyn`] so a host can subscribe by name, the
+    /// same route sibling controls use.
     pub const EVENT_NAMES: &'static [&'static str] =
         &["active_dock_changed", "dock_removed", "layout_changed"];
 

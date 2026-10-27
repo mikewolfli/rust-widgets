@@ -921,6 +921,16 @@ impl Widget for MediaPlayer {
                     crate::widget::capability::CapabilityValue::UInt(*v as u64)
                 }))
             }
+            "seek_preview" => {
+                Some(EventSignalRef::mapped("seek_preview", &self.seek_preview, |v| {
+                    // The declared shape is `OptionalScalar` of `UInt`, so a hovered position
+                    // arrives as its millisecond count and "no preview" arrives as `Null`.
+                    match v {
+                        Some(position) => CapabilityValue::UInt(*position),
+                        None => CapabilityValue::Null,
+                    }
+                }))
+            }
             _ => None,
         }
     }

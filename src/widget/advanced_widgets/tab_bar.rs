@@ -1735,6 +1735,9 @@ impl Widget for TabBar {
                     None => crate::widget::capability::CapabilityValue::Null,
                 },
             )),
+            "new_tab_requested" => {
+                Some(EventSignalRef::unit("new_tab_requested", &self.new_tab_requested))
+            }
             _ => None,
         }
     }

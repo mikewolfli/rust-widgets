@@ -1684,6 +1684,23 @@ impl Widget for TreeView {
                     )
                 },
             )),
+            "drag_finished" => {
+                Some(EventSignalRef::mapped("drag_finished", &self.drag_finished, |v| {
+                    // The declared payload is `String`, so the drop effect travels as its token
+                    // spelling rather than a debug dump.
+                    crate::widget::capability::CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "row_move_requested" => {
+                Some(EventSignalRef::mapped("row_move_requested", &self.row_move_requested, |v| {
+                    // The declared shape is `Tuple2` of `UInt`, so the (from, to) rows arrive as
+                    // a structured pair rather than its `Debug` spelling.
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::UInt(v.0 as u64),
+                        crate::widget::capability::CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }

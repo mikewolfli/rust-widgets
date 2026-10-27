@@ -6,6 +6,13 @@
 //!
 //! Methods are implemented as `impl SoftwareSurface` blocks.
 
+#[cfg(any(
+    test,
+    feature = "fonts-emoji-color",
+    feature = "fonts-vector-latin",
+    feature = "fonts-complex",
+    cjk_outline_face
+))]
 use crate::compat::Vec;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::arc_helpers::{for_each_arc_sample, normalized_arc_sweep};
@@ -1452,6 +1459,7 @@ impl SoftwareSurface {
                         pen_x.round() as i32,
                         origin.y,
                         font.family(),
+                        self.frame_number,
                         &mut config,
                     );
                 if !drawn {
@@ -1502,6 +1510,13 @@ impl SoftwareSurface {
         let Some(run) = shaping::glyph_run_for_family_at_weight(text, font, scale, weight) else {
             return false;
         };
+        // G-019: this path outlines each shaped glyph instead of consulting the coverage atlas,
+        // because ligatures are glyph-id shapes the atlas (keyed by character) cannot reproduce.
+        // It is opt-in (default off) and bounded: an oversized run falls back to the cluster path,
+        // which does use the atlas, rather than paying an unbounded outline cost.
+        if run.glyph_ids.len() > GLYPH_RUN_MAX_GLYPHS {
+            return false;
+        }
         let line = crate::render::TextMetrics::for_font(font, scale);
         if line.height == 0 {
             return true;
@@ -2102,15 +2117,15 @@ fn return_color_scratch(scratch: Vec<u8>) {
 #[cfg(feature = "text-shaping")]
 const ATLAS_STACK_RESOLVED_FACE: &str = "\u{1}";
 
-/// How many atlas lookups advance the glyph atlas' epoch.
+/// How many glyphs one opt-in glyph-run label may outline before falling back to the cluster path (G-019).
 ///
-/// `SoftwareSurface` exposes no per-frame hook this module can see, so the atlas' collection window
-/// is driven by a lookup count: one epoch is roughly a frame's worth of glyphs for an ordinary
-/// window, and [`crate::render::text::ATLAS_GC_FRAMES`] then keeps a caption resident for several
-/// frames. This is a policy, not a correctness requirement — a reaped slot is rasterised again on
-/// its next use with the same bytes, so only the hit rate depends on the number (G-202).
-#[cfg(feature = "text-shaping")]
-const ATLAS_LOOKUPS_PER_EPOCH: u32 = 4096;
+/// The glyph-run path is the opt-in ligature mode (`SoftwareSurface::set_glyph_run_text`), not a
+/// glyph-atlas cache: it fills each shaped glyph's vector outline, so its cost is proportional to
+/// the run. The cap keeps a pathological label from turning an enabling flag into an unbounded
+/// per-frame outline storm; the caller then uses the cluster renderer, which has the coverage
+/// atlas behind it.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+const GLYPH_RUN_MAX_GLYPHS: usize = 4096;
 
 #[cfg(feature = "text-shaping")]
 thread_local! {
@@ -2118,9 +2133,8 @@ thread_local! {
     /// reachable from this module.
     static TEXT_GLYPH_ATLAS: core::cell::RefCell<crate::render::text::GlyphAtlas> =
         core::cell::RefCell::new(crate::render::text::GlyphAtlas::new());
-    /// The lookup count that stands in for a frame boundary — see [`ATLAS_LOOKUPS_PER_EPOCH`].
-    #[allow(clippy::missing_const_for_thread_local)]
-    static TEXT_GLYPH_ATLAS_CALLS: core::cell::Cell<u32> = core::cell::Cell::new(0);
+    /// The last real frame number the atlas' epoch was advanced for (G-020).
+    static TEXT_GLYPH_ATLAS_FRAME: core::cell::Cell<u64> = const { core::cell::Cell::new(u64::MAX) };
 }
 
 /// Paints `ch` from the thread's glyph atlas when the atlas reproduces the request byte for byte.
@@ -2150,6 +2164,7 @@ fn blend_glyph_from_atlas(
     x: i32,
     y: i32,
     family: &str,
+    frame: u64,
     config: &mut GlyphDrawConfig,
 ) -> bool {
     if config.w == 0 || config.h == 0 || config.w > u8::MAX as u32 || config.h > u8::MAX as u32 {
@@ -2177,10 +2192,13 @@ fn blend_glyph_from_atlas(
     // line box, and the explicit cell lets the atlas serve that box byte for byte (G-202).
     .with_cell(config.w, config.h)
     .with_italic(config.italic);
-    let advance_epoch = TEXT_GLYPH_ATLAS_CALLS.with(|calls| {
-        let next = calls.get().wrapping_add(1);
-        calls.set(next);
-        next % ATLAS_LOOKUPS_PER_EPOCH == 0
+    let advance_epoch = TEXT_GLYPH_ATLAS_FRAME.with(|last| {
+        if last.get() == frame {
+            false
+        } else {
+            last.set(frame);
+            true
+        }
     });
     let slot = TEXT_GLYPH_ATLAS.with(|atlas| match atlas.try_borrow_mut() {
         Ok(mut atlas) => {

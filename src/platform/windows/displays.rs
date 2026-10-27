@@ -41,8 +41,9 @@
 use crate::compat::{String, Vec};
 use crate::core::Rect;
 use crate::platform::types::{Display, DisplayId};
-use winapi::shared::minwindef::{BOOL, LPARAM, TRUE};
+use winapi::shared::minwindef::{BOOL, FARPROC, LPARAM, TRUE};
 use winapi::shared::windef::{HDC, HMONITOR, HWND, LPRECT, RECT};
+use winapi::um::libloaderapi::{GetModuleHandleW, GetProcAddress};
 use winapi::um::wingdi::{CreateDCW, DeleteDC, GetDeviceCaps, LOGPIXELSX};
 use winapi::um::winuser::{
     EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITORINFOEXW,
@@ -108,6 +109,64 @@ unsafe fn scale_factor_of(device: &str) -> f32 {
         dpi as f32 / 96.0
     } else {
         1.0
+    }
+}
+
+/// The `GetDpiForWindow` signature, resolved dynamically so a pre-Windows-10 host still starts.
+///
+/// The symbol was added in Windows 10 1607. Importing it statically would make the whole module
+/// fail to load on an older system before any fallback could run, so it is looked up in
+/// `user32.dll` and only called when present.
+type GetDpiForWindowFn = unsafe extern "system" fn(HWND) -> u32;
+
+/// A window's own DPI from `GetDpiForWindow`, or `None` when the API is unavailable.
+///
+/// # Safety
+///
+/// `hwnd` must be a live window handle (or null, which is rejected before any call).
+unsafe fn window_dpi(hwnd: HWND) -> Option<u32> {
+    if hwnd.is_null() {
+        return None;
+    }
+    // `GetModuleHandleW` does not load the module; `user32.dll` is already mapped in every GUI
+    // process, and a null result is the honest "cannot resolve" answer.
+    let module_name: Vec<u16> = "user32.dll".encode_utf16().chain(std::iter::once(0)).collect();
+    let module = GetModuleHandleW(module_name.as_ptr());
+    if module.is_null() {
+        return None;
+    }
+    // SAFETY: the name is a NUL-terminated ASCII buffer that outlives the call.
+    let symbol = GetProcAddress(module, b"GetDpiForWindow\0".as_ptr() as *const i8);
+    if symbol.is_null() {
+        return None;
+    }
+    // SAFETY: the export has the documented `UINT GetDpiForWindow(HWND)` signature; the pointer
+    // is non-null and only called for a non-null live HWND.
+    let get_dpi: FARPROC = symbol;
+    let get_dpi: GetDpiForWindowFn = std::mem::transmute(get_dpi);
+    let dpi = get_dpi(hwnd);
+    (dpi > 0).then_some(dpi)
+}
+
+/// The scale factor of the display a specific window is on.
+///
+/// This is the per-monitor answer `Platform::dpi_scale_factor_for_window` publishes. It prefers
+/// `GetDpiForWindow`, which is per-monitor-DPI-aware and accounts for the window's actual monitor;
+/// when that API is absent it falls back to the monitor's display DC through
+/// [`display_of_monitor`], the same measurement [`displays`] reports per monitor.
+pub(crate) fn dpi_scale_factor_for_window_handle(hwnd: HWND) -> f32 {
+    if hwnd.is_null() {
+        return 1.0;
+    }
+    // SAFETY: `hwnd` is non-null, and the dynamic lookup validates both the module and the symbol.
+    if let Some(dpi) = unsafe { window_dpi(hwnd) } {
+        return dpi as f32 / 96.0;
+    }
+    // SAFETY: `MonitorFromWindow` only reads the window's placement; the returned handle is passed
+    // straight to `display_of_monitor`, which validates it before writing its out-parameter.
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        display_of_monitor(monitor).map(|display| display.scale).unwrap_or(1.0)
     }
 }
 

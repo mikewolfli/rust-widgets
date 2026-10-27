@@ -288,36 +288,46 @@ impl ThemeManager {
 
     /// Selects the appearance the **device** asks for, if a theme declares it.
     ///
-    /// # Why this is the only automatic theme switch
-    ///
-    /// [`EnvironmentProvider::color_scheme`](crate::style::environment::EnvironmentProvider::color_scheme)
-    /// and [`Theme::appearance`](crate::theme::AppearanceMode) answer two halves of one question.
-    /// The provider says what the *user asked for* (including "follow the system", which it resolves
-    /// itself); the theme says what it *is*. Nothing joined them, so a host that had faithfully
-    /// reported `Dark` through the environment still painted light — the fact was declared and read
-    /// by nobody.
-    ///
-    /// The conversion is where the two meet. It is deliberately **not** a `From` impl: this is a
-    /// resolution of one preference *against the currently registered themes*, and a `From` would
-    /// imply the mapping is a property of the values alone.
-    ///
     /// # What each mode resolves to
     ///
     /// * [`ThemeMode::Light`] / [`ThemeMode::Dark`] — the matching [`AppearanceMode`].
-    /// * [`ThemeMode::Auto`] — **no answer**, so this does nothing and returns `false`.
+    /// * [`ThemeMode::Auto`] — the system theme, read from
+    ///   [`Platform::system_theme`](crate::platform::Platform::system_theme). This is the one
+    ///   place `Auto` is resolved: a provider that reports `Auto` is asking the library to follow
+    ///   the host, not declining to answer. `None` (no backend, or a thread that cannot ask the
+    ///   toolkit) still changes nothing rather than guessing light.
     ///
-    /// The `Auto` arm is the one that matters. `color_scheme`'s own contract says `Auto` means
-    /// "follow, but do not guess": the provider is expected to resolve the system preference
-    /// itself and report `Dark` or `Light`. Treating `Auto` here as "pick light" would be the
-    /// fabricated answer principle #37 forbids — and it would silently overrule a host whose
-    /// *themes* are ordered differently from the guess.
+    /// # Why this is also the notification handler
+    ///
+    /// [`crate::style::environment::refresh_environment`] calls
+    /// [`crate::apply_environment_appearance`] when the environment generation changes. That
+    /// generation is bumped by the platform's push notification (`WM_SETTINGCHANGE`,
+    /// `WM_DPICHANGED`, the GTK `notify::gtk-application-prefer-dark-theme` signal, the macOS
+    /// appearance observer) and by the 250 ms backstop poll. So an `Auto` application follows a
+    /// live system change through the same channel P-208 established, instead of polling a
+    /// second time.
     ///
     /// Returns whether the active theme actually changed.
     pub fn follow_environment_appearance(&mut self) -> bool {
-        match crate::style::environment::environment().color_scheme {
+        let mode = crate::style::environment::environment().color_scheme;
+        let system = crate::platform::profile::system_theme();
+        self.apply_color_scheme(mode, system)
+    }
+
+    /// Resolves `mode` against an explicit system answer.
+    ///
+    /// Split from [`Self::follow_environment_appearance`] so a test can exercise the `Auto`
+    /// resolution without depending on the host's current appearance. `system` is `None` when the
+    /// backend cannot answer, which is the only case in which `Auto` declines to move.
+    fn apply_color_scheme(&mut self, mode: ThemeMode, system: Option<bool>) -> bool {
+        match mode {
             ThemeMode::Light => self.set_appearance(AppearanceMode::Light),
             ThemeMode::Dark => self.set_appearance(AppearanceMode::Dark),
-            ThemeMode::Auto => false,
+            ThemeMode::Auto => match system {
+                Some(true) => self.set_appearance(AppearanceMode::Dark),
+                Some(false) => self.set_appearance(AppearanceMode::Light),
+                None => false,
+            },
         }
     }
 
@@ -2485,39 +2495,45 @@ mod environment_appearance_tests {
         uninstall_environment();
     }
 
-    /// `Auto` is **not** a synonym for light.
+    /// `Auto` follows the system theme, and declines to guess only when the host cannot answer.
     ///
-    /// # The defect this pins
+    /// # The contract this pins
     ///
-    /// `Auto` means "follow, but do not guess": the provider is expected to resolve the system
-    /// preference itself and report `Light` or `Dark`. A library that turned `Auto` into "pick
-    /// light" would be inventing an answer the provider explicitly declined to give — principle
-    /// #37's fabricated capability — and it would overrule a host whose themes are ordered
-    /// differently from the guess. So the honest response is *no change* and `false`, which is
-    /// also what lets a caller tell "nothing needed doing" from "no theme declares that
-    /// appearance".
+    /// `Auto` is a request to follow the host. The library reads the system answer through
+    /// `Platform::system_theme`; a `Some(true/false)` selects the matching appearance, and only a
+    /// `None` (no backend, or a thread the toolkit forbids) leaves the theme alone. The previous
+    /// behaviour treated `Auto` as "no answer" even when the platform could answer, which is the
+    /// defect THM-003 records.
     #[test]
-    fn an_auto_preference_changes_nothing_rather_than_guessing_light() {
+    fn an_auto_preference_follows_the_system_theme_and_declines_without_one() {
         let _guard = crate::theme::theme_test_guard();
         let mut manager = manager_with_both_appearances();
 
-        // Start on dark, so a guess of "light" would be observable as a change.
+        // Start on dark, so a resolution to light is observable as a change.
         assert!(manager.set_appearance(AppearanceMode::Dark));
         assert_eq!(manager.current_theme_name(), "dark-fixture");
 
-        let previous = install_environment(Box::new(DeviceAsking(ThemeMode::Auto)));
         assert!(
-            !manager.follow_environment_appearance(),
-            "an unresolved preference must not be answered by guessing"
+            manager.apply_color_scheme(ThemeMode::Auto, Some(false)),
+            "the system says light, so Auto resolves to light"
+        );
+        assert_eq!(manager.current_theme_name(), Theme::default().name);
+
+        assert!(
+            manager.apply_color_scheme(ThemeMode::Auto, Some(true)),
+            "the system says dark, so Auto resolves to dark"
+        );
+        assert_eq!(manager.current_theme_name(), "dark-fixture");
+
+        assert!(
+            !manager.apply_color_scheme(ThemeMode::Auto, None),
+            "an unobservable system theme must not be guessed"
         );
         assert_eq!(
             manager.current_theme_name(),
             "dark-fixture",
-            "and it must not have moved the active theme off dark"
+            "and it must not have moved the active theme"
         );
-
-        drop(previous);
-        uninstall_environment();
     }
 
     /// A device asking for an appearance no registered theme provides reports `false` and keeps

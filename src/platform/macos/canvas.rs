@@ -31,10 +31,12 @@ use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::Event;
 use crate::platform::types::MousePhase;
 use cocoa::appkit::NSWindow;
-use cocoa::base::{id, nil, YES};
-use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
+use cocoa::base::{id, nil, NO, YES};
+use cocoa::foundation::{
+    NSArray, NSAutoreleasePool, NSNotFound, NSPoint, NSRange, NSRect, NSSize, NSString, NSUInteger,
+};
 use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel};
+use objc::runtime::{Class, Object, Protocol, Sel};
 use objc::{class, msg_send, sel, sel_impl};
 use std::collections::HashMap;
 use std::os::raw::c_void;
@@ -47,6 +49,28 @@ use std::time::{Duration, Instant};
 /// ownership policy applies. Declared locally because the `objc` crate exposes
 /// the constant only through the `objc-sys` surface.
 const OBJC_ASSOCIATION_ASSIGN: usize = 0;
+
+/// `NSRange` in the spelling `ClassDecl::add_method` accepts.
+///
+/// `cocoa`'s `NSRange` does not implement `objc::Encode`, and both the type (another crate) and
+/// the trait (another crate) are foreign, so the impl cannot live on either. This newtype is
+/// layout-identical to `NSRange` (`#[repr(transparent)]`), which is what AppKit passes to every
+/// `NSTextInputClient` range parameter, and its `Encode` supplies the runtime's own
+/// `{_NSRange=QQ}` encoding.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct EncodedRange(NSRange);
+
+// SAFETY: `EncodedRange` is `#[repr(transparent)]` over `NSRange`, whose two `NSUInteger`
+// fields are the only members; the encoding describes exactly that struct.
+unsafe impl objc::Encode for EncodedRange {
+    fn encode() -> objc::Encoding {
+        let unit = <NSUInteger as objc::Encode>::encode();
+        let encoding = format!("{{_NSRange={}{}}}", unit.as_str(), unit.as_str());
+        // SAFETY: the string is a well-formed Objective-C type encoding owned by this call.
+        unsafe { objc::Encoding::from_str(&encoding) }
+    }
+}
 
 #[link(name = "objc")]
 unsafe extern "C" {
@@ -77,6 +101,17 @@ fn association_key() -> id {
     ptr as id
 }
 
+thread_local! {
+    /// True while `keyDown:` is inside `interpretKeyEvents:`.
+    ///
+    /// AppKit calls back into the `NSTextInputClient` methods synchronously from that call. The
+    /// flag is the same one the objc2 canvas keeps, and it exists for the same reason: a
+    /// callback that consumed the key must stop `key_down` from also forwarding it as text.
+    static IME_INTERPRETING: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+    /// Set by an `NSTextInputClient` callback that consumed the key.
+    static IME_HANDLED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
 /// The `NSView` subclass backing every self-drawn mount.
 fn canvas_view_class() -> *const Class {
     static CLASS: OnceLock<usize> = OnceLock::new();
@@ -90,6 +125,14 @@ fn canvas_view_class() -> *const Class {
         // ABI AppKit calls them with (`drawRect:` takes an NSRect by value, which
         // `objc`'s `extern "C" fn(&Object, Sel, NSRect)` reproduces).
         unsafe {
+            // `NSTextInputClient` is how AppKit hands composition and committed text to a view
+            // that is not an `NSTextView`. Declaring the protocol is what makes the view an
+            // input-client candidate; the methods below are the callbacks themselves. The
+            // protocol is registered by AppKit, so a runtime without it (a stripped test host)
+            // simply skips the declaration rather than failing class registration.
+            if let Some(protocol) = Protocol::get("NSTextInputClient") {
+                decl.add_protocol(protocol);
+            }
             decl.add_method(sel!(drawRect:), draw_rect as extern "C" fn(&Object, Sel, NSRect));
             decl.add_method(
                 sel!(isFlipped),
@@ -129,6 +172,53 @@ fn canvas_view_class() -> *const Class {
             );
             decl.add_method(sel!(keyDown:), key_down as extern "C" fn(&Object, Sel, id));
             decl.add_method(sel!(keyUp:), key_up as extern "C" fn(&Object, Sel, id));
+            // IME: the `NSTextInputClient` callbacks. AppKit's input method calls these from
+            // `interpretKeyEvents:` (which `key_down` invokes first) and when the system input
+            // window changes. Without them the backend declared `ime: true` in
+            // `platform_impl.rs` while no composition could ever reach a widget (P-202).
+            decl.add_method(
+                sel!(hasMarkedText),
+                has_marked_text as extern "C" fn(&Object, Sel) -> cocoa::base::BOOL,
+            );
+            decl.add_method(
+                sel!(markedRange),
+                marked_range as extern "C" fn(&Object, Sel) -> EncodedRange,
+            );
+            decl.add_method(
+                sel!(selectedRange),
+                selected_range as extern "C" fn(&Object, Sel) -> EncodedRange,
+            );
+            decl.add_method(
+                sel!(validAttributesForMarkedText),
+                valid_attributes_for_marked_text as extern "C" fn(&Object, Sel) -> id,
+            );
+            decl.add_method(
+                sel!(attributedSubstringForProposedRange:actualRange:),
+                attributed_substring
+                    as extern "C" fn(&Object, Sel, EncodedRange, *mut c_void) -> id,
+            );
+            decl.add_method(
+                sel!(setMarkedText:selectedRange:replacementRange:),
+                set_marked_text as extern "C" fn(&Object, Sel, id, EncodedRange, EncodedRange),
+            );
+            decl.add_method(
+                sel!(insertText:replacementRange:),
+                insert_text as extern "C" fn(&Object, Sel, id, EncodedRange),
+            );
+            decl.add_method(sel!(unmarkText), unmark_text as extern "C" fn(&Object, Sel));
+            decl.add_method(
+                sel!(doCommandBySelector:),
+                do_command_by_selector as extern "C" fn(&Object, Sel, Sel),
+            );
+            decl.add_method(
+                sel!(firstRectForCharacterRange:actualRange:),
+                first_rect_for_character_range
+                    as extern "C" fn(&Object, Sel, EncodedRange, *mut c_void) -> NSRect,
+            );
+            decl.add_method(
+                sel!(characterIndexForPoint:),
+                character_index_for_point as extern "C" fn(&Object, Sel, NSPoint) -> NSUInteger,
+            );
             // Touch: AppKit delivers finger contacts through these responder methods
             // rather than the mouse path. Without them the gesture engine never saw a
             // `TouchBegin`, so all eleven recognisers were reachable only from tests.
@@ -356,8 +446,8 @@ unsafe fn event_local_point(view: id, event: id) -> Option<Point> {
 
 /// Reads an AppKit event's modifier flags, or `0` for a null event.
 ///
-/// `NSEvent`'s `modifierFlags` is the same source `map_key_modifiers` reads for keys,
-/// so a pointer press and a key press report the same bitfield for the same held keys.
+/// `NSEvent`'s `modifierFlags` is the same source [`super::accelerator::map_modifiers`] reads
+/// for keys, so a pointer press and a key press report the same bitfield for the same held keys.
 ///
 /// # Safety
 /// `event` must be a live `NSEvent` or null; a null event reads as zero modifiers.
@@ -665,6 +755,11 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
 
 /// Translates a key event into a widget [`Event`] and delivers it.
 ///
+/// AppKit's input method gets first refusal through `interpretKeyEvents:`. When the input
+/// method consumes the key (a marked-text update, a commit, or a plain character it turned
+/// into `insertText:`) the callback sets `IME_HANDLED` and this path stops. Everything else —
+/// arrows, Tab, chords — falls through to the translation below, so no key is swallowed.
+///
 /// Non-printing keys go through as [`Event::KeyPress`]; printable characters are
 /// delivered as [`Event::TextInput`] so the widget's text path (including its
 /// auto-pairing and IME handling) is the one that runs.
@@ -678,7 +773,22 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
         unsafe {
             let view = this as *const Object as id;
             let Some(widget_id) = widget_id_of(view) else { return };
-            let (key, modifiers) = super::types::translate_key_event(event);
+            // Give the input method first refusal. `interpretKeyEvents:` calls back into the
+            // `NSTextInputClient` methods registered on this class; the callbacks set
+            // `IME_HANDLED` when they consumed the event. The flag is reset afterwards so a
+            // callback invoked later (an asynchronous composition update) cannot affect the
+            // next key.
+            IME_INTERPRETING.set(true);
+            IME_HANDLED.set(false);
+            let events = NSArray::arrayWithObjects(nil, &[event]);
+            let _: () = msg_send![view, interpretKeyEvents: events];
+            let handled = IME_HANDLED.get();
+            IME_INTERPRETING.set(false);
+            if handled {
+                return;
+            }
+            let translated_key = super::types::translate_key_event(event);
+            let modifiers = translated_key.modifiers;
             // AppKit reports Tab as keycode 48 with no printable characters. The
             // widget-layer modifier bit for Shift is 1 (see `Modifiers::from_event_bits`).
             const WIDGET_SHIFT: u32 = 1;
@@ -688,7 +798,7 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
             // how a text field types an accented character (`⌥e` → `´`).
             const WIDGET_CONTROL: u32 = 2;
             const WIDGET_META: u32 = 8;
-            if key == KEY_TAB {
+            if u32::from(translated_key.appkit_key_code) == KEY_TAB {
                 crate::widget::runtime::focus_next(modifiers & WIDGET_SHIFT == 0);
                 let _: () = msg_send![view, setNeedsDisplay: YES];
                 note_native_redraw(widget_id);
@@ -699,18 +809,14 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
                 // `charactersIgnoringModifiers` is the key's text with ⌘/⌃ stripped, so
                 // `⌘A` answers `"a"`. The framework key code for that is `65` (upper
                 // case), which is what `LineEdit` matches for `Primary+A`.
-                let text = characters_ignoring_modifiers(event);
                 Event::KeyPress {
-                    key: super::accelerator::logical_key(key as u16, text.as_deref()),
+                    key: translated_key.logical_key_with_ignored_modifiers,
                     modifiers,
                 }
-            } else if let Some(text) = printable_characters(event) {
+            } else if let Some(text) = translated_key.text {
                 Event::TextInput { text }
             } else {
-                Event::KeyPress {
-                    key: super::accelerator::logical_key(key as u16, None),
-                    modifiers,
-                }
+                Event::KeyPress { key: translated_key.logical_key, modifiers }
             };
             // Keys follow focus: with nothing focused, the surface owner keeps them.
             let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
@@ -747,13 +853,10 @@ extern "C" fn key_up(this: &Object, _cmd: Sel, event: id) {
         unsafe {
             let view = this as *const Object as id;
             let Some(widget_id) = widget_id_of(view) else { return };
-            let (key, modifiers) = super::types::translate_key_event(event);
+            let translated_key = super::types::translate_key_event(event);
             let released = Event::KeyRelease {
-                key: super::accelerator::logical_key(
-                    key as u16,
-                    characters_ignoring_modifiers(event).as_deref(),
-                ),
-                modifiers,
+                key: translated_key.logical_key_with_ignored_modifiers,
+                modifiers: translated_key.modifiers,
             };
             // Keys follow focus, the same rule `key_down` applies, so a release reaches the
             // control its press did.
@@ -774,60 +877,273 @@ extern "C" fn key_up(this: &Object, _cmd: Sel, event: id) {
 /// AppKit virtual key code for Tab (not a character code).
 const KEY_TAB: u32 = 48;
 
-/// Returns the printable characters of a key event, when it produced any.
-///
-/// Control characters are excluded: Enter, Tab and Escape are meaningful as
-/// [`Event::KeyPress`] and the widget maps them to editing commands there.
-///
-/// # Safety
-/// `event` must be a live key `NSEvent` on the main thread.
-unsafe fn printable_characters(event: id) -> Option<String> {
-    characters_of(event, false)
-}
+// ── NSTextInputClient ──
+//
+// AppKit calls these on the canvas view. Each one mirrors the objc2 canvas
+// (`macos_objc2/native.rs`, BLUE28 B28.12) so both macOS backends drive the same
+// `MacOsImeBridge` state machine identically. The bridge is shared with
+// `Platform::ime_bridge()` (see `macos::types::ime_bridge`), which is what lets a composition
+// reach the control the widget runtime has focused.
 
-/// Returns the key event's text with its modifiers ignored.
-///
-/// A command chord still reports the letter it was pressed with, which is what lets the
-/// platform boundary produce the framework key code for `⌘A` (65) rather than the text
-/// `"a"` (which would be inserted instead of selecting). See
-/// [`super::accelerator::logical_key`].
-///
-/// # Safety
-/// `event` must be a live key `NSEvent` on the main thread.
-unsafe fn characters_ignoring_modifiers(event: id) -> Option<String> {
-    characters_of(event, true)
-}
-
-/// Reads the event's `NSString` characters, filtered to printable characters.
-///
-/// `ignoring_modifiers` selects `charactersIgnoringModifiers` instead of `characters`.
-/// The selector is selected by a boolean rather than passed in because `msg_send!`
-/// resolves a selector at compile time; a runtime `Sel` value has to go through
-/// `performSelector:`, which would add an `id` return that is harder to narrow safely.
-///
-/// # Safety
-/// `event` must be a live key `NSEvent` on the main thread.
-unsafe fn characters_of(event: id, ignoring_modifiers: bool) -> Option<String> {
-    let characters: id = if ignoring_modifiers {
-        msg_send![event, charactersIgnoringModifiers]
+/// `-hasMarkedText`: whether a composition is in progress.
+extern "C" fn has_marked_text(_this: &Object, _cmd: Sel) -> cocoa::base::BOOL {
+    if super::types::ime_bridge().has_marked_text() {
+        YES
     } else {
-        msg_send![event, characters]
-    };
-    if characters == nil {
+        NO
+    }
+}
+
+/// `-markedRange`: the composed range in UTF-16 units, or `NSNotFound` when nothing is marked.
+extern "C" fn marked_range(_this: &Object, _cmd: Sel) -> EncodedRange {
+    match super::types::ime_bridge().get_marked_text() {
+        Some(text) => EncodedRange(NSRange::new(0, text.encode_utf16().count() as NSUInteger)),
+        None => EncodedRange(NSRange::new(NSNotFound as NSUInteger, 0)),
+    }
+}
+
+/// `-selectedRange`: the caret sits at the end of the composition, matching objc2.
+extern "C" fn selected_range(_this: &Object, _cmd: Sel) -> EncodedRange {
+    let length =
+        super::types::ime_bridge().get_marked_text().map_or(0, |text| text.encode_utf16().count());
+    EncodedRange(NSRange::new(length as NSUInteger, 0))
+}
+
+/// `-validAttributesForMarkedText`: plain text needs no attributes, so the set is empty.
+extern "C" fn valid_attributes_for_marked_text(_this: &Object, _cmd: Sel) -> id {
+    // SAFETY: `+[NSArray array]` returns an autoreleased empty array owned by the call's pool.
+    unsafe { NSArray::array(nil) }
+}
+
+/// `-attributedSubstringForProposedRange:actualRange:`: the widget layer owns the text, so the
+/// surface has none to hand back.
+extern "C" fn attributed_substring(
+    _this: &Object,
+    _cmd: Sel,
+    _range: EncodedRange,
+    actual_range: *mut c_void,
+) -> id {
+    if !actual_range.is_null() {
+        // SAFETY: AppKit passes a writable `NSRange` out-parameter or null; the null case is
+        // checked, and `NSRange` is the type AppKit named in the selector.
+        unsafe { *(actual_range as *mut NSRange) = NSRange::new(0, 0) };
+    }
+    nil
+}
+
+/// `-setMarkedText:selectedRange:replacementRange:`: records the composition and delivers it as
+/// `Event::ImePreedit` to the focused control.
+extern "C" fn set_marked_text(
+    this: &Object,
+    _cmd: Sel,
+    string: id,
+    selected_range: EncodedRange,
+    _replacement_range: EncodedRange,
+) {
+    let outcome = std::panic::catch_unwind(|| {
+        // SAFETY: `this` is the live canvas view; `string` is the object AppKit passed.
+        unsafe {
+            let text = if string == nil {
+                // AppKit spells "remove the marked text" as a nil argument. Treating it as an
+                // empty composition is what actually clears the state (and matches what the GTK
+                // context does on `preedit-end`); returning early would leave the old preedit
+                // painted.
+                String::new()
+            } else {
+                let Some(text) = text_of(string) else { return };
+                text
+            };
+            if IME_INTERPRETING.get() {
+                IME_HANDLED.set(true);
+            }
+            let bridge = super::types::ime_bridge();
+            bridge.set_marked_text(
+                &text,
+                selected_range.0.location as i32,
+                selected_range.0.location.saturating_add(selected_range.0.length) as i32,
+            );
+            // `set_marked_text` delivers the preedit to the widget the bridge has focused. Two
+            // cases are left for this view to cover: nothing has focused the bridge yet (deliver
+            // to this canvas's own widget), and the composition was withdrawn (an empty marked
+            // string produces no `ImePreedit`, so send the empty composition that clears it).
+            let delivered_by_bridge =
+                bridge.focused_widget_id().is_some() && bridge.has_marked_text();
+            if !delivered_by_bridge {
+                if let Some(target) = bridge.focused_widget_id().or_else(|| ime_target(this)) {
+                    let composition = bridge.composition().unwrap_or_default();
+                    let _ = crate::platform::ime::deliver_composition_owned(target, composition);
+                }
+            }
+            redraw_canvas(this);
+        }
+    });
+    if outcome.is_err() {
+        log::error!("[macos] canvas: panic while updating IME composition");
+    }
+}
+
+/// `-insertText:replacementRange:`: a commit at the end of a composition, or a plain key AppKit
+/// translated into text.
+extern "C" fn insert_text(this: &Object, _cmd: Sel, string: id, _replacement_range: EncodedRange) {
+    let outcome = std::panic::catch_unwind(|| {
+        // SAFETY: `this` is the live canvas view; `string` is the object AppKit passed.
+        unsafe {
+            let Some(text) = text_of(string) else { return };
+            if IME_INTERPRETING.get() {
+                IME_HANDLED.set(true);
+            }
+            let bridge = super::types::ime_bridge();
+            if bridge.has_marked_text() {
+                // A commit at the end of a composition. `commit_text` clears the marked range and
+                // delivers `Event::ImeCommit` to the bridge's focused widget.
+                if bridge.focused_widget_id().is_some() {
+                    bridge.commit_text(&text);
+                } else if let Some(target) = ime_target(this) {
+                    // No runtime focus reached the bridge, but this canvas still knows which
+                    // control it presents: clear the preview, then commit there.
+                    bridge.discard_marked_text();
+                    let _ = crate::platform::ime::deliver_composition_owned(
+                        target,
+                        crate::platform::ime::ImeComposition::default(),
+                    );
+                    let _ = crate::platform::ime::deliver_commit(target, &text);
+                }
+            } else if let Some(target) = ime_target(this) {
+                // A plain key that AppKit translated into text. It travels as `TextInput` so a
+                // control's text path runs exactly as it did before IME was wired.
+                if !crate::widget::runtime::dispatch_event(target, &Event::TextInput { text }) {
+                    log::debug!("[macos] canvas: IME text dropped, id={target} is not mounted");
+                }
+            }
+            redraw_canvas(this);
+        }
+    });
+    if outcome.is_err() {
+        log::error!("[macos] canvas: panic while forwarding IME text");
+    }
+}
+
+/// `-unmarkText`: the input method withdrew its composition without committing.
+extern "C" fn unmark_text(this: &Object, _cmd: Sel) {
+    clear_composition(this);
+}
+
+/// `-doCommandBySelector:`: `interpretKeyEvents:` reached a command key it did not turn into
+/// text. A composition can no longer become text, so it is discarded; the key itself is **not**
+/// marked handled, which is what lets `key_down` forward it as a `KeyPress`.
+extern "C" fn do_command_by_selector(this: &Object, _cmd: Sel, _selector: Sel) {
+    clear_composition(this);
+}
+
+/// `-firstRectForCharacterRange:actualRange:`: the candidate window is anchored at the surface
+/// origin, in screen coordinates.
+extern "C" fn first_rect_for_character_range(
+    this: &Object,
+    _cmd: Sel,
+    range: EncodedRange,
+    actual_range: *mut c_void,
+) -> NSRect {
+    if !actual_range.is_null() {
+        // SAFETY: see `attributed_substring`; the caller owns the out-parameter.
+        unsafe { *(actual_range as *mut NSRange) = range.0 };
+    }
+    // SAFETY: `this` is the live canvas view AppKit is asking about.
+    unsafe {
+        let view = this as *const Object as id;
+        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
+        let window: id = msg_send![view, window];
+        if window == nil {
+            rect
+        } else {
+            NSWindow::convertRectToScreen_(window, rect)
+        }
+    }
+}
+
+/// `-characterIndexForPoint:`: the surface has no indexable text (the control owns it).
+extern "C" fn character_index_for_point(_this: &Object, _cmd: Sel, _point: NSPoint) -> NSUInteger {
+    0
+}
+
+/// Discards the bridge's composition and clears the widget's preview.
+///
+/// AppKit calls `unmarkText` and `doCommandBySelector:` even when nothing is marked, so the work
+/// is conditional: an arrow key must not emit an empty `ImePreedit` per keystroke.
+fn clear_composition(this: &Object) {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let bridge = super::types::ime_bridge();
+        if !bridge.has_marked_text() {
+            return;
+        }
+        bridge.discard_marked_text();
+        if let Some(target) = bridge.focused_widget_id().or_else(|| ime_target(this)) {
+            // An empty composition is how a control is told to stop painting its preedit; the
+            // GTK backend sends the same event on `preedit-end`.
+            let _ = crate::platform::ime::deliver_composition_owned(
+                target,
+                crate::platform::ime::ImeComposition::default(),
+            );
+        }
+        redraw_canvas(this);
+    }));
+    if outcome.is_err() {
+        log::error!("[macos] canvas: panic while clearing IME composition");
+    }
+}
+
+/// Asks AppKit to repaint this canvas and records the native redraw for the frame ledger.
+fn redraw_canvas(this: &Object) {
+    // SAFETY: `this` is the live canvas view AppKit called; the call runs on the main thread.
+    unsafe {
+        let view = this as *const Object as id;
+        let _: () = msg_send![view, setNeedsDisplay: YES];
+        if let Some(target) = ime_target(this) {
+            note_native_redraw(target);
+        }
+    }
+}
+
+/// The control an IME callback should deliver to: the widget runtime's focus, or this view's
+/// widget when no control has taken focus.
+///
+/// The fallback keeps a composition usable on a surface whose control never received a click (a
+/// canvas created with focus already inside it), and it is the same rule the key path applies
+/// (`focused_widget().unwrap_or(widget_id)`).
+fn ime_target(this: &Object) -> Option<ObjectId> {
+    // SAFETY: `this` is the live canvas view AppKit is calling back for.
+    unsafe {
+        crate::widget::runtime::focused_widget()
+            .or_else(|| widget_id_of(this as *const Object as id))
+    }
+}
+
+/// Reads the text AppKit passes to `insertText:`/`setMarkedText:`.
+///
+/// The argument is documented as an `NSString` or an `NSAttributedString`; both are accepted and
+/// anything else is ignored rather than reinterpreted.
+///
+/// # Safety
+/// `object` must be the argument AppKit supplied to one of those selectors.
+unsafe fn text_of(object: id) -> Option<String> {
+    if object == nil {
         return None;
     }
-    let utf8: *const std::os::raw::c_char = msg_send![characters, UTF8String];
+    let is_string: cocoa::base::BOOL = msg_send![object, isKindOfClass: class!(NSString)];
+    let string_object: id = if is_string == YES {
+        object
+    } else {
+        let is_attributed: cocoa::base::BOOL =
+            msg_send![object, isKindOfClass: class!(NSAttributedString)];
+        if is_attributed != YES {
+            return None;
+        }
+        msg_send![object, string]
+    };
+    let utf8: *const std::os::raw::c_char = msg_send![string_object, UTF8String];
     if utf8.is_null() {
         return None;
     }
-    let c_str = std::ffi::CStr::from_ptr(utf8);
-    let text = c_str.to_string_lossy().into_owned();
-    let printable: String = text.chars().filter(|ch| !ch.is_control()).collect();
-    if printable.is_empty() {
-        None
-    } else {
-        Some(printable)
-    }
+    Some(std::ffi::CStr::from_ptr(utf8).to_string_lossy().into_owned())
 }
 
 /// `-drawRect:` renders the mounted widget and blits the frame.
@@ -1504,9 +1820,20 @@ extern "C" fn drain_triggers_impl(_this: &Object, _cmd: Sel, timer: id) {
     // assumption; without one the helper answers the nominal interval and resets its phase.
     let deadline = super::display_link::next_deadline();
     let delta = crate::platform::frame_wait::presented_delta_ms(deadline);
-    crate::drive_frame(delta);
-    if let Some(deadline) = deadline {
-        retarget_heartbeat(timer, deadline);
+    let outcome = crate::drive_frame(delta);
+    if outcome.needs_another_frame {
+        if let Some(deadline) = deadline {
+            retarget_heartbeat(timer, deadline);
+        }
+    } else {
+        // Nothing is animating and nothing is queued (G-503): a still window does not need 60
+        // wakeups a second. The tick is moved out to the idle backstop, which still drains the
+        // resize triggers and notices a host that changed state without a wake, and the next
+        // animated frame moves it back to the display deadline.
+        retarget_heartbeat_in(
+            timer,
+            Duration::from_millis(crate::platform::types::IDLE_FRAME_INTERVAL_MS as u64),
+        );
     }
 }
 
@@ -1518,21 +1845,28 @@ extern "C" fn drain_triggers_impl(_this: &Object, _cmd: Sel, timer: id) {
 /// against it. A deadline that is already at hand is left alone so a missed presentation cannot
 /// turn the timer into a busy loop.
 fn retarget_heartbeat(timer: id, deadline: Instant) {
-    if timer == nil {
-        return;
-    }
     let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
         return;
     };
-    if remaining < Duration::from_millis(1) {
+    retarget_heartbeat_in(timer, remaining);
+}
+
+/// Moves the repeating heartbeat's next fire to `delay` from now.
+///
+/// Shared by the presented-deadline path and the idle backstop (G-503). A delay below one
+/// millisecond is left alone so a missed presentation cannot turn the timer into a busy loop.
+fn retarget_heartbeat_in(timer: id, delay: Duration) {
+    if timer == nil {
+        return;
+    }
+    if delay < Duration::from_millis(1) {
         return;
     }
     // SAFETY: `timer` is the live `NSTimer` AppKit passed to the tick selector, and `NSDate` is
     // the class `setFireDate:` takes. Both messages run on the AppKit main thread, which is where
     // the timer fires.
     unsafe {
-        let date: id =
-            msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: remaining.as_secs_f64()];
+        let date: id = msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: delay.as_secs_f64()];
         if date != nil {
             let _: () = msg_send![timer, setFireDate: date];
         }

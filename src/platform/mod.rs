@@ -260,6 +260,19 @@ pub mod ime_windows;
 #[cfg(not(alloc_frugal))]
 pub mod main_thread;
 pub(crate) mod runtime;
+/// What a sampled screen pixel means, independent of how it was read (SP-119).
+///
+/// The rule — an alpha-zero read is an absence rather than a transparent pixel — is one fact for
+/// every backend that samples a screen *with transparency*, which today means the two macOS ones.
+/// Written once here instead of beside each binding, and gated on that fact rather than on
+/// "always": a backend whose sampler cannot report transparency (Win32's `COLORREF` carries no
+/// alpha) must not carry a rule it cannot apply, which is why this is not an unconditional module.
+/// Widening the gate is a one-line change the day a third sampler needs it.
+///
+/// No FFI, no platform dependency: on a host that does not sample, the `test` arm still compiles
+/// it so its unit tests always run.
+#[cfg(any(target_os = "macos", test))]
+pub mod screen_sample;
 pub mod state;
 /// The stop request any thread may make and the frame tick that reads it.
 pub mod stop;

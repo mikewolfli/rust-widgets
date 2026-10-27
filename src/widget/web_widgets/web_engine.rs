@@ -12,6 +12,7 @@
 //! `crate::web::SimpleJsEngine`) and returns the actual result or error.
 //! Without that feature, evaluation reports `Err` instead of faking success.
 
+use crate::compat::{lock, Arc, Mutex, VecDeque};
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::signal::Signal1;
@@ -37,6 +38,28 @@ pub const FIRST_PAGE_ID: ObjectId = 1;
 /// anywhere; it exists so a settings consumer always has a concrete value to display and pass on.
 pub const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (compatible; rust-widgets WebEngineView) AppleWebKit/605.1.15";
+
+/// A find action a companion queued for the view (MW-014).
+///
+/// A widget cannot hold a borrow of another, so a `WebFindBar` writes into the view's shared
+/// queue instead of calling the find API directly. [`WebEngineView::poll_find_requests`] applies
+/// the queue through the same methods the manual API uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebFindRequest {
+    /// Run `needle` with the given case sensitivity.
+    Search {
+        /// The text to find.
+        needle: String,
+        /// Whether the match is case sensitive.
+        case_sensitive: bool,
+    },
+    /// Select the next match.
+    Next,
+    /// Select the previous match.
+    Previous,
+    /// Clear the active find.
+    Clear,
+}
 
 /// The `SameSite` policy a cookie was stored with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -399,6 +422,8 @@ pub struct WebEngineView {
     find_whole_word: bool,
     /// The case sensitivity of the last find, so a word-toggle can re-run it unchanged.
     find_case_sensitive: bool,
+    /// Find actions a companion bar queued for the next tick (MW-014).
+    find_requests: Arc<Mutex<VecDeque<WebFindRequest>>>,
     /// Vertical page scroll offset in logical pixels (MW-10).
     scroll_offset: i32,
     /// The page's painted content height, measured by the last draw.
@@ -850,6 +875,7 @@ impl WebEngineView {
             url_bar_rect: None,
             find_whole_word: false,
             find_case_sensitive: false,
+            find_requests: Arc::new(Mutex::new(VecDeque::new())),
             scroll_offset: 0,
             page_content_height: 0,
             download_dir: None,
@@ -1736,6 +1762,55 @@ impl WebEngineView {
         }
     }
 
+    /// The queue a [`WebFindRequest`] producer writes into (MW-014).
+    ///
+    /// Returned as a shared handle because `WebFindBar` cannot hold a borrow of this view. The
+    /// view drains the queue from `tick` and `draw`, and [`Self::poll_find_requests`] exposes the
+    /// same drain to a host that drives its own frame loop.
+    pub fn find_request_queue(&self) -> Arc<Mutex<VecDeque<WebFindRequest>>> {
+        Arc::clone(&self.find_requests)
+    }
+
+    /// Applies every queued find request, returning the latest progress.
+    ///
+    /// Returns `None` when the queue was empty. Each request goes through the same public find
+    /// methods the manual API uses, so a companion and a direct caller cannot disagree about what
+    /// searching means.
+    pub fn poll_find_requests(&mut self) -> Option<(usize, usize)> {
+        let requests: Vec<WebFindRequest> = {
+            let mut queue = lock(&self.find_requests);
+            queue.drain(..).collect()
+        };
+        if requests.is_empty() {
+            return None;
+        }
+        let mut latest = None;
+        for request in requests {
+            match request {
+                WebFindRequest::Search { needle, case_sensitive } => {
+                    if needle.is_empty() {
+                        self.clear_find();
+                    } else {
+                        // The view's own whole-word option is authoritative, exactly as the
+                        // manual `find_text` path treats it.
+                        let whole_word = self.find_whole_word;
+                        let _ =
+                            self.find_text_with_options(&needle, case_sensitive, whole_word, false);
+                    }
+                }
+                WebFindRequest::Next => {
+                    let _ = self.find_next();
+                }
+                WebFindRequest::Previous => {
+                    let _ = self.find_previous();
+                }
+                WebFindRequest::Clear => self.clear_find(),
+            }
+            latest = Some(self.find_progress());
+        }
+        latest
+    }
+
     /// The byte range of the currently selected match in the HTML source.
     pub fn current_match_range(&self) -> Option<(usize, usize)> {
         let index = self.find_current?;
@@ -1912,14 +1987,16 @@ impl Widget for WebEngineView {
         crate::core::Size::new(400, 300)
     }
 
-    /// Drains a script queued by [`Self::evaluate_javascript_async`].
+    /// Applies a script queued by [`Self::evaluate_javascript_async`] and any queued find request.
     fn tick(&mut self, _delta_ms: u32) -> bool {
-        self.poll_async_javascript()
+        let find_applied = self.poll_find_requests().is_some();
+        find_applied | self.poll_async_javascript()
     }
 
-    /// A queued script is an owed result, so the frame bus keeps ticking until it is drained.
+    /// A queued script or find request is owed work, so the frame bus keeps ticking until it is
+    /// drained.
     fn is_animating(&self) -> bool {
-        self.has_pending_javascript()
+        self.has_pending_javascript() || !lock(&self.find_requests).is_empty()
     }
 
     /// Resolves a published event name to this view's own signal.
@@ -2283,6 +2360,9 @@ impl EventHandler for WebEngineView {
 
 impl Draw for WebEngineView {
     fn draw(&mut self, ctx: &mut RenderContext) {
+        // A find request queued since the previous frame is applied before the page is painted,
+        // so the highlight a companion asked for is in the same frame as the request (MW-014).
+        self.poll_find_requests();
         let g = self.geometry();
 
         // The view's chrome and its blank page surface resolve the explicit style first, then the

@@ -562,6 +562,48 @@ impl Draw for MobileDatePicker {
 
 impl MobileDatePicker {
     /// Applies `delta` steps to one drum column, through the same clamps every path uses.
+    /// Selects the value painted at `row` in `column` (MISC-02).
+    ///
+    /// The drum paints five rows around the current value: row 0 is two steps before it and row 4
+    /// is two steps after. Resolving the row to the same item list the painter reads is what makes
+    /// a click choose the value under the pointer instead of stepping by one.
+    fn select_drum_row(&mut self, column: usize, row: i32) -> bool {
+        let offset = match column {
+            0 => (self.year - self.year_start).max(0),
+            1 => (self.month as i32 - 1).max(0),
+            _ => (self.day as i32 - 1).max(0),
+        };
+        let item = row + offset - 2;
+        match column {
+            0 => {
+                if item < 0 || item > self.year_end - self.year_start {
+                    return false;
+                }
+                let year = self.year_start + item;
+                let day = self.day.min(days_in_month(year, self.month));
+                self.set_date(year, self.month, day);
+                true
+            }
+            1 => {
+                if !(1..=12).contains(&(item + 1)) {
+                    return false;
+                }
+                let month = (item + 1) as u32;
+                let day = self.day.min(days_in_month(self.year, month));
+                self.set_date(self.year, month, day);
+                true
+            }
+            _ => {
+                let max_days = days_in_month(self.year, self.month) as i32;
+                if !(1..=max_days).contains(&(item + 1)) {
+                    return false;
+                }
+                self.set_date(self.year, self.month, (item + 1) as u32);
+                true
+            }
+        }
+    }
+
     /// `delta` may be larger than one when a drag covers several rows.
     fn apply_column_delta(&mut self, column: usize, delta: i32) {
         if delta == 0 {
@@ -686,41 +728,12 @@ impl EventHandler for MobileDatePicker {
                     ),
                 );
                 let rel_y = pos.y - drum_rect.y;
-                let row = rel_y / row_height;
-                // Upper half (row 0-2) = increment, lower half (row 3-4) = decrement
-                let increment = row <= 2;
-
-                match col {
-                    0 => {
-                        // Year column
-                        let new_year = if increment { self.year + 1 } else { self.year - 1 };
-                        let max_day = days_in_month(new_year, self.month);
-                        let clamped_day = self.day.min(max_day);
-                        self.set_date(new_year, self.month, clamped_day);
-                    }
-                    1 => {
-                        // Month column
-                        let new_month = if increment {
-                            (self.month as i32 + 1).clamp(1, 12) as u32
-                        } else {
-                            (self.month as i32 - 1).clamp(1, 12) as u32
-                        };
-                        let max_day = days_in_month(self.year, new_month);
-                        let clamped_day = self.day.min(max_day);
-                        self.set_date(self.year, new_month, clamped_day);
-                    }
-                    2 => {
-                        // Day column
-                        let max_days = days_in_month(self.year, self.month) as i32;
-                        let new_day = if increment {
-                            (self.day as i32 + 1).clamp(1, max_days) as u32
-                        } else {
-                            (self.day as i32 - 1).clamp(1, max_days) as u32
-                        };
-                        self.set_date(self.year, self.month, new_day);
-                    }
-                    _ => {}
-                }
+                let row_height = row_height.max(1);
+                let row = (rel_y / row_height).clamp(0, dimensions::PICKER_VISIBLE_ROWS as i32 - 1);
+                // MISC-02: a click selects the row under the pointer. It used to increment or
+                // decrement by one depending on which half of the drum was pressed, so the value
+                // the user pointed at was never the value they got.
+                self.select_drum_row(col, row);
             }
             // The keyboard path (MISC-12): left/right move the focused column, up/down change that
             // column by one through the same `set_date` clamp and signal the wheel and click paths
@@ -891,61 +904,59 @@ mod tests {
     #[test]
     fn picker_mouse_press_year_column() {
         let mut picker = make_picker();
-        // Click upper half of year column -> increment year
+        // MISC-02: the row under the pointer is selected. Row 3 is one year after the
+        // current 2025, and the centre row keeps the current value.
         picker.handle_event(&Event::MousePress {
-            pos: Point::new(20, 30),
+            pos: Point::new(20, 130),
             button: 1,
             modifiers: 0,
         });
         assert_eq!(picker.year(), 2026);
 
-        // Click lower half of year column -> decrement year
         picker.handle_event(&Event::MousePress {
-            pos: Point::new(20, 150),
+            pos: Point::new(20, 90),
             button: 1,
             modifiers: 0,
         });
-        assert_eq!(picker.year(), 2025);
+        assert_eq!(picker.year(), 2026, "the centre row is the current value");
     }
 
     #[test]
     fn picker_mouse_press_month_column() {
         let mut picker = make_picker();
-        // Click upper half of month column -> increment month
+        // Row 3 is February; the centre row keeps January.
         picker.handle_event(&Event::MousePress {
-            pos: Point::new(100, 30),
+            pos: Point::new(100, 130),
             button: 1,
             modifiers: 0,
         });
         assert_eq!(picker.month(), 2);
 
-        // Click lower half -> decrement month
         picker.handle_event(&Event::MousePress {
-            pos: Point::new(100, 150),
+            pos: Point::new(100, 90),
             button: 1,
             modifiers: 0,
         });
-        assert_eq!(picker.month(), 1);
+        assert_eq!(picker.month(), 2);
     }
 
     #[test]
     fn picker_mouse_press_day_column() {
         let mut picker = make_picker();
-        // Click upper half of day column -> increment day
+        // Row 3 is the day after the current one; the centre row keeps it.
         picker.handle_event(&Event::MousePress {
-            pos: Point::new(180, 30),
+            pos: Point::new(180, 130),
             button: 1,
             modifiers: 0,
         });
         assert_eq!(picker.day(), 2);
 
-        // Click lower half -> decrement day
         picker.handle_event(&Event::MousePress {
-            pos: Point::new(180, 150),
+            pos: Point::new(180, 90),
             button: 1,
             modifiers: 0,
         });
-        assert_eq!(picker.day(), 1);
+        assert_eq!(picker.day(), 2);
     }
 
     #[test]
@@ -1005,9 +1016,9 @@ mod tests {
         let mut picker = make_picker();
         picker.set_date(2025, 1, 31);
 
-        // Change to February - day should clamp to 28
+        // Change to February by selecting the row one below the centre: the day clamps to 28.
         picker.handle_event(&Event::MousePress {
-            pos: Point::new(100, 30), // upper half of month column -> increment
+            pos: Point::new(100, 130),
             button: 1,
             modifiers: 0,
         });
@@ -1039,19 +1050,20 @@ mod tests {
     fn picker_day_edge_cases() {
         let mut picker = make_picker();
 
-        // Test day = 1, decrement should stay at 1
+        // Row 0 is two values before the centre, which does not exist for day 1.
         picker.set_date(2025, 1, 1);
         picker.handle_event(&Event::MousePress {
-            pos: Point::new(180, 150), // lower half of day column -> decrement
+            pos: Point::new(180, 30),
             button: 1,
             modifiers: 0,
         });
         assert_eq!(picker.day(), 1);
 
-        // Test max day of a 31-day month, increment should stay at 31
+        // Row 4 is two values after the centre; from 31 January that is out of range daily,
+        // so the day stays put instead of wrapping.
         picker.set_date(2025, 1, 31);
         picker.handle_event(&Event::MousePress {
-            pos: Point::new(180, 30), // upper half of day column -> increment
+            pos: Point::new(180, 190),
             button: 1,
             modifiers: 0,
         });
@@ -1062,19 +1074,19 @@ mod tests {
     fn picker_month_edge_cases() {
         let mut picker = make_picker();
 
-        // January, decrement month -> should stay at 1
+        // January: row 0 is two months before the centre, which does not exist.
         picker.set_date(2025, 1, 15);
         picker.handle_event(&Event::MousePress {
-            pos: Point::new(100, 150), // lower half of month column -> decrement
+            pos: Point::new(100, 30),
             button: 1,
             modifiers: 0,
         });
         assert_eq!(picker.month(), 1);
 
-        // December, increment month -> should stay at 12
+        // December: row 4 is two months after the centre, which does not exist.
         picker.set_date(2025, 12, 15);
         picker.handle_event(&Event::MousePress {
-            pos: Point::new(100, 30), // upper half of month column -> increment
+            pos: Point::new(100, 190),
             button: 1,
             modifiers: 0,
         });
@@ -1174,7 +1186,7 @@ mod tests {
             modifiers: 0,
         });
         let after_press = picker.day();
-        assert_eq!(after_press, 2);
+        assert_eq!(after_press, 1, "row 1 is one value before the centre");
 
         // Dragging up by three rows is three more steps.
         picker.handle_event(&Event::MouseMove { pos: Point::new(180, 70 - 3 * row_height) });

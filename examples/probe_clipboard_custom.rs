@@ -90,16 +90,17 @@ fn main() {
         all(target_os = "macos", any(feature = "cocoa-legacy", feature = "macos"))
     )
 ))]
-fn gui_probe_allowed() -> bool {
-    if std::env::var("RW_GUI_PROBE_OK").ok().as_deref() == Some("1") {
-        return true;
-    }
-    println!(
-        "this probe replaces the clipboard on the session it runs on; set RW_GUI_PROBE_OK=1 to \
-         stage it (and prefer a machine whose clipboard nobody is using)"
-    );
-    false
-}
+#[path = "common/gui_probe.rs"]
+mod gui_probe;
+#[cfg(all(
+    not(alloc_frugal),
+    any(
+        all(unix_desktop, feature = "gtk-native"),
+        target_os = "windows",
+        all(target_os = "macos", any(feature = "cocoa-legacy", feature = "macos"))
+    )
+))]
+use gui_probe::gui_probe_allowed;
 
 #[cfg(all(
     not(alloc_frugal),

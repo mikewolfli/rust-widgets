@@ -157,20 +157,9 @@ const STRIP_GAP: u32 = 2;
 /// 项目树与编辑器之间的间距。
 const SPLIT_GAP: u32 = 4;
 
-/// The window's fixed chrome control ids.
-///
-/// Grouped because they travel together through the polling loop: the split-row geometry needs
-/// all three, and a function taking them one by one grows an argument per chrome row — which is
-/// how `run_loop` reached nine arguments when the menu row was added.
-#[derive(Debug, Clone, Copy)]
-struct ChromeIds {
-    /// The menu bar row (`0` when this window has no menu bar).
-    menu_bar: ObjectId,
-    /// The toolbar row.
-    tool_bar: ObjectId,
-    /// The status bar row.
-    status_bar: ObjectId,
-}
+// `ChromeIds` used to live here: a three-id bundle read only by the resize poller. The window
+// layout owns the rows now (`apply_layout`), so the bundle had no reader left and was deleted
+// rather than kept as a struct nothing constructs (DEMO-003).
 
 /// 左右分栏的宽度**权重**（项目树 : 编辑器）。
 ///
@@ -197,7 +186,7 @@ const EDITOR_MIN_W: u32 = 320;
 /// 之所以不另建一个 `Panel` 来占位：`PanelHandle::set_geometry` 会把几何记到它自己的
 /// 表里，而窗口布局走的是 `set_widget_geometry`，两者不互通 —— 面板占位会馁化到
 /// “首次手动设一次几何”，窗口后续缩放就不会再驱动分栏了。
-const SPLIT_ROW_ID: ObjectId = u64::MAX;
+const SPLIT_ROW_ID: ObjectId = rust_widgets::layout::PLACEHOLDER_ID;
 
 /// 组装窗口的纵向布局：工具栏（固定）→ 分栏（吃掉剩余高度）→ 状态栏（固定）。
 ///
@@ -255,42 +244,21 @@ fn build_split_layout(tree_id: ObjectId, editor_id: ObjectId) -> BoxLayout {
     split
 }
 
-/// 把两栏放进分栏那一行的矩形里。
-///
-/// # 为什么不挂在某个容器上
-///
-/// 窗口的纵向布局已经把“分栏那一行”算出来了，但布局项只能是控件 id，
-/// 它无法顺便把一个**子布局**也应用上。所以这里用同一份矩形把两栏切开 ——
-/// 矩形的唯一来源是 [`split_row_rect_in`]，它从窗口布局输出里读回分栏行，
-/// 所以两层不会不一致。
-fn apply_split(
-    split: &BoxLayout,
-    rect: Rect,
-    tree: &CustomWidgetHandle,
-    editor: &CustomWidgetHandle,
-) {
-    let tree_id = tree.raw_id();
-    let editor_id = editor.raw_id();
-    split.update(rect, &mut |id, geometry| {
-        if id == tree_id {
-            tree.set_geometry(geometry);
-        } else if id == editor_id {
-            editor.set_geometry(geometry);
-        }
-    });
-}
-
 /// 分栏那一行的矩形，从窗口纵向布局的输出里读回。
 ///
-/// 传入的是 `build_window_layout` 用的同三个 id 与**实际客户区**，所以这里的答案就是
-/// 窗口布局实际会给分栏行的那块地方 —— 不需要再抄一遍“工具栏 + 间距”的减法。
+/// 传入的是 `build_window_layout` 用的同四个 id 与**实际客户区**，所以这里的答案就是
+/// 窗口布局实际会给分栏行的那块地方 —— 不需要再抄一遍“菜单栏 + 工具栏 + 状态栏”的减法。
+///
+/// # 现在还用来干什么
+///
+/// 两栏由窗口布局里的**子布局**摆放（见 [`apply_layout`]），这个函数只负责“挂载时该给
+/// 自绘面一个多大的矩形”：`mount_surface` 必须收到一份矩形，而它应当与布局随后算出的
+/// 那份一致，首帧才不会跳动。所以它和布局共用一份推导，而不是各自算一遍。
 ///
 /// # 为什么客户区是参数而不是常量
 ///
-/// 内层分栏（项目树 | 编辑器）不在窗口布局的托管项里：窗口布局只能排“分栏那一行”这个
-/// 占位，两栏由 [`apply_split`] 自己切。所以窗口一变尺寸，外层会自动重排、内层却停在旧
-/// 矩形上（本 demo 之前的缺陷）。把客户区显式传进来，[`apply_layout`] 才能在**每次**重排时
-/// 用真实尺寸算出分栏行，内外两层就不会在一件事上给出两个答案。
+/// 窗口创建时与 resize 后的客户区不同；把它显式传进来，挂载与首次布局就不会在“当前
+/// 客户区是多少”上给出两个答案。
 fn split_row_rect_in_for(
     client: Rect,
     menu_bar_id: ObjectId,
@@ -596,10 +564,17 @@ const MENU_STRUCTURE: &[(&str, &[Command])] = &[
 
 /// 建立菜单栏，返回 `菜单项 id -> 命令` 的映射。
 ///
-/// 两部分分工：点击标题展开下拉菜单由本函数处理（`MenuBar::triggered` →
+/// 两部分分工：点击标题展开下拉菜单由本函数处理（`MenuBar::entry_action_triggered` →
 /// `MenuHandle::open_at`），而**选中菜单项**的通知仍由事件泵轮询
 /// `poll_menu_triggered()` 后交给 [`dispatch_menu_event`]。自绘后端的菜单选择已经会
 /// 进入同一个队列（`Menu::triggered_index` → 后端队列），所以两种后端只有一条消费路径。
+///
+/// # 为什么标题不参与分发（DEMO-002）
+///
+/// 以前这里拿回调里的标题去 `menus` 里找下标：标题本是给人看的文本，两处各写一份
+/// 映射就会漂移（比如将来加一个 "File (Beta)"）。现在每个条目由
+/// [`MenuBarHandle::set_entry_action_id`] 命名，回调带回的是**动作 id**，
+/// 与菜单项那一侧用的是同一个 id 面。
 fn build_menu_bar(
     win: &rust_widgets::app::WindowHandle,
     log: &Arc<EventLog>,
@@ -621,7 +596,12 @@ fn build_menu_bar(
             ));
             continue;
         }
-        menus.push((title.to_string(), menu.clone()));
+        // 给条目一个动作 id，展开哪个下拉菜单就不再靠标题匹配（DEMO-002）。
+        let entry_action_id = menu_entry_action_id(title);
+        if !bar.set_entry_action_id(index, Some(entry_action_id.clone())) {
+            log.append(format!("[MenuBar] WARN: entry {index} ({title}) 没有可命名的条目"));
+        }
+        menus.push((entry_action_id, menu.clone()));
         for command in *items {
             // Typed shortcut: the platform renders the host's own notation, so
             // the menu reads `⌘Z` on macOS and `Ctrl+Z` on Windows/Linux from
@@ -637,10 +617,11 @@ fn build_menu_bar(
     }
 
     // Opening the popup is the host's job (`MenuBar` owns the strip, not the drop-down).
-    // The event carries the entry rectangle, so the handler does not read the bar (it is
-    // lent out exclusively while its own event is dispatched).
-    bar.on_entry_triggered(move |title: String, entry: Rect| {
-        let Some(index) = menus.iter().position(|(name, _)| *name == title) else {
+    // The event carries both the entry's action id and its rectangle, so the handler needs neither
+    // a title table nor a read of the bar (it is lent out exclusively while its own event is
+    // dispatched).
+    bar.on_entry_action_triggered(move |action_id: String, entry: Rect| {
+        let Some(index) = menus.iter().position(|(id, _)| *id == action_id) else {
             return;
         };
         menus[index].1.open_at(
@@ -651,6 +632,11 @@ fn build_menu_bar(
     });
 
     (bar.raw_id(), bindings)
+}
+
+/// 条目动作 id：菜单栏条目与窗口内菜单项共用的 id 面（DEMO-002）。
+fn menu_entry_action_id(title: &str) -> String {
+    format!("menu.{title}")
 }
 
 /// 把一次菜单激活事件分派给编辑器。
@@ -980,16 +966,7 @@ fn run_inner() -> Result<(), String> {
     log.append("[Window] shown");
 
     print_usage();
-    run_loop(
-        &app,
-        win.raw_id(),
-        ChromeIds { menu_bar: menu_bar_id, tool_bar: tool_bar_id, status_bar: status.raw_id() },
-        &bindings,
-        &toolbar_buttons,
-        &tree,
-        &editor,
-        &log,
-    );
+    run_loop(&app, win.raw_id(), &bindings, &toolbar_buttons, &editor, &log);
     Ok(())
 }
 
@@ -1010,77 +987,63 @@ fn apply_layout(
     client: Rect,
     log: &Arc<EventLog>,
 ) {
-    // 外层：四行。`win.set_layout` 会用窗口自己的客户区重排（后端 resize 时已更新）。
-    let layout = build_window_layout(menu_bar_id, tool_bar_id, SPLIT_ROW_ID, status_bar_id);
-    log.append(format!(
-        "[Layout] window BoxLayout(Vertical): toolbar {TOOLBAR_H}px (fixed) + \
-         split (expanding) + status bar {STATUS_H}px (fixed) in client {}x{}",
-        client.width, client.height
-    ));
-    win.set_layout(layout);
-
-    // 内层：用**真实客户区**算出的分栏行矩形把两栏切开，而不是挂载时那份常量。
-    let row = split_row_rect_in_for(client, menu_bar_id, tool_bar_id, SPLIT_ROW_ID, status_bar_id);
+    // 外层四行；分栏那一行的占位项上挂一个**子布局**（DEMO-004）。窗口布局一次就把
+    // 两层都摆好，所以 resize 不再需要宿主重算内层（DEMO-003）。
+    let mut layout = build_window_layout(menu_bar_id, tool_bar_id, SPLIT_ROW_ID, status_bar_id);
     let split = build_split_layout(tree.raw_id(), editor.raw_id());
-    apply_split(&split, row, tree, editor);
+    if !layout.set_child_layout(SPLIT_ROW_ID, Box::new(split)) {
+        log.append("[Layout] WARN: 分栏行占位项不存在，两栏不会被窗口布局摆放");
+    }
     log.append(format!(
-        "[Layout] split BoxLayout(Horizontal): tree:editor = {}:{} \
-         (min {TREE_MIN_W}px / {EDITOR_MIN_W}px) in row ({},{}, {}, {})",
-        SPLIT_WEIGHTS.0, SPLIT_WEIGHTS.1, row.x, row.y, row.width, row.height
+        "[Layout] window BoxLayout(Vertical): menu {MENU_H}px + toolbar {TOOLBAR_H}px (fixed) + \
+         split (expanding, nested tree:editor = {}:{}) + status bar {STATUS_H}px (fixed) in \
+         client {}x{}",
+        SPLIT_WEIGHTS.0, SPLIT_WEIGHTS.1, client.width, client.height
     ));
+
+    // 首次摆放也走同一条链路：窗口布局存进 `LAYOUTS`，随即按当前客户区跑一遍。
+    win.set_layout(layout);
     log.append("[Layout] applied");
 }
 
-/// 内层分栏的重排：窗口客户区改变时用新尺寸重算两栏几何。
-///
-/// # 为什么需要单独一步
-///
-/// 窗口的纵向布局只托管“工具栏 / 分栏行 / 状态栏”三行，项目树与编辑器是**自绘挂载面**，
-/// 不在窗口布局的托管项里。所以后端 resize 会重排外层三行，却不会动内层的两栏 —— 窗口
-/// 越拉越宽，两栏却停在挂载时那份 `WINDOW_W` 上。这里按当前客户区重算一次内层，把它
-/// 与窗口大小重新对齐。
-fn resync_split_to_client_size(
-    chrome: ChromeIds,
-    tree: &CustomWidgetHandle,
-    editor: &CustomWidgetHandle,
-    size: (u32, u32),
-) {
-    let client = Rect::new(0, 0, size.0, size.1);
-    let row = split_row_rect_in_for(
-        client,
-        chrome.menu_bar,
-        chrome.tool_bar,
-        SPLIT_ROW_ID,
-        chrome.status_bar,
-    );
-    let split = build_split_layout(tree.raw_id(), editor.raw_id());
-    apply_split(&split, row, tree, editor);
-}
+// 内层分栏的重排不再需要（DEMO-003/DEMO-004）：
+//
+// 以前窗口布局只托管“菜单栏 / 工具栏 / 分栏行 / 状态栏”四行，项目树与编辑器是自绘挂载面，
+// 不在托管项里。所以后端 resize 会重排外层，却不会动内层两栏 —— 窗口越拉越宽，两栏却停在
+// 挂载时那份 `WINDOW_W` 上，于是消费线程每 100 ms 比一次客户区再补一次。
+//
+// 现在分栏是窗口布局的一个**子布局**（`BoxLayout::set_child_layout`，DEMO-004），
+// `apply_window_layout` 一次就摆完两层。补丁函数已删除：一套机制就够，两套只会给出两个答案。
 
-/// 轮询菜单/控件事件并转成命令。
+/// 消费菜单激活队列。
 ///
-/// # 线程分工：平台循环在主线程，轮询在后台线程
+/// # 线程分工：平台循环在主线程，消费在后台线程
 ///
 /// 两个事实决定了这个分工，顺序不能颠倒：
 ///
 /// 1. **平台事件循环必须在主线程跑。** GTK 3 把每个控件绑定到唯一的主线程，
 ///    `gtk::main()` 从别的线程调用会直接 panic（`GTK may only be used from the main
 ///    thread.`）。
-/// 2. **宿主又必须能轮询。** `poll_menu_triggered()` / `poll_widget_trigger_event()`
+/// 2. **宿主又必须能取。** `poll_menu_triggered()` / `poll_widget_trigger_event()`
 ///    是必须在循环之外调用的——循环一进去就回不到 Rust 侧，菜单就变成纯装饰。
 ///
-/// 所以：平台循环占住主线程，**轮询放到后台线程**。这与本文件早先的写法正好相反
+/// 所以：平台循环占住主线程，**消费放到后台线程**。这与本文件早先的写法正好相反
 /// （那时尝试把平台循环放到后台）——那种写法在 GTK 下必然 panic，因为它在工作线程里
 /// 初始化并驱动 GTK。
 ///
 /// 只有轮询本身会动 Qt/GTK 对象时才会出问题；`poll_*` 只读队列并分派命令，
 /// 不需要平台 API，所以可以安全地在后台线程运行。
 ///
-/// # 后台线程还负责一件事
+/// # 为什么 resize 不在这里了（DEMO-003）
 ///
-/// **内层分栏随窗口重排**：项目树/编辑器是自绘挂载面，不在窗口布局的托管项里，
-/// 所以客户区一变就重算一次（见 [`resync_split_to_client_size`]）。状态栏**不在**这里
-/// 写：原生控件只能在 UI 线程写下，而编辑器信号就是在那里发出的（见 [`wire_status_bar`]）。
+/// 以前这条线程还靠 `window_client_size()` 每 100 ms 对比客户区，把两栏重算一遍 ——
+/// 因为窗口布局只托管外层行，两栏是挂载面，不在托管项里。现在窗口布局自己带着
+/// **子布局**（`BoxLayout::set_child_layout`，DEMO-004），后端报 resize 就会跑完整棵
+/// 布局树，两栏与三行同一次完成。于是这条线程只剩“取队列”一件事，
+/// 也就没有第二条 resize 实现需要跟它对齐。
+///
+/// 队列仍然是必需的：原生菜单栏（macOS 的 `NSMenu`）选中项只进这个队列，不发射
+/// 任何控件信号 —— 它没有控件可发。
 ///
 /// 后台线程的唯一退出信号是 `done`，由主线程在 `app.run()` 返回后置位 —— 即窗口真正
 /// 关闭。窗口还开着时永远有人消费事件，因此不会出现“菜单事件进了队列却没人取”的半死
@@ -1088,28 +1051,26 @@ fn resync_split_to_client_size(
 fn run_loop(
     app: &App,
     window_id: ObjectId,
-    chrome: ChromeIds,
     bindings: &[(u64, MenuBinding)],
     toolbar_buttons: &[ObjectId],
-    tree: &CustomWidgetHandle,
     editor: &CustomWidgetHandle,
     log: &Arc<EventLog>,
 ) {
-    // 轮询线程需要在主线程进入平台循环之前启动，否则它一开始就看不到已经入队的
+    // 消费线程需要在主线程进入平台循环之前启动，否则它一开始就看不到已经入队的
     // 触发；`Arc` 让两个线程各自持有需要的东西。
     let bindings: Arc<Vec<(u64, MenuBinding)>> = Arc::new(bindings.to_vec());
     let toolbar_buttons: Arc<Vec<ObjectId>> = Arc::new(toolbar_buttons.to_vec());
     let editor = editor.clone();
-    let tree = tree.clone();
     let poll_log = Arc::clone(log);
     let done = Arc::new(AtomicBool::new(false));
     let done_flag = Arc::clone(&done);
 
     let poller = std::thread::spawn(move || {
+        // `window_id` is kept for the exit-path diagnostic: an id is what a log reader can
+        // correlate with the `[Window] created` line, and the pump no longer reads the size.
+        let _ = window_id;
         let mut handled = 0usize;
         let mut idle_ticks = 0u32;
-        // 记住上一次重排内层时使用的客户区，仅在真实变化时重算 —— 不是每个 tick 都动。
-        let mut last_client: Option<(u32, u32)> = rust_widgets::window_client_size(window_id);
         // The pump runs for as long as the window does. The only exit is `done`, which
         // the main thread sets after `app.run()` returns — i.e. after the window has
         // actually closed. This is the shutdown signal that keeps the two threads in
@@ -1119,21 +1080,7 @@ fn run_loop(
         while !done_flag.load(Ordering::SeqCst) {
             let mut did_work = false;
 
-            // 窗口 resize：客户区变了就把内层两栏重算一遍。外层三行由窗口布局自己负责，
-            // 但项目树/编辑器是自绘挂载面，不在窗口布局的托管项里（见 [`resync_split_to_client_size`]）。
-            if let Some(size) = rust_widgets::window_client_size(window_id) {
-                if last_client != Some(size) {
-                    resync_split_to_client_size(chrome, &tree, &editor, size);
-                    poll_log.append(format!(
-                        "[Layout] resize {}x{} -> 两栏已重算（tree/editor）",
-                        size.0, size.1
-                    ));
-                    last_client = Some(size);
-                    did_work = true;
-                }
-            }
-
-            // 菜单激活：菜单不会直接回调 Rust，必须从队列取出。
+            // 菜单激活：原生菜单与自绘菜单选择都进这个队列，必须从队列取出。
             while let Some(item_id) = rust_widgets::poll_menu_triggered() {
                 if dispatch_menu_event(item_id, &bindings, &editor, &poll_log) {
                     did_work = true;
@@ -1384,6 +1331,40 @@ mod tests {
             (actual - expected).abs() < 0.02,
             "the tree must take ~{expected:.3} of the split, got {actual:.3} \
              (tree {tree_w}px, editor {editor_w}px)"
+        );
+    }
+
+    /// 窗口布局自己就把两栏摆好了：不需要宿主再跑一遍第二层（DEMO-003/DEMO-004）。
+    ///
+    /// 这是本 demo 之前缺的那一环：外层布局只给分栏行一块矩形，两栏由宿主另跑一次；
+    /// resize 时宿主那次不会重跑，于是两栏停在旧宽度上。现在子布局挂在占位项上，一次
+    /// `update` 就把两层都算出来。
+    #[test]
+    fn the_window_layout_places_both_panes_in_one_pass() {
+        let (toolbar, split_row, status) = strip_ids();
+        let (tree, editor) = pane_ids();
+        let mut layout = build_window_layout(0, toolbar, split_row, status);
+        assert!(
+            layout.set_child_layout(split_row, Box::new(build_split_layout(tree, editor))),
+            "the reserved split row must accept the nested layout"
+        );
+
+        let placed = laid_out(&layout, Rect::new(0, 0, 900, 700));
+        let row = rect_of(&placed, split_row);
+        let tree_rect = rect_of(&placed, tree);
+        let editor_rect = rect_of(&placed, editor);
+
+        assert_eq!(tree_rect.x, row.x, "the tree starts where the split row starts");
+        assert_eq!(tree_rect.y, row.y);
+        assert_eq!(tree_rect.height, row.height, "the panes fill the row's height");
+        assert_eq!(
+            editor_rect.x,
+            tree_rect.x + tree_rect.width as i32 + SPLIT_GAP as i32,
+            "the editor follows the tree, separated by the declared gap"
+        );
+        assert!(
+            editor_rect.x + editor_rect.width as i32 <= row.x + row.width as i32,
+            "both panes stay inside the row the window layout gave them"
         );
     }
 

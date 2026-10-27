@@ -8,7 +8,7 @@
 //! color has alpha transparency, a checkerboard pattern is rendered behind it
 //! to indicate the transparent regions. An optional border frames the swatch.
 
-use crate::compat::Duration;
+use crate::compat::{lock, Arc, Duration, Mutex, Vec};
 use crate::core::{Color, Point, Rect};
 use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
 use crate::event::{Event, EventHandler};
@@ -18,6 +18,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::display_widgets::color_history::ColorHistory;
 use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -50,6 +51,15 @@ struct CheckerboardCache {
     tiles: crate::compat::Vec<(i32, i32, u32, u32, Color)>,
 }
 
+/// The write end of a paired [`ColorHistory`]'s commit stream (D-026).
+///
+/// The queue carries the colours; the redraw signal is the history's own, so a commit repaints
+/// the band even when it did not originate from a pointer gesture.
+struct ColorCommitSink {
+    colors: Arc<Mutex<Vec<Color>>>,
+    redraw: GenericSignal,
+}
+
 /// A compact color swatch widget that displays a color and emits a signal
 /// when clicked.
 pub struct ColorWell {
@@ -73,7 +83,14 @@ pub struct ColorWell {
     ///
     /// Every colour-changing path — the property route, a drop, and the host's own
     /// calls — ends in `set_color`, so a mirrored copy of the well sees them all.
+    /// This is an assignment signal, not a commit signal: a host previewing a colour
+    /// streams values through it without filling the recent-colour band.
     pub color_changed: Signal1<Color>,
+    /// The commit stream of a paired [`ColorHistory`], when one is attached (D-026).
+    ///
+    /// Only [`Self::commit_color`], [`Self::commit`] and a drop write here. A plain
+    /// [`Self::set_color`] is a preview and deliberately leaves the history alone.
+    history_commits: Option<ColorCommitSink>,
     /// The transparency grid, rendered once per pair of tones and well size.
     checkerboard: Option<CheckerboardCache>,
 }
@@ -91,6 +108,7 @@ impl ColorWell {
             clicked: GenericSignal::new(),
             picker_requested: GenericSignal::new(),
             color_changed: Signal1::new(),
+            history_commits: None,
             checkerboard: None,
         }
     }
@@ -101,6 +119,10 @@ impl ColorWell {
     }
 
     /// Sets the current color and requests a redraw.
+    ///
+    /// This is the *preview* route: it changes what the well paints and reports the value through
+    /// [`Self::color_changed`], but it does not record the colour in a paired history. Use
+    /// [`Self::commit_color`] when the value is final (D-026).
     pub fn set_color(&mut self, color: Color) {
         if self.color == color {
             return;
@@ -108,6 +130,51 @@ impl ColorWell {
         self.color = color;
         self.base.request_redraw();
         self.color_changed.emit(color);
+    }
+
+    /// Pairs this well with `history`, so a committed colour enters the recent-colour band.
+    ///
+    /// Attaching replaces any previous pairing. The history drains the commit stream on its next
+    /// paint or interaction, so the host does not have to poll (D-026).
+    pub fn attach_history(&mut self, history: &mut ColorHistory) {
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let redraw = history.accept_color_commits(Arc::clone(&commits));
+        self.history_commits = Some(ColorCommitSink { colors: commits, redraw });
+    }
+
+    /// Breaks the pairing, so later commits no longer reach the history.
+    pub fn detach_history(&mut self) {
+        self.history_commits = None;
+    }
+
+    /// Whether this well is paired with a history.
+    pub fn is_history_attached(&self) -> bool {
+        self.history_commits.is_some()
+    }
+
+    /// Commits `color`: assigns it and records it with the paired history, when one is attached.
+    ///
+    /// A commit is a deliberate choice (a picker result, a drop, a press on the well), which is
+    /// exactly the moment the recent-colour band should grow. Re-committing the current colour is
+    /// allowed; the history itself skips a repeated newest entry.
+    pub fn commit_color(&mut self, color: Color) {
+        self.set_color(color);
+        self.forward_commit(color);
+    }
+
+    /// Commits the colour the well currently shows.
+    pub fn commit(&mut self) {
+        self.forward_commit(self.color);
+    }
+
+    /// Writes `color` into the paired history's commit stream.
+    fn forward_commit(&self, color: Color) {
+        let Some(sink) = self.history_commits.as_ref() else {
+            return;
+        };
+        lock(&sink.colors).push(color);
+        // Wake the history, so its drain-on-paint sees the commit in the very next frame.
+        sink.redraw.emit();
     }
 
     /// Returns whether the border is visible.
@@ -449,6 +516,9 @@ impl EventHandler for ColorWell {
                         self.picker_requested.emit();
                     }
                     self.clicked.emit();
+                    // A press on the well selects the colour it shows, which is a commit
+                    // gesture rather than a preview (D-026).
+                    self.commit();
                 } else if *button == 1 {
                     // A press elsewhere ends the gesture, so the next press here
                     // is the first of a new pair rather than the second of a stale
@@ -503,7 +573,8 @@ impl DropTarget for ColorWell {
         let Some(color) = Color::parse_hex(&payload.item_id) else {
             return DropEffect::None;
         };
-        self.set_color(color);
+        // A drop is a final choice, so it commits rather than merely previews.
+        self.commit_color(color);
         DropEffect::Copy
     }
 
@@ -538,6 +609,37 @@ mod tests {
         let mut cw = ColorWell::new(Color::RED, Rect::new(0, 0, 40, 40));
         cw.set_color(Color::BLUE);
         assert_eq!(cw.color(), Color::BLUE);
+    }
+
+    /// D-026: only a committed colour enters the paired recent-colour band.
+    #[test]
+    fn a_committed_colour_reaches_the_paired_history() {
+        let mut cw = ColorWell::new(Color::RED, Rect::new(0, 0, 40, 40));
+        let mut history = ColorHistory::new(Rect::new(0, 0, 200, 80));
+        cw.attach_history(&mut history);
+        assert!(cw.is_history_attached());
+
+        // A preview assignment changes the well but leaves the history untouched.
+        cw.set_color(Color::BLUE);
+        assert_eq!(history.sync_committed_colors(), 0);
+        assert!(history.colors().is_empty(), "a preview is not a commit");
+
+        // A commit enters the band.
+        cw.commit_color(Color::GREEN);
+        assert_eq!(history.sync_committed_colors(), 1);
+        assert_eq!(history.colors(), &[Color::GREEN]);
+
+        // A press on the well commits the colour it currently shows.
+        cw.set_color(Color::BLUE);
+        cw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        assert_eq!(history.sync_committed_colors(), 1);
+        assert_eq!(history.colors(), &[Color::GREEN, Color::BLUE]);
+
+        // A detached well queues nothing.
+        cw.detach_history();
+        assert!(!cw.is_history_attached());
+        cw.commit_color(Color::RED);
+        assert_eq!(history.sync_committed_colors(), 0);
     }
 
     #[test]

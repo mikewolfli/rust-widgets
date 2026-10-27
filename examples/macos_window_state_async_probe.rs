@@ -13,15 +13,9 @@
 //!
 //! Run with `cargo run --example macos_window_state_async_probe`.
 
-#[cfg(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-))]
+#[cfg(full_widgets)]
 use std::thread::sleep;
-#[cfg(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-))]
+#[cfg(full_widgets)]
 use std::time::Duration;
 
 // The probe drives `app::App` and the platform singleton, both compiled out under
@@ -29,23 +23,14 @@ use std::time::Duration;
 // express that, because it is satisfied by any listed feature being on, and
 // `cargo --all-features` enables `desktop` and `mini` together. Gate `main` on the
 // same condition the modules use, with a stub for the builds where it is absent.
-#[cfg(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-))]
+#[cfg(full_widgets)]
 use rust_widgets::app::App;
-#[cfg(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-))]
+#[cfg(full_widgets)]
 use rust_widgets::platform::get_platform;
-#[cfg(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-))]
+#[cfg(full_widgets)]
 use rust_widgets::WindowStateFlag;
 
-#[cfg(all(not(alloc_frugal), any(feature = "desktop", feature = "tablet", feature = "mobile")))]
+#[cfg(full_widgets)]
 fn main() {
     App::new().init();
     let platform = get_platform();
@@ -78,10 +63,7 @@ fn main() {
 /// The probe's subject does not exist in this build: `mini`/`embedded` compile out
 /// the app lifecycle and the platform singleton. Report that rather than fail to
 /// build, which a bare `required-features` gate cannot do under `--all-features`.
-#[cfg(not(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-)))]
+#[cfg(not(full_widgets))]
 fn main() {
     println!(
         "macos_window_state_async_probe: not applicable in this build — it needs a \

@@ -45,6 +45,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::ChartTooltip;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -159,6 +160,10 @@ pub struct Heatmap {
     readout_text: ReadoutCache,
     /// Whether the host paints the hover read-out with a companion tooltip.
     hover_readout_external: bool,
+    /// An attached standard tooltip that paints the hover read-out at [`Self::hover_anchor`].
+    ///
+    /// `None` is the default: the inline read-out and its historical pixels are unchanged.
+    chart_tooltip: Option<ChartTooltip>,
     /// A caller-supplied colour ramp.
     ramp: Option<Box<dyn ColorRamp>>,
     /// Cached legend samples for the width they were built at.
@@ -222,6 +227,7 @@ impl Heatmap {
             legend_text: RefCell::new(None),
             readout_text: RefCell::new(None),
             hover_readout_external: false,
+            chart_tooltip: None,
             ramp: None,
             legend_cache: None,
             data_range_cache: Cell::new(None),
@@ -446,6 +452,7 @@ impl Heatmap {
             }
         }
         self.hovered_cell = None;
+        self.sync_chart_tooltip();
     }
 
     /// The display row a data row is painted at.
@@ -471,6 +478,42 @@ impl Heatmap {
         }
         self.hover_readout_external = external;
         self.base.request_redraw();
+    }
+
+    /// Attaches a standard tooltip that paints the hover read-out at [`Self::hover_anchor`].
+    ///
+    /// `None` is the default and paints nothing. Once attached, the tooltip follows the same
+    /// hovered cell as the inline read-out and the inline read-out steps aside, so the two cannot
+    /// both paint.
+    pub fn set_chart_tooltip(&mut self, tooltip: Option<ChartTooltip>) {
+        let mut tooltip = tooltip;
+        if let Some(attached) = tooltip.as_mut() {
+            attached.base_mut().set_geometry(self.geometry());
+        }
+        self.chart_tooltip = tooltip;
+        self.sync_chart_tooltip();
+        self.base.request_redraw();
+    }
+
+    /// The attached standard tooltip, when one is mounted.
+    pub fn chart_tooltip(&self) -> Option<&ChartTooltip> {
+        self.chart_tooltip.as_ref()
+    }
+
+    /// The attached standard tooltip mutably, when one is mounted.
+    pub fn chart_tooltip_mut(&mut self) -> Option<&mut ChartTooltip> {
+        self.chart_tooltip.as_mut()
+    }
+
+    /// Paints or withdraws the attached tooltip to match the hovered cell.
+    fn sync_chart_tooltip(&mut self) {
+        let anchor = self.hover_anchor();
+        if let Some(tooltip) = self.chart_tooltip.as_mut() {
+            match anchor {
+                Some((point, lines)) => tooltip.show_at(point, lines),
+                None => tooltip.hide(),
+            }
+        }
     }
 
     /// The hovered cell's anchor and suggested tooltip content, for an external read-out.
@@ -545,6 +588,7 @@ impl Heatmap {
         self.first_column = 0;
         self.clamp_pan();
         self.data_range_cache.set(None);
+        self.sync_chart_tooltip();
         self.base.request_redraw();
     }
 
@@ -1262,7 +1306,7 @@ impl Draw for Heatmap {
         //
         // The text and its measured size are cached against the hovered cell, so a still frame
         // with the pointer parked on a cell formats and measures nothing.
-        if self.show_tooltip && !self.hover_readout_external {
+        if self.show_tooltip && !self.hover_readout_external && self.chart_tooltip.is_none() {
             if let Some((row, column)) = self.hovered_cell {
                 let display_row = self.display_row_of(row);
                 let display_column = self.display_column_of(column);
@@ -1337,6 +1381,15 @@ impl Draw for Heatmap {
         }
         if self.show_legend {
             self.draw_legend(context, rect, grid, font, text_color);
+        }
+        // ── Attached standard tooltip ──
+        //
+        // The bubble paints only while visible, so an idle heat map does not grow an empty box.
+        if let Some(tooltip) = self.chart_tooltip.as_mut() {
+            tooltip.base_mut().set_geometry(rect);
+            if tooltip.is_visible() {
+                tooltip.draw(context);
+            }
         }
     }
 }
@@ -1565,6 +1618,7 @@ impl EventHandler for Heatmap {
                     if let Some((row, column)) = cell {
                         self.cell_hovered.emit((row, column));
                     }
+                    self.sync_chart_tooltip();
                     self.base.request_redraw();
                 }
             }
@@ -1627,6 +1681,7 @@ impl EventHandler for Heatmap {
                 self.region_current = None;
                 self.pan_drag = None;
                 if self.hovered_cell.take().is_some() || had_region {
+                    self.sync_chart_tooltip();
                     self.base.request_redraw();
                 }
             }
@@ -2420,5 +2475,20 @@ mod issue_2_8_tests {
         assert!(lines.iter().any(|line| line.text.contains("r1 / c0: 3")));
         grid.set_hover_readout_external(true);
         assert!(grid.hover_readout_external());
+    }
+
+    /// Chapter-3 gap 10: an attached tooltip is driven by the existing hover anchor. With no
+    /// attachment the heat map paints no tooltip, which is the default.
+    #[test]
+    fn an_attached_tooltip_follows_the_hovered_cell() {
+        let mut grid = grid();
+        assert!(grid.chart_tooltip().is_none());
+        grid.set_chart_tooltip(Some(ChartTooltip::new(Rect::new(0, 0, 400, 300))));
+        grid.hovered_cell = Some((1, 0));
+        grid.sync_chart_tooltip();
+        assert!(grid.chart_tooltip().expect("attached").is_visible());
+        grid.hovered_cell = None;
+        grid.sync_chart_tooltip();
+        assert!(!grid.chart_tooltip().expect("attached").is_visible());
     }
 }

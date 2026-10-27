@@ -582,6 +582,7 @@ checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 name = "control-demo"
 version = "0.1.0"
 dependencies = [
+ "preview-common",
  "rust_widgets",
 ]
 
@@ -2514,6 +2515,10 @@ name = "presser"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
+
+[[package]]
+name = "preview-common"
+version = "0.1.0"
 
 [[package]]
 name = "proc-macro-crate"

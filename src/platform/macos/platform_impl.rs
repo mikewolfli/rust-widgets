@@ -222,8 +222,9 @@ impl Platform for MacOSPlatform {
     /// now the same measured fact [`Self::dpi_scale_factor`] answers.
     ///
     /// `ime` and `accessibility` stay `true`: both have real implementations reachable
-    /// from this backend (`ime_bridge()` → `ImeMacosBridge`, `accessibility_bridge()` →
-    /// the AppKit bridge), and `shortcut_style()` really is `Mac`.
+    /// from this backend (`ime_bridge()` → the shared `MacOsImeBridge`, whose composition and
+    /// commit are driven by the canvas view's `NSTextInputClient` callbacks in `canvas.rs`;
+    /// `accessibility_bridge()` → the AppKit bridge), and `shortcut_style()` really is `Mac`.
     ///
     /// The two host-service flags follow the same rule: both are `true` because both
     /// methods have real bodies (`NSPasteboard`, and the `open` handler spawned by
@@ -413,6 +414,30 @@ impl Platform for MacOSPlatform {
         super::environment::accent_color()
     }
 
+    /// The pointer's position in the global display space (SP-119).
+    ///
+    /// `None` in a profile without the CoreGraphics module (`mini`/`embedded`), which is the same
+    /// honest absence a compositor-backed backend reports.
+    #[cfg(widgets_unstripped)]
+    fn global_pointer_position(&self) -> Option<crate::core::Point> {
+        let (x, y) = super::cg::pointer_position()?;
+        Some(crate::core::Point::from_f32(x as f32, y as f32))
+    }
+
+    /// The colour of one screen pixel at global `position` (SP-119).
+    ///
+    /// # Why this answers `None` even on a machine that allows sampling
+    ///
+    /// `CGWindowListCreateImage` returns null without the Screen Recording grant, and it also
+    /// returns null for a point outside every display. Both are "this pixel cannot be read", so a
+    /// picker falls back to sampling its own painted surface rather than being handed a colour no
+    /// pixel on screen has.
+    #[cfg(widgets_unstripped)]
+    fn sample_screen_color(&self, position: crate::core::Point) -> Option<crate::core::Color> {
+        let (r, g, b, a) = super::cg::sample_screen_pixel(position.x as f64, position.y as f64)?;
+        Some(crate::core::Color::rgba(r, g, b, a))
+    }
+
     /// The user's locale, from `NSLocale.currentLocale`.
     fn system_locale(&self) -> Option<&'static str> {
         super::environment::system_locale()
@@ -551,6 +576,16 @@ impl Platform for MacOSPlatform {
                 NSApplicationActivationOptions::NSApplicationActivateIgnoringOtherApps,
             );
             pool.drain();
+        }
+        // P-208: the legacy backend's AppKit observer existed but nothing installed it, so an
+        // accent change was only noticed by the polling fallback. `init` runs on the AppKit main
+        // thread (checked above), which is where the notification centre requires registration.
+        #[cfg(device_profile)]
+        if !super::environment::install_system_color_observer() {
+            log::debug!(
+                "[macos] the system-colour observer was not installed; the 250 ms environment \
+                 poll remains the backstop"
+            );
         }
     }
     fn run(&self) {
@@ -693,6 +728,68 @@ impl Platform for MacOSPlatform {
         // The state record is the authority for whether the widget existed.
         self.state.destroy_widget(widget_id)
     }
+    /// Creates a logical file-chooser handle.
+    ///
+    /// The native panel this backend presents is [`Self::choose_path`]
+    /// (`NSOpenPanel`/`NSSavePanel`), which is what the `file_dialog` capability flag describes.
+    /// The library paints the chooser control itself, so this records a handle rather than
+    /// constructing a second AppKit panel; returning `0` while the capability says there is a
+    /// picker would be the contradiction P-204 removes.
+    fn create_file_dialog(
+        &self,
+        _parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        self.register_state_only_handle(HandleKind::FileDialog, "Open File", x, y, width, height)
+    }
+
+    /// Message boxes are painted by the library; this backend creates no native one.
+    #[allow(clippy::too_many_arguments)]
+    fn create_message_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        let _ = (parent, title, text, x, y, width, height);
+        log::debug!(
+            "[macos] create_message_box: no native message-box control; the library paints it"
+        );
+        0
+    }
+
+    /// Colour choosers are painted by the library; AppKit's panel is not a per-window control.
+    fn create_color_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        let _ = (parent, x, y, width, height);
+        log::debug!(
+            "[macos] create_color_dialog: no native colour-dialog control; the library paints it"
+        );
+        0
+    }
+
+    /// Font choosers are painted by the library; AppKit's panel is not a per-window control.
+    fn create_font_dialog(&self, parent: ObjectId, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        let _ = (parent, x, y, width, height);
+        log::debug!(
+            "[macos] create_font_dialog: no native font-dialog control; the library paints it"
+        );
+        0
+    }
+
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         // Off-main (e.g. the C ABI called from a worker thread or unit tests),
         // never construct `NSWindow`: AppKit raises a foreign exception that
@@ -933,6 +1030,7 @@ impl Platform for MacOSPlatform {
                 }
                 #[cfg(widgets_unstripped)]
                 HandleKind::Canvas => handle.ptr as *mut core::ffi::c_void,
+                HandleKind::FileDialog => return None,
             }
         };
         let ns_view = core::ptr::NonNull::new(view)?;
@@ -1056,7 +1154,11 @@ impl Platform for MacOSPlatform {
         result.unwrap_or(None).unwrap_or_else(|| self.state.clipboard_text())
     }
     fn ime_bridge(&self) -> Option<&dyn ImeBridge> {
-        Some(&self.ime_bridge)
+        // The bridge is process-wide because the canvas view's `NSTextInputClient` callbacks are
+        // Objective-C functions with no handle on this platform object; see
+        // [`super::types::ime_bridge`]. Returning the same instance is what makes the runtime's
+        // focus notification visible to those callbacks.
+        Some(super::types::ime_bridge())
     }
 
     /// Reads the record the backend keeps for every id it allocated.
@@ -1263,6 +1365,118 @@ impl Platform for MacOSPlatform {
             }
         }
         self.state.window_min_size(widget_id)
+    }
+
+    /// Applies a maximum content size through `NSWindow.setContentMaxSize:`.
+    ///
+    /// AppKit clamps user resizing only; a programmatic `setFrame:` can still exceed it, which is
+    /// the same contract as `setContentMinSize:` and is stated rather than hidden.
+    fn set_window_max_size(&self, widget_id: ObjectId, width: u32, height: u32) -> bool {
+        let recorded = self.state.set_window_max_size(widget_id, width, height);
+        if !super::types::is_main_thread() {
+            return recorded;
+        }
+        let Some(window) = resolve_window_ptr(self, widget_id) else {
+            return recorded;
+        };
+        // SAFETY: `window` is an `NSWindow` on the AppKit main thread; `setContentMaxSize:`
+        // constrains the content view, which is what the library paints into.
+        unsafe {
+            let size = NSSize::new(width as f64, height as f64);
+            let _: () = msg_send![window, setContentMaxSize: size];
+        }
+        true
+    }
+
+    /// Makes the window non-opaque and gives it a clear background (or restores both).
+    ///
+    /// `isOpaque = NO` alone is not enough: AppKit still fills the window with its background
+    /// colour, so the background is switched to `clearColor` as the second half. The surface the
+    /// library blits must carry alpha for the result to be visible, which is a renderer concern
+    /// rather than a window one.
+    fn set_window_transparent(&self, widget_id: ObjectId, transparent: bool) -> bool {
+        if !super::types::is_main_thread() {
+            return false;
+        }
+        let Some(window) = resolve_window_ptr(self, widget_id) else {
+            return false;
+        };
+        // SAFETY: `window` is a live `NSWindow` on the AppKit main thread; both messages are
+        // documented `NSWindow`/`NSColor` operations and the returned colour is autoreleased.
+        unsafe {
+            let opaque: BOOL = if transparent { NO } else { YES };
+            let _: () = msg_send![window, setOpaque: opaque];
+            let color: id = if transparent {
+                msg_send![class!(NSColor), clearColor]
+            } else {
+                msg_send![class!(NSColor), windowBackgroundColor]
+            };
+            if color == nil {
+                return false;
+            }
+            let _: () = msg_send![window, setBackgroundColor: color];
+        }
+        true
+    }
+
+    /// Sets the window level to `NSFloatingWindowLevel` (3) or back to normal (0).
+    fn set_window_always_on_top(&self, widget_id: ObjectId, on: bool) -> bool {
+        if !super::types::is_main_thread() {
+            return false;
+        }
+        let Some(window) = resolve_window_ptr(self, widget_id) else {
+            return false;
+        };
+        // SAFETY: `window` is a live `NSWindow` on the AppKit main thread and `setLevel:` takes an
+        // `NSInteger`; 3 is `NSFloatingWindowLevel` and 0 is `NSNormalWindowLevel`.
+        unsafe {
+            let level: i64 = if on { 3 } else { 0 };
+            let _: () = msg_send![window, setLevel: level];
+        }
+        true
+    }
+
+    /// Sets the window's `NSAppearance` to Aqua or Dark Aqua.
+    fn set_window_preferred_theme(&self, widget_id: ObjectId, dark: bool) -> bool {
+        if !super::types::is_main_thread() {
+            return false;
+        }
+        let Some(window) = resolve_window_ptr(self, widget_id) else {
+            return false;
+        };
+        // SAFETY: the name is an autoreleased `NSString` in the main thread's pool, and
+        // `appearanceNamed:` returns a shared appearance the window retains.
+        unsafe {
+            let name = if dark { "NSAppearanceNameDarkAqua" } else { "NSAppearanceNameAqua" };
+            let ns_name = autoreleased_nsstring(name);
+            let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: ns_name];
+            if appearance == nil {
+                return false;
+            }
+            let _: () = msg_send![window, setAppearance: appearance];
+        }
+        true
+    }
+
+    /// Excludes the window from screen capture with `NSWindowSharingNone`.
+    ///
+    /// `setSharingType:` is the documented AppKit switch (`NSWindowSharingNone` = 0,
+    /// `NSWindowSharingReadOnly` = 1). It is read back by the system, so this is the native fact
+    /// rather than a recorded preference.
+    fn set_window_content_protected(&self, widget_id: ObjectId, protected: bool) -> bool {
+        if !super::types::is_main_thread() {
+            return false;
+        }
+        let Some(window) = resolve_window_ptr(self, widget_id) else {
+            return false;
+        };
+        // SAFETY: `window` is a live `NSWindow` on the AppKit main thread; `setSharingType:` takes
+        // an `NSUInteger` matching the two documented sharing constants.
+        unsafe {
+            let sharing: usize = if protected { 0 } else { 1 };
+            let _: () = msg_send![window, setSharingType: sharing];
+        }
+        true
     }
 
     /// AppKit window icons are a property of the application bundle, not of one window.

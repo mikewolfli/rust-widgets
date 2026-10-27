@@ -1617,6 +1617,18 @@ impl WidgetProperties for QRCode {
                 Some(c) => CapabilityValue::Color(c),
                 None => CapabilityValue::Null,
             }),
+            "logo" => match self.logo {
+                None => Ok(CapabilityValue::Null),
+                Some(crate::widget::icon_source::IconSource::Builtin(name)) => Ok(
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(name)),
+                ),
+                // A borrowed geometry logo has no document representation; reporting one would be
+                // a lie (the same rule `Icon::icon_source` follows).
+                Some(crate::widget::icon_source::IconSource::StaticGeometry(_)) => {
+                    Err(CapabilityAccessError::IconSourceNotPersistable)
+                }
+            },
+            "logo_size_modules" => Ok(CapabilityValue::UInt(u64::from(self.logo_modules))),
             _ => base_property_get(self, name),
         }
     }
@@ -1670,6 +1682,27 @@ impl WidgetProperties for QRCode {
                 }
                 Ok(())
             }
+            "logo" => {
+                match value {
+                    CapabilityValue::Null => self.set_logo(None),
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Builtin(
+                        name,
+                    )) => {
+                        self.set_logo(Some(crate::widget::icon_source::IconSource::Builtin(name)));
+                    }
+                    // A resource ID needs the host's resolver; guessing a path here would bypass
+                    // the resource policy.
+                    CapabilityValue::IconSpec(crate::widget::icon_source::IconSpec::Resource {
+                        ..
+                    }) => return Err(CapabilityAccessError::ResourceResolutionRequired),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
+            "logo_size_modules" => {
+                self.set_logo_size_modules(expect_u32_saturating(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -1684,6 +1717,8 @@ impl WidgetProperties for QRCode {
             "max_version",
             "foreground_color",
             "background_color",
+            "logo",
+            "logo_size_modules",
             BASE_PROPERTY_NAMES
         ]
     }

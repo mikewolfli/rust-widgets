@@ -47,14 +47,20 @@ pub enum OverlayKind {
     Snackbar,
     /// A toast stack.
     ToastStack,
+    /// A [`crate::widget::companions::ToastHost`].
+    ///
+    /// The host owns its own rows and expiry, but it anchors them exactly like the other two
+    /// overlays; giving it a slot is what lets one window column carry all three (SP-124).
+    ToastHost,
 }
 
 /// Assigns non-overlapping vertical offsets to the overlay controls that share a host.
 ///
-/// The snackbar and the toast stack each anchor independently inside their own rectangle, so a
-/// host that shows both at the bottom of a window used to have them paint over each other. This is
-/// the host-side coordinator the missing piece called for: the host reserves a height per visible
-/// control, in the order it wants them stacked, and writes [`Self::offset`] back to each control.
+/// The snackbar, the toast stack and the toast host each anchor independently inside their own
+/// rectangle, so a host that shows more than one at the bottom of a window used to have them
+/// paint over each other. This is the host-side coordinator the missing piece called for: the
+/// host reserves a height per visible control, in the order it wants them stacked, and writes
+/// [`Self::offset`] back to each control.
 #[derive(Debug, Clone, Default)]
 pub struct OverlayStack {
     entries: Vec<(OverlayKind, u32)>,

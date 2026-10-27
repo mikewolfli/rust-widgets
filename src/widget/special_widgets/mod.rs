@@ -50,7 +50,7 @@ pub use map_view::{
     Compass, MapMarker, MapView, ScaleBar, ScaleBarStyle, ScaleUnits, TileKey, TileLoadError,
     TileLoader, TileRequest, TileViewport, ZoomButton, ZoomControl,
 };
-pub use markdown_editor::{FindBar, MarkdownEditor, MarkdownOutlinePanel};
+pub use markdown_editor::{FindBar, MarkdownEditor, MarkdownOutlinePanel, MarkdownTextChange};
 pub use media_player::MediaPlayer;
 pub use notification_center::{NotificationCenter, NotificationItem, NotificationLevel};
 pub use radar_chart::RadarChart;

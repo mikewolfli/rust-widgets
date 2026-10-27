@@ -215,6 +215,9 @@ static VERB_CLASSES: &[VerbClass] = &[
     verb("next_page", PayloadFree, CommandEffect::SideEffecting),
     verb("select_all", PayloadFree, CommandEffect::MutatesControl),
     verb("clear", PayloadFree, CommandEffect::MutatesControl),
+    // SP-121: the chip input commits its pending text into the chip band. It changes only the
+    // control's own collection, the same class as `clear`.
+    verb("commit", PayloadFree, CommandEffect::MutatesControl),
     verb("toggle", PayloadFree, CommandEffect::MutatesControl),
     verb("toggle_preview_mode", PayloadFree, CommandEffect::MutatesControl),
     verb("toggle_shift", PayloadFree, CommandEffect::MutatesControl),

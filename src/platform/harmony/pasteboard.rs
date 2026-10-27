@@ -58,7 +58,7 @@ mod sys {
     //! libraries only exist in the SDK's per-architecture `sysroot/usr/lib` directory, which
     //! `cargo ohos` passes with `-L`.
 
-    use crate::compat::{MiniToString, String, Vec};
+    use crate::compat::{lock, MiniToString, Mutex, OnceLock, String, Vec};
     use core::ffi::{c_char, CStr};
 
     /// The status code UDMF and the pasteboard return on success (`UDMF_E_OK`).
@@ -217,22 +217,54 @@ mod sys {
         Some(CStr::from_ptr(pointer).to_string_lossy().into_owned())
     }
 
-    /// Runs `body` with a live pasteboard handle, destroying it afterwards.
+    /// The live system pasteboard, created on first use and kept until [`release`].
     ///
-    /// The pasteboard is created per call rather than cached: it is a handle onto a system
-    /// service, and holding one past the call would keep the service connection alive for the
-    /// whole process lifetime — a resource the caller never asked for.
+    /// # Why one handle rather than create/destroy per call
+    ///
+    /// Every read and write used to create and destroy the system handle, so a copy/paste burst
+    /// paid a service connection per operation (G-605). The handle points at one system service,
+    /// so it is created once here and destroyed by [`release`] when the backend stops.
+    ///
+    /// Stored as a `usize` because a raw pointer is neither `Send` nor `Sync`, while the lock is
+    /// what serialises every use; the conversion is the standard one and never leaves the module.
+    static PASTEBOARD: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
+
+    /// Runs `body` with the cached pasteboard handle.
+    ///
+    /// The lock is held for the whole operation rather than only while fetching the handle: the
+    /// handle is one mutable system object, so two threads interleaving calls on it is exactly the
+    /// race the lock exists to prevent.
     fn with_pasteboard<R>(body: impl FnOnce(*mut OhPasteboard) -> R) -> Option<R> {
-        // SAFETY: FFI constructor; the returned handle is checked for null before use.
-        let pasteboard = unsafe { OH_Pasteboard_Create() };
-        if pasteboard.is_null() {
-            log::error!("[harmony pasteboard] OH_Pasteboard_Create returned null");
-            return None;
+        let cell = PASTEBOARD.get_or_init(|| Mutex::new(None));
+        let mut slot = lock(cell);
+        if slot.is_none() {
+            // SAFETY: FFI constructor; the returned handle is checked for null before being
+            // stored, and is only ever released by `release`.
+            let created = unsafe { OH_Pasteboard_Create() };
+            if created.is_null() {
+                log::error!("[harmony pasteboard] OH_Pasteboard_Create returned null");
+                return None;
+            }
+            *slot = Some(created as usize);
         }
-        let result = body(pasteboard);
-        // SAFETY: `pasteboard` is the live handle created above and is not touched afterwards.
-        unsafe { OH_Pasteboard_Destroy(pasteboard) };
-        Some(result)
+        let Some(raw) = *slot else {
+            return None;
+        };
+        Some(body(raw as *mut OhPasteboard))
+    }
+
+    /// Destroys the cached pasteboard handle, if one was created.
+    ///
+    /// Called when the backend stops. A later use recreates it, so quitting does not leave the
+    /// clipboard unusable for a caller that restarts the loop.
+    pub(super) fn release() {
+        let cell = PASTEBOARD.get_or_init(|| Mutex::new(None));
+        let mut slot = lock(cell);
+        if let Some(raw) = slot.take() {
+            // SAFETY: the pointer was produced by OH_Pasteboard_Create and is released exactly
+            // once, because `take` clears the slot under the same lock.
+            unsafe { OH_Pasteboard_Destroy(raw as *mut OhPasteboard) };
+        }
     }
 
     /// The plain text of `record`, through the UDS the header requires the caller to supply.
@@ -709,6 +741,9 @@ mod sys {
     }
 
     /// Unreachable in practice.
+    /// Releases the cached handle. A host build never creates one, so there is nothing to do.
+    pub(super) fn release() {}
+
     pub(super) fn set_text(_text: &str) -> bool {
         false
     }
@@ -759,6 +794,14 @@ mod sys {
 /// `true` exactly when the [`sys`] module above is the real one — the same `cfg` the trait
 /// methods and the capability flag are produced from, so the flag and the bodies cannot drift.
 pub(crate) const PASTEBOARD_AVAILABLE: bool = cfg!(target_env = "ohos");
+
+/// Releases the cached system pasteboard handle when the backend stops (G-605).
+///
+/// A host build has no handle, so the call is a no-op there rather than a second code path at
+/// the call site.
+pub(crate) fn release() {
+    sys::release();
+}
 
 /// Publishes `text` on the system pasteboard.
 ///

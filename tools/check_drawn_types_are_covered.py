@@ -89,10 +89,6 @@ ACKNOWLEDGED = {
         "src/widget/chart_widgets/chart_crosshair.rs",
         "Drawn by `BarChart` / `LineChart` at the hover position; those controls' own snapshots and tests cover the picture. Registering it as a kind would expose a crosshair a host cannot meaningfully mount on its own.",
     ),
-    "ChipInput": (
-        "src/widget/special_widgets/chip_input.rs",
-        "The editable field `Chip` composes; host-mountable but with no registry row. Decide register-as-kind or fold into `chip`'s snapshot.",
-    ),
     "ColumnChooser": (
         "src/widget/view_widgets/column_chooser.rs",
         "Column-visibility companion for table/tree headers; drawn inside its owner's rect, no own census row.",
@@ -120,10 +116,6 @@ ACKNOWLEDGED = {
     "MapMarkerDetail": (
         "src/widget/special_widgets/map_marker_detail.rs",
         "Detail card `MapView` draws beside a selected marker; the map's snapshot covers it.",
-    ),
-    "MarkdownToolbar": (
-        "src/widget/special_widgets/markdown_toolbar.rs",
-        "Toolbar the markdown editor draws above its text; covered by the editor's snapshot.",
     ),
     "MediaScrubber": (
         "src/widget/media_widgets/media_scrubber.rs",

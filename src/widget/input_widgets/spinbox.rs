@@ -42,6 +42,7 @@ use crate::widget::numeric::ordered_clamp_f64;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+use super::input_companions::{StepButtons, StepDirection};
 use super::input_validator::{InputValidator, ValidationState, Validator};
 use super::lineedit::LineEdit;
 use crate::data_binding::{Formatter, ValidationError, Validator as ValueValidator};
@@ -154,6 +155,13 @@ pub struct SpinBox {
     /// `minimum` / `maximum`. Not emitted when the value is set to the value it
     /// already had.
     pub value_changed: Signal1<i32>,
+    /// Emitted with the exact decimal value after any accepted change (I-117).
+    ///
+    /// `value_changed` keeps its historical `i32` payload for compatibility, which rounds a
+    /// control configured with `decimals > 0`. This companion carries the f64 the model already
+    /// stores, so a subscriber does not have to read the control back (and cannot race a
+    /// deferred update).
+    pub value_changed_f64: Signal1<f64>,
     /// Emitted without a payload when an in-progress edit is committed or
     /// cancelled (Enter, focus loss, or step).
     pub editing_finished: GenericSignal,
@@ -220,6 +228,13 @@ pub struct SpinBox {
     numeric_link: NumericLinkSlot,
     /// Memoised prefix/suffix advances keyed by the font and the two strings (I-P65).
     decoration_cache: RefCell<Option<(Font, String, String, u32, u32)>>,
+    /// The standard step-button pair the hit test, the enabled state and the button boxes come
+    /// from (I-128).
+    ///
+    /// The pair owns the two halves' geometry, the direction a point names and the enabled
+    /// predicates; the spin box still paints its own themed chevrons because the companion's
+    /// painter has no colour hook (see `sync_step_buttons`).
+    step_buttons: StepButtons,
 }
 
 /// How a spin box chooses the distance of one step.
@@ -373,27 +388,32 @@ impl SpinBox {
         self.assemble_row().0
     }
 
-    /// The upper/lower half of the button column that the *up* step owns.
-    fn up_button(&self) -> Rect {
+    /// Brings the standard step-button pair in line with the column and the value bounds.
+    ///
+    /// The pair's boxes are the same two halves the paint path draws, and its enabled flags are
+    /// the same predicates that dim the arrows. Calling this before a hit test or a frame is what
+    /// keeps the companion's `direction_at` and the control's ink on one geometry.
+    fn sync_step_buttons(&mut self) {
         let column = self.button_column();
-        let half = column.height / 2;
-        Rect::new(column.x, column.y, column.width, half)
+        if self.step_buttons.bounds() != column {
+            self.step_buttons.set_bounds(column);
+        }
+        self.step_buttons.set_enabled_pair(self.can_step_up(), self.can_step_down());
+    }
+
+    /// The upper/lower half of the button column that the *up* step owns.
+    ///
+    /// The box is the companion's (`StepButtons::up_rect`), so the painted arrow, the hovered
+    /// half and the clickable half cannot describe different rectangles (I-128).
+    fn up_button(&self) -> Rect {
+        self.step_buttons.up_rect()
     }
 
     /// The upper/lower half of the button column that the *down* step owns.
     ///
-    /// Derived from the same column as [`Self::up_button`], so the two tile it: they were
-    /// two independent `+ height`/`+ height / 2` expressions in `draw` and a third spelling
-    /// in the hit test.
+    /// Derived by the same companion as [`Self::up_button`], so the two tile the column.
     fn down_button(&self) -> Rect {
-        let column = self.button_column();
-        let half = column.height / 2;
-        Rect::new(
-            column.x,
-            column.y + column.height.saturating_sub(half) as i32,
-            column.width,
-            half,
-        )
+        self.step_buttons.down_rect()
     }
 
     /// The value box and the step column.
@@ -505,6 +525,8 @@ impl SpinBox {
         }
         self.direction = direction;
         self.place_entry();
+        // The column moved to the other edge of the band, so the companion's bounds follow it.
+        self.sync_step_buttons();
         self.base.request_redraw();
         self.base.request_layout();
     }
@@ -530,7 +552,7 @@ impl SpinBox {
 
     /// Creates a spin box with default range 0-99 and integer precision.
     pub fn new(geometry: Rect) -> Self {
-        Self {
+        let mut spin_box = Self {
             base: BaseWidget::new(WidgetKind::SpinBox, geometry, "SpinBox"),
             value: 0.0,
             minimum: 0.0,
@@ -548,6 +570,7 @@ impl SpinBox {
             direction: crate::core::TextDirection::LeftToRight,
             alignment: crate::core::Alignment::Left,
             value_changed: Signal1::new(),
+            value_changed_f64: Signal1::new(),
             editing_finished: GenericSignal::new(),
             step_type: SpinBoxStepType::SingleStep,
             editing: false,
@@ -565,7 +588,10 @@ impl SpinBox {
             numeric_validator: None,
             numeric_link: Rc::new(RefCell::new(None)),
             decoration_cache: RefCell::new(None),
-        }
+            step_buttons: StepButtons::new(Rect::new(0, 0, 0, 0)),
+        };
+        spin_box.sync_step_buttons();
+        spin_box
     }
 
     /// The shared link slot this spin box publishes while a slider is bound.
@@ -614,6 +640,12 @@ impl SpinBox {
     pub fn value_f64(&self) -> f64 {
         self.current_value()
     }
+    /// Emits both value signals: the historical `i32` one and the exact `f64` one (I-117).
+    fn emit_value_changed(&mut self) {
+        let exact = self.current_value();
+        self.value_changed.emit(self.value());
+        self.value_changed_f64.emit(exact);
+    }
     /// Sets the value, clamped to the range and rounded to [`Self::decimals`].
     pub fn set_value(&mut self, value: i32) {
         self.set_value_f64(value as f64);
@@ -625,7 +657,7 @@ impl SpinBox {
     /// control unreadable. `±inf` is a legitimate open bound, so it is clamped normally.
     pub fn set_value_f64(&mut self, value: f64) {
         if self.apply_value_f64(value) {
-            self.value_changed.emit(self.value());
+            self.emit_value_changed();
         }
     }
 
@@ -667,7 +699,7 @@ impl SpinBox {
         if self.editing && !self.keyboard_tracking {
             self.pending_value_emit = true;
         } else {
-            self.value_changed.emit(self.value());
+            self.emit_value_changed();
         }
     }
 
@@ -679,7 +711,7 @@ impl SpinBox {
         if self.pending_value_emit {
             self.pending_value_emit = false;
             if !already_reported {
-                self.value_changed.emit(self.value());
+                self.emit_value_changed();
             }
         }
     }
@@ -1141,7 +1173,7 @@ impl SpinBox {
             let pending = self.pending_value_emit;
             self.pending_value_emit = false;
             if pending {
-                self.value_changed.emit(self.value());
+                self.emit_value_changed();
             }
         }
     }
@@ -1555,6 +1587,7 @@ impl Widget for SpinBox {
         // The hosted entry is positioned by the same boxes the paint path uses, so a resize or a
         // move must carry it along rather than leaving it at the old value box.
         self.place_entry();
+        self.sync_step_buttons();
     }
 
     fn size_hint(&self) -> Size {
@@ -1612,6 +1645,11 @@ impl Widget for SpinBox {
             "value_changed" => {
                 Some(EventSignalRef::mapped("value_changed", &self.value_changed, |v| {
                     CapabilityValue::Int(*v as i64)
+                }))
+            }
+            "value_changed_f64" => {
+                Some(EventSignalRef::mapped("value_changed_f64", &self.value_changed_f64, |v| {
+                    CapabilityValue::Float(*v)
                 }))
             }
             "editing_finished" => {
@@ -1807,12 +1845,16 @@ impl SpinBox {
     /// accessors the paint path uses, and the caller passes only what it alone knows: where
     /// the pointer landed.
     fn handle_button_click(&mut self, pos: Point) {
-        if self.down_button().contains_point(pos) {
-            self.step_down();
-            self.base.clicked.emit();
-        } else if self.up_button().contains_point(pos) {
-            self.step_up();
-            self.base.clicked.emit();
+        match self.step_buttons.direction_at(pos) {
+            Some(StepDirection::Down) => {
+                self.step_down();
+                self.base.clicked.emit();
+            }
+            Some(StepDirection::Up) => {
+                self.step_up();
+                self.base.clicked.emit();
+            }
+            None => {}
         }
     }
 }
@@ -1822,15 +1864,14 @@ impl EventHandler for SpinBox {
         if !self.base.is_enabled() {
             return;
         }
+        // The step column's boxes and enabled halves are the companion's, so they are refreshed
+        // before this event hit-tests them.
+        self.sync_step_buttons();
         match event {
             Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
-                    if self.up_button().contains_point(*pos) {
-                        self.held_step = Some(true);
-                        self.repeat_elapsed = 0;
-                        self.handle_button_click(*pos);
-                    } else if self.down_button().contains_point(*pos) {
-                        self.held_step = Some(false);
+                    if let Some(direction) = self.step_buttons.direction_at(*pos) {
+                        self.held_step = Some(direction == StepDirection::Up);
                         self.repeat_elapsed = 0;
                         self.handle_button_click(*pos);
                     } else if self.editable_rect().contains_point(*pos) {
@@ -1861,11 +1902,8 @@ impl EventHandler for SpinBox {
             Event::TouchBegin { pos, .. } => {
                 // I-P65: touch follows the same held-button path as the mouse, so pressing and
                 // holding a stepper repeats on a touch device too.
-                if self.up_button().contains_point(*pos) {
-                    self.held_step = Some(true);
-                    self.repeat_elapsed = 0;
-                } else if self.down_button().contains_point(*pos) {
-                    self.held_step = Some(false);
+                if let Some(direction) = self.step_buttons.direction_at(*pos) {
+                    self.held_step = Some(direction == StepDirection::Up);
                     self.repeat_elapsed = 0;
                 }
                 self.handle_button_click(*pos);
@@ -1981,6 +2019,9 @@ impl EventHandler for SpinBox {
 }
 impl Draw for SpinBox {
     fn draw(&mut self, context: &mut RenderContext) {
+        // The button column and the bound-aware enabled halves come from the standard pair, so
+        // the painted chevrons and the clickable halves read one state (I-128).
+        self.sync_step_buttons();
         // ── The band actually painted ──
         //
         // Every measurement below is taken from one of the four derived boxes (`row_band`,
@@ -2061,9 +2102,10 @@ impl Draw for SpinBox {
         context.draw_rect(down_button, button_border);
         // A button at its bound is painted dimmed, so the control says "there is nowhere
         // further to go" before the user presses it. A wrapping box never reaches a bound.
-        let down_arrow =
-            if self.can_step_down() { arrow_color } else { arrow_color.with_alpha(90) };
-        let up_arrow = if self.can_step_up() { arrow_color } else { arrow_color.with_alpha(90) };
+        // The predicates are the companion's, so a dimmed arrow and a refusing press agree.
+        let (up_enabled, down_enabled) = self.step_buttons.enabled_pair();
+        let down_arrow = if down_enabled { arrow_color } else { arrow_color.with_alpha(90) };
+        let up_arrow = if up_enabled { arrow_color } else { arrow_color.with_alpha(90) };
         draw_step_arrow(context, down_button, false, down_arrow);
         context.fill_rect(up_button, step_fill(button_bg));
         context.draw_rect(up_button, button_border);
@@ -3052,6 +3094,34 @@ mod tests {
         assert_eq!(sb.value_f64(), 1.2);
         sb.step_up();
         assert_eq!(seen.load(Ordering::SeqCst), 1, "a real step still emits");
+    }
+
+    // ── I-117: the exact decimal value is observable ──
+
+    /// A control configured with decimals emits the exact value, not the rounded `i32`.
+    ///
+    /// `value_changed` keeps its historical payload (`2.75` rounds to `3`), so a subscriber
+    /// that needs the value the control actually stores reads `value_changed_f64`.
+    #[test]
+    fn the_f64_signal_carries_the_exact_decimal_value() {
+        use crate::compat::Arc;
+        use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_decimals(2);
+        let exact = Arc::new(AtomicU64::new(0));
+        let rounded = Arc::new(AtomicI32::new(0));
+        let exact_sink = exact.clone();
+        let rounded_sink = rounded.clone();
+        sb.value_changed_f64.connect(move |value| {
+            exact_sink.store(value.to_bits(), Ordering::SeqCst);
+        });
+        sb.value_changed.connect(move |value| {
+            rounded_sink.store(*value, Ordering::SeqCst);
+        });
+
+        sb.set_value_f64(2.75);
+        assert_eq!(f64::from_bits(exact.load(Ordering::SeqCst)), 2.75);
+        assert_eq!(rounded.load(Ordering::SeqCst), 3, "the compatibility payload still rounds");
     }
 
     // ── D09-STYLE-02: the hint measures with the font the paint uses ──

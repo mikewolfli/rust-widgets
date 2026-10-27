@@ -1583,6 +1583,9 @@ mod corner_coverage_tests {
 #[cfg(test)]
 mod glyph_blend_clip_tests {
     use super::*;
+    // The `mini` profile is `no_std`, so `Vec` is not in the prelude; every test module that
+    // builds one names it here instead of relying on `super::*` to carry it.
+    use crate::compat::Vec;
 
     const CANVAS: u32 = 8;
 
@@ -1790,6 +1793,8 @@ mod glyph_blend_clip_tests {
 #[cfg(test)]
 mod coverage_layout_tests {
     use super::*;
+    // See `glyph_blend_clip_tests`: `Vec` is not in the `mini` prelude.
+    use crate::compat::Vec;
 
     const CANVAS: u32 = 8;
 

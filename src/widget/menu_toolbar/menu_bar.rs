@@ -98,6 +98,13 @@ pub struct MenuBarEntry {
     tooltip: String,
     /// Optional icon painted in the entry's leading column (M-03).
     icon: Option<IconSource>,
+    /// The action id this entry presents, when the host gave it one (DEMO-002).
+    ///
+    /// A plain entry's meaning is its title, and matching on that forces every host to keep a
+    /// title→action table beside the bar — the duplication DEMO-002 records. The id is the same
+    /// surface [`MenuEntry::action_id`](crate::widget::menu_toolbar::menu::MenuEntry::action_id)
+    /// already has for a drop-down row, so a host has one way to name an action and not two.
+    action_id: Option<String>,
 }
 
 /// A hover source adapter over a menu-bar entry.
@@ -232,7 +239,13 @@ fn menu_bar_entry_from_record(
 impl MenuBarEntry {
     /// Creates an enabled entry with the given title.
     pub fn new(title: impl Into<String>) -> Self {
-        Self { title: title.into(), enabled: true, tooltip: String::new(), icon: None }
+        Self {
+            title: title.into(),
+            enabled: true,
+            tooltip: String::new(),
+            icon: None,
+            action_id: None,
+        }
     }
 
     /// The entry's icon source, if one was assigned.
@@ -345,6 +358,16 @@ pub struct MenuBar {
     /// the event is the same rule as everywhere else — the emitter states the fact while it still
     /// has it, rather than making the receiver guess it afterwards.
     pub triggered_entry: Signal1<(String, Rect)>,
+
+    /// Emitted with the **action id** of the entry chosen and its rectangle, when the host named
+    /// it (DEMO-002).
+    ///
+    /// This is the counterpart of [`Self::triggered_entry`]'s title: same rectangle, id instead of
+    /// display text. A host that has to decide *which* menu to open from a title keeps a second
+    /// table beside the bar; the id removes that table, and it is the same id surface a drop-down
+    /// row already carries. Emitted only when the entry both has an id and a box, so a host never
+    /// has to guess either.
+    pub entry_action_triggered: Signal1<(String, Rect)>,
     /// A widget pinned to the bar's trailing edge, right of the last entry.
     ///
     /// The bar owns the box and paints the widget inside it; the widget owns its own
@@ -401,6 +424,7 @@ impl MenuBar {
             triggered: Signal1::new(),
             entry_hovered: Signal1::new(),
             triggered_entry: Signal1::new(),
+            entry_action_triggered: Signal1::new(),
             corner: None,
             menus: Vec::new(),
             open_menu_index: None,
@@ -493,6 +517,23 @@ impl MenuBar {
         let idx = self.entries.len();
         self.entries.push(MenuBarEntry::new(title));
         idx
+    }
+
+    /// The action id of entry `index`, when it has one (DEMO-002).
+    pub fn entry_action_id(&self, index: usize) -> Option<&str> {
+        self.entries.get(index).and_then(|entry| entry.action_id.as_deref())
+    }
+
+    /// Names entry `index` with an action id, which [`Self::entry_action_triggered`] then reports.
+    ///
+    /// Returns `false` for an out-of-range index. `None` clears the id, so a host that stops
+    /// presenting the action stops hearing about it.
+    pub fn set_entry_action_id(&mut self, index: usize, action_id: Option<String>) -> bool {
+        let Some(entry) = self.entries.get_mut(index) else {
+            return false;
+        };
+        entry.action_id = action_id.filter(|id| !id.is_empty());
+        true
     }
     /// Removes the entry at `index`; out-of-range indices are ignored.
     ///
@@ -828,10 +869,16 @@ impl MenuBar {
         }
         self.active_index = Some(index);
         let title = self.entries[index].title().to_string();
+        let action_id = self.entries[index].action_id.clone();
         let entry = self.entry_rect(index);
         self.triggered.emit(title.clone());
         if let Some(entry) = entry {
             self.triggered_entry.emit((title, entry));
+            // The id is emitted last, so a host that names and locates entries hears both facts
+            // about the same activation (DEMO-002).
+            if let Some(action_id) = action_id {
+                self.entry_action_triggered.emit((action_id, entry));
+            }
         }
     }
 
@@ -1034,6 +1081,20 @@ impl Widget for MenuBar {
                         CapabilityValue::Rect(v.1),
                     ]))
                 }))
+            }
+            "entry_action_triggered" => {
+                Some(EventSignalRef::mapped(
+                    "entry_action_triggered",
+                    &self.entry_action_triggered,
+                    |v| {
+                        // Same carrier as `triggered_entry`: the id identifies the action, the
+                        // rectangle places the popup the host opens for it (DEMO-002).
+                        CapabilityValue::Tuple(crate::compat::Vec::from([
+                            CapabilityValue::String(v.0.clone()),
+                            CapabilityValue::Rect(v.1),
+                        ]))
+                    },
+                ))
             }
             "entry_hovered" => {
                 Some(EventSignalRef::mapped("entry_hovered", &self.entry_hovered, |v| {
@@ -1496,6 +1557,40 @@ mod tests {
         menu_bar.add_menu("File");
         assert!(menu_bar.entry_rect(0).is_some());
         assert!(menu_bar.entry_rect(1).is_none());
+    }
+
+    /// Naming an entry with an action id makes the activation report that id, so a host never has
+    /// to keep a title→action table beside the bar (DEMO-002).
+    #[test]
+    fn a_named_entry_reports_its_action_id_when_activated() {
+        let mut bar = MenuBar::new(Rect::new(0, 0, 320, 28));
+        let index = bar.add_menu("File");
+        assert_eq!(bar.entry_action_id(index), None, "an entry starts unnamed");
+        assert!(bar.set_entry_action_id(index, Some(String::from("menu.file"))));
+        assert_eq!(bar.entry_action_id(index), Some("menu.file"));
+        assert!(bar.set_entry_action_id(index, None), "an id can be cleared");
+        assert_eq!(bar.entry_action_id(index), None);
+        assert!(
+            !bar.set_entry_action_id(9, Some(String::from("nope"))),
+            "an out-of-range index has nothing to name"
+        );
+
+        assert!(bar.set_entry_action_id(index, Some(String::from("menu.file"))));
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&seen);
+        bar.entry_action_triggered.connect_ref(move |payload: &(String, Rect)| {
+            if let Ok(mut seen) = sink.lock() {
+                seen.push(payload.0.clone());
+            }
+        });
+
+        let entry = bar.entry_rect(0).expect("the entry has a box");
+        bar.handle_event(&Event::mouse_press(entry.x + 4, entry.y + 4, 1));
+        assert_eq!(
+            lock(&seen).clone(),
+            alloc::vec![String::from("menu.file")],
+            "the activation reports the id the host gave the entry"
+        );
     }
 
     /// An attached menu opens under its own entry, draws, and toggles closed.

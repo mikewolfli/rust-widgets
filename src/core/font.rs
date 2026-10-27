@@ -312,14 +312,12 @@ impl Font {
     /// from: this looks it up in [`intern_family`], so a face built per frame (the chart
     /// adapter's label, a tag's fallback, a clock's readout) allocates nothing after its first
     /// use.
-    #[cfg(full_widgets)]
     pub(crate) fn new_interned(family: &str, size: f32, bold: bool, italic: bool) -> Self {
         let weight = if bold { Self::BOLD_WEIGHT } else { Self::REGULAR_WEIGHT };
         Self::with_weight_shared(intern_family(family), size, weight, italic)
     }
 
     /// [`Self::simple`] for a borrowed family name; see [`Self::new_interned`].
-    #[cfg(full_widgets)]
     pub(crate) fn simple_interned(family: &str, size: f32) -> Self {
         Self::new_interned(family, size, false, false)
     }

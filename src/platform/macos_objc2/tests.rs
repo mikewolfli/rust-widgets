@@ -127,6 +127,15 @@ fn objc2_clipboard_roundtrip() {
 
 #[test]
 fn objc2_runloop_integration_and_quit() {
+    // A frame tick consumes the process-wide stop request (`platform::stop`), so a loop started by
+    // this test can steal the request a sibling test recorded for its own loop — the cross-test race
+    // `TEST_SEAM_SERIAL` exists for. This test did not take that guard because the objc2 backend's
+    // suite was outside every matrix until it was opened; with `--features macos` it interleaved
+    // with `platform::tests::a_request_from_another_thread_ends_a_running_loop` and that test's
+    // ten-second join timed out.
+    let _serial = crate::platform::stop::TEST_SEAM_SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     // Verify run-loop start/quit parity with deterministic shutdown.
     let backend = MacOSObjc2Platform::new();
     backend.init();
@@ -192,5 +201,27 @@ fn objc2_surface_contract_matches_the_cocoa_backend() {
     assert!(
         !backend.unmount_surface(window),
         "a second unmount must report that the surface is gone, not claim another release"
+    );
+}
+
+/// Screen sampling answers an honest absence for a point no display covers (SP-119).
+///
+/// # What this can assert without a permission
+///
+/// A real pixel read needs the Screen Recording grant, so a test cannot assert a colour. What it
+/// *can* assert is the other half of the contract: a point outside every display has no pixel, so
+/// `sample_screen_color` must answer `None` rather than inventing one — and it must do so through
+/// the real CoreGraphics path, not by short-circuiting. The sampled coordinate is far outside any
+/// desktop (`-100_000` on both axes), so no display can cover it on any host.
+///
+/// The cocoa backend answers the same way for the same input; that is what makes this a parity
+/// fact between the two macOS backends rather than a claim about one of them.
+#[test]
+fn objc2_screen_sampling_answers_an_honest_absence_off_screen() {
+    let backend = MacOSObjc2Platform::new();
+    assert_eq!(
+        backend.sample_screen_color(crate::core::Point::new(-100_000, -100_000)),
+        None,
+        "a point outside every display has no pixel, so the read must report absence"
     );
 }

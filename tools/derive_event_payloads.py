@@ -178,6 +178,41 @@ MANUAL: dict[tuple[str, str], tuple[str, str]] = {
     # of pairs, so `Mixed` is the honest statement (the same one `kanban_board.card_moved` makes
     # for a card position nested inside a tuple): the arm delivers a `Tuple` of `Tuple2`s.
     ("virtual_table", "selection_set_changed"): ("Some(K::String)", "Some(S::Mixed)"),
+    # `chip_input` owns these four signals and publishes them under its own capability. The
+    # payload types are three strings and one unsigned count.
+    ("chip_input", "chip_committed"): ("Some(K::String)", "Some(S::Scalar)"),
+    ("chip_input", "chip_removed"): ("Some(K::String)", "Some(S::Scalar)"),
+    ("chip_input", "limit_reached"): ("Some(K::UInt)", "Some(S::Scalar)"),
+    ("chip_input", "text_changed"): ("Some(K::String)", "Some(S::Scalar)"),
+    # A close request carries a vetoable object, which no wire kind models; the published
+    # notification reports the request's current answer (allowed / not allowed). The veto path
+    # stays on the Rust signal, where the handler can mutate the request.
+    ("dock_widget", "about_to_close"): ("Some(K::Bool)", "Some(S::Scalar)"),
+    # A multi-select set is a list of index paths. Each path is a tuple of unsigned indices and
+    # the set is a tuple of those, so `Mixed` is the honest shape.
+    ("cascader", "selection_set_changed"): ("Some(K::String)", "Some(S::Mixed)"),
+    # A popup item is delivered as its stable id string; the host can look the row up by id.
+    ("drop_down_popup_host", "item_clicked"): ("Some(K::String)", "Some(S::Scalar)"),
+    # A sort request carries the column token plus the target state token.
+    ("header_menu", "sort_requested"): ("Some(K::String)", "Some(S::Tuple2)"),
+    # The operator is published as its token spelling (the same form the filter model consumes).
+    ("header_menu", "filter_requested"): ("Some(K::String)", "Some(S::Scalar)"),
+    # The direction is published as its documented token spelling (`leading`/`trailing`).
+    ("swipe_to_dismiss", "threshold_crossed"): ("Some(K::String)", "Some(S::Scalar)"),
+    # The zoom strip's Fit segment reports one of `ZoomMode`'s variants (`fit_width`,
+    # `fit_height`, `original`), and the control publishes the token spelling. A data-less enum
+    # has no scalar Rust type the derivation can name, so the wire kind is stated here.
+    ("zoom_strip", "fit_requested"): ("Some(K::String)", "Some(S::Scalar)"),
+    # An assignment is `(series index, edge token)`: two different kinds in one tuple, so the arm
+    # delivers `CapabilityValue::Tuple` and the declared kind is the mixed-tuple spelling the
+    # derivation uses when no single `PropertyValueKind` describes the payload.
+    ("axis_picker", "axis_assigned"): ("Some(K::String)", "Some(S::Mixed)"),
+    # A calendar click is `(year, month, day, mark)`; the mark itself is a `[colour, shape, badge]`
+    # tuple, so more than one kind travels in one value and the arm delivers a nested `Tuple`.
+    ("calendar_mark_layer", "mark_activated"): ("Some(K::String)", "Some(S::Mixed)"),
+    # The markdown editor's change is `(offset, removed, inserted, length)` — a changed run rather
+    # than the whole document (SP-001), so more than one kind travels in one value.
+    ("markdown_editor", "text_changed"): ("Some(K::String)", "Some(S::Mixed)"),
 }
 
 # Compatibility spellings published alongside their canonical name (kept in step with the

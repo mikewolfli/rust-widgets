@@ -58,20 +58,33 @@
 //! unsafe preconditions to uphold: geometry and property inputs are validated and clamped in
 //! safe Rust, and every collection is indexed through checked accessors.
 
+mod axis_picker;
+mod calendar_mark_layer;
+mod chart_data_table;
 mod chart_tooltip;
+mod command_palette_host;
+mod drag_ghost_layer;
 mod drawer_section_header;
+mod drop_down_popup_host;
 mod filter_row;
+mod find_replace_bar;
+mod grid_status_bar;
+mod header_menu;
 mod helpers;
 mod layer_panel;
 mod legend;
+mod line_number_gutter;
+mod list_state_host;
 mod menu_panel;
 mod playlist_panel;
 mod speed_dial;
+mod summary_row;
 mod swatch;
 mod swipe_actions;
 mod toast_host;
 mod tooltip_manager;
 mod zoom_pan;
+mod zoom_strip;
 
 #[cfg(test)]
 mod tests;
@@ -86,14 +99,30 @@ pub use crate::widget::input_widgets::input_companions::{
 pub use crate::widget::view_widgets::column_chooser::ColumnChooser;
 pub use crate::widget::view_widgets::grid_find_bar::GridFindBar;
 pub use crate::widget::view_widgets::thumbnail_cache::ThumbnailCache;
+pub use axis_picker::{AxisEdge, AxisPicker, AxisSpec};
+pub use calendar_mark_layer::{CalendarMark, CalendarMarkLayer, CalendarMarkShape};
+pub use chart_data_table::{ChartDataMode, ChartDataTable};
 pub use chart_tooltip::{ChartTooltip, TooltipLine};
+pub use command_palette_host::{
+    CommandPaletteHost, PaletteEntryRef, PaletteSource, PALETTE_ENTRY_SCHEMA,
+};
+pub use drag_ghost_layer::DragGhostLayer;
 pub use drawer_section_header::DrawerSectionHeader;
+pub use drop_down_popup_host::{
+    Direction, DropDownPopupHost, PopupItem, PopupPlacement, POPUP_ITEM_SCHEMA,
+};
 pub use filter_row::FilterRow;
+pub use find_replace_bar::FindReplaceBar;
+pub use grid_status_bar::GridStatusBar;
+pub use header_menu::{HeaderMenu, HeaderMenuAction, SortState};
 pub use layer_panel::{LayerEntry, LayerPanel, LAYER_ENTRY_SCHEMA};
 pub use legend::{Legend, LegendEntry, LegendOrientation, LegendPosition};
+pub use line_number_gutter::{LineNumberAlign, LineNumberGutter};
+pub use list_state_host::{ListState, ListStateHost};
 pub use menu_panel::{MenuPanel, MenuPanelItem, MENU_PANEL_ITEM_SCHEMA};
 pub use playlist_panel::{PlaylistPanel, PLAYLIST_TRACK_SCHEMA};
 pub use speed_dial::{SpeedDial, SpeedDialAction, SpeedDialDirection, SPEED_DIAL_ACTION_SCHEMA};
+pub use summary_row::{ColumnAggregate, ColumnAggregateKind, SummaryRow};
 pub use swatch::Swatch;
 pub use swipe_actions::{SwipeAction, SwipeActions, SwipeSide, SWIPE_ACTION_SCHEMA};
 pub use toast_host::{
@@ -101,3 +130,4 @@ pub use toast_host::{
 };
 pub use tooltip_manager::TooltipManager;
 pub use zoom_pan::{ZoomMode, ZoomPanController};
+pub use zoom_strip::ZoomStrip;

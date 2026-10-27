@@ -231,6 +231,32 @@ pub fn time_to_string(time: Time) -> String {
 // Default property value lookup
 // ---------------------------------------------------------------------------
 
+/// A canonical-name override for a default that a shared `WidgetKind` cannot answer.
+///
+/// Defaults are normally keyed by kind, because a kind names one visual role. Two of the new
+/// companions share a kind with a control whose record schema is different (`command_palette_host`
+/// with `ListView`, `drop_down_popup_host` with `Panel`), so the record default is answered here
+/// by canonical name first.
+#[cfg(full_widgets)]
+pub fn default_named_property_value(
+    canonical_name: &str,
+    property_name: &str,
+) -> Option<CapabilityValue> {
+    match (canonical_name, property_name) {
+        ("drop_down_popup_host", "items") => {
+            Some(CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::companions::POPUP_ITEM_SCHEMA,
+            )))
+        }
+        ("command_palette_host", "entries") => {
+            Some(CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::companions::PALETTE_ENTRY_SCHEMA,
+            )))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(full_widgets)]
 /// Looks up the value a property reports before anything has written it.
 ///
@@ -446,6 +472,14 @@ pub fn default_widget_property_default_value(
             "tracking" => CapabilityValue::Bool(true),
             "track_click" => CapabilityValue::String("page".to_string()),
             "slider_position" => CapabilityValue::Int(0),
+            // `zoom_strip` shares this kind. Its constructor starts at 100% over `0.1..=8.0`,
+            // stepping by 0.25 with the Fit segment enabled, so the schema's defaults mirror it.
+            "zoom_level" => CapabilityValue::Float(1.0),
+            "min" => CapabilityValue::Float(0.1),
+            "max" => CapabilityValue::Float(8.0),
+            "step" => CapabilityValue::Float(0.25),
+            "show_percentage" => CapabilityValue::Bool(true),
+            "fit_actions" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::ProgressBar => match property_name {
@@ -565,6 +599,51 @@ pub fn default_widget_property_default_value(
             "alignment" => CapabilityValue::String("left".to_string()),
             "checkable" => CapabilityValue::Bool(false),
             "checked" => CapabilityValue::Bool(true),
+            _ => return None,
+        },
+        // COMP-21 / COMP-26 / COMP-28 / COMP-29: the four companion overlays that report the
+        // plain container kind. `panel` itself is a `GroupBox` row, so this arm serves only the
+        // overlays; each default mirrors its control's constructor.
+        WidgetKind::Panel => match property_name {
+            "first_line" => CapabilityValue::UInt(1),
+            "line_count" => CapabilityValue::UInt(0),
+            "current_line" => CapabilityValue::UInt(0),
+            "align" => CapabilityValue::String("right".to_string()),
+            "marker_lines" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "series_names" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "assignments" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            // A fresh picker describes all four edges, each labelled by its token with auto-range
+            // on, which is exactly `AxisPicker::new`'s list.
+            "edges" => {
+                let mut edges = crate::compat::Vec::new();
+                for edge in ["left", "right", "top", "bottom"] {
+                    let mut spec = crate::compat::Vec::new();
+                    spec.push(CapabilityValue::String(String::from(edge)));
+                    spec.push(CapabilityValue::String(String::from(edge)));
+                    spec.push(CapabilityValue::Bool(true));
+                    edges.push(CapabilityValue::Tuple(spec));
+                }
+                CapabilityValue::Tuple(edges)
+            }
+            "year" => CapabilityValue::Int(2026),
+            "month" => CapabilityValue::UInt(1),
+            "max_per_cell" => CapabilityValue::UInt(3),
+            "mark_count" => CapabilityValue::UInt(0),
+            "title" => CapabilityValue::String(String::new()),
+            "active" => CapabilityValue::Bool(false),
+            "snap_back" => CapabilityValue::Bool(true),
+            "opacity" => CapabilityValue::Float(0.82),
+            "drop_bounds" => CapabilityValue::Null,
+            "ghost_rect" | "origin_rect" => {
+                CapabilityValue::Rect(crate::core::Rect::new(0, 0, 0, 0))
+            }
+            // COMP-A21 popup host (shares `Panel`).
+            "open" => CapabilityValue::Bool(false),
+            "highlighted_index" => CapabilityValue::Null,
+            "scroll_offset" => CapabilityValue::Float(0.0),
+            "max_visible_rows" => CapabilityValue::UInt(8),
+            "anchor_rect" => CapabilityValue::Rect(crate::core::Rect::new(0, 0, 0, 0)),
+            "placement" => CapabilityValue::String("automatic".to_string()),
             _ => return None,
         },
         WidgetKind::Splitter => match property_name {
@@ -739,6 +818,8 @@ pub fn default_widget_property_default_value(
             "query" => CapabilityValue::String(String::new()),
             "entry_count" => CapabilityValue::UInt(0),
             "filtered_count" => CapabilityValue::UInt(0),
+            // COMP-A30 command palette host (shares `ListView`).
+            "filter" => CapabilityValue::String(String::new()),
             "highlighted_index" => CapabilityValue::Null,
             "item_count" => CapabilityValue::UInt(0),
             "unread_count" => CapabilityValue::UInt(0),
@@ -832,6 +913,16 @@ pub fn default_widget_property_default_value(
             "loading_indicator_visible" => CapabilityValue::Bool(false),
             "fetch_timeout_ms" => CapabilityValue::UInt(0),
             "summary_text" => CapabilityValue::String(String::new()),
+            // COMP-24 / COMP-27: `summary_row` and `chart_data_table` share this kind. A fresh
+            // summary row has no aggregates and is not sticky; a fresh data table has no headers
+            // or rows, starts in preview mode and caps its preview at 100 rows.
+            "aggregates" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "sticky" => CapabilityValue::Bool(false),
+            "headers" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "rows" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "visible_series" => CapabilityValue::Tuple(crate::compat::Vec::new()),
+            "mode" => CapabilityValue::String("preview".to_string()),
+            "max_rows" => CapabilityValue::UInt(100),
             _ => return None,
         },
         WidgetKind::DataView => match property_name {
@@ -976,6 +1067,11 @@ pub fn default_widget_property_default_value(
             // menu-bar path clears the flag when it creates one (see `create_menu`).
             "show_heading" => CapabilityValue::Bool(true),
             "column_count" => CapabilityValue::UInt(1),
+            // COMP-A32 header menu (shares `Menu`).
+            "sortable" => CapabilityValue::Bool(true),
+            "filterable" => CapabilityValue::Bool(true),
+            "sort_state" => CapabilityValue::String("none".to_string()),
+            "filter_text" => CapabilityValue::String(String::new()),
             _ => return None,
         },
         WidgetKind::MenuBar => match property_name {
@@ -1000,6 +1096,16 @@ pub fn default_widget_property_default_value(
             "movable" => CapabilityValue::Bool(true),
             "floatable" => CapabilityValue::Bool(true),
             "item_count" => CapabilityValue::UInt(0),
+            // SP-022: `markdown_toolbar` shares this kind. Its defaults are the control's own
+            // constructor defaults (the standard action set, icons on the left, labels hidden).
+            "actions" => CapabilityValue::Tuple(
+                crate::widget::special_widgets::markdown_editor::MARKDOWN_TOOLBAR_ACTIONS
+                    .iter()
+                    .map(|token| CapabilityValue::String((*token).to_string()))
+                    .collect(),
+            ),
+            "icon_side" => CapabilityValue::String("left".to_string()),
+            "show_labels" => CapabilityValue::Bool(false),
             // The macOS toolbar's own names: an action strip is not selectable and has no
             // selected slot until the host asks for one.
             "selectable" => CapabilityValue::Bool(false),
@@ -1114,6 +1220,16 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::TextEdit => match property_name {
             "text" => CapabilityValue::String(String::new()),
+            // SP-121: `chip_input` shares this kind. Its committed items are a chip record list,
+            // and the four scalar settings are the control's documented defaults.
+            "items" => CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                &crate::widget::special_widgets::chip::CHIP_ITEM_SCHEMA,
+            )),
+            "item_count" => CapabilityValue::UInt(0),
+            "separator" => CapabilityValue::String(",".to_string()),
+            "max_count" => CapabilityValue::UInt(0),
+            "allow_duplicates" => CapabilityValue::Bool(false),
+            "placeholder" => CapabilityValue::String(String::new()),
             "placeholder_text" => CapabilityValue::String(String::new()),
             "max_length" => CapabilityValue::Null,
             "read_only" => CapabilityValue::Bool(false),
@@ -1814,6 +1930,13 @@ pub fn default_widget_property_default_value(
         WidgetKind::EmptyState => match property_name {
             "message" => CapabilityValue::String("No data".to_string()),
             "description" => CapabilityValue::String(String::new()),
+            // COMP-23: `list_state_host` shares this kind. A fresh host is idle, has no empty or
+            // error content and no pull gesture in progress.
+            "state" => CapabilityValue::String("idle".to_string()),
+            "empty_icon" => CapabilityValue::Null,
+            "empty_title" | "empty_hint" | "error_text" => CapabilityValue::String(String::new()),
+            "loading_rows" => CapabilityValue::UInt(0),
+            "pull_progress" => CapabilityValue::Float(0.0),
             _ => return None,
         },
         WidgetKind::ColorHistory => match property_name {
@@ -1856,9 +1979,11 @@ pub fn default_widget_property_default_value(
             "quiet_zone" => CapabilityValue::UInt(2),
             "ec_level" => CapabilityValue::String("L".to_string()),
             "min_version" => CapabilityValue::UInt(1),
-            "max_version" => CapabilityValue::UInt(10),
+            "max_version" => CapabilityValue::UInt(40),
             "foreground_color" => CapabilityValue::Null,
             "background_color" => CapabilityValue::Null,
+            "logo" => CapabilityValue::Null,
+            "logo_size_modules" => CapabilityValue::UInt(0),
             _ => return None,
         },
         WidgetKind::MasonryLayout => match property_name {
@@ -2165,6 +2290,12 @@ pub fn default_widget_property_default_value(
             "queued_count" => CapabilityValue::UInt(0),
             "max_queued" => CapabilityValue::UInt(4),
             "anchor" => CapabilityValue::String("center".to_string()),
+            // COMP-A23: `grid_status_bar` shares this kind. A new strip has no rows, no
+            // selection, no filter, and therefore an empty explicit text and summary.
+            "row_count" | "selected_count" => CapabilityValue::UInt(0),
+            "filter_active" => CapabilityValue::Bool(false),
+            "text" => CapabilityValue::String(String::new()),
+            "summary" => CapabilityValue::String(String::new()),
             _ => return None,
         },
 
@@ -2173,6 +2304,12 @@ pub fn default_widget_property_default_value(
             "text" => CapabilityValue::String(String::new()),
             "placeholder" => CapabilityValue::String("Search...".to_string()),
             "alignment" => CapabilityValue::String("left".to_string()),
+            // COMP-22: `find_replace_bar` shares this kind. A fresh strip is closed, with empty
+            // query and replacement text, both flags off and no matches.
+            "query" | "replacement" => CapabilityValue::String(String::new()),
+            "match_case" | "use_regex" => CapabilityValue::Bool(false),
+            "match_count" | "current_match" => CapabilityValue::UInt(0),
+            "replace_visible" | "open" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::ShortcutEditor => match property_name {
@@ -2261,6 +2398,9 @@ pub fn default_widget_property_default_value(
             "playback_rate" => CapabilityValue::Float(1.0),
             "controls_visible" => CapabilityValue::Bool(true),
             "looping" => CapabilityValue::Bool(false),
+            // A freshly loaded player is not stalled; the host raises this with the `buffering`
+            // property when it has no data (MW-003).
+            "buffering" => CapabilityValue::Bool(false),
             "pipeline" => CapabilityValue::String("Idle".to_string()),
             _ => return None,
         },

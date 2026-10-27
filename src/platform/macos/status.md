@@ -51,14 +51,14 @@ per-kind native *control* probe no longer exists (see the note above the tables)
 | Native window registered with the platform UI framework | ✅ Verified | `NSApplication.windows.count >= 1` after `create_window` |
 | Per-kind controls (`create_button`…) | ⛔ Removed | BLUE15 #55/#56 — the library paints every `WidgetKind`, so there is no `the reference button`/`the reference text field` and `grep` finds none |
 | Menu bar (`the reference menu`) | ⛔ Removed | no `create_menu_bar`/`menu_add_item` override; `native_menu: false`, and `menu_item_shortcut()`/`poll_menu_triggered()` are the only menu-shaped methods left |
-| Dialogs (`the reference alert` / `the reference open panel`) | ⛔ Removed | no `create_message_box`/`create_file_dialog` override |
+| Dialogs (`the reference alert` / `the reference open panel`) | ◐ Partial | `create_file_dialog` records a logical handle; the native panel is `choose_path` (`NSOpenPanel`/`NSSavePanel`). Message/colour/font creators return `0` explicitly (the library paints those). |
 | Widget surfaces (`mount_surface` + repaint queue) | ✅ Implemented | the library-painted path every `WidgetKind` now uses |
 | Displays / window's screen / generation | ✅ Implemented | `NSScreen` enumeration (`src/platform/macos/displays.rs`), `the reference window.screen()` for `display_of_window`, and a derived revision |
 | System appearance | ✅ Implemented (2026-10-19) | `NSApplication.effectiveAppearance`'s name → `Some(true)` for Dark Aqua, `Some(false)` otherwise; main-thread-only |
 | Safe area | ✅ Implemented (2026-10-19) | `NSView.safeAreaInsets` on the window's content view (macOS 11+); `None` on older systems or off the main thread |
 | Clipboard (`NSPasteboard`) | ✅ Verified | round-trip on the main thread; also `clipboard_backend()` for rich content |
 | External open | ✅ Implemented | `open_external()` spawns the host's `open` handler; `capabilities().open_external` is `true` for that reason. Hand-off, not completion — see the method's doc. Not exercised on this host (the status table can only be filled where macOS runs) |
-| IME / accessibility bridges | ✅ Implemented | `ime_bridge()` and `accessibility_bridge()` both answer with real bridges, which is why `capabilities()` reports `ime`/`accessibility` as `true` |
+| IME / accessibility bridges | ✅ Implemented (2026-10-27) | `ime_bridge()` returns the shared `MacOsImeBridge`; the canvas view's `NSTextInputClient` callbacks (`setMarkedText:`, `insertText:`, `unmarkText`, `doCommandBySelector:`) drive its composition and commit state, and `accessibility_bridge()` answers with the AppKit bridge. That is why `capabilities()` reports `ime`/`accessibility` as `true` (P-202) |
 | Geometry / visibility / text / enabled | ✅ Verified | reflected on the live native objects |
 | Off-main-thread calls | ✅ Guarded | state-only fallback (`ptr == 0`), never aborts |
 

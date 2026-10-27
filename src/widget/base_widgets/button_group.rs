@@ -842,12 +842,15 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
         group.button_toggled().connect(move |value| {
-            sink.lock().unwrap().push(*value);
+            // `crate::compat::lock`, not `.lock().unwrap()`: the `mini` profile's mutex guard has
+            // no `unwrap` (there is no poisoning to report), so the shared helper is the one form
+            // that compiles in every profile.
+            crate::compat::lock(&sink).push(*value);
         });
 
         notify_member_event(7, MemberEvent::Toggled(true));
         notify_member_event(7, MemberEvent::Toggled(false));
 
-        assert_eq!(*seen.lock().unwrap(), vec![(7, true), (7, false)]);
+        assert_eq!(*crate::compat::lock(&seen), vec![(7, true), (7, false)]);
     }
 }

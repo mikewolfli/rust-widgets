@@ -39,28 +39,16 @@
 // `cargo --all-features` enables `desktop` and `mini` together. Gate `main` on the
 // same condition the modules use, with a stub for the builds where the subject is
 // absent.
-#[cfg(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-))]
+#[cfg(full_widgets)]
 use rust_widgets::app::{App, CheckBoxHandle, WidgetHandle};
-#[cfg(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-))]
+#[cfg(full_widgets)]
 use rust_widgets::core::{ObjectId, Orientation};
-#[cfg(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-))]
+#[cfg(full_widgets)]
 use rust_widgets::platform::{get_platform, EchoMode};
-#[cfg(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-))]
+#[cfg(full_widgets)]
 use rust_widgets::WindowStateFlag;
 
-#[cfg(all(not(alloc_frugal), any(feature = "desktop", feature = "tablet", feature = "mobile")))]
+#[cfg(full_widgets)]
 fn main() {
     App::new().init();
 
@@ -196,10 +184,7 @@ fn main() {
 /// The probe's subject does not exist in this build: `mini`/`embedded` compile out
 /// the app lifecycle and the platform singleton. Report that rather than fail to
 /// build, which a bare `required-features` gate cannot do under `--all-features`.
-#[cfg(not(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-)))]
+#[cfg(not(full_widgets))]
 fn main() {
     println!(
         "control_property_uniform: not applicable in this build — it needs a device \

@@ -76,6 +76,10 @@ pub struct DateRangePicker {
     hover_date: Option<(i32, u32, u32)>,
     /// Preset chips offered above the grid.
     presets: Vec<DatePreset>,
+    /// The index of the preset last applied, when the selection came from one.
+    selected_preset: Option<usize>,
+    /// An optional `PresetChipBar` kept in step with [`Self::presets`] (MISC-008).
+    preset_bar: Option<super::preset_chip_bar::PresetChipBar>,
     /// Whether a second consecutive month is painted beside the first.
     double_month: bool,
     /// Minimum nights between the endpoints; `None` for no minimum.
@@ -145,6 +149,8 @@ impl DateRangePicker {
             end_date: None,
             hover_date: None,
             presets: Vec::new(),
+            selected_preset: None,
+            preset_bar: None,
             double_month: false,
             min_nights: None,
             max_nights: None,
@@ -188,6 +194,7 @@ impl DateRangePicker {
         let date = (today.year(), today.month(), today.day());
         self.start_date = Some(date);
         self.end_date = Some(date);
+        self.clear_preset_selection();
         self.emit_range_changed();
         self.base.request_redraw();
     }
@@ -203,7 +210,52 @@ impl DateRangePicker {
             return;
         }
         self.presets = presets;
+        if self.selected_preset.is_some_and(|index| index >= self.presets.len()) {
+            self.selected_preset = None;
+        }
+        self.sync_preset_bar();
         self.base.request_redraw();
+    }
+
+    /// Attaches a generic `PresetChipBar` and fills it with this picker's presets.
+    ///
+    /// Returns whether a bar is attached afterwards. The picker writes the list and the active
+    /// chip into the bar on every change; the host connects the bar's `preset_selected` to
+    /// [`Self::select_preset`] (the id is the preset index plus one), which is the same
+    /// model/view split [`RangePresetBar`] uses (MISC-008).
+    pub fn attach_preset_bar(
+        &mut self,
+        bar: Option<super::preset_chip_bar::PresetChipBar>,
+    ) -> bool {
+        self.preset_bar = bar;
+        self.sync_preset_bar();
+        self.preset_bar.is_some()
+    }
+
+    /// The attached preset bar, if any.
+    pub fn preset_bar(&self) -> Option<&super::preset_chip_bar::PresetChipBar> {
+        self.preset_bar.as_ref()
+    }
+
+    /// The attached preset bar for editing, if any.
+    pub fn preset_bar_mut(&mut self) -> Option<&mut super::preset_chip_bar::PresetChipBar> {
+        self.preset_bar.as_mut()
+    }
+
+    /// Pushes the preset list and the active chip into the attached bar.
+    fn sync_preset_bar(&mut self) {
+        let labels: Vec<String> = self.presets.iter().map(|preset| preset.label.clone()).collect();
+        let selected = self.selected_preset;
+        if let Some(bar) = self.preset_bar.as_mut() {
+            bar.clear_presets();
+            for (index, label) in labels.into_iter().enumerate() {
+                // Chip ids are one-based: `PresetChipBar` rejects id zero as an identity.
+                let _ = bar.add_preset_with_id(index as u64 + 1, label);
+            }
+            if let Some(index) = selected {
+                bar.set_selected_silent(index as u64 + 1);
+            }
+        }
     }
 
     /// Whether a second consecutive month is painted.
@@ -285,6 +337,8 @@ impl DateRangePicker {
             self.display_year = year;
             self.display_month = month;
         }
+        self.selected_preset = Some(index);
+        self.sync_preset_bar();
         self.emit_range_changed();
         self.preset_selected.emit(index);
         self.base.request_redraw();
@@ -306,6 +360,7 @@ impl DateRangePicker {
         self.end_date = Some(preset.end);
         self.display_year = preset.start.0;
         self.display_month = preset.start.1;
+        self.clear_preset_selection();
         self.emit_range_changed();
         self.base.request_redraw();
         None
@@ -516,6 +571,9 @@ impl DateRangePicker {
         if !self.accepts_date(clicked_date) {
             return;
         }
+        // A manually chosen day is not a preset, so the bar's active chip is cleared before the
+        // new range is reported (MISC-008).
+        self.clear_preset_selection();
         match (self.start_date, self.end_date) {
             (None, _) => {
                 self.start_date = Some(clicked_date);
@@ -553,8 +611,16 @@ impl DateRangePicker {
         if self.start_date.is_some() || self.end_date.is_some() {
             self.start_date = None;
             self.end_date = None;
+            self.clear_preset_selection();
             self.emit_range_changed();
             self.base.request_redraw();
+        }
+    }
+
+    /// Drops the active preset and mirrors the change into the attached bar.
+    fn clear_preset_selection(&mut self) {
+        if self.selected_preset.take().is_some() {
+            self.sync_preset_bar();
         }
     }
 
@@ -2079,6 +2145,39 @@ mod tests {
         assert_eq!(picker.apply_preset(&unknown), None);
         assert_eq!(picker.start_date(), Some((2025, 4, 1)));
         assert_eq!(picker.end_date(), Some((2025, 6, 30)));
+    }
+
+    /// MISC-008: the generic chip bar mirrors the picker's presets and active choice.
+    #[test]
+    fn a_preset_chip_bar_mirrors_the_picker_presets() {
+        use crate::widget::misc_widgets::preset_chip_bar::PresetChipBar;
+
+        let mut picker = make_picker();
+        picker.set_presets(vec![
+            DatePreset::new("Week", (2025, 1, 1), (2025, 1, 7)),
+            DatePreset::new("Month", (2025, 1, 1), (2025, 1, 31)),
+        ]);
+        assert!(picker.attach_preset_bar(Some(PresetChipBar::new(Rect::new(0, 0, 240, 24)))));
+        {
+            let bar = picker.preset_bar().expect("attached");
+            assert_eq!(bar.presets().len(), 2);
+            assert_eq!(bar.presets()[0].label, "Week");
+            assert_eq!(bar.selected_preset(), None);
+        }
+
+        picker.select_preset(1);
+        assert_eq!(
+            picker.preset_bar().expect("attached").selected_preset(),
+            Some(2),
+            "the chip id is the preset index plus one"
+        );
+
+        picker.clear_selection();
+        assert_eq!(
+            picker.preset_bar().expect("attached").selected_preset(),
+            None,
+            "a manual clear drops the active preset"
+        );
     }
 
     #[test]

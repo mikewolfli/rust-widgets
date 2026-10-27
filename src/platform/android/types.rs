@@ -24,6 +24,13 @@ pub(crate) enum AndroidHandleKind {
     Menu,
     /// Actionable menu leaf item.
     MenuItem,
+    /// A logical file-chooser control.
+    ///
+    /// The native picker is the Activity's `ACTION_OPEN_DOCUMENT` launch (`request_path`); this
+    /// kind records the handle the library paints the chooser with. Present only when the JNI
+    /// bridge that can launch the picker is compiled in.
+    #[cfg(feature = "android-jni")]
+    FileDialog,
 }
 
 /// Android platform menu state.

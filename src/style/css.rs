@@ -2005,11 +2005,42 @@ impl CssParser {
         state: Option<PseudoState>,
         style: &mut WidgetStyle,
     ) -> Result<(), String> {
+        Self::apply_rules_where(css, style, |selector| selector.matches(kind, class, id, state))
+    }
+
+    /// [`Self::parse_and_apply`] with the element's ancestor chain.
+    ///
+    /// A selector that uses a descendant or child combinator is a fact about the tree, so an
+    /// inline `css` declaration can only match one when the caller supplies the chain. This is
+    /// the same context entry [`crate::style::StyleSheet::apply_to_context`] uses (STY-002).
+    pub fn parse_and_apply_in(
+        css: &str,
+        element: ElementRef<'_>,
+        ancestors: &[ElementRef<'_>],
+        style: &mut WidgetStyle,
+    ) -> Result<(), String> {
+        Self::apply_rules_where(css, style, |selector| {
+            selector.matches_in(
+                element.kind.css_name(),
+                element.class,
+                element.id,
+                element.state,
+                ancestors,
+            )
+        })
+    }
+
+    /// Applies the rules selected by `matches`, so the chain-aware and chain-less entries share
+    /// one parse, one cache lookup and one declaration writer.
+    fn apply_rules_where(
+        css: &str,
+        style: &mut WidgetStyle,
+        mut matches: impl FnMut(&CssSelector) -> bool,
+    ) -> Result<(), String> {
         let rules = Self::cached_rules(css)?;
-        // Filter and apply matching rules in order
         for rule in rules.iter() {
             if let Some(selector) = Self::parse_selector(&rule.selector_text) {
-                if selector.matches(kind, class, id, state) {
+                if matches(&selector) {
                     Self::apply_declarations(&rule.declarations, style)?;
                 }
             }

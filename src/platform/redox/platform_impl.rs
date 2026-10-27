@@ -72,6 +72,8 @@ enum Pending {
     Pointer(ObjectId, Event, Point),
     /// A key/text event for a window's focused control.
     Key(ObjectId, Event),
+    /// A single committed character, delivered through the pooled text-input entry (G-606).
+    Text(ObjectId, char),
     /// Tab traversal, a library action rather than content.
     Tab(bool),
     /// A container reported a new client size.
@@ -356,10 +358,9 @@ impl OrbitalPlatform {
                 // character even while Control is held, so the modifier state is the only place
                 // that can tell `Ctrl+C` from a typed `c`.
                 if entry.input.modifiers & (MOD_CONTROL | MOD_ALT | MOD_META) == 0 {
-                    pending.push(Pending::Key(
-                        window_widget,
-                        Event::TextInput { text: text.character.to_string() },
-                    ));
+                    // One character per record, so it travels as the pooled single-character
+                    // text input rather than an owned `String` (G-606).
+                    pending.push(Pending::Text(window_widget, text.character));
                     entry.input.text_delivered = true;
                 }
             }
@@ -488,6 +489,10 @@ impl OrbitalPlatform {
                 Pending::Key(root, event) => {
                     let target = runtime::focused_widget().unwrap_or(root);
                     runtime::dispatch_event(target, &event);
+                }
+                Pending::Text(root, ch) => {
+                    let target = runtime::focused_widget().unwrap_or(root);
+                    runtime::dispatch_text_char(target, ch);
                 }
                 Pending::Tab(forward) => {
                     runtime::focus_next(forward);

@@ -245,6 +245,22 @@ impl PresetChipBar {
         true
     }
 
+    /// Selects the chip with `id` without publishing `preset_selected`.
+    ///
+    /// The model→view direction: a host mirroring its own preset list into this bar must not hear
+    /// its own write as a user gesture. [`Self::set_selected`] remains the gesture entry and
+    /// emits.
+    pub fn set_selected_silent(&mut self, id: u64) -> bool {
+        if !self.presets.iter().any(|preset| preset.id == id) {
+            return false;
+        }
+        if self.selected_preset_id != Some(id) {
+            self.selected_preset_id = Some(id);
+            self.base.request_redraw();
+        }
+        true
+    }
+
     /// The selected chip's id.
     pub fn selected_preset(&self) -> Option<u64> {
         self.selected_preset_id

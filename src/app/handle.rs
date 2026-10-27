@@ -189,39 +189,61 @@ impl WidgetHandle for SurfaceHandle {
         Self { id }
     }
 
-    /// Library-painted widgets route input into themselves.
+    /// Routes a click into the control's own `clicked` signal.
     ///
-    /// A `CodeEditor` handles its own clicks, keys and IME commits through
-    /// `EventHandler`; there is no separate platform control to attach a
-    /// click callback to. This deliberately does **not** register a callback
-    /// that would never fire — read the widget's own signals instead (for the
-    /// editor: `text_changed`, `cursor_moved`, `selection_changed`).
+    /// # Why the refusal is gone (DEMO-005)
     ///
-    /// # Why the refusal is recorded, not only logged
-    ///
-    /// The other handles route an unwired binding through `record_unwired_binding`, which is
-    /// what makes "how many of my handlers are unwired?" answerable afterwards
-    /// (see [`unwired_binding_count`]). This override only logged, so a caller asking that
-    /// question got **one answer for a `SurfaceHandle` and another for every other handle** —
-    /// for exactly the case the count exists to surface. The log line and the count now agree,
-    /// and the count is the one a program can branch on.
-    fn on_click<F: FnMut() + Send + 'static>(&self, _f: F) {
-        log::debug!(
-            "SurfaceHandle::on_click ignored for id={}: the widget emits its \
-             own signals rather than a platform click callback",
-            self.id
-        );
-        record_unwired_binding(self.id);
+    /// This used to record an unwired binding on the grounds that a library-painted control
+    /// "emits its own signals rather than a platform click callback". The premise was wrong:
+    /// every control's [`BaseWidget`](crate::widget::BaseWidget) carries `clicked`, and that is
+    /// exactly the signal [`register_click_callback`] connects to for every other handle. A
+    /// mounted surface therefore has a real click channel; refusing it made a callback registered
+    /// here unreachable while the same callback on a `ButtonHandle` worked — the asymmetry this
+    /// closes. There is still one definition of "what a click is" (`base.clicked`), so this is the
+    /// same wiring and not a second one.
+    fn on_click<F: FnMut() + Send + 'static>(&self, f: F) {
+        register_click_callback(self.id, f);
     }
 
-    /// See [`SurfaceHandle::on_click`]; the same reasoning applies.
-    fn on_value_changed<F: FnMut(&str) + 'static>(&self, _f: F) {
-        log::debug!(
-            "SurfaceHandle::on_value_changed ignored for id={}: the widget \
-             emits its own signals",
-            self.id
-        );
-        record_unwired_binding(self.id);
+    /// Routes a value change into the control's published `value_changed` event.
+    ///
+    /// # Why this re-dispatches instead of connecting directly (DEMO-005)
+    ///
+    /// The signature takes a `FnMut(&str)` that is **not** `Send`, and every slot on a control's
+    /// signal must be `Send + Sync` (the signal machinery is shared). Value callbacks therefore
+    /// live in the runtime's thread-local table, and the thing that runs them is
+    /// [`dispatch_trigger`]. So this subscribes a `Send + Sync` slot that captures only the id —
+    /// the same shape [`WidgetHandle::on_click_cross_thread`] uses — and the slot re-dispatches the
+    /// trigger, which reads the control's text and runs the stored callback on the thread that
+    /// emitted. A control that publishes no `value_changed` event has no channel to hang that on,
+    /// so the binding is recorded as unwired rather than left in a table nothing reads.
+    fn on_value_changed<F: FnMut(&str) + 'static>(&self, f: F) {
+        let widget_id = self.id;
+        let subscribed = crate::widget::runtime::with_widget(widget_id, |widget| {
+            widget.event_signal_dyn("value_changed")
+        })
+        .flatten()
+        .map(|signal| {
+            signal.subscribe(Box::new(
+                move |_payload: &crate::widget::capability::CapabilityValue| {
+                    dispatch_trigger(widget_id, WidgetTriggerKind::ValueChanged);
+                },
+            ))
+        });
+        match subscribed {
+            // The connection handle is deliberately dropped: `EventSignalRef::disconnect` is an
+            // explicit call, so the subscription lives until the control does. A later
+            // `remove_callbacks` clears the thread-local table, and the slot then finds no
+            // callback to run — the observable end state the caller asked for.
+            Some(_connection) => register_value_callback(widget_id, Rc::new(RefCell::new(f))),
+            None => {
+                log::warn!(
+                    "on_value_changed ignored for surface id={widget_id}: the control publishes \
+                     no `value_changed` event, so the callback could never run"
+                );
+                record_unwired_binding(widget_id);
+            }
+        }
     }
 }
 
@@ -2626,6 +2648,60 @@ impl MenuBarHandle {
                 record_unwired_binding(id);
             }
         }
+    }
+
+    /// Subscribes to the **action id** of an entry the user clicked (DEMO-002).
+    ///
+    /// The companion of [`MenuBarHandle::on_entry_triggered`]. A host that decides which menu to
+    /// open from that callback's title keeps a title→menu table beside the bar; naming the entry
+    /// with [`MenuBarHandle::set_entry_action_id`] removes it, and the id is the same surface a
+    /// drop-down row already carries. Entries with no id emit nothing, so a host that does not name
+    /// them is unaffected.
+    pub fn on_entry_action_triggered<F: FnMut(String, Rect) + Send + 'static>(&self, f: F) {
+        let id = self.raw_id();
+        let held: std::sync::Arc<std::sync::Mutex<F>> =
+            std::sync::Arc::new(std::sync::Mutex::new(f));
+        let connected = crate::widget::runtime::with_widget_mut(id, |widget| {
+            let held = std::sync::Arc::clone(&held);
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::menu_toolbar::menu_bar::MenuBar>()
+                .map(|bar| {
+                    bar.entry_action_triggered.connect_ref(move |payload: &(String, Rect)| {
+                        if let Ok(mut callback) = held.lock() {
+                            callback(payload.0.clone(), payload.1);
+                        } else {
+                            log::warn!(
+                                "the menu-entry action callback for widget {id} could not be \
+                                     locked; skipping this trigger rather than panicking"
+                            );
+                        }
+                    })
+                })
+        })
+        .flatten();
+        match connected {
+            Some(handle) => record_signal_connection(id, SignalKind::TriggeredEntry, handle),
+            None => {
+                log::warn!(
+                    "on_entry_action_triggered ignored for id={id}: it is not a live menu bar, so \
+                     the callback will never run."
+                );
+                record_unwired_binding(id);
+            }
+        }
+    }
+
+    /// Names the entry at `index` with an action id, which
+    /// [`MenuBarHandle::on_entry_action_triggered`] then reports. `None` clears it.
+    ///
+    /// Returns `false` for an out-of-range index or an id that is not a menu bar.
+    pub fn set_entry_action_id(&self, index: usize, action_id: Option<String>) -> bool {
+        crate::widget::runtime::with_widget_mut(self.raw_id(), |widget| {
+            (widget as &mut dyn core::any::Any)
+                .downcast_mut::<crate::widget::menu_toolbar::menu_bar::MenuBar>()
+                .is_some_and(|bar| bar.set_entry_action_id(index, action_id.clone()))
+        })
+        .unwrap_or(false)
     }
 
     /// Number of top-level entries the bar holds.
@@ -5595,10 +5671,9 @@ mod tests {
     ///
     /// `unwired_binding_count()` exists so a program can ask "was anything I wired left
     /// unwired?" (rule #97: "reported success for something that did not happen" must be
-    /// queryable). `SurfaceHandle::on_click` genuinely cannot register a callback — the widget
-    /// emits its own signals — so it is correct for it to refuse; but it refused **silently as
-    /// far as that count was concerned**, so the answer depended on which handle type was
-    /// asked. One question, one answer.
+    /// queryable). A handle built from an id that was never mounted has no signal to connect to,
+    /// so it is right for it to refuse — but the count is what makes that answer the same for
+    /// every handle type. One question, one answer.
     #[test]
     fn a_surface_handle_refusal_reaches_the_unwired_count() {
         reset_unwired_binding_count();
@@ -5609,12 +5684,66 @@ mod tests {
         assert_eq!(
             unwired_binding_count(),
             1,
-            "a refused click binding on a surface must be counted, not only logged"
+            "a click binding on an unmounted id must be counted, not only logged"
         );
 
         handle.on_value_changed(|_| {});
-        assert_eq!(unwired_binding_count(), 2, "and so must a refused value binding");
+        assert_eq!(unwired_binding_count(), 2, "and so must a value binding");
 
+        reset_unwired_binding_count();
+    }
+
+    /// A mounted surface's click and value callbacks reach the control's own signals (DEMO-005).
+    ///
+    /// The handle used to refuse both on the premise that a library-painted control has no click
+    /// channel. It has one — `base.clicked` for clicks, and the control's published
+    /// `value_changed` event for values — so the callbacks must run instead of being recorded as
+    /// unwired.
+    #[test]
+    fn a_mounted_surface_runs_the_callbacks_wired_through_its_handle() {
+        reset_unwired_binding_count();
+        let id = crate::widget::runtime::register(Box::new(
+            crate::widget::display_widgets::slider::Slider::new(crate::core::Rect::new(
+                0, 0, 200, 24,
+            )),
+        ))
+        .expect("a slider mounts");
+        let handle = SurfaceHandle::from_raw(id);
+
+        let clicks = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let seen = std::sync::Arc::clone(&clicks);
+        handle.on_click(move || *seen.lock().expect("click count") += 1);
+
+        let values = Rc::new(RefCell::new(0usize));
+        let recorded = Rc::clone(&values);
+        handle.on_value_changed(move |_text| *recorded.borrow_mut() += 1);
+
+        assert_eq!(unwired_binding_count(), 0, "both bindings reached a real channel");
+
+        // The control's own click signal is what the handle subscribes to.
+        crate::widget::runtime::with_widget_mut(id, |widget| widget.base().clicked.emit())
+            .expect("the control is mounted");
+        assert_eq!(
+            *clicks.lock().expect("click count"),
+            1,
+            "a click on the surface reaches the handle's callback"
+        );
+
+        // The control's published `value_changed` event re-dispatches into the value table.
+        crate::widget::runtime::with_widget_mut(id, |widget| {
+            (widget as &mut dyn std::any::Any)
+                .downcast_mut::<crate::widget::display_widgets::slider::Slider>()
+                .map(|slider| slider.set_value(42))
+        })
+        .expect("the control is mounted");
+        assert_eq!(
+            *values.borrow(),
+            1,
+            "a value change on the surface reaches the handle's callback"
+        );
+
+        remove_callbacks(id);
+        crate::widget::runtime::unregister(id);
         reset_unwired_binding_count();
     }
 

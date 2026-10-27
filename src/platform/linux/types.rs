@@ -22,6 +22,13 @@ use crate::platform::state::BackendState;
 pub(crate) enum LinuxHandleKind {
     /// Top-level GTK window handed to the library as a drawing surface.
     Window,
+    /// A logical file-chooser control.
+    ///
+    /// The native chooser is `Platform::choose_path` (`GtkFileChooserDialog`); the library paints
+    /// the chooser itself, so this kind records only the handle. Gated like the creator that
+    /// produces it: a build without GTK has no chooser and no handle to name.
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
+    FileDialog,
 }
 /// Runtime lifecycle state for Linux backend main loop fallback.
 pub(crate) struct LinuxRuntimeState {

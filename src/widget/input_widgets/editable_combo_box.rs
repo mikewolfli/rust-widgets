@@ -33,6 +33,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
+use crate::widget::input_widgets::suggestion_popup::{MatchMode, SuggestionPopup};
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -45,6 +46,12 @@ use std::rc::Rc;
 /// is tighter than the gap between the value and the field's edge — a relation, not a third
 /// independent numeral.
 const INDICATOR_LEADING_GAP: u32 = dimensions::TEXT_FIELD_PADDING_H / 2;
+
+/// Height of one painted row in the open list.
+///
+/// The list's row height is a fact the paint, the hit test and the popup engine all read, so it
+/// is named once instead of repeated as a literal in each of them.
+const EDITABLE_ROW_HEIGHT: u32 = 28;
 
 /// The indicator's box and the box the value may occupy, derived together.
 ///
@@ -133,8 +140,16 @@ pub struct EditableComboBox {
     cursor_blink: crate::style::CursorBlink,
     /// Maximum rows the open list shows at once. `None` shows them all.
     max_visible: Option<usize>,
-    /// Index of the first painted row in the open list.
-    scroll_offset: usize,
+    /// The candidate-list engine the open list is painted from (I-129).
+    ///
+    /// The popup filters the items, owns the painted window, resolves the row under the pointer
+    /// and holds the highlight. The control keeps its own item storage and paints the rows, so
+    /// `items` and every public accessor are unchanged.
+    popup: SuggestionPopup,
+    /// Bumped whenever `items` changes; the popup's row list is rebuilt only when it moves.
+    items_revision: u64,
+    /// The item revision the popup's rows currently reflect.
+    popup_synced_revision: u64,
 }
 
 impl EditableComboBox {
@@ -157,7 +172,7 @@ impl EditableComboBox {
 
     /// Creates a new EditableComboBox widget with the given geometry.
     pub fn new(geometry: Rect) -> Self {
-        Self {
+        let mut combo = Self {
             base: BaseWidget::new(WidgetKind::EditableComboBox, geometry, "EditableComboBox"),
             text: String::new(),
             items: Vec::new(),
@@ -175,8 +190,48 @@ impl EditableComboBox {
             selection_anchor: None,
             cursor_blink: crate::style::CursorBlink::new(),
             max_visible: None,
-            scroll_offset: 0,
+            popup: SuggestionPopup::new(geometry),
+            items_revision: 0,
+            popup_synced_revision: u64::MAX,
+        };
+        combo.sync_popup();
+        combo
+    }
+
+    /// The rectangle the open list hangs from: the field band's bottom edge.
+    fn popup_anchor(&self) -> Rect {
+        let band = self.field_band();
+        Rect::new(band.x, band.y + band.height as i32, band.width, 0)
+    }
+
+    /// Brings the popup engine's rows, filter, metrics and anchor up to date.
+    ///
+    /// Every read of the open list (paint, hit test, scroll) goes through the engine, so the
+    /// filter is applied here rather than at each call site. Row rebuilding is keyed on the item
+    /// revision, and the other setters are guarded internally, so a repaint is not a list copy.
+    fn sync_popup(&mut self) {
+        let offset = self.popup.scroll_offset();
+        let max = self.max_visible.unwrap_or_else(|| self.items.len().max(1));
+        if self.popup.max_visible() != max {
+            self.popup.set_max_visible(max);
         }
+        if self.popup.row_height() != EDITABLE_ROW_HEIGHT {
+            self.popup.set_row_height(EDITABLE_ROW_HEIGHT);
+        }
+        self.popup.set_match_mode(MatchMode::Prefix);
+        self.popup.set_anchor(self.popup_anchor());
+        if self.items_revision != self.popup_synced_revision {
+            self.popup.set_items(self.items.clone());
+            self.popup_synced_revision = self.items_revision;
+        }
+        self.popup.apply_filter(self.text.trim());
+        let row = self
+            .selected_index
+            .and_then(|index| self.popup.visible_indices().iter().position(|&c| c == index));
+        self.popup.set_selected_index(row);
+        // The scroll position is a view fact, not a selection fact: a text change that narrows
+        // the candidate list clamps it, but does not re-centre the window on the selection.
+        self.popup.set_scroll_offset(offset);
     }
 
     /// Returns the current text in the text field.
@@ -234,6 +289,7 @@ impl EditableComboBox {
             )));
         }
         self.text_changed.emit(self.text.clone());
+        self.sync_popup();
         self.base.request_redraw();
     }
 
@@ -276,23 +332,19 @@ impl EditableComboBox {
             return;
         }
         self.max_visible = max_visible;
+        self.sync_popup();
         self.base.request_redraw();
     }
 
     /// Index of the first painted row in the open list.
     pub fn scroll_offset(&self) -> usize {
-        self.scroll_offset
+        self.popup.scroll_offset()
     }
 
     /// Sets the first painted row, clamped to the rows that exist.
     pub fn set_scroll_offset(&mut self, offset: usize) {
-        let rows = self.filtered_indices().len();
-        let page = self.page_size(rows);
-        let next = offset.min(rows.saturating_sub(page.min(rows)));
-        if self.scroll_offset == next {
-            return;
-        }
-        self.scroll_offset = next;
+        self.sync_popup();
+        self.popup.set_scroll_offset(offset);
         self.base.request_redraw();
     }
 
@@ -317,20 +369,12 @@ impl EditableComboBox {
 
     /// Indices in `items` matching the typed prefix.
     ///
-    /// The typed prefix is folded **once** per call and compared byte-wise, instead of folding
-    /// every row (I-P05). The draw path, the hit test and the keyboard navigation all read this
-    /// one list, so rows are never cloned to be identified.
+    /// The filter and the painted window are the shared [`SuggestionPopup`]'s (I-129), so the
+    /// typed text is folded once there and this is a view over the rows it kept. The draw path,
+    /// the hit test and the keyboard navigation all read this one list, so rows are never cloned
+    /// to be identified.
     fn filtered_indices(&self) -> Vec<usize> {
-        let prefix = crate::widget::input_widgets::text_match::fold(self.text.trim());
-        self.items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| {
-                prefix.is_empty()
-                    || crate::widget::input_widgets::text_match::starts_with(item, &prefix)
-            })
-            .map(|(index, _)| index)
-            .collect()
+        self.popup.visible_indices().to_vec()
     }
 
     /// Moves the caret by `delta` characters.
@@ -394,21 +438,17 @@ impl EditableComboBox {
 
     /// Scrolls the list so the selected row is inside the window.
     fn ensure_selected_visible(&mut self) {
-        let indices = self.filtered_indices();
+        self.sync_popup();
         let Some(index) = self.selected_index else {
             return;
         };
-        let Some(position) = indices.iter().position(|&candidate| candidate == index) else {
+        let Some(position) =
+            self.popup.visible_indices().iter().position(|&candidate| candidate == index)
+        else {
             return;
         };
-        let page = self.page_size(indices.len());
-        if position < self.scroll_offset {
-            self.scroll_offset = position;
-        } else if position >= self.scroll_offset + page {
-            self.scroll_offset = position + 1 - page;
-        }
-        self.scroll_offset =
-            self.scroll_offset.min(indices.len().saturating_sub(page.min(indices.len())));
+        self.popup.scroll_into_view(position);
+        self.base.request_redraw();
     }
 
     /// Appends committed text to the field and emits `text_changed` (D09-INPUT-01).
@@ -435,6 +475,8 @@ impl EditableComboBox {
     /// Adds an item to the dropdown list.
     pub fn add_item(&mut self, item: impl Into<String>) {
         self.items.push(item.into());
+        self.items_revision = self.items_revision.wrapping_add(1);
+        self.sync_popup();
         self.base.request_redraw();
     }
 
@@ -449,6 +491,8 @@ impl EditableComboBox {
                     *sel -= 1;
                 }
             }
+            self.items_revision = self.items_revision.wrapping_add(1);
+            self.sync_popup();
             self.base.request_redraw();
             true
         } else {
@@ -460,6 +504,8 @@ impl EditableComboBox {
     pub fn clear_items(&mut self) {
         self.items.clear();
         self.selected_index = None;
+        self.items_revision = self.items_revision.wrapping_add(1);
+        self.sync_popup();
         self.collapse();
         self.base.request_redraw();
     }
@@ -483,6 +529,7 @@ impl EditableComboBox {
     pub fn expand(&mut self) {
         if !self.expanded {
             self.expanded = true;
+            self.sync_popup();
             // The open list owns the press that dismisses it, matching the combo box's
             // popup-grab contract (I-127).
             #[cfg(not(alloc_frugal))]
@@ -563,6 +610,7 @@ impl EditableComboBox {
             self.text_changed.emit(self.text.clone());
             self.item_selected.emit(index);
             self.expanded = false;
+            self.sync_popup();
             self.base.request_redraw();
             return true;
         }
@@ -580,6 +628,12 @@ impl Widget for EditableComboBox {
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// Keeps the popup's anchor on the field when the control is laid out again.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.sync_popup();
     }
 
     fn size_hint(&self) -> crate::core::Size {
@@ -728,6 +782,9 @@ impl WidgetProperties for EditableComboBox {
 
 impl Draw for EditableComboBox {
     fn draw(&mut self, context: &mut RenderContext) {
+        // The open list is painted from the popup's window and row boxes, so its filtered rows,
+        // scroll offset and highlight are synchronised once here (I-129).
+        self.sync_popup();
         // ── The band actually painted ──
         //
         // `geometry()` is the area the control was *given*; an editable combo box is a text
@@ -885,14 +942,9 @@ impl Draw for EditableComboBox {
             return;
         }
 
-        let indices = self.filtered_indices();
-        let page = self.page_size(indices.len());
-        let offset = self.scroll_offset.min(indices.len().saturating_sub(page.min(indices.len())));
-        let visible = &indices[offset..(offset + page).min(indices.len())];
-        let drop_down_y = rect.y + rect.height as i32;
-        let item_height = 28u32;
-        let drop_down_height = item_height * visible.len().max(1) as u32;
-        let drop_rect = Rect::new(rect.x, drop_down_y, rect.width, drop_down_height);
+        let start = self.popup.scroll_offset();
+        let rows = self.popup.window_rows();
+        let drop_rect = self.popup.popup_rect();
 
         // Dropdown background. The list floats over whatever is beneath it, so it is the
         // field's own colour rather than the window's: a transparent list would show the
@@ -900,8 +952,13 @@ impl Draw for EditableComboBox {
         context.fill_rounded_rect(drop_rect, 2, field);
         context.draw_rounded_rect_stroke(drop_rect, 2, border, 1);
 
-        if visible.is_empty() {
-            let row = Rect::new(rect.x + 1, drop_down_y, rect.width.saturating_sub(2), item_height);
+        if rows == 0 {
+            let row = Rect::new(
+                drop_rect.x + 1,
+                drop_rect.y,
+                drop_rect.width.saturating_sub(2),
+                EDITABLE_ROW_HEIGHT,
+            );
             let line = context.text_line(row, font);
             context.draw_text_fitted_cow(
                 Rect::new(row.x + 8, line.y, row.width.saturating_sub(16), line.height),
@@ -919,20 +976,23 @@ impl Draw for EditableComboBox {
             .map(|primary| primary.with_alpha(40))
             .unwrap_or_else(|| ink.blend(&field, 0.85));
 
-        // Rows are painted **from their indices**: the list used to clone every matching row and
-        // then linearly search the item list per painted row (O(visible x items) per frame), and
-        // two equal labels resolved to the first one's index (I-P08).
-        for (row, &original_index) in visible.iter().enumerate() {
+        // Rows are painted **from their indices**: the popup names the rows in its painted
+        // window, and the control reads the label from its own item storage. That keeps a
+        // duplicate label resolving to its own index instead of the first one's (I-P08).
+        for row in 0..rows {
+            let painted = start + row;
+            let Some(&original_index) = self.popup.visible_indices().get(painted) else { continue };
             let Some(item) = self.items.get(original_index) else { continue };
+            let Some(row_box) = self.popup.row_rect(painted) else { continue };
             let item_rect = Rect::new(
-                rect.x + 1,
-                drop_down_y + (row as i32) * (item_height as i32),
-                rect.width.saturating_sub(2),
-                item_height,
+                row_box.x + 1,
+                row_box.y,
+                row_box.width.saturating_sub(2),
+                row_box.height,
             );
 
             // Highlight selected item
-            if self.selected_index == Some(original_index) {
+            if self.popup.selected_index() == Some(painted) {
                 context.fill_rounded_rect(item_rect, 2, highlight);
             }
 
@@ -963,6 +1023,9 @@ impl EventHandler for EditableComboBox {
         if !self.base.is_enabled() {
             return;
         }
+        // The hit test and the list navigation read the popup's rows and window, so they are
+        // brought up to date before this event consults them.
+        self.sync_popup();
 
         match event {
             Event::KeyPress { key, modifiers } => {
@@ -1121,22 +1184,8 @@ impl EventHandler for EditableComboBox {
 
                 // Click on a dropdown item
                 if self.expanded {
-                    let item_height = 28i32;
-                    let drop_down_y = rect.y + rect.height as i32;
-                    let indices = self.filtered_indices();
-                    let page = self.page_size(indices.len());
-                    let offset = self
-                        .scroll_offset
-                        .min(indices.len().saturating_sub(page.min(indices.len())));
-                    let visible = &indices[offset..(offset + page).min(indices.len())];
-                    let drop_down_height = item_height * visible.len().max(1) as i32;
-                    let drop_rect =
-                        Rect::new(rect.x, drop_down_y, rect.width, drop_down_height as u32);
-
-                    if drop_rect.contains_point(*pos) {
-                        let rel_y = pos.y - drop_down_y;
-                        let row = (rel_y / item_height) as usize;
-                        if let Some(&index) = visible.get(row) {
+                    if let Some(row) = self.popup.window_row_at(*pos) {
+                        if let Some(&index) = self.popup.visible_indices().get(row) {
                             self.select_index(index);
                         }
                         return;
@@ -1155,7 +1204,7 @@ impl EventHandler for EditableComboBox {
                 }
                 let scroll = WheelScroll::from_event(*delta, *modifiers, 1);
                 if scroll.lines_y != 0 {
-                    let offset = (self.scroll_offset as i32 + scroll.lines_y).max(0) as usize;
+                    let offset = (self.scroll_offset() as i32 + scroll.lines_y).max(0) as usize;
                     self.set_scroll_offset(offset);
                 }
             }

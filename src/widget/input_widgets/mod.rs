@@ -25,7 +25,12 @@ pub mod ime_preedit;
 #[cfg(widgets_unstripped)]
 pub mod inplace_editor;
 /// Companion pieces the input family pairs with (COMP-C01..C05).
-#[cfg(widgets_unstripped)]
+///
+/// Not gated on `widgets_unstripped`: these are plain value/geometry types (chips, stepper
+/// buttons, a scroll indicator, a format toolbar) with no `widget::runtime` dependency, so the
+/// `mini` profile can carry them. They were gated only because the modules were introduced under
+/// that blanket, and the gate made `spinbox`/`textarea` — which are *not* gated — fail to build
+/// in `mini`.
 pub mod input_companions;
 /// The input grammars a single-line field can enforce.
 pub mod input_validator;
@@ -34,6 +39,17 @@ pub mod keyboard;
 pub(crate) mod line_editor;
 pub mod lineedit;
 pub mod listbox;
+/// The input-mask grammar shared by `MaskedEdit` and `LineEdit::set_input_mask` (I-011).
+///
+/// Profile-neutral: a value type with no widget kind and no runtime, so `LineEdit` can keep its
+/// mask support in a build that excludes the masked widget.
+pub(crate) mod mask_engine;
+/// Masked text input.
+///
+/// Gated on `widgets_unstripped` because it is a **widget kind**: the profile's
+/// [`WidgetKind`](crate::widget::WidgetKind) census decides which controls a build carries, and
+/// `mini` does not carry this one. The *grammar* it is built on is not gated — see
+/// [`mask_engine`], which is what a single-line field needs.
 #[cfg(widgets_unstripped)]
 pub mod masked_edit;
 /// `@`-triggered candidate completion inside free text.
@@ -88,11 +104,13 @@ pub use font_combo_box::FontComboBox;
 pub use ime_preedit::ImePreedit;
 #[cfg(widgets_unstripped)]
 pub use inplace_editor::InplaceEditor;
-#[cfg(widgets_unstripped)]
 pub use input_companions::{
-    Chip, DropSide, FormatAction, FormatActionSet, FormatToolbar, ScrollOrientation, Scrollbar,
-    StepButtons, StepDirection, StepOrientation,
+    Chip, DropSide, ScrollOrientation, Scrollbar, StepButtons, StepDirection, StepOrientation,
 };
+/// The format toolbar is the one companion that speaks the rich-text editor's own format value,
+/// so it follows `rich_edit`'s gate rather than the module's.
+#[cfg(widgets_unstripped)]
+pub use input_companions::{FormatAction, FormatActionSet, FormatToolbar};
 pub use keyboard::Keyboard;
 pub use lineedit::{EchoMode, InputValidator, LineEdit};
 pub use listbox::{ListBox, SelectionMode};

@@ -85,6 +85,7 @@ fn declare_cfg_aliases() {
     println!("cargo:rustc-check-cfg=cfg(widgets_unstripped)");
     println!("cargo:rustc-check-cfg=cfg(alloc_frugal)");
     println!("cargo:rustc-check-cfg=cfg(embedded_surface)");
+    println!("cargo:rustc-check-cfg=cfg(gtk_probe)");
     println!("cargo:rustc-check-cfg=cfg(declarative_view)");
     // The designer gate (BLUE19 D7-b-3). Declared here so a `cfg(designer_tooling)`
     // typo is a build error rather than a silently-false condition.
@@ -146,6 +147,13 @@ fn declare_cfg_aliases() {
     let is_embedded = feature_enabled("embedded");
     let is_stripped = is_mini || is_embedded;
     let view_opted_out = feature_enabled("no-declarative-view");
+    // `gtk_probe` — the gate the X11 GUI probes use: a non-mini build with the GTK backend. It
+    // replaces the same three-term expression repeated in every probe file (DEMO-006). The
+    // probes are desktop-only checks, so `full_widgets` would be the wrong alias: a `tablet`
+    // build has the widget tree but no GTK session to stage them against.
+    if unix_desktop && !is_mini && feature_enabled("gtk-native") {
+        println!("cargo:rustc-cfg=gtk_probe");
+    }
 
     if is_mini {
         println!("cargo:rustc-cfg=alloc_frugal");

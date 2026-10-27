@@ -661,6 +661,38 @@ impl IndicatorChart {
     /// 52 px on the left while the K-line, volume and depth panes reserved 48, so the same
     /// bar index was drawn four pixels apart in two panes that are stacked and read against
     /// each other.
+    /// The hovered bar's anchor and suggested tooltip content, for an external read-out.
+    ///
+    /// The anchor is the primary series' point at the hovered index; when that series has no
+    /// finite value there, the pane's vertical middle is used so the bubble still points at the
+    /// bar the host is reading (gap 10).
+    pub fn hover_anchor(&self) -> Option<(Point, Vec<crate::widget::companions::TooltipLine>)> {
+        let index = self.hovered_index?;
+        let (start, end) = self.view_bounds();
+        if index < start || index >= end {
+            return None;
+        }
+        let area = self.plot_area();
+        if area.rect.width == 0 || area.rect.height == 0 {
+            return None;
+        }
+        // A hover query is a user action, not a frame path, so one clone of the cached values
+        // is cheaper than a second series-building pipeline that could disagree with the paint.
+        let values = if self.values_valid { self.last_values.clone() } else { self.compute() };
+        let series = self.pane_series_from(values);
+        let (low, high) = self.axis_range(&series, start, end);
+        let index_axis = area.index_axis(end.saturating_sub(start).max(1));
+        let x = index_axis.center_for(index - start);
+        let value = series
+            .iter()
+            .find_map(|pane| pane.values.get(index).copied().filter(|value| value.is_finite()));
+        let y = match value {
+            Some(value) => area.price_axis(low, high).y_for(value),
+            None => area.rect.y + area.rect.height as i32 / 2,
+        };
+        Some((Point::new(x, y), self.hovered_summary()))
+    }
+
     fn plot_area(&self) -> PlotArea {
         PlotArea::indicator_pane(self.base.geometry())
     }

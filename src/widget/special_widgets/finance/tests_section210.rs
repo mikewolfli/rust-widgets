@@ -346,6 +346,54 @@ fn charts_expose_hover_summaries() {
     assert!(!ladder.hovered_summary().is_empty());
 }
 
+/// Gap 10: every finance pane publishes an anchor alongside its summary, so one
+/// `ChartTooltip` can be driven from the same `(Point, lines)` shape the charts use.
+#[test]
+fn finance_panes_expose_hover_anchors() {
+    let bounds = rect();
+    let inside = |point: Point| {
+        point.x >= bounds.x
+            && point.y >= bounds.y
+            && point.x < bounds.x + bounds.width as i32
+            && point.y < bounds.y + bounds.height as i32
+    };
+
+    let mut candle = CandlestickChart::new(rect());
+    candle.set_series(series_with(10));
+    candle.handle_event(&Event::MouseMove { pos: Point::new(200, 100) });
+    let (anchor, lines) = candle.hover_anchor().expect("a hovered candle has an anchor");
+    assert!(inside(anchor), "the candle anchor {anchor:?} must be inside the pane");
+    assert!(!lines.is_empty());
+
+    let mut volume = VolumeChart::new(rect());
+    volume.set_series(series_with(10));
+    volume.handle_event(&Event::MouseMove { pos: Point::new(200, 100) });
+    let (anchor, lines) = volume.hover_anchor().expect("a hovered volume bar has an anchor");
+    assert!(inside(anchor), "the volume anchor {anchor:?} must be inside the pane");
+    assert!(!lines.is_empty());
+
+    let mut indicator = IndicatorChart::new(rect());
+    indicator.set_series(series_with(10));
+    indicator.handle_event(&Event::MouseMove { pos: Point::new(200, 100) });
+    let (anchor, lines) = indicator.hover_anchor().expect("a hovered indicator bar has an anchor");
+    assert!(inside(anchor), "the indicator anchor {anchor:?} must be inside the pane");
+    assert!(!lines.is_empty());
+
+    let mut depth = super::depth_chart::DepthChart::new(rect());
+    depth.set_book(fixtures::sample_book(6));
+    depth.handle_event(&Event::MouseMove { pos: Point::new(200, 100) });
+    let (anchor, lines) = depth.hover_anchor().expect("a hovered depth level has an anchor");
+    assert!(inside(anchor), "the depth anchor {anchor:?} must be inside the pane");
+    assert!(!lines.is_empty());
+
+    let mut ladder = OrderBookWidget::new(rect());
+    ladder.set_book(fixtures::sample_book(6));
+    ladder.handle_event(&Event::MouseMove { pos: Point::new(20, 10) });
+    let (anchor, lines) = ladder.hover_anchor().expect("a hovered ladder row has an anchor");
+    assert!(inside(anchor), "the ladder anchor {anchor:?} must be inside the pane");
+    assert!(!lines.is_empty());
+}
+
 // ── J-P18: linear indicator windows ──────────────────────────────────────
 
 /// The rolling windows agree with a naive window scan, including through a gap.

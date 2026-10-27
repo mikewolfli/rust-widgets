@@ -575,6 +575,77 @@ impl Platform for AndroidPlatform {
 
     // ─── Widget creation ─────────────────────────────────────────────────
 
+    /// Creates a logical file-chooser handle and starts the Activity picker.
+    ///
+    /// Android has no file-picker View: the genuine operation is
+    /// `ACTION_OPEN_DOCUMENT`, launched by [`Self::request_path`]. The library paints the chooser
+    /// control itself, so this records a handle and returns it; the picked URI arrives through
+    /// [`Self::take_path_choice`]. The returned id is non-zero exactly when `file_dialog` is
+    /// advertised (P-204).
+    fn create_file_dialog(&self, _parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        // The capability is a runtime fact (`picker_ready`), so the creator answers the same way:
+        // no bridge, no logical handle, rather than a handle the picker cannot service.
+        #[cfg(feature = "android-jni")]
+        if !crate::platform::android_jni::picker_ready() {
+            log::debug!(
+                "[android] create_file_dialog: the JNI bridge has no Activity Context yet; returning 0"
+            );
+            return 0;
+        }
+        #[cfg(not(feature = "android-jni"))]
+        {
+            let _ = (x, y, width, height);
+            log::debug!(
+                "[android] create_file_dialog: built without `android-jni`; there is no picker"
+            );
+            return 0;
+        }
+        #[cfg(feature = "android-jni")]
+        {
+            let id =
+                self.insert_widget(AndroidHandleKind::FileDialog, "Open File", x, y, width, height);
+            // The launch is asynchronous; a false answer means the bridge lost its Context between
+            // the readiness check and the call, which the caller reads from `take_path_choice`.
+            let _ = self.request_path(crate::platform::PathPurpose::OpenFile, "Open File");
+            id
+        }
+    }
+
+    /// Message boxes are painted by the library; Android exposes no standalone message-box View.
+    #[allow(clippy::too_many_arguments)]
+    fn create_message_box(
+        &self,
+        parent: u64,
+        title: &str,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> u64 {
+        let _ = (parent, title, text, x, y, width, height);
+        log::debug!(
+            "[android] create_message_box: no native message-box control; the library paints it"
+        );
+        0
+    }
+
+    /// Colour choosers are painted by the library; Android ships no system colour picker.
+    fn create_color_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        let _ = (parent, x, y, width, height);
+        log::debug!(
+            "[android] create_color_dialog: no system colour picker; the library paints it"
+        );
+        0
+    }
+
+    /// Font choosers are painted by the library; Android ships no system font picker.
+    fn create_font_dialog(&self, parent: u64, x: i32, y: i32, width: u32, height: u32) -> u64 {
+        let _ = (parent, x, y, width, height);
+        log::debug!("[android] create_font_dialog: no system font picker; the library paints it");
+        0
+    }
+
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         if self.state.count_kind(AndroidHandleKind::Window) > 0 {
             log::warn!(

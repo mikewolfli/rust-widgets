@@ -174,6 +174,23 @@ impl LayerPanel {
         self.selected_layer
     }
 
+    /// Sets the selection without publishing `layer_selected`.
+    ///
+    /// The model→view direction: a host mirroring its own layer stack into this panel must not
+    /// hear its own write as a user gesture. [`Self::select_layer`] remains the gesture entry and
+    /// emits; a `None` clears the selection.
+    pub fn set_selected_layer(&mut self, id: Option<u64>) {
+        let next = id.filter(|id| self.entries.iter().any(|entry| entry.id == *id));
+        if self.selected_layer == next {
+            return;
+        }
+        self.selected_layer = next;
+        if let Some(id) = next {
+            self.scroll_to_layer(id);
+        }
+        self.base.request_redraw();
+    }
+
     /// Selects the layer with `id`, returning whether it exists.
     pub fn select_layer(&mut self, id: u64) -> bool {
         if !self.entries.iter().any(|entry| entry.id == id) {

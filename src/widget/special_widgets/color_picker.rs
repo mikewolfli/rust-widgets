@@ -255,6 +255,37 @@ impl ColorPicker {
         false
     }
 
+    /// Samples the screen at `screen` and applies the colour, which is the picker's full-screen
+    /// eyedropper (SP-119).
+    ///
+    /// `screen` is in the host's global screen space — the space
+    /// [`Platform::global_pointer_position`](crate::platform::Platform::global_pointer_position)
+    /// reports. Translating a window point into it needs the window's own origin, so the layer that
+    /// knows the window (a host dragging an eyedropper across the desktop) does that and calls
+    /// this; the picker itself only knows its own rectangle.
+    ///
+    /// Returns `false` when the backend cannot read that pixel: no screen-sampling capability, no
+    /// screen-capture permission, or a point outside every display. The picker's colour is then
+    /// left untouched rather than being driven to black.
+    ///
+    /// The picked hue, saturation and value replace the current ones, but the current **alpha** is
+    /// kept: a screen pixel is opaque, and overwriting a translucent pick with 255 would silently
+    /// change something the eyedropper never measured.
+    pub fn pick_screen_color_at(&mut self, screen: Point) -> bool {
+        let Some(sampled) = crate::platform::platform_facts().sample_screen_color(screen) else {
+            return false;
+        };
+        let mut color = sampled;
+        color.a = self.alpha;
+        self.apply_color_quietly(color);
+        // The same three signals a live edit emits, so a host cannot tell a sampled value from a
+        // dragged one — they are the same user action on the same control.
+        self.color_changed.emit(self.color);
+        self.hex_changed.emit(self.color.to_hex_rgba());
+        self.color_previewed.emit(self.color);
+        true
+    }
+
     /// Commits the hex field, leaving edit mode.
     pub fn commit_hex(&mut self) {
         if !self.hex_editing {

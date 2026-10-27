@@ -16,11 +16,13 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usi
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::input_widgets::input_companions::{ScrollOrientation, Scrollbar};
 use crate::widget::metrics::{active_profile, dimensions, effective_font, profile_metrics};
 use crate::widget::text_utils::{byte_index_of_char, floor_char_boundary};
 use crate::widget::widget_trait::InputMethodQuery;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::cell::Cell;
 use std::collections::HashMap;
 
 /// One logical line: `(start, content_end, end)` byte offsets.
@@ -147,8 +149,11 @@ pub struct TextArea {
     revision: u64,
     /// Memoised display rows: the soft-wrapped rows the paint, caret and hit test share.
     display_rows_cache: RefCell<Option<DisplayRowCache>>,
-    /// Per-logical-line wrap results, reused when a line's content and width are unchanged (I-006).
-    wrapped_lines: RefCell<Vec<WrappedLineCache>>,
+    /// The splice the next [`Self::display_rows`] call may patch in place (I-006).
+    ///
+    /// Only one splice is described at a time. A second edit before the rows are read clears the
+    /// hint, which falls back to the whole-table path rather than composing two unrelated deltas.
+    pending_row_edit: Cell<Option<PendingEdit>>,
     /// Measured advances for the selection band's two edges, keyed by the revision.
     ///
     /// The band used to re-shape its line prefix and its selected run on every frame, which is two
@@ -160,6 +165,12 @@ pub struct TextArea {
     cursor_blink: crate::style::CursorBlink,
     /// Whether the pointer is currently dragging the scrollbar thumb (I-118).
     scrollbar_drag: bool,
+    /// The standard scrollbar the track, thumb and drag offset come from (I-128).
+    ///
+    /// The companion owns the proportional thumb geometry and the pointer-to-offset map; this
+    /// control still paints it in its own ink because the companion's painter reads only palette
+    /// roles and would move the field's themed scrollbar to a different colour.
+    scrollbar: Scrollbar,
 }
 
 /// One display row: the byte range of the value it paints.
@@ -187,19 +198,44 @@ struct DisplayRowCache {
     /// previous face (I-07).
     font: Font,
     rows: Rc<Vec<DisplayRow>>,
+    /// The logical spans the rows were built from, retained so the next edit can reuse the
+    /// untouched paragraphs at either end (I-006).
+    spans: Rc<Vec<LineSpan>>,
+    /// One entry per logical paragraph, parallel to `spans`.
+    paragraphs: Vec<ParagraphRow>,
+    /// Index into `rows` of each paragraph's first row, parallel to `spans`.
+    row_starts: Vec<usize>,
+    /// Document byte length when the cache was built, used to validate a pending splice.
+    text_len: usize,
 }
 
-/// One logical line's wrapped rows, relative to the line start, keyed by its own content (I-006).
+/// One logical paragraph's wrapped rows, keyed by its own content revision and the style inputs.
 ///
-/// A soft-wrap pass used to re-measure every glyph of the document on any edit. The line's own
-/// text and width are the only inputs that decide its breaks, so an unchanged line can hand back
-/// its previous rows and only the edited paragraph is measured again.
-struct WrappedLineCache {
-    hash: u64,
+/// A soft-wrap pass used to re-measure every glyph of the document on any edit. A paragraph's own
+/// text, width and font decide its breaks, so an unchanged paragraph hands back its previous rows.
+/// The `Rc` keeps reusing an untouched paragraph to a refcount bump.
+#[derive(Clone)]
+struct ParagraphRow {
+    /// Fingerprint of the paragraph's visible text.
+    content_revision: u64,
+    /// The width the paragraph was wrapped at.
     width: u32,
+    /// Whether soft wrap was on when the rows were built.
+    soft_wrap: bool,
     font: Font,
-    /// `(relative start, relative end)` pairs inside the line's content.
-    rows: Vec<(usize, usize)>,
+    /// `(relative start, relative end)` pairs inside the paragraph's content.
+    rows: Rc<Vec<(usize, usize)>>,
+}
+
+/// A byte splice that [`TextArea::display_rows`] can apply without rebuilding every paragraph.
+#[derive(Clone, Copy, Debug)]
+struct PendingEdit {
+    /// Byte offset in the new text where the changed run begins.
+    start: usize,
+    /// Bytes removed at `start` from the pre-edit text.
+    removed: usize,
+    /// Bytes inserted at `start` in the new text.
+    inserted: usize,
 }
 
 /// A cheap content hash for one line's wrap-cache key.
@@ -210,6 +246,51 @@ fn line_hash(text: &str) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
+}
+
+/// The logical paragraph containing `offset`, clamped to a real span.
+fn paragraph_index_at(spans: &[LineSpan], offset: usize) -> usize {
+    spans.partition_point(|&(start, _, _)| start <= offset).saturating_sub(1)
+}
+
+/// Breaks one paragraph's content into `(relative start, relative end)` rows.
+///
+/// This is the same measurement the whole-table path always made, expressed relative to the
+/// paragraph start so an unchanged row can be moved when earlier text shifts.
+fn wrap_paragraph_rows(
+    content: &str,
+    width: u32,
+    font: &Font,
+    context: &RenderContext<'_>,
+) -> Vec<(usize, usize)> {
+    let mut rows = Vec::new();
+    let mut row_start = 0usize;
+    let mut row_width = 0.0f32;
+    let mut last_break: Option<usize> = None;
+    for (offset, ch) in content.char_indices() {
+        let mut glyph = [0u8; 4];
+        let advance = context.measure_text(ch.encode_utf8(&mut glyph), font).width as f32;
+        if row_width + advance > width as f32 && offset > row_start {
+            let break_at = last_break
+                .filter(|boundary| *boundary > row_start && *boundary <= offset)
+                .unwrap_or(offset);
+            rows.push((row_start, break_at));
+            row_start = break_at;
+            row_width = 0.0;
+            for (_, carried) in content[row_start..offset].char_indices() {
+                let mut glyph = [0u8; 4];
+                row_width +=
+                    context.measure_text(carried.encode_utf8(&mut glyph), font).width as f32;
+            }
+            last_break = None;
+        }
+        if ch.is_whitespace() || ch == '-' {
+            last_break = Some(offset + ch.len_utf8());
+        }
+        row_width += advance;
+    }
+    rows.push((row_start, content.len()));
+    rows
 }
 
 /// Memoised selection-band advances, keyed by the document revision and the full font.
@@ -263,10 +344,16 @@ impl TextArea {
             scroll_x: 0,
             revision: 0,
             display_rows_cache: RefCell::new(None),
-            wrapped_lines: RefCell::new(Vec::new()),
+            pending_row_edit: Cell::new(None),
             band_width_cache: RefCell::new(None),
             cursor_blink: crate::style::CursorBlink::new(),
             scrollbar_drag: false,
+            scrollbar: {
+                let mut bar = Scrollbar::new();
+                bar.set_orientation(ScrollOrientation::Vertical, 4);
+                bar.set_thumb_min_length(8);
+                bar
+            },
         }
     }
 
@@ -492,6 +579,7 @@ impl TextArea {
         // table, and a stale one would cut at an offset from the previous document.
         self.line_spans_cache.borrow_mut().take();
         self.display_rows_cache.borrow_mut().take();
+        self.pending_row_edit.set(None);
         self.revision = self.revision.wrapping_add(1);
         self.enforce_max_block_count();
         *self.history_target.borrow_mut() = self.text.clone();
@@ -530,8 +618,24 @@ impl TextArea {
             return;
         }
         self.line_spans_cache.borrow_mut().take();
-        self.display_rows_cache.borrow_mut().take();
         self.revision = self.revision.wrapping_add(1);
+        if self.max_block_count.is_some() {
+            // The line budget may drop a prefix, which no single splice describes. Keep the
+            // whole-table path for that case.
+            self.display_rows_cache.borrow_mut().take();
+            self.pending_row_edit.set(None);
+        } else if self.pending_row_edit.get().is_some() {
+            // A second splice landed before the rows were read. One hint cannot describe both,
+            // so fall back to the whole-table path rather than composing unrelated deltas.
+            self.display_rows_cache.borrow_mut().take();
+            self.pending_row_edit.set(None);
+        } else {
+            // The row cache survives: the next `display_rows` re-wraps only the paragraphs the
+            // splice touched and reuses the untouched ends (I-006).
+            let edit =
+                PendingEdit { start: offset, removed: removed.len(), inserted: inserted.len() };
+            self.pending_row_edit.set(Some(edit));
+        }
         self.enforce_max_block_count();
         match before {
             Some(before) => {
@@ -594,6 +698,7 @@ impl TextArea {
         self.text = next;
         self.line_spans_cache.borrow_mut().take();
         self.display_rows_cache.borrow_mut().take();
+        self.pending_row_edit.set(None);
         self.revision = self.revision.wrapping_add(1);
         self.enforce_max_block_count();
         if !self.restoring_history {
@@ -880,6 +985,7 @@ impl TextArea {
         }
         self.soft_wrap = wrap;
         self.display_rows_cache.borrow_mut().take();
+        self.pending_row_edit.set(None);
         self.first_visible_line = 0;
         self.base.request_redraw();
     }
@@ -897,6 +1003,7 @@ impl TextArea {
         }
         self.content_margin = margin;
         self.display_rows_cache.borrow_mut().take();
+        self.pending_row_edit.set(None);
         self.base.request_redraw();
     }
 
@@ -945,6 +1052,7 @@ impl TextArea {
         self.selection_anchor = self.selection_anchor.map(|anchor| anchor.saturating_sub(cut));
         self.line_spans_cache.borrow_mut().take();
         self.display_rows_cache.borrow_mut().take();
+        self.pending_row_edit.set(None);
         self.revision = self.revision.wrapping_add(1);
         true
     }
@@ -960,105 +1068,233 @@ impl TextArea {
     /// With soft wrap off this is exactly one row per logical line, which is what keeps the
     /// existing layout and its pixels unchanged. The cache is keyed by the mutation counter rather
     /// than the document text, so a hit is an integer comparison.
+    ///
+    /// When only the text changed, a pending splice lets this rebuild solely the paragraphs it
+    /// touched and reuse the untouched ends (I-006). A width, wrap, margin or font change takes
+    /// the whole-table path, because it moves every paragraph.
     fn display_rows(&self) -> Rc<Vec<DisplayRow>> {
         let width = self.content_width();
         let font = self.text_font().clone();
-        if let Some(cache) = self.display_rows_cache.borrow().as_ref() {
-            if cache.revision == self.revision
-                && cache.width == width
-                && cache.soft_wrap == self.soft_wrap
-                && cache.margin == self.content_margin
-                && cache.font == font
-            {
-                return Rc::clone(&cache.rows);
+        {
+            let cache = self.display_rows_cache.borrow();
+            if let Some(cache) = cache.as_ref() {
+                if cache.revision == self.revision
+                    && cache.width == width
+                    && cache.soft_wrap == self.soft_wrap
+                    && cache.margin == self.content_margin
+                    && cache.font == font
+                {
+                    return Rc::clone(&cache.rows);
+                }
             }
         }
-        let rows = Rc::new(self.build_display_rows(width));
-        *self.display_rows_cache.borrow_mut() = Some(DisplayRowCache {
+        let pending = self.pending_row_edit.take();
+        let incremental = {
+            let cache = self.display_rows_cache.borrow();
+            match (cache.as_ref(), pending) {
+                (Some(cached), Some(edit))
+                    if cached.width == width
+                        && cached.soft_wrap == self.soft_wrap
+                        && cached.margin == self.content_margin
+                        && cached.font == font
+                        && edit.start <= self.text.len()
+                        && edit.start + edit.inserted <= self.text.len()
+                        && edit.start + edit.removed <= cached.text_len
+                        && cached.text_len + edit.inserted == self.text.len() + edit.removed =>
+                {
+                    self.incremental_display_rows(cached, edit, width, &font)
+                }
+                _ => None,
+            }
+        };
+        let next = incremental.unwrap_or_else(|| {
+            let cache = self.display_rows_cache.borrow();
+            self.build_display_rows(width, &font, cache.as_ref())
+        });
+        let rows = Rc::clone(&next.rows);
+        *self.display_rows_cache.borrow_mut() = Some(next);
+        rows
+    }
+
+    /// Rebuilds only the paragraphs a splice touched, reusing the untouched ends (I-006).
+    ///
+    /// Returns `None` when the old and new line tables do not line up — for example a splice that
+    /// removes the terminator between two paragraphs and therefore merges them. The caller then
+    /// takes the whole-table path, so the returned rows always match a full rebuild byte for byte.
+    fn incremental_display_rows(
+        &self,
+        cached: &DisplayRowCache,
+        edit: PendingEdit,
+        width: u32,
+        font: &Font,
+    ) -> Option<DisplayRowCache> {
+        let spans = self.line_spans();
+        let old_spans = &cached.spans;
+        let old_count = old_spans.len();
+        let new_count = spans.len();
+        let first_old = paragraph_index_at(old_spans, edit.start);
+        let last_old = if edit.removed == 0 {
+            first_old
+        } else {
+            paragraph_index_at(old_spans, edit.start + edit.removed - 1)
+        };
+        let prefix = first_old.min(old_count).min(new_count);
+        let suffix = old_count.saturating_sub(last_old + 1);
+        if prefix + suffix > new_count {
+            return None;
+        }
+        let new_suffix_start = new_count - suffix;
+        let old_suffix_start = last_old + 1;
+        if new_suffix_start < prefix {
+            return None;
+        }
+        // The untouched tail must still begin at the same paragraph boundary, shifted by the
+        // splice. Removing the terminator that separated the changed run from the tail merges
+        // the two paragraphs, and that is not a reusable suffix.
+        if suffix > 0 {
+            let delta = edit.inserted as isize - edit.removed as isize;
+            let expected = old_spans[old_suffix_start].0 as isize + delta;
+            if expected < 0 || spans[new_suffix_start].0 as isize != expected {
+                return None;
+            }
+        }
+
+        let mut rows: Vec<DisplayRow> = Vec::new();
+        let mut paragraphs: Vec<ParagraphRow> = Vec::with_capacity(new_count);
+        let mut row_starts: Vec<usize> = Vec::with_capacity(new_count);
+
+        // The prefix is byte-for-byte untouched, so its absolute rows can be copied as they are.
+        let prefix_row_end = cached.row_starts.get(prefix).copied().unwrap_or(cached.rows.len());
+        rows.extend_from_slice(&cached.rows[..prefix_row_end.min(cached.rows.len())]);
+        row_starts.extend_from_slice(cached.row_starts.get(..prefix).unwrap_or(&[]));
+        paragraphs.extend(cached.paragraphs.iter().take(prefix).cloned());
+
+        // Only the middle is measured. Every untouched paragraph keeps its cached rows.
+        let mut measurement =
+            crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
+        let context = RenderContext::new(&mut measurement);
+        for &(start, content_end, _) in spans.iter().take(new_suffix_start).skip(prefix) {
+            row_starts.push(rows.len());
+            let content = &self.text[start..content_end];
+            let entry = self.wrap_paragraph(width, font, &context, content, line_hash(content));
+            for &(rel_start, rel_end) in entry.rows.iter() {
+                rows.push(DisplayRow { start: start + rel_start, end: start + rel_end });
+            }
+            paragraphs.push(entry);
+        }
+
+        // The tail's content is unchanged; its relative rows shift with the new span start.
+        for offset in 0..suffix {
+            let new_index = new_suffix_start + offset;
+            let old_index = old_suffix_start + offset;
+            let start = spans[new_index].0;
+            row_starts.push(rows.len());
+            let entry = cached.paragraphs.get(old_index)?.clone();
+            for &(rel_start, rel_end) in entry.rows.iter() {
+                rows.push(DisplayRow { start: start + rel_start, end: start + rel_end });
+            }
+            paragraphs.push(entry);
+        }
+
+        if rows.is_empty() {
+            rows.push(DisplayRow { start: 0, end: 0 });
+        }
+        Some(DisplayRowCache {
             revision: self.revision,
             width,
             soft_wrap: self.soft_wrap,
             margin: self.content_margin,
-            font,
-            rows: Rc::clone(&rows),
-        });
-        rows
+            font: font.clone(),
+            rows: Rc::new(rows),
+            spans,
+            paragraphs,
+            row_starts,
+            text_len: self.text.len(),
+        })
     }
 
-    /// Builds the display-row table for `width`, wrapping long lines when soft wrap is on.
-    fn build_display_rows(&self, width: u32) -> Vec<DisplayRow> {
+    /// Builds the whole display-row table, wrapping long paragraphs when soft wrap is on.
+    ///
+    /// This is the width/style-change fallback. It may reuse a paragraph whose content, width and
+    /// font are unchanged from `previous`, but it visits every logical paragraph.
+    fn build_display_rows(
+        &self,
+        width: u32,
+        font: &Font,
+        previous: Option<&DisplayRowCache>,
+    ) -> DisplayRowCache {
         let spans = self.line_spans();
-        let font = self.text_font().clone();
+        let reusable = previous.filter(|cache| {
+            cache.width == width
+                && cache.soft_wrap == self.soft_wrap
+                && cache.margin == self.content_margin
+                && cache.font == *font
+        });
         let mut measurement =
             crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
         let context = RenderContext::new(&mut measurement);
-        let advance_of = |ch: char| {
-            let mut glyph = [0u8; 4];
-            context.measure_text(ch.encode_utf8(&mut glyph), &font).width as f32
-        };
         let mut rows = Vec::new();
-        let mut cache = self.wrapped_lines.borrow_mut();
-        cache.resize_with(spans.len(), || WrappedLineCache {
-            hash: 0,
-            width: 0,
-            font: Font::default(),
-            rows: Vec::new(),
-        });
-        for (line_index, &(start, content_end, _)) in spans.iter().enumerate() {
-            if !self.soft_wrap || width == 0 || content_end <= start {
-                rows.push(DisplayRow { start, end: content_end });
-                continue;
-            }
+        let mut paragraphs = Vec::with_capacity(spans.len());
+        let mut row_starts = Vec::with_capacity(spans.len());
+        for (index, &(start, content_end, _)) in spans.iter().enumerate() {
+            row_starts.push(rows.len());
             let content = &self.text[start..content_end];
-            let hash = line_hash(content);
-            let reusable = {
-                let entry = &cache[line_index];
-                entry.hash == hash && entry.width == width && entry.font == font
-            };
-            if reusable {
-                for &(rel_start, rel_end) in &cache[line_index].rows {
-                    rows.push(DisplayRow { start: start + rel_start, end: start + rel_end });
-                }
-                continue;
+            let content_revision = line_hash(content);
+            let reused = reusable
+                .and_then(|cache| cache.paragraphs.get(index))
+                .filter(|entry| {
+                    entry.content_revision == content_revision
+                        && entry.width == width
+                        && entry.soft_wrap == self.soft_wrap
+                        && entry.font == *font
+                })
+                .cloned();
+            let entry = reused.unwrap_or_else(|| {
+                self.wrap_paragraph(width, font, &context, content, content_revision)
+            });
+            for &(rel_start, rel_end) in entry.rows.iter() {
+                rows.push(DisplayRow { start: start + rel_start, end: start + rel_end });
             }
-            let mut line_rows = Vec::new();
-            let mut row_start = start;
-            let mut row_width = 0.0f32;
-            let mut last_break: Option<usize> = None;
-            for (offset, ch) in content.char_indices() {
-                let absolute = start + offset;
-                let advance = advance_of(ch);
-                if row_width + advance > width as f32 && absolute > row_start {
-                    let break_at = last_break
-                        .filter(|boundary| *boundary > row_start && *boundary <= absolute)
-                        .unwrap_or(absolute);
-                    rows.push(DisplayRow { start: row_start, end: break_at });
-                    line_rows.push((row_start - start, break_at - start));
-                    row_start = break_at;
-                    row_width = 0.0;
-                    for (_, carried) in self.text[row_start..absolute].char_indices() {
-                        row_width += advance_of(carried);
-                    }
-                    last_break = None;
-                }
-                if ch.is_whitespace() || ch == '-' {
-                    last_break = Some(absolute + ch.len_utf8());
-                }
-                row_width += advance;
-            }
-            rows.push(DisplayRow { start: row_start, end: content_end });
-            line_rows.push((row_start - start, content_end - start));
-            let entry = &mut cache[line_index];
-            entry.hash = hash;
-            entry.width = width;
-            entry.font = font.clone();
-            entry.rows = line_rows;
+            paragraphs.push(entry);
         }
-        cache.truncate(spans.len());
         if rows.is_empty() {
             rows.push(DisplayRow { start: 0, end: 0 });
         }
-        rows
+        DisplayRowCache {
+            revision: self.revision,
+            width,
+            soft_wrap: self.soft_wrap,
+            margin: self.content_margin,
+            font: font.clone(),
+            rows: Rc::new(rows),
+            spans,
+            paragraphs,
+            row_starts,
+            text_len: self.text.len(),
+        }
+    }
+
+    /// Measures one logical paragraph, returning its relative rows and cache key.
+    fn wrap_paragraph(
+        &self,
+        width: u32,
+        font: &Font,
+        context: &RenderContext<'_>,
+        content: &str,
+        content_revision: u64,
+    ) -> ParagraphRow {
+        let rows = if !self.soft_wrap || width == 0 || content.is_empty() {
+            Rc::new(vec![(0usize, content.len())])
+        } else {
+            Rc::new(wrap_paragraph_rows(content, width, font, context))
+        };
+        ParagraphRow {
+            content_revision,
+            width,
+            soft_wrap: self.soft_wrap,
+            font: font.clone(),
+            rows,
+        }
     }
 
     /// The display row a caret at `offset` belongs to.
@@ -1217,6 +1453,7 @@ impl TextArea {
             self.text.truncate(boundary);
             self.line_spans_cache.borrow_mut().take();
             self.display_rows_cache.borrow_mut().take();
+            self.pending_row_edit.set(None);
             self.revision = self.revision.wrapping_add(1);
             // The caret must stay on a boundary inside what is left.
             self.cursor_pos = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
@@ -1506,6 +1743,7 @@ impl TextArea {
         self.text = self.history_target.borrow().clone();
         self.line_spans_cache.borrow_mut().take();
         self.display_rows_cache.borrow_mut().take();
+        self.pending_row_edit.set(None);
         self.revision = self.revision.wrapping_add(1);
         self.cursor_pos = self.cursor_pos.min(self.text.len());
         self.restoring_history = false;
@@ -2260,19 +2498,20 @@ impl TextArea {
         Some((track, total, visible))
     }
 
-    /// The thumb rectangle within `track`, proportional to the visible fraction.
-    fn scrollbar_thumb(&self, track: Rect, total: usize, visible: usize) -> Rect {
-        let height = ((visible as f32 / total as f32) * track.height as f32)
-            .max(8.0)
-            .min(track.height as f32) as u32;
-        let max_first = total.saturating_sub(visible);
-        let fraction = if max_first == 0 {
-            0.0
-        } else {
-            self.first_visible_line.min(max_first) as f32 / max_first as f32
-        };
-        let y = track.y + (((track.height - height) as f32) * fraction) as i32;
-        Rect::new(track.x, y, track.width, height)
+    /// Hands the standard scrollbar the track and the metrics it needs.
+    ///
+    /// Returns the track when the value overflows the viewport. The companion then owns the
+    /// thumb rectangle, the `pos`-to-offset mapping and the visible predicate, so the paint and
+    /// the drag cannot disagree about the thumb they act on (I-128).
+    fn sync_scrollbar(&mut self) -> Option<Rect> {
+        let (track, total, visible) = self.scrollbar_track()?;
+        self.scrollbar.set_track(track);
+        self.scrollbar.set_metrics(
+            total.min(u32::MAX as usize) as u32,
+            visible.min(u32::MAX as usize) as u32,
+            self.first_visible_line.min(u32::MAX as usize) as u32,
+        );
+        Some(track)
     }
 
     /// Whether `pos` is on the scrollbar track (and therefore grabs the thumb).
@@ -2282,31 +2521,32 @@ impl TextArea {
 
     /// Scrolls the value so the scrollbar dragged to `y` lands there (I-118).
     fn scrollbar_scroll_to(&mut self, y: i32) {
-        let Some((track, total, visible)) = self.scrollbar_track() else {
+        let Some(track) = self.sync_scrollbar() else {
             return;
         };
-        let thumb = self.scrollbar_thumb(track, total, visible);
-        let travel = (track.height.saturating_sub(thumb.height)).max(1) as f32;
-        let offset = (y - track.y - thumb.height as i32 / 2) as f32;
-        let max_first = total.saturating_sub(visible);
-        let fraction = (offset / travel).clamp(0.0, 1.0);
-        let next = (fraction * max_first as f32).round() as usize;
+        let next = self.scrollbar.drag_thumb(Point::new(track.x, y)) as usize;
         if next != self.first_visible_line {
             self.first_visible_line = next;
         }
     }
 
     /// Paints the right-edge scrollbar when the value is taller than the viewport (I-118).
-    fn draw_scrollbar(&self, context: &mut RenderContext) {
-        let Some((track, total, visible)) = self.scrollbar_track() else {
+    fn draw_scrollbar(&mut self, context: &mut RenderContext) {
+        let Some(track) = self.sync_scrollbar() else {
             return;
         };
+        if !self.scrollbar.is_visible() {
+            return;
+        }
         let paper = self.style().background_color.unwrap_or(Color::WHITE);
         let ink = self.style().text_color.unwrap_or(Color::BLACK);
         let track_color = ink.blend(&paper, 0.18);
         let thumb_color = ink.blend(&paper, 0.45);
         context.fill_rect(track, track_color);
-        context.fill_rect(self.scrollbar_thumb(track, total, visible), thumb_color);
+        let thumb = self.scrollbar.thumb_rect(track);
+        if thumb.width > 0 && thumb.height > 0 {
+            context.fill_rect(thumb, thumb_color);
+        }
     }
 
     /// The resolved body font the control paints and measures text with.
@@ -3882,6 +4122,80 @@ mod tests {
             1,
             "the new revision starts clean"
         );
+    }
+
+    /// A middle-paragraph edit patches the row table instead of re-wrapping the document.
+    #[test]
+    fn an_incremental_row_rebuild_matches_the_full_table_for_a_middle_line_edit() {
+        let mut ta = TextArea::new(
+            "first line\nsecond line that is long enough to wrap around\nthird line".to_string(),
+            Rect::new(0, 0, 90, 200),
+        );
+        ta.set_soft_wrap(true);
+        let _ = ta.display_rows();
+        let stale_revision = ta.display_rows_cache.borrow().as_ref().map(|cache| cache.revision);
+        let middle = ta.text().find("long").expect("the middle paragraph has the token");
+        ta.set_cursor_pos(middle);
+        ta.insert_char('X');
+        // The edit's own scroll pass already folds the splice into the row table. If that pass
+        // failed the guard, the cache would still be stale here and the comparison below would
+        // still pass, so assert the cache was actually rebuilt for the new revision.
+        assert!(ta.pending_row_edit.get().is_none(), "the splice hint was consumed");
+        assert_eq!(
+            ta.display_rows_cache.borrow().as_ref().map(|cache| cache.revision),
+            Some(ta.revision)
+        );
+        assert_ne!(stale_revision, Some(ta.revision));
+        let incremental = ta.display_rows();
+        // Drop the cache so the next read has to take the whole-table path.
+        ta.display_rows_cache.borrow_mut().take();
+        ta.pending_row_edit.set(None);
+        let full = ta.display_rows();
+        assert_eq!(*incremental, *full);
+    }
+
+    /// The incremental helper itself must return rows identical to a from-scratch build.
+    #[test]
+    fn an_incremental_splice_matches_the_full_rebuild() {
+        let mut ta = TextArea::new(
+            "first line\nsecond line that is long enough to wrap around\nthird line".to_string(),
+            Rect::new(0, 0, 90, 200),
+        );
+        ta.set_soft_wrap(true);
+        let _ = ta.display_rows();
+        let cached = ta.display_rows_cache.borrow_mut().take().expect("the rows are seeded");
+        let at = ta.text.find("long").expect("the middle paragraph has the token");
+        ta.text.insert(at, 'X');
+        ta.line_spans_cache.borrow_mut().take();
+        ta.revision = ta.revision.wrapping_add(1);
+        let width = ta.content_width();
+        let font = ta.text_font().clone();
+        let incremental = ta
+            .incremental_display_rows(
+                &cached,
+                PendingEdit { start: at, removed: 0, inserted: 1 },
+                width,
+                &font,
+            )
+            .expect("the middle splice is reusable");
+        let full = ta.build_display_rows(width, &font, None);
+        assert_eq!(*incremental.rows, *full.rows);
+    }
+
+    /// An edit that merges two paragraphs cannot reuse the tail, but the fallback still agrees.
+    #[test]
+    fn a_paragraph_merging_edit_matches_the_full_table() {
+        let mut ta = TextArea::new("one\ntwo\nthree".to_string(), Rect::new(0, 0, 120, 120));
+        ta.set_soft_wrap(true);
+        let _ = ta.display_rows();
+        let newline = ta.text().find('\n').expect("the value has a terminator");
+        ta.set_cursor_pos(newline);
+        ta.delete_forward();
+        let incremental = ta.display_rows();
+        ta.display_rows_cache.borrow_mut().take();
+        ta.pending_row_edit.set(None);
+        let full = ta.display_rows();
+        assert_eq!(*incremental, *full);
     }
 
     /// Undo records only the changed run, not a snapshot of the whole document.

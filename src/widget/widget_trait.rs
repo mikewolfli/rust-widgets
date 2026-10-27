@@ -965,8 +965,19 @@ pub trait Widget: EventHandler + Any {
     ///
     /// [`connect_event`]: crate::widget::capability::WidgetFactory::connect_event
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
-        let _ = name;
-        None
+        // W-302: the two focus events are base facts, not per-control signals, so every control
+        // resolves them from the base state without declaring an arm of its own.
+        // `BaseWidget::PUBLISHED_EVENTS` is the single list; a name outside it stays unresolved,
+        // which is the honest default for a control that has not published its own arms.
+        if !BaseWidget::PUBLISHED_EVENTS.contains(&name) {
+            return None;
+        }
+        use crate::signal::EventSignalRef;
+        match name {
+            "focus_gained" => Some(EventSignalRef::unit("focus_gained", &self.base().focus_gained)),
+            "focus_lost" => Some(EventSignalRef::unit("focus_lost", &self.base().focus_lost)),
+            _ => None,
+        }
     }
 
     /// Whether this widget has ever asked to be repainted.
@@ -1075,11 +1086,34 @@ pub trait Widget: EventHandler + Any {
     /// Apply CSS styles to this widget. The `css` text is parsed and rules matching
     /// the widget's kind and optional class/id are applied to the widget's style.
     fn apply_css(&mut self, css: &str, class: Option<&str>) -> Result<(), String> {
-        // `css_name` is the same `Debug` spelling the selector parser expects, without the
-        // per-call `format!` allocation this used to make on the inline-CSS path.
-        let kind_str = self.kind().css_name();
+        self.apply_css_in(css, class, None, &[])
+    }
+
+    /// [`Widget::apply_css`] with the element's id and ancestor chain.
+    ///
+    /// Inline CSS is a stylesheet like any other, so a descendant or child combinator written in
+    /// it is only answerable when the caller knows the tree. The JSON loader passes the chain it
+    /// built while instantiating the node (STY-002); a caller that has no chain keeps using
+    /// [`Widget::apply_css`], whose rules match against the element alone.
+    fn apply_css_in(
+        &mut self,
+        css: &str,
+        class: Option<&str>,
+        id: Option<&str>,
+        ancestors: &[crate::style::ElementRef<'_>],
+    ) -> Result<(), String> {
         let mut style = self.style().clone();
-        CssParser::parse_and_apply(css, kind_str, class, None, None, &mut style)?;
+        // STY-002: the inline entry is a production consumer too, so it passes the control's
+        // current interaction state rather than `None`. Without this, `:hover`/`:focus` rules in
+        // an element's own `css` text were unreachable for the same reason the app-wide sheet's
+        // were.
+        let element = crate::style::ElementRef {
+            kind: self.kind(),
+            class,
+            id,
+            state: Some(self.widget_state()),
+        };
+        CssParser::parse_and_apply_in(css, element, ancestors, &mut style)?;
         self.set_style(style);
         Ok(())
     }

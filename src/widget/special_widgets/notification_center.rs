@@ -894,6 +894,11 @@ impl Widget for NotificationCenter {
                     crate::widget::capability::CapabilityValue::Null
                 }))
             }
+            "items_changed" => {
+                Some(EventSignalRef::mapped("items_changed", &self.items_changed, |count| {
+                    CapabilityValue::UInt(*count as u64)
+                }))
+            }
             _ => None,
         }
     }

@@ -381,6 +381,7 @@ impl SoftwareSurface {
             nonzero_intersections: Vec::new(),
             text_coverage_scratch: Vec::new(),
             blend_mode: BlendMode::Normal,
+            frame_number: 0,
             glyph_run_text: false,
             #[cfg(feature = "3d")]
             depth_buffer: Vec::new(),
@@ -444,12 +445,19 @@ impl SoftwareSurface {
     /// Clears the current back buffer with a solid color.
     pub fn begin_frame(&mut self, clear: Color) {
         fill_pixels(self.buffer.back_mut(), clear);
+        // The real frame boundary (G-020): the text atlas advances its collection epoch from this
+        // value instead of counting lookups, so eviction follows frames rather than text volume.
+        self.frame_number = self.frame_number.wrapping_add(1);
         // A new frame starts with no geometry in front of the camera. The buffer is cleared lazily
         // by the first mesh draw of the frame, so a 2D-only frame pays nothing for the feature.
         #[cfg(feature = "3d")]
         {
             self.depth_dirty = true;
         }
+    }
+    /// The frame counter advanced by [`Self::begin_frame`] (G-020).
+    pub fn frame_number(&self) -> u64 {
+        self.frame_number
     }
     /// Presents the back buffer as the current frame.
     pub fn end_frame(&mut self) {

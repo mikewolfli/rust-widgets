@@ -56,7 +56,7 @@ pub(crate) fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
 /// Same contract as [`contains_ignore_ascii_case`]: `needle` is already lower-cased, and a
 /// non-ASCII needle takes the owned path. The command palette ranks a prefix match above a
 /// substring match, and it used to build a lowered copy of every candidate to answer this.
-#[cfg(widgets_unstripped)]
+#[cfg(full_widgets)]
 pub(crate) fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return true;

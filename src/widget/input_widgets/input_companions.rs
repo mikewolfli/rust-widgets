@@ -26,12 +26,308 @@
 //! These controls contain no `unsafe` code and own all of their state. Geometry and numeric
 //! inputs are validated and clamped in safe Rust.
 
+use crate::compat::{MiniToString, String};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::WidgetStyle;
 use crate::widget::metrics::{estimate_text_width, role_font};
 use crate::widget::Draw;
+
+/// The shared swipe-gesture kernel used by `SwipeActions` and `SwipeToDismiss` (COMP-A03).
+///
+/// # Why it lives here
+///
+/// A swiped row is one gesture with two presentations: a background that reveals actions
+/// (`SwipeActions`) and a wrapper that dismisses its child (`SwipeToDismiss`). Each used to
+/// spell the threshold, the rubber-band damping, the flick rule and the settle out of its own
+/// copy, which is the shape where one copy drifts and the two controls stop agreeing about
+/// what "the same drag" means. The model is written once here and both controls consume it.
+///
+/// Gated on `full_widgets` because that is the only profile either consumer is compiled in;
+/// `mini`/`embedded` never build this code and must not carry it.
+#[cfg(full_widgets)]
+pub(crate) mod swipe_kernel {
+    use crate::style::{MotionSlot, PropertyDriver};
+
+    /// The distance a kernel threshold is clamped to, in logical pixels.
+    ///
+    /// A zero threshold would make every tap a decision and a negative one would make the
+    /// comparison meaningless, so both resolve to the nearest legal value.
+    const MIN_THRESHOLD: f32 = 1.0;
+
+    fn legal_threshold(threshold: f32) -> f32 {
+        if threshold.is_finite() {
+            threshold.max(MIN_THRESHOLD)
+        } else {
+            MIN_THRESHOLD
+        }
+    }
+
+    /// What a released swipe decided.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum SwipeCommit {
+        /// The travel, or its velocity, passed the threshold; the gesture commits.
+        Commit,
+        /// The gesture stayed below both the distance and the flick rule; it rebounds.
+        Rebound,
+    }
+
+    /// The distance/velocity model shared by both swipe controls.
+    ///
+    /// `threshold` is the travel at which the gesture commits. `SwipeToDismiss` passes its
+    /// dismiss distance; `SwipeActions` passes the span its reveal band covers, so "the whole
+    /// action set is exposed" and "the row would dismiss" are the same measurement.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub(crate) struct SwipeKernel {
+        threshold: f32,
+        damping: f32,
+    }
+
+    impl SwipeKernel {
+        /// How much of the travel past the threshold a drag keeps.
+        pub(crate) const DEFAULT_DAMPING: f32 = 0.35;
+        /// The pointer speed, in pixels per millisecond, that counts as a flick.
+        pub(crate) const FLICK_VELOCITY: f32 = 0.5;
+        /// The shortest travel a flick may commit from, as a fraction of the threshold.
+        pub(crate) const FLICK_FLOOR_RATIO: f32 = 0.25;
+        /// The largest distance, in pixels, that the flick floor may reach.
+        pub(crate) const FLICK_FLOOR_MAX: f32 = 40.0;
+        /// The frame length a pointer sample is priced against, in milliseconds.
+        ///
+        /// The platform event carries no timestamp, and the exact wall-clock rate does not
+        /// matter for the "was this a flick" decision, so both controls price a sample the
+        /// same way rather than each inventing a different rate.
+        pub(crate) const NOMINAL_FRAME_MS: f32 = 16.0;
+
+        /// Builds a kernel whose `threshold` is the distance that commits a gesture.
+        pub(crate) fn new(threshold: f32) -> Self {
+            Self { threshold: legal_threshold(threshold), damping: Self::DEFAULT_DAMPING }
+        }
+
+        /// The distance at which a gesture commits.
+        pub(crate) fn threshold(&self) -> f32 {
+            self.threshold
+        }
+
+        /// Sets the commit distance; a non-finite write is ignored.
+        ///
+        /// Returns whether the value changed, so a caller can decide whether to repaint.
+        pub(crate) fn set_threshold(&mut self, threshold: f32) -> bool {
+            if !threshold.is_finite() {
+                return false;
+            }
+            let threshold = legal_threshold(threshold);
+            if (self.threshold - threshold).abs() < f32::EPSILON {
+                return false;
+            }
+            self.threshold = threshold;
+            true
+        }
+
+        /// The signed travel a drag of `raw` pixels is drawn at.
+        ///
+        /// Past the threshold the row keeps only [`Self::DEFAULT_DAMPING`] of each further
+        /// pixel: an over-drag gets resistance instead of dragging the row off its own row.
+        pub(crate) fn damp(&self, raw: f32) -> f32 {
+            if !raw.is_finite() {
+                return 0.0;
+            }
+            let magnitude = raw.abs();
+            if magnitude <= self.threshold {
+                return raw;
+            }
+            raw.signum() * (self.threshold + (magnitude - self.threshold) * self.damping)
+        }
+
+        /// How far a gesture has travelled toward its threshold, in `0.0..=1.0`.
+        pub(crate) fn progress(&self, offset: f32) -> f32 {
+            if !offset.is_finite() {
+                return 0.0;
+            }
+            (offset.abs() / self.threshold).clamp(0.0, 1.0)
+        }
+
+        /// The distance an `offset` reveals toward one side, in pixels.
+        ///
+        /// `toward_positive` selects the side: a positive offset reveals the leading band, a
+        /// negative one the trailing band. The result is the clamp of the travel to the
+        /// threshold, which is the same span the reveal geometry is laid out in.
+        pub(crate) fn reveal(&self, offset: f32, toward_positive: bool) -> f32 {
+            if !offset.is_finite() {
+                return 0.0;
+            }
+            let travels_that_way = if toward_positive { offset > 0.0 } else { offset < 0.0 };
+            if !travels_that_way {
+                return 0.0;
+            }
+            self.progress(offset) * self.threshold
+        }
+
+        /// The pointer velocity between two samples, in pixels per millisecond.
+        pub(crate) fn velocity(previous_x: f32, x: f32) -> f32 {
+            if !previous_x.is_finite() || !x.is_finite() {
+                return 0.0;
+            }
+            (x - previous_x) / Self::NOMINAL_FRAME_MS
+        }
+
+        /// Whether `offset` alone has reached the threshold.
+        pub(crate) fn crosses(&self, offset: f32) -> bool {
+            offset.is_finite() && offset.abs() >= self.threshold
+        }
+
+        /// The decision a release at `offset` moving at `velocity` makes.
+        ///
+        /// Distance **or** a flick commits. The flick floor stops a fast tap from dismissing a
+        /// row it never really dragged, which is the rule both controls now share.
+        pub(crate) fn decision(&self, offset: f32, velocity: f32) -> SwipeCommit {
+            if !offset.is_finite() {
+                return SwipeCommit::Rebound;
+            }
+            let distance = offset.abs();
+            let floor =
+                (self.threshold * Self::FLICK_FLOOR_RATIO).clamp(1.0, Self::FLICK_FLOOR_MAX);
+            let flicked =
+                velocity.is_finite() && velocity.abs() > Self::FLICK_VELOCITY && distance >= floor;
+            if distance >= self.threshold || flicked {
+                SwipeCommit::Commit
+            } else {
+                SwipeCommit::Rebound
+            }
+        }
+    }
+
+    /// The rebound half of the kernel: the residual a released gesture travels back through.
+    ///
+    /// The driver is always priced by the theme's `normal` motion, so a themed tempo reaches
+    /// the spring-back; at rest its value is exactly zero, which is what keeps a settled
+    /// picture identical to an untouched one.
+    pub(crate) struct SwipeSettle {
+        driver: PropertyDriver,
+    }
+
+    impl SwipeSettle {
+        /// A settle driver resting at zero.
+        pub(crate) fn new() -> Self {
+            Self { driver: PropertyDriver::at(0.0, MotionSlot::Normal) }
+        }
+
+        /// Places the residual at `value` without animating, for the release frame.
+        pub(crate) fn jump_to(&mut self, value: f32) {
+            self.driver.jump_to(value);
+        }
+
+        /// Aims the residual at `target`.
+        pub(crate) fn aim(&mut self, target: f32) {
+            self.driver.set_target(target);
+        }
+
+        /// Places the residual at `offset` and aims it according to `decision`.
+        ///
+        /// A rebound travels back to zero; a commit leaves the residual where the gesture
+        /// released it, so whatever carries the departure continues from that point.
+        pub(crate) fn release(&mut self, offset: f32, decision: SwipeCommit) {
+            self.jump_to(offset);
+            if decision == SwipeCommit::Rebound {
+                self.aim(0.0);
+            }
+        }
+
+        /// The current residual, in pixels.
+        pub(crate) fn value(&self) -> f32 {
+            self.driver.value()
+        }
+
+        /// Whether the residual is still travelling.
+        pub(crate) fn is_moving(&self) -> bool {
+            self.driver.is_moving()
+        }
+
+        /// Advances the residual by `delta_ms`, reporting whether it is still travelling.
+        pub(crate) fn tick(&mut self, delta_ms: u32) -> bool {
+            self.driver.tick(delta_ms)
+        }
+    }
+
+    impl Default for SwipeSettle {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_kernel_clamps_a_threshold_to_at_least_one_pixel() {
+            let mut kernel = SwipeKernel::new(0.0);
+            assert_eq!(kernel.threshold(), 1.0);
+            assert!(!kernel.set_threshold(f32::NAN), "a non-finite write is ignored");
+            assert_eq!(kernel.threshold(), 1.0);
+            assert!(kernel.set_threshold(64.0));
+            assert_eq!(kernel.threshold(), 64.0);
+            assert!(!kernel.set_threshold(64.0), "an unchanged write reports no change");
+        }
+
+        #[test]
+        fn travel_past_the_threshold_is_damped_and_below_it_is_not() {
+            let kernel = SwipeKernel::new(100.0);
+            assert_eq!(kernel.damp(80.0), 80.0);
+            assert_eq!(kernel.damp(-80.0), -80.0);
+            assert_eq!(kernel.damp(140.0), 100.0 + 40.0 * SwipeKernel::DEFAULT_DAMPING);
+            assert_eq!(kernel.damp(-140.0), -(100.0 + 40.0 * SwipeKernel::DEFAULT_DAMPING));
+        }
+
+        #[test]
+        fn progress_and_reveal_clamp_to_the_threshold_span() {
+            let kernel = SwipeKernel::new(100.0);
+            assert_eq!(kernel.progress(50.0), 0.5);
+            assert_eq!(kernel.progress(-400.0), 1.0);
+            assert!(
+                (kernel.reveal(40.0, true) - 40.0).abs() < 0.001,
+                "a travel inside the span reveals exactly itself"
+            );
+            assert_eq!(
+                kernel.reveal(40.0, false),
+                0.0,
+                "a positive offset never reveals the other side"
+            );
+            assert_eq!(kernel.reveal(-400.0, false), 100.0);
+        }
+
+        #[test]
+        fn a_release_commits_on_distance_or_on_a_flick_above_the_floor() {
+            let kernel = SwipeKernel::new(100.0);
+            assert_eq!(kernel.decision(99.0, 0.0), SwipeCommit::Rebound);
+            assert_eq!(kernel.decision(100.0, 0.0), SwipeCommit::Commit);
+            // A flick needs both speed and the flick floor (25 px here).
+            assert_eq!(kernel.decision(24.0, 10.0), SwipeCommit::Rebound);
+            assert_eq!(kernel.decision(25.0, 10.0), SwipeCommit::Commit);
+            assert_eq!(kernel.decision(60.0, 0.1), SwipeCommit::Rebound);
+        }
+
+        #[test]
+        fn the_settle_rebinds_a_rebound_and_holds_a_commit() {
+            let mut settle = SwipeSettle::new();
+            settle.release(-60.0, SwipeCommit::Rebound);
+            assert_eq!(settle.value(), -60.0);
+            assert!(settle.is_moving());
+            let mut guard = 64;
+            while guard > 0 && settle.tick(16) {
+                guard -= 1;
+            }
+            assert!(guard > 0, "the spring-back must terminate");
+            assert!(settle.value().abs() < 0.01, "a settled rebound rests at zero");
+            assert!(!settle.is_moving());
+
+            settle.release(-60.0, SwipeCommit::Commit);
+            assert_eq!(settle.value(), -60.0);
+            assert!(!settle.is_moving(), "a commit does not travel back");
+        }
+    }
+}
 
 /// The theme style a model-only companion paints with.
 ///
@@ -782,9 +1078,11 @@ impl Draw for Scrollbar {
 
 // ───────────────────────────── COMP-C05 FormatToolbar ─────────────────────────────
 
+#[cfg(widgets_unstripped)]
 use crate::widget::input_widgets::rich_edit::CharFormat;
 
 /// Which format buttons a [`FormatToolbar`] publishes.
+#[cfg(widgets_unstripped)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FormatActionSet {
     /// The bold button.
@@ -799,6 +1097,7 @@ pub struct FormatActionSet {
     pub clear_format: bool,
 }
 
+#[cfg(widgets_unstripped)]
 impl Default for FormatActionSet {
     fn default() -> Self {
         Self { bold: true, italic: true, underline: true, color: true, clear_format: true }
@@ -806,6 +1105,7 @@ impl Default for FormatActionSet {
 }
 
 /// One action a [`FormatToolbar`] can request.
+#[cfg(widgets_unstripped)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatAction {
     /// Toggle bold.
@@ -821,6 +1121,7 @@ pub enum FormatAction {
 }
 
 /// The actions a toolbar paints, in the order their cells are laid out.
+#[cfg(widgets_unstripped)]
 const FORMAT_ACTIONS: [FormatAction; 5] = [
     FormatAction::Bold,
     FormatAction::Italic,
@@ -829,13 +1130,23 @@ const FORMAT_ACTIONS: [FormatAction; 5] = [
     FormatAction::ClearFormat,
 ];
 /// Width of one format cell, in logical pixels.
+#[cfg(widgets_unstripped)]
 const FORMAT_CELL_WIDTH: u32 = 28;
 /// Gap between two format cells, in logical pixels.
+#[cfg(widgets_unstripped)]
 const FORMAT_CELL_GAP: u32 = 2;
 /// Height of a cell when the toolbar has not been given a box yet.
+#[cfg(widgets_unstripped)]
 const FORMAT_DEFAULT_HEIGHT: u32 = 28;
+/// The height a [`FormatToolbar`] occupies when it paints itself through [`Draw`].
+///
+/// Exposed so a control that hosts the toolbar as a strip (rather than painting it on its
+/// own) can reserve exactly the box the toolbar would have painted into.
+#[cfg(widgets_unstripped)]
+pub const FORMAT_TOOLBAR_HEIGHT: u32 = FORMAT_DEFAULT_HEIGHT;
 
 /// A format toolbar that reports the user's intent without touching an editor (COMP-C05).
+#[cfg(widgets_unstripped)]
 ///
 /// The host connects [`Self::format_requested`] to `rich_edit::apply_char_format` (or the selected
 /// span set), which keeps the editor from depending on the toolbar.
@@ -851,6 +1162,7 @@ pub struct FormatToolbar {
     pub format_requested: Signal1<(FormatAction, Option<Color>)>,
 }
 
+#[cfg(widgets_unstripped)]
 impl FormatToolbar {
     /// Creates a toolbar publishing every action.
     pub fn new() -> Self {
@@ -935,7 +1247,17 @@ impl FormatToolbar {
 
     /// The format an action would produce, for the host's preview/highlight.
     pub fn preview(&self, action: FormatAction) -> CharFormat {
-        let mut format = self.active_format.clone();
+        self.preview_from(&self.active_format, action)
+    }
+
+    /// The format `action` would produce from `base`.
+    ///
+    /// [`Self::preview`] applies the toolbar's cached [`Self::active_format`]; a host that
+    /// hosts the toolbar inside an editor has the cursor's real format instead, which is what
+    /// this entry point takes. Both readers run the same rule, so an embedded toolbar and a
+    /// standalone one cannot disagree about what a button does.
+    pub fn preview_from(&self, base: &CharFormat, action: FormatAction) -> CharFormat {
+        let mut format = base.clone();
         match action {
             FormatAction::Bold => format.bold = !format.bold,
             FormatAction::Italic => format.italic = !format.italic,
@@ -1076,12 +1398,14 @@ impl FormatToolbar {
     }
 }
 
+#[cfg(widgets_unstripped)]
 impl Default for FormatToolbar {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(widgets_unstripped)]
 impl Draw for FormatToolbar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = if self.bounds.width == 0 || self.bounds.height == 0 {

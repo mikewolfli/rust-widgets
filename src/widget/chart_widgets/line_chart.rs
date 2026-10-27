@@ -40,6 +40,7 @@ use crate::widget::chart_widgets::charts::{
 };
 use crate::widget::chart_widgets::charts::{AxisConfig, AxisScale};
 use crate::widget::chart_widgets::{finite_samples, is_finite_sample};
+use crate::widget::companions::{Legend, LegendEntry};
 #[cfg(not(feature = "chart"))]
 use crate::widget::metrics::role_font;
 // Shared with the engine-backed path so the `not(feature = "chart")` fallback cannot
@@ -183,6 +184,10 @@ pub struct LineChart {
     last_legend_area: Option<LegendArea>,
     /// Whether the hover read-out is delegated to an external tooltip host.
     hover_readout_external: bool,
+    /// An attached standard legend; when set it replaces the self-drawn column.
+    legend: Option<Legend>,
+    /// Toggles queued by the attached legend's `series_toggled` signal.
+    legend_events: crate::compat::Arc<crate::compat::Mutex<crate::compat::Vec<(usize, bool)>>>,
     /// Bumped on every data or visibility change so the projection key cannot collide.
     data_revision: u64,
     /// The pointer position where a press began, for the click-vs-pan threshold (CH-06).
@@ -312,6 +317,10 @@ impl LineChart {
             projection_builds: std::cell::Cell::new(0),
             last_legend_area: None,
             hover_readout_external: false,
+            legend: None,
+            legend_events: crate::compat::Arc::new(crate::compat::Mutex::new(
+                crate::compat::Vec::new(),
+            )),
             data_revision: 0,
             press_start: None,
             pressed_point: None,
@@ -350,6 +359,7 @@ impl LineChart {
         self.install_transition(from);
         self.invalidate_data_cache();
         self.revalidate_hover();
+        self.sync_legend();
         self.base.request_redraw();
     }
 
@@ -375,6 +385,7 @@ impl LineChart {
         self.install_transition(from);
         self.invalidate_data_cache();
         self.revalidate_hover();
+        self.sync_legend();
         self.base.request_redraw();
     }
 
@@ -385,6 +396,7 @@ impl LineChart {
         self.series.push(series);
         self.clear_transition();
         self.invalidate_data_cache();
+        self.sync_legend();
         self.base.request_redraw();
     }
 
@@ -634,6 +646,7 @@ impl LineChart {
             return;
         }
         self.line_color = color;
+        self.sync_legend();
         self.base.request_redraw();
     }
 
@@ -978,9 +991,88 @@ impl LineChart {
         series.visible = visible;
         self.invalidate_data_cache();
         self.revalidate_hover();
+        self.sync_legend();
         self.series_toggled.emit((index, visible));
         self.base.request_redraw();
         true
+    }
+
+    /// Mounts `legend` as this chart's legend, or restores the self-drawn column with `None`.
+    ///
+    /// The attached legend is checkable, and its `series_toggled` signal drives
+    /// [`Self::set_series_visible`], so a click on the standard companion hides the same line the
+    /// self-drawn row would. While one is attached the chart paints it and skips its own column;
+    /// the self-drawn path is unchanged when no legend is attached.
+    pub fn set_legend(&mut self, legend: Option<Legend>) {
+        crate::compat::lock(&self.legend_events).clear();
+        let mut legend = legend;
+        if let Some(attached) = legend.as_mut() {
+            attached.set_checkable(true);
+            let events = crate::compat::Arc::clone(&self.legend_events);
+            attached.series_toggled.connect(move |value| {
+                crate::compat::lock(&events).push(*value);
+            });
+        }
+        self.legend = legend;
+        self.sync_legend();
+        self.base.request_redraw();
+    }
+
+    /// The attached standard legend, when one is mounted.
+    pub fn legend(&self) -> Option<&Legend> {
+        self.legend.as_ref()
+    }
+
+    /// The attached standard legend mutably, when one is mounted.
+    pub fn legend_mut(&mut self) -> Option<&mut Legend> {
+        self.legend.as_mut()
+    }
+
+    /// The entries the attached legend should show for the current series.
+    fn legend_entries(&self) -> crate::compat::Vec<LegendEntry> {
+        (0..self.series.len())
+            .map(|index| {
+                let series = &self.series[index];
+                let label = if series.name.is_empty() {
+                    format!("Series {}", index + 1)
+                } else {
+                    series.name.clone()
+                };
+                LegendEntry::new(label, self.series_color(index))
+                    .with_visible(self.is_series_visible(index))
+            })
+            .collect()
+    }
+
+    /// Brings the attached legend's rows in line with the chart's series and visibility.
+    fn sync_legend(&mut self) {
+        // A toggle made on the companion programmatically (not through the chart's event path)
+        // is queued by the same slot; apply it before overwriting the companion's rows.
+        self.drain_legend_toggles();
+        let desired = self.legend_entries();
+        if let Some(legend) = self.legend.as_mut() {
+            if legend.entries() != desired.as_slice() {
+                legend.set_entries(desired);
+            }
+        }
+    }
+
+    /// Applies toggles the attached legend reported through `series_toggled`.
+    fn drain_legend_toggles(&mut self) {
+        let pending = {
+            let mut events = crate::compat::lock(&self.legend_events);
+            core::mem::take(&mut *events)
+        };
+        for (index, visible) in pending {
+            let _ = self.set_series_visible(index, visible);
+        }
+    }
+
+    /// Whether the attached legend owns `pos`.
+    fn legend_owns(&self, pos: Point) -> bool {
+        self.legend
+            .as_ref()
+            .is_some_and(|legend| legend.is_visible() && legend.geometry().contains_point(pos))
     }
 
     /// Delegates the hover read-out to a host-owned tooltip when `external` is set.
@@ -1041,7 +1133,7 @@ impl LineChart {
 
     /// The series index of the legend row under `pos`, when the legend is shown.
     fn legend_entry_at(&self, pos: Point) -> Option<usize> {
-        if !self.show_legend {
+        if !self.show_legend || self.legend.is_some() {
             return None;
         }
         let area = self.last_legend_area?;
@@ -1391,6 +1483,7 @@ impl WidgetProperties for LineChart {
 
 impl Draw for LineChart {
     fn draw(&mut self, context: &mut RenderContext) {
+        self.sync_legend();
         let rect = self.base.geometry();
         if rect.width == 0 || rect.height == 0 {
             return;
@@ -1415,7 +1508,8 @@ impl Draw for LineChart {
             } else {
                 0.0
             };
-            let legend_items = if self.show_legend { self.series.len() } else { 0 };
+            let legend_items =
+                if self.show_legend && self.legend.is_none() { self.series.len() } else { 0 };
             let layout = compute_cartesian_layout_measured(
                 rect,
                 self.show_labels || self.x_axis_label.is_some(),
@@ -1475,7 +1569,7 @@ impl Draw for LineChart {
                     );
                 }
             }
-            if self.show_legend {
+            if self.show_legend && self.legend.is_none() {
                 draw_legend_entries_iter(
                     &mut adapter,
                     &layout,
@@ -1560,6 +1654,16 @@ impl Draw for LineChart {
                     chrome,
                     crate::core::HorizontalAlignment::Left,
                 );
+            }
+        }
+
+        // ── Attached standard legend ──
+        //
+        // Painted before the data early-return so hiding every series (the state a legend is
+        // used to recover from) cannot make the legend disappear with them.
+        if let Some(legend) = self.legend.as_mut() {
+            if legend.is_visible() {
+                legend.draw(context);
             }
         }
 
@@ -1979,6 +2083,21 @@ impl EventHandler for LineChart {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
+            return;
+        }
+        // A mounted legend owns its rectangle: forward the pointer there, apply the toggles its
+        // `series_toggled` queued, and keep the chart's own hit path out of the same press.
+        let over_legend = match event {
+            Event::MouseMove { pos } | Event::MousePress { pos, .. } => self.legend_owns(*pos),
+            _ => false,
+        };
+        if let Some(legend) = self.legend.as_mut() {
+            if over_legend || !matches!(event, Event::MouseMove { .. } | Event::MousePress { .. }) {
+                legend.handle_event(event);
+            }
+        }
+        self.drain_legend_toggles();
+        if over_legend {
             return;
         }
         let plot_area = match self.last_plot_area {
@@ -2408,6 +2527,9 @@ mod tests {
     }
 
     /// Several series are drawn and the legend reserves a column for their names.
+    ///
+    /// Gated on `chart`: the legend column geometry comes from the engine-backed layout.
+    #[cfg(feature = "chart")]
     #[test]
     fn multi_series_draws_every_line_and_the_legend() {
         let mut lc = LineChart::new(Rect::new(0, 0, 400, 240));
@@ -2538,6 +2660,9 @@ mod tests {
     }
 
     /// CH-001: clicking a legend row toggles the series and reports it.
+    ///
+    /// Gated on `chart`: the legend hit area is recorded by the engine-backed draw path.
+    #[cfg(feature = "chart")]
     #[test]
     fn a_legend_click_toggles_the_series_it_names() {
         use std::sync::{Arc, Mutex};
@@ -2646,5 +2771,21 @@ mod tests {
             runs_without_tooltip,
             "the chart no longer paints its own tooltip"
         );
+    }
+
+    /// Chapter-3 gap 8: a mounted standard legend toggles the series through the chart's existing
+    /// visibility path, and the legend's own entry follows it.
+    #[test]
+    fn an_attached_legend_toggle_hides_the_series() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 320, 220));
+        lc.set_series(vec![
+            LineSeries::new("alpha", vec![(0.0, 1.0), (1.0, 2.0)]),
+            LineSeries::new("beta", vec![(0.0, 2.0), (1.0, 1.0)]),
+        ]);
+        lc.set_legend(Some(crate::widget::companions::Legend::new(Rect::new(0, 0, 120, 60))));
+        assert_eq!(lc.legend().expect("attached").entries().len(), 2);
+        lc.handle_event(&Event::mouse_press(10, 10, 1));
+        assert!(!lc.is_series_visible(0));
+        assert!(!lc.legend().expect("attached").entries()[0].visible);
     }
 }

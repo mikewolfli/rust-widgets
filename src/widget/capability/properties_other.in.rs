@@ -1008,6 +1008,10 @@ macro_rules! impl_properties_other {
             PropertySchema::new("max_version", PropertyValueKind::UInt, true, true),
             PropertySchema::new("foreground_color", PropertyValueKind::Color, true, true),
             PropertySchema::new("background_color", PropertyValueKind::Color, true, true),
+            // MISC-03: the logo cut-out and its module size. `logo` is a structured icon spec,
+            // the same representation `Icon` uses, so a document can round-trip it.
+            PropertySchema::new("logo", PropertyValueKind::IconSpec, true, true),
+            PropertySchema::new("logo_size_modules", PropertyValueKind::UInt, true, true),
         ];
 
         #[cfg(not(alloc_frugal))]
@@ -1774,6 +1778,99 @@ macro_rules! impl_properties_other {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        /// Markdown formatting strip beside a markdown editor (SP-022).
+        ///
+        /// Mirrors [`MarkdownToolbar`](crate::widget::special_widgets::markdown_editor::MarkdownToolbar)'s
+        /// property contract: the enabled action tokens, which side the icon is drawn on and whether
+        /// labels are shown. The action list is writable because the control validates every token in
+        /// `set_actions` and refuses an unknown one rather than painting a dead cell.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const MARKDOWN_TOOLBAR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("actions", PropertyValueKind::StringList, true, true),
+            PropertySchema::enumerated("icon_side", true, true, &["none", "left", "right"]),
+            PropertySchema::new("show_labels", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Unified dropdown popup host (COMP-A21).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const DROP_DOWN_POPUP_HOST_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::records(
+                "items",
+                true,
+                true,
+                &crate::widget::companions::POPUP_ITEM_SCHEMA,
+            ),
+            PropertySchema::new("open", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("highlighted_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("scroll_offset", PropertyValueKind::Float, true, true),
+            PropertySchema::new("max_visible_rows", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("anchor_rect", PropertyValueKind::Rect, true, true),
+            PropertySchema::enumerated("placement", true, true, &["below", "above", "automatic"]),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Command palette host (COMP-A30).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const COMMAND_PALETTE_HOST_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::records(
+                "entries",
+                true,
+                true,
+                &crate::widget::companions::PALETTE_ENTRY_SCHEMA,
+            ),
+            PropertySchema::new("filter", PropertyValueKind::String, true, true),
+            PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Header menu (COMP-A32).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const HEADER_MENU_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("sortable", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("filterable", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("sort_state", true, true, &["none", "asc", "desc"]),
+            PropertySchema::new("filter_text", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Group avatar (COMP-MISC-010). It publishes only the base contract; membership is set
+        /// through `push`/`clear`, not a scalar property.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const GROUP_AVATAR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Grid status strip (COMP-A23). Counts are read-only summaries of the grid's model; the
+        /// filter flag and explicit text are writable, and `summary` is the painted string.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const GRID_STATUS_BAR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("row_count", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("selected_count", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("filter_active", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("summary", PropertyValueKind::String, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
         /// Find/replace strip beside an editor (`COMP-16`).
         #[cfg(not(alloc_frugal))]
         pub(crate) const FIND_BAR_PROPERTIES: &[PropertySchema] = &[
@@ -2005,6 +2102,170 @@ macro_rules! impl_properties_other {
             PropertySchema::new("row_height", PropertyValueKind::UInt, true, true),
             PropertySchema::new("title_from_source", PropertyValueKind::Bool, true, true),
             PropertySchema::new("filter", PropertyValueKind::String, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        // ── Editor/chart/data companion overlays (COMP-21..29) ──
+        //
+        // These controls are first-class capabilities even though each reports the kind of the
+        // control it partners (`Panel`, `Table`, `Slider`, `SearchBar`, `EmptyState`). The kind
+        // is what the theme and the accessibility role classify by; the capability name is what
+        // the factory, the manifest and the property contract address. Every name below is the
+        // one the control's own `WidgetProperties::property_names` publishes.
+
+        /// Line-number rail for an editor or a log view (`COMP-21`).
+        ///
+        /// `marker_lines` is the breakpoint row list: each entry is a bare document line number
+        /// with no identity of its own, so the list kind (not `Records`) is the honest shape.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const LINE_NUMBER_GUTTER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("first_line", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("line_count", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("current_line", PropertyValueKind::UInt, true, true),
+            PropertySchema::enumerated("align", true, true, &["left", "right"]),
+            PropertySchema::new("marker_lines", PropertyValueKind::NumberList, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Find/replace strip beside an editor (`COMP-22`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const FIND_REPLACE_BAR_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("query", PropertyValueKind::String, true, true),
+            PropertySchema::new("replacement", PropertyValueKind::String, true, true),
+            PropertySchema::new("match_case", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("use_regex", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("match_count", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("current_match", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("replace_visible", PropertyValueKind::Bool, true, true),
+            // `open` is the strip's visibility state, and writing it is the same edge-triggered
+            // open/close the control's own `open()` / `close()` methods perform.
+            PropertySchema::new("open", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Loading / empty / error surface for a list (`COMP-23`).
+        ///
+        /// `state` is the four-token state machine the reader reports, and `empty_icon` is the
+        /// optional built-in icon the surface paints (a static `IconSpec` with no built-in source
+        /// is refused by the writer, so the schema declares `IconSpec` rather than `String`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const LIST_STATE_HOST_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::enumerated("state", true, true, &["idle", "loading", "empty", "error"]),
+            PropertySchema::new("empty_icon", PropertyValueKind::IconSpec, true, true),
+            PropertySchema::new("empty_title", PropertyValueKind::String, true, true),
+            PropertySchema::new("empty_hint", PropertyValueKind::String, true, true),
+            PropertySchema::new("error_text", PropertyValueKind::String, true, true),
+            PropertySchema::new("loading_rows", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("pull_progress", PropertyValueKind::Float, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Aggregate row of a table (`COMP-24`).
+        ///
+        /// Each `aggregates` entry is the `[column_token, kind, label]` triple the reader
+        /// produces, so the list kind is the carrier rather than a nested record schema.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const SUMMARY_ROW_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("aggregates", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("sticky", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Zoom strip beside a chart or a canvas (`COMP-25`).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const ZOOM_STRIP_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("zoom_level", PropertyValueKind::Float, true, true),
+            PropertySchema::new("min", PropertyValueKind::Float, true, true),
+            PropertySchema::new("max", PropertyValueKind::Float, true, true),
+            PropertySchema::new("step", PropertyValueKind::Float, true, true),
+            PropertySchema::new("show_percentage", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("fit_actions", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Per-series axis assignment for a chart (`COMP-26`).
+        ///
+        /// `assignments` is one edge token per series in `series_names` order, and each `edges`
+        /// entry is the `[edge, label, auto_range]` triple the reader produces.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const AXIS_PICKER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("series_names", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("assignments", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("edges", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Tabular view of a chart's series data (`COMP-27`).
+        ///
+        /// `rows` is a list of rows, each row a list of cell strings; the vocabulary has no
+        /// two-dimensional list kind, so `StringList` is the carrier and the row boundary is the
+        /// inner list the reader returns. `rows` and `row_count` are derived from the series
+        /// snapshot, so both are read-only (rewriting rows alone would dangle every series index).
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const CHART_DATA_TABLE_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("headers", PropertyValueKind::StringList, true, true),
+            PropertySchema::new("rows", PropertyValueKind::StringList, true, false),
+            PropertySchema::new("visible_series", PropertyValueKind::NumberList, true, true),
+            PropertySchema::enumerated("mode", true, true, &["preview", "export"]),
+            PropertySchema::new("max_rows", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("row_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Per-date mark overlay for a calendar (`COMP-28`).
+        ///
+        /// `mark_count` is the derived total across every date the layer holds, so it is reported
+        /// only; the marks themselves are written through the control's Rust-side `set_mark`.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const CALENDAR_MARK_LAYER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("year", PropertyValueKind::Int, true, true),
+            PropertySchema::new("month", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("max_per_cell", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("mark_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
+        /// Translucent proxy card that follows the pointer during a drag (`COMP-29`).
+        ///
+        /// The gesture geometry (`active`, `ghost_rect`, `origin_rect`) is owned by
+        /// `begin`/`follow`/`finish`, so those three are reported only. `drop_bounds` is the
+        /// optional acceptance region; the property name is the control's own `drop_bounds`.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const DRAG_GHOST_LAYER_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("title", PropertyValueKind::String, true, true),
+            PropertySchema::new("active", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("snap_back", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("opacity", PropertyValueKind::Float, true, true),
+            PropertySchema::new("drop_bounds", PropertyValueKind::Rect, true, true),
+            PropertySchema::new("ghost_rect", PropertyValueKind::Rect, true, false),
+            PropertySchema::new("origin_rect", PropertyValueKind::Rect, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

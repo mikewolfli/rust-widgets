@@ -1900,6 +1900,10 @@ fn dispatch_hover_transition(hovered: Option<ObjectId>, point: Point) {
         if let Some(hovered) = hovered {
             let _ = dispatch_event(hovered, &Event::MouseEnter { pos: point });
         }
+        // The manager is the library's one tooltip presenter, so the pointer path — not the
+        // host and not the control — is what feeds it (COMP-09).
+        #[cfg(full_widgets)]
+        forward_hover_to_tooltip_managers(hovered, point);
     }
 
     // BLUE28 B28.09: the control's cursor intent is applied through the platform once
@@ -1932,6 +1936,69 @@ fn dispatch_hover_transition(hovered: Option<ObjectId>, point: Point) {
 /// so the previous hover would otherwise stay highlighted forever.
 pub fn clear_hover(point: Point) {
     dispatch_hover_transition(None, point);
+}
+
+/// Registers the hovered control's `tooltip` property with every mounted [`TooltipManager`].
+///
+/// [`TooltipManager`]: crate::widget::companions::TooltipManager
+///
+/// # Why the runtime owns this bridge
+///
+/// Until this existed a tooltip was reachable only two ways: a host called
+/// `TooltipManager::register` for each control it cared about (the wiring had to be repeated
+/// per control and could silently fall out of step with the tree), or the control painted its
+/// own bubble. The runtime is the one place that already knows which widget the pointer is
+/// over, so it is the natural producer for "the hovered control's tooltip". The manager stays
+/// the only **presenter**: this function moves a registration and nothing else, so the delay,
+/// duration, follow-pointer placement and drawing all remain in one implementation. The pointer
+/// position is forwarded with the registration so a follow-pointer bubble anchors where the
+/// hover actually began, instead of at the manager's own origin.
+///
+/// # The two passes, and why
+///
+/// The tooltip text is read first, then the manager ids are collected, then each manager is
+/// mutated. Mutating while the registry's map is borrowed would alias the live entries — and a
+/// manager that requests a repaint reads the registry. The id scan uses `MOUNTED` directly
+/// rather than `for_each_mounted_widget` because the latter also re-observes every widget's
+/// animating bit, which a pointer transition has no business rewriting.
+#[cfg(full_widgets)]
+fn forward_hover_to_tooltip_managers(hovered: Option<ObjectId>, point: Point) {
+    use crate::widget::capability::coercion::widget_as_mut;
+    use crate::widget::companions::TooltipManager;
+
+    // The published spelling is the control's `tooltip` **property**: `base_property_get`
+    // answers that name from the same field `Widget::tooltip` reads, so a control with a
+    // contract and one without cannot disagree about what its tooltip says.
+    let text = hovered.and_then(|id| {
+        read_widget(id, |widget| {
+            let from_property =
+                widget.properties_dyn().and_then(|properties| match properties.get("tooltip") {
+                    Ok(crate::widget::CapabilityValue::String(text)) => Some(text),
+                    _ => None,
+                });
+            from_property.unwrap_or_else(|| crate::compat::String::from(widget.tooltip()))
+        })
+    });
+
+    let managers: alloc::vec::Vec<ObjectId> = MOUNTED
+        .try_with(|map| {
+            map.borrow()
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.widget.kind() == crate::widget::WidgetKind::TooltipManager
+                })
+                .map(|(id, _)| *id)
+                .collect()
+        })
+        .unwrap_or_default();
+    for id in managers {
+        let _ = with_widget_mut(id, |widget| {
+            if let Some(manager) = widget_as_mut::<TooltipManager>(widget) {
+                manager.note_runtime_hover(hovered, text.as_deref());
+                manager.note_pointer(point);
+            }
+        });
+    }
 }
 
 /// Returns the widget the pointer is currently over, if any.
@@ -3659,6 +3726,49 @@ pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
         let _ = sync_ime_candidate(id);
     }
     true
+}
+
+// A `String` buffer reused across single-character text-input dispatches (G-606).
+//
+// A committed character reaches a control as `Event::TextInput { text }`, and that variant owns
+// its `String`. Building one per keystroke allocated and freed a buffer for every character the
+// user typed. The pool holds one buffer that a dispatch borrows for the call and hands back
+// immediately afterwards, so after the first keystroke the hot path allocates nothing. A nested
+// dispatch (a handler that types into another control) finds the slot empty and allocates for
+// that one call; that is what keeps re-entrancy safe without a lock, and it is also the "only
+// allocate when the content changes" rule the plan asks for: the buffer grows once and is reused.
+thread_local! {
+    static TEXT_INPUT_BUFFER: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Delivers a single committed character to `id` as [`Event::TextInput`], reusing the pooled
+/// payload buffer.
+///
+/// The multi-character entry points (paste, IME commit, a backend that reads a whole UTF-16
+/// string at once) keep using [`Event::text_input`]; this is the one-code-point hot path.
+///
+/// Returns whether the widget was found, with the same contract as [`dispatch_event`].
+pub fn dispatch_text_char(id: ObjectId, ch: char) -> bool {
+    let mut buffer = TEXT_INPUT_BUFFER
+        .try_with(|slot| slot.borrow_mut().take())
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    buffer.clear();
+    buffer.push(ch);
+    let event = Event::TextInput { text: buffer };
+    let delivered = dispatch_event(id, &event);
+    // Hand the payload back so the next keystroke reuses it instead of allocating.
+    if let Event::TextInput { text } = event {
+        let _ = TEXT_INPUT_BUFFER.try_with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(text);
+            }
+        });
+    }
+    delivered
 }
 
 /// Whether `event` can move a text control's caret, which is what [`sync_ime_candidate`]
@@ -9338,6 +9448,33 @@ mod tests {
         unregister(id);
     }
 
+    /// A typed character reaches the control and its payload buffer is recycled, so typing does
+    /// not allocate a `String` per keystroke (G-606).
+    #[test]
+    fn a_typed_character_is_delivered_through_the_pooled_payload() {
+        use crate::widget::input_widgets::lineedit::LineEdit;
+        let field = register(Box::new(LineEdit::new(Rect::new(0, 0, 200, 24)))).expect("mount");
+        let _field = MountGuard(field);
+        assert!(focus_widget(field));
+
+        assert!(dispatch_text_char(field, 'a'), "the control receives the character");
+        let first = TEXT_INPUT_BUFFER.with(|slot| slot.borrow().as_ref().map(|text| text.as_ptr()));
+        assert!(dispatch_text_char(field, 'b'), "and the next one");
+        let second =
+            TEXT_INPUT_BUFFER.with(|slot| slot.borrow().as_ref().map(|text| text.as_ptr()));
+        assert!(first.is_some(), "the payload is handed back to the pool");
+        assert_eq!(first, second, "the buffer is reused, not rebuilt per keystroke");
+
+        let text = with_widget(field, |widget| {
+            (widget as &dyn std::any::Any)
+                .downcast_ref::<LineEdit>()
+                .map(|field| field.text().to_string())
+        })
+        .flatten();
+        assert_eq!(text.as_deref(), Some("ab"), "both characters reached the value");
+        clear_focus();
+    }
+
     /// A secondary-button press opens the menu at the pointer, clamped to the
     /// viewport — the whole right-click path in one assertion.
     #[cfg(full_widgets)]
@@ -10437,6 +10574,77 @@ mod tests {
         assert_eq!(hovered, Some(true), "MouseEnter must reach the button's hover flag");
 
         clear_hover(Point::new(0, 0));
+        unregister(parent);
+        unregister(button_id);
+    }
+
+    /// A hovered control's own `tooltip` reaches a mounted `TooltipManager` (COMP-09).
+    ///
+    /// The test never calls `register`: it moves the pointer over a button that was given a
+    /// tooltip and then advances the manager's clock. Text appearing is proof that the runtime's
+    /// hover bridge carried it — and the bubble appearing is proof the manager is still the only
+    /// presenter.
+    #[test]
+    fn a_hovered_controls_tooltip_reaches_the_mounted_manager() {
+        use crate::widget::capability::coercion::{widget_as, widget_as_mut};
+        use crate::widget::companions::TooltipManager;
+
+        let parent = register(Box::new(crate::widget::container_widgets::groupbox::GroupBox::new(
+            Rect::new(0, 0, 300, 300),
+        )))
+        .expect("registry");
+        let mut button = crate::widget::base_widgets::button::Button::new(
+            "ok".to_string(),
+            Rect::new(20, 20, 80, 30),
+        );
+        button.set_geometry(Rect::new(20, 20, 80, 30));
+        button.set_tooltip("Save the document".to_string());
+        let button_id = register(Box::new(button)).expect("registry");
+        with_widget_mut(parent, |widget| widget.add_child(button_id));
+
+        let manager_id =
+            register(Box::new(TooltipManager::new(Rect::new(0, 0, 300, 300)))).expect("registry");
+
+        clear_hover(Point::new(0, 0));
+        dispatch_pointer_event(
+            parent,
+            &Event::MouseMove { pos: Point::new(30, 30) },
+            Point::new(30, 30),
+        );
+
+        let registered = with_widget(manager_id, |widget| {
+            widget_as::<TooltipManager>(widget)
+                .and_then(|manager| manager.text_for(button_id).map(str::to_string))
+        })
+        .flatten();
+        assert_eq!(
+            registered.as_deref(),
+            Some("Save the document"),
+            "the runtime's hover bridge must register the hovered control's tooltip"
+        );
+
+        // The delay belongs to the manager, not the bridge: advance its clock and the bubble
+        // appears carrying the text that came from the button.
+        let shown = with_widget_mut(manager_id, |widget| {
+            widget_as_mut::<TooltipManager>(widget).map(|manager| {
+                let _ = manager.tick(600, 600);
+                manager.tooltip().map(str::to_string)
+            })
+        })
+        .flatten()
+        .flatten();
+        assert_eq!(shown.as_deref(), Some("Save the document"));
+
+        clear_hover(Point::new(0, 0));
+        let released = with_widget(manager_id, |widget| {
+            widget_as::<TooltipManager>(widget)
+                .and_then(|manager| manager.text_for(button_id))
+                .map(str::to_string)
+        })
+        .flatten();
+        assert!(released.is_none(), "leaving the widget releases the bridge registration");
+
+        unregister(manager_id);
         unregister(parent);
         unregister(button_id);
     }

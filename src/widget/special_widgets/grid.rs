@@ -102,6 +102,15 @@ pub struct GridWidget {
     page_rows: Option<u32>,
     /// The page currently drawn when paging is enabled.
     page: u32,
+    /// The first column drawn in the scrolling band; frozen columns are painted before it
+    /// (SP-115). `0` keeps the historical "every column is visible" behaviour.
+    scroll_column: u32,
+    /// Leading columns pinned to the left of the body and exempt from horizontal scrolling
+    /// (SP-115). `0` keeps the historical behaviour.
+    frozen_columns: u32,
+    /// Leading rows pinned to the top of the body and exempt from vertical paging (SP-115).
+    /// `0` keeps the historical behaviour.
+    frozen_rows: u32,
     /// Per-cell text, indexed by `[row][column]`.
     cells: Vec<Vec<String>>,
     /// Optional column headings, one per column.
@@ -161,6 +170,9 @@ impl GridWidget {
             column_widths: Vec::new(),
             page_rows: None,
             page: 0,
+            scroll_column: 0,
+            frozen_columns: 0,
+            frozen_rows: 0,
             cells: Vec::new(),
             headers: Vec::new(),
             row_headers: Vec::new(),
@@ -201,6 +213,9 @@ impl GridWidget {
             column_widths: Vec::new(),
             page_rows: None,
             page: 0,
+            scroll_column: 0,
+            frozen_columns: 0,
+            frozen_rows: 0,
             cells: Vec::new(),
             headers: Vec::new(),
             row_headers: Vec::new(),
@@ -539,12 +554,9 @@ impl GridWidget {
         }
         let local_y = (y - rect.y) as u32;
         let step = (self.cell_height + self.spacing).max(1);
-        let visible_row = local_y / step;
-        if visible_row < self.visible_rows() {
-            Some(self.first_row() + visible_row)
-        } else {
-            None
-        }
+        // Slot → row rather than `first_row() + slot`: a frozen band occupies the leading slots
+        // (SP-115). With nothing frozen the two rules agree.
+        self.row_at_slot(local_y / step)
     }
 
     /// Returns the cell column for a given x-coordinate, or `None` if outside.
@@ -557,14 +569,36 @@ impl GridWidget {
             return None;
         }
         // Per-column widths mean the column is no longer `local_x / step`; the walk is over the
-        // column count, not over the cells, so it stays bounded by the grid's shape.
-        let mut left = rect.x;
+        // column count, not over the cells, so it stays bounded by the grid's shape. The pinned
+        // band is tested first because its columns are painted at their natural offsets while a
+        // scrolling column may be shifted past them (SP-115).
+        //
+        // The walk applies the scroll shift on the fly rather than building the painted-offset
+        // vector: this runs on every pointer motion, and an allocation per hover event is exactly
+        // the kind of per-frame cost the cached frame tables exist to avoid.
+        let frozen = self.frozen_column_count();
+        let first = self.first_scrolling_column();
+        let shift = if self.scrolls_columns() {
+            self.raw_column_offset(frozen) - self.raw_column_offset(first)
+        } else {
+            0
+        };
+        let right = rect.x + rect.width as i32;
+        let mut natural = 0i32;
         for column in 0..self.columns {
-            let width = self.column_width(column) as i32;
-            if x >= left && x < left + width {
-                return Some(column);
+            // A column inside the frozen band keeps its natural offset; one at or past the scroll
+            // position is shifted left; one between them is not painted at all.
+            if column < frozen || column >= first {
+                let left = rect.x + if column < frozen { natural } else { natural + shift };
+                if left >= right {
+                    break;
+                }
+                let width = self.column_width(column) as i32;
+                if x >= left && x < left + width {
+                    return Some(column);
+                }
             }
-            left += width + self.spacing as i32;
+            natural += self.column_width(column) as i32 + self.spacing as i32;
         }
         None
     }
@@ -602,8 +636,26 @@ impl GridWidget {
         self.base.request_redraw();
     }
 
-    /// The x offset of column `column` from the body's left edge, spacing included.
+    /// The painted x offset of column `column` from the body's left edge, spacing included.
+    ///
+    /// A pinned column keeps its natural offset; a scrolling column is shifted left by the width of
+    /// the columns the view scrolled past (SP-115). With nothing frozen and no scroll the rules
+    /// agree with the natural offset, so an unconfigured grid is unchanged.
     fn column_offset(&self, column: u32) -> i32 {
+        if !self.scrolls_columns() {
+            return self.raw_column_offset(column);
+        }
+        let frozen = self.frozen_column_count();
+        if column < frozen {
+            return self.raw_column_offset(column);
+        }
+        let first = self.first_scrolling_column();
+        self.raw_column_offset(frozen) + self.raw_column_offset(column)
+            - self.raw_column_offset(first)
+    }
+
+    /// The natural x offset of column `column`, ignoring the frozen band and the scroll position.
+    fn raw_column_offset(&self, column: u32) -> i32 {
         let mut offset = 0i32;
         for index in 0..column {
             offset += self.column_width(index) as i32 + self.spacing as i32;
@@ -611,15 +663,33 @@ impl GridWidget {
         offset
     }
 
-    /// Every column's offset from the body's left edge, so a frame builds it once.
+    /// Every column's painted offset from the body's left edge, so a frame builds it once.
     fn column_offsets(&self) -> Vec<i32> {
-        let mut offsets = Vec::with_capacity(self.columns as usize);
+        let mut raw = Vec::with_capacity(self.columns as usize);
         let mut offset = 0i32;
         for column in 0..self.columns {
-            offsets.push(offset);
+            raw.push(offset);
             offset += self.column_width(column) as i32 + self.spacing as i32;
         }
-        offsets
+        if !self.scrolls_columns() {
+            return raw;
+        }
+        let frozen = self.frozen_column_count() as usize;
+        let first = self.first_scrolling_column() as usize;
+        let frozen_offset = raw.get(frozen).copied().unwrap_or(offset);
+        let first_offset = raw.get(first).copied().unwrap_or(offset);
+        raw.iter()
+            .enumerate()
+            .map(
+                |(index, value)| {
+                    if index < frozen {
+                        *value
+                    } else {
+                        frozen_offset + *value - first_offset
+                    }
+                },
+            )
+            .collect()
     }
 
     /// Returns the cell position `(row, col)` for a given point, or `None`.
@@ -651,8 +721,12 @@ impl GridWidget {
             return None;
         }
         let rect = self.body_rect();
-        let visible_row = row.saturating_sub(self.first_row());
-        if row < self.first_row() || visible_row >= self.visible_rows() {
+        // Slot → y rather than `row - first_row()`: the pinned band owns the leading slots
+        // (SP-115). With nothing frozen the two rules agree.
+        let slot = self.row_slot(row)?;
+        // A column the view scrolled past is not painted, so it has no rectangle. Pinned columns
+        // are never in that range.
+        if col >= self.frozen_column_count() && col < self.first_scrolling_column() {
             return None;
         }
         let (row_span, column_span) = match spans {
@@ -664,7 +738,7 @@ impl GridWidget {
                 Some(offsets) => offsets.get(col as usize).copied().unwrap_or(0),
                 None => self.column_offset(col),
             };
-        let y = rect.y + (visible_row * (self.cell_height + self.spacing)) as i32;
+        let y = rect.y + (slot * (self.cell_height + self.spacing)) as i32;
         // A spanning cell covers its columns' widths plus the gaps it crosses.
         let width: u32 = (0..column_span)
             .map(|index| self.column_width(col + index))
@@ -830,6 +904,144 @@ impl GridWidget {
         }
     }
 
+    // ── Frozen bands and horizontal scroll (SP-115) ────────
+
+    /// The number of leading columns that are actually pinned (bounded by the column count).
+    fn frozen_column_count(&self) -> u32 {
+        self.frozen_columns.min(self.columns)
+    }
+
+    /// The number of leading rows that are actually pinned (bounded by the row count).
+    fn frozen_row_count(&self) -> u32 {
+        self.frozen_rows.min(self.rows)
+    }
+
+    /// The first column painted in the scrolling band.
+    ///
+    /// A scroll position inside the frozen band is meaningless -- those columns are always
+    /// visible -- so the value is raised to the frozen count. `0` when nothing is frozen and no
+    /// scroll was requested, which is the historical first column.
+    fn first_scrolling_column(&self) -> u32 {
+        self.scroll_column.max(self.frozen_column_count()).min(self.columns)
+    }
+
+    /// The first row painted in the scrolling band.
+    ///
+    /// A frozen row is pinned, so the scrolling window starts past it as well as past the current
+    /// page's first row. `0` when nothing is frozen, which is the historical first row.
+    fn first_scrolling_row(&self) -> u32 {
+        self.first_row().max(self.frozen_row_count())
+    }
+
+    /// Whether the column band is split into a frozen and a scrolling part.
+    ///
+    /// When it is not, every column keeps being painted, exactly as before SP-115. When it is,
+    /// the paint stops at the body's right edge instead of painting columns the view cannot show.
+    fn scrolls_columns(&self) -> bool {
+        self.scroll_column > 0 || self.frozen_columns > 0
+    }
+
+    /// The row painted in `slot` of the body, or `None` when that slot is empty.
+    ///
+    /// Slot 0 is the top of the body. The first `frozen_rows` slots hold the pinned rows and the
+    /// rest hold the scrolling window. With no frozen rows this is `first_row() + slot`, the
+    /// historical mapping, so an unconfigured grid is bit-for-bit unchanged.
+    fn row_at_slot(&self, slot: u32) -> Option<u32> {
+        if slot >= self.visible_rows() {
+            return None;
+        }
+        let frozen = self.frozen_row_count();
+        if slot < frozen {
+            return Some(slot);
+        }
+        let row = self.first_scrolling_row() + (slot - frozen);
+        let end = self.first_row().saturating_add(self.visible_rows());
+        (row < end).then_some(row)
+    }
+
+    /// The slot a row is painted in, or `None` when the row is outside the visible window.
+    ///
+    /// The inverse of [`Self::row_at_slot`]. A row inside the frozen band but not pinned (only
+    /// reachable when paging and freezing are combined) is not painted at all.
+    fn row_slot(&self, row: u32) -> Option<u32> {
+        if row >= self.rows {
+            return None;
+        }
+        let frozen = self.frozen_row_count();
+        if row < frozen {
+            return Some(row);
+        }
+        let first_scrolling = self.first_scrolling_row();
+        if row < first_scrolling {
+            return None;
+        }
+        let slot = frozen + (row - first_scrolling);
+        (slot < self.visible_rows()).then_some(slot)
+    }
+
+    /// The first column shown in the scrolling band.
+    pub fn scroll_column(&self) -> u32 {
+        self.scroll_column
+    }
+
+    /// Scrolls the column band so `column` is its first column.
+    ///
+    /// Frozen columns stay pinned, so a position inside the frozen band is raised to the frozen
+    /// count. Returns `false` when the column does not exist.
+    pub fn set_scroll_column(&mut self, column: u32) -> bool {
+        if column >= self.columns {
+            return false;
+        }
+        if self.scroll_column == column {
+            return true;
+        }
+        self.scroll_column = column;
+        self.invalidate_frame_cache();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The number of leading columns pinned to the left of the body.
+    pub fn frozen_columns(&self) -> u32 {
+        self.frozen_columns
+    }
+
+    /// Pins the first `columns` columns to the left of the body; `0` restores the historical grid.
+    ///
+    /// The pinned columns keep their painted width, so the scrolling columns share what the body
+    /// has left after them rather than being squeezed by them.
+    pub fn set_frozen_columns(&mut self, columns: u32) {
+        let columns = columns.min(self.columns);
+        if self.frozen_columns == columns {
+            return;
+        }
+        self.frozen_columns = columns;
+        self.update_cell_dimensions();
+        self.invalidate_frame_cache();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The number of leading rows pinned to the top of the body.
+    pub fn frozen_rows(&self) -> u32 {
+        self.frozen_rows
+    }
+
+    /// Pins the first `rows` rows to the top of the body; `0` restores the historical grid.
+    ///
+    /// A pinned row keeps its slot regardless of which page is shown, and the scrolling band below
+    /// it starts at the first row past both the page's first row and the frozen band. Combining
+    /// freezing with paging therefore shows `page_rows - frozen_rows` scrolling rows on page 0.
+    pub fn set_frozen_rows(&mut self, rows: u32) {
+        let rows = rows.min(self.rows);
+        if self.frozen_rows == rows {
+            return;
+        }
+        self.frozen_rows = rows;
+        self.invalidate_frame_cache();
+        self.base.request_redraw();
+    }
+
     // ── Recalculate cell dimensions ────────────────────────
     fn update_cell_dimensions(&mut self) {
         let rect = self.body_rect();
@@ -842,18 +1054,35 @@ impl GridWidget {
         self.cell_height = (rect.height.saturating_sub(total_spacing_h)) / rows;
         // Columns with an explicit width take it out of the pool first; the remaining ones share
         // what is left, so setting one column never squeezes the grid past its own width (SP-69).
+        //
+        // A frozen column is part of the pinned band, so it never competes for the scrolling
+        // band's share: its explicit width (or the computed one) is taken out of the pool and the
+        // scrolling columns divide the rest (SP-115). With nothing frozen this is the same sum as
+        // before.
+        let frozen = self.frozen_column_count();
         let mut fixed = 0u32;
         let mut auto = 0u32;
-        for column in 0..cols {
+        for column in frozen..cols {
             match self.column_widths.get(column as usize).copied().flatten() {
                 Some(width) => fixed = fixed.saturating_add(width.max(1)),
                 None => auto += 1,
             }
         }
-        let total_spacing_w = self.spacing.saturating_mul(cols.saturating_sub(1));
-        let free = rect.width.saturating_sub(total_spacing_w).saturating_sub(fixed);
-        let divisor = if auto == 0 { cols } else { auto };
-        self.cell_width = free.checked_div(divisor).unwrap_or(0).max(1);
+        let frozen_explicit: u32 = (0..frozen)
+            .filter_map(|column| self.column_widths.get(column as usize).copied().flatten())
+            .map(|width| width.max(1))
+            .sum();
+        let total_spacing_w =
+            self.spacing.saturating_mul(cols.saturating_sub(frozen).saturating_sub(1));
+        let frozen_spacing = self.spacing.saturating_mul(frozen);
+        let free = rect
+            .width
+            .saturating_sub(total_spacing_w)
+            .saturating_sub(frozen_spacing)
+            .saturating_sub(frozen_explicit)
+            .saturating_sub(fixed);
+        let divisor = if auto == 0 { cols.saturating_sub(frozen) } else { auto };
+        self.cell_width = free.checked_div(divisor.max(1)).unwrap_or(0).max(1);
     }
 }
 
@@ -932,6 +1161,27 @@ impl Widget for GridWidget {
             "header_clicked" => {
                 Some(EventSignalRef::mapped("header_clicked", &self.header_clicked, |v| {
                     CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "cell_edited" => {
+                Some(EventSignalRef::mapped("cell_edited", &self.cell_edited, |v| {
+                    // The declared shape is `Mixed`, so the payload arrives as the
+                    // (row, column, text) tuple rather than its `Debug` spelling.
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                        CapabilityValue::String(v.2.clone()),
+                    ])
+                }))
+            }
+            "edit_requested" => {
+                Some(EventSignalRef::mapped("edit_requested", &self.edit_requested, |v| {
+                    // The declared shape is `Tuple2` of `UInt`, so the payload arrives as the
+                    // (row, column) pair rather than its `Debug` spelling.
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ])
                 }))
             }
             _ => None,
@@ -1186,14 +1436,35 @@ impl Draw for GridWidget {
         // set and the column offsets instead of rebuilding all three (SP-114).
         let tables =
             self.frame_cache.as_ref().expect("ensure_frame_tables() populates the frame cache");
-        for row in self.first_row()..self.first_row() + self.visible_rows() {
-            for column in 0..self.columns {
+        // A frozen band is painted first and the scrolling band after it (SP-115). With nothing
+        // frozen there is a single band starting at `first_row()` and this walks exactly the cells
+        // the pre-SP-115 loop walked.
+        let frozen_columns = self.frozen_column_count();
+        let first_scrolling = self.first_scrolling_column();
+        let stop_at_edge = self.scrolls_columns();
+        for slot in 0..self.visible_rows() {
+            let Some(row) = self.row_at_slot(slot) else {
+                continue;
+            };
+            let mut column = if frozen_columns > 0 { 0 } else { first_scrolling };
+            while column < self.columns {
+                // Step from the pinned band to the scrolling band in one hop, so a scrolled grid
+                // does not paint the columns it scrolled past.
+                if column == frozen_columns && first_scrolling > frozen_columns {
+                    column = first_scrolling;
+                    continue;
+                }
+                let offset = tables.column_offsets.get(column as usize).copied().unwrap_or(0);
+                if stop_at_edge && offset >= body.width as i32 {
+                    break;
+                }
                 let Some(cell) = self.cell_rect_in(
                     row,
                     column,
                     Some(&tables.spans),
                     Some(&tables.column_offsets),
                 ) else {
+                    column += 1;
                     continue;
                 };
                 if tables.selected.contains_key(&(row, column)) {
@@ -1236,6 +1507,7 @@ impl Draw for GridWidget {
                         ink,
                     );
                 }
+                column += 1;
             }
         }
 
@@ -1259,7 +1531,15 @@ impl Draw for GridWidget {
                 let Some(title) = self.headers.get(column as usize) else {
                     continue;
                 };
-                let x = body.x + self.column_offset(column);
+                // A heading follows its column: pinned ones stay put, scrolled ones move with the
+                // scrolling band and are skipped once they leave the body (SP-115).
+                if column >= frozen_columns && column < first_scrolling {
+                    continue;
+                }
+                let x = body.x + tables.column_offsets.get(column as usize).copied().unwrap_or(0);
+                if stop_at_edge && x >= body.x + body.width as i32 {
+                    continue;
+                }
                 let width = self.column_width(column);
                 let line = context.text_line(Rect::new(x, band.y, width, band.height), &font);
                 context.draw_text_fitted_cow(
@@ -1290,12 +1570,14 @@ impl Draw for GridWidget {
             );
             let font = crate::widget::metrics::role_font(self.style(), 11.0);
             let rows = self.visible_rows();
-            for visible in 0..rows {
-                let row = self.first_row() + visible;
+            for slot in 0..rows {
+                let Some(row) = self.row_at_slot(slot) else {
+                    continue;
+                };
                 let Some(title) = self.row_headers.get(row as usize) else {
                     continue;
                 };
-                let y = body.y + (visible * (self.cell_height + self.spacing)) as i32;
+                let y = body.y + (slot * (self.cell_height + self.spacing)) as i32;
                 if y >= body.y + body.height as i32 {
                     break;
                 }
@@ -1818,6 +2100,57 @@ mod tests {
         grid.set_row_headers(Vec::new());
         assert_eq!(grid.row_header_width(), 0);
         assert_eq!(grid.cell_at(Point::new(10, 10)), Some((0, 0)));
+    }
+
+    /// Frozen row/column bands and horizontal scrolling are opt-in; their defaults reproduce the
+    /// historical grid exactly (SP-115).
+    #[test]
+    fn frozen_bands_and_horizontal_scroll_are_opt_in() {
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 120, 100), 3, 4);
+        assert_eq!(grid.frozen_columns(), 0);
+        assert_eq!(grid.frozen_rows(), 0);
+        assert_eq!(grid.scroll_column(), 0);
+        assert_eq!(grid.cell_at(Point::new(10, 10)), Some((0, 0)));
+        assert_eq!(grid.cell_rect(0, 3).map(|rect| rect.x), Some(90), "every column paints");
+
+        // Pin column 0, then scroll the band to column 2.
+        grid.set_frozen_columns(1);
+        assert_eq!(
+            grid.cell_at(Point::new(10, 10)),
+            Some((0, 0)),
+            "the pinned column keeps its slot"
+        );
+        assert!(grid.set_scroll_column(2));
+        assert!(!grid.set_scroll_column(9), "a column outside the grid cannot become first");
+        let pinned = grid.cell_rect(0, 0).expect("the pinned column is always painted");
+        assert_eq!(pinned.x, 0);
+        assert_eq!(grid.cell_rect(0, 1), None, "a scrolled-past column has no rectangle");
+        let scrolled = grid.cell_rect(0, 2).expect("the scrolled-to column is painted");
+        assert_eq!(scrolled.x, pinned.width as i32, "it starts right of the pinned band");
+        assert_eq!(grid.cell_at(Point::new(scrolled.x + 1, 10)), Some((0, 2)));
+
+        // Pin row 0 above the scrolling window.
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 100, 90), 3, 2);
+        grid.set_frozen_rows(1);
+        let first = grid.cell_rect(0, 0).expect("the pinned row is painted");
+        let second = grid.cell_rect(1, 0).expect("the window starts below the pinned row");
+        assert_eq!(second.y, first.y + first.height as i32);
+        assert_eq!(grid.cell_at(Point::new(10, first.y + 1)), Some((0, 0)));
+        assert_eq!(grid.cell_at(Point::new(10, second.y + 1)), Some((1, 0)));
+
+        // Paging and freezing together: the pinned row survives the page change and is not
+        // repeated inside the page's window.
+        let mut paged = GridWidget::with_dimensions(Rect::new(0, 0, 100, 90), 6, 2);
+        paged.set_page_rows(Some(3));
+        paged.set_page(1);
+        paged.set_frozen_rows(1);
+        assert!(paged.cell_rect(0, 0).is_some(), "the pinned row is not paged away");
+        assert!(paged.cell_rect(2, 0).is_none(), "the pinned band is not repeated below");
+        assert!(paged.cell_rect(3, 0).is_some(), "the page's first row is the window's first");
+
+        // Freezing is bounded by the grid's shape.
+        paged.set_frozen_rows(99);
+        assert_eq!(paged.frozen_rows(), 6);
     }
 
     /// Editing is off by default; when enabled, a double-click starts it and Enter commits the

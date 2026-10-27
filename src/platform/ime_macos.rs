@@ -399,7 +399,7 @@ impl MacOsImeBridge {
             else {
                 return false;
             };
-            crate::platform::ime::deliver_composition(widget_id, &composition)
+            crate::platform::ime::deliver_composition_owned(widget_id, composition)
         }
         #[cfg(alloc_frugal)]
         {

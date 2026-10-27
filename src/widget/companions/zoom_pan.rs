@@ -154,6 +154,14 @@ impl ZoomPanController {
         self.max_zoom
     }
 
+    /// The accepted zoom range as a `(min, max)` pair.
+    ///
+    /// A host that converts [`Self::zoom_level`] into its own range needs both ends, not one at a
+    /// time; this is the pair that [`Self::map_zoom_to_range`] expects as its `source`.
+    pub fn zoom_range(&self) -> (f32, f32) {
+        (self.min_zoom, self.max_zoom)
+    }
+
     /// Sets the zoom range, swapping an inverted pair rather than producing an empty range.
     pub fn set_zoom_range(&mut self, min_zoom: f32, max_zoom: f32) {
         if !min_zoom.is_finite() || !max_zoom.is_finite() || min_zoom <= 0.0 {
@@ -164,6 +172,44 @@ impl ZoomPanController {
         self.min_zoom = min_zoom;
         self.max_zoom = max_zoom;
         self.set_zoom_level(self.zoom_level);
+    }
+
+    /// Maps `zoom`, expressed in `source`'s range, onto `target`'s range (chapter 3, gap 12).
+    ///
+    /// Both ranges are zoom *factors* around a `1.0` anchor, so the mapping runs in logarithmic
+    /// space, where equal ratios are equal distances, and each side of the anchor is rescaled on
+    /// its own. That keeps three promises a plain clamp cannot: `1.0` maps to `1.0` (a host that
+    /// can express 1:1 keeps showing 1:1), each source end maps to the matching target end, and a
+    /// zoom-in step stays a zoom-in step.
+    ///
+    /// An input outside `source` is treated as its nearest end, and the result is clamped into
+    /// `target`. A non-finite input, or a range that is non-positive or has no span, falls back to
+    /// `1.0` clamped into `target` — the only answer when there is no interval to interpolate.
+    ///
+    /// This is the conversion a host uses when its range conflicts with the controller's. A host
+    /// that shares the controller's contract only needs its own setter's clamp instead; see
+    /// `ImageView`, whose `0.05 ..= 20.0` narrows the controller's `0.05 ..= 32.0` without
+    /// rescaling.
+    pub fn map_zoom_to_range(zoom: f32, source: (f32, f32), target: (f32, f32)) -> f32 {
+        let Some((t_min, t_max)) = usable_zoom_range(target) else {
+            // Nothing to map onto: hand the value back unchanged rather than inventing a range.
+            return zoom;
+        };
+        if !zoom.is_finite() {
+            return 1.0_f32.clamp(t_min, t_max);
+        }
+        let Some((s_min, s_max)) = usable_zoom_range(source) else {
+            return zoom.clamp(t_min, t_max);
+        };
+        let zoom = zoom.clamp(s_min, s_max);
+        let mapped = if zoom >= 1.0 {
+            rescale_ratio(zoom, s_max, t_max).unwrap_or(1.0)
+        } else {
+            // Below the anchor the distance is the reciprocal ratio, so `0.5` is as far from
+            // `1.0` as `2.0` is, on both sides of the conversion.
+            rescale_ratio(1.0 / zoom, 1.0 / s_min, 1.0 / t_min).map_or(1.0, |ratio| 1.0 / ratio)
+        };
+        mapped.clamp(t_min, t_max)
     }
 
     /// Returns the region of interest.
@@ -287,6 +333,28 @@ impl EventHandler for ZoomPanController {
             _ => {}
         }
     }
+}
+
+/// Normalises a `(min, max)` pair into ascending, positive bounds.
+///
+/// `None` means there is no interval to interpolate over: a non-finite, non-positive or
+/// single-point range cannot describe a zoom span, so callers clamp instead of dividing by zero.
+fn usable_zoom_range((a, b): (f32, f32)) -> Option<(f32, f32)> {
+    if !a.is_finite() || !b.is_finite() || a <= 0.0 || b <= 0.0 {
+        return None;
+    }
+    let (min, max) = if a <= b { (a, b) } else { (b, a) };
+    (max > min).then_some((min, max))
+}
+
+/// Maps the ratio `ratio` in `[1.0, source_extent]` onto `[1.0, target_extent]` logarithmically.
+///
+/// `None` means the source has no room above `1.0`, in which case there is no ratio to rescale.
+fn rescale_ratio(ratio: f32, source_extent: f32, target_extent: f32) -> Option<f32> {
+    if source_extent <= 1.0 || target_extent <= 0.0 || !target_extent.is_finite() {
+        return None;
+    }
+    Some(target_extent.powf(ratio.log2() / source_extent.log2()))
 }
 
 /// The overlap of two rectangles, or an empty rectangle when they do not meet.
@@ -510,5 +578,34 @@ mod tests {
             .expect("content_height writable");
         assert_eq!(controller.content_size(), Size::new(640, 480));
         assert!(controller.set("content_width", CapabilityValue::Float(1.0)).is_err());
+    }
+
+    /// The range conversion keeps the `1:1` anchor, sends both ends to the matching end and
+    /// stays monotone (chapter 3, gap 12).
+    #[test]
+    fn the_zoom_range_conversion_keeps_the_anchor_and_the_ends() {
+        let source = (0.05, 32.0);
+        let target = (0.25, 8.0);
+        let map = |zoom: f32| ZoomPanController::map_zoom_to_range(zoom, source, target);
+
+        assert!((map(1.0) - 1.0).abs() < 1e-6, "1:1 must stay 1:1");
+        assert!((map(source.0) - target.0).abs() < 1e-5, "the low end maps onto the low end");
+        assert!((map(source.1) - target.1).abs() < 1e-5, "the high end maps onto the high end");
+
+        let zoomed_in = map(2.0);
+        let zoomed_out = map(0.5);
+        assert!(zoomed_in > 1.0, "a zoom-in stays a zoom-in");
+        assert!(zoomed_out < 1.0, "a zoom-out stays a zoom-out");
+
+        // Out-of-range input lands on the target's ends rather than escaping the host's range.
+        assert!((map(1000.0) - target.1).abs() < 1e-5);
+        assert!((map(0.0001) - target.0).abs() < 1e-5);
+
+        // A degenerate or invalid range cannot be interpolated; the fallback still answers inside
+        // the target rather than producing NaN.
+        let flat = ZoomPanController::map_zoom_to_range(2.0, (0.0, 0.0), target);
+        assert!((flat - 2.0).abs() < 1e-6, "an invalid source falls back to a plain clamp");
+        let nan = ZoomPanController::map_zoom_to_range(f32::NAN, source, target);
+        assert!((nan - 1.0).abs() < 1e-6);
     }
 }

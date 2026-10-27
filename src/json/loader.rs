@@ -36,6 +36,7 @@ use crate::json::{
     BoundJsonLayout, ChildLayoutAttrs, ChildPlacement,
 };
 use crate::layout::inspector::LayoutInspector;
+use crate::style::ElementRef;
 use crate::widget::{
     Button, CheckBox, ComboBox, GroupBox, Label, LineEdit, ListBox, ProgressBar, RadioButton,
     ScrollArea, ScrollBar, Slider, SpinBox, Switch, Widget,
@@ -135,6 +136,7 @@ impl JsonLoader {
             &mut binding,
             0,
             resolver,
+            &[],
         )?;
 
         // Run layout diagnostics after all widgets are created.
@@ -652,6 +654,7 @@ impl JsonLoader {
         binding: &mut BoundJsonLayout,
         depth: u32,
         resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
+        ancestors: &[ElementRef<'_>],
     ) -> Result<ObjectId, String> {
         if depth > MAX_DEPTH {
             return Err(format!(
@@ -719,6 +722,7 @@ impl JsonLoader {
                                 binding,
                                 depth + 1,
                                 resolver,
+                                ancestors,
                             )?;
 
                             if child_id != 0 {
@@ -759,7 +763,17 @@ impl JsonLoader {
         // stylesheet — the same precedence a browser gives inline styles over an
         // author stylesheet. `class` selects which rules apply; the widget's own
         // kind is matched automatically.
-        apply_declared_styles(&mut *widget, obj);
+        apply_declared_styles(&mut *widget, obj, ancestors);
+
+        // The element this node contributes to its children's chain. `state` is not part of a
+        // combinator, so it stays `None` here (STY-002).
+        let mut child_ancestors = ancestors.to_vec();
+        child_ancestors.push(ElementRef {
+            kind: widget.kind(),
+            class: obj.get("class").and_then(|v| v.as_str()),
+            id: if id_str.is_empty() { None } else { Some(id_str) },
+            state: None,
+        });
 
         // Apply common properties (geometry, enabled, visible, tooltip, style).
         //
@@ -915,6 +929,7 @@ impl JsonLoader {
                             binding,
                             depth + 1,
                             resolver,
+                            &child_ancestors,
                         )?;
                         if tab_widget_children && child_id != 0 {
                             let title = child_val
@@ -986,6 +1001,7 @@ impl JsonLoader {
                                     binding,
                                     depth + 1,
                                     resolver,
+                                    &child_ancestors,
                                 )?;
 
                                 if child_id != 0 {
@@ -1323,10 +1339,15 @@ fn kind_label(widget: &dyn Widget) -> &'static str {
 /// JSON keys applied after this function always win. A malformed stylesheet is
 /// reported and skipped: the widget is still created, because failing the whole
 /// load over one bad rule would hide the rest of the layout.
-fn apply_declared_styles(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value>) {
+fn apply_declared_styles(
+    widget: &mut dyn Widget,
+    obj: &serde_json::Map<String, Value>,
+    ancestors: &[ElementRef<'_>],
+) {
     let kind = kind_label(widget);
     let class = obj.get("class").and_then(|v| v.as_str());
     let id = obj.get("id").and_then(|v| v.as_str());
+    let element = ElementRef { kind: widget.kind(), class, id, state: Some(widget.widget_state()) };
 
     // One clone, one write-back. This used to clone the widget's whole style and install it
     // once per layer — up to four deep copies per node, each briefly *applying* a non-final
@@ -1358,7 +1379,12 @@ fn apply_declared_styles(widget: &mut dyn Widget, obj: &serde_json::Map<String, 
     if !crate::style::global_stylesheet_manager().is_empty() {
         let applied = {
             let manager = crate::style::global_stylesheet_manager();
-            manager.apply_to(kind, class, id, None, &mut style)
+            // STY-002: pass the control's live interaction state and the element chain built by
+            // the loader. The production entry used to pass `None` for the state and no chain at
+            // all, so every `:hover`/`:pressed`/`:focus`/`:disabled` rule and every
+            // descendant/child combinator in an app-wide sheet was parsed, indexed and then could
+            // never match the control it was written for.
+            manager.apply_to_context(element, ancestors, &mut style)
         };
         if let Err(error) = applied {
             log::warn!(
@@ -1378,7 +1404,7 @@ fn apply_declared_styles(widget: &mut dyn Widget, obj: &serde_json::Map<String, 
 
     // 3. Page-local inline CSS on this node.
     if let Some(css) = obj.get("css").and_then(|v| v.as_str()) {
-        match widget.apply_css(css, class) {
+        match widget.apply_css_in(css, class, id, ancestors) {
             Ok(()) => {}
             Err(error) => log::warn!(
                 "JSON layout: the inline \"css\" on {kind} (id {id:?}) could not be applied: \
@@ -3590,6 +3616,61 @@ mod tests {
         // unconditionally, both loads would report the same style.
         let unmatched = r#"{"window": {"id": "w", "title": "T", "width": 400, "height": 300, "layout": {"type": "vbox", "children": [{"button": {"id": "bt", "text": "Go", "class": "secondary", "css": ".primary { border-radius: 7px; }"}}]}}}"#;
         assert!(JsonLoader::load(unmatched).is_ok(), "the unmatched case must still load");
+    }
+
+    /// A descendant combinator in inline CSS matches the ancestor chain the loader built.
+    ///
+    /// Before STY-002 the inline entry passed no chain, so `Panel Button { … }` parsed, was
+    /// indexed, and could never match the button it was written for.
+    #[test]
+    fn a_descendant_combinator_in_inline_css_matches_the_loader_chain() {
+        let obj: serde_json::Map<String, Value> = serde_json::from_str(
+            r#"{"id": "bt", "text": "Go", "css": "Panel Button { border-radius: 11px; }"}"#,
+        )
+        .expect("the test node must be a JSON object");
+        let ancestors =
+            [ElementRef { kind: WidgetKind::Panel, class: None, id: None, state: None }];
+
+        let mut matched = Button::new("Go".to_string(), Rect::new(0, 0, 80, 24));
+        apply_declared_styles(&mut matched, &obj, &ancestors);
+        assert_eq!(matched.style().border_radius, Some(11), "the chain must satisfy the selector");
+
+        let mut unmatched = Button::new("Go".to_string(), Rect::new(0, 0, 80, 24));
+        apply_declared_styles(&mut unmatched, &obj, &[]);
+        assert_ne!(
+            unmatched.style().border_radius,
+            Some(11),
+            "without a chain the combinator must not match"
+        );
+    }
+
+    /// A descendant combinator in an app-wide sheet matches the same chain.
+    #[test]
+    fn a_descendant_combinator_in_a_global_sheet_matches_the_loader_chain() {
+        use crate::style::{global_stylesheet_manager, stylesheet_test_guard};
+        let _guard = stylesheet_test_guard();
+        global_stylesheet_manager().clear();
+        global_stylesheet_manager().register(
+            "combinator",
+            "Panel Button { border-radius: 13px; }",
+            0,
+        );
+
+        let obj: serde_json::Map<String, Value> =
+            serde_json::from_str(r#"{"id": "bt", "text": "Go"}"#)
+                .expect("the test node must be a JSON object");
+        let ancestors =
+            [ElementRef { kind: WidgetKind::Panel, class: None, id: None, state: None }];
+
+        let mut matched = Button::new("Go".to_string(), Rect::new(0, 0, 80, 24));
+        apply_declared_styles(&mut matched, &obj, &ancestors);
+        assert_eq!(matched.style().border_radius, Some(13));
+
+        let mut unmatched = Button::new("Go".to_string(), Rect::new(0, 0, 80, 24));
+        apply_declared_styles(&mut unmatched, &obj, &[]);
+        assert_ne!(unmatched.style().border_radius, Some(13));
+
+        global_stylesheet_manager().clear();
     }
 
     /// A malformed inline `"css"` string warns and is skipped; the widget is still

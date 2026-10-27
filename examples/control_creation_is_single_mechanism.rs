@@ -35,23 +35,14 @@
 // absent. Gating `main` on the same condition the modules use keeps the file
 // compiling everywhere: where the subject exists the probe runs, and elsewhere a
 // stub explains why there is nothing to probe.
-#[cfg(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-))]
+#[cfg(full_widgets)]
 use rust_widgets::app::App;
-#[cfg(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-))]
+#[cfg(full_widgets)]
 use rust_widgets::core::ObjectId;
-#[cfg(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-))]
+#[cfg(full_widgets)]
 use rust_widgets::platform::get_platform;
 
-#[cfg(all(not(alloc_frugal), any(feature = "desktop", feature = "tablet", feature = "mobile")))]
+#[cfg(full_widgets)]
 fn main() {
     App::new().init();
     let platform = get_platform();
@@ -137,10 +128,7 @@ fn main() {
 /// app lifecycle and the platform singleton. Report that honestly rather than
 /// failing to build, which is what a bare `required-features` gate cannot do under
 /// `cargo --all-features` (it enables `desktop` and `mini` together).
-#[cfg(not(all(
-    not(alloc_frugal),
-    any(feature = "desktop", feature = "tablet", feature = "mobile")
-)))]
+#[cfg(not(full_widgets))]
 fn main() {
     println!(
         "control_creation_is_single_mechanism: not applicable in this build — it needs a \

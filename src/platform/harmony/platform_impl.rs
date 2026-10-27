@@ -315,6 +315,9 @@ impl Platform for HarmonyPlatform {
         self.runtime.running.store(false, Ordering::SeqCst);
         // The loop may be parked in `pause_between_frames`; wake it so the stop is immediate.
         crate::platform::frame_wait::wake();
+        // Release the process-lifetime system handles this backend caches (G-605). A later use
+        // recreates them, so a restarted loop is not left without a clipboard.
+        super::pasteboard::release();
         true
     }
 

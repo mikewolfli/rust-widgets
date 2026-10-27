@@ -41,6 +41,56 @@ const TEXT_ROW_HEIGHT: i32 = 16;
 /// The bottom inset a row has to clear to be painted.
 const TEXT_BOTTOM_INSET: i32 = 8;
 
+/// The interval one edit replaced, and the document length after it.
+///
+/// # Why the signal carries this instead of the whole document
+///
+/// `text_changed` used to clone the entire document on every keystroke, so a 200 KB note paid
+/// 200 KB per character even when one character was inserted (SP-001). The payload names the
+/// changed run instead: `before[..offset]` and `after[offset + removed.len()..]` are unchanged,
+/// and a subscriber that needs the new document applies this to the copy it already has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkdownTextChange {
+    /// Byte offset where the replaced run began, on a character boundary.
+    pub offset: usize,
+    /// The text removed at `offset`; empty for an insertion.
+    pub removed: String,
+    /// The text inserted at `offset`; empty for a deletion.
+    pub inserted: String,
+    /// The document's byte length after the edit.
+    pub len: usize,
+}
+
+/// The minimal run that differs between `before` and `after`, on character boundaries.
+///
+/// Returns `(offset, removed, inserted)`. One implementation feeds both the undo command and the
+/// `text_changed` payload, so the two cannot disagree about which run changed.
+fn changed_run<'a>(before: &'a str, after: &'a str) -> (usize, &'a str, &'a str) {
+    let before_bytes = before.as_bytes();
+    let after_bytes = after.as_bytes();
+    let max_prefix: usize = before_bytes.len().min(after_bytes.len());
+    let mut prefix: usize = 0;
+    while prefix < max_prefix && before_bytes[prefix] == after_bytes[prefix] {
+        prefix += 1;
+    }
+    // Both strings share this prefix, so a boundary in `before` is one in `after` too.
+    while prefix > 0 && !before.is_char_boundary(prefix) {
+        prefix -= 1;
+    }
+    let max_suffix: usize = before_bytes.len().min(after_bytes.len()) - prefix;
+    let mut suffix: usize = 0;
+    while suffix < max_suffix
+        && before_bytes[before_bytes.len() - 1 - suffix]
+            == after_bytes[after_bytes.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    while suffix > 0 && !before.is_char_boundary(before.len() - suffix) {
+        suffix -= 1;
+    }
+    (prefix, &before[prefix..before.len() - suffix], &after[prefix..after.len() - suffix])
+}
+
 /// An undo step that records only the bytes that differ between two document states.
 ///
 /// A whole-document snapshot would store both versions on every keystroke. The common
@@ -57,40 +107,15 @@ struct MarkdownTextDeltaCommand {
 impl MarkdownTextDeltaCommand {
     /// Builds a command for a mutation that has already been applied.
     fn new(target: Rc<RefCell<String>>, before: &str, after: &str) -> Self {
-        // The common prefix and suffix are found by byte first, then trimmed back to character
-        // boundaries. Byte comparison is the same answer as character comparison here (equal
-        // bytes at equal offsets mean equal characters) and is an order of magnitude cheaper on
-        // the ASCII that dominates source text.
-        let before_bytes = before.as_bytes();
-        let after_bytes = after.as_bytes();
-        let max_prefix: usize = before_bytes.len().min(after_bytes.len());
-        let mut prefix: usize = 0;
-        while prefix < max_prefix && before_bytes[prefix] == after_bytes[prefix] {
-            prefix += 1;
-        }
-        // Both strings share this prefix, so a boundary in `before` is one in `after` too.
-        while prefix > 0 && !before.is_char_boundary(prefix) {
-            prefix -= 1;
-        }
-        let max_suffix: usize = before_bytes.len().min(after_bytes.len()) - prefix;
-        let mut suffix: usize = 0;
-        while suffix < max_suffix
-            && before_bytes[before_bytes.len() - 1 - suffix]
-                == after_bytes[after_bytes.len() - 1 - suffix]
-        {
-            suffix += 1;
-        }
-        while suffix > 0 && !before.is_char_boundary(before.len() - suffix) {
-            suffix -= 1;
-        }
+        let (offset, removed, inserted) = changed_run(before, after);
         Self {
             id: CommandId(
                 NEXT_MARKDOWN_COMMAND_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
             ),
             target,
-            offset: prefix,
-            removed: before[prefix..before.len() - suffix].to_string(),
-            inserted: after[prefix..after.len() - suffix].to_string(),
+            offset,
+            removed: removed.to_string(),
+            inserted: inserted.to_string(),
         }
     }
 
@@ -313,7 +338,7 @@ pub struct MarkdownEditor {
     /// rows that fit.
     first_visible_line: usize,
     /// Emitted when text changes.
-    pub text_changed: Signal1<String>,
+    pub text_changed: Signal1<MarkdownTextChange>,
     /// Emitted when preview mode changes.
     pub preview_mode_changed: Signal1<bool>,
     /// Emitted when a selection appears (`true`) or disappears (`false`).
@@ -1231,19 +1256,32 @@ impl MarkdownEditor {
 
     fn restore_history_text(&mut self) {
         self.restoring_history = true;
-        self.text = self.history_target.borrow().clone();
+        let before = core::mem::replace(&mut self.text, self.history_target.borrow().clone());
         self.restoring_history = false;
         self.revision = self.revision.wrapping_add(1);
         self.clamp_cursor();
         self.selection_anchor = None;
         self.apply_selection(None);
-        // The payload is the whole document, so the clone is only paid when there is somebody to
-        // receive it; the signal contract itself is unchanged.
-        if self.text_changed.slot_count() > 0 {
-            self.text_changed.emit(self.text.clone());
-        }
+        self.emit_text_changed(&before);
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Emits the changed run between `before` and the live document.
+    ///
+    /// The clone is only paid when a subscriber will receive it, and it is the changed run, not
+    /// the document (SP-001).
+    fn emit_text_changed(&mut self, before: &str) {
+        if self.text_changed.slot_count() == 0 {
+            return;
+        }
+        let (offset, removed, inserted) = changed_run(before, &self.text);
+        self.text_changed.emit(MarkdownTextChange {
+            offset,
+            removed: removed.to_string(),
+            inserted: inserted.to_string(),
+            len: self.text.len(),
+        });
     }
 
     /// Number of editable lines.
@@ -1352,10 +1390,7 @@ impl MarkdownEditor {
             )));
         }
         self.clamp_cursor();
-        // A whole-document payload is worth cloning only when a subscriber will receive it.
-        if self.text_changed.slot_count() > 0 {
-            self.text_changed.emit(self.text.clone());
-        }
+        self.emit_text_changed(&before);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -1780,7 +1815,14 @@ impl Widget for MarkdownEditor {
         match name {
             "text_changed" => {
                 Some(EventSignalRef::mapped("text_changed", &self.text_changed, |v| {
-                    CapabilityValue::String(v.clone())
+                    // The changed run is a structured payload: offset, the removed and inserted
+                    // text, then the document length after the edit (SP-001).
+                    CapabilityValue::Tuple(vec![
+                        CapabilityValue::UInt(v.offset as u64),
+                        CapabilityValue::String(v.removed.clone()),
+                        CapabilityValue::String(v.inserted.clone()),
+                        CapabilityValue::UInt(v.len as u64),
+                    ])
                 }))
             }
             "preview_mode_changed" => Some(EventSignalRef::mapped(
@@ -4635,7 +4677,7 @@ mod tests {
     #[test]
     fn text_input_inserts_text_and_emits_signal() {
         let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
-        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = Arc::new(Mutex::new(Vec::<MarkdownTextChange>::new()));
         let sink = seen.clone();
         editor.text_changed.connect(move |value| {
             if let Ok(mut guard) = sink.lock() {
@@ -4647,7 +4689,11 @@ mod tests {
 
         assert_eq!(editor.text(), "# Hello");
         let got = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
-        assert_eq!(got, vec!["# Hello".to_string()]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].offset, 0);
+        assert_eq!(got[0].removed, "");
+        assert_eq!(got[0].inserted, "# Hello");
+        assert_eq!(got[0].len, 7);
     }
 
     #[test]
@@ -5468,22 +5514,47 @@ mod issue_20261026_tests {
         assert_eq!(editor.header_buffer.as_ptr(), start, "the same buffer is reused");
     }
 
-    /// SP-001: the published signal still carries the whole document to whoever listens.
+    /// SP-001: the published signal carries the changed run, not a copy of the document.
     #[test]
-    fn text_changed_still_reports_the_whole_document_to_a_subscriber() {
+    fn text_changed_reports_the_changed_run_to_a_subscriber() {
         let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        editor.set_text("alpha");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<MarkdownTextChange>::new()));
         let sink = seen.clone();
-        editor.text_changed.connect(move |text| {
+        editor.text_changed.connect(move |change| {
             if let Ok(mut guard) = sink.lock() {
-                guard.push(text.as_ref().clone());
+                guard.push(change.as_ref().clone());
             }
         });
-        editor.set_text("fresh");
-        assert_eq!(
-            seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
-            vec!["fresh".to_string()]
-        );
+        editor.set_text("alpha beta");
+        let got = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].offset, 5, "the common prefix is left out");
+        assert_eq!(got[0].removed, "");
+        assert_eq!(got[0].inserted, " beta");
+        assert_eq!(got[0].len, 10);
+    }
+
+    /// Undoing a whole-document restore still reports the run that changed.
+    #[test]
+    fn undo_reports_the_run_it_restored() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("draft");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<MarkdownTextChange>::new()));
+        let sink = seen.clone();
+        editor.text_changed.connect(move |change| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(change.as_ref().clone());
+            }
+        });
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "");
+        let got = seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].offset, 0);
+        assert_eq!(got[0].removed, "draft");
+        assert_eq!(got[0].inserted, "");
+        assert_eq!(got[0].len, 0);
     }
 
     /// SP-006: a blink frame in a damage-tracking mode damages only the caret's rectangle.

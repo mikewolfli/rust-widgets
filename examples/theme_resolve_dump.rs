@@ -27,10 +27,7 @@
 //! probe first did) lets the claim and the value drift apart silently. Reading it from
 //! the theme's own `background` token keeps both sides of the comparison together.
 
-#![cfg(all(
-    any(feature = "desktop", feature = "tablet", feature = "mobile"),
-    not(any(feature = "mini", feature = "embedded"))
-))]
+#![cfg(full_widgets)]
 
 use rust_widgets::core::Color;
 use rust_widgets::theme::{global_theme_manager, resolved_theme_style, AppearanceMode};

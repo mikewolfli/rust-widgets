@@ -144,9 +144,12 @@ fn pointer_position(display: &gtk::gdk::Display) -> Option<(i32, i32)> {
 ///
 /// They are exactly the GTK settings the environment facts read:
 /// `gtk-theme-name` backs [`Platform::high_contrast`], `gtk-enable-animations` backs
-/// [`Platform::reduce_motion`], and `gtk-application-prefer-dark-theme` is what the theme manager
-/// resolves an app's appearance from. There is no GTK signal for "the user changed their desktop
-/// accent", so that fact stays derived — the honest limit, not a fabricated signal.
+/// [`Platform::reduce_motion`], and `gtk-application-prefer-dark-theme` backs
+/// [`Platform::system_theme`]. The last is what the theme manager resolves an application's
+/// appearance from. This is the push half of P-208: the 250 ms style-layer poll is
+/// the backstop for a session whose toolkit was not initialised on this thread, not the only
+/// signal. There is no GTK signal for "the user changed their desktop accent", so that fact stays
+/// derived — the honest limit, not a fabricated signal.
 ///
 /// # Why it runs once and only on the main thread
 ///
@@ -209,7 +212,8 @@ impl Platform for LinuxPlatform {
     /// (see [`Platform::capabilities`]), and this backend's own name says it "keeps widget state
     /// in-process and never opens native GTK windows", so it must not claim a host integration it
     /// does not wire up. `dpi_scaling`, `ime` and `accessibility` are answered by the in-process
-    /// toolkit layer; there is no host menu protocol, so `native_menu` is `false` — the same
+    /// toolkit layer (`GDK`'s monitors, the per-window `GtkIMContext` in `linux::canvas`, and the
+    /// AT-SPI bridge); there is no host menu protocol, so `native_menu` is `false` — the same
     /// reasoning `crate::platform::wayland` records.
     ///
     /// # Why `dpi_scaling` follows `dpi_scale_factor`
@@ -227,8 +231,8 @@ impl Platform for LinuxPlatform {
             accessibility: true,
             native_menu: false,
             typed_widget_trigger: true,
-            // `create_file_dialog` is not overridden, so it falls through to the trait default
-            // (which answers "no control was created") and there is no system chooser.
+            // `create_file_dialog` returns a logical handle in a `gtk-native` build and
+            // `choose_path` presents the GTK chooser, so the flag and the methods agree (P-204).
             //
             // The clipboard is the GDK display clipboard (see `super::gdk_clipboard`), and GDK
             // is a *build* fact while a display is a *session* fact: a `gtk-native` build in a
@@ -465,6 +469,38 @@ impl Platform for LinuxPlatform {
     /// once for the style layer's snapshot.
     fn system_locale(&self) -> Option<&'static str> {
         crate::platform::locale::interned_from_environment()
+    }
+
+    /// The colour scheme GTK is configured to prefer.
+    ///
+    /// `gtk-application-prefer-dark-theme` is the GTK 3 setting the toolkit itself honours; it is
+    /// the same property the theme manager resolves an application's appearance from. GTK 3 has
+    /// one application-wide preference rather than a per-window appearance, so this is the
+    /// honest value rather than a per-window guess. `None` without `gtk-native`, off the toolkit
+    /// thread, or before any display exists.
+    ///
+    /// # Push, not poll (P-208)
+    ///
+    /// [`watch_environment_settings`] connects `notify::gtk-application-prefer-dark-theme` to the
+    /// shared environment revision, so a change is visible on the next poll immediately instead of
+    /// waiting for the TTL to expire. The 250 ms style-layer poll remains the backstop for a session
+    /// whose toolkit was not initialised on this thread; it is not the only signal.
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
+    fn system_theme(&self) -> Option<bool> {
+        if !gtk::is_initialized_main_thread() {
+            return None;
+        }
+        static CACHE: crate::platform::environment_cache::EnvironmentFactCache<Option<bool>> =
+            crate::compat::OnceLock::new();
+        crate::platform::environment_cache::cached_environment_fact(&CACHE, || {
+            let settings = gtk::Settings::default()?;
+            Some(settings.is_gtk_application_prefer_dark_theme())
+        })
+    }
+
+    #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
+    fn system_theme(&self) -> Option<bool> {
+        None
     }
 
     /// A revision of the environment facts, derived from their current values.
@@ -947,21 +983,106 @@ impl Platform for LinuxPlatform {
         self.state.destroy_widget(widget_id)
     }
 
-    /// Creates a top-level window, with a real GTK toplevel when this is the GTK
-    /// main thread.
+    // Creates a top-level window, with a real GTK toplevel when this is the GTK
+    // main thread.
+    //
+    // # Off-main callers get a state-only window
+    //
+    // GTK 3 binds every widget to one main thread: `gtk::Window::new` (and the
+    // rest of the toolkit) calls `assert_initialized_main_thread!()`, which
+    // **aborts the process** from any other thread. Off-main is a real case — the
+    // C ABI may be driven from a worker thread, and a test harness runs every
+    // `#[test]` on its own thread. Skipping the native construction there and
+    // returning a state-only handle keeps the call honouring its contract (a
+    // valid, text/geometry-consistent id) instead of taking down the process.
+    //
+    // This mirrors `CocoaPlatform::create_window`, which refuses to construct an
+    // `NSWindow` off the AppKit main thread for exactly the same reason.
+    //
+    /// Creates a logical file-chooser handle when this build has the GTK chooser.
     ///
-    /// # Off-main callers get a state-only window
+    /// [`Self::choose_path`] is the native picker this capability describes; the library paints
+    /// the chooser control itself, so this records a handle rather than constructing a second GTK
+    /// dialog object. The `0` on a non-GTK build is consistent with `file_dialog: false` there.
+    #[cfg(all(unix_desktop, feature = "gtk-native"))]
+    fn create_file_dialog(
+        &self,
+        _parent: crate::core::ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> crate::core::ObjectId {
+        self.insert_widget(LinuxHandleKind::FileDialog, "Open File", x, y, width, height)
+    }
+
+    #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
+    fn create_file_dialog(
+        &self,
+        parent: crate::core::ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> crate::core::ObjectId {
+        let _ = (parent, x, y, width, height);
+        0
+    }
+
+    /// Message boxes are painted by the library; this backend creates no native one.
+    #[allow(clippy::too_many_arguments)]
+    fn create_message_box(
+        &self,
+        parent: crate::core::ObjectId,
+        title: &str,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> crate::core::ObjectId {
+        let _ = (parent, title, text, x, y, width, height);
+        log::debug!(
+            "[linux] create_message_box: no native message-box control; the library paints it"
+        );
+        0
+    }
+
+    /// Colour choosers are painted by the library; this backend creates no native one.
+    fn create_color_dialog(
+        &self,
+        parent: crate::core::ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> crate::core::ObjectId {
+        let _ = (parent, x, y, width, height);
+        log::debug!(
+            "[linux] create_color_dialog: no native colour-dialog control; the library paints it"
+        );
+        0
+    }
+
+    /// Font choosers are painted by the library; this backend creates no native one.
+    fn create_font_dialog(
+        &self,
+        parent: crate::core::ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> crate::core::ObjectId {
+        let _ = (parent, x, y, width, height);
+        log::debug!(
+            "[linux] create_font_dialog: no native font-dialog control; the library paints it"
+        );
+        0
+    }
+
+    /// Creates a top-level window, with a real GTK toplevel on the toolkit thread.
     ///
-    /// GTK 3 binds every widget to one main thread: `gtk::Window::new` (and the
-    /// rest of the toolkit) calls `assert_initialized_main_thread!()`, which
-    /// **aborts the process** from any other thread. Off-main is a real case — the
-    /// C ABI may be driven from a worker thread, and a test harness runs every
-    /// `#[test]` on its own thread. Skipping the native construction there and
-    /// returning a state-only handle keeps the call honouring its contract (a
-    /// valid, text/geometry-consistent id) instead of taking down the process.
-    ///
-    /// This mirrors `CocoaPlatform::create_window`, which refuses to construct an
-    /// `NSWindow` off the AppKit main thread for exactly the same reason.
+    /// See the block comment above for the off-main state-only fallback.
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         let id = self.insert_widget(LinuxHandleKind::Window, title, x, y, width, height);
         // A fresh GTK toplevel is restored, windowed, resizable and decorated.
@@ -1063,24 +1184,28 @@ impl Platform for LinuxPlatform {
                     return glib::Propagation::Stop;
                 }
                 // A printable character is committed text; everything else keeps its key code
-                // so shortcuts and navigation reach the control unchanged. `printable_text`
+                // so shortcuts and navigation reach the control unchanged. `printable_char`
                 // refuses a control chord, so Ctrl+C is a copy rather than a typed `c`. The
                 // keyval is normalised to the framework's logical code at this boundary: GDK's
                 // Return is `0xFF0D` while every control matches `13`.
-                let translated = if let Some(text) = super::canvas::printable_text(event) {
-                    crate::event::Event::TextInput { text }
+                //
+                // The printable branch uses the pooled single-character entry, so typing does
+                // not allocate a payload per keystroke (G-606).
+                let target = crate::widget::runtime::focused_widget().unwrap_or(window_widget);
+                let delivered = if let Some(ch) = super::canvas::printable_char(event) {
+                    crate::widget::runtime::dispatch_text_char(target, ch)
                 } else {
                     let modifiers = super::canvas::modifier_bits(event);
-                    crate::event::Event::KeyPress {
+                    let key_event = crate::event::Event::KeyPress {
                         key: super::canvas::logical_key(
                             *event.keyval(),
                             super::canvas::is_control_chord(modifiers),
                         ),
                         modifiers,
-                    }
+                    };
+                    crate::widget::runtime::dispatch_event(target, &key_event)
                 };
-                let target = crate::widget::runtime::focused_widget().unwrap_or(window_widget);
-                if crate::widget::runtime::dispatch_event(target, &translated) {
+                if delivered {
                     key_area.queue_draw();
                     crate::platform::linux::canvas::note_canvas_redraw(target);
                 }
@@ -1623,6 +1748,97 @@ impl Platform for LinuxPlatform {
     /// The minimum size recorded for a window; GTK exposes no getter for its geometry hints.
     fn window_min_size(&self, widget_id: crate::core::ObjectId) -> Option<(u32, u32)> {
         self.state.window_min_size(widget_id)
+    }
+
+    /// Applies a maximum size through `gtk::Window::set_geometry_hints` (`MAX_SIZE`).
+    fn set_window_max_size(
+        &self,
+        widget_id: crate::core::ObjectId,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        if let Some(window) = native_window_for(self, widget_id) {
+            let geometry = gtk::gdk::Geometry::new(
+                0,
+                0,
+                width as i32,
+                height as i32,
+                0,
+                0,
+                0,
+                0,
+                0.0,
+                0.0,
+                gtk::gdk::Gravity::NorthWest,
+            );
+            window.set_geometry_hints(
+                None::<&gtk::Widget>,
+                Some(&geometry),
+                gtk::gdk::WindowHints::MAX_SIZE,
+            );
+            self.state.set_window_max_size(widget_id, width, height);
+            return true;
+        }
+        self.state.set_window_max_size(widget_id, width, height)
+    }
+
+    /// GTK 3 expresses window transparency as whole-window opacity.
+    ///
+    /// `set_app_paintable(true)` makes the window paint its own background (needed for a surface
+    /// with alpha), and `set_opacity` is the only alpha control GTK 3 exposes. It is a whole-window
+    /// value, so a transparent window becomes fully transparent; GTK has no per-pixel window alpha
+    /// outside the compositor's own RGBA visual. The limit is stated rather than pretending the
+    /// per-widget surface alpha reaches the compositor.
+    fn set_window_transparent(&self, widget_id: crate::core::ObjectId, transparent: bool) -> bool {
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        if let Some(window) = native_window_for(self, widget_id) {
+            window.set_app_paintable(true);
+            window.set_opacity(if transparent { 0.0 } else { 1.0 });
+            return true;
+        }
+        #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
+        let _ = (widget_id, transparent);
+        false
+    }
+
+    /// Keeps the window above others with `gtk_window_set_keep_above`.
+    fn set_window_always_on_top(&self, widget_id: crate::core::ObjectId, on: bool) -> bool {
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        if let Some(window) = native_window_for(self, widget_id) {
+            window.set_keep_above(on);
+            return true;
+        }
+        #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
+        let _ = (widget_id, on);
+        false
+    }
+
+    /// Sets GTK's application-wide dark-theme preference.
+    ///
+    /// GTK 3 has no per-window appearance, so this is the closest native expression of a preferred
+    /// theme. It is applied through `GtkSettings`, the same object `Platform::system_theme` reads.
+    fn set_window_preferred_theme(&self, widget_id: crate::core::ObjectId, dark: bool) -> bool {
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        if native_window_for(self, widget_id).is_some() {
+            let Some(settings) = gtk::Settings::default() else {
+                return false;
+            };
+            settings.set_gtk_application_prefer_dark_theme(dark);
+            return true;
+        }
+        #[cfg(not(all(unix_desktop, feature = "gtk-native")))]
+        let _ = (widget_id, dark);
+        false
+    }
+
+    /// GTK 3/X11 exposes no per-window capture exclusion; the trait default is the honest answer.
+    fn set_window_content_protected(
+        &self,
+        _widget_id: crate::core::ObjectId,
+        _protected: bool,
+    ) -> bool {
+        false
     }
 
     /// Loads a window icon from `path` through `gtk::Window::set_icon_from_file`.

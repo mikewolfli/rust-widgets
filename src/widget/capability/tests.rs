@@ -1533,6 +1533,29 @@ fn connect_event_binds_every_spelling_to_the_canonical_signal() {
     }
 }
 
+/// W-302: the focus events every control inherits from `BaseWidget` are published names.
+///
+/// They are one shared row rather than 180 duplicated ones, so the lookup — not the capability
+/// table — is what accepts them. A name the control really does not publish must still be refused.
+#[test]
+fn focus_events_are_published_for_every_control() {
+    use crate::signal::CustomSignalHub;
+
+    let factory = WidgetFactory::new_with_defaults();
+    let hub = CustomSignalHub::new();
+    for control in ["button", "label", "slider", "text_area", "data_grid"] {
+        for event in ["focus_gained", "focus_lost"] {
+            factory.event_is_subscribable(control, event, &hub).unwrap_or_else(|error| {
+                panic!("`{control}` must accept the inherited `{event}`: {error:?}")
+            });
+        }
+    }
+    assert!(
+        factory.event_is_subscribable("button", "no_such_focus_event", &hub).is_err(),
+        "the shared focus rows must not make every name subscribable"
+    );
+}
+
 /// The four interactive-looking controls with no published events publish none on purpose.
 ///
 /// # Why this is a contract, not a gap (BLUE-issue E-14)

@@ -18,7 +18,7 @@
 
 use core::cell::RefCell;
 
-use crate::compat::{Box, Rc, String};
+use crate::compat::{Box, MiniToString, Rc, String};
 use crate::undo::{TextSpliceCommand, UndoStack};
 use crate::widget::text_utils::{floor_char_boundary, next_char_boundary, previous_char_boundary};
 

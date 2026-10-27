@@ -15,16 +15,17 @@
 //! Registration surface: canonical name `web_find_bar` (alias `page_find_bar`), kind
 //! [`WidgetKind::WebFindBar`], registered in the factory like any other companion.
 
+use crate::compat::Arc;
 use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::{GenericSignal, Signal1};
+use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
-use crate::widget::web_widgets::web_engine::WebEngineView;
+use crate::widget::web_widgets::web_engine::{WebEngineView, WebFindRequest};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -44,6 +45,16 @@ pub struct WebFindBar {
     pub previous_requested: GenericSignal,
     /// Emitted when the bar closes.
     pub closed: GenericSignal,
+    /// The live wiring to a view's find queue, when one is attached (MW-014).
+    binding: Option<WebFindBinding>,
+}
+
+/// The subscription that feeds a `WebEngineView`'s find queue (MW-014).
+///
+/// The bar emits requests and the view applies them; this binding is only the set of connections
+/// that join the two, dropped when the bar is detached or re-attached.
+struct WebFindBinding {
+    _scope: ConnectionScope,
 }
 
 impl WebFindBar {
@@ -60,6 +71,7 @@ impl WebFindBar {
             next_requested: GenericSignal::new(),
             previous_requested: GenericSignal::new(),
             closed: GenericSignal::new(),
+            binding: None,
         }
     }
 
@@ -144,6 +156,56 @@ impl WebFindBar {
     /// Requests the previous match, wrapping at the start.
     pub fn previous_match(&mut self) {
         self.previous_requested.emit();
+    }
+
+    /// Wires this bar's request signals to `view`'s find queue (MW-014).
+    ///
+    /// After attaching, `search_requested` becomes a search request, and the next/previous
+    /// signals become match steps; the view applies them on its next tick or paint through
+    /// [`WebEngineView::poll_find_requests`]. A view cannot be borrowed by a signal callback, so
+    /// the queue is the join, exactly as the pagination and column-chooser bindings do it.
+    ///
+    /// Attaching twice replaces the previous wiring rather than doubling it. A query already in
+    /// the bar is run immediately, so a host that opens the bar with text preloaded sees the
+    /// matches without a second keystroke.
+    pub fn attach(&mut self, view: &mut WebEngineView) {
+        self.detach();
+        let queue = view.find_request_queue();
+        let scope = ConnectionScope::new();
+
+        let search_queue = Arc::clone(&queue);
+        self.search_requested.connect_scoped(&scope, move |value| {
+            let (query, case_sensitive) = &*value;
+            crate::compat::lock(&search_queue).push_back(WebFindRequest::Search {
+                needle: query.clone(),
+                case_sensitive: *case_sensitive,
+            });
+        });
+
+        let next_queue = Arc::clone(&queue);
+        self.next_requested.connect_scoped(&scope, move || {
+            crate::compat::lock(&next_queue).push_back(WebFindRequest::Next);
+        });
+
+        let previous_queue = Arc::clone(&queue);
+        self.previous_requested.connect_scoped(&scope, move || {
+            crate::compat::lock(&previous_queue).push_back(WebFindRequest::Previous);
+        });
+
+        self.binding = Some(WebFindBinding { _scope: scope });
+        if !self.query.is_empty() {
+            self.apply_to(view);
+        }
+    }
+
+    /// Stops feeding a view.
+    pub fn detach(&mut self) {
+        self.binding = None;
+    }
+
+    /// Whether the bar is attached to a view's find queue.
+    pub fn is_attached(&self) -> bool {
+        self.binding.is_some()
     }
 
     /// Runs this bar's query against `view` and adopts the reported match progress.
@@ -522,5 +584,38 @@ mod tests {
         view.set_find_whole_word(true);
         assert_eq!(bar.apply_to(&mut view), (1, 2));
         assert_eq!(bar.match_progress(), (1, 2));
+    }
+
+    /// MW-014: the bar's signals feed the view's find API without a manual `apply_to`.
+    #[test]
+    fn attaching_the_bar_feeds_the_view_find_state() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 320, 240));
+        view.load_html("<p>cat category cat</p>");
+        let mut bar = WebFindBar::new(Rect::new(0, 0, 320, 36));
+        bar.open();
+        bar.attach(&mut view);
+        assert!(bar.is_attached());
+
+        // A query write queues a search; the view applies it on its next poll.
+        bar.set_query("cat");
+        assert_eq!(view.poll_find_requests(), Some((1, 3)));
+        assert_eq!(view.find_progress(), (1, 3), "the query reached the engine find state");
+
+        // The step signals drive the engine's own next/previous methods.
+        bar.next_match();
+        assert_eq!(view.poll_find_requests(), Some((2, 3)));
+        assert_eq!(view.find_progress(), (2, 3));
+        bar.previous_match();
+        assert_eq!(view.poll_find_requests(), Some((1, 3)));
+
+        // The manual API keeps working beside the binding.
+        assert_eq!(bar.apply_to(&mut view), (1, 3));
+        assert_eq!(bar.next_in(&mut view), Some((2, 3)));
+
+        // A detached bar queues nothing.
+        bar.detach();
+        assert!(!bar.is_attached());
+        bar.set_query("dog");
+        assert_eq!(view.poll_find_requests(), None);
     }
 }

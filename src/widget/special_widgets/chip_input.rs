@@ -309,20 +309,48 @@ impl Widget for ChipInput {
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 
-    /// Resolves the one event this control publishes onto the bus.
+    /// Resolves every published event of this control onto the bus.
     ///
     /// `tag_input` is the shared capability this control is registered under (its aliases include
-    /// `chip_input`), and `tags_changed` is the event it declares. The four control-specific
-    /// signals are emitted on the concrete type; publishing them by name needs payload rows in
-    /// `capability/event_payloads.rs`, which is outside this change (SP-121).
+    /// `chip_input`). `tags_changed` was the only name it published before SP-121; the four
+    /// signals the control emits itself are now published alongside it and declared in
+    /// `capability/event_payloads.rs`, so a host can subscribe to a commit, a removal, a text
+    /// edit and a refused commit by name instead of reaching for the concrete type.
+    ///
+    /// The payload conversions follow the capability convention: text is `String`, and the item
+    /// count carried by [`Self::limit_reached`] is `UInt` rather than a signed `Int` because a
+    /// count can never be negative.
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
+            "chip_committed" => {
+                Some(EventSignalRef::mapped("chip_committed", &self.chip_committed, |id| {
+                    CapabilityValue::String(id.clone())
+                }))
+            }
+            "chip_removed" => {
+                Some(EventSignalRef::mapped("chip_removed", &self.chip_removed, |id| {
+                    CapabilityValue::String(id.clone())
+                }))
+            }
+            "limit_reached" => {
+                Some(EventSignalRef::mapped("limit_reached", &self.limit_reached, |count| {
+                    CapabilityValue::UInt(*count as u64)
+                }))
+            }
             "tags_changed" => {
                 Some(EventSignalRef::mapped("tags_changed", &self.tags_changed, |tags| {
+                    // The declared shape is `ListScalar` of `String`, so the payload arrives as the
+                    // tag list rather than its `Debug` spelling — a subscriber can read each tag
+                    // as its own string.
                     CapabilityValue::Tuple(
                         tags.iter().map(|tag| CapabilityValue::String(tag.clone())).collect(),
                     )
+                }))
+            }
+            "text_changed" => {
+                Some(EventSignalRef::mapped("text_changed", &self.text_changed, |text| {
+                    CapabilityValue::String(text.clone())
                 }))
             }
             _ => None,
@@ -603,5 +631,18 @@ mod tests {
 
         // The declared event resolves to this signal, so a hub subscription reaches it.
         assert!(input.event_signal_dyn("tags_changed").is_some());
+    }
+
+    /// SP-121: every signal this control emits resolves by its published name, and nothing else
+    /// does — the capability row and the arm set name the same five events.
+    #[test]
+    fn every_chip_input_event_resolves_by_name() {
+        let input = ChipInput::new(Rect::new(0, 0, 240, 60));
+        for name in
+            ["chip_committed", "chip_removed", "limit_reached", "tags_changed", "text_changed"]
+        {
+            assert!(input.event_signal_dyn(name).is_some(), "{name} must resolve");
+        }
+        assert!(input.event_signal_dyn("no_such_event").is_none());
     }
 }

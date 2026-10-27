@@ -1035,6 +1035,30 @@ pub(crate) fn markdown_editor_capability() -> WidgetCapability {
     }
 }
 
+/// The markdown editor's formatting strip (SP-022).
+///
+/// A separate control rather than a mode of `tool_bar`: its action set is the markdown token
+/// vocabulary, its cells execute through [`MarkdownToolbar::execute`], and its single published
+/// event carries the activated token. It shares `WidgetKind::ToolBar` with `tool_bar` and
+/// `mac_toolbar` because the theme role and the accessibility role are the same, so the concrete
+/// type is what distinguishes the three.
+///
+/// [`MarkdownToolbar::execute`]: crate::widget::special_widgets::markdown_editor::MarkdownToolbar::execute
+#[cfg(not(alloc_frugal))]
+pub(crate) fn markdown_toolbar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ToolBar,
+        canonical_name: "markdown_toolbar",
+        aliases: &["md_toolbar"],
+        properties: MARKDOWN_TOOLBAR_PROPERTIES,
+        events: events_of!("markdown_toolbar"),
+        // The action list is the writable `actions` StringList, so `set_actions` is a property
+        // write. `execute` takes the token itself and has no property carrier, so it stays a
+        // Rust-side entry point (principle #18).
+        commands: &[],
+    }
+}
+
 #[cfg(not(alloc_frugal))]
 pub(crate) fn toast_stack_capability() -> WidgetCapability {
     WidgetCapability {
@@ -1416,6 +1440,29 @@ pub(crate) fn dock_widget_capability() -> WidgetCapability {
         // bit-flag set (`DockFeatures` / `DockAreas`) and the control publishes no property that
         // carries one; the control's own setters are the write path (principle #18).
         commands: &["set_title", "set_floating"],
+    }
+}
+
+/// The dock host's published events (C-001).
+///
+/// [`DockArea`](crate::widget::container_widgets::DockArea) is a layout owner rather than a
+/// `Widget`: it holds child ids and arranges the docks registered with it, so it has no
+/// `WidgetKind` of its own and cannot carry a capability row under its own kind. Its three
+/// host-facing signals therefore travel on this row, which shares the dock family's kind and
+/// property schema because the constructible member of that family is the dock widget.
+///
+/// The events are resolved by `DockArea::event_signal_dyn`, not by `DockWidget`: the area owns
+/// `active_dock_changed`, `dock_removed` and `layout_changed`, and a host that owns the area
+/// connects those names through [`WidgetFactory::connect_event`](crate::widget::WidgetFactory).
+#[cfg(not(alloc_frugal))]
+pub(crate) fn dock_area_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::DockWidget,
+        canonical_name: "dock_area",
+        aliases: &["dock_host"],
+        properties: DOCK_WIDGET_PROPERTIES,
+        events: events_of!("dock_area"),
+        commands: &[],
     }
 }
 
@@ -2086,7 +2133,7 @@ pub(crate) fn tag_input_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::TagInput,
         canonical_name: "tag_input",
-        aliases: &["tag_editor", "chip_input"],
+        aliases: &["tag_editor"],
         properties: TAG_INPUT_PROPERTIES,
         events: events_of!("tag_input"),
         // Audit 20261026: `add_tag`, `remove_tag` stay unpublished — each takes a label or an
@@ -2094,6 +2141,24 @@ pub(crate) fn tag_input_capability() -> WidgetCapability {
         // `items` records property, so the two are reachable as a whole-list write (principle
         // #18).
         commands: &["set_placeholder"],
+    }
+}
+
+/// The chip input's capability (SP-121).
+///
+/// It used to be an alias of `tag_input`, which made four events published under `tag_input`
+/// resolve against `TagInput` even though only `ChipInput` emits them — the capability table and
+/// the control disagreed. A canonical row of its own lets each control own its schema and its
+/// events, and the alias is removed rather than left to resolve to the wrong struct.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn chip_input_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::TextEdit,
+        canonical_name: "chip_input",
+        aliases: &[],
+        properties: CHIP_INPUT_PROPERTIES,
+        events: events_of!("chip_input"),
+        commands: &["commit", "clear"],
     }
 }
 
@@ -2924,6 +2989,77 @@ pub(crate) fn status_bar_capability() -> WidgetCapability {
     }
 }
 
+/// The grid status strip's capability (COMP-A23).
+///
+/// It shares `WidgetKind::StatusBar` with the message bar, so it needs its own canonical name and
+/// a concrete-type tie-break; its events are the strip's own `status_clicked`.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn grid_status_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::StatusBar,
+        canonical_name: "grid_status_bar",
+        aliases: &["table_status_bar"],
+        properties: GRID_STATUS_BAR_PROPERTIES,
+        events: events_of!("grid_status_bar"),
+        commands: &["set_text"],
+    }
+}
+
+/// The group avatar's capability (MISC-010).
+///
+/// It shares `WidgetKind::Avatar` with the single `Avatar`; membership is a method call
+/// (`push`/`clear`), so the schema is the base contract and no event is published.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn group_avatar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Avatar,
+        canonical_name: "group_avatar",
+        aliases: &[],
+        properties: GROUP_AVATAR_PROPERTIES,
+        events: &[],
+        commands: &[],
+    }
+}
+
+/// Unified dropdown popup host (COMP-A21).
+#[cfg(not(alloc_frugal))]
+pub(crate) fn drop_down_popup_host_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Panel,
+        canonical_name: "drop_down_popup_host",
+        aliases: &[],
+        properties: DROP_DOWN_POPUP_HOST_PROPERTIES,
+        events: events_of!("drop_down_popup_host"),
+        commands: &[],
+    }
+}
+
+/// Command palette host (COMP-A30).
+#[cfg(not(alloc_frugal))]
+pub(crate) fn command_palette_host_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::ListView,
+        canonical_name: "command_palette_host",
+        aliases: &[],
+        properties: COMMAND_PALETTE_HOST_PROPERTIES,
+        events: events_of!("command_palette_host"),
+        commands: &[],
+    }
+}
+
+/// Header menu (COMP-A32).
+#[cfg(not(alloc_frugal))]
+pub(crate) fn header_menu_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Menu,
+        canonical_name: "header_menu",
+        aliases: &[],
+        properties: HEADER_MENU_PROPERTIES,
+        events: events_of!("header_menu"),
+        commands: &[],
+    }
+}
+
 /// Property grid properties: property_count (read-only), selected_index (r/w).
 #[cfg(not(alloc_frugal))]
 pub(crate) fn property_grid_capability() -> WidgetCapability {
@@ -3505,11 +3641,16 @@ pub(crate) fn markdown_outline_panel_capability() -> WidgetCapability {
 
 #[cfg(not(alloc_frugal))]
 /// `find_bar` — the editor's find/replace strip (`COMP-16`).
+///
+/// `find_replace_bar` used to be an alias of this control. It is now the canonical name of the
+/// companion `FindReplaceBar` capability (`COMP-22`), so the spelling has to name the control a
+/// caller can actually mount; keeping the alias would have made one name resolve to two different
+/// widgets depending on which row registered last.
 pub(crate) fn find_bar_capability() -> WidgetCapability {
     WidgetCapability {
         kind: WidgetKind::FindBar,
         canonical_name: "find_bar",
-        aliases: &["find_replace_bar"],
+        aliases: &[],
         properties: FIND_BAR_PROPERTIES,
         events: events_of!("find_bar"),
         commands: &[],
@@ -3676,6 +3817,133 @@ pub(crate) fn grid_view_header_capability() -> WidgetCapability {
         aliases: &["table_header_bar"],
         properties: GRID_VIEW_HEADER_PROPERTIES,
         events: events_of!("grid_view_header"),
+        commands: &[],
+    }
+}
+
+// ── Editor/chart/data companion overlays (COMP-21..29) ──
+//
+// Nine companion controls that report the kind of the control they partner. Each keeps its own
+// canonical name, property table and published events; the shared kind is resolved by the
+// concrete-type tie-break in `WidgetFactory::widget_matches_capability`.
+
+#[cfg(not(alloc_frugal))]
+/// `line_number_gutter` — the editor's line-number rail (`COMP-21`).
+pub(crate) fn line_number_gutter_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Panel,
+        canonical_name: "line_number_gutter",
+        aliases: &[],
+        properties: LINE_NUMBER_GUTTER_PROPERTIES,
+        events: events_of!("line_number_gutter"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `find_replace_bar` — the editor's find/replace strip (`COMP-22`).
+pub(crate) fn find_replace_bar_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::SearchBar,
+        canonical_name: "find_replace_bar",
+        aliases: &[],
+        properties: FIND_REPLACE_BAR_PROPERTIES,
+        events: events_of!("find_replace_bar"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `list_state_host` — the loading/empty/error surface for a list (`COMP-23`).
+pub(crate) fn list_state_host_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::EmptyState,
+        canonical_name: "list_state_host",
+        aliases: &[],
+        properties: LIST_STATE_HOST_PROPERTIES,
+        events: events_of!("list_state_host"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `summary_row` — the aggregate row of a table (`COMP-24`).
+pub(crate) fn summary_row_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Table,
+        canonical_name: "summary_row",
+        aliases: &[],
+        properties: SUMMARY_ROW_PROPERTIES,
+        events: events_of!("summary_row"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `zoom_strip` — the zoom strip beside a chart or a canvas (`COMP-25`).
+pub(crate) fn zoom_strip_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Slider,
+        canonical_name: "zoom_strip",
+        aliases: &[],
+        properties: ZOOM_STRIP_PROPERTIES,
+        events: events_of!("zoom_strip"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `axis_picker` — per-series axis assignment for a chart (`COMP-26`).
+pub(crate) fn axis_picker_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Panel,
+        canonical_name: "axis_picker",
+        aliases: &[],
+        properties: AXIS_PICKER_PROPERTIES,
+        events: events_of!("axis_picker"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `chart_data_table` — the tabular view of a chart's series data (`COMP-27`).
+///
+/// Like every other capability here the table lives in `properties_other.in.rs`; the control
+/// itself is built by the `full_widgets` companion module, which is why the constructor and the
+/// registration entry sit inside the same gates as the siblings.
+pub(crate) fn chart_data_table_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Table,
+        canonical_name: "chart_data_table",
+        aliases: &[],
+        properties: CHART_DATA_TABLE_PROPERTIES,
+        events: events_of!("chart_data_table"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `calendar_mark_layer` — per-date marks painted over a calendar (`COMP-28`).
+pub(crate) fn calendar_mark_layer_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Panel,
+        canonical_name: "calendar_mark_layer",
+        aliases: &[],
+        properties: CALENDAR_MARK_LAYER_PROPERTIES,
+        events: events_of!("calendar_mark_layer"),
+        commands: &[],
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+/// `drag_ghost_layer` — the translucent proxy card that follows a drag (`COMP-29`).
+pub(crate) fn drag_ghost_layer_capability() -> WidgetCapability {
+    WidgetCapability {
+        kind: WidgetKind::Panel,
+        canonical_name: "drag_ghost_layer",
+        aliases: &[],
+        properties: DRAG_GHOST_LAYER_PROPERTIES,
+        events: events_of!("drag_ghost_layer"),
         commands: &[],
     }
 }

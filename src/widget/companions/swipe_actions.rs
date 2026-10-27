@@ -25,6 +25,9 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_draw_bridge, impl_widget_property_hooks, property_names_of};
 
 use super::helpers::expect_color;
+#[cfg(test)]
+use crate::widget::input_widgets::input_companions::swipe_kernel::SwipeCommit;
+use crate::widget::input_widgets::input_companions::swipe_kernel::SwipeKernel;
 
 /// Which side of the row an action belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +115,14 @@ pub struct SwipeActions {
     icon_side: u32,
     /// The row's current horizontal offset, set by the host.
     offset: f32,
+    /// The shared swipe model: its threshold is the span the reveal band covers.
+    ///
+    /// The band and the gesture are the same measurement. "The whole action set is exposed"
+    /// and "the row would dismiss" are both `|offset| >= span`, so this companion runs the
+    /// same distance/damping/progress rule `SwipeToDismiss` runs instead of a second copy
+    /// (COMP-A03). Geometry is still derived from `max_reveal_width` directly, so the painted
+    /// boxes are unchanged.
+    gesture: SwipeKernel,
     /// Emitted with the side and index of the action a press landed on.
     pub action_triggered: Signal1<(SwipeSide, usize)>,
 }
@@ -132,6 +143,7 @@ impl SwipeActions {
             max_reveal_width: 240,
             icon_side: 18,
             offset: 0.0,
+            gesture: SwipeKernel::new(240.0),
             action_triggered: Signal1::new(),
         }
     }
@@ -169,7 +181,26 @@ impl SwipeActions {
             return;
         }
         self.max_reveal_width = width;
+        self.gesture.set_threshold(width as f32);
         self.base.request_redraw();
+    }
+
+    /// The commit decision a release at `offset` with `velocity` makes.
+    ///
+    /// This is the same rule `SwipeToDismiss` applies, over the same kernel: the reveal span is
+    /// this companion's threshold, so a drag that would expose the whole action set reports
+    /// [`SwipeCommit::Commit`] here exactly when it would dismiss there. Test-only because the
+    /// companion draws a host-owned offset rather than owning a release of its own; the paint
+    /// path consumes the kernel's reveal/progress above.
+    #[cfg(test)]
+    pub(crate) fn gesture_decision(&self, offset: f32, velocity: f32) -> SwipeCommit {
+        self.gesture.decision(offset, velocity)
+    }
+
+    /// The threshold this companion's gesture commits at, in pixels.
+    #[cfg(test)]
+    pub(crate) fn gesture_threshold(&self) -> f32 {
+        self.gesture.threshold()
     }
 
     /// The square side of an action's icon.
@@ -249,10 +280,15 @@ impl SwipeActions {
             return None;
         }
         let width = self.action_width(side);
+        // The reveal band is the shared kernel's clamped travel: the host may report an offset
+        // past `max_reveal_width` (an over-drag), and the kernel states that the band stops at
+        // its span. The extra `.min` keeps a degenerate span of zero revealing nothing, which is
+        // what the pre-kernel arithmetic did (the kernel itself clamps its threshold to 1 px).
         let reveal = match side {
-            SwipeSide::Leading => offset.max(0.0).min(self.max_reveal_width as f32) as u32,
-            SwipeSide::Trailing => (-offset).max(0.0).min(self.max_reveal_width as f32) as u32,
-        };
+            SwipeSide::Leading => self.gesture.reveal(offset, true),
+            SwipeSide::Trailing => self.gesture.reveal(offset, false),
+        }
+        .min(self.max_reveal_width as f32) as u32;
         let consumed = (index as u32).saturating_mul(width);
         if reveal <= consumed {
             return None;

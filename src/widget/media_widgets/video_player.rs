@@ -12,7 +12,7 @@
 use core::cell::Cell;
 use core::fmt::Write as _;
 
-use crate::compat::Arc;
+use crate::compat::{Arc, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
@@ -23,6 +23,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::PlaylistPanel;
 use crate::widget::media_widgets::subtitle_bar::SubtitleBar;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
@@ -237,6 +238,13 @@ pub struct VideoPlayer {
     base: BaseWidget,
     /// Source URI or path of the video.
     source: String,
+    /// The playback queue. The player owns the model; a `PlaylistPanel` attached with
+    /// [`Self::attach_playlist_panel`] is the chrome that lists it (MW-015).
+    playlist: Vec<String>,
+    /// The queue entry currently loaded, when the source came from the queue.
+    playlist_index: Option<usize>,
+    /// An optional queue panel kept in step with the model.
+    playlist_panel: Option<PlaylistPanel>,
     /// Whether playback is active.
     is_playing: bool,
     /// Current playback position in seconds.
@@ -369,6 +377,9 @@ impl VideoPlayer {
         Self {
             base: BaseWidget::new(WidgetKind::VideoPlayer, geometry, "VideoPlayer"),
             source: String::new(),
+            playlist: Vec::new(),
+            playlist_index: None,
+            playlist_panel: None,
             is_playing: false,
             current_time: 0.0,
             duration: 0.0,
@@ -432,6 +443,10 @@ impl VideoPlayer {
     /// decoded. Loading also resets the simulated clock and pauses playback.
     pub fn load(&mut self, source: &str) {
         self.source = source.to_string();
+        // A direct load of a source that is in the queue keeps the "where am I" answer, the same
+        // rule `set_playlist` applies in the other direction (MW-015).
+        self.playlist_index = self.playlist.iter().position(|item| item == source);
+        self.sync_playlist_panel();
         self.current_time = 0.0;
         self.is_playing = false;
         self.back = None;
@@ -441,6 +456,99 @@ impl VideoPlayer {
             if source.is_empty() { VideoPipelineState::Idle } else { VideoPipelineState::Demuxing };
         self.set_status(if source.is_empty() { MediaStatus::Idle } else { MediaStatus::Paused });
         self.base.request_redraw();
+    }
+
+    /// Replaces the playback queue.
+    ///
+    /// The model is the player's; the attached [`PlaylistPanel`] is chrome that lists it. A
+    /// source that names a queue entry keeps its position, so a host that sets the list after
+    /// loading does not lose the "where am I" answer (the same rule `MediaPlayer` applies).
+    pub fn set_playlist(&mut self, playlist: Vec<String>) {
+        self.playlist = playlist;
+        self.playlist_index = self.playlist.iter().position(|item| item == &self.source);
+        self.sync_playlist_panel();
+        self.base.request_redraw();
+    }
+
+    /// Returns the playback queue.
+    pub fn playlist(&self) -> &[String] {
+        &self.playlist
+    }
+
+    /// The queue entry currently loaded, if the source came from the queue.
+    pub fn playlist_index(&self) -> Option<usize> {
+        self.playlist_index.filter(|index| *index < self.playlist.len())
+    }
+
+    /// Loads queue entry `index`.
+    pub fn select_track(&mut self, index: usize) -> bool {
+        let Some(source) = self.playlist.get(index).cloned() else {
+            return false;
+        };
+        self.load(&source);
+        // `load` matched the source back to its first occurrence; a duplicate entry has to take
+        // the position that was asked for, so the index is written again after the load.
+        self.playlist_index = Some(index);
+        self.sync_playlist_panel();
+        true
+    }
+
+    /// Loads the next queue entry.
+    pub fn next_track(&mut self) -> bool {
+        if self.playlist.is_empty() {
+            return false;
+        }
+        let next = match self.playlist_index() {
+            Some(index) => index + 1,
+            None => 0,
+        };
+        self.select_track(next)
+    }
+
+    /// Loads the previous queue entry.
+    pub fn previous_track(&mut self) -> bool {
+        let Some(index) = self.playlist_index() else {
+            return false;
+        };
+        if index == 0 {
+            return false;
+        }
+        self.select_track(index - 1)
+    }
+
+    /// Attaches a queue panel and fills it with the current model.
+    ///
+    /// Returns whether a panel is attached afterwards; `false` detaches the current one.
+    pub fn attach_playlist_panel(&mut self, panel: Option<PlaylistPanel>) -> bool {
+        self.playlist_panel = panel;
+        self.sync_playlist_panel();
+        self.playlist_panel.is_some()
+    }
+
+    /// The attached queue panel, if any.
+    pub fn playlist_panel(&self) -> Option<&PlaylistPanel> {
+        self.playlist_panel.as_ref()
+    }
+
+    /// The attached queue panel for editing, if any.
+    pub fn playlist_panel_mut(&mut self) -> Option<&mut PlaylistPanel> {
+        self.playlist_panel.as_mut()
+    }
+
+    /// Pushes the model into the attached panel.
+    ///
+    /// Called from every model write, so the panel cannot show a queue the player is not
+    /// playing from.
+    fn sync_playlist_panel(&mut self) {
+        // Snapshot both model facts before borrowing the panel mutably: the panel lives in
+        // `self`, so reading `self.playlist` inside the borrow is a second borrow of the same
+        // value.
+        let tracks = self.playlist.clone();
+        let current = self.playlist_index();
+        if let Some(panel) = self.playlist_panel.as_mut() {
+            panel.set_tracks(tracks);
+            panel.set_current_index(current);
+        }
     }
 
     /// Accepts a decoded frame from the host's pipeline.
@@ -1390,6 +1498,16 @@ impl Widget for VideoPlayer {
             "metadata_changed" => {
                 Some(EventSignalRef::unit("metadata_changed", &self.metadata_changed))
             }
+            "audio_track_selected" => Some(EventSignalRef::mapped(
+                "audio_track_selected",
+                &self.audio_track_selected,
+                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+            )),
+            "subtitle_track_selected" => Some(EventSignalRef::mapped(
+                "subtitle_track_selected",
+                &self.subtitle_track_selected,
+                |v| crate::widget::capability::CapabilityValue::UInt(*v as u64),
+            )),
             _ => None,
         }
     }
@@ -1408,6 +1526,9 @@ impl WidgetProperties for VideoPlayer {
             "playback_rate" => Ok(CapabilityValue::Float(self.playback_rate() as f64)),
             "controls_visible" => Ok(CapabilityValue::Bool(self.controls_visible())),
             "looping" => Ok(CapabilityValue::Bool(self.is_looping())),
+            // MW-003: the host's data-starvation report, so the state machine's `Buffering` arm
+            // has a production entry instead of being reachable only from tests.
+            "buffering" => Ok(CapabilityValue::Bool(self.is_buffering())),
             "pipeline" => Ok(CapabilityValue::String(format!("{:?}", self.pipeline()))),
             _ => base_property_get(self, name),
         }
@@ -1447,6 +1568,10 @@ impl WidgetProperties for VideoPlayer {
                 self.set_looping(expect_bool(value)?);
                 Ok(())
             }
+            "buffering" => {
+                self.set_buffering(expect_bool(value)?);
+                Ok(())
+            }
             // The pipeline stage is reported by the host-driven lifecycle, not assigned.
             "pipeline" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -1461,6 +1586,7 @@ impl WidgetProperties for VideoPlayer {
             "playback_rate",
             "controls_visible",
             "looping",
+            "buffering",
             "pipeline",
             BASE_PROPERTY_NAMES
         ]
@@ -2575,6 +2701,53 @@ mod tests {
         assert_eq!(vp.media_status(), MediaStatus::Playing);
         vp.tick(1.0);
         assert!((vp.current_time() - 2.0).abs() < 1e-9);
+    }
+
+    /// MW-015: the queue is the player's model and the panel is its chrome; both stay in step.
+    #[test]
+    fn the_playlist_model_drives_an_attached_panel() {
+        use crate::widget::companions::PlaylistPanel;
+
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.set_playlist(vec!["a.mp4".to_string(), "b.mp4".to_string(), "c.mp4".to_string()]);
+        let panel = PlaylistPanel::new(Rect::new(0, 0, 160, 120));
+        assert!(vp.attach_playlist_panel(Some(panel)), "the panel is attached");
+        assert_eq!(vp.playlist_panel().expect("attached").tracks().len(), 3);
+        assert_eq!(vp.playlist_panel().expect("attached").current_index(), None);
+
+        assert!(vp.select_track(1));
+        assert_eq!(vp.playlist_index(), Some(1));
+        assert_eq!(vp.playlist_panel().expect("attached").current_index(), Some(1));
+        assert_eq!(vp.source(), "b.mp4");
+
+        assert!(vp.next_track());
+        assert_eq!(vp.playlist_index(), Some(2));
+        assert!(!vp.next_track(), "the queue has no wrap-around");
+        assert!(vp.previous_track());
+        assert_eq!(vp.playlist_index(), Some(1));
+        assert_eq!(vp.playlist_panel().expect("attached").current_index(), Some(1));
+
+        assert!(!vp.attach_playlist_panel(None));
+        assert!(vp.playlist_panel().is_none());
+    }
+
+    /// MW-003: the declarative property route reaches the same `Buffering` arm as the method.
+    #[test]
+    fn the_buffering_property_reaches_the_state_machine() {
+        use crate::widget::capability::types::CapabilityValue;
+        use crate::widget::capability::WidgetProperties;
+
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("stream.m3u8");
+        vp.play();
+        assert_eq!(vp.get("buffering"), Ok(CapabilityValue::Bool(false)));
+
+        vp.set("buffering", CapabilityValue::Bool(true)).expect("the property is writable");
+        assert_eq!(vp.media_status(), MediaStatus::Buffering);
+        assert_eq!(vp.get("buffering"), Ok(CapabilityValue::Bool(true)));
+
+        vp.set("buffering", CapabilityValue::Bool(false)).expect("the property is writable");
+        assert_eq!(vp.media_status(), MediaStatus::Playing);
     }
 
     #[test]

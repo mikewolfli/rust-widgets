@@ -17,6 +17,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::{LayerEntry, LayerPanel};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use alloc::collections::VecDeque;
@@ -293,6 +294,8 @@ pub struct Canvas {
     base: BaseWidget,
     /// Layers in painting order (back to front).
     layers: Vec<CanvasLayer>,
+    /// An optional layer panel kept in step with this canvas's stack (gap 5).
+    layer_panel: Option<LayerPanel>,
     /// The layer new commands are appended to; `None` means the default layer.
     current_layer: Option<u64>,
     /// Next layer identity; identities are stable across reorders and removals.
@@ -368,6 +371,7 @@ impl Canvas {
         Self {
             base: BaseWidget::new(WidgetKind::Canvas, geometry, "Canvas"),
             layers: Vec::new(),
+            layer_panel: None,
             current_layer: None,
             next_layer_id: 1,
             next_command_seq: 1,
@@ -463,6 +467,7 @@ impl Canvas {
         self.pending_group = None;
         self.content_changed.emit(0);
         self.layer_changed.emit(0);
+        self.sync_layer_panel();
         self.base.request_redraw();
     }
 
@@ -485,6 +490,7 @@ impl Canvas {
         let name = name.into();
         if let Some(index) = self.layers.iter().position(|layer| layer.name == name) {
             self.current_layer = Some(self.layers[index].id);
+            self.sync_layer_panel();
             return index;
         }
         let id = self.next_layer_id;
@@ -500,8 +506,47 @@ impl Canvas {
         });
         self.current_layer = Some(id);
         self.layer_changed.emit(self.layers.len());
+        self.sync_layer_panel();
         self.base.request_redraw();
         self.layers.len() - 1
+    }
+
+    /// Attaches a layer panel and fills it with the current stack.
+    ///
+    /// Returns whether a panel is attached afterwards; `None` detaches it. The host keeps the
+    /// panel's own gestures (`layer_selected`, `visibility_toggled`) and applies them through
+    /// [`Self::set_layer_visible`] / [`Self::move_layer`]; the canvas writes the model back into
+    /// the panel on every structural change, so the two cannot disagree (gap 5).
+    pub fn attach_layer_panel(&mut self, panel: Option<LayerPanel>) -> bool {
+        self.layer_panel = panel;
+        self.sync_layer_panel();
+        self.layer_panel.is_some()
+    }
+
+    /// The attached layer panel, if any.
+    pub fn layer_panel(&self) -> Option<&LayerPanel> {
+        self.layer_panel.as_ref()
+    }
+
+    /// The attached layer panel for editing, if any.
+    pub fn layer_panel_mut(&mut self) -> Option<&mut LayerPanel> {
+        self.layer_panel.as_mut()
+    }
+
+    /// Pushes the canvas layer stack into the attached panel.
+    fn sync_layer_panel(&mut self) {
+        let entries: Vec<LayerEntry> = self
+            .layers
+            .iter()
+            .map(|layer| LayerEntry::new(layer.id, layer.name.clone()).with_visible(layer.visible))
+            .collect();
+        let current_layer = self.current_layer;
+        if let Some(panel) = self.layer_panel.as_mut() {
+            panel.set_entries(entries);
+            // The canvas's current layer is the panel's selection; the silent setter keeps a
+            // model→view write from being reported back to the host as a user gesture.
+            panel.set_selected_layer(current_layer);
+        }
     }
 
     /// Shows or hides the layer at `index`, returning whether it exists.
@@ -513,6 +558,7 @@ impl Canvas {
         layer.visible = visible;
         self.invalidate_hit_cache();
         self.layer_changed.emit(self.layers.len());
+        self.sync_layer_panel();
         self.base.request_redraw();
         true
     }
@@ -534,6 +580,7 @@ impl Canvas {
         self.layers.insert(to.min(self.layers.len()), layer);
         self.invalidate_hit_cache();
         self.layer_changed.emit(self.layers.len());
+        self.sync_layer_panel();
         self.base.request_redraw();
         true
     }
@@ -564,6 +611,7 @@ impl Canvas {
         self.invalidate_hit_cache();
         self.layer_changed.emit(self.layers.len());
         self.content_changed.emit(count);
+        self.sync_layer_panel();
         self.base.request_redraw();
         true
     }
@@ -1949,6 +1997,35 @@ mod tests {
         assert_eq!(canvas.command_count(), 0);
         assert_eq!(canvas.geometry(), Rect::new(0, 0, 200, 100));
         assert_eq!(canvas.kind(), WidgetKind::Canvas);
+    }
+
+    /// Gap 5: the layer panel mirrors the canvas stack on every structural change.
+    #[test]
+    fn a_layer_panel_follows_the_canvas_stack() {
+        let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
+        assert!(canvas.attach_layer_panel(Some(LayerPanel::new(Rect::new(0, 0, 120, 160)))));
+        canvas.begin_layer("ink");
+        canvas.begin_layer("guide");
+        {
+            let panel = canvas.layer_panel().expect("attached");
+            assert_eq!(panel.entries().len(), 2);
+            assert_eq!(panel.entries()[0].name, "ink");
+            assert_eq!(panel.entries()[1].name, "guide");
+            assert_eq!(panel.selected_layer(), Some(2), "the current layer is selected");
+        }
+
+        assert!(canvas.set_layer_visible(0, false));
+        assert!(!canvas.layer_panel().expect("attached").entries()[0].visible);
+
+        assert!(canvas.move_layer(1, 0));
+        assert_eq!(canvas.layer_panel().expect("attached").entries()[0].name, "guide");
+
+        assert!(canvas.remove_layer(0));
+        assert_eq!(canvas.layer_panel().expect("attached").entries().len(), 1);
+
+        canvas.clear();
+        assert!(canvas.layer_panel().expect("attached").entries().is_empty());
+        assert_eq!(canvas.layer_panel().expect("attached").selected_layer(), None);
     }
 
     #[test]

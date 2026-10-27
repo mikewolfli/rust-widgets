@@ -22,7 +22,8 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::decorations::{
     DecorationLayout, DecorationMetrics, DecorationSlots, DECORATION_GAP,
 };
-use crate::widget::input_widgets::masked_edit::MaskEngine;
+use crate::widget::input_widgets::mask_engine::MaskEngine;
+use crate::widget::input_widgets::validation_bubble::{ValidationBubble, ValidationSeverity};
 use crate::widget::metrics::{
     active_profile, dimensions, effective_font, estimate_text_width, profile_metrics,
     ControlMetrics,
@@ -130,6 +131,12 @@ pub struct LineEdit {
     /// second `revalidate` for an unchanged revision (a theme or decoration write) reuses the
     /// result instead of re-running the rule.
     validation_revision: Option<u64>,
+    /// The field-anchored message bubble kept in step with [`Self::validation_state`].
+    ///
+    /// The companion is the shared presenter (COMP-B02); the host mounts it beside the field and
+    /// this control writes the message and anchor into it whenever the rule changes, so the
+    /// bubble is not a second hand-drawn error row (I-029).
+    validation_bubble: ValidationBubble,
     /// The uncommitted input-method composition, or `None` when no IME session is active.
     /// # Why the preedit is a field of the *field*, and not an overlay widget
     ///
@@ -474,6 +481,7 @@ impl LineEdit {
             validation_message_detail: None,
             validation_error_active: false,
             validation_revision: None,
+            validation_bubble: ValidationBubble::new(Rect::new(0, 0, 0, 0)),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             focused: false,
@@ -632,6 +640,38 @@ impl LineEdit {
         }
     }
 
+    /// The field-anchored message bubble this control keeps in step with its rule.
+    ///
+    /// The bubble is mounted by the host (it floats outside the field's own rectangle), and the
+    /// field writes its message, severity and anchor. Reading it is how a host that lays out its
+    /// own validation chrome knows what to show (I-029).
+    pub fn validation_bubble(&self) -> &ValidationBubble {
+        &self.validation_bubble
+    }
+
+    /// The field-anchored message bubble, for placement by the host.
+    pub fn validation_bubble_mut(&mut self) -> &mut ValidationBubble {
+        &mut self.validation_bubble
+    }
+
+    /// Writes the current rule outcome into the bubble.
+    ///
+    /// An invalid value shows the rule's message as an error; an unfinished or acceptable value
+    /// hides the bubble, matching the field's own rule that an incomplete value is not an
+    /// accusation. The anchor is the field's own rectangle, so the bubble floats beside the
+    /// control it accuses.
+    fn sync_validation_bubble(&mut self) {
+        let anchor = self.base.geometry();
+        self.validation_bubble.set_anchor(anchor);
+        match self.validation_state {
+            ValidationState::Invalid => {
+                let text = self.validation_message_text().to_string();
+                self.validation_bubble.show_message(&text, ValidationSeverity::Error);
+            }
+            _ => self.validation_bubble.hide(),
+        }
+    }
+
     /// Applies the validator's own repair to the current value.
     ///
     /// Returns whether the value changed. The repair runs through [`Self::set_text`], so it is
@@ -690,6 +730,7 @@ impl LineEdit {
         self.validation_state = state;
         self.validation_message = message;
         self.validation_message_detail = detail;
+        self.sync_validation_bubble();
         if state.is_invalid() {
             let shown = self.validation_message_text();
             if self.decorations.error.as_str() != shown {
@@ -2117,8 +2158,8 @@ impl LineEdit {
 
     /// Installs or removes an input mask.
     ///
-    /// The mask is parsed by [`crate::widget::input_widgets::masked_edit`]'s engine, so the
-    /// single-line field accepts exactly the grammar the dedicated masked control does. With a
+    /// The mask is parsed by [`crate::widget::input_widgets::mask_engine`], the same grammar the
+    /// dedicated masked control uses. With a
     /// mask installed the value is kept in its formatted form and typing fills the next cell;
     /// removing it leaves the current text untouched. `None` (the default) is the previous
     /// free-form behaviour.
@@ -2729,6 +2770,11 @@ impl Widget for LineEdit {
             "text_edited" => Some(EventSignalRef::mapped("text_edited", &self.text_edited, |v| {
                 CapabilityValue::String(v.clone())
             })),
+            "action_triggered" => {
+                Some(EventSignalRef::mapped("action_triggered", &self.action_triggered, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
             "undo_available" => {
                 Some(EventSignalRef::mapped("undo_available", &self.undo_available, |v| {
                     CapabilityValue::Bool(*v)
@@ -5196,7 +5242,11 @@ mod tests {
         read_only.set_text("secret");
         read_only.set_read_only(true);
         read_only.select_all();
-        read_only.handle_event(&KeyPress { key: 67, modifiers: 2 });
+        // Read-only fields still copy via the platform's primary accelerator. The event bit is
+        // the portable "primary" one (Command on macOS, Control on Windows/Linux); a raw Control
+        // bit is not the primary accelerator on macOS, so using it made this assertion pass only
+        // on the platforms whose shortcut style treats Control as primary.
+        read_only.handle_event(&KeyPress { key: 67, modifiers: 0b1000 });
         assert_eq!(crate::get_clipboard_text(), "secret");
         // …but editing stays blocked.
         assert_eq!(read_only.text(), "secret");
@@ -5779,6 +5829,40 @@ mod composition_tests {
         field.set_dyn_validator(None);
         assert_eq!(field.validation_state(), ValidationState::Acceptable);
         assert!(field.is_valid());
+    }
+
+    /// I-029: the shared bubble is the field's message carrier, kept in step with the rule.
+    #[test]
+    fn the_validation_bubble_follows_the_rule_outcome() {
+        #[derive(Debug)]
+        struct RefusesEverything;
+
+        impl Validator for RefusesEverything {
+            fn state(&self, text: &str) -> ValidationState {
+                if text.is_empty() {
+                    ValidationState::Intermediate
+                } else {
+                    ValidationState::Invalid
+                }
+            }
+
+            fn message(&self) -> &'static str {
+                "This value is refused"
+            }
+        }
+
+        let mut field = LineEdit::new(Rect::new(10, 20, 200, 24));
+        field.set_dyn_validator(Some(Box::new(RefusesEverything)));
+        assert!(!field.validation_bubble().is_visible(), "empty is not an accusation");
+
+        field.insert_str("x");
+        assert!(field.validation_bubble().is_visible());
+        assert_eq!(field.validation_bubble().message(), "This value is refused");
+        assert_eq!(field.validation_bubble().severity(), ValidationSeverity::Error);
+        assert_eq!(field.validation_bubble().anchor(), Some(Rect::new(10, 20, 200, 24)));
+
+        field.set_text("");
+        assert!(!field.validation_bubble().is_visible(), "an empty value clears the bubble");
     }
 
     /// A repairable value is fixed up through the rule's own nearest form.

@@ -174,6 +174,10 @@ const TOAST_INSET: u32 = 8;
 /// `Toast` and `ToastItem` provide the payload; this control provides the lifecycle their own
 /// documents assign to the host: automatic expiry, a queue cap, and an explicit overflow
 /// policy. It paints its visible rows and dismisses the row clicked.
+///
+/// A host that shares a screen edge with a `Snackbar` or a `ToastStack` joins their `OverlayStack`
+/// through [`Self::set_overlay_offset`], so the controls stack instead of painting over each other
+/// (SP-124). With no stack the offset stays zero and the picture is unchanged.
 pub struct ToastHost {
     base: BaseWidget,
     visible: Vec<HostedToast>,
@@ -186,6 +190,11 @@ pub struct ToastHost {
     overflow_policy: ToastOverflowPolicy,
     next_id: u64,
     now_ms: u64,
+    /// A host-assigned offset that clears the controls reserved before it (SP-124).
+    ///
+    /// Zero is the unstacked picture, so a host that never joins an `OverlayStack` paints
+    /// exactly the same rows as before.
+    overlay_offset: i32,
     /// Emitted with the id of a toast removed by its deadline.
     pub toast_expired: Signal1<u64>,
     /// Emitted with the id of a toast removed by [`Self::dismiss`], a policy drop or
@@ -210,6 +219,7 @@ impl ToastHost {
             overflow_policy: ToastOverflowPolicy::DropOldest,
             next_id: 1,
             now_ms: 0,
+            overlay_offset: 0,
             toast_expired: Signal1::new(),
             toast_dismissed: Signal1::new(),
             queue_overflow: Signal1::new(),
@@ -385,6 +395,36 @@ impl ToastHost {
         self.overflow_policy
     }
 
+    /// The host-assigned offset that clears another overlay control (SP-124).
+    pub fn overlay_offset(&self) -> i32 {
+        self.overlay_offset
+    }
+
+    /// Moves the host's rows clear of the controls stacked before it (SP-124).
+    ///
+    /// The sign follows the anchor: a bottom-anchored host rises by `offset`, a top-anchored one
+    /// descends. Zero leaves every row where it was, so a single host is unaffected.
+    pub fn set_overlay_offset(&mut self, offset: i32) {
+        if self.overlay_offset == offset {
+            return;
+        }
+        self.overlay_offset = offset;
+        self.base.request_redraw();
+    }
+
+    /// The vertical space the visible rows currently claim in a host's stack.
+    ///
+    /// An empty host claims nothing: unlike `ToastStack` it paints no resting row, so reserving
+    /// space for it would push a neighbouring snackbar up for an invisible control.
+    pub fn overlay_height(&self) -> u32 {
+        let rows = self.visible.len() as u32;
+        if rows == 0 {
+            return 0;
+        }
+        rows.saturating_mul(TOAST_ROW_HEIGHT)
+            .saturating_add(rows.saturating_sub(1).saturating_mul(TOAST_ROW_GAP))
+    }
+
     /// Builds the host's copy of a toast with the next id and deadline.
     fn hosted(&mut self, message: String, level: ToastLevel, duration_ms: u32) -> HostedToast {
         let id = self.next_id;
@@ -486,6 +526,13 @@ impl ToastHost {
         } else {
             let below = (count - 1 - stack_index) as u32;
             rect.bottom() - TOAST_INSET as i32 - (TOAST_ROW_HEIGHT + below * pitch) as i32
+        };
+        // A host-stacked overlay moves away from the edge it is anchored to; at rest the offset
+        // is zero and this is the same row the unstacked host painted.
+        let y = if self.anchor.is_top() {
+            y.saturating_add(self.overlay_offset)
+        } else {
+            y.saturating_sub(self.overlay_offset)
         };
         Some(Rect::new(x, y, width, TOAST_ROW_HEIGHT))
     }
@@ -657,6 +704,47 @@ impl WidgetProperties for ToastHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::special_widgets::snackbar::{OverlayKind, OverlayStack};
+
+    #[test]
+    fn a_host_stack_offset_moves_the_rows_without_changing_the_anchor() {
+        let mut host = ToastHost::new(Rect::new(0, 0, 320, 200));
+        host.push_item(ToastItem::new("a", "first", ToastLevel::Info, 3_000));
+        let unstacked = host.row_rect(0).expect("one visible row");
+        assert_eq!(host.overlay_height(), TOAST_ROW_HEIGHT);
+
+        host.set_overlay_offset(24);
+        assert_eq!(host.overlay_offset(), 24);
+        let shifted = host.row_rect(0).expect("one visible row");
+        assert_eq!(shifted.y, unstacked.y - 24, "a bottom anchor rises by the offset");
+
+        host.set_anchor(ToastAnchor::TopLeft);
+        host.set_overlay_offset(0);
+        let top_unstacked = host.row_rect(0).expect("one visible row");
+        host.set_overlay_offset(24);
+        assert_eq!(
+            host.row_rect(0).expect("one visible row").y,
+            top_unstacked.y + 24,
+            "a top anchor descends by the offset"
+        );
+    }
+
+    /// The shared stack seats a toast host clear of a snackbar (SP-124).
+    #[test]
+    fn the_overlay_stack_seats_a_toast_host_clear_of_a_snackbar() {
+        let mut host = ToastHost::new(Rect::new(0, 0, 320, 200));
+        host.push_item(ToastItem::new("a", "first", ToastLevel::Info, 3_000));
+
+        let mut stack = OverlayStack::new();
+        stack.reserve(OverlayKind::Snackbar, 48);
+        stack.reserve(OverlayKind::ToastHost, host.overlay_height());
+        assert_eq!(stack.offset(OverlayKind::Snackbar), 0);
+        assert_eq!(stack.offset(OverlayKind::ToastHost), 54, "height plus the gap");
+
+        let unstacked = host.row_rect(0).expect("one visible row");
+        host.set_overlay_offset(stack.offset(OverlayKind::ToastHost));
+        assert_eq!(host.row_rect(0).expect("one visible row").y, unstacked.y - 54);
+    }
 
     #[test]
     fn a_toast_leaves_the_visible_queue_on_its_deadline() {

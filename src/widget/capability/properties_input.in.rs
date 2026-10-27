@@ -487,6 +487,24 @@ macro_rules! impl_properties_input {
             PropertySchema::new("geometry", PropertyValueKind::String, false, false),
         ];
 
+        /// The chip input's own contract (SP-121). It is a distinct control from `tag_input`:
+        /// the committed items live on its chip band, and the four events below are emitted by
+        /// this control, not by the tag button strip.
+        #[cfg(not(alloc_frugal))]
+        pub(crate) const CHIP_INPUT_PROPERTIES: &[PropertySchema] = &[
+            PropertySchema::new("items", PropertyValueKind::Records, true, true),
+            PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("text", PropertyValueKind::String, true, true),
+            PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
+            PropertySchema::new("separator", PropertyValueKind::String, true, true),
+            PropertySchema::new("max_count", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("allow_duplicates", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
+            PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
+            PropertySchema::new("geometry", PropertyValueKind::String, false, false),
+        ];
+
         #[cfg(not(alloc_frugal))]
         pub(crate) const IME_PREEDIT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),

@@ -472,6 +472,12 @@ pub struct SoftwareSurface {
     /// changes* — a sequential fact, exactly like the clip stack — and because every opaque and
     /// antialiased primitive funnels its writes through [`SoftwareSurface::write_pixel`].
     pub(crate) blend_mode: BlendMode,
+    /// Monotonic frame counter, advanced by [`SoftwareSurface::begin_frame`] (G-020).
+    ///
+    /// The glyph atlas' epoch used to be advanced by an approximate lookup count, which drifted
+    /// from the real frame boundary and made eviction timing depend on how much text a frame
+    /// happened to draw. The counter is the true frame boundary: one `begin_frame`, one epoch.
+    pub(crate) frame_number: u64,
     /// Whether text is drawn glyph by glyph through a shaped run.
     ///
     /// Off by default, which keeps the cluster raster path (and every existing snapshot)

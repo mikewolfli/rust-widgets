@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::types::*;
-use crate::compat::{Instant, Rc, RefCell, String};
+use crate::compat::{Instant, MiniToString, Rc, RefCell, String};
 
 /// How long two adjacent edits of the same source may stay separate records, in milliseconds.
 ///

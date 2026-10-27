@@ -104,10 +104,11 @@ pub trait EnvironmentProvider {
 
     /// The system's preferred appearance.
     ///
-    /// Returns a [`ThemeMode`], and `Auto` means "follow, but do not guess": the library will not
-    /// consult a clock to resolve it (see the module docs on the wall-clock defect). A host that
-    /// wants the automatic behaviour resolves it itself and reports `Dark` or `Light` — it is the
-    /// only party that knows the user's actual preference.
+    /// Returns a [`ThemeMode`]. [`ThemeMode::Auto`] means "follow the host": the theme manager
+    /// resolves it against `Platform::system_theme` and re-resolves when the environment
+    /// notification channel advances, so a provider may report `Auto` instead of reading the OS
+    /// itself. A resolved `Dark`/`Light` is used as-is. Only when the platform cannot answer does
+    /// `Auto` leave the current appearance in place.
     fn color_scheme(&self) -> ThemeMode {
         ThemeMode::Light
     }
@@ -548,7 +549,15 @@ pub fn refresh_environment() {
         // The style caches live in `theme`, which only exists where a device profile does; a
         // profile without one resolves no styles, so there is nothing to invalidate.
         #[cfg(device_profile)]
-        crate::theme::invalidate_resolved_style_cache();
+        {
+            crate::theme::invalidate_resolved_style_cache();
+            // THM-003: an `Auto` appearance follows the system through this same refresh. The
+            // generation above is advanced by every P-208 push source (Windows messages, GTK's
+            // `notify::gtk-application-prefer-dark-theme`, the macOS appearance observer) and by
+            // the bounded poll, so this is the subscription path rather than a second poll.
+            // Resolved modes are a no-op here; only `Auto` consults the system answer.
+            crate::apply_environment_appearance();
+        }
     }
 }
 

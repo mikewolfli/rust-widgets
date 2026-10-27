@@ -4,9 +4,9 @@
 //! Data grid widget backed by incremental data source protocol.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::compat::Rc;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
@@ -23,10 +23,12 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::FilterRow;
 use crate::widget::metrics::{effective_font, ControlMetrics};
 use crate::widget::nav_widgets::pagination::Pagination;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
+use super::column_chooser::ColumnChooser;
 use super::data_source::{DataRole, IncrementalTableDataSource};
 
 /// The margin a data grid leaves between its own frame and its cells: 2 px on every edge.
@@ -354,6 +356,8 @@ pub struct DataGrid {
     pagination: Option<PaginationBinding>,
     /// The last page the binding applied, so polling twice does not re-emit.
     pagination_applied_page: usize,
+    /// The `FilterRow` this grid follows, when one is attached (chapter 3, gap 2).
+    filter_row: Option<FilterBinding>,
     /// Emitted when the selection changes; query [`DataGrid::selected_cells`] for the units.
     selection_changed: Signal1<()>,
     /// Emitted with the cell keyboard navigation moved to.
@@ -407,6 +411,14 @@ pub struct DataGrid {
     pub page_applied: Signal1<usize>,
     /// Columns excluded from painting and hit-testing (V-014).
     hidden_columns: BTreeSet<usize>,
+    /// The `ColumnChooser` this grid follows, when one is attached (V-015).
+    column_chooser: Option<ColumnChooserBinding>,
+    /// The column display order the chooser last reported, as source column indices.
+    ///
+    /// Empty means the source order. The paint and hit-test paths address columns by their
+    /// absolute source index, so this records the reported order without repainting the grid in
+    /// a second coordinate space.
+    column_order: Vec<usize>,
     /// Merged cells, expressed in projected coordinates (V-014).
     cell_spans: Vec<CellSpan>,
     /// Additional header rows painted above the title row (V-014).
@@ -1148,6 +1160,50 @@ struct PaginationBinding {
     _connection: ConnectionHandle,
 }
 
+/// The live link between a [`DataGrid`] and a [`FilterRow`] (chapter 3, gap 2).
+///
+/// A row publishes the complete condition list after every change, so the link parks the latest
+/// report in a shared slot and [`DataGrid::poll_filter_row`] folds it into the grid's filter model.
+/// This is the same host-free shape as [`PaginationBinding`]: a widget cannot hold a borrow of
+/// another, so the signal writes state and the grid reads it on its next paint or interaction.
+struct FilterBinding {
+    /// The condition list the row published since the last poll.
+    conditions: Arc<Mutex<Option<Vec<FilterCondition>>>>,
+    /// The subscription, dropped with the binding so a detached grid leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
+/// The live link between a [`DataGrid`] and a [`ColumnChooser`] (V-015).
+///
+/// The chooser's signals carry persisted column tokens rather than source indices, so the link
+/// resolves each token through the column set both controls were configured with and parks the
+/// answer in a shared queue. [`DataGrid::poll_column_chooser`] drains that queue, which is the
+/// same host-free pattern the pagination binding uses.
+struct ColumnChooserBinding {
+    /// `(source column, visible)` changes reported since the last poll.
+    visibility: Arc<Mutex<Vec<(usize, bool)>>>,
+    /// The display order the chooser last reported, mapped to source columns.
+    order: Arc<Mutex<Vec<usize>>>,
+    /// The subscriptions, dropped with the binding so a re-attach leaves no slot behind.
+    _scope: ConnectionScope,
+}
+
+/// Resolves a chooser token to the grid's source column.
+///
+/// The exact token is preferred; when a width or capability differs between the two controls, the
+/// title alone still identifies the column, so a host that changed a width after attaching keeps
+/// its visibility wiring.
+fn resolve_column_token(
+    token: &str,
+    tokens: &HashMap<String, usize>,
+    titles: &HashMap<String, usize>,
+) -> Option<usize> {
+    tokens
+        .get(token)
+        .copied()
+        .or_else(|| ColumnSpec::from_token(token).and_then(|spec| titles.get(&spec.title).copied()))
+}
+
 impl DataGrid {
     /// Creates an empty data grid.
     pub fn new(geometry: Rect) -> Self {
@@ -1191,6 +1247,7 @@ impl DataGrid {
             header_filter_visible: false,
             pagination: None,
             pagination_applied_page: 0,
+            filter_row: None,
             selection_changed: Signal1::new(),
             current_changed: Signal1::new(),
             cell_clicked: Signal1::new(),
@@ -1214,6 +1271,8 @@ impl DataGrid {
             filter_changed: Signal1::new(),
             page_applied: Signal1::new(),
             hidden_columns: BTreeSet::new(),
+            column_chooser: None,
+            column_order: Vec::new(),
             cell_spans: Vec::new(),
             extra_header_rows: Vec::new(),
             cell_tooltip: None,
@@ -1355,6 +1414,86 @@ impl DataGrid {
     /// The bound page and page size, when a pagination bar is bound.
     pub fn pagination_state(&self) -> Option<(usize, usize)> {
         self.pagination.as_ref().map(|binding| (self.pagination_applied_page, binding.page_size))
+    }
+
+    // ── FilterRow wiring (chapter 3, gap 2) ──
+
+    /// Follows `row`'s `filter_changed` stream (chapter 3, gap 2).
+    ///
+    /// A filter row publishes complete condition lists — a commit, a clear and `filter_cleared`'s
+    /// empty list all arrive on `filter_changed` — so the link parks the newest list and
+    /// [`Self::poll_filter_row`] installs it as one conjunction, the same semantics
+    /// [`Self::set_filters`] has. Attaching makes the row authoritative: its current conditions
+    /// replace the grid's filter immediately, and every later report does the same. Conditions
+    /// address source columns exactly as the row reports them; the grid does not remap them.
+    ///
+    /// Programmatic filtering is untouched: [`Self::set_filters`] and [`Self::set_filter_expr`]
+    /// keep their behaviour, and a grid with no row attached never polls. Attaching replaces any
+    /// previous row, so calling this twice leaves one subscription rather than two.
+    pub fn attach_filter_row(&mut self, row: &FilterRow) {
+        let conditions = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&conditions);
+        let scope = ConnectionScope::new();
+        let redraw = self.base.redraw_requested_signal().clone();
+        row.filter_changed.connect_scoped(&scope, move |reported| {
+            *sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some((*reported).clone());
+            // A row edit redraws the grid, so the poll that applies it happens next frame rather
+            // than on whatever event arrives afterwards.
+            redraw.emit();
+        });
+        self.filter_row = Some(FilterBinding { conditions, _scope: scope });
+        // Adopt the row's current state now, so attaching does not wait for the next edit.
+        self.apply_filter_row_conditions(row.conditions().to_vec());
+    }
+
+    /// Stops following the attached row; the last applied filter stays.
+    pub fn detach_filter_row(&mut self) {
+        if self.filter_row.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`FilterRow`] is attached.
+    pub fn is_filter_row_attached(&self) -> bool {
+        self.filter_row.is_some()
+    }
+
+    /// Applies the condition list the attached row published since the last poll.
+    ///
+    /// Called from `draw` and `handle_event`, so a row edit is reflected by the next frame or
+    /// interaction without the host forwarding it. Returns whether a report was applied.
+    pub fn poll_filter_row(&mut self) -> bool {
+        let reported = {
+            let Some(binding) = self.filter_row.as_ref() else {
+                return false;
+            };
+            binding.conditions.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take()
+        };
+        match reported {
+            Some(conditions) => {
+                self.apply_filter_row_conditions(conditions);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Installs `conditions` as one conjunction and refreshes the projection.
+    ///
+    /// The flat list is mirrored into `filters` so `summary_text` and the `filters` property report
+    /// the grid as filtered, then installed as the tree `apply_filter_sort` evaluates. Going
+    /// through [`Self::set_filter_expr`] is what invalidates the projection caches and announces
+    /// the change on `filter_changed`.
+    fn apply_filter_row_conditions(&mut self, conditions: Vec<FilterCondition>) {
+        self.filters = conditions
+            .iter()
+            .map(|condition| ColumnFilter {
+                column: condition.column,
+                query: condition.operand.clone(),
+            })
+            .collect();
+        self.set_filter_expr(FilterExpr::from_conditions(conditions));
     }
 
     /// A one-line overview of the grid's data state.
@@ -1922,6 +2061,128 @@ impl DataGrid {
             self.base.request_redraw();
         }
         true
+    }
+
+    // ── ColumnChooser wiring (V-015) ──
+
+    /// Follows `chooser`'s visibility and order signals (V-015).
+    ///
+    /// A widget cannot hold a borrow of another, so the chooser writes into a shared queue and
+    /// [`Self::poll_column_chooser`] drains it from the paint and event paths. Attaching replaces
+    /// any previous chooser, so calling this twice leaves one subscription rather than two.
+    ///
+    /// The column set both controls were configured with is captured at attach time: the chooser
+    /// reports persisted tokens, and the grid needs their source indices. A token this grid does
+    /// not know is ignored rather than guessed at, so a chooser covering more columns than the
+    /// bound source cannot hide an unrelated column.
+    pub fn attach_column_chooser(&mut self, chooser: &ColumnChooser) {
+        let (token_map, title_map) = self.column_token_maps(chooser);
+        let token_map = Arc::new(token_map);
+        let title_map = Arc::new(title_map);
+        let visibility = Arc::new(Mutex::new(Vec::new()));
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let scope = ConnectionScope::new();
+
+        let visibility_sink = Arc::clone(&visibility);
+        let lookup_tokens = Arc::clone(&token_map);
+        let lookup_titles = Arc::clone(&title_map);
+        chooser.column_visibility_changed.connect_scoped(&scope, move |change| {
+            let (token, visible) = &*change;
+            let Some(column) = resolve_column_token(token, &lookup_tokens, &lookup_titles) else {
+                return;
+            };
+            let mut guard = visibility_sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.push((column, *visible));
+        });
+
+        let order_sink = Arc::clone(&order);
+        let lookup_tokens = Arc::clone(&token_map);
+        let lookup_titles = Arc::clone(&title_map);
+        chooser.column_order_changed.connect_scoped(&scope, move |reported| {
+            let mapped: Vec<usize> = reported
+                .iter()
+                .filter_map(|token| resolve_column_token(token, &lookup_tokens, &lookup_titles))
+                .collect();
+            let mut guard = order_sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = mapped;
+        });
+
+        self.column_chooser = Some(ColumnChooserBinding { visibility, order, _scope: scope });
+        self.base.request_redraw();
+    }
+
+    /// Stops following the attached chooser.
+    pub fn detach_column_chooser(&mut self) {
+        if self.column_chooser.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a [`ColumnChooser`] is attached.
+    pub fn is_column_chooser_attached(&self) -> bool {
+        self.column_chooser.is_some()
+    }
+
+    /// Applies every chooser change reported since the last poll.
+    ///
+    /// Called from `draw` and `handle_event`, so a chooser click is reflected by the next frame
+    /// without the host forwarding it. Returns whether any grid state changed.
+    pub fn poll_column_chooser(&mut self) -> bool {
+        let Some(binding) = self.column_chooser.as_ref() else {
+            return false;
+        };
+        let changes: Vec<(usize, bool)> = {
+            let mut guard =
+                binding.visibility.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            core::mem::take(&mut *guard)
+        };
+        let reported_order: Vec<usize> =
+            binding.order.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+
+        let mut changed = false;
+        for (column, visible) in changes {
+            changed |= self.set_column_hidden(column, !visible);
+        }
+        if !reported_order.is_empty() && reported_order != self.column_order {
+            self.column_order = reported_order;
+            self.base.request_redraw();
+            changed = true;
+        }
+        changed
+    }
+
+    /// The column order the attached chooser last reported, as source column indices.
+    ///
+    /// An empty report returns the natural order. The grid's paint and hit-test paths address
+    /// columns by absolute source index, so this is the reported order as state; it does not
+    /// restate the paint geometry.
+    pub fn column_display_order(&self) -> Vec<usize> {
+        if self.column_order.is_empty() {
+            (0..self.column_count()).collect()
+        } else {
+            self.column_order.clone()
+        }
+    }
+
+    /// The token and title maps used to resolve a chooser's tokens.
+    fn column_token_maps(
+        &self,
+        chooser: &ColumnChooser,
+    ) -> (HashMap<String, usize>, HashMap<String, usize>) {
+        let mut tokens = HashMap::new();
+        let mut titles = HashMap::new();
+        // A bound header is authoritative because it describes the same source columns this grid
+        // paints. Without one, the chooser's own column list is the only description available.
+        let specs: Vec<&ColumnSpec> = if self.header_columns.is_empty() {
+            chooser.columns().iter().collect()
+        } else {
+            self.header_columns.iter().collect()
+        };
+        for (index, spec) in specs.into_iter().enumerate() {
+            tokens.insert(spec.to_token(), index);
+            titles.entry(spec.title.clone()).or_insert(index);
+        }
+        (tokens, titles)
     }
 
     // ── Merged cells (V-014) ──
@@ -3450,6 +3711,11 @@ impl Draw for DataGrid {
     fn draw(&mut self, context: &mut RenderContext) {
         // Drain a page the bound bar reported, so the paint shows the page the reader asked for.
         self.poll_pagination();
+        // Drain chooser visibility/order changes for the same reason: the frame that follows the
+        // chooser click already reflects it (V-015).
+        self.poll_column_chooser();
+        // A bound filter row reports through the same shared-cell route (chapter 3, gap 2).
+        self.poll_filter_row();
         let rect = self.base.geometry();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
@@ -3861,6 +4127,10 @@ impl crate::event::EventHandler for DataGrid {
         // A page click on the bound bar is a shared-cell write, so it is drained here before the
         // event is routed: the frame that follows the click already shows the new page.
         self.poll_pagination();
+        // A chooser click is likewise a shared write, drained before routing (V-015).
+        self.poll_column_chooser();
+        // A filter-row edit is a shared write as well (chapter 3, gap 2).
+        self.poll_filter_row();
         // The base keeps the control-level hover/press facts and answers `widget_state()`. This
         // handler did not forward to it, so `"data_grid:hover"` could never fire.
         self.base.handle_event(event);
@@ -4084,6 +4354,72 @@ mod tests {
             data: (0..rows).map(|r| (0..cols).map(|c| format!("{r}:{c}")).collect()).collect(),
         }));
         grid
+    }
+
+    /// V-015: a chooser toggle reaches the grid's hidden-column state.
+    #[test]
+    fn a_chooser_toggle_hides_the_column_in_the_grid() {
+        use crate::widget::view_widgets::column_chooser::ColumnChooser;
+
+        let mut grid = static_grid(2, 3);
+        let mut chooser = ColumnChooser::new(Rect::new(0, 0, 220, 260));
+        chooser.set_columns(vec![
+            ColumnSpec::new("Name", 100),
+            ColumnSpec::new("Size", 80),
+            ColumnSpec::new("Owner", 120),
+        ]);
+        let tokens: Vec<String> = chooser.columns().iter().map(ColumnSpec::to_token).collect();
+
+        grid.attach_column_chooser(&chooser);
+        assert!(grid.is_column_chooser_attached());
+        assert!(!grid.is_column_hidden(1));
+
+        assert!(chooser.set_column_visible(&tokens[1], false));
+        assert!(grid.poll_column_chooser(), "the reported change is applied");
+        assert!(grid.is_column_hidden(1), "the chooser hid the second column");
+
+        assert!(chooser.set_column_visible(&tokens[1], true));
+        assert!(grid.poll_column_chooser());
+        assert!(!grid.is_column_hidden(1), "showing the column restores it");
+
+        // A reorder is reported as source indices as well (V-015).
+        assert!(chooser.move_column(0, 2));
+        assert!(grid.poll_column_chooser());
+        assert_eq!(grid.column_display_order(), vec![1, 2, 0]);
+
+        grid.detach_column_chooser();
+        assert!(!grid.is_column_chooser_attached());
+        assert!(chooser.set_column_visible(&tokens[1], false));
+        assert!(!grid.poll_column_chooser(), "a detached chooser reports nothing");
+        assert!(!grid.is_column_hidden(1));
+    }
+
+    /// Chapter 3, gap 2: a condition committed on the bound row filters the grid, and detaching
+    /// stops the wiring without undoing the last filter.
+    #[test]
+    fn a_condition_from_the_filter_row_filters_the_grid() {
+        let mut grid = static_grid(4, 2);
+        let mut row = FilterRow::new(Rect::new(0, 0, 300, 28));
+        row.set_columns(vec!["Id".to_string(), "Name".to_string()]);
+
+        grid.attach_filter_row(&row);
+        assert!(grid.is_filter_row_attached());
+        assert_eq!(grid.fetch_visible_cells().len(), 4, "an empty row filters nothing");
+
+        assert!(row.set_condition(0, FilterCondition::contains(0, "2")));
+        assert!(grid.poll_filter_row(), "the reported conditions are applied");
+        let rows = grid.fetch_visible_cells();
+        assert_eq!(rows.len(), 1, "the condition filters the grid rows");
+        assert_eq!(rows[0][0], Some("2:0".to_string()));
+        assert!(!grid.poll_filter_row(), "an unchanged report is not re-applied");
+
+        grid.detach_filter_row();
+        assert!(!grid.is_filter_row_attached());
+        assert!(row.set_condition(0, FilterCondition::contains(0, "3")));
+        assert!(!grid.poll_filter_row(), "a detached row reports nothing");
+        let rows = grid.fetch_visible_cells();
+        assert_eq!(rows.len(), 1, "the last applied filter stays");
+        assert_eq!(rows[0][0], Some("2:0".to_string()));
     }
 
     #[test]

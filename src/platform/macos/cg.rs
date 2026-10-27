@@ -25,6 +25,7 @@
 #![cfg(all(target_os = "macos", feature = "cocoa-legacy", widgets_unstripped))]
 #![allow(non_snake_case)] // names mirror the C ABI
 
+use std::cell::RefCell;
 use std::os::raw::{c_int, c_void};
 
 /// Opaque `CGContextRef`.
@@ -155,6 +156,60 @@ unsafe extern "C" {
     pub(crate) fn CGContextSetInterpolationQuality(context: CGContextRef, quality: c_int);
 }
 
+/// The reusable CoreGraphics bitmap behind [`blit_rgba`] (G-601).
+///
+/// A blit used to create a colour space and a whole-window bitmap context per frame and release
+/// them at the end. The context's storage is overwritten in full each frame, so it can live for as
+/// long as the mount's size does; the cache is keyed by that size and drops the objects when the
+/// window is resized or the thread exits.
+struct BitmapCache {
+    context: CGContextRef,
+    color_space: CGColorSpaceRef,
+    width: u32,
+    height: u32,
+}
+
+impl BitmapCache {
+    fn new(width: u32, height: u32) -> Option<Self> {
+        // SAFETY: both are plain CoreGraphics constructors; each result is checked for null and
+        // the colour space is released when the context cannot be created.
+        unsafe {
+            let color_space = CGColorSpaceCreateDeviceRGB();
+            if color_space.is_null() {
+                return None;
+            }
+            let context = CGBitmapContextCreate(
+                std::ptr::null_mut(),
+                width as usize,
+                height as usize,
+                8,
+                width as usize * 4,
+                color_space,
+                BITMAP_ALPHA_PREMULTIPLIED_LAST | BITMAP_BYTE_ORDER_32_BIG,
+            );
+            if context.is_null() {
+                CGColorSpaceRelease(color_space);
+                return None;
+            }
+            Some(Self { context, color_space, width, height })
+        }
+    }
+}
+
+impl Drop for BitmapCache {
+    fn drop(&mut self) {
+        // SAFETY: both handles were created by this cache and are released exactly once here.
+        unsafe {
+            CGContextRelease(self.context);
+            CGColorSpaceRelease(self.color_space);
+        }
+    }
+}
+
+thread_local! {
+    static BITMAP_CACHE: RefCell<Option<BitmapCache>> = const { RefCell::new(None) };
+}
+
 /// Renders a top-down RGBA frame into an existing CoreGraphics context.
 ///
 /// Handles three details the caller should not have to think about:
@@ -163,8 +218,8 @@ unsafe extern "C" {
 ///    `PremultipliedLast` layout is not, so RGB is scaled by alpha.
 /// 2. **Row order** — the frame is top-down, CG draws bottom-up, so the CTM is
 ///    flipped around the destination height.
-/// 3. **Allocation ownership** — the color space, bitmap context and image are
-///    all released here, including on the early-return paths.
+/// 3. **Allocation ownership** — the color space and bitmap context are retained per thread for
+///    the current mount size (G-601); the image is released here on every path.
 ///
 /// Returns `false` (after logging) when a CoreGraphics object cannot be created.
 ///
@@ -191,26 +246,26 @@ pub(crate) unsafe fn blit_rgba(
         return false;
     }
 
-    let color_space = CGColorSpaceCreateDeviceRGB();
-    if color_space.is_null() {
-        log::error!("[macos] canvas: CGColorSpaceCreateDeviceRGB returned null");
+    let color_space = BITMAP_CACHE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let stale =
+            slot.as_ref().is_none_or(|cache| cache.width != width || cache.height != height);
+        if stale {
+            *slot = BitmapCache::new(width, height);
+        }
+        slot.as_ref().map(|cache| cache.color_space)
+    });
+    let Some(color_space) = color_space else {
+        log::error!("[macos] canvas: could not create the bitmap context for {width}x{height}");
         return false;
-    }
-
-    let bitmap = CGBitmapContextCreate(
-        std::ptr::null_mut(),
-        width as usize,
-        height as usize,
-        8,
-        width as usize * 4,
-        color_space,
-        BITMAP_ALPHA_PREMULTIPLIED_LAST | BITMAP_BYTE_ORDER_32_BIG,
-    );
-    if bitmap.is_null() {
-        CGColorSpaceRelease(color_space);
-        log::error!("[macos] canvas: CGBitmapContextCreate returned null for {width}x{height}");
+    };
+    // The cache holds both handles for the rest of the blit; `color_space` only proves creation
+    // succeeded, the context below is what receives the pixels.
+    let _ = color_space;
+    let bitmap = BITMAP_CACHE.with(|slot| slot.borrow().as_ref().map(|cache| cache.context));
+    let Some(bitmap) = bitmap else {
         return false;
-    }
+    };
 
     // Copy in with premultiplied alpha, row by row using the bitmap's **actual**
     // stride. Assuming `width * 4` is wrong: CoreGraphics is free to pad rows
@@ -234,8 +289,6 @@ pub(crate) unsafe fn blit_rgba(
     }
 
     let image = CGBitmapContextCreateImage(bitmap);
-    CGContextRelease(bitmap);
-    CGColorSpaceRelease(color_space);
     if image.is_null() {
         log::error!("[macos] canvas: CGBitmapContextCreateImage returned null");
         return false;
@@ -254,6 +307,126 @@ pub(crate) unsafe fn blit_rgba(
     CGContextRestoreGState(context);
     CGImageRelease(image);
     true
+}
+
+// ── Screen sampling (SP-119) ────────────────────────────────────────────────
+
+/// `kCGWindowListOptionOnScreenOnly`: composite only what is currently on screen.
+pub(crate) const WINDOW_LIST_ON_SCREEN_ONLY: u32 = 1 << 0;
+/// `kCGWindowImageDefault`: the default image options (no shadow, no bounding box).
+pub(crate) const WINDOW_IMAGE_DEFAULT: u32 = 0;
+
+/// An opaque `CFTypeRef`, and the CFData the pixel bytes arrive in.
+pub(crate) type CFTypeRef = *mut c_void;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    /// Composites the on-screen windows intersecting `bounds` into one image.
+    ///
+    /// A 1×1 `bounds` is the single-pixel read an eyedropper needs. The call answers null when the
+    /// process has no Screen Recording permission, which is why it is the whole "can I sample?"
+    /// test rather than a guess.
+    fn CGWindowListCreateImage(
+        bounds: CGRect,
+        list_option: u32,
+        window_id: u32,
+        image_option: u32,
+    ) -> CGImageRef;
+
+    /// Creates an event source-independent event; passing a null source is legal.
+    fn CGEventCreate(source: CFTypeRef) -> CFTypeRef;
+    /// The event's location in the global display space (top-left origin, y down).
+    fn CGEventGetLocation(event: CFTypeRef) -> CGPoint;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    /// Releases a CoreFoundation object.
+    fn CFRelease(value: CFTypeRef);
+}
+
+/// Samples one pixel of the composited screen at global `(x, y)`.
+///
+/// Returns top-down `(r, g, b, a)`, or `None` when the pixel cannot be read — no Screen Recording
+/// permission, nothing on screen there, or a CoreGraphics object that could not be created. The
+/// pixel is drawn into a 1×1 bitmap the backend owns so the byte order is the one this file
+/// already declares, instead of depending on whatever private layout
+/// `CGWindowListCreateImage` chose for the snapshot.
+///
+/// # Why the `None` is honest rather than a fallback colour
+///
+/// macOS gives every process a *thumbnail* of another application's window even when the pixel
+/// bytes are unavailable, so there is no case where inventing a colour would be correct. A picker
+/// that receives `None` falls back to sampling its own painted surface, which is a real value.
+pub(crate) fn sample_screen_pixel(x: f64, y: f64) -> Option<(u8, u8, u8, u8)> {
+    // SAFETY: every CoreGraphics object created here is released on every path before return;
+    // the only reads are the four bytes of the bitmap this function created.
+    unsafe {
+        let image = CGWindowListCreateImage(
+            CGRect { origin: CGPoint { x, y }, size: CGSize { width: 1.0, height: 1.0 } },
+            WINDOW_LIST_ON_SCREEN_ONLY,
+            0,
+            WINDOW_IMAGE_DEFAULT,
+        );
+        if image.is_null() {
+            return None;
+        }
+        let color_space = CGColorSpaceCreateDeviceRGB();
+        if color_space.is_null() {
+            CGImageRelease(image);
+            return None;
+        }
+        let context = CGBitmapContextCreate(
+            std::ptr::null_mut(),
+            1,
+            1,
+            8,
+            4,
+            color_space,
+            BITMAP_ALPHA_PREMULTIPLIED_LAST | BITMAP_BYTE_ORDER_32_BIG,
+        );
+        CGColorSpaceRelease(color_space);
+        if context.is_null() {
+            CGImageRelease(image);
+            return None;
+        }
+        // Nearest-neighbour: the source may be 1×1 at the display's pixel scale, and averaging is
+        // not what a pixel read means.
+        CGContextSetInterpolationQuality(context, 0);
+        CGContextDrawImage(context, CGRect::new(1.0, 1.0), image);
+        let data = CGBitmapContextGetData(context) as *const u8;
+        let sampled = if data.is_null() {
+            None
+        } else {
+            let pixel = std::slice::from_raw_parts(data, 4);
+            // Shared with the objc2 backend; see `platform::screen_sample` for why an alpha-zero
+            // read is an absence rather than a colour.
+            crate::platform::screen_sample::presentable((pixel[0], pixel[1], pixel[2], pixel[3]))
+        };
+        CGContextRelease(context);
+        CGImageRelease(image);
+        sampled
+    }
+}
+
+/// The pointer's position in the global display space (SP-119).
+///
+/// `CGEventGetLocation` answers in the same space [`sample_screen_pixel`] reads (top-left origin,
+/// y down), so the two can be combined directly — unlike `NSEvent.mouseLocation`, which is
+/// bottom-left relative to the primary screen and would need a flip the caller cannot see.
+/// `None` when no event can be created, which needs no permission but can fail.
+pub(crate) fn pointer_position() -> Option<(f64, f64)> {
+    // SAFETY: a null source is the documented "create a plain event" form, and the event is
+    // released before return.
+    unsafe {
+        let event = CGEventCreate(std::ptr::null_mut());
+        if event.is_null() {
+            return None;
+        }
+        let location = CGEventGetLocation(event);
+        CFRelease(event);
+        Some((location.x, location.y))
+    }
 }
 
 #[cfg(test)]

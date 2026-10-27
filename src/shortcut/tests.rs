@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 use super::*;
-use crate::compat::MiniToString;
+// `mini` is `no_std`: `Vec`/`Box` come from `compat`, not the prelude.
+use crate::compat::{Box, MiniToString, Vec};
 use crate::event::Event;
 #[test]
 fn test_shortcut_parsing() {

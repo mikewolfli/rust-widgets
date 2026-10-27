@@ -756,6 +756,11 @@ impl Widget for MessageBox {
                     CapabilityValue::UInt(*v)
                 }))
             }
+            "finished" => Some(EventSignalRef::mapped("finished", &self.finished, |v| {
+                // The declared payload is `String`, so the button travels as its published token
+                // (the same spelling the `default_button` property reports).
+                CapabilityValue::String(standard_button_token(*v).to_string())
+            })),
             _ => None,
         }
     }

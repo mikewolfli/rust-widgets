@@ -34,12 +34,12 @@
 //! Exit codes: `0` = every check held, `1` = a check failed, `2` = this host cannot stage it
 //! (no display, or one of `wmctrl`/`xwininfo`/`xwd` missing — the line says which).
 
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn main() {
     staged()
 }
 
-#[cfg(not(all(not(alloc_frugal), unix_desktop, feature = "gtk-native")))]
+#[cfg(not(gtk_probe))]
 fn main() {
     println!(
         "probe_window_on_screen: this build has no X11 session to ask (`--features \
@@ -61,18 +61,12 @@ fn main() {
 /// So the default is to refuse and say how to allow it, and the answer is a deliberate act rather
 /// than a side effect of running `cargo run --example`.
 #[cfg(all(unix_desktop, feature = "gtk-native"))]
-fn gui_probe_allowed() -> bool {
-    if std::env::var("RW_GUI_PROBE_OK").ok().as_deref() == Some("1") {
-        return true;
-    }
-    println!(
-        "this probe opens real windows on the desktop it runs on; set RW_GUI_PROBE_OK=1 to stage \
-         it (and prefer a machine whose screen nobody is using)"
-    );
-    false
-}
+#[path = "common/gui_probe.rs"]
+mod gui_probe;
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+use gui_probe::gui_probe_allowed;
 
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn staged() {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -200,7 +194,7 @@ fn staged() {
 }
 
 /// What the X server reported for the probe's window.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 struct ScreenReport {
     /// Whether `wmctrl -l` listed a window with the probe's title.
     listed: bool,
@@ -217,7 +211,7 @@ struct ScreenReport {
 }
 
 /// The parts of an `xwd` dump this probe reads.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 struct XwdCapture {
     /// Captured width, from the XWD header.
     width: u32,
@@ -230,7 +224,7 @@ struct XwdCapture {
 }
 
 /// Whether `tool` is absent from `PATH`, asked without running it.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn which_missing(tool: &str) -> bool {
     std::env::var_os("PATH")
         .map(|path| {
@@ -243,14 +237,14 @@ fn which_missing(tool: &str) -> bool {
 }
 
 /// Whether `path` is executable, using the mode bits directly (no extra dependency for this).
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn is_executable(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path).map(|meta| meta.permissions().mode() & 0o111 != 0).unwrap_or(false)
 }
 
 /// Asks `wmctrl`, `xwininfo` and `xwd` about the window titled `title`.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn ask_the_x_server(title: &str, expected: (u32, u32)) -> ScreenReport {
     let mut report = ScreenReport {
         listed: false,
@@ -328,7 +322,7 @@ fn ask_the_x_server(title: &str, expected: (u32, u32)) -> ScreenReport {
 }
 
 /// Reads the `label 123` line `xwininfo` prints, as a number.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn field(text: &str, label: &str) -> u32 {
     text.lines()
         .find_map(|line| line.trim().strip_prefix(label))
@@ -346,7 +340,7 @@ fn field(text: &str, label: &str) -> u32 {
 /// name follows the fixed 100-byte header, padded up to `header_size`, and then the colour map
 /// entries, and only then the pixel rows. Reading the offsets out of the dump means a change in the
 /// producer cannot silently shift the numbers this probe reports.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn parse_xwd(bytes: &[u8]) -> Result<(u32, u32, u32, usize), String> {
     fn u32_at(bytes: &[u8], offset: usize) -> u32 {
         u32::from_be_bytes([bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]])

@@ -515,6 +515,13 @@ pub struct EventLoop {
     /// the accelerator hook and delivery. The chain is empty by default, so an existing host sees
     /// exactly the old behaviour.
     event_filters: Vec<EventFilterFn>,
+    /// Whether [`Self::start`] has moved the filter chain onto the loop thread (W-09).
+    ///
+    /// `running` cannot express this: the chain is handed over once and never returned, so
+    /// stopping the loop does not give the host permission to append a filter that the thread
+    /// would never consult. `mini` never sets this (it has no loop thread), which keeps its
+    /// "add at any time" behaviour.
+    filters_moved_to_thread: bool,
     /// Whether same-frame mouse moves are coalesced to their last position before dispatch (W-10).
     ///
     /// On by default: the pointer stream is the highest-frequency input a desktop produces, and
@@ -656,6 +663,7 @@ impl EventLoop {
             dispatch_fn: None,
             shortcut_dispatch: None,
             event_filters: Vec::new(),
+            filters_moved_to_thread: false,
             #[cfg(not(alloc_frugal))]
             coalesce_pointer_moves: true,
             parent_lookup: Arc::new(runtime_parent),
@@ -726,6 +734,7 @@ impl EventLoop {
         // The filter chain moves onto the loop thread with the rest of the dispatch state: a filter
         // added after `start` would never run, so `add_event_filter` refuses that (W-09).
         let event_filters = core::mem::take(&mut self.event_filters);
+        self.filters_moved_to_thread = true;
         #[cfg(not(alloc_frugal))]
         let coalesce_move_setting = self.coalesce_pointer_moves;
         // The gesture recognisers' self-armed timer (W-11). The handle shares the manager's timer
@@ -1437,6 +1446,9 @@ impl EventLoop {
     pub fn add_event_filter(&mut self, filter: EventFilterFn) -> bool {
         #[cfg(not(alloc_frugal))]
         if *lock(&self.running) {
+            return false;
+        }
+        if self.filters_moved_to_thread {
             return false;
         }
         self.event_filters.push(filter);

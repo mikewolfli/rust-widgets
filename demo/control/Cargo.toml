@@ -5,9 +5,4 @@ edition = "2021"
 
 [dependencies]
 rust_widgets = { path = "../..", features = ["runtime-fonts"] }
-
-# Linux 桌面由 `desktop` profile 自带的后端覆盖（该 profile 已包含 `gtk-native`），
-# 此处只补 demo 自己需要的 `runtime-fonts`。保留 `target_os = "linux"` 段是为了让
-# 宿主显式看到本 demo 依赖真实 GTK 窗口，而不是无窗口的状态后端。
-[target.'cfg(target_os = "linux")'.dependencies]
-rust_widgets = { path = "../..", features = ["runtime-fonts"] }
+preview-common = { path = "../preview_common" }

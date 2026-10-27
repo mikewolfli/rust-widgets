@@ -11,6 +11,7 @@
 //! hold the editor — a toolbar that reached into a text control would be the second implementation
 //! path for the same edit, and the host already knows both handles.
 
+use crate::compat::Rc;
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -95,6 +96,12 @@ pub struct MarkdownToolbar {
     show_labels: bool,
     hovered: Option<usize>,
     pressed: Option<usize>,
+    /// Per-cell paint text memoised until the action set, side or label mode changes (SP-120).
+    ///
+    /// Each cell used to build its `String` (and, with labels, a `format!`) every frame. The
+    /// inputs change only through the setters below, so one revision bump is enough to invalidate.
+    label_cache: core::cell::RefCell<Option<(u64, Rc<Vec<String>>)>>,
+    label_revision: u64,
     /// Emitted with the token of the action a reader activated.
     pub action_triggered: Signal1<String>,
 }
@@ -109,6 +116,8 @@ impl MarkdownToolbar {
             show_labels: false,
             hovered: None,
             pressed: None,
+            label_cache: core::cell::RefCell::new(None),
+            label_revision: 0,
             action_triggered: Signal1::new(),
         }
     }
@@ -116,6 +125,32 @@ impl MarkdownToolbar {
     /// The enabled actions, in paint order.
     pub fn actions(&self) -> &[String] {
         &self.actions
+    }
+
+    /// The per-cell paint text, rebuilt only when the action set or its presentation changes.
+    fn labels(&self) -> Rc<Vec<String>> {
+        if let Some((revision, labels)) = &*self.label_cache.borrow() {
+            if *revision == self.label_revision {
+                return Rc::clone(labels);
+            }
+        }
+        let labels: Vec<String> = self
+            .actions
+            .iter()
+            .map(|token| {
+                let icon = action_icon(token).unwrap_or("");
+                let label = if self.show_labels { token.as_str() } else { "" };
+                match (self.icon_side, label.is_empty()) {
+                    (_, true) => icon.to_string(),
+                    (ToolbarIconSide::None, false) => label.to_string(),
+                    (ToolbarIconSide::Left, false) => format!("{icon} {label}"),
+                    (ToolbarIconSide::Right, false) => format!("{label} {icon}"),
+                }
+            })
+            .collect();
+        let labels = Rc::new(labels);
+        *self.label_cache.borrow_mut() = Some((self.label_revision, Rc::clone(&labels)));
+        labels
     }
 
     /// Replaces the enabled actions.
@@ -133,6 +168,7 @@ impl MarkdownToolbar {
         self.actions = actions;
         self.hovered = None;
         self.pressed = None;
+        self.label_revision = self.label_revision.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
         true
@@ -149,6 +185,7 @@ impl MarkdownToolbar {
             return;
         }
         self.icon_side = side;
+        self.label_revision = self.label_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -163,6 +200,7 @@ impl MarkdownToolbar {
             return;
         }
         self.show_labels = show;
+        self.label_revision = self.label_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -380,21 +418,14 @@ impl Draw for MarkdownToolbar {
             let Some(cell) = self.cell_rect(index) else {
                 continue;
             };
-            let token = self.actions[index].as_str();
             let pressed = self.pressed == Some(index);
             if pressed {
                 context.fill_rounded_rect(cell, 3, accent.with_alpha(70));
             } else if self.hovered == Some(index) {
                 context.fill_rounded_rect(cell, 3, surface.blend(&ink, 0.08));
             }
-            let icon = action_icon(token).unwrap_or("");
-            let label = if self.show_labels { token } else { "" };
-            let text = match (self.icon_side, label.is_empty()) {
-                (_, true) => icon.to_string(),
-                (ToolbarIconSide::None, false) => label.to_string(),
-                (ToolbarIconSide::Left, false) => format!("{icon} {label}"),
-                (ToolbarIconSide::Right, false) => format!("{label} {icon}"),
-            };
+            let labels = self.labels();
+            let text = &labels[index];
             context.draw_text_fitted_cow(
                 cell,
                 &text,

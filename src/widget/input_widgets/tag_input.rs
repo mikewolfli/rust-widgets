@@ -21,6 +21,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::input_widgets::input_validator::{ValidationState, Validator};
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
+use crate::widget::input_widgets::suggestion_popup::{MatchMode, SuggestionPopup};
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -47,7 +48,9 @@ const SUGGESTION_MAX_VISIBLE: usize = 6;
 /// The undo payload: the tag list plus the in-progress input buffer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TagInputState {
-    tags: Vec<String>,
+    /// Copy-on-write tag list. Undo snapshots share one handle until the tags actually change,
+    /// so typing (which only edits `input_buffer`) does not clone every tag (I-104).
+    tags: Rc<Vec<String>>,
     input_buffer: String,
 }
 
@@ -111,10 +114,15 @@ pub struct TagInput {
     chip_scroll: usize,
     /// The x of the drag insertion indicator while a chip is being dragged (I-115).
     drag_indicator: Option<i32>,
-    /// The candidate row the suggestion layer highlights (I-113).
-    suggestion_highlight: usize,
     /// Whether the suggestion layer is open (I-113).
     suggestions_open: bool,
+    /// The suggestion engine the layer's filtered rows, window, hit test and highlight come from
+    /// (I-129).
+    ///
+    /// The candidate labels stay here, so [`Self::suggestions`] and every public accessor keep
+    /// their meaning; the popup is given the labels and the typed prefix, and reports which rows
+    /// are painted and which one is marked.
+    popup: SuggestionPopup,
     /// The host's available area, used to flip the suggestion layer above the field
     /// when there is no room below it (I-124).
     viewport: Option<Rect>,
@@ -130,6 +138,12 @@ pub struct TagInput {
     tag_validator: Option<Box<dyn Validator>>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<TagInputState>>,
+    /// Shared view of [`Self::tags`], keyed by [`Self::tags_revision`].
+    ///
+    /// Every undo snapshot clones this handle instead of the tag list, so a keystroke that only
+    /// edits the input buffer allocates no tag copy (I-104). A tag mutation bumps `tags_revision`,
+    /// which is what tells the next snapshot to build a fresh handle.
+    shared_tags: RefCell<Option<(u64, Rc<Vec<String>>)>>,
 }
 
 impl TagInput {
@@ -153,8 +167,8 @@ impl TagInput {
             multiline: false,
             chip_scroll: 0,
             drag_indicator: None,
-            suggestion_highlight: 0,
             suggestions_open: false,
+            popup: SuggestionPopup::new(geometry),
             viewport: None,
             preedit: String::new(),
             tags_changed: Signal1::new(),
@@ -163,9 +177,10 @@ impl TagInput {
             tag_validator: None,
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(TagInputState {
-                tags: Vec::new(),
+                tags: Rc::new(Vec::new()),
                 input_buffer: String::new(),
             })),
+            shared_tags: RefCell::new(None),
         }
     }
 
@@ -297,6 +312,8 @@ impl TagInput {
             return;
         }
         self.suggestions = suggestions;
+        self.popup.set_items(self.suggestions.clone());
+        self.refresh_suggestions();
         self.base.request_redraw();
     }
 
@@ -357,6 +374,7 @@ impl TagInput {
             self.bump_tags();
             self.record_state_change(before);
             self.tags_changed.emit(self.tags.clone());
+            self.refresh_suggestions();
             self.base.request_redraw();
         }
     }
@@ -549,6 +567,9 @@ impl TagInput {
         if self.tags != old_tags {
             self.tags_changed.emit(self.tags.clone());
         }
+        // The buffer is empty now, so the suggestion layer's open state follows it rather than
+        // staying open over a cleared field.
+        self.refresh_suggestions();
         self.base.request_redraw();
     }
 
@@ -588,8 +609,23 @@ impl TagInput {
 
     // ── Private helpers ──
 
+    /// The current tags as a shared, copy-on-write snapshot.
+    ///
+    /// The handle is reused until `tags_revision` moves, so a run of input-buffer edits shares
+    /// one tag allocation across every undo record (I-104).
+    fn shared_tags(&self) -> Rc<Vec<String>> {
+        if let Some((revision, tags)) = self.shared_tags.borrow().as_ref() {
+            if *revision == self.tags_revision {
+                return Rc::clone(tags);
+            }
+        }
+        let tags = Rc::new(self.tags.clone());
+        *self.shared_tags.borrow_mut() = Some((self.tags_revision, Rc::clone(&tags)));
+        tags
+    }
+
     fn snapshot_state(&self) -> TagInputState {
-        TagInputState { tags: self.tags.clone(), input_buffer: self.input_buffer.clone() }
+        TagInputState { tags: self.shared_tags(), input_buffer: self.input_buffer.clone() }
     }
 
     fn record_state_change(&mut self, before: TagInputState) {
@@ -610,7 +646,9 @@ impl TagInput {
     fn restore_history_state(&mut self) {
         let previous_tags = self.tags.clone();
         let state = self.history_target.borrow().clone();
-        self.tags = state.tags;
+        // Undo is not the per-keystroke path, so materialising the list here is fine; the point
+        // of the shared handle is that the snapshots themselves never copied it (I-104).
+        self.tags = state.tags.as_ref().clone();
         self.input_buffer = state.input_buffer;
         self.input_cursor = self.input_buffer.len();
         self.input_anchor = None;
@@ -738,6 +776,8 @@ impl TagInput {
             self.chip_scroll = 0;
         }
         self.chip_cache.borrow_mut().take();
+        // The layer hangs from the field, whose height follows the chip rows.
+        self.sync_suggestion_popup();
         self.base.request_redraw();
     }
 
@@ -755,7 +795,7 @@ impl TagInput {
         let label = format!("+{}", layout.hidden);
         let font = effective_font(self.style());
         let width =
-            Self::with_measurement(|context| context.measure_text(&label, &font).width as i32)
+            Self::with_measurement(|context| context.measure_text(&label, font).width as i32)
                 + TAG_PADDING * 2;
         Some((Rect::new(x, y, width as u32, TAG_HEIGHT as u32), layout.hidden))
     }
@@ -877,7 +917,7 @@ impl TagInput {
         // painted/hit-tested layout cannot disagree about a chip's width (I-105).
         let font = effective_font(self.style());
         let text_width =
-            Self::with_measurement(|context| context.measure_text(tag, &font).width as i32);
+            Self::with_measurement(|context| context.measure_text(tag, font).width as i32);
         text_width + TAG_PADDING * 2 + TAG_CLOSE_RADIUS * 2 + 4
     }
 
@@ -888,45 +928,55 @@ impl TagInput {
     }
 
     /// The suggestions that match the current input as a case-insensitive prefix (I-113).
-    fn visible_suggestions(&self) -> Vec<usize> {
+    ///
+    /// The matching itself is the popup's ([`SuggestionPopup`] with [`MatchMode::Prefix`]), so
+    /// the painted rows, the hit test and the accepted row all read one filter (I-129). An empty
+    /// buffer offers nothing: the layer is an aid to typing, not a way to browse the whole list.
+    fn visible_suggestions(&self) -> &[usize] {
         if self.input_buffer.trim().is_empty() {
-            return Vec::new();
+            return &[];
         }
-        let prefix = self.input_buffer.trim().to_lowercase();
-        self.suggestions
-            .iter()
-            .enumerate()
-            .filter(|(_, candidate)| candidate.to_lowercase().starts_with(&prefix))
-            .map(|(index, _)| index)
-            .collect()
+        self.popup.visible_indices()
     }
 
     /// Puts the highlighted suggestion into the input buffer (I-113).
     fn accept_highlighted(&mut self) -> bool {
-        let matches = self.visible_suggestions();
-        let Some(&index) = matches.get(self.suggestion_highlight) else {
+        let Some(row) = self.popup.selected_index() else {
             return false;
         };
-        self.input_buffer = self.suggestions[index].clone();
+        let Some(&index) = self.popup.visible_indices().get(row) else {
+            return false;
+        };
+        let Some(suggestion) = self.suggestions.get(index).cloned() else {
+            return false;
+        };
+        self.input_buffer = suggestion;
         self.input_cursor = self.input_buffer.len();
         // The completed text is selected in full (I-113), matching `complete_input`, so the
         // next keystroke replaces it rather than appending to it.
         self.input_anchor = Some(0);
         self.suggestions_open = false;
-        self.suggestion_highlight = 0;
+        self.popup.set_selected_index(None);
         self.base.request_redraw();
         true
     }
 
     /// Opens or closes the suggestion layer from the current filter (I-113).
     fn refresh_suggestions(&mut self) {
-        let count = self.visible_suggestions().len();
-        self.suggestions_open = count > 0 && self.focused;
+        // Keep the row the user was on when the new filter still has it; a shortened list clamps
+        // it, which is the same rule the layer published before the popup owned the highlight.
+        let previous = self.popup.selected_index().unwrap_or(0);
+        self.sync_suggestion_popup();
+        let count = self.popup.visible_count();
         if count == 0 {
-            self.suggestion_highlight = 0;
-        } else if self.suggestion_highlight >= count {
-            self.suggestion_highlight = count - 1;
+            self.popup.set_selected_index(None);
+        } else {
+            self.popup.set_selected_index(Some(previous.min(count - 1)));
         }
+        self.suggestions_open = count > 0 && self.focused && !self.input_buffer.trim().is_empty();
+        // The layer's height follows the painted row count, so its anchor is refreshed here
+        // rather than being derived a second time by the paint and the hit test.
+        self.sync_suggestion_anchor();
     }
 
     /// Supplies the host's available area, which makes the suggestion layer's flip
@@ -936,6 +986,7 @@ impl TagInput {
             return;
         }
         self.viewport = viewport;
+        self.sync_suggestion_popup();
         self.base.request_redraw();
     }
 
@@ -944,49 +995,75 @@ impl TagInput {
         self.viewport
     }
 
+    /// Brings the popup engine's filter, metrics and anchor up to date.
+    ///
+    /// Every suggestion read (paint, hit test, acceptance) goes through the engine, so the filter
+    /// is applied here rather than three times. The metric setters are guarded by the comparisons
+    /// above, which keeps a repaint from requesting another frame through the popup.
+    fn sync_suggestion_popup(&mut self) {
+        if self.popup.max_visible() != SUGGESTION_MAX_VISIBLE
+            || self.popup.row_height() != SUGGESTION_ROW_HEIGHT as u32
+        {
+            self.popup.set_metrics(SUGGESTION_MAX_VISIBLE, SUGGESTION_ROW_HEIGHT as u32);
+        }
+        self.popup.set_match_mode(MatchMode::Prefix);
+        self.popup.set_flip_allowed(false);
+        self.popup.set_viewport(self.viewport);
+        self.popup.apply_filter(self.input_buffer.trim());
+        self.sync_suggestion_anchor();
+    }
+
+    /// Places the popup's anchor so its own popup rectangle is the layer this control paints.
+    ///
+    /// The popup hangs a list below an anchor and flips it above when the viewport has no room;
+    /// this control keeps the historical two-pixel gap, so the anchor carries that gap and the
+    /// flip is done here (the popup is told not to flip). The anchor is positioned and sized from
+    /// the layer the old derivation produced, so the painted box does not move.
+    fn sync_suggestion_anchor(&mut self) {
+        let field = self.field_rect();
+        let rows = self.popup.window_rows().max(1) as u32;
+        let height = rows * SUGGESTION_ROW_HEIGHT as u32;
+        let below = field.y + field.height as i32 + 2;
+        let fits_below = self
+            .viewport
+            .is_none_or(|viewport| below + height as i32 <= viewport.y + viewport.height as i32);
+        let mut layer = if fits_below {
+            Rect::new(field.x, below, field.width, height)
+        } else {
+            Rect::new(field.x, field.y - height as i32 - 2, field.width, height)
+        };
+        if let Some(viewport) = self.viewport {
+            layer = crate::widget::input_widgets::popup_support::clamp_rect_into(layer, viewport);
+        }
+        // An anchor whose bottom edge is the layer's top makes `popup_rect` return exactly the
+        // layer: the popup adds the anchor height to its y, and the flip is disabled above.
+        self.popup.set_anchor(Rect::new(
+            layer.x,
+            layer.y - layer.height as i32,
+            layer.width,
+            layer.height,
+        ));
+    }
+
     /// The suggestion layer's rectangle and the first painted row, when it is open.
     ///
     /// The paint and the hit test read this one derivation, so a click lands on the row
     /// that was drawn — including after the layer flips above the field (I-124).
     fn suggestion_layer(&self) -> Option<(Rect, usize, usize)> {
-        if !self.focused || !self.suggestions_open {
+        if !self.focused || !self.suggestions_open || self.input_buffer.trim().is_empty() {
             return None;
         }
-        let matches = self.visible_suggestions();
-        if matches.is_empty() {
+        let visible = self.popup.window_rows();
+        if visible == 0 {
             return None;
         }
-        let visible = matches.len().min(SUGGESTION_MAX_VISIBLE);
-        let highlight = self.suggestion_highlight.min(matches.len() - 1);
-        let start = (highlight + visible).saturating_sub(SUGGESTION_MAX_VISIBLE).min(highlight);
-        let height = (visible as i32 * SUGGESTION_ROW_HEIGHT) as u32;
-        let field = self.field_rect();
-        let below = field.y + field.height as i32 + 2;
-        let fits_below = self
-            .viewport
-            .is_none_or(|viewport| below + height as i32 <= viewport.y + viewport.height as i32);
-        let y = if fits_below { below } else { field.y - height as i32 - 2 };
-        let layer = Rect::new(field.x, y, field.width, height);
-        let layer = match self.viewport {
-            Some(viewport) => {
-                crate::widget::input_widgets::popup_support::clamp_rect_into(layer, viewport)
-            }
-            None => layer,
-        };
-        Some((layer, start, visible))
+        Some((self.popup.popup_rect(), self.popup.scroll_offset(), visible))
     }
 
     /// The suggestion row under `pos`, when the layer is open and the point is on one.
     fn suggestion_row_at(&self, pos: Point) -> Option<usize> {
-        let (layer, start, visible) = self.suggestion_layer()?;
-        if !layer.contains_point(pos) {
-            return None;
-        }
-        let row = ((pos.y - layer.y) / SUGGESTION_ROW_HEIGHT) as usize;
-        if row >= visible {
-            return None;
-        }
-        Some(start + row)
+        self.suggestion_layer()?;
+        self.popup.window_row_at(pos)
     }
 }
 
@@ -999,6 +1076,12 @@ impl Widget for TagInput {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+
+    /// Keeps the suggestion layer's anchor on the field when the control is laid out again.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.sync_suggestion_popup();
     }
 
     fn size_hint(&self) -> crate::core::Size {
@@ -1051,6 +1134,16 @@ impl Widget for TagInput {
                     CapabilityValue::Tuple(
                         v.iter().map(|tag| CapabilityValue::String(tag.clone())).collect(),
                     )
+                }))
+            }
+            "tag_overflow" => {
+                Some(EventSignalRef::mapped("tag_overflow", &self.tag_overflow, |text| {
+                    CapabilityValue::String(text.clone())
+                }))
+            }
+            "tag_rejected" => {
+                Some(EventSignalRef::mapped("tag_rejected", &self.tag_rejected, |text| {
+                    CapabilityValue::String(text.clone())
                 }))
             }
             _ => None,
@@ -1121,6 +1214,9 @@ impl WidgetProperties for TagInput {
 
 impl Draw for TagInput {
     fn draw(&mut self, context: &mut RenderContext) {
+        // The suggestion layer is painted from the popup's filtered rows and window, so those
+        // are synchronised before the frame reads them (I-129).
+        self.sync_suggestion_popup();
         // The **field**, not the control's rectangle: see `field_rect`. Every measurement
         // below — the fill, the border, the chip row and the input area — is taken from this
         // one box, so none of them can drift away from the others.
@@ -1411,12 +1507,12 @@ impl Draw for TagInput {
         // ── Suggestion layer (I-113) ──
         if let Some((layer, start, visible)) = self.suggestion_layer() {
             let matches = self.visible_suggestions();
-            let highlight = self.suggestion_highlight.min(matches.len().saturating_sub(1));
+            let highlight = self.popup.selected_index();
             context.fill_rect(layer, base_bg);
             context.draw_rect(layer, accent.unwrap_or(Color::rgb(180, 180, 180)));
             for (row, index) in matches.iter().skip(start).take(visible).enumerate() {
                 let y = layer.y + row as i32 * SUGGESTION_ROW_HEIGHT;
-                let selected = start + row == highlight;
+                let selected = highlight == Some(start + row);
                 if selected {
                     context.fill_rect(
                         Rect::new(
@@ -1445,12 +1541,15 @@ impl EventHandler for TagInput {
         if !self.base.is_enabled() {
             return;
         }
+        // The layer's hit test and key navigation read the popup's window and highlight, so
+        // they are synchronised before this event consults them.
+        self.sync_suggestion_popup();
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 // The suggestion layer is painted over the field, so its rows are hit first
                 // (I-124). A click takes the row the same way Enter does.
                 if let Some(row) = self.suggestion_row_at(*pos) {
-                    self.suggestion_highlight = row;
+                    self.popup.set_selected_index(Some(row));
                     if self.accept_highlighted() {
                         self.commit_input();
                     }
@@ -1571,19 +1670,16 @@ impl EventHandler for TagInput {
                 let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                 let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
                 // I-113: the open suggestion layer owns Up/Down/Enter/Tab/Escape.
-                if self.suggestions_open {
-                    let count = self.visible_suggestions().len();
+                if self.suggestions_open && !self.input_buffer.trim().is_empty() {
                     match *key {
                         38 => {
-                            if self.suggestion_highlight > 0 {
-                                self.suggestion_highlight -= 1;
+                            if self.popup.move_highlight(-1) {
                                 self.base.request_redraw();
                             }
                             return;
                         }
                         40 => {
-                            if count > 0 && self.suggestion_highlight + 1 < count {
-                                self.suggestion_highlight += 1;
+                            if self.popup.move_highlight(1) {
                                 self.base.request_redraw();
                             }
                             return;
@@ -1631,6 +1727,9 @@ impl EventHandler for TagInput {
                         } else if !self.tags.is_empty() {
                             let before = self.snapshot_state();
                             self.tags.pop();
+                            // The tag list changed, so the shared snapshot and the chip layout
+                            // must both be invalidated (I-104).
+                            self.bump_tags();
                             self.record_state_change(before);
                             self.tags_changed.emit(self.tags.clone());
                             self.base.request_redraw();
@@ -2294,6 +2393,46 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
+        assert_eq!(ti.tags(), &["alpha"]);
+    }
+
+    /// Typing shares the tag list between snapshots instead of cloning it per key (I-104).
+    #[test]
+    fn typing_shares_the_tag_list_instead_of_cloning_it() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.set_focused(true);
+        ti.add_tag("alpha");
+        ti.add_tag("beta");
+        let before = ti.snapshot_state();
+
+        ti.handle_event(&Event::text_input("x"));
+
+        let after = ti.snapshot_state();
+        assert!(Rc::ptr_eq(&before.tags, &after.tags), "typing must share the tag list");
+        assert_eq!(before.tags, after.tags);
+        assert_eq!(after.tags.as_ref(), &["alpha".to_string(), "beta".to_string()]);
+
+        ti.add_tag("gamma");
+        let changed = ti.snapshot_state();
+        assert!(!Rc::ptr_eq(&after.tags, &changed.tags), "a tag write publishes a new list");
+        assert_eq!(
+            changed.tags.as_ref(),
+            &["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+        );
+    }
+
+    /// Removing a tag with Backspace also advances the shared snapshot revision.
+    #[test]
+    fn backspace_tag_removal_publishes_a_new_shared_list() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.set_focused(true);
+        ti.add_tag("alpha");
+        let before = ti.snapshot_state();
+        ti.handle_event(&Event::KeyPress { key: 8, modifiers: 0 });
+        let after = ti.snapshot_state();
+        assert!(ti.tags().is_empty());
+        assert!(!Rc::ptr_eq(&before.tags, &after.tags));
+        assert!(ti.undo());
         assert_eq!(ti.tags(), &["alpha"]);
     }
 }

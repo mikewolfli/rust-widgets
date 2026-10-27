@@ -42,35 +42,6 @@ pub(crate) const MOD_OPTION: u64 = 1 << 19;
 /// `NSEventModifierFlagCommand`.
 pub(crate) const MOD_COMMAND: u64 = 1 << 20;
 
-/// Translates an AppKit `NSEvent` key event into `(key_code, widget_modifiers)`.
-///
-/// Testable core of the cocoa backend's `translate_key_event`: takes the raw
-/// AppKit values so the mapping can be asserted without constructing an `NSEvent`.
-///
-/// # Modifier mapping
-///
-/// The widget layer uses a small fixed bitfield: shift = 1, control = 2,
-/// alt = 4, meta/command = 8 (see `Modifiers::from_event_bits`). This converts
-/// AppKit's `NSEventModifierFlag` bits into that layout, so a `KeyPress`
-/// arriving through a self-drawn canvas carries the same bits as one arriving
-/// through the regular event loop.
-///
-/// Command **must** be forwarded as bit 3: it is the macOS primary accelerator
-/// (`⌘Z`, `⌘S`, ...). Dropping it made every Command chord reach the widget as a
-/// bare key press, which is why application shortcuts never fired on macOS.
-///
-/// # Key code
-///
-/// AppKit's `keyCode` is a hardware layout code and is returned unchanged; the
-/// widget layer's key handling is written against exactly those codes for the
-/// non-printing keys (arrows, Enter, Escape, Backspace, Delete, Page Up/Down,
-/// Home/End). Printable characters travel as `Event::TextInput` and therefore
-/// never depend on this number.
-#[cfg(widgets_unstripped)]
-pub(crate) fn map_key_modifiers(appkit_flags: u64, key_code: u16) -> (u32, u32) {
-    (key_code as u32, map_modifiers(appkit_flags))
-}
-
 /// Normalises an AppKit virtual key code to the framework's key-code convention.
 ///
 /// # Why the raw `keyCode` cannot be forwarded
@@ -133,7 +104,7 @@ pub(crate) fn logical_key(appkit_code: u16, characters: Option<&str>) -> u32 {
 
 /// Converts AppKit's `NSEventModifierFlag` bits into the widget-layer bitfield.
 ///
-/// Split out of [`map_key_modifiers`] so a **pointer** event can carry the same
+/// Split out of [`translate_key`] so a **pointer** event can carry the same
 /// modifier state a key event does. A `Shift`/`Ctrl` press is what selects a range or
 /// toggles one row in an extended-selection view, and the widget layer can only honour
 /// that if the press it receives says which modifiers were held.
@@ -141,6 +112,10 @@ pub(crate) fn logical_key(appkit_code: u16, characters: Option<&str>) -> u32 {
 /// Lives here rather than in `macos/types.rs` for the same reason [`parse_shortcut`]
 /// does: both macOS backends convert modifier flags, and `macos/types.rs` is gated on
 /// `cocoa-legacy` while the objc2 backend is selected by the `macos` feature.
+///
+/// Command **must** reach the widget as bit 3: it is the macOS primary accelerator (`⌘Z`,
+/// `⌘S`, ...). Dropping it made every Command chord arrive as a bare key press, which is why
+/// application shortcuts never fired on macOS.
 #[cfg(widgets_unstripped)]
 pub(crate) fn map_modifiers(appkit_flags: u64) -> u32 {
     const WIDGET_SHIFT: u32 = 1;
@@ -161,6 +136,86 @@ pub(crate) fn map_modifiers(appkit_flags: u64) -> u32 {
         modifiers |= WIDGET_META;
     }
     modifiers
+}
+
+/// Everything an AppKit key event translates to, spelled once for both macOS backends.
+///
+/// # Why both key codes are carried
+///
+/// The two backends read an `NSEvent` through different crates (the legacy one through `objc`
+/// message sends, objc2 through its typed `NSEvent`), so only the conversion can be shared, not
+/// the reading. What they did **not** share was the conversion itself: `printable_characters`,
+/// `logical_key` selection and the modifier mapping were copied into both canvases, and the
+/// copies drifted (the cocoa canvas normalised Enter/arrows to the framework's codes while the
+/// objc2 canvas forwarded AppKit's hardware codes).
+///
+/// This value keeps both spellings so each backend can keep sending exactly what it sent before:
+///
+/// * [`Self::appkit_key_code`] — AppKit's `keyCode`, unchanged (the objc2 canvas's spelling).
+/// * [`Self::logical_key`] — the framework's normalised code (Enter 13, Left 37, ...), which is
+///   the cocoa canvas's spelling.
+/// * [`Self::logical_key_with_ignored_modifiers`] — the same normalisation applied to the
+///   event's `charactersIgnoringModifiers`, so a chord reports the letter it was pressed with
+///   (`⌘A` → 65) instead of the character it would type.
+///
+/// The text fields are already filtered: a key that typed only a control character carries
+/// `None`, so neither caller has to remember that rule.
+pub(crate) struct TranslatedKey {
+    /// AppKit's hardware key code, verbatim.
+    pub(crate) appkit_key_code: u16,
+    /// Framework key code with no character spelling (named keys normalised).
+    pub(crate) logical_key: u32,
+    /// Framework key code derived from `charactersIgnoringModifiers`.
+    pub(crate) logical_key_with_ignored_modifiers: u32,
+    /// Widget-layer modifier bits (see [`map_modifiers`]).
+    pub(crate) modifiers: u32,
+    /// The event's printable text, control characters removed.
+    pub(crate) text: Option<String>,
+    /// The event's printable text with modifiers ignored, control characters removed.
+    pub(crate) ignored_modifiers_text: Option<String>,
+}
+
+/// Translates the AppKit values a key `NSEvent` exposes into widget-layer facts.
+///
+/// Both macOS canvases call this with the four values they read from their own `NSEvent`
+/// spelling, so the modifier mapping, the printable-character filter and the named-key
+/// normalisation have one implementation. Gated with [`logical_key`], its only
+/// `widgets_unstripped` consumer.
+#[cfg(widgets_unstripped)]
+pub(crate) fn translate_key(
+    appkit_key_code: u16,
+    appkit_flags: u64,
+    characters: Option<&str>,
+    characters_ignoring_modifiers: Option<&str>,
+) -> TranslatedKey {
+    let text = printable_text(characters);
+    let ignored_modifiers_text = printable_text(characters_ignoring_modifiers);
+    TranslatedKey {
+        appkit_key_code,
+        logical_key: logical_key(appkit_key_code, None),
+        logical_key_with_ignored_modifiers: logical_key(
+            appkit_key_code,
+            ignored_modifiers_text.as_deref(),
+        ),
+        modifiers: map_modifiers(appkit_flags),
+        text,
+        ignored_modifiers_text,
+    }
+}
+
+/// Removes control characters from AppKit's character string.
+///
+/// Enter, Tab and Escape are meaningful as `KeyPress` and are mapped there; treating them as
+/// text as well would insert a newline or a tab into a field on every command key. Both macOS
+/// canvases applied this rule separately before this helper existed.
+#[cfg(widgets_unstripped)]
+fn printable_text(characters: Option<&str>) -> Option<String> {
+    let printable: String = characters?.chars().filter(|ch| !ch.is_control()).collect();
+    if printable.is_empty() {
+        None
+    } else {
+        Some(printable)
+    }
 }
 
 /// Parses a **displayed** accelerator (e.g. `"⌘Z"`, `"Ctrl+Shift+Z"`, `"F1"`)
@@ -377,5 +432,46 @@ mod logical_key_tests {
     #[test]
     fn an_unnamed_key_keeps_its_hardware_code() {
         assert_eq!(logical_key(10, None), 10, "§ has no framework name");
+    }
+}
+
+/// The shared translation is the one both macOS canvases call, so these pin the parts each
+/// backend consumes rather than one backend's whole event policy.
+#[cfg(all(test, widgets_unstripped))]
+mod translate_key_tests {
+    use super::{translate_key, MOD_COMMAND, MOD_SHIFT};
+    use crate::event::key_codes as keys;
+
+    #[test]
+    fn a_plain_key_carries_both_spellings_and_its_text() {
+        let key = translate_key(0, 0, Some("a"), Some("a"));
+        assert_eq!(key.appkit_key_code, 0, "objc2 forwards the hardware code");
+        // With no named-key match and no character spelling, the framework code falls back to
+        // the hardware code; a plain letter travels as `TextInput` anyway.
+        assert_eq!(key.logical_key, 0);
+        assert_eq!(key.logical_key_with_ignored_modifiers, 65, "⌘A's letter");
+        assert_eq!(key.modifiers, 0);
+        assert_eq!(key.text.as_deref(), Some("a"));
+        assert_eq!(key.ignored_modifiers_text.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn a_chord_reports_the_letter_not_the_typed_character() {
+        let key = translate_key(0, MOD_COMMAND | MOD_SHIFT, Some("A"), Some("a"));
+        assert_eq!(key.modifiers, 8 | 1, "Command is meta, Shift is bit 0");
+        assert_eq!(key.logical_key_with_ignored_modifiers, 65);
+        assert_eq!(key.text.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn control_characters_are_not_text() {
+        let enter = translate_key(36, 0, Some("\r"), Some("\r"));
+        assert_eq!(enter.text, None, "Enter is a KeyPress, not an inserted newline");
+        assert_eq!(enter.logical_key, keys::ENTER);
+
+        let left = translate_key(123, 0, None, None);
+        assert_eq!(left.text, None);
+        assert_eq!(left.logical_key, keys::LEFT);
+        assert_eq!(left.appkit_key_code, 123, "objc2 still sees AppKit's code");
     }
 }

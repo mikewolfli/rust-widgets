@@ -811,6 +811,19 @@ impl Widget for ShortcutEditor {
                     ]))
                 }))
             }
+            "conflict_detected" => {
+                Some(EventSignalRef::mapped("conflict_detected", &self.conflict_detected, |v| {
+                    // `Mixed`: the shortcut id and the keys already bound to it, kept as their
+                    // own components instead of a debug dump.
+                    let (id, keys) = v;
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::String(id.clone()),
+                        CapabilityValue::Tuple(
+                            keys.iter().map(|key| CapabilityValue::String(key.clone())).collect(),
+                        ),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }

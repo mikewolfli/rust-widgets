@@ -28,7 +28,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
     use winapi::um::winuser::NMHDR;
     use winapi::um::winuser::{
         DefWindowProcW, GetDlgCtrlID, PostQuitMessage, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-        WM_ERASEBKGND, WM_GETMINMAXINFO, WM_NOTIFY, WM_SETTINGCHANGE,
+        WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_NOTIFY, WM_SETTINGCHANGE,
     };
     // Every message that is only *matched* by a `widgets_unstripped` arm is imported under the
     // same condition: an unconditional import would be unused on a stripped profile, and an
@@ -37,9 +37,10 @@ pub(crate) unsafe extern "system" fn wnd_proc(
     // route into the tree (paint, mouse, wheel, key, character).
     #[cfg(widgets_unstripped)]
     use winapi::um::winuser::{
-        GetClientRect, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_UNICHAR,
+        GetClientRect, WM_CHAR, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION,
+        WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+        WM_SETFOCUS, WM_SIZE, WM_UNICHAR,
     };
     match msg {
         // The window's own painting: every control the window owns, drawn as one frame.
@@ -242,6 +243,16 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             crate::platform::profile::notify_environment_changed();
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+        // The window moved to a monitor with a different DPI (G-604). The DPI-derived facts are
+        // cached like every other environment reading, so the same revision bump is what makes
+        // the next layout and glyph pass read the new scale instead of waiting for the 250 ms
+        // poll. The suggested rectangle in `lParam` is deliberately not applied here: the window
+        // manager already moved the window, and resizing from this arm would fight a host that
+        // positions its own windows.
+        WM_DPICHANGED => {
+            crate::platform::profile::notify_environment_changed();
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         // The **character** the key produced, which `WM_KEYDOWN` cannot supply.
         //
         // # Why forwarding `WM_KEYDOWN` was not enough
@@ -255,6 +266,24 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // `WM_UNICHAR` for `WM_UNICHAR`-aware windows), which is the message a text control
         // must consume. `TranslateMessage` in the run loop is what performs the translation,
         // and the canvas procedure had the same gap — see `canvas::forward_char`.
+        #[cfg(widgets_unstripped)]
+        WM_IME_STARTCOMPOSITION => {
+            // P-201: the same bridge the canvas uses. A window's own tree painter hosts editable
+            // controls too, and an IME message delivered to the toplevel must reach the focused
+            // control rather than dead-ending at `DefWindowProcW`.
+            super::canvas::ime_composition_begin(hwnd);
+            0
+        }
+        #[cfg(widgets_unstripped)]
+        WM_IME_COMPOSITION => {
+            super::canvas::ime_composition(hwnd, lparam);
+            0
+        }
+        #[cfg(widgets_unstripped)]
+        WM_IME_ENDCOMPOSITION => {
+            super::canvas::ime_composition_begin(hwnd);
+            0
+        }
         #[cfg(widgets_unstripped)]
         WM_CHAR | WM_UNICHAR => {
             if let Some(window_id) = window_widget_for(hwnd) {
@@ -441,23 +470,30 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         }
         // Win32 has no `SetWindowMinSize` API: the minimum is enforced by writing
         // `ptMinTrackSize` into the MINMAXINFO the system passes before a resize or
-        // maximise. Returning 0 here after filling it in tells the system the
-        // constraint was applied.
+        // maximise. The maximum uses the same message's `ptMaxTrackSize` (P-206).
+        // Returning 0 here after filling it in tells the system the constraint was
+        // applied.
         WM_GETMINMAXINFO => {
             if let Some(platform) = notify::active_windows_platform() {
                 if let Some(widget_id) = unsafe { platform.widget_id_by_native_handle(hwnd) } {
-                    if let Some((min_w, min_h)) = platform.state.window_min_size(widget_id) {
-                        if !lparam_is_null(lparam) {
-                            let info = lparam as *mut winapi::um::winuser::MINMAXINFO;
-                            // SAFETY: Win32 passes a valid MINMAXINFO pointer in
-                            // lParam for WM_GETMINMAXINFO for the duration of the
-                            // call; we only write into it.
-                            unsafe {
+                    let min = platform.state.window_min_size(widget_id);
+                    let max = platform.state.window_max_size(widget_id);
+                    if (min.is_some() || max.is_some()) && !lparam_is_null(lparam) {
+                        let info = lparam as *mut winapi::um::winuser::MINMAXINFO;
+                        // SAFETY: Win32 passes a valid MINMAXINFO pointer in
+                        // lParam for WM_GETMINMAXINFO for the duration of the
+                        // call; we only write into it.
+                        unsafe {
+                            if let Some((min_w, min_h)) = min {
                                 (*info).ptMinTrackSize.x = min_w as i32;
                                 (*info).ptMinTrackSize.y = min_h as i32;
                             }
-                            return 0;
+                            if let Some((max_w, max_h)) = max {
+                                (*info).ptMaxTrackSize.x = max_w as i32;
+                                (*info).ptMaxTrackSize.y = max_h as i32;
+                            }
                         }
+                        return 0;
                     }
                 }
             }
@@ -924,11 +960,10 @@ unsafe fn forward_window_char(hwnd: HWND, window_id: u64, character: u32) {
         return;
     };
     let target = crate::widget::runtime::focused_widget().unwrap_or(window_id);
-    // `Event::text_input` rather than a struct literal: the variant carries a `String`
-    // (the committed text, which may be several code units once a layout or an IME has
-    // had its say), so the constructor is the one place that spelling lives.
-    let event = crate::event::Event::text_input(character.to_string());
-    if crate::widget::runtime::dispatch_event(target, &event) {
+    // The pooled single-character entry, so a keystroke does not allocate a payload: a
+    // `WM_CHAR` is always exactly one scalar value (G-606). Multi-character text still goes
+    // through `Event::text_input`.
+    if crate::widget::runtime::dispatch_text_char(target, character) {
         invalidate_window(hwnd);
     }
 }

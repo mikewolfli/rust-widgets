@@ -23,10 +23,12 @@
 use crate::core::{MutexExt, ObjectId, Point, Rect};
 use crate::event::Event;
 use crate::platform::types::MousePhase;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
+use winapi::shared::minwindef::{DWORD, LPARAM, LRESULT, UINT, WPARAM};
 use winapi::shared::windef::{HDC, HWND, RECT};
+use winapi::um::imm::{ImmGetContext, ImmReleaseContext, HIMC};
 use winapi::um::wingdi::{
     StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
 };
@@ -39,6 +41,8 @@ use winapi::um::winuser::{
     WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_TOUCH, WM_UNICHAR, WNDCLASSW,
     WS_CHILD, WS_TABSTOP, WS_VISIBLE,
 };
+#[cfg(widgets_unstripped)]
+use winapi::um::winuser::{WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION};
 // Touch-only Win32 entry points. Grouped under one gate so a build without the
 // `touch` capability does not import symbols it never calls (which would be an
 // unused-import warning) and does not need `WM_TOUCH` handling at all.
@@ -294,6 +298,22 @@ unsafe extern "system" fn canvas_wnd_proc(
             forward_wheel(hwnd, wparam, lparam);
             0
         }
+        // IME composition (P-201). A canvas hosts editable controls, so it must receive the
+        // composition stream the same way a window does; before this arm a Windows IME sent its
+        // messages to the child HWND and nothing in the library read them, so a composed string
+        // never reached the focused control.
+        WM_IME_STARTCOMPOSITION => {
+            ime_composition_begin(hwnd);
+            0
+        }
+        WM_IME_COMPOSITION => {
+            ime_composition(hwnd, lparam);
+            0
+        }
+        WM_IME_ENDCOMPOSITION => {
+            ime_composition_begin(hwnd);
+            0
+        }
         // The produced character. A canvas hosts widgets that can be typed into exactly as a
         // window does, and forwarding only `WM_KEYDOWN`'s virtual-key code is what left a
         // mounted text control unable to accept a digit or any IME text — the same defect the
@@ -514,43 +534,55 @@ pub(crate) unsafe fn blit_frame(hdc: HDC, width: u32, height: u32, frame: &[u8])
 
     // 32-bit top-down BGRA. The frame is RGBA, so red and blue are swapped while
     // copying; alpha is forced opaque because StretchDIBits with BI_RGB ignores it.
-    let mut buffer = vec![0u8; expected];
-    for (offset, pixel) in buffer.as_chunks_mut::<4>().0.iter_mut().zip(frame.as_chunks::<4>().0) {
-        offset[0] = pixel[2];
-        offset[1] = pixel[1];
-        offset[2] = pixel[0];
-        offset[3] = 255;
-    }
+    // The conversion buffer is retained per thread (G-601): a repaint used to allocate a
+    // whole-window buffer every frame, which is the largest recurring cost of a 1:1 blit.
+    BLIT_BUFFER.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        buffer.resize(expected, 0);
+        for (offset, pixel) in
+            buffer.as_chunks_mut::<4>().0.iter_mut().zip(frame.as_chunks::<4>().0)
+        {
+            offset[0] = pixel[2];
+            offset[1] = pixel[1];
+            offset[2] = pixel[0];
+            offset[3] = 255;
+        }
 
-    let mut info: BITMAPINFOHEADER = std::mem::zeroed();
-    info.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    info.biWidth = width_i32;
-    // A negative height selects a top-down DIB, matching the frame's row order.
-    // `checked_neg` cannot fail here because the conversion above rejects `i32::MIN`-scale
-    // heights, but stating it keeps the negation total by construction.
-    info.biHeight = height_i32.checked_neg().unwrap_or(height_i32);
-    info.biPlanes = 1;
-    info.biBitCount = 32;
-    info.biCompression = BI_RGB;
+        let mut info: BITMAPINFOHEADER = std::mem::zeroed();
+        info.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        info.biWidth = width_i32;
+        // A negative height selects a top-down DIB, matching the frame's row order.
+        // `checked_neg` cannot fail here because the conversion above rejects `i32::MIN`-scale
+        // heights, but stating it keeps the negation total by construction.
+        info.biHeight = height_i32.checked_neg().unwrap_or(height_i32);
+        info.biPlanes = 1;
+        info.biBitCount = 32;
+        info.biCompression = BI_RGB;
 
-    let scanned = StretchDIBits(
-        hdc,
-        0,
-        0,
-        width_i32,
-        height_i32,
-        0,
-        0,
-        width_i32,
-        height_i32,
-        buffer.as_ptr() as *const _,
-        &info as *const _ as *const BITMAPINFO,
-        DIB_RGB_COLORS,
-        SRCCOPY,
-    );
-    if scanned == 0 {
-        log::error!("[windows] blit_frame: StretchDIBits failed for {width}x{height}");
-    }
+        let scanned = StretchDIBits(
+            hdc,
+            0,
+            0,
+            width_i32,
+            height_i32,
+            0,
+            0,
+            width_i32,
+            height_i32,
+            buffer.as_ptr() as *const _,
+            &info as *const _ as *const BITMAPINFO,
+            DIB_RGB_COLORS,
+            SRCCOPY,
+        );
+        if scanned == 0 {
+            log::error!("[windows] blit_frame: StretchDIBits failed for {width}x{height}");
+        }
+    });
+}
+
+thread_local! {
+    /// The BGRA conversion buffer reused by [`blit_frame`] (G-601).
+    static BLIT_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Marks the whole canvas as needing a repaint.
@@ -892,6 +924,103 @@ unsafe fn forward_touch(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
 /// records: they are commands (`WM_KEYDOWN` already delivered them) rather than text.
 ///
 /// # Safety
+/// The `GCS_COMPSTR` bit of `WM_IME_COMPOSITION`'s `lParam`: the composition string changed.
+const GCS_COMPSTR: DWORD = 0x0008;
+/// The `GCS_CURSORPOS` bit: the composition cursor position is requested with the string.
+const GCS_CURSORPOS: DWORD = 0x0080;
+/// The `GCS_RESULTSTR` bit: the committed result string is available.
+const GCS_RESULTSTR: DWORD = 0x0800;
+
+// `ImmGetCompositionStringW`, which `winapi` 0.3 does not bind.
+//
+// # Safety
+//
+// `himc` must be a live input context from `ImmGetContext`, and `buffer` must be null or point
+// at `length` writable bytes.
+extern "system" {
+    fn ImmGetCompositionStringW(
+        himc: HIMC,
+        index: DWORD,
+        buffer: *mut core::ffi::c_void,
+        length: DWORD,
+    ) -> i32;
+}
+
+/// Reads one composition string (or the result string) from `himc`.
+///
+/// Returns `None` when the API reports an error. An empty string is a real answer: the IME is
+/// running, but the user has not typed anything into the composition yet.
+unsafe fn ime_string(himc: HIMC, which: DWORD) -> Option<String> {
+    let bytes = ImmGetCompositionStringW(himc, which, core::ptr::null_mut(), 0);
+    if bytes < 0 {
+        return None;
+    }
+    if bytes == 0 {
+        return Some(String::new());
+    }
+    let units = bytes as usize / 2;
+    let mut buffer = vec![0u16; units];
+    let written = ImmGetCompositionStringW(himc, which, buffer.as_mut_ptr().cast(), bytes as DWORD);
+    if written < 0 {
+        return None;
+    }
+    buffer.truncate(written as usize / 2);
+    Some(String::from_utf16_lossy(&buffer))
+}
+
+/// The widget a canvas IME message belongs to: the library's focused control, or the canvas.
+fn ime_target(hwnd: HWND) -> Option<ObjectId> {
+    crate::widget::runtime::focused_widget().or_else(|| widget_id_of(hwnd))
+}
+
+/// Publishes an empty composition so a newly started (or ended) composition clears the preview.
+pub(crate) unsafe fn ime_composition_begin(hwnd: HWND) {
+    let Some(widget_id) = ime_target(hwnd) else {
+        return;
+    };
+    let composition = crate::platform::ime::ImeComposition {
+        text: String::new(),
+        cursor_position: 0,
+        selection_length: 0,
+    };
+    crate::platform::ime::deliver_composition_owned(widget_id, composition);
+}
+
+/// Routes `WM_IME_COMPOSITION`'s composition and result strings into the focused control.
+pub(crate) unsafe fn ime_composition(hwnd: HWND, lparam: LPARAM) {
+    let Some(widget_id) = ime_target(hwnd) else {
+        return;
+    };
+    let flags = lparam as DWORD;
+    let himc = ImmGetContext(hwnd);
+    if himc.is_null() {
+        return;
+    }
+    if flags & GCS_RESULTSTR != 0 {
+        if let Some(text) = ime_string(himc, GCS_RESULTSTR) {
+            if !text.is_empty() {
+                crate::platform::ime::deliver_commit(widget_id, &text);
+            }
+        }
+    }
+    if flags & GCS_COMPSTR != 0 {
+        let text = ime_string(himc, GCS_COMPSTR).unwrap_or_default();
+        let cursor = if flags & GCS_CURSORPOS != 0 {
+            let value = ImmGetCompositionStringW(himc, GCS_CURSORPOS, core::ptr::null_mut(), 0);
+            value.max(0) as usize
+        } else {
+            text.len()
+        };
+        let composition = crate::platform::ime::ImeComposition {
+            text,
+            cursor_position: cursor,
+            selection_length: 0,
+        };
+        crate::platform::ime::deliver_composition_owned(widget_id, composition);
+    }
+    ImmReleaseContext(hwnd, himc);
+}
+
 /// `hwnd` must be a live window handle this backend created.
 unsafe fn forward_char(hwnd: HWND, wparam: WPARAM) {
     let Some(widget_id) = widget_id_of(hwnd) else {
@@ -908,7 +1037,9 @@ unsafe fn forward_char(hwnd: HWND, wparam: WPARAM) {
     // Keys follow focus, and a canvas that never took focus has none: without this the
     // wheel of `focused_widget` would reach a control in another tree.
     let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
-    if crate::widget::runtime::dispatch_event(target, &Event::text_input(character.to_string())) {
+    // The pooled single-character entry keeps the payload out of the allocator: `WM_CHAR` is
+    // one scalar value per message (G-606).
+    if crate::widget::runtime::dispatch_text_char(target, character) {
         invalidate_canvas(hwnd);
     }
 }

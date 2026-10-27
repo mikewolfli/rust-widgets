@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Rich text editor widget.
-use crate::core::{Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::wheel::WheelScroll;
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -18,6 +18,8 @@ use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+use super::input_companions::{FormatAction, FormatToolbar, FORMAT_TOOLBAR_HEIGHT};
 
 /// A styled run of a [`RichEdit`] document.
 ///
@@ -301,6 +303,16 @@ pub struct RichEdit {
     line_starts_cache: RefCell<Option<(u64, Rc<Vec<usize>>)>>,
     /// The typing run the next keystroke may extend, so a word is one undo step (I-P55).
     typing_run: Option<Rc<RefCell<RichDelta>>>,
+    /// The optional formatting strip, drawn above the document (COMP-C05).
+    ///
+    /// `None` is the default, which is what keeps this control's paint byte-identical to the
+    /// strip-less editor: with no toolbar the body occupies the whole geometry and no extra
+    /// pixels are touched. When a control is here, it is the **standard**
+    /// [`FormatToolbar`](super::input_companions::FormatToolbar) rather than a private copy —
+    /// the strip and a host-driven toolbar therefore share one action set, one cell layout, one
+    /// hit test and one preview rule. The editor applies a pressed action itself, so the strip
+    /// is functional without host wiring; `format_requested` still fires for observers.
+    format_toolbar: Option<FormatToolbar>,
 }
 
 struct VisualRowsCache {
@@ -348,7 +360,104 @@ impl RichEdit {
             format_cache: RefCell::new(None),
             line_starts_cache: RefCell::new(None),
             typing_run: None,
+            format_toolbar: None,
         }
+    }
+
+    /// Whether a formatting strip is shown above the document.
+    pub fn is_format_strip_enabled(&self) -> bool {
+        self.format_toolbar.is_some()
+    }
+
+    /// Shows or hides the standard [`FormatToolbar`] above the document.
+    ///
+    /// Enabling is additive: nothing about the document, the selection or the existing paint
+    /// path changes, and the strip is laid out in the control's own box (the body moves below
+    /// it). Disabling drops the toolbar and restores the full-height body, so the default paint
+    /// is exactly the strip-less picture.
+    pub fn enable_format_strip(&mut self, enabled: bool) {
+        if enabled == self.format_toolbar.is_some() {
+            return;
+        }
+        self.format_toolbar = enabled.then(FormatToolbar::new);
+        self.sync_format_strip_bounds();
+        self.base.request_redraw();
+    }
+
+    /// The hosted formatting strip, when one is enabled.
+    pub fn format_strip(&self) -> Option<&FormatToolbar> {
+        self.format_toolbar.as_ref()
+    }
+
+    /// The hosted formatting strip mutably, when one is enabled.
+    pub fn format_strip_mut(&mut self) -> Option<&mut FormatToolbar> {
+        self.format_toolbar.as_mut()
+    }
+
+    /// Applies the format `action` would produce to the selection (or the typing format).
+    ///
+    /// This is the editor half of COMP-C05's contract: the toolbar only reports intent, and the
+    /// editor decides what a format is. The rule is taken from the hosted toolbar's own
+    /// [`FormatToolbar::preview_from`], so the strip and a host-driven toolbar cannot disagree
+    /// about what a button does; with no strip enabled a default toolbar supplies the same rule.
+    /// A read-only document ignores the request, and an action the toolbar does not publish is
+    /// refused, exactly as [`FormatToolbar::press`] would refuse it.
+    pub fn apply_format_action(&mut self, action: FormatAction) {
+        if self.read_only {
+            return;
+        }
+        let base = self.cursor_format();
+        let format = match self.format_toolbar.as_ref() {
+            Some(toolbar) => {
+                if !toolbar.is_enabled(action) {
+                    return;
+                }
+                toolbar.preview_from(&base, action)
+            }
+            None => FormatToolbar::new().preview_from(&base, action),
+        };
+        self.apply_char_format(format);
+    }
+
+    /// The format at the caret, or the pending typing format at a bare caret.
+    fn cursor_format(&self) -> CharFormat {
+        if let Some(format) = self.typing_format.as_ref().filter(|_| self.selection.is_none()) {
+            return format.clone();
+        }
+        let offset = self
+            .selection
+            .map(|(start, end)| start.min(end))
+            .unwrap_or(self.extend_caret)
+            .min(self.text.len());
+        self.format_at(offset)
+    }
+
+    /// Keeps the hosted toolbar's hit-test box on the strip's rectangle.
+    fn sync_format_strip_bounds(&mut self) {
+        let rect = self.base.geometry();
+        if let Some(toolbar) = self.format_toolbar.as_mut() {
+            toolbar.set_bounds(Rect::new(
+                rect.x,
+                rect.y,
+                rect.width,
+                FORMAT_TOOLBAR_HEIGHT.min(rect.height),
+            ));
+        }
+    }
+
+    /// The box the document paints in: the control less the formatting strip, when shown.
+    fn body_rect(&self) -> Rect {
+        let rect = self.base.geometry();
+        if self.format_toolbar.is_none() {
+            return rect;
+        }
+        let strip = FORMAT_TOOLBAR_HEIGHT.min(rect.height);
+        Rect::new(rect.x, rect.y + strip as i32, rect.width, rect.height - strip)
+    }
+
+    /// The action under `pos` when a formatting strip is shown.
+    fn format_strip_action_at(&self, pos: Point) -> Option<FormatAction> {
+        self.format_toolbar.as_ref()?.action_at(pos)
     }
     /// Returns current editor text.
     pub fn text(&self) -> &str {
@@ -788,7 +897,9 @@ impl RichEdit {
 
     /// How many whole lines fit in the interior at the current font.
     fn visible_line_count(&self) -> usize {
-        let rect = self.geometry();
+        // The strip, when shown, is not document space: counting it as rows would let the last
+        // document line scroll under the toolbar.
+        let rect = self.body_rect();
         let line_height = effective_font(self.style()).effective_line_height().max(1.0) as i32;
         let usable = (rect.height as i32 - 8).max(line_height);
         (usable / line_height).max(1) as usize
@@ -1000,7 +1111,9 @@ impl RichEdit {
     /// the renderer's own width model. Deriving the row from a second layout would let a click land
     /// on a different line than the one drawn there.
     pub fn byte_offset_at_point(&self, pos: crate::core::Point) -> usize {
-        let rect = self.geometry();
+        // Hit testing and painting must agree about where the document starts, so the strip is
+        // subtracted from the same box the painter uses.
+        let rect = self.body_rect();
         let padding = 4;
         let font = effective_font(self.style());
         let line_height = font.effective_line_height().max(1.0) as i32;
@@ -1208,7 +1321,8 @@ impl Widget for RichEdit {
     /// The editor used to fall back to whatever default the trait supplied, which ignored the
     /// value entirely. Measuring with the same effective font the paint uses keeps the hint and
     /// the ink in step, and the row count follows the wrap mode so a wrapped document asks for the
-    /// height it actually paints.
+    /// height it actually paints. An enabled formatting strip adds its own height on top, which
+    /// is zero in the default (strip-less) configuration.
     fn size_hint(&self) -> Size {
         let font = effective_font(self.style());
         let width = self
@@ -1218,7 +1332,14 @@ impl Widget for RichEdit {
             .fold(0.0f32, f32::max);
         let line_height = font.effective_line_height().max(1.0);
         let height = self.display_row_count() as f32 * line_height;
-        Size::new((width + 16.0).max(120.0) as u32, (height + 12.0).max(60.0) as u32)
+        let strip = if self.format_toolbar.is_some() { FORMAT_TOOLBAR_HEIGHT } else { 0 };
+        Size::new((width + 16.0).max(120.0) as u32, ((height + 12.0).max(60.0) as u32) + strip)
+    }
+
+    /// Lays the control out and keeps the hosted strip's hit-test box on its rectangle.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.sync_format_strip_bounds();
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -1408,6 +1529,25 @@ impl Draw for RichEdit {
         );
         // Draw text content — all lines. I-P57: the row height comes from the font the ink is
         // actually drawn with, not a hardcoded 16 that disagreed with `size_hint`.
+        //
+        // The formatting strip (COMP-C05), when enabled, is painted into the top of the box and
+        // the document body starts below it. With no strip the body **is** `rect`, which is what
+        // keeps this control's default paint identical to the strip-less editor.
+        if self.format_toolbar.is_some() {
+            // Read the caret's format and the strip box **before** borrowing the toolbar
+            // mutably: both readers borrow the editor, and the toolbar lives inside it.
+            let format = self.cursor_format();
+            let strip_bounds =
+                Rect::new(rect.x, rect.y, rect.width, FORMAT_TOOLBAR_HEIGHT.min(rect.height));
+            // Keep the toolbar's highlight on the caret's real format, and its hit-test box on
+            // the strip rectangle, before it paints.
+            if let Some(toolbar) = self.format_toolbar.as_mut() {
+                toolbar.set_active_format(format);
+                toolbar.set_bounds(strip_bounds);
+                toolbar.draw(context);
+            }
+        }
+        let body = self.body_rect();
         let font = effective_font(self.style());
         let line_height = font.effective_line_height().max(1.0) as i32;
         let padding = 2i32;
@@ -1434,15 +1574,15 @@ impl Draw for RichEdit {
         let rows = self.visual_rows();
         // I-P57: a long unwrapped row must not paint over the border or its neighbours.
         context.push_clip(
-            rect.x + padding,
-            rect.y + padding,
-            rect.width.saturating_sub(padding as u32 * 2),
-            rect.height.saturating_sub(padding as u32 * 2),
+            body.x + padding,
+            body.y + padding,
+            body.width.saturating_sub(padding as u32 * 2),
+            body.height.saturating_sub(padding as u32 * 2),
         );
         // An empty document still shows a caret and its placeholder.
         if self.text.is_empty() && !self.placeholder_text.is_empty() {
             context.draw_text(
-                crate::core::Point::new(rect.x + padding, rect.y + padding + line_height),
+                crate::core::Point::new(body.x + padding, body.y + padding + line_height),
                 &self.placeholder_text,
                 font,
                 ink.blend(&paper, 0.45),
@@ -1456,8 +1596,8 @@ impl Draw for RichEdit {
                 continue;
             }
             let line_y =
-                rect.y + padding + line_height * ((row_idx - self.first_visible_line) as i32 + 1);
-            if line_y > rect.y + rect.height as i32 {
+                body.y + padding + line_height * ((row_idx - self.first_visible_line) as i32 + 1);
+            if line_y > body.y + body.height as i32 {
                 break;
             }
             let row_text = &self.text[row_start..row_end];
@@ -1653,6 +1793,19 @@ impl crate::event::EventHandler for RichEdit {
                 self.base.request_redraw();
             }
             crate::event::Event::MousePress { pos, button, .. } if *button == 1 => {
+                // A press on the formatting strip belongs to a toolbar cell, not to the
+                // document. Intercepting it here is what keeps the strip usable without host
+                // wiring while leaving the editor's own public contract unchanged.
+                if let Some(action) = self.format_strip_action_at(*pos) {
+                    if let Some(toolbar) = self.format_toolbar.as_mut() {
+                        // `press` emits `format_requested` as it always has, so an observer still
+                        // sees the intent; the editor then applies it through the same rule.
+                        toolbar.press(action);
+                    }
+                    self.apply_format_action(action);
+                    self.base.request_redraw();
+                    return;
+                }
                 self.base.set_mouse_pressed(true);
                 // A press focuses the control, which is how the user reaches it with the pointer.
                 self.focused = true;
@@ -2558,5 +2711,44 @@ mod tests {
         assert!(re.spans().is_empty(), "undo restores the previous span list");
         assert!(re.redo());
         assert_eq!(re.spans().len(), 1);
+    }
+
+    /// The formatting strip is the standard `FormatToolbar`, and it is opt-in (COMP-C05).
+    #[test]
+    fn the_formatting_strip_is_opt_in_and_restores_the_default_paint() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 300, 200));
+        re.set_text("hello".to_string());
+        assert!(!re.is_format_strip_enabled(), "the editor paints strip-less by default");
+        assert!(re.format_strip().is_none());
+        let default_hint = re.size_hint();
+
+        re.enable_format_strip(true);
+        assert!(re.is_format_strip_enabled());
+        assert!(re.format_strip().is_some(), "the strip is the shared toolbar type");
+        assert!(re.size_hint().height > default_hint.height, "the strip claims its own height");
+
+        re.enable_format_strip(false);
+        assert_eq!(re.size_hint(), default_hint, "disabling restores the default paint");
+        assert!(re.format_strip().is_none());
+    }
+
+    /// A press on a strip cell applies that action to the selection, without host wiring.
+    #[test]
+    fn the_formatting_strip_applies_a_pressed_action_to_the_selection() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 300, 200));
+        re.set_text("hello".to_string());
+        re.set_selection(0, 5);
+        re.enable_format_strip(true);
+
+        // The first cell is Bold; a press inside it must format, not move the caret.
+        let strip = re.format_strip().expect("strip enabled").bounds();
+        let pos = Point::new(strip.x + 4, strip.y + 4);
+        re.handle_event(&crate::event::Event::MousePress { pos, button: 1, modifiers: 0 });
+
+        assert!(
+            re.spans().iter().any(|span| span.format.bold),
+            "the B cell bolds the selected run"
+        );
+        assert_eq!(re.selection(), Some((0, 5)), "a strip press does not disturb the selection");
     }
 }

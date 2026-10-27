@@ -35,12 +35,12 @@
 //! Exit codes: `0` = every check held, `1` = a check failed, `2` = this host cannot stage it
 //! (no display, or one of `python3`/`wmctrl`/`xwininfo`/`xwd`/`xwdtopnm` missing).
 
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn main() {
     staged()
 }
 
-#[cfg(not(all(not(alloc_frugal), unix_desktop, feature = "gtk-native")))]
+#[cfg(not(gtk_probe))]
 fn main() {
     println!(
         "probe_gtk_interactions: this build has no X11 session to ask (`--features \
@@ -48,19 +48,13 @@ fn main() {
     );
 }
 
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
-fn gui_probe_allowed() -> bool {
-    if std::env::var("RW_GUI_PROBE_OK").ok().as_deref() == Some("1") {
-        return true;
-    }
-    println!(
-        "this probe opens a real window and injects pointer/key events on the desktop it runs on; \
-         set RW_GUI_PROBE_OK=1 to stage it (and prefer a machine whose screen nobody is using)"
-    );
-    false
-}
+#[cfg(gtk_probe)]
+#[path = "common/gui_probe.rs"]
+mod gui_probe;
+#[cfg(gtk_probe)]
+use gui_probe::gui_probe_allowed;
 
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn staged() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
@@ -274,7 +268,7 @@ fn staged() {
 /// The capture is taken through `xwd`/`xwdtopnm`, so it reads the window's **presented**
 /// pixels rather than the model. `update_list` is handed to `schedule_on_main`, which is the
 /// path §0.5 named as the one that did not repaint.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn stage(
     title: &str,
     steps: &mut Vec<String>,
@@ -316,7 +310,7 @@ fn stage(
     Ok((before, after))
 }
 
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 struct Report {
     steps: Vec<String>,
     before: u64,
@@ -324,7 +318,7 @@ struct Report {
 }
 
 /// Runs `tools/x11_inject_keys.py` against `title` with `args`.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn run_injector(title: &str, args: &[&str]) -> Result<(), String> {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/x11_inject_keys.py");
     let output = std::process::Command::new("python3")
@@ -349,7 +343,7 @@ fn run_injector(title: &str, args: &[&str]) -> Result<(), String> {
 /// `xwdtopnm` writes a P6 PPM, which is a three-line header followed by raw RGB. Parsing it
 /// here is deliberately smaller than a second XWD header reader: this probe only needs a
 /// stable byte digest, not the pixel values.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn capture_region(title: &str, x: u32, y: u32, width: u32, height: u32) -> Result<u64, String> {
     let id = window_id(title)?;
     let output = std::process::Command::new("sh")
@@ -364,7 +358,7 @@ fn capture_region(title: &str, x: u32, y: u32, width: u32, height: u32) -> Resul
 }
 
 /// FNV-1a over one region of a P6 PPM.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn ppm_region_hash(bytes: &[u8], x: u32, y: u32, width: u32, height: u32) -> Result<u64, String> {
     let mut cursor = 0usize;
     let token = |cursor: &mut usize| -> Result<String, String> {
@@ -426,7 +420,7 @@ fn ppm_region_hash(bytes: &[u8], x: u32, y: u32, width: u32, height: u32) -> Res
 }
 
 /// The X window id `wmctrl` lists for `title`.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn window_id(title: &str) -> Result<String, String> {
     let output = std::process::Command::new("wmctrl")
         .arg("-l")
@@ -440,7 +434,7 @@ fn window_id(title: &str) -> Result<String, String> {
 }
 
 /// Whether `tool` is absent from `PATH`, asked without running it.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn which_missing(tool: &str) -> bool {
     std::env::var_os("PATH")
         .map(|path| {
@@ -453,7 +447,7 @@ fn which_missing(tool: &str) -> bool {
 }
 
 /// Whether `path` is executable, using the mode bits directly.
-#[cfg(all(not(alloc_frugal), unix_desktop, feature = "gtk-native"))]
+#[cfg(gtk_probe)]
 fn is_executable(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path).map(|meta| meta.permissions().mode() & 0o111 != 0).unwrap_or(false)

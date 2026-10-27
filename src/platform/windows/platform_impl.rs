@@ -294,6 +294,89 @@ unsafe fn enumerate_directwrite() -> Option<Vec<SystemFont>> {
     Some(out)
 }
 
+/// The DWM margins struct, in its ABI form.
+///
+/// `dwmapi.h` spells four `int` fields in this order; nothing else from that header is needed, so
+/// the type is declared here rather than enabling a whole `winapi` feature for one struct.
+#[cfg(target_os = "windows")]
+#[repr(C)]
+#[allow(dead_code)]
+struct DwmMargins {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "dwmapi")]
+#[allow(non_snake_case)]
+extern "system" {
+    /// Sets one DWM window attribute.
+    ///
+    /// # Safety
+    ///
+    /// `hwnd` must be a live window handle, and `pv_attribute` must point at
+    /// `cb_attribute` readable bytes whose layout matches the attribute being set.
+    fn DwmSetWindowAttribute(
+        hwnd: winapi::shared::windef::HWND,
+        dw_attribute: u32,
+        pv_attribute: *const std::ffi::c_void,
+        cb_attribute: u32,
+    ) -> i32;
+
+    /// Extends the DWM frame into the client area.
+    ///
+    /// # Safety
+    ///
+    /// `hwnd` must be a live window handle, and `margins` must point at one valid `MARGINS`.
+    fn DwmExtendFrameIntoClientArea(
+        hwnd: winapi::shared::windef::HWND,
+        margins: *const DwmMargins,
+    ) -> i32;
+}
+
+/// One checked call to `DwmSetWindowAttribute`.
+///
+/// # Safety
+///
+/// `hwnd` must be live and `value` must point at `size` readable bytes for the attribute.
+#[cfg(target_os = "windows")]
+unsafe fn dwm_set_window_attribute(
+    hwnd: winapi::shared::windef::HWND,
+    attribute: u32,
+    value: *const std::ffi::c_void,
+    size: u32,
+) -> i32 {
+    // SAFETY: the caller guarantees the handle and buffer; this wrapper only forwards them.
+    unsafe { DwmSetWindowAttribute(hwnd, attribute, value, size) }
+}
+
+/// Enables or disables client-area composition for a layered window.
+///
+/// # Safety
+///
+/// `hwnd` must be a live window handle; the margins are a local value that outlives the call.
+#[cfg(target_os = "windows")]
+unsafe fn dwm_extend_frame_into_client_area(
+    hwnd: winapi::shared::windef::HWND,
+    enable: bool,
+) -> Result<(), i32> {
+    let margins = if enable {
+        DwmMargins { left: -1, top: -1, right: -1, bottom: -1 }
+    } else {
+        DwmMargins { left: 0, top: 0, right: 0, bottom: 0 }
+    };
+    let hr =
+        // SAFETY: the caller guarantees a live handle; `margins` is this frame's local value.
+        unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins as *const DwmMargins) };
+    if hr >= 0 {
+        Ok(())
+    } else {
+        Err(hr)
+    }
+}
+
 impl Platform for WindowsPlatform {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -442,6 +525,208 @@ impl Platform for WindowsPlatform {
             return None;
         }
         self.state.window_min_size(widget_id)
+    }
+
+    /// Records a maximum content size and asks Win32 to recompute its frame constraints.
+    ///
+    /// Win32 has no `SetWindowMaxSize`; like the minimum, the value is consumed by the
+    /// `WM_GETMINMAXINFO` handler in `wnd_proc` (`ptMaxTrackSize`). A `SetWindowPos` with only the
+    /// `SWP_NO*` flags makes the system ask again immediately, so a *reduction* applies now rather
+    /// than at the next user resize.
+    fn set_window_max_size(&self, widget_id: ObjectId, width: u32, height: u32) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return false;
+        }
+        self.state.set_window_max_size(widget_id, width, height);
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{
+                SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+            };
+            if let Some(hwnd) = self.get_native_handle(widget_id) {
+                // SAFETY: `hwnd` is live; the call only re-runs the min/max query and changes no
+                // position, size or z-order (`SWP_NOSIZE` is what keeps the zero extents from
+                // being applied as a new size).
+                unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        std::ptr::null_mut(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+            }
+        }
+        true
+    }
+
+    /// Toggles a layered window; see the trait method for what each toolkit expresses.
+    ///
+    /// `WS_EX_LAYERED` is Win32's window-transparency bit. On a compositing desktop the DWM then
+    /// combines the window's alpha with what is behind it; `DwmExtendFrameIntoClientArea` with
+    /// `-1` margins lets the client area participate, which is the part a plain layered window does
+    /// not do. Removing the bit restores an ordinary opaque window. Colour-key transparency is
+    /// deliberately not used: it would punch out one colour rather than honour the surface's own
+    /// alpha channel.
+    fn set_window_transparent(&self, widget_id: ObjectId, transparent: bool) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{
+                GetWindowLongW, SetLayeredWindowAttributes, SetWindowLongW, GWL_EXSTYLE, LWA_ALPHA,
+                WS_EX_LAYERED,
+            };
+            let Some(hwnd) = self.get_native_handle(widget_id) else {
+                return false;
+            };
+            // SAFETY: `hwnd` is live; the style read/write pair is the documented way to toggle an
+            // extended window style, and the layered attribute only changes this window's alpha.
+            unsafe {
+                let style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+                let updated =
+                    if transparent { style | WS_EX_LAYERED } else { style & !WS_EX_LAYERED };
+                SetWindowLongW(hwnd, GWL_EXSTYLE, updated as i32);
+                if transparent {
+                    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+                }
+                if let Err(error) = dwm_extend_frame_into_client_area(hwnd, transparent) {
+                    // Composition may be unavailable in a remote/headless session. The layered
+                    // bit is still set, so this is a stated limit rather than a silent success.
+                    log::debug!(
+                        "[windows] transparent window {widget_id}: DWM composition unavailable \
+                         ({error}); only the layered-window bit was applied"
+                    );
+                }
+            }
+            true
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = transparent;
+            false
+        }
+    }
+
+    /// Keeps the window above ordinary windows with `SetWindowPos(HWND_TOPMOST)`.
+    fn set_window_always_on_top(&self, widget_id: ObjectId, on: bool) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{
+                SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            };
+            let Some(hwnd) = self.get_native_handle(widget_id) else {
+                return false;
+            };
+            let insert_after = if on { HWND_TOPMOST } else { HWND_NOTOPMOST };
+            // SAFETY: `hwnd` is live; only its z-order changes, with position and size left alone.
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    insert_after,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                ) != 0
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = on;
+            false
+        }
+    }
+
+    /// Sets the window's immersive dark-mode attribute through `DwmSetWindowAttribute`.
+    ///
+    /// The attribute id is `DWMWA_USE_IMMERSIVE_DARK_MODE` (20) on current Windows and 19 on the
+    /// first builds that shipped it; both are tried because the documented id moved. A failure from
+    /// both means this DWM does not expose the attribute, which is reported rather than claimed.
+    fn set_window_preferred_theme(&self, widget_id: ObjectId, dark: bool) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let Some(hwnd) = self.get_native_handle(widget_id) else {
+                return false;
+            };
+            // A Windows BOOL is an i32; `DwmSetWindowAttribute` reads exactly that many bytes.
+            let value: i32 = if dark { 1 } else { 0 };
+            let size = std::mem::size_of::<i32>() as u32;
+            for attribute in [20u32, 19u32] {
+                // SAFETY: `hwnd` is live and `value` outlives the call; the API copies
+                // `size` bytes from it into its own storage.
+                let hr = unsafe {
+                    dwm_set_window_attribute(
+                        hwnd,
+                        attribute,
+                        &value as *const i32 as *const _,
+                        size,
+                    )
+                };
+                if hr >= 0 {
+                    return true;
+                }
+            }
+            false
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = dark;
+            false
+        }
+    }
+
+    /// Excludes the window from capture through `SetWindowDisplayAffinity`.
+    ///
+    /// `WDA_EXCLUDEFROMCAPTURE` (0x11) is the Windows 10 2004+ answer; older systems reject it and
+    /// this reports `false` rather than falling back to `WDA_MONITOR`, which blanks the window
+    /// instead of merely protecting it.
+    fn set_window_content_protected(&self, widget_id: ObjectId, protected: bool) -> bool {
+        let Some(kind) = self.state.kind_of(widget_id) else {
+            return false;
+        };
+        if !matches!(kind, super::types::WindowsHandleKind::Window) {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use winapi::um::winuser::{SetWindowDisplayAffinity, WDA_NONE};
+            const WDA_EXCLUDEFROMCAPTURE: u32 = 0x0000_0011;
+            let Some(hwnd) = self.get_native_handle(widget_id) else {
+                return false;
+            };
+            let affinity = if protected { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE };
+            // SAFETY: `hwnd` is live and the affinity value is one of the two documented flags.
+            unsafe { SetWindowDisplayAffinity(hwnd, affinity) != 0 }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = protected;
+            false
+        }
     }
 
     fn set_window_icon(&self, widget_id: ObjectId, path: &str) -> bool {
@@ -1242,16 +1527,14 @@ impl Platform for WindowsPlatform {
             accessibility: true,
             native_menu: false,
             typed_widget_trigger: true,
-            // `create_file_dialog` is not overridden, so there is no system chooser to offer;
-            // the trait default answers "no control was created".
             // `set/get_clipboard_text` use the Win32 clipboard (`OpenClipboard` /
             // `SetClipboardData`), so a copy is visible outside this process.
             clipboard: true,
             // `open_external` spawns `cmd /C start`.
             open_external: true,
-            // `choose_path` presents the Win32 common dialogs (`GetOpenFileNameW` /
-            // `GetSaveFileNameW`, `SHBrowseForFolderW`), so the flag and the method are one
-            // implementation.
+            // `create_file_dialog` returns a logical handle and `choose_path` presents the
+            // Win32 common dialogs (`GetOpenFileNameW` / `GetSaveFileNameW`,
+            // `SHBrowseForFolderW`), so the flag and the methods are one implementation.
             file_dialog: true,
             // DirectWrite's system collection names each family's backing file through
             // `IDWriteFontFile` + `IDWriteLocalFontFileLoader` (B28.39).
@@ -1325,6 +1608,76 @@ impl Platform for WindowsPlatform {
         {
             1.0
         }
+    }
+
+    /// The pointer's position in the desktop's screen space (SP-119).
+    ///
+    /// `GetCursorPos` answers in physical screen pixels, the same space `GetPixel` reads, so the
+    /// two answers can be combined into "what colour is under the cursor". The coordinates are
+    /// deliberately not divided by [`Self::dpi_scale_factor`]: the sampler is a screen-space read,
+    /// not a window-local one.
+    #[cfg(target_os = "windows")]
+    fn global_pointer_position(&self) -> Option<crate::core::Point> {
+        // SAFETY: `GetCursorPos` only writes into the caller's `POINT`; the stack value is valid
+        // for the call and nothing is retained.
+        unsafe {
+            let mut point = winapi::shared::windef::POINT { x: 0, y: 0 };
+            if winapi::um::winuser::GetCursorPos(&mut point) == 0 {
+                return None;
+            }
+            Some(crate::core::Point::new(point.x, point.y))
+        }
+    }
+
+    /// The colour of the desktop pixel at `position` (SP-119).
+    ///
+    /// `GetPixel` on the screen DC reads the composited desktop, which is exactly what an
+    /// eyedropper picks. `CLR_INVALID` is the documented "that point is not on the desktop"
+    /// answer, and it is mapped to `None` rather than to a colour.
+    #[cfg(target_os = "windows")]
+    fn sample_screen_color(&self, position: crate::core::Point) -> Option<crate::core::Color> {
+        // SAFETY: the screen DC is released on every path, and `GetPixel` only reads it.
+        unsafe {
+            let hdc = winapi::um::winuser::GetDC(std::ptr::null_mut());
+            if hdc.is_null() {
+                return None;
+            }
+            let pixel = winapi::um::wingdi::GetPixel(hdc, position.x, position.y);
+            winapi::um::winuser::ReleaseDC(std::ptr::null_mut(), hdc);
+            if pixel == winapi::um::wingdi::CLR_INVALID {
+                return None;
+            }
+            // `COLORREF` is 0x00BBGGRR.
+            let red = (pixel & 0x0000_00FF) as u8;
+            let green = ((pixel & 0x0000_FF00) >> 8) as u8;
+            let blue = ((pixel & 0x00FF_0000) >> 16) as u8;
+            Some(crate::core::Color::rgb(red, green, blue))
+        }
+    }
+
+    /// The DPI scale of the monitor the window is on (P-207).
+    ///
+    /// [`Self::dpi_scale_factor`] answers the primary monitor's scale because it has no window to
+    /// ask about. A host laying out one window on a mixed-DPI desktop needs that window's own
+    /// monitor, which Win32 exposes as `GetDpiForWindow` (Windows 10 1607+) with a monitor-DC
+    /// fallback on older systems. The lookup is live rather than cached: `WM_DPICHANGED` already
+    /// invalidates the shared environment revision, so a cached global value would be re-read, and
+    /// reading the window directly also reflects a move that happened without a message reaching
+    /// this backend.
+    #[cfg(target_os = "windows")]
+    fn dpi_scale_factor_for_window(&self, window_id: ObjectId) -> f32 {
+        #[cfg(widgets_unstripped)]
+        let hwnd = super::window_hwnd_for_widget_id(self, window_id);
+        #[cfg(not(widgets_unstripped))]
+        let hwnd = self.get_native_handle(window_id);
+        hwnd.map(super::displays::dpi_scale_factor_for_window_handle)
+            .unwrap_or_else(|| self.dpi_scale_factor())
+    }
+
+    /// Non-Windows builds have no window to resolve; the global answer is the documented default.
+    #[cfg(not(target_os = "windows"))]
+    fn dpi_scale_factor_for_window(&self, _window_id: ObjectId) -> f32 {
+        self.dpi_scale_factor()
     }
 
     /// The monitors Win32 reports; see [`super::displays`].
@@ -1604,6 +1957,75 @@ impl Platform for WindowsPlatform {
             let _ = (widget_id, kind);
             false
         }
+    }
+
+    /// Creates a logical file-chooser handle.
+    ///
+    /// The native chooser in this backend is [`Self::choose_path`] (`GetOpenFileNameW` /
+    /// `GetSaveFileNameW`), which is what the `file_dialog` capability flag describes. The library
+    /// paints the chooser control itself, so this creator returns a state handle of the same kind
+    /// rather than a second, shadow Win32 dialog object; a `0` would tell the caller there is no
+    /// control while the capability says there is a picker (P-204).
+    fn create_file_dialog(
+        &self,
+        _parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        self.state.create_widget(WindowsHandleKind::FileDialog, "Open File", x, y, width, height)
+    }
+
+    /// Message boxes are painted by the library; this backend creates no native one.
+    #[allow(clippy::too_many_arguments)]
+    fn create_message_box(
+        &self,
+        parent: ObjectId,
+        title: &str,
+        text: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = (parent, title, text, x, y, width, height);
+        log::debug!(
+            "[windows] create_message_box: no native message-box control; the library paints it"
+        );
+        0
+    }
+
+    /// Colour choosers are painted by the library; this backend creates no native one.
+    fn create_color_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        log::debug!(
+            "[windows] create_color_dialog: no native colour-dialog control; the library paints it"
+        );
+        0
+    }
+
+    /// Font choosers are painted by the library; this backend creates no native one.
+    fn create_font_dialog(
+        &self,
+        parent: ObjectId,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> ObjectId {
+        let _ = (parent, x, y, width, height);
+        log::debug!(
+            "[windows] create_font_dialog: no native font-dialog control; the library paints it"
+        );
+        0
     }
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {

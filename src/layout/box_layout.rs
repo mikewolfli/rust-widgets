@@ -3,11 +3,10 @@
 
 //! Box layout manager — arranges items in a single row or column.
 use super::{ChildInfo, Layout, LayoutConstraints, LayoutContext, Orientation, SizePolicy};
-use crate::compat::{Any, Vec};
+use crate::compat::{Any, Box, Vec};
 use crate::core::Alignment;
 use crate::core::{ObjectId, Rect, Size};
 use crate::style::EdgeOffsets;
-#[derive(Debug)]
 struct BoxLayoutItem {
     widget_id: Option<ObjectId>,
     stretch: u32,
@@ -38,7 +37,59 @@ struct BoxLayoutItem {
     /// real measurement supplied by the caller (a text control knows its ascent), not a
     /// stand-in for the start edge.
     baseline: Option<u32>,
+    /// A layout that runs inside this item's rectangle (DEMO-004).
+    ///
+    /// The child layout is given exactly the rectangle this item was allocated, so "this row is a
+    /// horizontal split of two panes" is expressed as one layout tree instead of a caller computing
+    /// the row's rectangle and then running a second layout against it — the two-pass form that
+    /// kept the code-editor demo's inner panes one resize behind its outer rows.
+    ///
+    /// A placeholder item ([`PLACEHOLDER_ID`]) exists purely to host one; a real item may have
+    /// both a widget and a child layout, in which case the widget is placed and the child layout
+    /// then divides the same rectangle.
+    child_layout: Option<Box<dyn Layout>>,
 }
+
+impl core::fmt::Debug for BoxLayoutItem {
+    /// `dyn Layout` has no `Debug` supertrait, so the nested layout is reported by presence rather
+    /// than by contents. `BoxLayout` keeps its `Debug` derive, which is what diagnostics print.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BoxLayoutItem")
+            .field("widget_id", &self.widget_id)
+            .field("stretch", &self.stretch)
+            .field("constraints", &self.constraints)
+            .field("policy", &self.policy)
+            .field("align", &self.align)
+            .field("cross_size", &self.cross_size)
+            .field("baseline", &self.baseline)
+            .field("has_child_layout", &self.child_layout.is_some())
+            .finish()
+    }
+}
+/// The id a [`BoxLayout`] item uses when it reserves a slot for something that is not a control.
+///
+/// A box can hold a row whose rectangle a **nested** layout then splits; that row is not a widget,
+/// but `update`'s callback is keyed by `ObjectId`, so it needs an id to report. This is the largest
+/// `ObjectId`, which the runtime never hands out, so it cannot collide with a live control.
+///
+/// # Why this is a named constant and not a literal at the call site
+///
+/// The code-editor demo used `u64::MAX` directly and documented the “no-op for an unknown id”
+/// behaviour in a comment. A sentinel whose meaning lives only in prose becomes a different
+/// number at the next call site; naming it here is what makes “this row is not a control” a fact
+/// the type system carries (DEMO-004).
+pub const PLACEHOLDER_ID: crate::core::ObjectId = u64::MAX;
+
+/// The context a nested layout receives from an entry point that was not given one (DEMO-004).
+///
+/// `update` and `arrange` are the **nominal** geometry entries — their answer must not depend on the
+/// device's text preference — so a nested layout reached from them is given this context at the
+/// same scale instead of `LayoutContext::default()`, which reads the platform's text scale. The
+/// touch floor is zero because those entries deliberately do not grow children.
+fn nominal_context(scale: f32) -> LayoutContext {
+    LayoutContext { layout_scale: scale, font_scale: scale, min_touch_size: Size::new(0, 0) }
+}
+
 /// Linear layout that arranges items in one direction.
 #[derive(Debug)]
 pub struct BoxLayout {
@@ -117,6 +168,7 @@ impl BoxLayout {
                 align: None,
                 cross_size: None,
                 baseline: None,
+                child_layout: None,
             },
         );
         true
@@ -139,6 +191,7 @@ impl BoxLayout {
                 align: None,
                 cross_size: None,
                 baseline: None,
+                child_layout: None,
             },
         );
         true
@@ -242,6 +295,7 @@ impl BoxLayout {
             align: None,
             cross_size: None,
             baseline: None,
+            child_layout: None,
         });
     }
 
@@ -264,8 +318,36 @@ impl BoxLayout {
             align: None,
             cross_size: None,
             baseline: None,
+            child_layout: None,
         });
     }
+    /// Attaches a nested layout to the item for `widget_id` (DEMO-004).
+    ///
+    /// The nested layout runs inside that item's rectangle, after the item itself (if any) has been
+    /// placed. A [`PLACEHOLDER_ID`] item exists purely to host one; a real item may have both a
+    /// widget and a nested layout, in which case the layout divides the rectangle the widget was
+    /// given.
+    ///
+    /// Returns `false` when `widget_id` is not an item of this layout. There is deliberately no
+    /// second entry point: the item is the unit that owns a rectangle, so "attach a layout" and
+    /// "attach a widget" address the same item.
+    pub fn set_child_layout(&mut self, widget_id: ObjectId, layout: Box<dyn Layout>) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.widget_id == Some(widget_id))
+        else {
+            return false;
+        };
+        item.child_layout = Some(layout);
+        true
+    }
+
+    /// The nested layout attached to the item for `widget_id`, if any.
+    pub fn child_layout(&self, widget_id: ObjectId) -> Option<&dyn Layout> {
+        self.items
+            .iter()
+            .find(|item| item.widget_id == Some(widget_id))
+            .and_then(|item| item.child_layout.as_deref())
+    }
+
     /// Sets size constraints for an existing widget item.
     pub fn set_constraints(&mut self, widget_id: ObjectId, constraints: LayoutConstraints) {
         if let Some(item) = self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
@@ -633,6 +715,14 @@ impl BoxLayout {
             if let Some(widget_id) = item.widget_id {
                 out(widget_id, child_rect);
             }
+            // A nested layout divides the same rectangle this item was given (DEMO-004).
+            // Running it here — next to the placement, in every entry point — is what keeps a
+            // two-level layout one pass instead of a caller re-running it afterwards against a
+            // rectangle it had to re-derive. This entry carries no context, so the nested layout
+            // gets the nominal one at this entry's scale.
+            if let Some(child) = &item.child_layout {
+                child.update_with_context(child_rect, &nominal_context(scale), &mut *out);
+            }
             match self.orientation {
                 Orientation::Horizontal => cursor_x += (major + scaled_spacing) as i32,
                 Orientation::Vertical => cursor_y += (major + scaled_spacing) as i32,
@@ -786,17 +876,18 @@ impl Layout for BoxLayout {
                 }
             };
             if let Some(widget_id) = item.widget_id {
-                // Grown to the device class's minimum touch area, as the flex layout does — the two
-                // must agree or the same controls would be addressable in one container and not the
-                // other. The cursor advances by the *allocated* major length either way, so growing
-                // a child cannot push its siblings around.
-                widgets(
-                    widget_id,
-                    crate::layout::types::grow_to_min_touch_size(
-                        child_rect,
-                        context.min_touch_size,
-                    ),
+                let placed = crate::layout::types::grow_to_min_touch_size(
+                    child_rect,
+                    context.min_touch_size,
                 );
+                widgets(widget_id, placed);
+                // The nested layout divides the rectangle its item was given, so it and the widget
+                // it may accompany agree on the box (DEMO-004).
+                if let Some(child) = &item.child_layout {
+                    child.update_with_context(placed, context, &mut *widgets);
+                }
+            } else if let Some(child) = &item.child_layout {
+                child.update_with_context(child_rect, context, &mut *widgets);
             }
             match self.orientation {
                 Orientation::Horizontal => cursor_x += (major + scaled_spacing) as i32,
@@ -868,6 +959,7 @@ impl Layout for BoxLayout {
             align: None,
             cross_size: None,
             baseline: None,
+            child_layout: None,
         });
     }
     fn remove_widget(&mut self, widget_id: ObjectId) {
@@ -930,6 +1022,13 @@ impl Layout for BoxLayout {
             if let Some(widget_id) = item.widget_id {
                 widgets(widget_id, child_rect);
             }
+            // `update` is the nominal geometry entry: no context, no scaling, and no touch floor.
+            // A nested layout is still run, with that same nominal reading, so a caller that asks
+            // this entry for a rectangle gets the same tree shape the context entry produces
+            // (DEMO-004).
+            if let Some(child) = &item.child_layout {
+                child.update_with_context(child_rect, &nominal_context(1.0), &mut *widgets);
+            }
             match self.orientation {
                 Orientation::Horizontal => cursor_x += (major + self.spacing) as i32,
                 Orientation::Vertical => cursor_y += (major + self.spacing) as i32,
@@ -970,6 +1069,60 @@ mod tests {
 
     fn rect_of(out: &[(ObjectId, Rect)], id: ObjectId) -> Rect {
         out.iter().find(|(i, _)| *i == id).map(|(_, r)| *r).expect("the id was placed")
+    }
+
+    /// A nested layout divides the rectangle of the item that hosts it (DEMO-004).
+    ///
+    /// This is the shape the code-editor demo uses: a vertical window layout reserves one row and
+    /// attaches the tree/editor split to it, so one pass places both levels instead of the caller
+    /// re-deriving the row and running a second layout afterwards.
+    #[test]
+    fn a_nested_layout_runs_inside_its_items_rectangle() {
+        let toolbar = 1u64;
+        let left = 11u64;
+        let right = 22u64;
+
+        let mut panes = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        panes.add_widget(left, 1);
+        panes.add_widget(right, 3);
+
+        let mut window = BoxLayout::new(Orientation::Vertical, 0, 0);
+        window.add_widget(toolbar, 1);
+        window.add_widget(PLACEHOLDER_ID, 4);
+        assert!(window.set_child_layout(PLACEHOLDER_ID, Box::new(panes)));
+        assert!(
+            window.child_layout(PLACEHOLDER_ID).is_some(),
+            "the nested layout is readable back from its item"
+        );
+
+        let out = placed(&window, Rect::new(0, 0, 400, 500));
+        let row = rect_of(&out, PLACEHOLDER_ID);
+        assert_eq!(row.height, 400, "the row is the four-fifths share it was given");
+
+        let left_rect = rect_of(&out, left);
+        let right_rect = rect_of(&out, right);
+        assert_eq!(left_rect.x, row.x, "the nested band starts where its row starts");
+        assert_eq!(left_rect.y, row.y);
+        assert_eq!(left_rect.width, 100, "one quarter of the row, not of the window");
+        assert_eq!(right_rect.width, 300);
+        assert_eq!(right_rect.x, row.x + 100);
+        assert_eq!(left_rect.height, row.height, "the panes fill the row's height");
+
+        // An id that is not an item has nothing to attach to.
+        assert!(
+            !window.set_child_layout(9999, Box::new(BoxLayout::new(Orientation::Vertical, 0, 0)))
+        );
+    }
+
+    /// DEMO-004: a reserved row reports the named placeholder id, which no live control owns.
+    #[test]
+    fn a_placeholder_row_reports_the_reserved_id() {
+        let mut layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+        layout.add_widget(PLACEHOLDER_ID, 1);
+        let out = placed(&layout, Rect::new(0, 0, 120, 80));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, PLACEHOLDER_ID);
+        assert_ne!(PLACEHOLDER_ID, 0, "a real widget id is never zero or the sentinel");
     }
 
     /// The explicit cross size is honoured by every entry point, including the one that receives
