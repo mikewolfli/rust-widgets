@@ -1343,16 +1343,18 @@ mod tests {
         chart.set_data(vec![DataPoint::new("A", 10), DataPoint::new("B", 50)]);
         assert!(chart.hover_enabled(), "hover tracks by default");
 
-        chart.handle_event(&Event::MouseMove { pos: Point::new(115, 50) });
+        // Two line points centre at x 40 and x 190, so the probe sits clearly on B's half:
+        // the historical 115 was an exact tie between the two and resolved to A.
+        chart.handle_event(&Event::MouseMove { pos: Point::new(150, 50) });
         assert_eq!(chart.hovered_index(), Some(1));
 
         chart.set_hover_enabled(false);
         assert_eq!(chart.hovered_index(), None, "turning it off clears the marker");
-        chart.handle_event(&Event::MouseMove { pos: Point::new(115, 50) });
+        chart.handle_event(&Event::MouseMove { pos: Point::new(150, 50) });
         assert_eq!(chart.hovered_index(), None, "a disabled switch tracks nothing");
 
         chart.set_hover_enabled(true);
-        chart.handle_event(&Event::MouseMove { pos: Point::new(115, 50) });
+        chart.handle_event(&Event::MouseMove { pos: Point::new(150, 50) });
         assert_eq!(chart.hovered_index(), Some(1));
         assert_eq!(chart.get("hover_enabled"), Ok(CapabilityValue::Bool(true)));
     }

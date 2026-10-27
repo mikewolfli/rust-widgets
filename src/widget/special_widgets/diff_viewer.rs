@@ -20,6 +20,9 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::effective_font;
+use crate::widget::special_widgets::code_editor::{
+    BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter, TokenKind, TokenSpan,
+};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::borrow::Cow;
@@ -226,6 +229,18 @@ pub struct DiffViewer {
     span_widths: SpanWidths,
     /// Whether `display_rows` needs rebuilding before the next use.
     display_dirty: bool,
+    /// Whether the compared lines are syntax-highlighted.
+    ///
+    /// Off by default: the viewer's own meaning is the diff, and a colour added for a token would
+    /// compete with the added/removed/changed row tint that carries it. A host that shows source
+    /// turns it on and names the language.
+    syntax_highlight: bool,
+    /// The language the highlighter tokenises when [`Self::syntax_highlight`] is on.
+    language: LanguageId,
+    /// Highlight spans for both sides of every line, built once per text change.
+    syntax_spans: Option<(LanguageId, Vec<(Vec<TokenSpan>, Vec<TokenSpan>)>)>,
+    /// Whether [`Self::syntax_spans`] must be rebuilt before the next use.
+    syntax_dirty: bool,
     /// Emitted after compare. Payload is changed-lines count.
     pub compared: Signal1<usize>,
     /// Emitted when the selected row changes, with the selected line index.
@@ -306,6 +321,10 @@ impl DiffViewer {
             display_rows: Vec::new(),
             span_widths: HashMap::new(),
             display_dirty: true,
+            syntax_highlight: false,
+            language: LanguageId::PlainText,
+            syntax_spans: None,
+            syntax_dirty: true,
             compared: Signal1::new(),
             selection_changed: Signal1::new(),
             view_mode_changed: Signal1::new(),
@@ -326,6 +345,150 @@ impl DiffViewer {
     /// Returns diff lines.
     pub fn lines(&self) -> &[DiffLine] {
         &self.lines
+    }
+
+    /// Whether the compared lines are syntax-highlighted.
+    pub fn syntax_highlight(&self) -> bool {
+        self.syntax_highlight
+    }
+
+    /// Enables or disables syntax highlighting over the diff rows.
+    ///
+    /// Off by default, which is the row-level presentation the viewer has always painted.
+    pub fn set_syntax_highlight(&mut self, enabled: bool) {
+        if self.syntax_highlight == enabled {
+            return;
+        }
+        self.syntax_highlight = enabled;
+        self.syntax_dirty = true;
+        self.base.request_redraw();
+    }
+
+    /// The language tokenised when syntax highlighting is on.
+    pub fn language(&self) -> LanguageId {
+        self.language
+    }
+
+    /// Sets the language tokenised by syntax highlighting.
+    ///
+    /// [`LanguageId::PlainText`] produces no token spans, so enabling highlighting without a
+    /// language leaves the paint path exactly as it was.
+    pub fn set_language(&mut self, language: LanguageId) {
+        if self.language == language {
+            return;
+        }
+        self.language = language;
+        self.syntax_dirty = true;
+        self.base.request_redraw();
+    }
+
+    /// Rebuilds the token spans when the text or language changed.
+    ///
+    /// Both sides are lexed in their own line order, so a multi-line construct that the diff
+    /// splits across an added or removed row keeps its state on the side the row belongs to.
+    fn ensure_syntax_spans(&mut self) {
+        if !self.syntax_dirty {
+            return;
+        }
+        self.syntax_dirty = false;
+        if !self.syntax_highlight || self.language == LanguageId::PlainText {
+            return;
+        }
+        let highlighter = BuiltinHighlighter::new(self.language);
+        let mut left_state = LineState::initial();
+        let mut right_state = LineState::initial();
+        let mut rows = Vec::with_capacity(self.lines.len());
+        for line in &self.lines {
+            let left = match &line.left {
+                Some(text) => {
+                    let (spans, state) = highlighter.highlight_line(text, left_state);
+                    left_state = state;
+                    spans
+                }
+                None => Vec::new(),
+            };
+            let right = match &line.right {
+                Some(text) => {
+                    let (spans, state) = highlighter.highlight_line(text, right_state);
+                    right_state = state;
+                    spans
+                }
+                None => Vec::new(),
+            };
+            rows.push((left, right));
+        }
+        self.syntax_spans = Some((self.language, rows));
+    }
+
+    /// The token colour for `kind`, resolved against the row's ink and surface.
+    fn token_color(kind: TokenKind, ink: Color, background: Color) -> Color {
+        use crate::style::{semantic_color, SemanticColor};
+        match kind {
+            TokenKind::Keyword | TokenKind::Function => {
+                semantic_color(SemanticColor::Info).unwrap_or(Color::BLUE)
+            }
+            TokenKind::Type => semantic_color(SemanticColor::Info).unwrap_or(Color::PRIMARY),
+            TokenKind::String | TokenKind::Character => {
+                semantic_color(SemanticColor::Success).unwrap_or(Color::GREEN)
+            }
+            TokenKind::Number => semantic_color(SemanticColor::Warning).unwrap_or(Color::ORANGE),
+            TokenKind::Preprocessor => semantic_color(SemanticColor::Error).unwrap_or(Color::RED),
+            TokenKind::Comment | TokenKind::BlockComment => ink.blend(&background, 0.45),
+            TokenKind::Plain | TokenKind::Operator | TokenKind::Identifier => ink,
+        }
+    }
+
+    /// Draws `text` at `origin`, colouring its token spans when syntax highlighting is on.
+    ///
+    /// Each run is measured as it is placed, so a token boundary is the only thing that moves a
+    /// glyph; a line without spans (or with highlighting off) takes the single-call path the
+    /// viewer has always used.
+    fn draw_highlighted(
+        &self,
+        context: &mut RenderContext,
+        origin: Point,
+        text: &str,
+        spans: &[TokenSpan],
+        font: &crate::core::Font,
+        ink: Color,
+        background: Color,
+    ) {
+        if !self.syntax_highlight || spans.is_empty() {
+            context.draw_text(origin, text, font, ink, HorizontalAlignment::Left);
+            return;
+        }
+        let mut cursor = 0usize;
+        let mut x = origin.x;
+        for span in spans {
+            let start = span.start.min(text.len());
+            let end = span.end.min(text.len()).max(start);
+            if start > cursor {
+                if let Some(gap) = text.get(cursor..start) {
+                    context.draw_text(
+                        Point::new(x, origin.y),
+                        gap,
+                        font,
+                        ink,
+                        HorizontalAlignment::Left,
+                    );
+                    x += context.measure_text(gap, font).width as i32;
+                }
+            }
+            if let Some(run) = text.get(start..end) {
+                context.draw_text(
+                    Point::new(x, origin.y),
+                    run,
+                    font,
+                    Self::token_color(span.kind, ink, background),
+                    HorizontalAlignment::Left,
+                );
+                x += context.measure_text(run, font).width as i32;
+            }
+            cursor = cursor.max(end);
+        }
+        if let Some(tail) = text.get(cursor..) {
+            context.draw_text(Point::new(x, origin.y), tail, font, ink, HorizontalAlignment::Left);
+        }
     }
 
     /// Returns selected line index.
@@ -860,6 +1023,9 @@ impl DiffViewer {
     }
 
     fn recompute(&mut self) {
+        // The line list is replaced below, so the per-line token spans describe rows that no
+        // longer exist.
+        self.syntax_dirty = true;
         let left_lines: Vec<&str> = self.left.lines().collect();
         let right_lines: Vec<&str> = self.right.lines().collect();
         // Comparison keys: what the algorithm judges, while the rows keep showing the raw text.
@@ -1424,6 +1590,9 @@ impl Draw for DiffViewer {
         // change rather than per frame. Done before the style borrow is taken because it needs
         // `&mut self`.
         self.ensure_display_rows();
+        // Token spans describe the rows that are about to be painted, so they are rebuilt after
+        // the rows exist and before the style borrow is taken (the rebuild needs `&mut self`).
+        self.ensure_syntax_spans();
 
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
@@ -1553,6 +1722,12 @@ impl Draw for DiffViewer {
             let Some(line) = self.lines.get(index) else {
                 continue;
             };
+            let (left_spans, right_spans): (&[TokenSpan], &[TokenSpan]) = self
+                .syntax_spans
+                .as_ref()
+                .and_then(|(_, rows)| rows.get(index))
+                .map(|(left, right)| (left.as_slice(), right.as_slice()))
+                .unwrap_or((&[], &[]));
             let bg = match line.kind {
                 DiffKind::Equal => None,
                 DiffKind::Added => added.or_else(|| Some(background.blend(&Color::GREEN, 0.12))),
@@ -1598,12 +1773,14 @@ impl Draw for DiffViewer {
                             text_color.blend(&background, 0.5),
                             HorizontalAlignment::Left,
                         );
-                        context.draw_text(
+                        self.draw_highlighted(
+                            context,
                             Point::new(rect.x + 34, y),
                             text,
+                            left_spans,
                             font,
                             row_ink,
-                            HorizontalAlignment::Left,
+                            background,
                         );
                         context.pop_clip();
                     }
@@ -1623,12 +1800,14 @@ impl Draw for DiffViewer {
                             text_color.blend(&background, 0.5),
                             HorizontalAlignment::Left,
                         );
-                        context.draw_text(
+                        self.draw_highlighted(
+                            context,
                             Point::new(mid_x + 34, y),
                             text,
+                            right_spans,
                             font,
                             row_ink,
-                            HorizontalAlignment::Left,
+                            background,
                         );
                         context.pop_clip();
                     }
@@ -1647,6 +1826,13 @@ impl Draw for DiffViewer {
                         }
                     };
                     if let (Some(text), Some(gutter)) = (text, gutter) {
+                        let spans = match side {
+                            RowSide::Left => left_spans,
+                            _ => match line.kind {
+                                DiffKind::Removed => left_spans,
+                                _ => right_spans,
+                            },
+                        };
                         context.push_clip(
                             rect.x + 2,
                             y - 11,
@@ -1660,12 +1846,14 @@ impl Draw for DiffViewer {
                             text_color.blend(&background, 0.5),
                             HorizontalAlignment::Left,
                         );
-                        context.draw_text(
+                        self.draw_highlighted(
+                            context,
                             Point::new(rect.x + 38, y),
                             text,
+                            spans,
                             font,
                             row_ink,
-                            HorizontalAlignment::Left,
+                            background,
                         );
                         context.pop_clip();
                     }
@@ -2830,5 +3018,49 @@ mod issue_2_8_tests {
         assert!(count >= 2);
         let row = &viewer.display_rows[1];
         assert!(row.left_gutter.is_some() || row.right_gutter.is_some());
+    }
+
+    /// SP-016: syntax highlighting is opt-in and tokenises the compared lines in place.
+    #[test]
+    fn syntax_highlight_is_off_by_default_and_tokenises_when_enabled() {
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 400));
+        viewer.set_texts("fn main() {}", "fn main() { }");
+        assert!(!viewer.syntax_highlight(), "the default presentation is unchanged");
+        assert_eq!(viewer.language(), LanguageId::PlainText);
+        viewer.ensure_syntax_spans();
+        assert!(viewer.syntax_spans.is_none(), "no tokens are built while it is off");
+
+        viewer.set_syntax_highlight(true);
+        viewer.set_language(LanguageId::Rust);
+        viewer.ensure_syntax_spans();
+        let (language, rows) = viewer.syntax_spans.as_ref().expect("spans were built");
+        assert_eq!(*language, LanguageId::Rust);
+        let (left, _) = &rows[0];
+        assert!(
+            left.iter().any(|span| span.kind == TokenKind::Keyword
+                && viewer.lines()[0]
+                    .left
+                    .as_deref()
+                    .and_then(|text| text.get(span.start..span.end))
+                    == Some("fn")),
+            "the keyword is classified for its own colour"
+        );
+    }
+
+    /// SP-016: the highlighted paint path runs over a real frame.
+    #[test]
+    fn syntax_highlighted_rows_paint() {
+        use crate::core::{Color, Size};
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+        let mut viewer = DiffViewer::new(Rect::new(0, 0, 640, 300));
+        viewer.set_texts("let value = 1;\nfn run() {}", "let value = 2;\nfn run() {}");
+        viewer.set_language(LanguageId::Rust);
+        viewer.set_syntax_highlight(true);
+        let mut backend = SoftwarePaintBackend::new(Size::new(640, 300), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut context = RenderContext::new(&mut backend);
+        viewer.draw(&mut context);
+        backend.end_frame();
+        assert!(!backend.frame_rgba().is_empty());
     }
 }

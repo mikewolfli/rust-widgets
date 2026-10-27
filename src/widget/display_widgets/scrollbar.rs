@@ -2404,6 +2404,10 @@ mod tests {
         use crate::event::FocusReason;
 
         let mut bar = ScrollBar::new(Rect::new(0, 0, 16, 200));
+        // The constructor defaults to horizontal like every control in this crate; the
+        // tall shape is a vertical bar only once it is stated, which is what the arrow
+        // directions below are written against.
+        bar.set_orientation(Orientation::Vertical);
         bar.set_value(50);
         bar.set_single_step(1);
         bar.set_page_step(10);

@@ -1392,6 +1392,14 @@ impl CssParser {
         value: &str,
         sink: &mut ValueSink<'_>,
     ) -> Result<bool, String> {
+        // STY-003: a `var(--token)` reference is evaluated before the property parser sees the
+        // value, so every property that accepts a colour or a length can read a theme token
+        // without a second syntax. The resolved text is a literal, so the recursion terminates;
+        // a fallback that itself contains `var()` is expanded on the next pass.
+        if value.contains("var(") {
+            let resolved = Self::resolve_variables(value)?;
+            return Self::apply_value_spelled(property, &resolved, sink);
+        }
         match property {
             "color" | "text-color" | "foreground" => {
                 sink.text_color(Self::cached_color(value)?);
@@ -1485,6 +1493,135 @@ impl CssParser {
         Ok(true)
     }
 
+    /// Expands every `var(--name[, fallback])` in `value` from the active theme's token set.
+    ///
+    /// # Why the theme is the variable scope
+    ///
+    /// A stylesheet has no declaration block of its own to hold custom properties, and adding
+    /// a parallel variable registry would be a second palette that could disagree with the
+    /// theme. The token set a theme already publishes is therefore the scope: a reviewer can
+    /// answer "what does `--primary` mean?" by reading [`crate::theme::Colors`]. A name the
+    /// theme does not publish is an error rather than an empty substitution, unless the
+    /// declaration supplies the CSS-defined fallback.
+    fn resolve_variables(value: &str) -> Result<String, String> {
+        let mut resolved = String::new();
+        let mut rest = value;
+        while let Some(start) = rest.find("var(") {
+            resolved.push_str(&rest[..start]);
+            let after_open = &rest[start + 4..];
+            // The closing `)` is the one that balances the opening `var(`, not merely the first
+            // one in the text: a fallback is allowed to contain a function call such as
+            // `rgb(1, 2, 3)`, and cutting at its `)` would produce a truncated value.
+            let mut depth = 0usize;
+            let mut close = None;
+            for (index, ch) in after_open.char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' if depth == 0 => {
+                        close = Some(index);
+                        break;
+                    }
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+            }
+            let Some(close) = close else {
+                return Err(format!("unterminated var() in '{value}'"));
+            };
+            let inner = &after_open[..close];
+            let (raw_name, fallback) = match inner.split_once(',') {
+                Some((name, fallback)) => (name, Some(fallback.trim())),
+                None => (inner, None),
+            };
+            let name = raw_name.trim();
+            match Self::theme_variable(name) {
+                Some(replacement) => resolved.push_str(&replacement),
+                None => match fallback {
+                    Some(fallback) if !fallback.is_empty() => resolved.push_str(fallback),
+                    _ => {
+                        return Err(format!(
+                            "unknown CSS variable '{name}': it names no theme token and no \
+                             fallback was given"
+                        ))
+                    }
+                },
+            }
+            rest = &after_open[close + 1..];
+        }
+        resolved.push_str(rest);
+        Ok(resolved)
+    }
+
+    /// Resolves one variable name against the active theme's colour, spacing and border tokens.
+    fn theme_variable(name: &str) -> Option<String> {
+        if let Some(length) = Self::theme_length_variable(name) {
+            return Some(length);
+        }
+        let color = Self::theme_color_variable(name)?;
+        Some(format!("#{:02x}{:02x}{:02x}{:02x}", color.r, color.g, color.b, color.a))
+    }
+
+    /// A colour role named by `--<role>` or `--color-<role>`.
+    fn theme_color_variable(name: &str) -> Option<Color> {
+        let colors = crate::style::theme::palette_shared()?;
+        let role = name.strip_prefix("--color-").or_else(|| name.strip_prefix("--"))?;
+        // CSS custom-property names are conventionally kebab-case; the theme's fields are
+        // snake_case. Accepting both spellings keeps one token from having two public names.
+        let role = role.replace('_', "-");
+        Some(match role.as_str() {
+            "background" => colors.background,
+            "foreground" => colors.foreground,
+            "primary" => colors.primary,
+            "secondary" => colors.secondary,
+            "accent" => colors.accent,
+            "error" => colors.error,
+            "warning" => colors.warning,
+            "success" => colors.success,
+            "disabled" => colors.disabled,
+            "info" => colors.info,
+            "outline" => colors.outline,
+            "outline-variant" => colors.outline_variant,
+            "scrim" => colors.scrim,
+            "surface-container" => colors.surface_container,
+            "surface-container-high" => colors.surface_container_high,
+            "inverse-surface" => colors.inverse_surface,
+            "on-inverse-surface" => colors.on_inverse_surface,
+            "link" => colors.link,
+            "link-visited" => colors.link_visited,
+            "placeholder-text" => colors.placeholder_text,
+            "bright-text" => colors.bright_text,
+            _ => return None,
+        })
+    }
+
+    /// A spacing, border or font size token named by `--<name>`.
+    #[cfg(device_profile)]
+    fn theme_length_variable(name: &str) -> Option<String> {
+        let manager = crate::style::theme_manager();
+        let theme = manager.current_theme()?;
+        let value = match name.strip_prefix("--")? {
+            "space-small" | "spacing-small" => theme.spacing.small,
+            "space-medium" | "spacing-medium" => theme.spacing.medium,
+            "space-large" | "spacing-large" => theme.spacing.large,
+            "space-extra-large" | "spacing-extra-large" | "space-xl" => theme.spacing.extra_large,
+            "border-width" => theme.borders.width,
+            "border-radius" | "radius" => theme.borders.radius,
+            "font-size-caption" => return Some(format!("{}", theme.fonts.caption.size())),
+            "font-size-body" => return Some(format!("{}", theme.fonts.body.size())),
+            "font-size-title" => return Some(format!("{}", theme.fonts.title.size())),
+            "font-size-headline" => return Some(format!("{}", theme.fonts.headline.size())),
+            "font-size-display" => return Some(format!("{}", theme.fonts.display.size())),
+            _ => return None,
+        };
+        Some(format!("{value}"))
+    }
+
+    /// No theme module in this profile, so no token names a length.
+    #[cfg(not(device_profile))]
+    fn theme_length_variable(_name: &str) -> Option<String> {
+        None
+    }
+
     /// Parses `border-style` into the style primitive's own vocabulary (G-404).
     ///
     /// `none` is a value, not a missing declaration: it suppresses a border a lower layer set.
@@ -1540,7 +1677,16 @@ impl CssParser {
 
     /// Parse a CSS color value (#fff, #ffffff, rgb(r,g,b), rgba(r,g,b,a), named colors)
     pub fn parse_color(value: &str) -> Result<Color, String> {
-        let v = value.trim();
+        // STY-003: a colour property may name a theme token through `var()`. The conversion
+        // happens here as well as in the declaration path so a caller that uses this parser
+        // directly gets the same spelling.
+        let expanded;
+        let v = if value.contains("var(") {
+            expanded = Self::resolve_variables(value)?;
+            expanded.trim()
+        } else {
+            value.trim()
+        };
         if let Some(hex) = v.strip_prefix('#') {
             Self::parse_hex_color(hex)
         } else if v.starts_with("rgb") {
@@ -2070,6 +2216,76 @@ mod tests {
         assert_eq!(c, Color::rgba(255, 255, 255, 255));
         let c = CssParser::parse_color("transparent").unwrap();
         assert_eq!(c, Color::rgba(0, 0, 0, 0));
+    }
+
+    /// STY-003: a `var()` reference uses the declaration's CSS fallback when the active theme
+    /// publishes no such token, instead of silently producing a transparent colour.
+    #[test]
+    fn a_var_reference_uses_its_fallback_when_the_theme_has_no_token() {
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declaration_text(
+            "background-color: var(--not-a-theme-token, #123456)",
+            &mut style,
+        )
+        .expect("a fallback must resolve");
+        assert_eq!(style.background_color, Some(Color::rgb(0x12, 0x34, 0x56)));
+    }
+
+    /// A fallback is a whole CSS value, so it may itself be a function call; the closing `)`
+    /// must be the one that balances `var(`, not the first one inside `rgb(...)`.
+    #[test]
+    fn a_var_fallback_may_be_a_function_call() {
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declaration_text(
+            "background-color: var(--not-a-theme-token, rgb(1, 2, 3))",
+            &mut style,
+        )
+        .expect("a function-call fallback must resolve");
+        assert_eq!(style.background_color, Some(Color::rgb(1, 2, 3)));
+    }
+
+    /// A typo'd token with no fallback is refused rather than substituted with nothing.
+    #[test]
+    fn an_unknown_var_without_a_fallback_is_an_error() {
+        let mut style = WidgetStyle::default();
+        let result = CssParser::apply_declaration_text(
+            "background-color: var(--not-a-theme-token)",
+            &mut style,
+        );
+        assert!(result.is_err(), "an unresolved variable must be reported");
+        assert_eq!(style.background_color, None, "the failed declaration writes nothing");
+    }
+
+    /// The variable scope is the theme's own token set: `--primary` is the active palette's
+    /// primary role, so a theme switch moves every sheet that uses the name.
+    #[cfg(device_profile)]
+    #[test]
+    fn a_var_reference_reads_the_active_theme_palette() {
+        let palette = crate::style::theme::palette_shared().expect("a default theme is active");
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declaration_text("background-color: var(--primary)", &mut style)
+            .expect("a theme token resolves");
+        assert_eq!(style.background_color, Some(palette.primary));
+        assert_eq!(
+            CssParser::parse_color("var(--color-primary)").unwrap(),
+            palette.primary,
+            "the `--color-` spelling names the same role"
+        );
+    }
+
+    /// A length property reads the same scope, so spacing is a token rather than a literal.
+    #[cfg(device_profile)]
+    #[test]
+    fn a_length_var_reference_reads_a_spacing_token() {
+        let medium = crate::style::theme_manager()
+            .current_theme()
+            .expect("a default theme is active")
+            .spacing
+            .medium;
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declaration_text("padding: var(--space-medium)", &mut style)
+            .expect("a spacing token resolves");
+        assert_eq!(style.padding, crate::style::Padding::all(medium));
     }
 
     #[test]

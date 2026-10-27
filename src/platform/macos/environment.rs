@@ -14,9 +14,12 @@
 //! `msg_send` round trips four times a second for settings a user changes on the order of days, so
 //! the three facts named in [`cached_environment_fact`] — `high_contrast`, `reduce_motion` and
 //! `system_locale` (which caches both the `NSLocale` read and the environment-variable fallback) —
-//! are held in a one-second TTL slot. **The TTL is the only invalidation trigger**: the system
-//! colour notification below refreshes the accent palette but does not touch these slots or the
-//! environment revision (the missing push source is tracked as issue P-201), so a changed
+//! are held in a one-second TTL slot. **The wrapper is the shared one**
+//! ([`crate::platform::environment_cache`]), so a notification that reaches
+//! `Platform::notify_environment_changed` drops these readings immediately and the TTL remains only
+//! the backstop for a change no notification announced (P-302). The system colour notification
+//! below refreshes the accent palette but does not itself touch these slots or the environment
+//! revision (the missing push source for this backend is tracked as issue P-201), so a changed
 //! accessibility switch becomes visible within one second and no later. `system_theme` and
 //! `accent_color` are not cached here: the appearance read lives in `platform_impl`, and the accent
 //! is delivered by the notification instead of by polling.
@@ -47,56 +50,27 @@ use objc::declare::ClassDecl;
 use objc::runtime::{Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
 use std::ffi::{c_char, CStr};
+// P-302: the TTL slot and its invalidation rule live once, in the shared wrapper, so the macOS,
+// Windows and Android backends cannot drift and a notification invalidates every one of them.
+#[cfg(not(alloc_frugal))]
+use crate::platform::environment_cache::{cached_environment_fact, EnvironmentFactCache};
 
-/// How long a cached AppKit environment fact may be reused.
-///
-/// One second, the same value the Windows backend uses for the same facts: it is far below the rate
-/// at which anyone flips an accessibility switch, and it removes four AppKit round trips per poll
-/// from the style layer's 250 ms cycle.
-const ENVIRONMENT_TTL: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// The slot shape shared by every cached fact in this module.
-type EnvironmentFactCache<T> =
-    std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, T)>>>;
-
-/// Re-reads one AppKit environment fact at most once per [`ENVIRONMENT_TTL`].
-///
-/// # Cached facts and their invalidation trigger
-///
-/// | fact | slot | AppKit source |
-/// |---|---|---|
-/// | `high_contrast` | [`HIGH_CONTRAST_CACHE`] | `NSWorkspace.accessibilityDisplayShouldIncreaseContrast` |
-/// | `reduce_motion` | [`REDUCE_MOTION_CACHE`] | `NSWorkspace.accessibilityDisplayShouldReduceMotion` |
-/// | `system_locale` | [`SYSTEM_LOCALE_CACHE`] | `NSLocale.currentLocale`, then `LC_ALL`/`LANG` |
-///
-/// **Invalidation trigger: TTL expiry.** The system-colour observer refreshes the accent palette but
-/// does not clear these slots, so a fact changes at most one second after the host says so. The
-/// read runs with no lock held, so two threads that both miss sample the host instead of queueing
-/// behind each other.
-///
-/// Callers whose answer depends on being on a particular thread must keep that check **outside**
-/// this wrapper: caching a "wrong thread" answer would make it a host fact for a whole TTL.
+/// The `mini` profile compiles no environment cache (see `platform::environment_cache`), so the
+/// same call has to stay available without one: the reading goes straight to AppKit on every
+/// question. That is the honest shape for a sized profile — it trades the repeated read for the
+/// slot — and it keeps the call sites below identical in every build.
+#[cfg(alloc_frugal)]
 fn cached_environment_fact<T: Copy>(
-    cache: &'static EnvironmentFactCache<T>,
+    _cache: &'static EnvironmentFactCache<T>,
     read: impl FnOnce() -> T,
 ) -> T {
-    // `get_or_init`, not `get`: an uninitialised `OnceLock` answers `None` forever, so `get` here
-    // would read the slot, find it absent, run the read and drop the value — a cache that never
-    // caches.
-    let slot = cache.get_or_init(|| std::sync::Mutex::new(None));
-    if let Ok(guard) = slot.lock() {
-        if let Some((sampled_at, value)) = *guard {
-            if sampled_at.elapsed() < ENVIRONMENT_TTL {
-                return value;
-            }
-        }
-    }
-    let value = read();
-    if let Ok(mut guard) = slot.lock() {
-        *guard = Some((std::time::Instant::now(), value));
-    }
-    value
+    read()
 }
+
+/// The slot shape, declared only where [`cached_environment_fact`] really caches.
+#[cfg(alloc_frugal)]
+type EnvironmentFactCache<T> =
+    std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, T)>>>;
 
 static HIGH_CONTRAST_CACHE: EnvironmentFactCache<Option<bool>> = std::sync::OnceLock::new();
 static REDUCE_MOTION_CACHE: EnvironmentFactCache<Option<bool>> = std::sync::OnceLock::new();

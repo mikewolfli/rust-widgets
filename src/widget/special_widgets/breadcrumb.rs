@@ -83,6 +83,8 @@ pub struct Breadcrumb {
     separator: String,
     /// Whether the caller asked for the full path to be shown despite the band's width.
     overflow_expanded: bool,
+    /// Whether the hidden-segment popup is open (SP-118).
+    overflow_open: bool,
     /// The one layout the paint, the hit test and the overflow marker read.
     layout_cache: Option<BreadcrumbLayout>,
     /// Whether the host wants the path in editable form.
@@ -132,6 +134,7 @@ impl Breadcrumb {
             separator_width: 14,
             separator: String::from("/"),
             overflow_expanded: false,
+            overflow_open: false,
             layout_cache: None,
             editing: false,
             edit_buffer: String::new(),
@@ -362,6 +365,101 @@ impl Breadcrumb {
         self.layout_cache = None;
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// The width of the hidden-segment popup's row.
+    const OVERFLOW_ROW_HEIGHT: u32 = 18;
+
+    /// The padding around the hidden-segment popup's rows.
+    const OVERFLOW_PADDING: u32 = 4;
+
+    /// Whether the hidden-segment popup is open.
+    pub fn is_overflow_open(&self) -> bool {
+        self.overflow_open
+    }
+
+    /// Opens the hidden-segment popup instead of showing the whole path.
+    ///
+    /// The marker stands for the folded middle of the trail; showing only those segments keeps the
+    /// root and the current location in place, where expanding the whole path used to push the
+    /// current segment out of the band (SP-118).
+    pub fn open_overflow(&mut self) {
+        if self.overflow_open || self.collapsed_count() == 0 {
+            return;
+        }
+        self.overflow_open = true;
+        self.base.request_redraw();
+    }
+
+    /// Closes the hidden-segment popup.
+    pub fn close_overflow(&mut self) {
+        if !self.overflow_open {
+            return;
+        }
+        self.overflow_open = false;
+        self.base.request_redraw();
+    }
+
+    /// The segments the current fold hides, or an empty slice when nothing is folded.
+    pub fn hidden_segments(&self) -> &[BreadcrumbSegment] {
+        if self.segments.len() <= 2 || self.collapsed_count() == 0 {
+            return &[];
+        }
+        &self.segments[1..self.segments.len() - 1]
+    }
+
+    /// The popup's rectangle: one row per hidden segment, anchored under the trail.
+    fn overflow_popup_rect(&self) -> Option<Rect> {
+        let hidden = self.hidden_segments().len();
+        if !self.overflow_open || hidden == 0 {
+            return None;
+        }
+        let band = self.band();
+        let geometry = self.geometry();
+        let top = band.y + band.height as i32;
+        let available = (geometry.y + geometry.height as i32 - top).max(0) as u32;
+        if available == 0 {
+            return None;
+        }
+        let rows = hidden.min((available / Self::OVERFLOW_ROW_HEIGHT).max(1) as usize);
+        let height = (rows as u32) * Self::OVERFLOW_ROW_HEIGHT + Self::OVERFLOW_PADDING * 2;
+        let width = band.width.min(240).max(80);
+        Some(Rect::new(band.x, top, width, height.min(available)))
+    }
+
+    /// The segment index under `pos` while the popup is open.
+    fn overflow_row_at(&self, pos: Point) -> Option<usize> {
+        let popup = self.overflow_popup_rect()?;
+        if pos.x < popup.x || pos.x >= popup.x + popup.width as i32 {
+            return None;
+        }
+        let offset = pos.y - popup.y - Self::OVERFLOW_PADDING as i32;
+        if offset < 0 {
+            return None;
+        }
+        let row = (offset as u32) / Self::OVERFLOW_ROW_HEIGHT;
+        let hidden = self.hidden_segments();
+        if (row as usize) >= hidden.len() {
+            return None;
+        }
+        Some(1 + row as usize)
+    }
+
+    /// The rectangle one popup row occupies, for tests and a host that draws its own menu.
+    pub fn overflow_row_rect(&self, hidden_index: usize) -> Option<Rect> {
+        let popup = self.overflow_popup_rect()?;
+        if hidden_index >= self.hidden_segments().len() {
+            return None;
+        }
+        let y = popup.y
+            + Self::OVERFLOW_PADDING as i32
+            + hidden_index as i32 * Self::OVERFLOW_ROW_HEIGHT as i32;
+        Some(Rect::new(
+            popup.x + Self::OVERFLOW_PADDING as i32,
+            y,
+            popup.width.saturating_sub(Self::OVERFLOW_PADDING * 2),
+            Self::OVERFLOW_ROW_HEIGHT,
+        ))
     }
 
     /// The path separator used when the trail is edited as text.
@@ -765,16 +863,28 @@ impl EventHandler for Breadcrumb {
 
         match event {
             Event::MousePress { pos, button: 1, .. } => {
+                // While the hidden-segment popup is open, a press in it selects the row and a press
+                // anywhere else closes it first (SP-118).
+                if self.overflow_open {
+                    if let Some(index) = self.overflow_row_at(*pos) {
+                        let _ = self.set_selected_index(index);
+                        self.close_overflow();
+                        self.base.request_redraw();
+                        return;
+                    }
+                    self.close_overflow();
+                }
                 if let Some(hidden) = self.overflow_at(*pos) {
-                    self.expand();
+                    // The marker no longer expands the trail: it lists only the folded middle.
                     self.overflow_clicked.emit(hidden);
+                    self.open_overflow();
                     return;
                 }
                 if let Some(index) = self.hit_index(*pos) {
                     let _ = self.set_selected_index(index);
                 }
             }
-            Event::MouseDoubleClick { pos, button: 1 } => {
+            Event::MouseDoubleClick { pos, button: 1 } if !self.overflow_open => {
                 if let Some(index) = self.hit_index(*pos) {
                     let _ = self.set_selected_index(index);
                     let _ = self.activate_selected();
@@ -789,6 +899,7 @@ impl EventHandler for Breadcrumb {
                 }
             }
             Event::KeyPress { key, modifiers } => match *key {
+                27 if self.overflow_open => self.close_overflow(),
                 37 => self.move_selection(-1),
                 39 => self.move_selection(1),
                 13 => {
@@ -984,6 +1095,39 @@ impl Draw for Breadcrumb {
             slot_x += width;
             if position + 1 < slots.len() {
                 slot_x += self.separator_width;
+            }
+        }
+
+        // ── Hidden-segment popup (SP-118) ──
+        // The `…` marker lists only the folded middle, leaving the root and the current location
+        // where they were; expanding the whole path used to push the last segment out of the band.
+        if let Some(popup) = self.overflow_popup_rect() {
+            // The popup is a raised surface, so it is a step away from the band rather than the
+            // same fill, and it borrows the trail's own resolved ink and border.
+            let surface = background.blend(&text_color, 0.06);
+            context.fill_rect(popup, surface);
+            context.draw_rect(popup, border);
+            let hidden = self.hidden_segments();
+            for (row, segment) in hidden.iter().enumerate() {
+                let Some(rect) = self.overflow_row_rect(row) else {
+                    break;
+                };
+                if self.selected_index == Some(1 + row) {
+                    context.fill_rect(rect, selected_background);
+                }
+                let line = context.text_line(rect, font);
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        rect.x + self.segment_padding,
+                        line.y,
+                        rect.width.saturating_sub(self.segment_padding as u32).max(1),
+                        line.height,
+                    ),
+                    &segment.label,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
             }
         }
     }
@@ -1243,12 +1387,12 @@ mod tests {
         assert_eq!(slots[2].0, Some(2));
     }
 
-    /// The folded marker is a control, not decoration: pressing it reports the hidden count
-    /// and expands the trail; the separator property drives the edited path.
+    /// The folded marker is a control, not decoration: pressing it reports the hidden count and
+    /// opens a list of only the hidden segments instead of expanding the whole path (SP-118).
     #[test]
-    fn the_overflow_marker_emits_and_expands() {
+    fn the_overflow_marker_lists_only_the_hidden_segments() {
         use std::sync::{Arc, Mutex};
-        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 140, 28));
+        let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 140, 200));
         breadcrumb.set_segments(vec![
             BreadcrumbSegment::new("root", "Root"),
             BreadcrumbSegment::new("middle", "A long middle directory"),
@@ -1274,13 +1418,32 @@ mod tests {
                 x += breadcrumb.separator_width;
             }
         }
-        breadcrumb.handle_event(&Event::mouse_press(marker_x.expect("a marker"), 10, 1));
+        breadcrumb.handle_event(&Event::mouse_press(
+            marker_x.expect("a marker"),
+            band.y + band.height as i32 / 2,
+            1,
+        ));
 
         assert_eq!(*seen.lock().unwrap(), vec![1]);
-        assert_eq!(breadcrumb.collapsed_count(), 0, "pressing the marker shows the whole path");
+        assert!(breadcrumb.is_overflow_open(), "the marker opens the hidden-segment list");
+        assert_eq!(breadcrumb.collapsed_count(), 1, "the trail stays folded");
+        assert_eq!(
+            breadcrumb
+                .hidden_segments()
+                .iter()
+                .map(|segment| segment.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["middle"],
+            "only the folded middle is listed"
+        );
 
-        breadcrumb.collapse();
+        // Picking a row selects that segment and closes the list without expanding the trail.
+        let row = breadcrumb.overflow_row_rect(0).expect("a popup row");
+        breadcrumb.handle_event(&Event::mouse_press(row.x + 2, row.y + 2, 1));
+        assert_eq!(breadcrumb.selected_index(), Some(1));
+        assert!(!breadcrumb.is_overflow_open());
         assert_eq!(breadcrumb.collapsed_count(), 1);
+
         breadcrumb.set_separator("::");
         breadcrumb.set_editing(true);
         assert_eq!(breadcrumb.editing_text(), "Root::A long middle directory::Leaf");

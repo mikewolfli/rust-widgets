@@ -319,6 +319,7 @@ fn records_from_json(
         };
         let mut record = RecordValue::new();
         for (name, field) in fields {
+            let declared = declared_field_kind(schema, name);
             let field_value = match field {
                 Value::Null => CapabilityValue::Null,
                 Value::Bool(flag) => CapabilityValue::Bool(*flag),
@@ -330,18 +331,54 @@ fn records_from_json(
                         _ => return None,
                     }
                 }
-                Value::String(text) => CapabilityValue::String(text.clone()),
-                // A nested object is read **only** where the row's declared schema says the field is
-                // a structured icon descriptor — the one compound kind a row declares today. The
-                // kind decides, not the JSON shape, so a typo cannot smuggle an object into a field
-                // that promises text (and a field the schema does not declare is still refused here
-                // and named by the row validator one layer up).
-                Value::Array(_) | Value::Object(_) if declares_icon_spec_field(schema, name) => {
-                    CapabilityValue::IconSpec(icon_spec_from_json(field)?)
-                }
-                // Any other compound value inside a record would be a second grammar to keep in
-                // step; it is refused rather than guessed at.
-                Value::Array(_) | Value::Object(_) => return None,
+                // A scalar string is read by the row's declared kind when that kind is itself a
+                // string-shaped value with a document grammar. `Color` and `Rect` are the two
+                // (W-304): both are written as strings by the inverse, so the reader has to accept
+                // the spelling it writes or the round trip breaks.
+                Value::String(text) => match declared {
+                    Some(crate::widget::capability::PropertyValueKind::Color) => {
+                        CapabilityValue::Color(crate::style::CssParser::parse_color(text).ok()?)
+                    }
+                    Some(crate::widget::capability::PropertyValueKind::Rect) => {
+                        CapabilityValue::Rect(rect_from_json(field)?)
+                    }
+                    _ => CapabilityValue::String(text.clone()),
+                },
+                // A compound value is read only where the row's declared schema says the field is
+                // a structured kind (W-304). The kind decides, not the JSON shape, so a typo can
+                // not smuggle an object into a field that promises text.
+                Value::Array(_) | Value::Object(_) => match declared {
+                    Some(crate::widget::capability::PropertyValueKind::Rect) => {
+                        CapabilityValue::Rect(rect_from_json(field)?)
+                    }
+                    Some(crate::widget::capability::PropertyValueKind::IconSpec) => {
+                        CapabilityValue::IconSpec(icon_spec_from_json(field)?)
+                    }
+                    Some(crate::widget::capability::PropertyValueKind::Records) => {
+                        CapabilityValue::Records(records_from_json(field, None)?)
+                    }
+                    Some(crate::widget::capability::PropertyValueKind::StringList) => {
+                        CapabilityValue::Tuple(
+                            string_list_from_json(field)?
+                                .into_iter()
+                                .map(CapabilityValue::String)
+                                .collect(),
+                        )
+                    }
+                    Some(crate::widget::capability::PropertyValueKind::NumberList) => {
+                        CapabilityValue::Tuple(
+                            number_list_from_json(field)?
+                                .into_iter()
+                                .map(CapabilityValue::Float)
+                                .collect(),
+                        )
+                    }
+                    // An array of scalars is the positional carrier (`Tuple`) and its only
+                    // document form is a JSON array. Without a declared element kind, a scalar
+                    // array is read as that carrier; an object is refused because a record's
+                    // fields have to be named. This is what makes `Tuple` fields round-trip.
+                    _ => CapabilityValue::Tuple(tuple_from_json(field)?),
+                },
             };
             record = record.with(name.clone(), field_value);
         }
@@ -350,17 +387,41 @@ fn records_from_json(
     Some(RecordList::from_items(&crate::widget::capability::EMPTY_RECORD_SCHEMA, records))
 }
 
-/// Whether the row schema declares `name` as a structured icon descriptor.
-fn declares_icon_spec_field(
+/// The scalar elements of a JSON array, in order, as the positional [`CapabilityValue::Tuple`].
+///
+/// A nested object is refused: a tuple element has no field names, so there is no place to put
+/// one, and guessing a shape would write a value the reader would read back differently (W-304).
+fn tuple_from_json(
+    value: &Value,
+) -> Option<crate::compat::Vec<crate::widget::capability::CapabilityValue>> {
+    use crate::widget::capability::CapabilityValue;
+    let array = value.as_array()?;
+    let mut items = crate::compat::Vec::with_capacity(array.len());
+    for item in array {
+        let element = match item {
+            Value::Null => CapabilityValue::Null,
+            Value::Bool(flag) => CapabilityValue::Bool(*flag),
+            Value::Number(number) => match (number.as_u64(), number.as_i64(), number.as_f64()) {
+                (Some(unsigned), _, _) => CapabilityValue::UInt(unsigned),
+                (None, Some(signed), _) => CapabilityValue::Int(signed),
+                (None, None, Some(float)) => CapabilityValue::Float(float),
+                _ => return None,
+            },
+            Value::String(text) => CapabilityValue::String(text.clone()),
+            Value::Array(_) | Value::Object(_) => return None,
+        };
+        items.push(element);
+    }
+    Some(items)
+}
+
+/// The declared kind of `name` on `schema`, or `None` when no row schema is known.
+fn declared_field_kind(
     schema: Option<&crate::widget::capability::RecordSchema>,
     name: &str,
-) -> bool {
-    let Some(schema) = schema else {
-        return false;
-    };
-    schema.fields.iter().any(|field| {
-        field.name == name && field.kind == crate::widget::capability::PropertyValueKind::IconSpec
-    })
+) -> Option<crate::widget::capability::PropertyValueKind> {
+    let schema = schema?;
+    schema.field(name).map(|field| field.kind)
 }
 
 /// Serialises a record list back into the JSON array a document carries (the inverse of
@@ -374,12 +435,17 @@ fn declares_icon_spec_field(
 /// `{"kind":"builtin","name":"info"}` must be a row this same module reads as an `IconSpec` again.
 /// One round-trip test therefore covers both directions at once.
 ///
+/// # What it writes
+///
+/// Every kind a row can declare has a document form: scalars as JSON scalars, a colour as its
+/// CSS spelling, a rectangle as `[x, y, w, h]`, a tuple as an array, and a nested record list as an
+/// array of objects (W-304). Each spelling is the one `records_from_json` reads back, so a value
+/// written here round-trips through the same module.
+///
 /// # What it refuses
 ///
-/// The kinds the reader refuses. A row field whose value has no document grammar (`Color`, `Rect`, a
-/// nested `Records` or `Tuple`) returns `None`, and so does a non-list value. Approximating one of
-/// them — stringifying it, say — would write a document that the reader reads back as a *different*
-/// value, so refusing is what keeps "what I read" and "what I write" the same statement.
+/// A non-list value returns `None`. A field that has no document grammar refuses the whole value
+/// rather than writing a partial record that would read back as a different one.
 pub fn records_to_json(value: &CapabilityValue) -> Option<Value> {
     let CapabilityValue::Records(list) = value else {
         return None;
@@ -407,6 +473,16 @@ fn capability_value_to_json(value: &CapabilityValue) -> Option<Value> {
         CapabilityValue::Float(number) => serde_json::Number::from_f64(*number).map(Value::Number),
         CapabilityValue::String(text) => Some(Value::String(text.clone())),
         CapabilityValue::IconSpec(spec) => Some(icon_spec_to_json(spec)),
+        // A colour is written as the CSS spelling the reader parses. The RGBA form is used so an
+        // alpha channel survives the trip; `parse_color` accepts both six- and eight-digit hex.
+        CapabilityValue::Color(color) => Some(Value::String(color.to_hex_rgba())),
+        // A rectangle's document form is the four-element array the reader also accepts.
+        CapabilityValue::Rect(rect) => {
+            Some(serde_json::json!([rect.x, rect.y, rect.width, rect.height]))
+        }
+        // A nested record list is written by the same function that writes a top-level one, so the
+        // two spellings cannot drift (W-304).
+        CapabilityValue::Records(_) => records_to_json(value),
         // A positional list — a string list, a sample series — exports as a JSON array of its
         // elements. Only scalar elements have a document form; a compound element makes the whole
         // value refuse (rather than writing a partial array that would read back differently).
@@ -417,9 +493,6 @@ fn capability_value_to_json(value: &CapabilityValue) -> Option<Value> {
             }
             Some(Value::Array(out))
         }
-        // Every other kind is either not a field a row declares or has no document grammar; see the
-        // function's own note on why approximating one is worse than refusing it.
-        _ => None,
     }
 }
 
@@ -647,6 +720,95 @@ mod tests {
     use crate::widget::Button;
 
     #[test]
+    fn color_rect_tuple_and_nested_records_round_trip() {
+        use crate::widget::capability::{PropertyValueKind, RecordField, RecordSchema};
+
+        // The declared row shape: the kind decides how a compound field is read, which is what
+        // keeps a typo from smuggling a structure into a text field (W-304).
+        static ROW_FIELDS: &[RecordField] = &[
+            RecordField::required("id", PropertyValueKind::String),
+            RecordField::optional("color", PropertyValueKind::Color),
+            RecordField::optional("rect", PropertyValueKind::Rect),
+            RecordField::optional("sample", PropertyValueKind::NumberList),
+            RecordField::optional("nested", PropertyValueKind::Records),
+        ];
+        static ROW_SCHEMA: RecordSchema = RecordSchema {
+            fields: ROW_FIELDS,
+            id_field: "id",
+            ids_unique: true,
+            ids_required: true,
+        };
+
+        let json = serde_json::json!([{
+            "id": "a",
+            "color": "#11223344",
+            "rect": [1, 2, 30, 40],
+            "sample": [1.5, 2.5],
+            // Not declared on the row: an array of scalars is the positional `Tuple` carrier.
+            "pair": [1, "x", true],
+            "nested": [{"id": "n1", "label": "N"}]
+        }]);
+
+        let Some(CapabilityValue::Records(list)) = to_capability_value_with_record_schema(
+            &json,
+            Some(PropertyValueKind::Records),
+            Some(&ROW_SCHEMA),
+        ) else {
+            panic!("the record list must read");
+        };
+        let record = list.get(0).expect("one record");
+        assert!(matches!(
+            record.get("color"),
+            Some(CapabilityValue::Color(color)) if *color == crate::core::Color::rgba(0x11, 0x22, 0x33, 0x44)
+        ));
+        assert!(matches!(
+            record.get("rect"),
+            Some(CapabilityValue::Rect(rect)) if *rect == Rect::new(1, 2, 30, 40)
+        ));
+        assert!(matches!(
+            record.get("sample"),
+            Some(CapabilityValue::Tuple(items))
+                if items == &vec![CapabilityValue::Float(1.5), CapabilityValue::Float(2.5)]
+        ));
+        assert!(matches!(
+            record.get("pair"),
+            Some(CapabilityValue::Tuple(items)) if items.len() == 3
+        ));
+        assert!(matches!(
+            record.get("nested"),
+            Some(CapabilityValue::Records(nested)) if nested.len() == 1
+        ));
+
+        // Writing the value and reading the result back must produce the same document again: both
+        // directions of the four kinds are decided in this module, so the trip is the assertion.
+        let written = records_to_json(&CapabilityValue::Records(list)).expect(
+            "a record list has a
+            document form",
+        );
+        let Some(CapabilityValue::Records(reread)) = to_capability_value_with_record_schema(
+            &written,
+            Some(PropertyValueKind::Records),
+            Some(&ROW_SCHEMA),
+        ) else {
+            panic!("the written document must read back as a record list");
+        };
+        let rewritten = records_to_json(&CapabilityValue::Records(reread))
+            .expect("the re-read list must write again");
+        assert_eq!(written, rewritten, "the four compound kinds must round-trip unchanged");
+    }
+
+    #[test]
+    fn a_compound_value_outside_a_declared_kind_is_still_refused() {
+        // `records_from_json` must not guess at an object in an undeclared field: the kind decides.
+        let json = serde_json::json!([{"id": "a", "payload": {"nested": 1}}]);
+        assert_eq!(
+            to_capability_value(&json, Some(PropertyValueKind::Records)),
+            None,
+            "an object in a field the schema does not declare has no document grammar"
+        );
+    }
+
+    #[test]
     fn normalize_folds_case_and_separators() {
         assert_eq!(normalize("Font-Size"), "fontsize");
         assert_eq!(normalize("font_size"), "fontsize");
@@ -695,7 +857,15 @@ mod tests {
         assert_eq!(to_capability_value(&serde_json::json!(["a", "b"]), kind), None);
         // A nested structure as a field value: a record field is one value of a declared kind.
         assert_eq!(to_capability_value(&serde_json::json!([{"id": {"nested": 1}}]), kind), None);
-        assert_eq!(to_capability_value(&serde_json::json!([{"id": [1, 2]}]), kind), None);
+        // A scalar array in an **undeclared** field is the positional `Tuple` carrier and is read
+        // as such; this is the reader half of the W-304 round trip. The kind still decides for a
+        // declared field (see the tests below), so a typo cannot turn a declared string into a
+        // list.
+        assert!(matches!(
+            to_capability_value(&serde_json::json!([{"id": [1, 2]}]), kind),
+            Some(CapabilityValue::Records(list))
+                if matches!(list.get(0).and_then(|record| record.get("id")), Some(CapabilityValue::Tuple(_)))
+        ));
         // An empty array **is** an empty list, which is a legitimate value.
         let Some(CapabilityValue::Records(empty)) =
             to_capability_value(&serde_json::json!([]), kind)
@@ -768,11 +938,11 @@ mod tests {
             CapabilityValue::Tuple(vec![CapabilityValue::Float(1.0), CapabilityValue::Float(2.5)]);
         assert_eq!(capability_value_to_json(&numbers), Some(serde_json::json!([1.0, 2.5])));
 
-        // An element with no document form (a colour is not a row field) makes the whole value
-        // refuse, rather than writing a partial array that would read back as a different list.
+        // An element with no document form (a non-finite float) makes the whole value refuse,
+        // rather than writing a partial array that would read back as a different list.
         let compound = CapabilityValue::Tuple(vec![
             CapabilityValue::String(String::from("Alpha")),
-            CapabilityValue::Color(crate::core::Color::BLACK),
+            CapabilityValue::Float(f64::NAN),
         ]);
         assert_eq!(capability_value_to_json(&compound), None);
     }

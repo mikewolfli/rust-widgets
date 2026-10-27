@@ -59,6 +59,20 @@ struct GanttDrag {
     kind: GanttDragKind,
 }
 
+/// A timeline pan in progress: the press position and the viewport it started from.
+///
+/// The viewport is stored rather than the axis value under the pointer because a pan is a
+/// translation by pixels; recomputing from the press viewport keeps the grab point under the
+/// pointer no matter how many events a drag produces.
+struct GanttPan {
+    /// The pointer x at press time.
+    origin_x: i32,
+    /// The viewport start at press time.
+    start: i64,
+    /// The viewport end at press time.
+    end: i64,
+}
+
 /// One gantt task bar.
 ///
 /// Describes a single bar on the timeline. The widget treats `start` and `end`
@@ -174,6 +188,9 @@ pub enum DependencyKind {
     StartToStart,
     /// Both finish together, so the elbow enters the successor's right edge.
     FinishToFinish,
+    /// The successor finishes when the predecessor starts, so the elbow leaves the
+    /// predecessor's left edge and enters the successor's right edge.
+    StartToFinish,
 }
 
 use core::cell::RefCell;
@@ -197,6 +214,7 @@ impl DependencyKind {
             Self::FinishToStart => "fts",
             Self::StartToStart => "sts",
             Self::FinishToFinish => "ftf",
+            Self::StartToFinish => "stf",
         }
     }
 
@@ -206,6 +224,7 @@ impl DependencyKind {
             "fts" => Some(Self::FinishToStart),
             "sts" => Some(Self::StartToStart),
             "ftf" => Some(Self::FinishToFinish),
+            "stf" => Some(Self::StartToFinish),
             _ => None,
         }
     }
@@ -214,11 +233,11 @@ impl DependencyKind {
 /// The row shape of the `tasks` property (`BLUE26 B26.09`).
 ///
 /// A task is one flat record. `dependencies` is the typed edge list rendered as
-/// `"<predecessor_id>:<fts|sts|ftf>"` tokens: a record field cannot hold a nested structure
+/// `"<predecessor_id>:<fts|sts|ftf|stf>"` tokens: a record field cannot hold a nested structure
 /// (a `Records` field value is refused, see `records.rs`), so the relationship kind travels in
 /// the token instead. A token with **no** `:kind` suffix is a finish-to-start edge — the meaning a
 /// plain [`GanttTask::depends_on`] id has. Because the split is on the last colon, a task id must
-/// not itself end in `":fts"`, `":sts"` or `":ftf"`.
+/// not itself end in `":fts"`, `":sts"`, `":ftf"` or `":stf"`.
 pub const GANTT_TASK_SCHEMA: crate::widget::capability::RecordSchema =
     crate::widget::capability::RecordSchema {
         fields: &[
@@ -378,6 +397,18 @@ pub struct GanttWidget {
     hovered_task: Option<usize>,
     /// The pointer position that produced [`Self::hovered_task`], for the read-out anchor.
     hover_position: Point,
+    /// Whether [`Self::hover_position`] names a real pointer position.
+    ///
+    /// A fresh control has no pointer, and anchoring a wheel zoom at the origin would move a
+    /// chart the reader never pointed at.
+    pointer_known: bool,
+    /// A timeline pan in progress.
+    pan: Option<GanttPan>,
+    /// Child task id to parent task id, forming the task hierarchy.
+    ///
+    /// Empty is the flat schedule every caller had before the hierarchy existed: without a
+    /// parent, a task is a root and is painted exactly as it always was.
+    task_parents: HashMap<String, String>,
     /// Whether the hover read-out bubble is painted.
     show_hover_readout: bool,
     /// A drag in progress.
@@ -429,6 +460,9 @@ impl GanttWidget {
             critical_cache: RefCell::new(None),
             hovered_task: None,
             hover_position: Point::new(0, 0),
+            pointer_known: false,
+            pan: None,
+            task_parents: HashMap::new(),
             show_hover_readout: true,
             drag: None,
             axis: TimelineAxis::new(Rect::new(0, 0, 0, 0)),
@@ -927,6 +961,67 @@ impl GanttWidget {
         )
     }
 
+    /// Starts a bar drag when `pos` lands on a task's bar or milestone.
+    ///
+    /// Returns whether a drag began. A press that names a row but misses its bar is not a drag:
+    /// the caller treats the empty plot as a timeline pan instead.
+    fn begin_bar_drag(&mut self, pos: Point) -> bool {
+        let Some(index) = self.row_at(pos) else {
+            return false;
+        };
+        let _ = self.select_index(index);
+        let Some(task) = self.tasks.get(index) else {
+            return false;
+        };
+        let (start, end, milestone, id) = (task.start, task.end, task.milestone, task.id.clone());
+        let (track_x, track_w) = self.track_geometry();
+        let x0 = self.project_x(start, track_x, track_w);
+        let x1 = self.project_x(end, track_x, track_w).max(x0 + 2);
+        let lane_y = self.lane_rect(index - self.scroll_offset).y;
+        let bar_top = lane_y + 5;
+        let bar_bottom = lane_y + self.row_height as i32 - 5;
+        let kind = if milestone {
+            // A milestone is a diamond, not a bar, so only the diamond itself is grabbable.
+            // It used to be undraggable at all, which left the one point-shaped mark on the
+            // chart as the only thing a user could not move.
+            let half = (self.row_height.saturating_sub(10) / 2) as i32;
+            if (pos.x - x0).abs() > half + 2 {
+                return false;
+            }
+            GanttDragKind::Move
+        } else {
+            if pos.x < x0 || pos.x > x1 || pos.y < bar_top || pos.y > bar_bottom {
+                return false;
+            }
+            // The edges resize, the bottom strip sets progress, and the rest moves the bar.
+            // Before this the whole bar moved regardless of where it was grabbed, so a
+            // schedule could not be adjusted without editing the task list.
+            if pos.x <= x0 + RESIZE_HANDLE {
+                GanttDragKind::ResizeStart
+            } else if pos.x >= x1 - RESIZE_HANDLE {
+                GanttDragKind::ResizeEnd
+            } else if pos.y >= bar_bottom - PROGRESS_STRIP {
+                GanttDragKind::Progress
+            } else {
+                GanttDragKind::Move
+            }
+        };
+        self.drag = Some(GanttDrag {
+            task: index,
+            origin_value: self.axis_value_at(pos.x),
+            start,
+            end,
+            kind,
+        });
+        if kind == GanttDragKind::Progress {
+            self.set_progress_from_pointer(index, start, end, pos.x);
+        }
+        if kind != GanttDragKind::Move {
+            self.task_resize_started.emit(id);
+        }
+        true
+    }
+
     /// Sets `index`'s progress from the pointer's x over the bar `start..end`.
     ///
     /// Shared by the press and the move so that a press inside the progress strip immediately
@@ -980,6 +1075,11 @@ impl GanttWidget {
         for (index, task) in self.tasks.iter().enumerate() {
             self.id_index.entry(task.id.clone()).or_insert(index);
         }
+        // A hierarchy names rows by id, so an edge whose child or parent left the schedule has
+        // nothing to describe any more.
+        self.task_parents.retain(|child, parent| {
+            self.id_index.contains_key(child) && self.id_index.contains_key(parent)
+        });
         self.selected_index = None;
         self.recompute_viewport();
         self.base.request_layout();
@@ -1016,13 +1116,178 @@ impl GanttWidget {
 
     /// Zooms around center.
     pub fn zoom(&mut self, factor: f32) {
+        self.zoom_around(factor, None);
+    }
+
+    /// Zooms around the axis value under `x`.
+    ///
+    /// The place under the pointer stays under the pointer, which is what makes a wheel zoom
+    /// readable: a centre-anchored zoom slides the date the reader is looking at away from it.
+    /// [`Self::zoom`] is the centre-anchored spelling and keeps its previous behaviour.
+    pub fn zoom_at(&mut self, factor: f32, x: i32) {
+        self.zoom_around(factor, Some(x));
+    }
+
+    /// Shared zoom implementation; `anchor_x` is `None` for a centre-anchored zoom.
+    fn zoom_around(&mut self, factor: f32, anchor_x: Option<i32>) {
         if factor <= 0.0 {
             return;
         }
         let span = (self.viewport_end - self.viewport_start).max(1) as f32;
-        let center = (self.viewport_start + self.viewport_end) as f32 / 2.0;
         let half = (span / factor / 2.0).max(1.0);
-        self.set_viewport((center - half).floor() as i64, (center + half).ceil() as i64);
+        let new_span = half * 2.0;
+        let ratio = match anchor_x {
+            Some(x) => {
+                let (track_x, track_w) = self.track_geometry();
+                ((x - track_x) as f32 / track_w.max(1) as f32).clamp(0.0, 1.0)
+            }
+            None => 0.5,
+        };
+        // The axis value under the anchor is the fixed point: it keeps the same relative position
+        // in the new window instead of being recomputed from the window's centre.
+        let anchor = self.viewport_start as f32 + span * ratio;
+        let start = anchor - new_span * ratio;
+        match anchor_x {
+            // A pointer anchor rounds to the nearest endpoint: an integer axis cannot hold a
+            // fraction, and rounding keeps the anchor within half a unit of where it was.
+            Some(_) => self.set_viewport(start.round() as i64, (start + new_span).round() as i64),
+            // The centre-anchored spelling keeps its historical floor/ceil endpoints.
+            None => self.set_viewport(start.floor() as i64, (start + new_span).ceil() as i64),
+        }
+    }
+
+    /// Whether a timeline pan is in progress.
+    pub fn is_panning(&self) -> bool {
+        self.pan.is_some()
+    }
+
+    /// The parent of `task_id`, when the hierarchy assigns one.
+    pub fn task_parent(&self, task_id: &str) -> Option<&str> {
+        self.task_parents.get(task_id).map(String::as_str)
+    }
+
+    /// Assigns `child_id` under `parent_id`, returning whether both resolved and the edge is acyclic.
+    ///
+    /// A task hierarchy is a relation between two rows that already exist, so an unknown id or a
+    /// self-parent is refused rather than stored. A parent that is itself a descendant of the child
+    /// would make the tree a cycle, which no flattening or roll-up can walk; that edge is refused
+    /// too, leaving the schedule exactly as it was.
+    pub fn set_task_parent(&mut self, child_id: &str, parent_id: &str) -> bool {
+        if child_id == parent_id {
+            return false;
+        }
+        let (Some(child), Some(parent)) =
+            (self.id_index.get(child_id).copied(), self.id_index.get(parent_id).copied())
+        else {
+            return false;
+        };
+        // Walk the parent chain from the prospective parent: reaching the child closes a cycle.
+        let mut cursor = Some(parent);
+        let mut steps = 0usize;
+        while let Some(index) = cursor {
+            if index == child {
+                return false;
+            }
+            let Some(task) = self.tasks.get(index) else {
+                break;
+            };
+            cursor = self.task_parents.get(&task.id).and_then(|id| self.id_index.get(id).copied());
+            steps += 1;
+            if steps > self.tasks.len() {
+                break;
+            }
+        }
+        let changed = self.task_parents.insert(child_id.to_string(), parent_id.to_string())
+            != Some(parent_id.to_string());
+        if changed {
+            self.base.request_redraw();
+        }
+        true
+    }
+
+    /// Removes `child_id`'s parent, returning whether it had one.
+    pub fn clear_task_parent(&mut self, child_id: &str) -> bool {
+        let removed = self.task_parents.remove(child_id).is_some();
+        if removed {
+            self.base.request_redraw();
+        }
+        removed
+    }
+
+    /// The direct children of `parent_id`, in task order.
+    pub fn task_children(&self, parent_id: &str) -> Vec<&str> {
+        self.tasks
+            .iter()
+            .filter(|task| self.task_parents.get(&task.id).is_some_and(|id| id == parent_id))
+            .map(|task| task.id.as_str())
+            .collect()
+    }
+
+    /// How many ancestors task `index` has; `0` for a root and for an unknown index.
+    pub fn task_depth(&self, index: usize) -> usize {
+        let Some(task) = self.tasks.get(index) else {
+            return 0;
+        };
+        let mut depth = 0usize;
+        let mut cursor = self.task_parents.get(&task.id);
+        while let Some(parent_id) = cursor {
+            depth += 1;
+            if depth > self.tasks.len() {
+                // A malformed chain must not hang the paint path.
+                break;
+            }
+            cursor = self.task_parents.get(parent_id);
+        }
+        depth
+    }
+
+    /// The rolled-up `(start, end, progress)` of task `index`'s descendants.
+    ///
+    /// The range is the span of every descendant, and the progress is their duration-weighted
+    /// average, so a long child moves the summary more than a short one. `None` for a leaf: a
+    /// summary row only exists where there is something to summarise.
+    pub fn task_rollup(&self, index: usize) -> Option<(i64, i64, u8)> {
+        let task = self.tasks.get(index)?;
+        let mut start = i64::MAX;
+        let mut end = i64::MIN;
+        let mut weight = 0i64;
+        let mut weighted_progress = 0i128;
+        for descendant in &self.tasks {
+            if !self.is_descendant_of(&descendant.id, &task.id) {
+                continue;
+            }
+            start = start.min(descendant.start);
+            end = end.max(descendant.end);
+            let duration = (descendant.end - descendant.start).max(1);
+            weight = weight.saturating_add(duration);
+            weighted_progress += i128::from(descendant.progress) * i128::from(duration);
+        }
+        if start == i64::MAX || end == i64::MIN {
+            return None;
+        }
+        let progress = if weight > 0 {
+            (weighted_progress / i128::from(weight)).clamp(0, 100) as u8
+        } else {
+            0
+        };
+        Some((start, end, progress))
+    }
+
+    /// Whether `child_id` is somewhere below `ancestor_id`.
+    fn is_descendant_of(&self, child_id: &str, ancestor_id: &str) -> bool {
+        let mut cursor = self.task_parents.get(child_id);
+        let mut steps = 0usize;
+        while let Some(parent_id) = cursor {
+            if parent_id == ancestor_id {
+                return true;
+            }
+            steps += 1;
+            if steps > self.tasks.len() {
+                return false;
+            }
+            cursor = self.task_parents.get(parent_id);
+        }
+        false
     }
 
     /// Select task by index.
@@ -1369,67 +1634,37 @@ impl EventHandler for GanttWidget {
                 self.base.request_redraw();
             }
             Event::MousePress { pos, button: 1, .. } => {
-                let Some(index) = self.row_at(*pos) else {
+                if self.begin_bar_drag(*pos) {
                     return;
-                };
-                let _ = self.select_index(index);
-                let Some(task) = self.tasks.get(index) else {
-                    return;
-                };
-                let (start, end, milestone, id) =
-                    (task.start, task.end, task.milestone, task.id.clone());
-                let (track_x, track_w) = self.track_geometry();
-                let x0 = self.project_x(start, track_x, track_w);
-                let x1 = self.project_x(end, track_x, track_w).max(x0 + 2);
-                let lane_y = self.lane_rect(index - self.scroll_offset).y;
-                let bar_top = lane_y + 5;
-                let bar_bottom = lane_y + self.row_height as i32 - 5;
-                let kind = if milestone {
-                    // A milestone is a diamond, not a bar, so only the diamond itself is grabbable.
-                    // It used to be undraggable at all, which left the one point-shaped mark on the
-                    // chart as the only thing a user could not move.
-                    let half = (self.row_height.saturating_sub(10) / 2) as i32;
-                    if (pos.x - x0).abs() > half + 2 {
-                        return;
-                    }
-                    GanttDragKind::Move
-                } else {
-                    if pos.x < x0 || pos.x > x1 || pos.y < bar_top || pos.y > bar_bottom {
-                        return;
-                    }
-                    // The edges resize, the bottom strip sets progress, and the rest moves the bar.
-                    // Before this the whole bar moved regardless of where it was grabbed, so a
-                    // schedule could not be adjusted without editing the task list.
-                    if pos.x <= x0 + RESIZE_HANDLE {
-                        GanttDragKind::ResizeStart
-                    } else if pos.x >= x1 - RESIZE_HANDLE {
-                        GanttDragKind::ResizeEnd
-                    } else if pos.y >= bar_bottom - PROGRESS_STRIP {
-                        GanttDragKind::Progress
-                    } else {
-                        GanttDragKind::Move
-                    }
-                };
-                self.drag = Some(GanttDrag {
-                    task: index,
-                    origin_value: self.axis_value_at(pos.x),
-                    start,
-                    end,
-                    kind,
-                });
-                if kind == GanttDragKind::Progress {
-                    self.set_progress_from_pointer(index, start, end, pos.x);
                 }
-                if kind != GanttDragKind::Move {
-                    self.task_resize_started.emit(id);
+                // An empty plot is the timeline's own surface: holding it and moving pans the
+                // axis, which is the gesture every map and gantt timeline offers.
+                let (track_x, track_w) = self.track_geometry();
+                let top = self.geometry().y + self.axis_height();
+                if pos.y >= top && pos.x >= track_x && pos.x <= track_x + track_w as i32 {
+                    self.pan = Some(GanttPan {
+                        origin_x: pos.x,
+                        start: self.viewport_start,
+                        end: self.viewport_end,
+                    });
                 }
             }
             Event::MouseMove { pos } => {
+                self.pointer_known = true;
+                self.hover_position = *pos;
+                if let Some(pan) = self.pan.as_ref() {
+                    // The pan is a pixel translation, so the grabbed date stays under the pointer
+                    // whatever the viewport does between events.
+                    let (_, track_w) = self.track_geometry();
+                    let span = (pan.end - pan.start).max(1);
+                    let shift = i64::from(pos.x - pan.origin_x) * span / i64::from(track_w.max(1));
+                    self.set_viewport(pan.start - shift, pan.end - shift);
+                    return;
+                }
                 if self.drag.is_none() {
                     // Hover is tracked only while nothing is being dragged: during a drag the
                     // pointer belongs to the bar, not to a read-out target.
                     let hovered = self.row_at(*pos);
-                    self.hover_position = *pos;
                     if hovered != self.hovered_task {
                         self.hovered_task = hovered;
                         self.task_hovered.emit(hovered);
@@ -1487,10 +1722,15 @@ impl EventHandler for GanttWidget {
                 self.invalidate_critical_path();
                 self.base.request_redraw();
             }
-            Event::MouseRelease { button: 1, .. } => self.finish_drag(),
+            Event::MouseRelease { button: 1, .. } => {
+                self.pan = None;
+                self.finish_drag();
+            }
             // A drag that loses the pointer must not leave a bar following a pointer that is no
             // longer there; the gesture is committed at its last position.
             Event::MouseLeave { .. } => {
+                self.pointer_known = false;
+                self.pan = None;
                 if self.hovered_task.take().is_some() {
                     self.task_hovered.emit(None);
                 }
@@ -1502,10 +1742,17 @@ impl EventHandler for GanttWidget {
                     if delta.y != 0 {
                         self.scroll_by(if delta.y > 0 { 1 } else { -1 });
                     }
-                } else if delta.y < 0 {
-                    self.zoom(1.2);
-                } else if delta.y > 0 {
-                    self.zoom(0.8);
+                } else if delta.y != 0 {
+                    // The date under the pointer is the fixed point of the zoom; with no pointer
+                    // yet, the centre is (which is the behaviour the wheel always had).
+                    let anchor = (self.pointer_known
+                        && self.geometry().contains_point(self.hover_position))
+                    .then_some(self.hover_position.x);
+                    let factor = if delta.y < 0 { 1.2 } else { 0.8 };
+                    match anchor {
+                        Some(x) => self.zoom_at(factor, x),
+                        None => self.zoom(factor),
+                    }
                 }
             }
             Event::KeyPress { key, .. } => match *key {
@@ -1657,8 +1904,15 @@ impl Draw for GanttWidget {
             // horizontal axis and leaves `y` at the band's top edge, so handing it a
             // `row_height`-tall band pinned every task name to the top of its lane again.
             // `draw_text_line` is the entry point that centres on both axes.
-            let label_band =
-                Rect::new(rect.x, y, track_x.saturating_sub(rect.x) as u32, self.row_height);
+            // A task with a parent is indented one step per level, so the schedule reads as the
+            // tree the hierarchy describes; a flat schedule has depth 0 and is unchanged.
+            let indent = (self.task_depth(index) as i32) * 12;
+            let label_band = Rect::new(
+                rect.x + indent,
+                y,
+                track_x.saturating_sub(rect.x + indent) as u32,
+                self.row_height,
+            );
             context.draw_text_line_cow(
                 label_band,
                 &task.label,
@@ -1724,6 +1978,29 @@ impl Draw for GanttWidget {
                     Rect::new(bar_rect.x, bar_rect.y, progress_w, bar_rect.height),
                     progress_fill,
                 );
+            }
+
+            // A parent row carries its children's aggregate as a bracket under its own bar, so a
+            // collapsed-looking summary row still states the span and progress of what it groups.
+            // A leaf computes no roll-up and pays nothing.
+            if let Some((rollup_start, rollup_end, rollup_progress)) = self.task_rollup(index) {
+                let from_x = self.project_x(rollup_start, track_x, track_w);
+                let to_x = self.project_x(rollup_end, track_x, track_w).max(from_x + 2);
+                let bracket_y = y + self.row_height as i32 - 3;
+                context.draw_line(
+                    Point::new(from_x, bracket_y),
+                    Point::new(to_x, bracket_y),
+                    link_color,
+                );
+                let filled =
+                    ((to_x - from_x) as f32 * (rollup_progress as f32 / 100.0)).round() as i32;
+                if filled > 0 {
+                    context.draw_line(
+                        Point::new(from_x, bracket_y),
+                        Point::new(from_x + filled, bracket_y),
+                        critical_color,
+                    );
+                }
             }
 
             context.draw_line(
@@ -1796,6 +2073,10 @@ impl Draw for GanttWidget {
                     ),
                     DependencyKind::FinishToFinish => (
                         self.project_x(pred.end.max(pred.start + 1), track_x, track_w),
+                        self.project_x(task.end.max(task.start + 1), track_x, track_w),
+                    ),
+                    DependencyKind::StartToFinish => (
+                        self.project_x(pred.start, track_x, track_w),
                         self.project_x(task.end.max(task.start + 1), track_x, track_w),
                     ),
                 };
@@ -1899,7 +2180,7 @@ impl Draw for GanttWidget {
 // 2000-line production limit (principle #9). Re-exporting keeps their public
 // path unchanged: `gantt_widget::TimelineAxis` and friends still resolve.
 #[path = "gantt_companions.rs"]
-mod companions;
+pub(crate) mod companions;
 pub use companions::{
     DateFormat, Dependency, DependencyEditor, TimelineAxis, AXIS_MAX_ZOOM, AXIS_MIN_ZOOM,
 };
@@ -2738,6 +3019,105 @@ mod tests {
     fn set_tasks_command_reports_a_missing_payload() {
         let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
         assert_eq!(gantt.command("set_tasks"), Err(CapabilityAccessError::OutOfRange));
+    }
+
+    /// SP-019: the start-to-finish relationship round-trips through its token.
+    #[test]
+    fn start_to_finish_dependency_round_trips() {
+        assert_eq!(DependencyKind::StartToFinish.token(), "stf");
+        assert_eq!(DependencyKind::from_token("stf"), Some(DependencyKind::StartToFinish));
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        let mut follower = GanttTask::new("b", "Build", 5, 9, 0);
+        follower
+            .dependencies
+            .push(GanttDependency { id: "a".into(), kind: DependencyKind::StartToFinish });
+        gantt.set_tasks(vec![GanttTask::new("a", "Design", 0, 4, 100), follower]);
+        let tokens = match gantt.get("tasks").expect("readable") {
+            CapabilityValue::Records(records) => records
+                .items()
+                .iter()
+                .map(|record| match record.get("dependencies") {
+                    Some(CapabilityValue::Tuple(items)) => items
+                        .iter()
+                        .filter_map(|item| match item {
+                            CapabilityValue::String(token) => Some(token.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        assert_eq!(tokens[1], ["a:stf"]);
+    }
+
+    /// SP-017: a press on empty plot pans the axis and release ends the pan.
+    #[test]
+    fn dragging_empty_plot_pans_the_timeline() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        let before = gantt.viewport();
+        // The first lane's bar spans x for 0..=10; the lane near the track's right edge is
+        // empty plot.
+        let lane = gantt.lane_rect(0);
+        let (track_x, track_w) = gantt.track_geometry();
+        let start = Point::new(track_x + track_w as i32 - 8, lane.y + 4);
+        gantt.handle_event(&Event::mouse_press(start.x, start.y, 1));
+        assert!(gantt.is_panning());
+        gantt.handle_event(&Event::mouse_move(start.x - 100, start.y));
+        let after = gantt.viewport();
+        assert!(after.0 > before.0, "dragging left advances the window");
+        assert_eq!(after.1 - after.0, before.1 - before.0, "the span is unchanged");
+        gantt.handle_event(&Event::mouse_release(start.x - 100, start.y, 1));
+        assert!(!gantt.is_panning());
+    }
+
+    /// SP-018: a pointer-anchored zoom keeps the date under the pointer fixed.
+    #[test]
+    fn zoom_at_keeps_the_anchor_date_in_place() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(sample_tasks());
+        let (track_x, track_w) = gantt.track_geometry();
+        let x = track_x + track_w as i32 / 4;
+        let (start, end) = gantt.viewport();
+        let ratio = (x - track_x) as f64 / track_w as f64;
+        let anchor = start as f64 + ratio * (end - start) as f64;
+
+        gantt.zoom_at(2.0, x);
+
+        let (start, end) = gantt.viewport();
+        let anchor_after = start as f64 + ratio * (end - start) as f64;
+        assert!(
+            (anchor_after - anchor).abs() <= 1.0,
+            "the anchored date stays within one axis unit: {anchor} vs {anchor_after}"
+        );
+        assert!(end - start < 30, "the window narrowed");
+    }
+
+    /// SP-020: the hierarchy is validated and its roll-up aggregates the descendants.
+    #[test]
+    fn task_hierarchy_indents_and_rolls_up() {
+        let mut gantt = GanttWidget::new(Rect::new(0, 0, 700, 180));
+        gantt.set_tasks(vec![
+            GanttTask::new("root", "Root", 0, 10, 100),
+            GanttTask::new("child", "Child", 2, 6, 50),
+            GanttTask::new("grand", "Grand", 7, 12, 0),
+        ]);
+        assert_eq!(gantt.task_depth(0), 0);
+        assert!(gantt.set_task_parent("child", "root"));
+        assert!(gantt.set_task_parent("grand", "child"));
+        assert_eq!(gantt.task_depth(1), 1);
+        assert_eq!(gantt.task_depth(2), 2);
+        assert_eq!(gantt.task_children("root"), vec!["child"]);
+        assert_eq!(gantt.task_parent("grand"), Some("child"));
+        assert_eq!(gantt.task_rollup(0), Some((2, 12, 22)));
+        assert_eq!(gantt.task_rollup(2), None, "a leaf has no summary");
+
+        assert!(!gantt.set_task_parent("root", "grand"), "a cycle is refused");
+        assert!(!gantt.set_task_parent("missing", "root"));
+        assert!(gantt.clear_task_parent("grand"));
+        assert_eq!(gantt.task_depth(2), 0);
     }
 }
 

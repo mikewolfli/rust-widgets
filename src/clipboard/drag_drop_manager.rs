@@ -16,7 +16,18 @@ impl DragDropManager {
     /// Returns `true` if the backend accepts the drag request.
     #[cfg(not(alloc_frugal))]
     pub fn begin_drag(source_widget_id: ObjectId, mime: impl AsRef<str>, payload: &[u8]) -> bool {
-        Self::begin_drag_with(get_platform(), source_widget_id, mime.as_ref(), payload)
+        let mime = mime.as_ref();
+        let accepted = Self::begin_drag_with(get_platform(), source_widget_id, mime, payload);
+        // APP-012: report the accepted drag on the application channel, not as a widget trigger:
+        // a drag has a source but no single target to deliver a `WidgetTriggerEvent` to.
+        #[cfg(full_widgets)]
+        if accepted {
+            crate::app::publish_application_event(&crate::app::ApplicationEvent::DragStarted {
+                source_widget_id,
+                mime: crate::compat::String::from(mime),
+            });
+        }
+        accepted
     }
     /// Drag and drop not available in mini mode.
     #[cfg(alloc_frugal)]
@@ -42,7 +53,16 @@ impl DragDropManager {
     /// Poll the next pending drop event, if any.
     #[cfg(not(alloc_frugal))]
     pub fn poll_drop_event() -> Option<DropEvent> {
-        Self::poll_drop_event_with(get_platform())
+        let event = Self::poll_drop_event_with(get_platform());
+        // APP-012: the dequeue point is where "the user dropped" becomes a fact the application can
+        // observe, so the broadcast happens here rather than at each host call site.
+        #[cfg(full_widgets)]
+        if let Some(event) = &event {
+            crate::app::publish_application_event(&crate::app::ApplicationEvent::DropCompleted {
+                event: event.clone(),
+            });
+        }
+        event
     }
     /// Drag and drop not available in mini mode.
     #[cfg(alloc_frugal)]

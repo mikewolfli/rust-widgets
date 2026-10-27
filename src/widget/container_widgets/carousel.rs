@@ -2616,6 +2616,11 @@ mod tests {
         c.tick(250);
         assert_eq!(c.selected_index().unwrap_or(0), 1, "1050 ms crosses the interval once");
 
+        // An autoplay advance is a programmatic page change, so it slides (C-010). Let the
+        // slide finish first: while it is in flight it owes frames of its own, which would
+        // make the "no autoplay, no repaint" assertion below test the wrong thing.
+        c.tick(PAGE_TRANSITION_MS);
+
         // Turning autoplay off stops it owing frames at all.
         c.set_autoplay(None);
         assert!(!c.is_animating(), "a carousel with no autoplay must not keep repainting");

@@ -52,6 +52,8 @@ struct ProcessedFrame {
     width: u32,
     height: u32,
     stride: u32,
+    /// The source layout, so a change of format cannot reuse the wrong conversion.
+    format: PixelFormat,
     mirror: bool,
     zoom_bits: u32,
     data: Vec<u8>,
@@ -77,20 +79,18 @@ impl CameraDevice {
 
 /// Pixel layout a capture device negotiated.
 ///
-/// Only [`PixelFormat::Rgba8888`] is accepted by [`CameraPreview::set_frame`]: the control paints
-/// RGBA bytes and does no colour conversion, so claiming to accept a packed YUV layout it cannot
-/// convert would make a host hand it bytes that then drew as noise.
+/// Both variants are paintable: the viewfinder's image primitive takes tightly packed RGBA, and
+/// [`CameraPreview`] converts BGRA while it repacks a frame. The enum used to declare two YUV
+/// layouts it could never convert, so a host could negotiate a format the control then rejected —
+/// a declaration with no implementation (MW-007). Declaring only what is paint promotes the
+/// layout from documentation to contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PixelFormat {
     /// Tightly packed RGBA, 4 bytes per pixel.
     #[default]
     Rgba8888,
-    /// Tightly packed BGRA, 4 bytes per pixel.
+    /// Tightly packed BGRA, 4 bytes per pixel; converted to RGBA when painted.
     Bgra8888,
-    /// Semi-planar YUV 4:2:0.
-    Nv12,
-    /// Packed YUV 4:2:2.
-    Yuy2,
 }
 
 /// A decoded camera frame supplied by the host.
@@ -197,6 +197,13 @@ pub struct CameraPreview {
     zoom_text: String,
     /// The repacked/mirrored/cropped frame from the previous draw.
     processed: Option<ProcessedFrame>,
+    /// Emitted when the host asks for a still capture.
+    ///
+    /// The control has no capture pipeline, so it reports the request rather than inventing a
+    /// picture; the host answers by injecting the frame it captured (MW-008).
+    pub capture_requested: GenericSignal,
+    /// Milliseconds accumulated toward the next automatic presentation.
+    present_elapsed_ms: u64,
 }
 
 impl CameraPreview {
@@ -224,6 +231,8 @@ impl CameraPreview {
             camera_id_text: "Camera #0".to_string(),
             zoom_text: "1.0x".to_string(),
             processed: None,
+            capture_requested: GenericSignal::new(),
+            present_elapsed_ms: 0,
         }
     }
 
@@ -308,6 +317,7 @@ impl CameraPreview {
             return;
         }
         self.pixel_format = format;
+        self.processed = None;
         self.announce_format();
         self.base.request_redraw();
     }
@@ -324,8 +334,22 @@ impl CameraPreview {
             return;
         }
         self.target_fps = fps;
+        self.present_elapsed_ms = 0;
         self.announce_format();
         self.base.request_redraw();
+    }
+
+    /// Asks the host for a still capture of the current view.
+    ///
+    /// The viewfinder only presents what a host injects, so a capture request is a signal rather
+    /// than a returned image: the host takes the picture and hands it back through
+    /// [`Self::set_frame_shared`] (MW-008). Inactive previews have nothing to capture and are
+    /// ignored, matching the control's other device actions.
+    pub fn request_capture(&mut self) {
+        if !self.is_active {
+            return;
+        }
+        self.capture_requested.emit();
     }
 
     /// Announces `(width, height)` as the negotiated format.
@@ -438,10 +462,10 @@ impl CameraPreview {
         if frame.width == 0 || frame.height == 0 {
             return Err("a camera frame needs non-zero dimensions".to_string());
         }
-        if self.pixel_format != PixelFormat::Rgba8888 || frame.format != PixelFormat::Rgba8888 {
+        if frame.format != self.pixel_format {
             return Err(format!(
-                "the negotiated {:?} layout cannot be painted; this control accepts RGBA8888 frames",
-                frame.format
+                "the frame's {:?} layout does not match the negotiated {:?}",
+                frame.format, self.pixel_format
             ));
         }
         let minimum = frame.width as usize * 4;
@@ -473,6 +497,7 @@ impl CameraPreview {
         self.resolution = resolution;
         self.resolution_text = format!("{}x{}", resolution.0, resolution.1);
         self.processed = None;
+        self.present_elapsed_ms = 0;
         self.frame_available.emit(frame.pts_ms);
         self.back = Some(frame);
         if negotiated {
@@ -513,6 +538,7 @@ impl CameraPreview {
         };
         let pts = frame.pts_ms;
         self.front = Some(frame);
+        self.present_elapsed_ms = 0;
         self.frame_presented.emit(pts as f64 / 1000.0);
         self.base.request_redraw();
         true
@@ -597,7 +623,8 @@ impl CameraPreview {
     /// zoom -- does no pixel work (L-P06).
     fn ensure_processed(&mut self, frame: &CameraFrame) -> bool {
         let tight = frame.width as usize * 4;
-        let identity = !self.mirror_mode
+        let identity = frame.format == PixelFormat::Rgba8888
+            && !self.mirror_mode
             && (self.zoom_level - 1.0).abs() < f32::EPSILON
             && frame.stride as usize == tight;
         if identity {
@@ -614,6 +641,7 @@ impl CameraPreview {
                     && cached.width == frame.width
                     && cached.height == frame.height
                     && cached.stride == frame.stride
+                    && cached.format == frame.format
                     && cached.mirror == self.mirror_mode
                     && cached.zoom_bits == zoom_bits
         );
@@ -642,7 +670,13 @@ impl CameraPreview {
                 let from = source_row + source_x as usize * 4;
                 let to = row as usize * tight + column as usize * 4;
                 if let Some(pixel) = frame.data.get(from..from + 4) {
-                    data[to..to + 4].copy_from_slice(pixel);
+                    let destination = &mut data[to..to + 4];
+                    destination.copy_from_slice(pixel);
+                    // The image primitive paints RGBA; a BGRA capture is reordered here, in the
+                    // same pass that already repacks padded rows (MW-007).
+                    if frame.format == PixelFormat::Bgra8888 {
+                        destination.swap(0, 2);
+                    }
                 }
             }
         }
@@ -652,6 +686,7 @@ impl CameraPreview {
             width,
             height,
             stride: frame.stride,
+            format: frame.format,
             mirror: self.mirror_mode,
             zoom_bits,
             data,
@@ -724,6 +759,29 @@ impl Widget for CameraPreview {
         }
     }
 
+    /// Presents a waiting frame at the requested capture rate.
+    ///
+    /// A host that only calls `tick` (the animation bus does) now gets frames at
+    /// [`Self::target_fps`] instead of keeping the first one in the back slot forever: the
+    /// controller reports the rate and the view honours it (MW-008). A host that calls
+    /// [`Self::present_frame`] itself is unaffected because a present resets the accumulator.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.is_active || self.back.is_none() {
+            return false;
+        }
+        self.present_elapsed_ms = self.present_elapsed_ms.saturating_add(u64::from(delta_ms));
+        let interval = (1000u64 / u64::from(self.target_fps.max(1))).max(1);
+        if self.present_elapsed_ms < interval {
+            return false;
+        }
+        self.present_frame()
+    }
+
+    /// Whether a captured frame is waiting for its presentation slot.
+    fn is_animating(&self) -> bool {
+        self.is_active && self.back.is_some()
+    }
+
     impl_widget_property_hooks!();
 }
 
@@ -757,8 +815,6 @@ impl WidgetProperties for CameraPreview {
                 let format = match expect_string(value)?.to_ascii_lowercase().as_str() {
                     "rgba8888" | "rgba" => PixelFormat::Rgba8888,
                     "bgra8888" | "bgra" => PixelFormat::Bgra8888,
-                    "nv12" => PixelFormat::Nv12,
-                    "yuy2" => PixelFormat::Yuy2,
                     _ => return Err(CapabilityAccessError::TypeMismatch),
                 };
                 self.set_pixel_format(format);
@@ -1149,8 +1205,8 @@ mod tests {
         );
         let data = vec![0u8; 4 * 4 * 4];
         assert!(
-            preview.set_frame(4, 4, &data).is_err(),
-            "a layout the painter cannot interpret is refused rather than decoded as RGBA"
+            preview.set_frame(4, 4, &data).is_ok(),
+            "a negotiated BGRA layout is paintable now that the conversion exists (MW-007)"
         );
     }
 
@@ -1281,5 +1337,73 @@ mod tests {
         });
         preview.report_permission_denied();
         assert!(denied.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// A BGRA capture is converted in the repack pass, so the declared format is implemented
+    /// rather than a dead alternative (MW-007).
+    #[test]
+    fn a_bgra_frame_is_converted_to_the_rgba_order_the_painter_reads() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        preview.set_pixel_format(PixelFormat::Bgra8888);
+        // One pixel: B, G, R, A in the source; the painter needs R, G, B, A.
+        let source: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![10u8, 20, 30, 255]);
+        let frame = CameraFrame::from_shared(1, 1, 0, PixelFormat::Bgra8888, 4, source);
+        assert!(preview.ensure_processed(&frame), "a BGRA frame is always converted");
+        let processed = preview.processed.as_ref().expect("the converted buffer is cached");
+        assert_eq!(processed.data, vec![30, 20, 10, 255]);
+        // With mirroring and zoom at their defaults, the conversion is the only transform, so a
+        // second call reuses the buffer.
+        let before = processed.data.as_ptr();
+        assert!(preview.ensure_processed(&frame));
+        assert_eq!(preview.processed.as_ref().unwrap().data.as_ptr(), before);
+    }
+
+    /// A frame whose layout disagrees with the negotiated one is refused instead of mis-painted.
+    #[test]
+    fn a_frame_format_must_match_the_negotiated_layout() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        preview.set_pixel_format(PixelFormat::Bgra8888);
+        let source: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![0u8; 16]);
+        let rgba = CameraFrame::from_shared(2, 2, 0, PixelFormat::Rgba8888, 8, source);
+        assert!(preview.set_frame_shared(std::sync::Arc::new(rgba)).is_err());
+    }
+
+    /// The capture request is reported rather than answered with an invented picture (MW-008).
+    #[test]
+    fn a_capture_request_reaches_the_host_only_while_active() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let s = seen.clone();
+        preview.capture_requested.connect(move || {
+            s.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        preview.request_capture();
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 0);
+        preview.start_preview();
+        preview.request_capture();
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// `target_fps` is now consumed: the tick presents a waiting frame at that rate (MW-008).
+    #[test]
+    fn the_tick_throttles_presentation_to_the_target_frame_rate() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 320, 240));
+        preview.start_preview();
+        preview.set_target_fps(10);
+        let data: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![1u8; 4 * 4 * 4]);
+        preview
+            .set_frame_shared(std::sync::Arc::new(CameraFrame::new(4, 4, 7, data)))
+            .expect("a matching frame is accepted");
+        let presented = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+        let p = presented.clone();
+        preview.frame_presented.connect(move |pts: std::sync::Arc<f64>| {
+            p.store((*pts * 1000.0) as u64, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert!(!preview.tick(50), "half the interval is too early");
+        assert!(preview.frame().is_none());
+        assert!(preview.tick(50), "the second half presents");
+        assert_eq!(preview.frame().map(|frame| frame.pts_ms), Some(7));
+        assert_eq!(presented.load(std::sync::atomic::Ordering::SeqCst), 7);
+        assert!(preview.is_animating() == false, "nothing waits after the present");
     }
 }

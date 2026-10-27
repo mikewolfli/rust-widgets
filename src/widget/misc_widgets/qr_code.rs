@@ -4,7 +4,7 @@
 //! QRCode widget — renders a real byte-mode QR Code symbol.
 //!
 //! The widget contains a dependency-free QR encoder (ISO/IEC 18004) for byte mode. It supports
-//! versions 1 through 10 at error-correction levels **L** and **M**, writes the mode and
+//! versions 1 through 40 at all four error-correction levels, writes the mode and
 //! character-count indicators, appends Reed–Solomon codewords, chooses the mask with the lowest
 //! penalty score, and emits the function patterns and format/version information. The resulting
 //! module grid is a real QR symbol: a conforming scanner can decode it when the drawing is large
@@ -12,18 +12,17 @@
 //!
 //! Supported envelope:
 //!
-//! * **Byte mode only.** Every payload is encoded as its UTF-8 bytes. The encoder does not select
-//!   numeric or alphanumeric mode, which would be more compact for some inputs, but byte mode is
-//!   valid for every string and is the one mode implemented here.
-//! * **Versions 1–10, EC levels L and M.** The version is chosen automatically, smallest first.
-//!   A payload that does not fit version 10 at the selected level is reported through the
+//! * **Byte, numeric and alphanumeric modes.** The encoder plans runs of digits and
+//!   alphanumeric characters, and falls back to UTF-8 byte mode for everything else.
+//! * **Versions 1–40, all four EC levels.** The version is chosen automatically, smallest first.
+//!   A payload that does not fit version 40 at the selected level is reported through the
 //!   widget's `encode_error` field, and `draw` renders an explicit error placeholder instead of a
 //!   QR-like matrix.
 //! * **Real format information.** The 15-bit format field is BCH-encoded with the standard
-//!   generator and `0x5412` mask; versions 7–10 also carry the 18-bit version information.
+//!   generator and `0x5412` mask; versions 7 and above also carry the 18-bit version information.
 //!
-//! The character-count indicator is 8 bits wide for versions 1–9 and 16 bits wide for version 10,
-//! as the specification requires at that boundary.
+//! The character-count indicator is 8 bits wide for versions 1–9 and 16 bits wide for byte mode
+//! at version 10 and above, as the specification requires at that boundary.
 
 use std::fmt;
 
@@ -34,7 +33,7 @@ use crate::widget::capability::coercion::{expect_string, expect_u32_saturating, 
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Side of a finder pattern (and of its separator ring) in modules.
@@ -160,7 +159,7 @@ fn finder_corner(size: u32, row: u32, col: u32) -> Option<(u32, u32, bool, bool)
 }
 
 /// Data-codeword and Reed–Solomon layout for one (version, EC level) pair.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BlockSpec {
     data_codewords: usize,
     ec_per_block: usize,
@@ -217,8 +216,94 @@ fn block_spec(version: u8, ec: QrEcLevel) -> Option<BlockSpec> {
             (10, QrEcLevel::M) => (216, 26, 5, 43, 4),
             (10, QrEcLevel::Q) => (154, 24, 8, 19, 6),
             (10, QrEcLevel::H) => (122, 28, 8, 15, 6),
-            _ => return None,
+            _ => return spec_from_tables(version, ec),
         };
+    Some(BlockSpec { data_codewords, ec_per_block, num_blocks, short_data_codewords, short_blocks })
+}
+
+/// Reed–Solomon codewords per block, `[L, M, Q, H]`, indexed by version (0 is unused).
+///
+/// These are the ISO/IEC 18004 tables; versions 1–10 are kept in [`block_spec`] directly, and
+/// `spec_from_tables` reproduces them exactly (pinned by a unit test).
+const ECC_CODEWORDS_PER_BLOCK: [[u8; 41]; 4] = [
+    [
+        0, 7, 10, 15, 20, 26, 18, 20, 24, 30, 18, 20, 24, 26, 30, 22, 24, 28, 30, 28, 28, 28, 28,
+        30, 30, 26, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
+    ],
+    [
+        0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28,
+        28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28,
+    ],
+    [
+        0, 13, 22, 18, 26, 18, 24, 18, 22, 20, 24, 28, 26, 24, 20, 30, 24, 28, 28, 26, 30, 28, 30,
+        30, 30, 30, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
+    ],
+    [
+        0, 17, 28, 22, 16, 22, 28, 26, 26, 24, 28, 24, 28, 22, 24, 24, 30, 28, 28, 26, 28, 30, 24,
+        30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
+    ],
+];
+
+/// Reed–Solomon block counts, `[L, M, Q, H]`, indexed by version (0 is unused).
+const NUM_ERROR_CORRECTION_BLOCKS: [[u8; 41]; 4] = [
+    [
+        0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 4, 4, 6, 6, 6, 6, 7, 8, 8, 9, 9, 10, 12, 12, 12, 13,
+        14, 15, 16, 17, 18, 19, 19, 20, 21, 22, 24, 25,
+    ],
+    [
+        0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21,
+        23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49,
+    ],
+    [
+        0, 1, 1, 2, 2, 4, 4, 6, 6, 8, 8, 8, 10, 12, 16, 12, 17, 16, 18, 21, 20, 23, 23, 25, 27, 29,
+        34, 34, 35, 38, 40, 43, 45, 48, 51, 53, 56, 59, 62, 65, 68,
+    ],
+    [
+        0, 1, 1, 2, 4, 4, 4, 5, 6, 8, 8, 11, 11, 16, 16, 18, 16, 19, 21, 25, 25, 25, 34, 30, 32,
+        35, 37, 40, 42, 45, 48, 51, 54, 57, 60, 63, 66, 70, 74, 77, 81,
+    ],
+];
+
+/// The total number of codewords (data plus EC) a version carries.
+///
+/// The function patterns are subtracted from the raw module count rather than tabulated, so the
+/// number cannot drift from the matrix the encoder actually builds.
+fn total_codewords(version: u8) -> usize {
+    let version = usize::from(version);
+    let mut modules = (16 * version + 128) * version + 64;
+    if version >= 2 {
+        let alignment = version / 7 + 2;
+        modules -= (25 * alignment - 10) * alignment - 55;
+        if version >= 7 {
+            modules -= 36;
+        }
+    }
+    modules / 8
+}
+
+/// Derives a block layout from the standard tables for versions 11–40.
+///
+/// The data capacity is the version's total minus the parity, and the blocks differ by at most
+/// one codeword, which is exactly the [`BlockSpec`] shape.
+fn spec_from_tables(version: u8, ec: QrEcLevel) -> Option<BlockSpec> {
+    if version == 0 || version > 40 {
+        return None;
+    }
+    let index = usize::from(version);
+    let row = match ec {
+        QrEcLevel::L => 0,
+        QrEcLevel::M => 1,
+        QrEcLevel::Q => 2,
+        QrEcLevel::H => 3,
+    };
+    let ec_per_block = usize::from(ECC_CODEWORDS_PER_BLOCK[row][index]);
+    let num_blocks = usize::from(NUM_ERROR_CORRECTION_BLOCKS[row][index]);
+    if ec_per_block == 0 || num_blocks == 0 {
+        return None;
+    }
+    let data_codewords = total_codewords(version).checked_sub(ec_per_block * num_blocks)?;
+    let short_data_codewords = data_codewords / num_blocks;
+    let short_blocks = num_blocks - data_codewords % num_blocks;
     Some(BlockSpec { data_codewords, ec_per_block, num_blocks, short_data_codewords, short_blocks })
 }
 
@@ -346,8 +431,8 @@ fn choose_version_in(
     min_version: u8,
     max_version: u8,
 ) -> Result<u8, QrEncodeError> {
-    let min_version = min_version.clamp(1, 10);
-    let max_version = max_version.clamp(min_version, 10);
+    let min_version = min_version.clamp(1, 40);
+    let max_version = max_version.clamp(min_version, 40);
     for version in min_version..=max_version {
         // The 8-bit count indicator of versions 1–9 cannot describe more than 255 bytes.
         if version <= 9 && data_len > 255 {
@@ -368,8 +453,9 @@ fn choose_version_in(
         }
     }
     Err(QrEncodeError(format!(
-        "byte-mode payload of {data_len} bytes does not fit any supported QR version (1-10) at \
-         EC level {ec:?}"
+        "byte-mode payload of {data_len} bytes does not fit any supported QR version ({}..={}) at \
+         EC level {ec:?}",
+        min_version, max_version
     )))
 }
 
@@ -511,6 +597,9 @@ fn draw_timing(matrix: &mut QrMatrix) {
 }
 
 /// Alignment-pattern centre coordinates for each supported version.
+///
+/// Versions 1–40 are tabulated rather than derived: the positions are a published table and
+/// deriving them would put a second, subtly different rule beside it.
 fn alignment_positions(version: u8) -> &'static [u32] {
     match version {
         1 => &[],
@@ -523,6 +612,36 @@ fn alignment_positions(version: u8) -> &'static [u32] {
         8 => &[6, 24, 42],
         9 => &[6, 26, 46],
         10 => &[6, 28, 50],
+        11 => &[6, 30, 54],
+        12 => &[6, 32, 58],
+        13 => &[6, 34, 62],
+        14 => &[6, 26, 46, 66],
+        15 => &[6, 26, 48, 70],
+        16 => &[6, 26, 50, 74],
+        17 => &[6, 30, 54, 78],
+        18 => &[6, 30, 56, 82],
+        19 => &[6, 30, 58, 86],
+        20 => &[6, 34, 62, 90],
+        21 => &[6, 28, 50, 72, 94],
+        22 => &[6, 26, 50, 74, 98],
+        23 => &[6, 30, 54, 78, 102],
+        24 => &[6, 28, 54, 80, 106],
+        25 => &[6, 32, 58, 84, 110],
+        26 => &[6, 30, 58, 86, 114],
+        27 => &[6, 34, 62, 90, 118],
+        28 => &[6, 26, 50, 74, 98, 122],
+        29 => &[6, 30, 54, 78, 102, 126],
+        30 => &[6, 26, 52, 78, 104, 130],
+        31 => &[6, 30, 56, 82, 108, 134],
+        32 => &[6, 34, 60, 86, 112, 138],
+        33 => &[6, 30, 58, 86, 114, 142],
+        34 => &[6, 34, 62, 90, 118, 146],
+        35 => &[6, 30, 54, 78, 102, 126, 150],
+        36 => &[6, 24, 50, 76, 102, 128, 154],
+        37 => &[6, 28, 54, 80, 106, 132, 158],
+        38 => &[6, 32, 58, 84, 110, 136, 162],
+        39 => &[6, 26, 54, 82, 110, 138, 166],
+        40 => &[6, 30, 58, 86, 114, 142, 170],
         _ => &[],
     }
 }
@@ -558,7 +677,7 @@ fn draw_alignment_pattern(matrix: &mut QrMatrix, center_row: u32, center_col: u3
     }
 }
 
-/// Draws the 18-bit version information for versions 7–10.
+/// Draws the 18-bit version information for versions 7 and above.
 fn draw_version_info(matrix: &mut QrMatrix, version: u8) {
     let bits = version_bits(version);
     let size = matrix.size;
@@ -839,7 +958,7 @@ fn best_mask(matrix: &QrMatrix) -> u8 {
 /// Test-only constructor for the default version window.
 #[cfg(test)]
 fn encode_byte_mode(data: &[u8], ec: QrEcLevel) -> Result<QrMatrix, QrEncodeError> {
-    encode_byte_mode_in(data, ec, 1, 10)
+    encode_byte_mode_in(data, ec, 1, 40)
 }
 
 /// Encodes `data` within an explicit version window.
@@ -900,13 +1019,15 @@ impl QrMode {
 
     /// The width of this mode's character-count indicator at `version`.
     fn count_bits(self, version: u8) -> usize {
-        match (self, version <= 9) {
-            (QrMode::Numeric, true) => 10,
-            (QrMode::Numeric, false) => 12,
-            (QrMode::AlphaNumeric, true) => 9,
-            (QrMode::AlphaNumeric, false) => 11,
-            (QrMode::Byte, true) => 8,
-            (QrMode::Byte, false) => 16,
+        match (self, version <= 9, version <= 26) {
+            (QrMode::Numeric, true, _) => 10,
+            (QrMode::Numeric, false, true) => 12,
+            (QrMode::Numeric, false, false) => 14,
+            (QrMode::AlphaNumeric, true, _) => 9,
+            (QrMode::AlphaNumeric, false, true) => 11,
+            (QrMode::AlphaNumeric, false, false) => 13,
+            (QrMode::Byte, true, _) => 8,
+            (QrMode::Byte, false, _) => 16,
         }
     }
 
@@ -991,8 +1112,8 @@ fn encode_segmented_in(
     min_version: u8,
     max_version: u8,
 ) -> Result<QrMatrix, QrEncodeError> {
-    let min_version = min_version.clamp(1, 10);
-    let max_version = max_version.clamp(min_version, 10);
+    let min_version = min_version.clamp(1, 40);
+    let max_version = max_version.clamp(min_version, 40);
     let mut chosen = None;
     for version in min_version..=max_version {
         let Some(spec) = block_spec(version, ec) else {
@@ -1192,6 +1313,14 @@ pub struct QRCode {
     foreground_color: Option<Color>,
     /// Caller-supplied quiet-zone colour, or `None` to follow the theme's background.
     background_color: Option<Color>,
+    /// An optional mark painted in a cut-out at the symbol's centre.
+    ///
+    /// `None` is the historical symbol: every module is painted. When set, the modules under the
+    /// centred square are treated as light (the "hole") and the mark is painted on top, which is
+    /// the only way a decoder can tolerate a logo (MISC-03).
+    logo: Option<IconSource>,
+    /// Side of the logo hole in modules; `0` selects the default (a fifth of the symbol).
+    logo_modules: u32,
 }
 
 impl QRCode {
@@ -1206,9 +1335,11 @@ impl QRCode {
             encode_error: None,
             ec_level: QrEcLevel::L,
             min_version: 1,
-            max_version: 10,
+            max_version: 40,
             foreground_color: None,
             background_color: None,
+            logo: None,
+            logo_modules: 0,
         };
         widget.reencode();
         widget
@@ -1282,10 +1413,10 @@ impl QRCode {
         (self.min_version, self.max_version)
     }
 
-    /// Sets the version window (clamped to the supported `1..=10`) and re-encodes.
+    /// Sets the version window (clamped to the specification's `1..=40`) and re-encodes.
     pub fn set_version_range(&mut self, min_version: u8, max_version: u8) {
-        let min_version = min_version.clamp(1, 10);
-        let max_version = max_version.clamp(min_version, 10);
+        let min_version = min_version.clamp(1, 40);
+        let max_version = max_version.clamp(min_version, 40);
         if self.min_version == min_version && self.max_version == max_version {
             return;
         }
@@ -1321,6 +1452,80 @@ impl QRCode {
         }
         self.background_color = color;
         self.base.request_redraw();
+    }
+
+    /// The optional centre mark, or `None` for the plain symbol.
+    pub fn logo(&self) -> Option<IconSource> {
+        self.logo
+    }
+
+    /// Installs or removes the centre mark.
+    ///
+    /// The mark is painted in a light cut-out rather than over the modules: a logo that leaves
+    /// the modules beneath it intact is invisible to the decoder, so the cut-out is the feature
+    /// that makes a logo usable rather than the picture itself. Nothing about the encoding
+    /// changes, so this does not re-encode.
+    pub fn set_logo(&mut self, logo: Option<IconSource>) {
+        if self.logo == logo {
+            return;
+        }
+        self.logo = logo;
+        self.base.request_redraw();
+    }
+
+    /// The configured cut-out side in modules; `0` means the default of a fifth of the symbol.
+    pub fn logo_size_modules(&self) -> u32 {
+        self.logo_modules
+    }
+
+    /// Sets the cut-out side in modules; `0` restores the automatic size.
+    pub fn set_logo_size_modules(&mut self, modules: u32) {
+        if self.logo_modules == modules {
+            return;
+        }
+        self.logo_modules = modules;
+        self.base.request_redraw();
+    }
+
+    /// The error-correction level a logo-carrying symbol should use, if any.
+    ///
+    /// A logo removes data from the symbol, so the level has to leave enough recovery budget for
+    /// it. Level **H** recovers about 30% of codewords, which covers the default hole (about 4%
+    /// of the modules) with a wide margin. The hint is advisory: [`QRCode::set_ec_level`] is not
+    /// called here, so a caller that never asks for a logo keeps the historical level.
+    pub fn logo_ec_hint(&self) -> Option<QrEcLevel> {
+        self.logo.map(|_| QrEcLevel::H)
+    }
+
+    /// The centred module square reserved for the logo, as `(row, column, side)`.
+    ///
+    /// `None` while no logo is installed. The square is clamped to leave the finder patterns and
+    /// their separators intact, and is centred on the symbol. A caller-sized square is honoured
+    /// up to that limit, so a badly large value cannot erase the patterns a scanner relies on.
+    fn logo_hole(&self) -> Option<(u32, u32, u32)> {
+        self.logo?;
+        let size = self.matrix.size;
+        let requested = if self.logo_modules == 0 { (size / 5).max(5) } else { self.logo_modules };
+        let side = requested.min(size.saturating_sub(8)).max(1);
+        if side == 0 {
+            return None;
+        }
+        let origin = (size - side) / 2;
+        Some((origin, origin, side))
+    }
+
+    /// Whether `(row, column)` falls inside the logo cut-out.
+    #[cfg(test)]
+    fn is_logo_module(&self, row: u32, col: u32) -> bool {
+        match self.logo_hole() {
+            Some((origin_row, origin_col, side)) => {
+                row >= origin_row
+                    && row < origin_row + side
+                    && col >= origin_col
+                    && col < origin_col + side
+            }
+            None => false,
+        }
     }
 
     /// Returns the size of the **quiet zone** — the light margin around the symbol — in
@@ -1440,12 +1645,12 @@ impl WidgetProperties for QRCode {
                 Ok(())
             }
             "min_version" => {
-                let min = expect_usize(value)?.min(10) as u8;
+                let min = expect_usize(value)?.min(40) as u8;
                 self.set_version_range(min, self.max_version);
                 Ok(())
             }
             "max_version" => {
-                let max = expect_usize(value)?.clamp(1, 10) as u8;
+                let max = expect_usize(value)?.clamp(1, 40) as u8;
                 self.set_version_range(self.min_version, max);
                 Ok(())
             }
@@ -1556,18 +1761,31 @@ impl Draw for QRCode {
         // Draw the quiet-zone surface for the entire symbol area.
         context.fill_rect(Rect::new(symbol_x, symbol_y, symbol_side, symbol_side), surface);
 
+        // The logo cut-out: modules inside it are treated as light below, and the hole is filled
+        // with the quiet-zone colour before the mark is painted, so the two always agree (MISC-03).
+        let logo_hole = self.logo_hole();
+        let in_logo_hole = |row: u32, col: u32| match logo_hole {
+            Some((origin_row, origin_col, side)) => {
+                row >= origin_row
+                    && row < origin_row + side
+                    && col >= origin_col
+                    && col < origin_col + side
+            }
+            None => false,
+        };
+
         for row in 0..size {
             // Horizontal run merging (K-P14): consecutive dark modules in one row become one
             // rectangle. A version-10 symbol is 57x57, so the per-module loop issued up to 3 249
             // fill commands a frame; a real payload is far closer to one run per row.
             let mut col = 0u32;
             while col < size {
-                if !self.matrix.get(row, col) {
+                if !self.matrix.get(row, col) || in_logo_hole(row, col) {
                     col += 1;
                     continue;
                 }
                 let run_start = col;
-                while col < size && self.matrix.get(row, col) {
+                while col < size && self.matrix.get(row, col) && !in_logo_hole(row, col) {
                     col += 1;
                 }
                 let run_len = col - run_start;
@@ -1589,6 +1807,25 @@ impl Draw for QRCode {
                     continue;
                 }
                 context.fill_rect(Rect::new(x, y, cell_w, cell_h), module_color);
+            }
+        }
+
+        // The cut-out itself, then the caller's mark on top of it. Painting the hole before the
+        // mark means a transparent or failed icon still leaves a clean, scannable light square.
+        if let Some((origin_row, origin_col, side)) = logo_hole {
+            let hole = Rect::new(
+                symbol_x + (self.quiet_zone + origin_col) as i32 * module as i32,
+                symbol_y + (self.quiet_zone + origin_row) as i32 * module as i32,
+                side * module,
+                side * module,
+            );
+            context.fill_rect(hole, surface);
+            if let Some(source) = self.logo {
+                if let Err(error) =
+                    crate::widget::paint_icon(context, source.into(), hole, module_color)
+                {
+                    log::warn!("QR logo could not be painted: {error:?}");
+                }
             }
         }
     }
@@ -1832,10 +2069,10 @@ mod tests {
     #[test]
     fn oversized_data_reports_encode_error_without_fake_matrix() {
         let mut qr = QRCode::new(Rect::new(0, 0, 120, 120));
-        let oversized = "a".repeat(272);
+        let oversized = "a".repeat(3000);
         qr.set_data(&oversized);
 
-        assert!(qr.encode_error().is_some(), "272 bytes exceed version 10-L byte capacity");
+        assert!(qr.encode_error().is_some(), "3000 bytes exceed version 40-L byte capacity");
         assert_eq!(qr.data(), oversized.as_str(), "data() still reports the requested payload");
         assert!(
             qr.matrix.modules.iter().all(|&dark| !dark),
@@ -1873,8 +2110,71 @@ mod tests {
             .expect("256 bytes fit version 10-L with a 16-bit count");
         assert_eq!(over_u8_count.size, 57, "256 bytes use the 16-bit count field");
 
-        let too_long = encode_byte_mode(&[b'A'; 272], QrEcLevel::L);
-        assert!(too_long.is_err(), "272 bytes exceed version 10-L capacity");
+        // The envelope now reaches the specification's version 40; only a payload beyond that
+        // version's capacity is an error (MISC-04).
+        let over_ten = encode_byte_mode(&[b'A'; 272], QrEcLevel::L)
+            .expect("272 bytes now fit version 11 at EC L");
+        assert_eq!(over_ten.size, matrix_size(11));
+        let too_long = encode_byte_mode(&[b'A'; 3000], QrEcLevel::L);
+        assert!(too_long.is_err(), "3000 bytes exceed version 40-L capacity");
+    }
+
+    /// The table-derived layouts for versions 1–10 must reproduce the explicit ones exactly, so
+    /// extending the envelope to version 40 cannot silently change a symbol that used to fit.
+    #[test]
+    fn the_derived_block_tables_match_the_explicit_layouts() {
+        for version in 1u8..=10 {
+            for ec in [QrEcLevel::L, QrEcLevel::M, QrEcLevel::Q, QrEcLevel::H] {
+                let explicit = block_spec(version, ec).expect("explicit layout");
+                let derived = spec_from_tables(version, ec).expect("derived layout");
+                assert_eq!(explicit, derived, "version {version} {ec:?}");
+            }
+        }
+    }
+
+    /// The highest version's capacities are the specification's published numbers.
+    #[test]
+    fn version_forty_holds_the_specifications_capacity() {
+        assert_eq!(total_codewords(40), 3706);
+        assert_eq!(block_spec(40, QrEcLevel::L).map(|spec| spec.data_codewords), Some(2956));
+        assert_eq!(block_spec(40, QrEcLevel::H).map(|spec| spec.data_codewords), Some(1276));
+        assert!(block_spec(41, QrEcLevel::L).is_none(), "the specification stops at 40");
+    }
+
+    /// A logo reserves a centred light square and recommends level H without changing the level.
+    #[test]
+    fn a_logo_carves_a_centred_hole_and_hints_a_higher_ec_level() {
+        let mut qr = QRCode::new(Rect::new(0, 0, 120, 120));
+        qr.set_data("logo");
+        assert!(qr.logo_hole().is_none(), "no logo means no hole");
+        assert!(qr.logo_ec_hint().is_none());
+
+        qr.set_logo(Some(IconSource::Builtin(crate::widget::IconName::Home)));
+        let (row, col, side) = qr.logo_hole().expect("a logo carves a hole");
+        assert_eq!(row, col, "the hole is centred");
+        assert_eq!(row * 2 + side, qr.matrix.size, "the hole is centred on the symbol");
+        assert!(qr.is_logo_module(row, col));
+        assert!(!qr.is_logo_module(0, 0), "the finder patterns stay intact");
+        assert_eq!(qr.logo_ec_hint(), Some(QrEcLevel::H));
+        assert_eq!(qr.ec_level(), QrEcLevel::L, "the hint does not change the encoder");
+
+        qr.set_logo(None);
+        assert!(qr.logo_hole().is_none());
+        assert!(qr.logo_ec_hint().is_none());
+    }
+
+    /// The logo is painted in a cut-out, so the rendered symbol differs from the plain one.
+    #[test]
+    fn a_logo_changes_the_painted_symbol() {
+        let mut plain = QRCode::new(Rect::new(0, 0, 240, 240));
+        plain.set_data("logo-paint");
+        let without = crate::widget::svg::render_to_svg(&mut plain);
+
+        let mut marked = QRCode::new(Rect::new(0, 0, 240, 240));
+        marked.set_data("logo-paint");
+        marked.set_logo(Some(IconSource::Builtin(crate::widget::IconName::Home)));
+        let with = crate::widget::svg::render_to_svg(&mut marked);
+        assert_ne!(without, with, "the hole and the mark must be visible");
     }
 
     /// All three finder patterns must be the **same shape**, with a light separator ring.

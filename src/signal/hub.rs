@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::{ConnectionHandle, ConnectionScope, GenericSignal, Priority};
-use crate::compat::{lock, HashMap, Mutex, String};
+use crate::compat::{format, lock, HashMap, Mutex, String};
 
 /// Registry of dynamically named zero-argument signals.
 ///
@@ -60,6 +60,64 @@ impl CustomSignalHub {
         F: FnMut() + Send + Sync + 'static,
     {
         lock(&self.signals).entry(name.into()).or_default().connect(slot)
+    }
+
+    /// Connects a slot to a named signal that must already exist (W-04).
+    ///
+    /// # Why this exists
+    ///
+    /// [`Self::connect`] creates the named signal on demand, so subscribing to a misspelled or
+    /// never-defined name succeeds silently: the host gets a live handle, the name exists in the
+    /// hub, and nothing will ever emit it. That is indistinguishable from a correct wire at run
+    /// time, which is exactly the failure a host needs help diagnosing.
+    ///
+    /// This variant checks the name against the hub first and reports the miss instead of
+    /// creating a slot for it. The original entry point is unchanged — a caller that relies on
+    /// the create-on-connect behaviour keeps it, which is why this is an added variant rather
+    /// than a change of behaviour.
+    ///
+    /// # Errors
+    ///
+    /// `Err` names the undefined signal. Nothing is created or connected in that case.
+    pub fn try_connect<F>(
+        &self,
+        name: impl Into<String>,
+        slot: F,
+    ) -> Result<ConnectionHandle, String>
+    where
+        F: FnMut() + Send + Sync + 'static,
+    {
+        let name = name.into();
+        let mut signals = lock(&self.signals);
+        let Some(signal) = signals.get_mut(&name) else {
+            return Err(format!(
+                "cannot subscribe to `{name}`: no signal with that name is defined in this hub \
+                 (define it first, or use `connect` to create it)"
+            ));
+        };
+        Ok(signal.connect(slot))
+    }
+
+    /// Connects a once-slot to a named signal that must already exist (W-04).
+    ///
+    /// The checked counterpart of [`Self::connect_once`], with the same creation rule as
+    /// [`Self::try_connect`]: an undefined name is reported instead of materialised.
+    pub fn try_connect_once<F>(
+        &self,
+        name: impl Into<String>,
+        slot: F,
+    ) -> Result<ConnectionHandle, String>
+    where
+        F: FnMut() + Send + Sync + 'static,
+    {
+        let name = name.into();
+        let mut signals = lock(&self.signals);
+        let Some(signal) = signals.get_mut(&name) else {
+            return Err(format!(
+                "cannot subscribe to `{name}`: no signal with that name is defined in this hub"
+            ));
+        };
+        Ok(signal.connect_once(slot))
     }
 
     /// Disconnect a specific handle from a named signal.
@@ -256,6 +314,49 @@ mod tests {
         let hub = CustomSignalHub::new();
         hub.emit("nobody-listens");
         assert!(!hub.contains("nobody-listens"));
+    }
+
+    /// W-04: the checked variants refuse an undefined name instead of silently creating it, and
+    /// the original create-on-connect entry point keeps its behaviour.
+    #[test]
+    fn a_checked_subscription_refuses_an_undefined_name() {
+        use alloc::sync::Arc;
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let hub = CustomSignalHub::new();
+        assert!(hub.try_connect("missing", || {}).is_err());
+        assert!(hub.try_connect_once("missing", || {}).is_err());
+        assert!(!hub.contains("missing"), "a refused subscription must not define the name");
+        assert_eq!(hub.signal_count(), 0, "and it must not leave an empty signal behind");
+
+        // The unchecked entry point still creates the name, which is the behaviour an existing
+        // caller may rely on.
+        let _ = hub.connect("created", || {});
+        assert!(hub.contains("created"));
+
+        // A defined name is accepted and the slot really fires.
+        hub.define("changed");
+        let hits = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&hits);
+        let handle = hub
+            .try_connect("changed", move || {
+                seen.fetch_add(1, Ordering::SeqCst);
+            })
+            .expect("a defined name is subscribable");
+        hub.emit("changed");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert!(hub.disconnect("changed", handle));
+
+        // A once-slot through the checked path fires exactly once.
+        let hits = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&hits);
+        hub.try_connect_once("changed", move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        })
+        .expect("a defined name is subscribable once");
+        hub.emit("changed");
+        hub.emit("changed");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
     /// Removing a named signal must not drop the slots' captures under the hub lock.

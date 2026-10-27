@@ -385,7 +385,10 @@ impl PieChart {
     }
 
     /// Maps a pointer position to the slice under it.
-    fn slice_at(&self, pos: Point) -> Option<usize> {
+    fn slice_at(&mut self, pos: Point) -> Option<usize> {
+        // Hit testing must see the same angles the painter draws, so the cache is
+        // brought up to date even when no frame has been painted yet.
+        self.ensure_angle_cache();
         let center = self.center()?;
         let dx = f64::from(pos.x - center.x);
         let dy = f64::from(pos.y - center.y);

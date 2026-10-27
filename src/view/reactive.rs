@@ -46,6 +46,19 @@
 //!   coalesce at the producer or drive the property directly; re-running a whole
 //!   `build` per frame is not what this layer is for (BLUE18 §6: animation is
 //!   `PropertyAnimation`'s job).
+//!
+//! # The queue item carries a key (VW-002)
+//!
+//! A queued change is not a unit token: a subscription that declared which keyed container its
+//! binding feeds ([`ReactiveHost::subscribe_in`]) queues that key, and the pump then compares
+//! **only** that container — `ViewEngine::update_scoped` rather than `ViewEngine::update`. The
+//! value still travels through no channel (the view reads the binding itself), so the payload is
+//! a scope, not a copy of the state. A change with no scope keeps the whole-view behaviour, which
+//! is what [`ReactiveHost::subscribe`] still queues.
+//!
+//! This mirrors the row-signal channel beside it: both ask the engine to stop the *comparison* at
+//! a container key, and both leave the description of the tree to the view. They differ in who
+//! reports the change — a model row-by-row there, a binding here.
 
 use crate::core::ObjectId;
 use crate::data_binding::{Binding, BindingListener, BoxedListener};
@@ -72,10 +85,24 @@ pub fn reactive_pump_event() -> Event {
 
 /// What a listener records when a bound value changes.
 ///
-/// A unit signal, not the value: the view reads the binding itself on every
-/// `build`, so carrying a copy through the queue would be a second source of
-/// truth that could disagree with the binding.
-struct Changed;
+/// Not the value: the view reads the binding itself on every `build`, so carrying a copy through
+/// the queue would be a second source of truth that could disagree with the binding.
+///
+/// # Why it carries the container key (VW-002)
+///
+/// The *value* stays out of the payload for the reason above, but the **scope** does not: a
+/// subscriber that declared [`ReactiveHost::subscribe_in`] also declared which keyed container
+/// its binding feeds, and the pump can then compare only that container instead of the whole
+/// tree. `None` is the pre-existing behaviour — "this binding may affect the whole view" — and
+/// is what [`ReactiveHost::subscribe`] still records, so an existing caller sees exactly the
+/// updates it saw before.
+///
+/// The key is a [`Node::key`](crate::view::Node::key) rather than the binding's subscription key
+/// because only the declarative tree has keys: the subscription key names the listener, not the
+/// subtree it affects.
+struct Changed {
+    scope: Option<crate::compat::String>,
+}
 
 /// A binding whose changes rebuild a declarative view on the UI thread.
 ///
@@ -132,14 +159,58 @@ impl<V: View> ReactiveHost<V> {
     /// [`Binding::unsubscribe`](crate::data_binding::Binding::unsubscribe) later.
     /// The listener itself holds only the `Send`-safe queue, which is what lets it
     /// satisfy `BindingListener: Send` while the engine stays on this thread.
+    ///
+    /// The queued change carries no scope, so a pump rebuilds and compares the whole tree — the
+    /// only safe answer for a binding whose reach the caller did not declare. Use
+    /// [`Self::subscribe_in`] when the binding only feeds one keyed container.
     pub fn subscribe<T: Clone + Send + 'static>(&self, binding: &Binding<T>) -> String {
+        self.subscribe_with_scope(binding, None)
+    }
+
+    /// Subscribe `binding`, declaring that it only feeds the container keyed `container`
+    /// (VW-002).
+    ///
+    /// A `set` then queues a change **carrying that key**, and [`Self::pump`] / [`Self::pump_idle`]
+    /// compare only that container through
+    /// [`ViewEngine::update_scoped`](crate::view::ViewEngine::update_scoped). The tree is still
+    /// described in full — a [`View`] has no smaller description — but the per-key comparison work
+    /// and the patches a rebuild can emit stop at the container.
+    ///
+    /// # What the caller promises
+    ///
+    /// The same assertion [`RowSignal`] documents: nothing outside `container`'s subtree reads
+    /// this binding. The engine cannot verify it cheaply (verifying it is the full diff the scope
+    /// exists to avoid), so a wrong scope shows a stale subtree outside the container — which is
+    /// why the argument is named for the container rather than for the optimisation. A key the
+    /// diff cannot resolve falls back to a full diff, the safe direction.
+    ///
+    /// Several bindings may declare the same container; their queued changes then share one
+    /// scope, and [`Self::pump_idle`] coalesces them into a single scoped update.
+    ///
+    /// One binding declares **one** scope: the listener key is the host's, as [`Self::subscribe`]
+    /// uses it, so subscribing the same binding again replaces the earlier declaration rather than
+    /// leaving two listeners that would each queue a change.
+    pub fn subscribe_in<T: Clone + Send + 'static>(
+        &self,
+        binding: &Binding<T>,
+        container: impl Into<crate::compat::String>,
+    ) -> String {
+        self.subscribe_with_scope(binding, Some(container.into()))
+    }
+
+    /// The one subscription path both public doors use.
+    fn subscribe_with_scope<T: Clone + Send + 'static>(
+        &self,
+        binding: &Binding<T>,
+        scope: Option<crate::compat::String>,
+    ) -> String {
         let key = format!("view_host_{:p}", self as *const Self);
         let queue = std::sync::Arc::clone(&self.changed);
         let observed = std::sync::Arc::clone(&self.observed);
         let idle_pending = std::sync::Arc::clone(&self.idle_pending);
         binding.subscribe(
             &key,
-            Box::new(FnChanged { queue, observed, idle_pending }) as BoxedListener,
+            Box::new(FnChanged { queue, observed, idle_pending, scope }) as BoxedListener,
         );
         key
     }
@@ -151,17 +222,33 @@ impl<V: View> ReactiveHost<V> {
     /// unconditionally per frame is cheap.
     ///
     /// Each queued change produces one `update`, preserving the producer's count;
-    /// no change is silently merged.
+    /// no change is silently merged. A change that named a container through
+    /// [`Self::subscribe_in`] updates through
+    /// [`ViewEngine::update_scoped`](crate::view::ViewEngine::update_scoped) instead of the full
+    /// [`ViewEngine::update`], so its comparison stops at that container; a change with no scope
+    /// rebuilds the whole view, exactly as before.
     pub fn pump(&mut self) -> usize {
         let mut rebuilds = 0usize;
-        while self.changed.try_pop().is_some() {
-            self.engine.update(&self.view, self.create.as_ref());
+        while let Some(change) = self.changed.try_pop() {
+            self.apply_change(&change);
             rebuilds += 1;
         }
         if rebuilds > 0 {
             self.idle_pending.store(false, std::sync::atomic::Ordering::SeqCst);
         }
         rebuilds
+    }
+
+    /// Applies one queued change at the scope it declared.
+    fn apply_change(&mut self, change: &Changed) {
+        match change.scope.as_deref() {
+            Some(container) => {
+                self.engine.update_scoped(&self.view, self.create.as_ref(), container);
+            }
+            None => {
+                self.engine.update(&self.view, self.create.as_ref());
+            }
+        }
     }
 
     /// Apply every queued binding change **coalesced into one rebuild**. Call on the UI thread.
@@ -174,13 +261,35 @@ impl<V: View> ReactiveHost<V> {
     ///
     /// The binding's `observed` counter still advances for every set, so "the producer fired
     /// five times" stays answerable even though the rebuild count is one.
+    ///
+    /// A burst whose changes all named the **same** container through [`Self::subscribe_in`]
+    /// coalesces into one scoped update (`ViewEngine::update_scoped`). Any change with no scope, or
+    /// two changes naming different containers, make the coalesced update a full one: the union of
+    /// two scopes is not a scope, and guessing one would leave the other stale.
     pub fn pump_idle(&mut self) -> bool {
         let mut applied = false;
-        while self.changed.try_pop().is_some() {
+        let mut scope: Option<crate::compat::String> = None;
+        let mut whole_view = false;
+        while let Some(change) = self.changed.try_pop() {
             applied = true;
+            match change.scope {
+                Some(key) => match &scope {
+                    None => scope = Some(key),
+                    Some(seen) if *seen != key => whole_view = true,
+                    Some(_) => {}
+                },
+                None => whole_view = true,
+            }
         }
         if applied {
-            self.engine.update(&self.view, self.create.as_ref());
+            match (whole_view, scope.as_deref()) {
+                (false, Some(container)) => {
+                    self.engine.update_scoped(&self.view, self.create.as_ref(), container);
+                }
+                _ => {
+                    self.engine.update(&self.view, self.create.as_ref());
+                }
+            }
         }
         self.idle_pending.store(false, std::sync::atomic::Ordering::SeqCst);
         applied
@@ -308,6 +417,8 @@ struct FnChanged {
     queue: std::sync::Arc<BlockingQueue<Changed>>,
     observed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     idle_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The container key the subscription declared, or `None` for a whole-view rebuild.
+    scope: Option<crate::compat::String>,
 }
 
 impl BindingListener for FnChanged {
@@ -318,7 +429,7 @@ impl BindingListener for FnChanged {
         // silently swallowed: `notifications()` still advances, so a caller can
         // see that a change was observed even on the path where it could not be
         // queued.
-        let _ = self.queue.push(Changed);
+        let _ = self.queue.push(Changed { scope: self.scope.clone() });
     }
 }
 
@@ -576,5 +687,92 @@ mod tests {
         assert_eq!(applied, 1, "the worker's set must have queued exactly one rebuild");
         assert_eq!(host.notifications(), 1);
         assert_eq!(text_of(id).as_deref(), Some("v9"), "the UI thread applied it");
+    }
+
+    /// A label outside a keyed container and a row inside it, both reading the same state, so a
+    /// scoped pump is visible in which of the two the diff actually patched.
+    struct Scoped {
+        value: Rc<Cell<i64>>,
+    }
+
+    impl View for Scoped {
+        fn build(&self) -> Node {
+            let value = self.value.get();
+            Node::new("panel")
+                .key("root")
+                .child(
+                    Node::new("label")
+                        .key("outside")
+                        .prop("text", CapabilityValue::String(format!("o{value}"))),
+                )
+                .child(
+                    Node::new("panel").key("rows").child(
+                        Node::new("label")
+                            .key("row")
+                            .prop("text", CapabilityValue::String(format!("r{value}"))),
+                    ),
+                )
+        }
+    }
+
+    /// VW-002: a subscription that declares its container carries that key in the notification,
+    /// and the pump compares only that container.
+    #[test]
+    fn a_keyed_subscription_diffs_only_its_container() {
+        use crate::data_binding::Binding;
+        let value = Rc::new(Cell::new(0i64));
+        let mut host = ReactiveHost::new(Scoped { value: Rc::clone(&value) }, Box::new(creator()));
+        host.mount();
+        let outside = host.engine().id_at(&[0]).expect("the label outside the container");
+        let row = host.engine().id_at(&[1, 0]).expect("the row inside it");
+        assert_eq!(text_of(outside).as_deref(), Some("o0"));
+        assert_eq!(text_of(row).as_deref(), Some("r0"));
+
+        let binding = Binding::new(0i64);
+        host.subscribe_in(&binding, "rows");
+        value.set(1);
+        binding.set(1);
+        assert_eq!(host.pump(), 1, "one set, one update");
+
+        assert_eq!(text_of(row).as_deref(), Some("r1"), "the declared container was compared");
+        assert_eq!(
+            text_of(outside).as_deref(),
+            Some("o0"),
+            "the notification's key kept the diff inside its container"
+        );
+
+        // The unscoped door keeps the whole-view behaviour: same producer, both patched.
+        host.subscribe(&binding);
+        value.set(2);
+        binding.set(2);
+        assert_eq!(host.pump(), 1);
+        assert_eq!(text_of(row).as_deref(), Some("r2"));
+        assert_eq!(text_of(outside).as_deref(), Some("o2"), "no scope means the whole view");
+    }
+
+    /// VW-002: the idle pump coalesces a burst of same-container changes into one scoped update.
+    #[test]
+    fn the_idle_pump_coalesces_into_one_scoped_update() {
+        use crate::data_binding::Binding;
+        let value = Rc::new(Cell::new(0i64));
+        let mut host = ReactiveHost::new(Scoped { value: Rc::clone(&value) }, Box::new(creator()));
+        host.mount();
+        let outside = host.engine().id_at(&[0]).expect("the label outside the container");
+        let row = host.engine().id_at(&[1, 0]).expect("the row inside it");
+
+        let binding = Binding::new(0i64);
+        host.subscribe_in(&binding, "rows");
+        value.set(3);
+        for n in 0..4 {
+            binding.set(n);
+        }
+        assert!(host.pump_idle(), "the burst is applied");
+        assert_eq!(host.notifications(), 4, "coalescing does not drop observations");
+        assert_eq!(text_of(row).as_deref(), Some("r3"), "the container is up to date");
+        assert_eq!(
+            text_of(outside).as_deref(),
+            Some("o0"),
+            "one scoped update, so the container's siblings were not compared"
+        );
     }
 }

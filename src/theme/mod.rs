@@ -76,8 +76,8 @@ pub use manager::{
 };
 pub use preset_states::preset_state_key_count;
 pub use types::{
-    AppearanceMode, BevelOverride, Borders, Colors, Fonts, IconSlot, IconTokens, Material, Motion,
-    PaddingToken, ShadowOverride, ShadowToken, Spacing, SurfaceElevationToken,
+    AppearanceMode, BevelOverride, BorderSide, Borders, Colors, Fonts, IconSlot, IconTokens,
+    Material, Motion, PaddingToken, ShadowOverride, ShadowToken, Spacing, SurfaceElevationToken,
     SurfaceHairlineToken, SurfaceMaterialToken, SystemAccent, Theme, ThemeOverrides,
     ThemeStyleToken, WidgetRole,
 };
@@ -587,6 +587,83 @@ mod tests {
         assert_eq!(manager.resolve_style("button"), before);
     }
 
+    /// THM-002: a forced mode answers every palette role, not only the page pair, so a control
+    /// that resolves a semantic token is as legible as one that paints its own background.
+    #[test]
+    fn a_high_contrast_override_forces_every_palette_role() {
+        let mut manager = ThemeManager::new();
+        let theme_primary = manager.effective_colors().primary;
+        manager.set_high_contrast(HighContrastMode::BlackOnWhite);
+
+        let forced = manager.effective_colors();
+        assert_eq!(forced.background, Color::WHITE);
+        assert_eq!(forced.foreground, Color::BLACK);
+        assert_eq!(forced.primary, Color::BLACK, "an action colour must not stay low-contrast");
+        assert_eq!(forced.error, Color::BLACK);
+        assert_eq!(forced.warning, Color::BLACK);
+        assert_eq!(forced.success, Color::BLACK);
+        assert_eq!(forced.outline, Color::BLACK, "a focus ring stays visible");
+        assert_eq!(forced.link, Color::BLACK);
+        assert_eq!(forced.link_visited, Color::BLACK);
+        assert_eq!(forced.placeholder_text, Color::BLACK);
+        assert_eq!(forced.bright_text, Color::BLACK);
+        assert_eq!(forced.surface_container, Color::WHITE, "a raised face stays on the page");
+        assert_eq!(forced.on_inverse_surface, Color::BLACK);
+
+        // The resolved style's border is forced too; a state override cannot reintroduce it.
+        assert_eq!(manager.resolve_style("button").border_color, Some(Color::BLACK));
+
+        manager.set_high_contrast(HighContrastMode::None);
+        assert_eq!(manager.effective_colors().primary, theme_primary);
+    }
+
+    /// STY-005: a state override is a child of the base resolution, so every property it does
+    /// not state keeps the base value — including the non-`Option` geometry and an explicit
+    /// `shadow: none` clearing a base shadow.
+    #[test]
+    fn a_state_override_inherits_the_properties_it_does_not_state() {
+        let theme = theme_with_overrides(&[
+            (
+                "button",
+                ThemeStyleToken {
+                    background: Some(Color::RED),
+                    border: Some(Color::BLUE),
+                    ..Default::default()
+                },
+            ),
+            (
+                "button:hover",
+                ThemeStyleToken { foreground: Some(Color::GREEN), ..Default::default() },
+            ),
+            (
+                "button:pressed",
+                ThemeStyleToken {
+                    shadow: crate::theme::ShadowOverride::None,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let mut manager = ThemeManager::new();
+        manager.register_theme(theme);
+        assert!(manager.set_theme("default"));
+
+        let base = manager.resolve_style("button");
+        let hovered = manager.resolve_style_for_state("button", Some(WidgetState::Hover));
+        assert_eq!(hovered.text_color, Some(Color::GREEN), "the stated property wins");
+        assert_eq!(hovered.background_color, base.background_color, "the fill is inherited");
+        assert_eq!(hovered.border_color, base.border_color, "the border is inherited");
+        assert_eq!(hovered.padding, base.padding, "the non-Option padding is inherited");
+        assert_eq!(hovered.margin, base.margin);
+        assert!(base.surface.is_some(), "the button role resolves a face");
+        assert_eq!(
+            hovered.surface, base.surface,
+            "a token that names no surface dimension must not replace the resolved face"
+        );
+
+        let pressed = manager.resolve_style_for_state("button", Some(WidgetState::Pressed));
+        assert_eq!(pressed.shadow, None, "an explicit clear must not inherit the base shadow");
+    }
+
     /// The override survives a theme switch: it is a user preference, not a
     /// property of one theme.
     #[test]
@@ -862,6 +939,10 @@ mod tests {
             "surface_container_high",
             "inverse_surface",
             "on_inverse_surface",
+            "link",
+            "link_visited",
+            "placeholder_text",
+            "bright_text",
         ];
         let mut sources = String::new();
         let mut stack = vec![std::path::PathBuf::from("src")];

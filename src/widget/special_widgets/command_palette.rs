@@ -173,6 +173,18 @@ pub struct CommandPalette {
     /// The paint used to `format!` the title and lower-case it twice per row per frame to find
     /// the highlight (SP-P72); both are computed when the result set is refreshed.
     rows: Vec<RowPresentation>,
+    /// The painted text of every entry, rebuilt only when the entry list changes (SP-116).
+    display_texts: Vec<String>,
+    /// The ASCII characters each entry contains, as a 128-bit mask (SP-116).
+    ///
+    /// Every scoring tier requires the query's first character to appear in one of the entry's
+    /// fields, so an entry whose mask lacks it cannot match. The mask turns that fact into one
+    /// bit test instead of a scan of the title, id, category and keywords.
+    entry_masks: Vec<u128>,
+    /// Reused contiguous-score buffer, so a keystroke does not reallocate the result set.
+    contiguous_scores: Vec<(usize, i32)>,
+    /// Reused fuzzy-score buffer (SP-116).
+    fuzzy_scores: Vec<(usize, i32)>,
     /// The caption drawn when the query matches nothing (SP-64).
     empty_text: String,
     /// Whether the footer's key hints are drawn (SP-64).
@@ -200,6 +212,10 @@ impl CommandPalette {
             group_by_category: false,
             slots: Vec::new(),
             rows: Vec::new(),
+            display_texts: Vec::new(),
+            entry_masks: Vec::new(),
+            contiguous_scores: Vec::new(),
+            fuzzy_scores: Vec::new(),
             empty_text: String::from("No matching commands"),
             show_hints: true,
             hint_text: String::new(),
@@ -211,9 +227,45 @@ impl CommandPalette {
     /// Replaces command entries.
     pub fn set_entries(&mut self, entries: Vec<CommandEntry>) {
         self.entries = entries;
+        self.rebuild_entry_cache();
         self.refresh_filter();
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Rebuilds the per-entry text and first-character masks.
+    ///
+    /// Both are pure functions of the entry list, so they move only when `set_entries` replaces it
+    /// rather than on every keystroke (SP-116).
+    fn rebuild_entry_cache(&mut self) {
+        let mut texts = Vec::with_capacity(self.entries.len());
+        let mut masks = Vec::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            let text = if entry.category.is_empty() {
+                entry.title.clone()
+            } else {
+                format!("{} · {}", entry.category, entry.title)
+            };
+            let mut mask = 0u128;
+            for field in [&entry.title, &entry.id, &entry.category] {
+                for ch in field.chars() {
+                    if ch.is_ascii() {
+                        mask |= 1u128 << (ch.to_ascii_lowercase() as u32);
+                    }
+                }
+            }
+            for keyword in &entry.keywords {
+                for ch in keyword.chars() {
+                    if ch.is_ascii() {
+                        mask |= 1u128 << (ch.to_ascii_lowercase() as u32);
+                    }
+                }
+            }
+            texts.push(text);
+            masks.push(mask);
+        }
+        self.display_texts = texts;
+        self.entry_masks = masks;
     }
 
     /// Returns all command entries.
@@ -444,15 +496,41 @@ impl CommandPalette {
 
     fn refresh_filter(&mut self) {
         let query = self.query.to_lowercase();
-        // The fuzzy tier is a **fallback**, not an extra band of ordinary matches: adding a
-        // scattered match beside every contiguous one would flood the list on a two-letter query
-        // (`sa` would match `Sidebar` as a subsequence). When the contiguous tiers find nothing,
-        // the scattered tier takes over — which is the case it exists for, `gfh` for `git fetch`
-        // (SP-65).
-        let mut scored = self.score_all(&query, false);
-        if scored.is_empty() && !query.is_empty() {
-            scored = self.score_all(&query, true);
+        // One pass over the entries (SP-116). An entry that matches a contiguous tier goes into
+        // the contiguous buffer; one that does not is scored against the scattered tier at once.
+        // The scattered buffer is only used when **no** contiguous match exists, which is exactly
+        // the rule the two-pass form expressed by scanning everything a second time.
+        self.contiguous_scores.clear();
+        self.fuzzy_scores.clear();
+        let first = query.chars().next();
+        for (index, entry) in self.entries.iter().enumerate() {
+            // The mask prunes an entry that cannot contain the query's first character without
+            // touching any of its strings. A non-ASCII query keeps the full scan, because the
+            // mask covers ASCII only.
+            if let Some(first) = first {
+                if first.is_ascii() {
+                    let mask = self.entry_masks.get(index).copied().unwrap_or(0);
+                    if mask & (1u128 << (first as u32)) == 0 {
+                        continue;
+                    }
+                }
+            }
+            match Self::score_entry_with(entry, &query, false) {
+                Some(score) => self.contiguous_scores.push((index, score)),
+                None => {
+                    if let Some(score) = Self::score_entry_with(entry, &query, true) {
+                        self.fuzzy_scores.push((index, score));
+                    }
+                }
+            }
         }
+        let use_fuzzy = self.contiguous_scores.is_empty() && !query.is_empty();
+        // The result set reuses a member buffer rather than allocating a fresh vector per key.
+        let mut scored = if use_fuzzy {
+            core::mem::take(&mut self.fuzzy_scores)
+        } else {
+            core::mem::take(&mut self.contiguous_scores)
+        };
 
         // One sort, three keys: score descending, then most-recently-used, then input order.
         //
@@ -469,7 +547,7 @@ impl CommandPalette {
         scored.sort_by(|a, b| {
             b.1.cmp(&a.1).then_with(|| rank(a.0).cmp(&rank(b.0))).then_with(|| a.0.cmp(&b.0))
         });
-        self.filtered_indices = scored.into_iter().map(|(index, _)| index).collect();
+        self.filtered_indices = scored.iter().map(|(index, _)| *index).collect();
         if self.group_by_category {
             // Stable: within one category the score/MRU order is preserved, so grouping
             // changes presentation only and never promotes a worse textual match.
@@ -489,6 +567,14 @@ impl CommandPalette {
         }
         self.rebuild_rows();
         self.rebuild_slots();
+
+        // Hand the buffer back for the next key, keeping its allocation.
+        scored.clear();
+        if use_fuzzy {
+            self.fuzzy_scores = scored;
+        } else {
+            self.contiguous_scores = scored;
+        }
     }
 
     /// Recomputes the painted text and match highlight for every filtered row.
@@ -497,25 +583,25 @@ impl CommandPalette {
         self.rows.clear();
         self.rows.reserve(self.filtered_indices.len());
         for filtered_index in 0..self.filtered_indices.len() {
-            let Some(entry) = self.filtered_entry(filtered_index) else {
+            let Some(entry_index) = self.filtered_indices.get(filtered_index).copied() else {
                 self.rows.push(RowPresentation::default());
                 continue;
             };
-            let text = if entry.category.is_empty() {
-                entry.title.clone()
-            } else {
-                format!("{} · {}", entry.category, entry.title)
+            let Some(text) = self.display_texts.get(entry_index) else {
+                self.rows.push(RowPresentation::default());
+                continue;
             };
             let highlight = if folded_query.is_empty() {
                 None
             } else {
-                // Folded once, here, instead of twice per row per frame.
+                // Folded once, here, instead of twice per row per frame. The painted text itself
+                // comes from the per-entry cache, so a key no longer clones a formatted string.
                 let folded = text.to_lowercase();
                 folded
                     .find(&folded_query)
                     .map(|offset| (text[..offset].chars().count(), self.query.chars().count()))
             };
-            self.rows.push(RowPresentation { text, highlight });
+            self.rows.push(RowPresentation { entry_index: Some(entry_index), highlight });
         }
     }
 
@@ -539,16 +625,6 @@ impl CommandPalette {
     }
 
     /// Scores every entry, optionally allowing the scattered-subsequence tier.
-    fn score_all(&self, query: &str, allow_fuzzy: bool) -> Vec<(usize, i32)> {
-        self.entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| {
-                Self::score_entry_with(entry, query, allow_fuzzy).map(|score| (index, score))
-            })
-            .collect()
-    }
-
     fn score_entry_with(entry: &CommandEntry, query: &str, allow_fuzzy: bool) -> Option<i32> {
         if query.is_empty() {
             return Some(1);
@@ -662,11 +738,14 @@ struct PaletteSlot {
     filtered_index: usize,
 }
 
-/// One filtered row's painted text and matched run, built with the result set.
-#[derive(Clone, Default)]
+/// One filtered row's cached matched run, built with the result set.
+///
+/// The row's painted text lives in [`CommandPalette::display_texts`], indexed by `entry_index`, so
+/// a result-set refresh copies no formatted string (SP-116).
+#[derive(Clone, Copy, Default)]
 struct RowPresentation {
-    /// The text as painted, `category · title` when the entry has a category.
-    text: String,
+    /// The entry this row paints, or `None` for a placeholder row.
+    entry_index: Option<usize>,
     /// The matched run as `(character offset, character count)`, for the highlight box.
     highlight: Option<(usize, usize)>,
 }
@@ -1063,11 +1142,17 @@ impl Draw for CommandPalette {
                 // midpoint used as a glyph top edge, so every result sat half a line low.
                 //
                 // The text and its matched run come from the cached presentation, so neither
-                // `format!` nor `to_lowercase` runs on the paint path (SP-P72).
-                let presentation = self.rows.get(filtered_index).cloned().unwrap_or_default();
+                // `format!` nor `to_lowercase` runs on the paint path (SP-P72), and the text
+                // itself is borrowed from the per-entry cache rather than cloned (SP-116).
+                let presentation = self.rows.get(filtered_index).copied().unwrap_or_default();
+                let Some(entry_index) = presentation.entry_index else {
+                    y += self.row_height as i32;
+                    continue;
+                };
+                let text = self.display_texts.get(entry_index).map(String::as_str).unwrap_or("");
                 context.draw_text_fitted_cow(
                     line_box,
-                    &presentation.text,
+                    text,
                     font,
                     text_color,
                     HorizontalAlignment::Left,
@@ -1077,14 +1162,11 @@ impl Draw for CommandPalette {
                 if let Some((offset, count)) = presentation.highlight {
                     let start_x = band.x
                         + context
-                            .measure_text(
-                                &presentation.text.chars().take(offset).collect::<String>(),
-                                font,
-                            )
+                            .measure_text(&text.chars().take(offset).collect::<String>(), font)
                             .width as i32;
                     let width = context
                         .measure_text(
-                            &presentation.text.chars().skip(offset).take(count).collect::<String>(),
+                            &text.chars().skip(offset).take(count).collect::<String>(),
                             font,
                         )
                         .width;
@@ -1380,5 +1462,53 @@ mod tests {
         // No match
         palette.set_query("nonexistent");
         assert_eq!(palette.filtered_count(), 0);
+    }
+
+    /// The single scoring pass preserves the tier order: contiguous matches occupy the result set
+    /// alone, and the scattered tier runs only when nothing contiguous matched (SP-116).
+    #[test]
+    fn the_single_pass_keeps_contiguous_matches_ahead_of_the_fuzzy_fallback() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 240));
+        palette.set_entries(vec![
+            CommandEntry::new("sidebar", "Sidebar"),
+            CommandEntry::new("save_as", "Save As"),
+            CommandEntry::new("git_fetch", "Git Fetch"),
+        ]);
+
+        // `s` starts both titles (120 each), so the input order breaks the tie; the scattered
+        // tier must not add anything beside them.
+        palette.set_query("s");
+        assert_eq!(palette.filtered_count(), 2);
+        assert_eq!(palette.filtered_entry(0).map(|entry| entry.id.as_str()), Some("sidebar"));
+        assert_eq!(palette.filtered_entry(1).map(|entry| entry.id.as_str()), Some("save_as"));
+
+        // With no contiguous hit, the scattered tier takes over: `gfh` reaches `Git Fetch`.
+        palette.set_query("gfh");
+        assert_eq!(palette.filtered_count(), 1);
+        assert_eq!(palette.filtered_entry(0).map(|entry| entry.id.as_str()), Some("git_fetch"));
+
+        // An uppercase query folds to the same mask and still finds the entry.
+        palette.set_query("SA");
+        assert_eq!(palette.filtered_count(), 1);
+        assert_eq!(palette.filtered_entry(0).map(|entry| entry.id.as_str()), Some("save_as"));
+    }
+
+    /// The entry text and its mask are built once per entry list, not per keystroke (SP-116).
+    #[test]
+    fn the_painted_text_and_mask_are_cached_with_the_entry_list() {
+        let mut palette = CommandPalette::new(Rect::new(0, 0, 320, 240));
+        palette.set_entries(vec![CommandEntry::new("open", "Open").with_category("File")]);
+        assert_eq!(palette.display_texts, vec![String::from("File · Open")]);
+        let mask = palette.entry_masks[0];
+        assert_ne!(mask & (1u128 << ('o' as u32)), 0);
+        assert_ne!(mask & (1u128 << ('f' as u32)), 0);
+        assert_eq!(mask & (1u128 << ('z' as u32)), 0);
+
+        // The same buffers survive a query change; only the filtered indices move.
+        let mask_before = palette.entry_masks.clone();
+        let text_before = palette.display_texts.clone();
+        palette.set_query("op");
+        assert_eq!(palette.entry_masks, mask_before);
+        assert_eq!(palette.display_texts, text_before);
     }
 }

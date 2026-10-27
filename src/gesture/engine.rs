@@ -188,6 +188,11 @@ pub struct GestureTuning {
     /// Travel before a pan begins emitting, in logical pixels.
     pub pan_min_distance: f32,
     /// Movement that still counts as stationary, in logical pixels.
+    ///
+    /// This bounds **one** tap's own travel (`TapGesture`). The distance allowed between the two
+    /// taps of a double-tap is this value times
+    /// [`DOUBLE_TAP_SEPARATION_FACTOR`](crate::event::double_click::DOUBLE_TAP_SEPARATION_FACTOR);
+    /// the ratio is defined once there so the two bounds cannot drift apart (W-03).
     pub max_stationary_distance: f32,
     /// Movement allowed during a long-press hold, in logical pixels.
     pub long_press_max_move: f32,

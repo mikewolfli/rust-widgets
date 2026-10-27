@@ -1380,10 +1380,17 @@ impl RiveWidget {
 
     /// Loads an animation from the bytes of a `.riv` file, with no filesystem access.
     ///
+    /// # What is decoded, and what is documented as not decoded
+    ///
     /// The decoder parses the Rive header, property table and object stream, and makes the
     /// artboard, animation and state-machine names available through [`Self::artboard_names`],
-    /// [`Self::animation_names`] and [`Self::state_machine_names`]. Rendering stays host-provided:
-    /// a `.riv` file's artboard is not converted to drawable shapes here.
+    /// [`Self::animation_names`] and [`Self::state_machine_names`]. The **shape list and the
+    /// timeline are not parsed**: [`RiveAnimationData`]'s `shapes` stays empty and the animation's
+    /// duration/frame rate come from the object stream's animation record alone. That is a
+    /// documented header/name-only parse, not a partial scene that silently renders nothing;
+    /// a host that wants pixels flattens the artboard through
+    /// [`Self::load_animation_from_json`]. Completing shape/timeline decoding to the lottie
+    /// engine's architecture is tracked separately (MW-010) and is deliberately not faked here.
     pub fn load_animation_from_riv(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
         let info = decode_riv(bytes)?;
         let display_name = if name.is_empty() {

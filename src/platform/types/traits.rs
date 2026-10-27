@@ -2345,6 +2345,36 @@ pub trait Platform: Send + Sync {
         Err(PathPickerError::Unsupported)
     }
 
+    /// Asks the host for a path, offering `filters` in the picker's filter list.
+    ///
+    /// # Why this is a second method rather than a parameter on [`Self::choose_path`]
+    ///
+    /// `choose_path` is a published signature that every backend and the crate-level
+    /// [`crate::choose_path`] already call; widening it would break each of them for a request
+    /// most callers do not have. A method with a default keeps the old call working unchanged and
+    /// lets exactly the backends whose picker has a filter control opt in.
+    ///
+    /// # The default is delegation, not silence
+    ///
+    /// The default forwards to [`Self::choose_path`] and therefore ignores `filters`. That is the
+    /// honest answer for a backend with no filter control: the user still gets a picker, and a
+    /// backend with no picker at all still answers [`PathPickerError::Unsupported`] rather than
+    /// pretending a filter list made one appear. A caller that **requires** filtering can compare
+    /// the two calls, but a host should treat the returned path as authoritative either way —
+    /// filters constrain what the picker **offers**, not what the caller may accept.
+    ///
+    /// `filters` is meaningful for [`PathPurpose::OpenFile`] and [`PathPurpose::SaveFile`];
+    /// [`PathPurpose::SelectDirectory`] selects a directory, so a backend ignores the list there.
+    /// An empty list means "no preference" and is the same request as [`Self::choose_path`].
+    fn choose_path_with_filters(
+        &self,
+        purpose: PathPurpose,
+        title: &str,
+        _filters: &[PathFilter],
+    ) -> Result<Option<std::path::PathBuf>, PathPickerError> {
+        self.choose_path(purpose, title)
+    }
+
     /// Starts an asynchronous path request, returning `false` when this backend has no picker.
     ///
     /// This is the non-blocking half of the BLUE28 B28.08 contract. A mobile/Web host presents

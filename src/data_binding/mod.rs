@@ -187,3 +187,212 @@ pub fn pull_widget_property(
         _ => false,
     }
 }
+
+/// Binds one model value to a mounted widget property in **both** directions (BIND-010).
+///
+/// # What the two directions are
+///
+/// * model → control: [`bind_widget_property`]'s observer writes every new value through the
+///   control's property contract;
+/// * control → model: the control's value trigger pulls the property back (the reverse channel
+///   [`pull_widget_property`] provides, wired here instead of left to the host).
+///
+/// # Why an echo guard
+///
+/// A push makes the control emit its value trigger, and the pull that follows would set the binding
+/// again — each direction running forever. The guard is the same atomic re-arm [`Binding::bind_to`]
+/// uses: the side that is applying a change marks the pair busy, so the event caused by that change
+/// is ignored rather than re-propagated.
+#[cfg(all(not(alloc_frugal), full_widgets))]
+pub fn bind_widget_property_two_way<H>(
+    binding: &Binding<crate::widget::capability::CapabilityValue>,
+    key: &str,
+    widget: &H,
+    widget_id: crate::core::ObjectId,
+    property: &str,
+) where
+    H: crate::app::WidgetHandle,
+{
+    use crate::compat::Arc;
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    let syncing = Arc::new(AtomicBool::new(false));
+    let property = crate::compat::String::from(property);
+
+    // model → control
+    let observed_property = property.clone();
+    let linked = binding.clone();
+    let push_guard = Arc::clone(&syncing);
+    binding.observe(key, move |value| {
+        if push_guard.swap(true, Ordering::SeqCst) {
+            // The control's own change is being pulled into the model; do not push it back.
+            return;
+        }
+        let applied = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+            crate::widget::widget_property_set(widget, &observed_property, value.clone())
+        });
+        push_guard.store(false, Ordering::SeqCst);
+        if matches!(applied, Some(Ok(()))) {
+            linked.announce_synced(&observed_property);
+        }
+    });
+
+    // control → model
+    let pulled_property = property.clone();
+    let pulled = binding.clone();
+    let pull_guard = Arc::clone(&syncing);
+    widget.on_value_changed(move |_text: &str| {
+        if pull_guard.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let _ = pull_widget_property(&pulled, widget_id, &pulled_property);
+        pull_guard.store(false, Ordering::SeqCst);
+    });
+
+    // The initial value is published like the one-way bridge, so the control never shows its
+    // constructor default until the model next changes.
+    let initial = binding.get();
+    let _ = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+        crate::widget::widget_property_set(widget, &property, initial)
+    });
+    binding.announce_synced(&property);
+}
+
+/// Binds a model value to a widget property through a validator (BIND-010).
+///
+/// # Why a hook rather than a caller-side check
+///
+/// A model can hold a value the control's schema refuses (a range limit, an empty required field).
+/// Writing it directly would leave the control and the model disagreeing with no record of why. The
+/// validator runs before every write — including the initial one — and a refusal is reported through
+/// [`Binding::validation_failed_signal`] instead of reaching the control.
+#[cfg(not(alloc_frugal))]
+pub fn bind_widget_property_validated<V>(
+    binding: &Binding<crate::widget::capability::CapabilityValue>,
+    key: &str,
+    widget_id: crate::core::ObjectId,
+    property: &str,
+    validator: V,
+) where
+    V: crate::data_binding::Validator<crate::widget::capability::CapabilityValue> + 'static,
+{
+    let property = crate::compat::String::from(property);
+    let observed_property = property.clone();
+
+    // Validate the initial value before the validator moves into the observer.
+    match validator.validate(binding.get()) {
+        Ok(value) => {
+            let _ = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+                crate::widget::widget_property_set(widget, &property, value)
+            });
+            binding.announce_synced(&property);
+        }
+        Err(error) => {
+            binding.validation_failed_signal().emit(error.message);
+        }
+    }
+
+    let linked = binding.clone();
+    binding.observe(key, move |value| match validator.validate(value.clone()) {
+        Ok(value) => {
+            let applied = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+                crate::widget::widget_property_set(widget, &observed_property, value)
+            });
+            if matches!(applied, Some(Ok(()))) {
+                linked.announce_synced(&observed_property);
+            }
+        }
+        Err(error) => {
+            linked.validation_failed_signal().emit(error.message);
+        }
+    });
+}
+
+#[cfg(all(test, full_widgets))]
+mod tests {
+    use super::*;
+
+    struct NonEmptyText;
+
+    impl crate::data_binding::Validator<crate::widget::capability::CapabilityValue> for NonEmptyText {
+        fn validate(
+            &self,
+            value: crate::widget::capability::CapabilityValue,
+        ) -> Result<crate::widget::capability::CapabilityValue, crate::data_binding::ValidationError>
+        {
+            match &value {
+                crate::widget::capability::CapabilityValue::String(text) if text.is_empty() => {
+                    Err(crate::data_binding::ValidationError::new("text must not be empty"))
+                }
+                _ => Ok(value),
+            }
+        }
+    }
+
+    fn mount_button(text: &str) -> crate::core::ObjectId {
+        crate::widget::runtime::register(crate::compat::Box::new(crate::widget::Button::new(
+            text.to_string(),
+            crate::core::Rect::new(0, 0, 80, 24),
+        )))
+        .expect("a button mounts")
+    }
+
+    fn capability_text(text: &str) -> crate::widget::capability::CapabilityValue {
+        crate::widget::capability::CapabilityValue::String(crate::compat::String::from(text))
+    }
+
+    fn widget_text(id: crate::core::ObjectId) -> crate::widget::capability::CapabilityValue {
+        crate::widget::runtime::with_widget(id, |widget| {
+            crate::widget::widget_property_get(widget, "text")
+        })
+        .expect("the widget is mounted")
+        .expect("the control publishes `text`")
+    }
+
+    /// BIND-010: a model change reaches the control and a control change returns to the model.
+    #[test]
+    fn a_two_way_property_binding_syncs_both_directions() {
+        let id = mount_button("alpha");
+        let binding = Binding::new(capability_text("alpha"));
+        let handle = crate::app::ButtonHandle::from_raw(id);
+        bind_widget_property_two_way(&binding, "text", &handle, id, "text");
+
+        // model → control
+        binding.set(capability_text("beta"));
+        assert_eq!(widget_text(id), capability_text("beta"));
+
+        // control → model: write the control's own property, then deliver the value trigger the
+        // control would emit for it. The pull reads the live property, so the model follows.
+        let _ = crate::widget::runtime::with_widget_mut(id, |widget| {
+            crate::widget::widget_property_set(widget, "text", capability_text("gamma"))
+        });
+        crate::app::dispatch_trigger(id, crate::platform::WidgetTriggerKind::ValueChanged);
+        assert_eq!(binding.get(), capability_text("gamma"), "the control change reaches the model");
+
+        crate::app::remove_callbacks(id);
+        crate::widget::runtime::unregister(id);
+    }
+
+    /// BIND-010: a value the validator refuses is reported and never reaches the control.
+    #[test]
+    fn a_validated_property_binding_refuses_a_bad_value() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        let id = mount_button("keep");
+        let binding = Binding::new(capability_text(""));
+        let failures = crate::compat::Arc::new(AtomicUsize::new(0));
+        let counter = crate::compat::Arc::clone(&failures);
+        binding.validation_failed_signal().connect_ref(move |_message| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        bind_widget_property_validated(&binding, "text", id, "text", NonEmptyText);
+        assert_eq!(failures.load(Ordering::SeqCst), 1, "the invalid initial value is reported");
+        assert_eq!(widget_text(id), capability_text("keep"), "a refused value must not apply");
+
+        binding.set(capability_text("valid"));
+        assert_eq!(widget_text(id), capability_text("valid"));
+
+        crate::app::remove_callbacks(id);
+        crate::widget::runtime::unregister(id);
+    }
+}

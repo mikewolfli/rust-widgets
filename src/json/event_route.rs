@@ -520,6 +520,16 @@ pub fn marker_for_key(key: &str) -> Option<JsonTriggerMarker> {
     MARKER_KEYS.iter().find(|(candidate, _)| *candidate == key).map(|(_, marker)| *marker)
 }
 
+/// The published name a document consulted before the table could answer it.
+///
+/// [`json_event_binding`] used to return `Published { name: "clicked", .. }` for any name the
+/// control did not publish, so a misspelt wire bound the click signal and ran on the wrong event
+/// (W-303). A binding now carries this sentinel instead: `bind_wired` sees a name the control does
+/// not resolve, reports the refusal and records it as unwired, exactly as it does for any other
+/// name with no live signal. The warning emitted at construction names the miss, so the author
+/// learns why rather than discovering a handler that never ran.
+pub const UNRESOLVED_PUBLISHED_NAME: &str = "";
+
 /// The binding a published event name declares, resolved against `widget_type`'s capability.
 ///
 /// # Why the name is copied into a `&'static str`
@@ -541,10 +551,19 @@ pub fn json_event_binding(widget_type: &str, name: &str) -> JsonEventBinding {
         .capability(widget_type)
         .and_then(|capability| crate::widget::capability::find_event_schema(capability, name))
         .is_some_and(|schema| schema.payload.is_some());
+    // The event's own spelling from the table, which is what `connect_event` accepts — a document
+    // that wrote a differently-cased name still binds to the published one. A name no control
+    // publishes must **not** fall back to `clicked` (W-303): the sentinel below makes the binder
+    // refuse it, and this warning is the diagnostic the author needs.
+    let canonical = published_event_name(widget_type, name);
+    if canonical.is_none() {
+        log::warn!(
+            "[{widget_type}] `{name}` is not a published event, so it has no signal to bind; the \
+             binding is refused rather than retargeted to `clicked`"
+        );
+    }
     JsonEventBinding::Published {
-        // The event's own spelling from the table, which is what `connect_event` accepts — a
-        // document that wrote a differently-cased name still binds to the published one.
-        name: published_event_name(widget_type, name).unwrap_or("clicked"),
+        name: canonical.unwrap_or(UNRESOLVED_PUBLISHED_NAME),
         has_payload,
         // The name carries the intent; see `JsonTriggerMarker::for_published_name`. This is what
         // keeps `events: {"closed": …}` / `events: {"double_clicked": …}` from being bound to
@@ -729,6 +748,38 @@ pub fn bind_published_event(
     )
 }
 
+/// Wires every published event of `widget_type` for which a global handler of the **same name** is
+/// already registered on this thread (W-301).
+///
+/// # Why a batch entry point
+///
+/// A host that registers handlers under their published names (`clicked`, `value_changed`, …) had to
+/// repeat those names once per control in a `bind_published_event` loop. Forgetting one was silent:
+/// the control kept a handler that never ran, which is the failure rule #97 forbids. The batch form
+/// reads the same capability table and the same handler registry the single-name form does, so the
+/// two cannot disagree about what is bindable.
+///
+/// # What it does not do
+///
+/// It binds only names the control actually publishes *and* the thread's registry holds. A name in
+/// the registry that the control does not publish is left alone rather than logged as an error: a
+/// host may register one handler set for several controls, and a control that cannot carry an event
+/// is not a defect in the document. Each successful binding is additive, exactly as
+/// [`bind_published_event`] is.
+///
+/// Returns the number of bindings made.
+pub fn bind_all_published_events(widget_id: crate::core::ObjectId, widget_type: &str) -> usize {
+    let mut bound = 0;
+    for name in crate::json::events::global_handler_names() {
+        if published_event_name(widget_type, &name).is_some()
+            && bind_published_event(widget_id, widget_type, &name, &name)
+        {
+            bound += 1;
+        }
+    }
+    bound
+}
+
 /// Wires one **compatibility** key (`on_click`, `on_change`, …) to a live control.
 ///
 /// See [`bind_published_event`] for why this is public. `key` must be one the marker table lists;
@@ -768,6 +819,25 @@ pub fn bind_marker_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// W-303: a name the control does not publish is refused, never retargeted to `clicked`.
+    ///
+    /// The defect was `unwrap_or("clicked")`: a misspelt `events` name bound the click callback and
+    /// ran on the wrong trigger while reporting the right one. The binding now carries the sentinel,
+    /// which the binder refuses because the control resolves no signal for it.
+    #[test]
+    fn an_undeclared_published_name_is_not_retargeted_to_clicked() {
+        let binding = json_event_binding("button", "no_such_event");
+        let JsonEventBinding::Published { name, marker, .. } = binding else {
+            panic!("a published lookup must produce a published binding");
+        };
+        assert_eq!(name, UNRESOLVED_PUBLISHED_NAME);
+        assert_ne!(name, "clicked", "an unknown name must not become the click wire");
+        // The intent classifier still reads the spelling the author wrote, so a diagnostic can say
+        // what they meant; the name is what refuses the binding.
+        assert!(matches!(marker, JsonTriggerMarker::Clicked));
+        assert!(!bind_published_event(0u64, "button", "no_such_event", "on_typo"));
+    }
 
     #[test]
     fn every_marker_key_resolves_to_its_marker() {

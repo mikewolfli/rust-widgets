@@ -399,10 +399,10 @@ impl MasonryLayout {
     /// The declared `height` remains the fallback: a card with no control, or one whose runtime
     /// entry is unavailable, keeps the height the caller gave it.
     fn measured_item_height(&self, item: &MasonryItem) -> u32 {
-        let measured = item.widget_id.and_then(|widget_id| {
+        let hint = item.widget_id.and_then(|widget_id| {
             crate::widget::runtime::with_widget(widget_id, |widget| widget.size_hint().height)
         });
-        measured.filter(|height| *height > 0).unwrap_or(item.height).max(20)
+        hint.filter(|height| *height > 0).unwrap_or(item.height).max(20)
     }
 
     /// The width a card's content asks for (C-020).
@@ -967,13 +967,20 @@ mod tests {
             Rect::new(0, 0, 150, 90),
         )))
         .expect("the test control mounts");
+        // The card follows the control's *measured* hint, which for a label is its text metrics
+        // rather than the rectangle it was constructed with. The declared height is deliberately
+        // different so the assertion cannot be satisfied by the fallback.
+        let measured_height = crate::widget::runtime::with_widget(id, |widget| widget.size_hint())
+            .expect("the control is mounted")
+            .height
+            .max(20);
         let mut ml = MasonryLayout::new(Rect::new(0, 0, 400, 400));
         ml.set_columns(1);
-        ml.add_item_with_widget("measured", 20, Color::WHITE, Some(id));
+        ml.add_item_with_widget("measured", 7, Color::WHITE, Some(id));
         ml.set_column_width_strategy(MasonryColumnWidth::Content);
         assert_eq!(ml.column_width_strategy(), MasonryColumnWidth::Content);
         let rects = ml.layout_items_shared();
-        assert_eq!(rects[0].1.height, 90, "the card follows its control's size hint");
+        assert_eq!(rects[0].1.height, measured_height, "the card follows its measured hint");
         assert_eq!(rects[0].1.width, 400, "one content column takes the whole width");
         let _ = crate::widget::runtime::unregister(id);
     }

@@ -1427,6 +1427,15 @@ impl EventHandler for MapView {
             Event::MouseRelease { button: 1, .. } => {
                 self.drag = None;
             }
+            // A two-finger pinch is a zoom around the gesture's midpoint. The recogniser already
+            // supplies the anchor, so the same pointer-anchored path the wheel uses applies.
+            #[cfg(feature = "touch")]
+            Event::Pinch { scale, center, .. } => {
+                if scale.is_finite() && *scale > 0.0 {
+                    self.last_pointer = Some(*center);
+                    self.zoom_at(*scale, *center);
+                }
+            }
             Event::MouseLeave { .. } => {
                 self.drag = None;
             }
@@ -2336,5 +2345,28 @@ mod tests {
             Err(CapabilityAccessError::ConstraintViolation { .. })
         ));
         assert_eq!(map.markers().len(), 2, "a refused write changes nothing");
+    }
+
+    /// SP-021: a pinch zooms around its midpoint, leaving the world point under it in place.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn pinch_zooms_around_the_gesture_midpoint() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 300));
+        let anchor = Point::new(150, 140);
+        let before_zoom = map.zoom();
+        let rect = map.geometry();
+        let zoom = before_zoom.max(0.0001);
+        let center_px = rect.x as f32 + rect.width as f32 / 2.0;
+        let world_before = map.center_x + (anchor.x as f32 - center_px) / zoom;
+
+        map.handle_event(&Event::pinch_at(1.5, anchor.x, anchor.y));
+
+        assert!(map.zoom() > before_zoom, "a spread zooms in");
+        let zoom_after = map.painted_zoom().max(0.0001);
+        let world_after = map.center_x + (anchor.x as f32 - center_px) / zoom_after;
+        assert!(
+            (world_before - world_after).abs() < 0.5,
+            "the anchored world point stays put: {world_before} vs {world_after}"
+        );
     }
 }

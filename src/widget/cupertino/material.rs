@@ -9,6 +9,7 @@
 //! each module's name describe its contents; the public paths are re-exported by
 //! `cupertino::mod`, so no caller's import changes.
 
+use crate::compat::VecDeque;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -23,6 +24,19 @@ use crate::widget::{BaseWidget, Draw, IconItemError, IconSource, Widget, WidgetK
 use crate::{impl_widget_property_hooks, property_names_of};
 
 // ── MaterialSnackbar ─────────────────────────────────────────────────────────
+
+/// The most messages a snackbar holds behind the visible one by default.
+const SNACKBAR_MAX_QUEUED: usize = 4;
+
+/// One snackbar's content, captured so a host that sets the next message before calling
+/// `show` cannot overwrite the message that is still on screen.
+#[derive(Clone)]
+struct SnackbarContent {
+    message: String,
+    action_text: String,
+    duration_ms: u64,
+    elapsed_ms: u64,
+}
 
 /// Material Design snackbar notification.
 ///
@@ -50,6 +64,15 @@ pub struct MaterialSnackbar {
     action_rect: Option<Rect>,
     /// Whether the press landed on the action button and has not been released yet.
     pressed_action: bool,
+    /// Whether a `show` issued while a message is presented waits its turn.
+    queueing: bool,
+    /// The number of messages that may wait behind the visible one.
+    max_queued: usize,
+    /// Messages waiting behind the visible one, oldest first.
+    queue: VecDeque<SnackbarContent>,
+    /// The content the visible bar was last presented with, so `show` can restore it when the
+    /// host has already set the next message.
+    presented: Option<SnackbarContent>,
 }
 
 impl MaterialSnackbar {
@@ -71,6 +94,10 @@ impl MaterialSnackbar {
             closing: false,
             action_rect: None,
             pressed_action: false,
+            queueing: false,
+            max_queued: SNACKBAR_MAX_QUEUED,
+            queue: VecDeque::new(),
+            presented: None,
         }
     }
 
@@ -105,16 +132,92 @@ impl MaterialSnackbar {
     }
 
     /// Shows the snackbar. Does nothing if already visible.
+    ///
+    /// With [`Self::set_queueing`] on, a `show` issued while a message is presented queues its
+    /// content behind the visible one instead of racing it: the bar then displays the messages
+    /// one at a time, oldest first. Queueing is off by default, which keeps the historical
+    /// behaviour — the visible bar simply keeps showing its current text.
     pub fn show(&mut self) {
-        if !self.base.is_visible() {
-            self.base.show();
-            self.elapsed_ms = 0;
-            self.closing = false;
-            // Slide in from below: start off screen and animate to the presented position.
-            self.slide.jump_to(0.0);
-            self.slide.set_target(1.0);
+        if self.base.is_visible() {
+            if self.queueing {
+                self.enqueue_current();
+            } else {
+                // The bar is already up, so whatever the setters just wrote is what it shows.
+                self.presented = Some(self.content());
+            }
+            return;
+        }
+        self.present(self.content());
+    }
+
+    /// The current message and action as one value.
+    fn content(&self) -> SnackbarContent {
+        SnackbarContent {
+            message: self.message.clone(),
+            action_text: self.action_text.clone(),
+            duration_ms: self.duration_ms,
+            elapsed_ms: self.elapsed_ms,
+        }
+    }
+
+    /// Puts `content` on screen, sliding in from below when the bar was hidden.
+    fn present(&mut self, content: SnackbarContent) {
+        self.message = content.message.clone();
+        self.action_text = content.action_text.clone();
+        self.duration_ms = content.duration_ms;
+        self.elapsed_ms = 0;
+        self.action_rect = None;
+        self.pressed_action = false;
+        self.presented = Some(content);
+        self.base.show();
+        self.closing = false;
+        // Slide in from below: start off screen and animate to the presented position.
+        self.slide.jump_to(0.0);
+        self.slide.set_target(1.0);
+        self.base.request_redraw();
+    }
+
+    /// Queues the text a host has just set, restoring the message still on screen first.
+    ///
+    /// A host spells a later message as `set_message(...)` followed by `show`, so by the time
+    /// the queue sees the call the visible fields already hold the new text. The last presented
+    /// content is kept for exactly this case: without restoring it, the bar would show the
+    /// queued message early and then show it again when its turn came.
+    fn enqueue_current(&mut self) {
+        if self.max_queued == 0 {
+            return;
+        }
+        let incoming = SnackbarContent {
+            message: self.message.clone(),
+            action_text: self.action_text.clone(),
+            duration_ms: self.duration_ms,
+            elapsed_ms: 0,
+        };
+        if let Some(presented) = self.presented.clone() {
+            self.message = presented.message;
+            self.action_text = presented.action_text;
+            self.duration_ms = presented.duration_ms;
+            self.elapsed_ms = presented.elapsed_ms;
+            self.action_rect = None;
+            self.pressed_action = false;
             self.base.request_redraw();
         }
+        // Bounded: the oldest waiting message is dropped, so a producer that outpaces the
+        // display cannot grow the queue without limit. A message that never appeared has not
+        // been dismissed, so no `dismissed` is emitted for it.
+        while self.queue.len() >= self.max_queued {
+            self.queue.pop_front();
+        }
+        self.queue.push_back(incoming);
+    }
+
+    /// Presents the next queued message, if there is one. Returns whether one was presented.
+    fn present_next_queued(&mut self) -> bool {
+        let Some(next) = self.queue.pop_front() else {
+            return false;
+        };
+        self.present(next);
+        true
     }
 
     /// Dismisses the snackbar immediately. Emits the `dismissed` signal.
@@ -129,7 +232,52 @@ impl MaterialSnackbar {
             self.closing = false;
             self.slide.jump_to(0.0);
             self.dismissed.emit();
+            // A queued message takes the screen as soon as the visible one leaves, which is what
+            // makes the queue serial rather than an overwrite.
+            self.present_next_queued();
             self.base.request_redraw();
+        }
+    }
+
+    /// Whether `show` queues a message behind the visible one instead of racing it.
+    pub fn is_queueing(&self) -> bool {
+        self.queueing
+    }
+
+    /// Enables or disables queueing of messages shown while another is visible.
+    ///
+    /// Off by default, which is the historical behaviour: a second `show` while the bar is up
+    /// changes nothing but the visible text. Turning it off clears anything already waiting, so
+    /// a picture taken after the setter cannot show a message that will never be presented.
+    pub fn set_queueing(&mut self, queueing: bool) {
+        if self.queueing == queueing {
+            return;
+        }
+        self.queueing = queueing;
+        if !queueing {
+            self.queue.clear();
+        }
+    }
+
+    /// The number of messages waiting behind the visible one.
+    pub fn queued_count(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// The cap on queued messages.
+    pub fn max_queued(&self) -> usize {
+        self.max_queued
+    }
+
+    /// Caps the queue; when it is full the oldest waiting message is dropped.
+    pub fn set_max_queued(&mut self, max_queued: usize) {
+        let max_queued = max_queued.min(64);
+        if self.max_queued == max_queued {
+            return;
+        }
+        self.max_queued = max_queued;
+        while self.queue.len() > self.max_queued {
+            self.queue.pop_front();
         }
     }
 
@@ -208,6 +356,8 @@ impl Widget for MaterialSnackbar {
             self.base.hide();
             self.closing = false;
             self.dismissed.emit();
+            // The exit is what frees the screen, so the next queued message slides in here.
+            self.present_next_queued();
             changed = true;
         }
         if changed {
@@ -588,6 +738,20 @@ impl RailItem {
     }
 }
 
+/// How a navigation-rail destination paints its caption.
+///
+/// Material's rail is defined with the icon alone; the label variant is the shape this control
+/// has always drawn, so it stays the default and no existing picture changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NavigationRailLabelMode {
+    /// The icon with its caption beneath it, for every destination.
+    #[default]
+    IconAndLabel,
+    /// The icon alone, centred in the destination band. The item's label is kept, so a host and
+    /// an accessibility reader still have the destination's name.
+    IconOnly,
+}
+
 /// The widest the rail's own strip is drawn.
 ///
 /// A navigation rail is a fixed-width edge strip (Material's spec is 80 dp), so the
@@ -619,6 +783,8 @@ pub struct MaterialNavigationRail {
     pub current_changed: Signal1<usize>,
     /// An optional header widget (an avatar, a fab, a search box) drawn above the items.
     header_widget: Option<crate::compat::Box<dyn Widget>>,
+    /// Whether each destination paints its caption.
+    label_mode: NavigationRailLabelMode,
 }
 
 impl MaterialNavigationRail {
@@ -633,6 +799,7 @@ impl MaterialNavigationRail {
             selected_index: 0,
             current_changed: Signal1::new(),
             header_widget: None,
+            label_mode: NavigationRailLabelMode::IconAndLabel,
         }
     }
 
@@ -780,6 +947,25 @@ impl MaterialNavigationRail {
     /// The header slot, when one is installed.
     pub fn header_widget_mut(&mut self) -> Option<&mut (dyn Widget + '_)> {
         self.header_widget.as_deref_mut()
+    }
+
+    /// How each destination paints its caption.
+    pub fn label_mode(&self) -> NavigationRailLabelMode {
+        self.label_mode
+    }
+
+    /// Sets whether destinations paint their captions.
+    ///
+    /// [`NavigationRailLabelMode::IconAndLabel`] is the default and the historical shape, so a
+    /// rail that never calls this setter draws exactly as it did. The hit target is one whole
+    /// destination band in either mode; only the paint changes.
+    pub fn set_label_mode(&mut self, mode: NavigationRailLabelMode) {
+        if self.label_mode == mode {
+            return;
+        }
+        self.label_mode = mode;
+        self.base.request_layout();
+        self.base.request_redraw();
     }
 
     /// The y offset the first item starts at (below the header, when present).
@@ -994,9 +1180,16 @@ impl Draw for MaterialNavigationRail {
             let icon_color = if is_selected { primary } else { secondary };
             let typed_source = self.item_icon_sources.get(i).copied().flatten();
             let icon_side = 24u32;
+            // An icon-only rail centres the glyph in the destination band; with a caption the
+            // glyph sits above it, which is the offset the control has always used.
+            let icon_top = if self.label_mode == NavigationRailLabelMode::IconOnly {
+                item_y + ((item_height - icon_side) / 2) as i32
+            } else {
+                item_y + 16
+            };
             let icon_rect = Rect::new(
                 rect.x + (rail_width as i32 - icon_side as i32) / 2,
-                item_y + 16,
+                icon_top,
                 icon_side,
                 icon_side,
             );
@@ -1031,7 +1224,7 @@ impl Draw for MaterialNavigationRail {
                 let height = metrics.height.max(12);
                 let badge_rect = Rect::new(
                     rect.x + (rail_width as i32 + icon_side as i32) / 2 - width as i32 + 2,
-                    item_y + 10,
+                    icon_rect.y - 6,
                     width,
                     height,
                 );
@@ -1048,21 +1241,23 @@ impl Draw for MaterialNavigationRail {
             // ── Label ──
             // Centred in a band whose top is the label's top edge: the origin is the glyph box,
             // so `item_y + 44 + height / 2` put every label half a line low.
-            let label_color = if is_selected { primary } else { secondary };
-            let label_metrics = context.measure_text(&item.label, &label_font);
-            let label_band = Rect::new(
-                rect.x + 4,
-                item_y + 44,
-                rail_width.saturating_sub(8),
-                label_metrics.height.max(1),
-            );
-            context.draw_text_fitted_cow(
-                label_band,
-                &item.label,
-                &label_font,
-                label_color,
-                HorizontalAlignment::Center,
-            );
+            if self.label_mode == NavigationRailLabelMode::IconAndLabel {
+                let label_color = if is_selected { primary } else { secondary };
+                let label_metrics = context.measure_text(&item.label, &label_font);
+                let label_band = Rect::new(
+                    rect.x + 4,
+                    item_y + 44,
+                    rail_width.saturating_sub(8),
+                    label_metrics.height.max(1),
+                );
+                context.draw_text_fitted_cow(
+                    label_band,
+                    &item.label,
+                    &label_font,
+                    label_color,
+                    HorizontalAlignment::Center,
+                );
+            }
         }
     }
 }
@@ -1110,5 +1305,133 @@ impl EventHandler for MaterialNavigationRail {
                 self.base.handle_event(event);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::svg::{render_to_svg, text_ink_boxes};
+
+    fn make_snackbar() -> MaterialSnackbar {
+        MaterialSnackbar::new(Rect::new(0, 0, 320, 48))
+    }
+
+    /// Queueing is off by default, which is the historical behaviour: a second `show` while the
+    /// bar is up changes nothing but the text the setters already wrote.
+    #[test]
+    fn a_second_show_does_not_queue_by_default() {
+        let mut snack = make_snackbar();
+        assert!(!snack.is_queueing(), "queueing is opt-in");
+        snack.set_message("first");
+        snack.show();
+        snack.set_message("second");
+        snack.show();
+        assert_eq!(snack.message(), "second");
+        assert_eq!(snack.queued_count(), 0, "nothing waits behind the visible message");
+        assert_eq!(snack.max_queued(), SNACKBAR_MAX_QUEUED);
+    }
+
+    /// CB-002: with queueing on, a later message waits instead of overwriting the one on screen,
+    /// and the two are presented one after the other.
+    #[test]
+    fn queued_messages_are_presented_one_at_a_time() {
+        let mut snack = make_snackbar();
+        snack.set_queueing(true);
+        snack.set_message("first");
+        snack.show();
+        snack.set_message("second");
+        snack.show();
+
+        assert_eq!(snack.message(), "first", "the presented message is not overwritten");
+        assert_eq!(snack.queued_count(), 1);
+
+        snack.dismiss();
+        assert!(snack.is_visible(), "the queued message takes the screen");
+        assert_eq!(snack.message(), "second");
+        assert_eq!(snack.queued_count(), 0, "the queue drained in order");
+    }
+
+    /// The queue is bounded; a producer that outpaces the display drops the oldest waiting
+    /// message rather than growing without limit.
+    #[test]
+    fn the_queue_is_bounded_and_drops_the_oldest_waiting_message() {
+        let mut snack = make_snackbar();
+        snack.set_queueing(true);
+        snack.set_max_queued(1);
+        snack.set_message("first");
+        snack.show();
+        snack.set_message("second");
+        snack.show();
+        snack.set_message("third");
+        snack.show();
+        assert_eq!(snack.queued_count(), 1);
+        snack.dismiss();
+        assert_eq!(snack.message(), "third", "the newest waiting message is kept");
+    }
+
+    /// Turning queueing off clears what was waiting, so nothing is promised that will never be
+    /// presented.
+    #[test]
+    fn turning_queueing_off_clears_the_waiting_messages() {
+        let mut snack = make_snackbar();
+        snack.set_queueing(true);
+        snack.set_message("first");
+        snack.show();
+        snack.set_message("second");
+        snack.show();
+        assert_eq!(snack.queued_count(), 1);
+        snack.set_queueing(false);
+        assert_eq!(snack.queued_count(), 0);
+    }
+
+    /// The animated exit is a dismissal too, so the next queued message slides in once the
+    /// outgoing one has left.
+    #[test]
+    fn an_animated_exit_hands_the_screen_to_the_next_queued_message() {
+        let mut snack = make_snackbar();
+        snack.set_queueing(true);
+        snack.set_message("first");
+        snack.show();
+        snack.set_message("second");
+        snack.show();
+        snack.dismiss_animated();
+        for _ in 0..200 {
+            if snack.message() == "second" {
+                break;
+            }
+            snack.tick(16);
+        }
+        assert_eq!(snack.message(), "second");
+        assert!(snack.is_visible(), "the queued message is presented after the exit");
+    }
+
+    /// CB-003: the label mode selects the painted shape without changing the destinations, and
+    /// the default keeps the historical icon-plus-caption picture.
+    ///
+    /// Text leaves the SVG renderer as glyph geometry, so the caption is counted rather than
+    /// searched for: the labelled rail must paint exactly one more text run per destination.
+    #[test]
+    fn an_icon_only_rail_paints_no_captions_and_still_selects() {
+        let mut rail = MaterialNavigationRail::new(Rect::new(0, 0, 80, 400));
+        rail.add_item("home", "Home");
+        rail.add_item("search", "Find");
+        assert_eq!(rail.label_mode(), NavigationRailLabelMode::IconAndLabel);
+
+        let labelled = text_ink_boxes(&render_to_svg(&mut rail)).len();
+
+        rail.set_label_mode(NavigationRailLabelMode::IconOnly);
+        assert_eq!(rail.label_mode(), NavigationRailLabelMode::IconOnly);
+        let icon_only = text_ink_boxes(&render_to_svg(&mut rail)).len();
+        assert_eq!(
+            labelled,
+            icon_only + 2,
+            "the only text an icon-only rail drops is the two captions"
+        );
+        assert_eq!(rail.item_count(), 2, "the labels are kept on the items");
+
+        // The hit target is unchanged: a release inside a destination band still selects it.
+        rail.handle_event(&Event::mouse_release(40, 100, 1));
+        assert_eq!(rail.selected(), 1);
     }
 }

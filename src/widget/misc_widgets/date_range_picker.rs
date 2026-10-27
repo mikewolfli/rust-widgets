@@ -97,6 +97,8 @@ pub struct DateRangePicker {
     focus_date: Option<(i32, u32, u32)>,
     /// Cached numeral widths and header line height (K-P12).
     digit_metrics: crate::compat::RefCell<DigitMetrics>,
+    /// The month/year header text of each panel, rebuilt only when its page changes (MISC-05).
+    header_text_cache: crate::compat::RefCell<Vec<(i32, u32, String)>>,
 }
 
 /// A font's identity, as far as text measurement is concerned.
@@ -152,6 +154,7 @@ impl DateRangePicker {
             maximum_date: None,
             focus_date: None,
             digit_metrics: crate::compat::RefCell::new(DigitMetrics::default()),
+            header_text_cache: crate::compat::RefCell::new(Vec::new()),
         }
     }
 
@@ -439,12 +442,10 @@ impl DateRangePicker {
 
     /// Whether `date` lies inside the configured bounds.
     pub fn accepts_date(&self, date: (i32, u32, u32)) -> bool {
-        if self.minimum_date.is_some_and(|minimum| date_to_ordinal(date) < date_to_ordinal(minimum))
-        {
+        if self.minimum_date.is_some_and(|minimum| date < minimum) {
             return false;
         }
-        if self.maximum_date.is_some_and(|maximum| date_to_ordinal(date) > date_to_ordinal(maximum))
-        {
+        if self.maximum_date.is_some_and(|maximum| date > maximum) {
             return false;
         }
         true
@@ -522,11 +523,9 @@ impl DateRangePicker {
                 self.base.request_redraw();
             }
             (Some(start), None) => {
-                let start_ord = date_to_ordinal(start);
-                let click_ord = date_to_ordinal(clicked_date);
-                let (new_start, new_end) = if click_ord > start_ord {
+                let (new_start, new_end) = if clicked_date > start {
                     (start, clicked_date)
-                } else if click_ord < start_ord {
+                } else if clicked_date < start {
                     (clicked_date, start)
                 } else {
                     self.clear_selection();
@@ -664,19 +663,66 @@ impl DateRangePicker {
     }
 
     /// Checks if a date falls within the current selection range.
+    ///
+    /// The comparison is the date tuple's own lexicographic order, which is exactly the order the
+    /// former ordinal conversion encoded for a valid calendar date. Inlining it removes the
+    /// repeated multiplications this predicate ran once per cell per frame (MISC-06).
     fn is_in_range(&self, date: (i32, u32, u32)) -> bool {
         let Some(start) = self.start_date else {
             return false;
         };
-        if date_to_ordinal(date) < date_to_ordinal(start) {
+        if date < start {
             return false;
         }
         if let Some(end) = self.end_date {
-            date_to_ordinal(date) <= date_to_ordinal(end)
+            date <= end
         } else {
             // If no end date, highlight just the start
             date == start
         }
+    }
+
+    /// The range a click on the hovered day would complete, if one is pending.
+    ///
+    /// Hovering after a start date previews the second endpoint, in either direction; once an end
+    /// exists the range is committed and there is nothing left to preview. This is the semantic
+    /// the hover arm's own comment promises and the draw previously did not paint (MISC-07).
+    fn hover_preview_range(&self) -> Option<((i32, u32, u32), (i32, u32, u32))> {
+        let start = self.start_date?;
+        if self.end_date.is_some() {
+            return None;
+        }
+        let hover = self.hover_date?;
+        if hover == start {
+            return None;
+        }
+        if hover < start {
+            Some((hover, start))
+        } else {
+            Some((start, hover))
+        }
+    }
+
+    /// The header text of `panel`, formatted once per page rather than once per frame.
+    fn header_text(&self, panel: usize) -> core::cell::Ref<'_, str> {
+        let (year, month) = self.panel_month(panel);
+        {
+            let mut cache = self.header_text_cache.borrow_mut();
+            if cache.len() <= panel {
+                cache.resize_with(panel + 1, || (0, 0, String::new()));
+            }
+            let entry = &mut cache[panel];
+            if entry.0 != year || entry.1 != month {
+                entry.0 = year;
+                entry.1 = month;
+                entry.2.clear();
+                let _ = core::fmt::Write::write_fmt(
+                    &mut entry.2,
+                    format_args!("{} {year}", month_name_for(month)),
+                );
+            }
+        }
+        core::cell::Ref::map(self.header_text_cache.borrow(), |cache| cache[panel].2.as_str())
     }
 
     /// The calendar grid's geometry for the current month and rectangle.
@@ -763,11 +809,6 @@ struct GridLayout {
     column_pitch: u32,
     /// Cells to draw, including the leading blanks of the first week.
     total_cells: usize,
-}
-
-/// Converts a date to a single ordinal number for easy comparison.
-fn date_to_ordinal(date: (i32, u32, u32)) -> i64 {
-    date.0 as i64 * 10000 + date.1 as i64 * 100 + date.2 as i64
 }
 
 /// Formats a date as an ISO `YYYY-MM-DD` string.
@@ -1024,10 +1065,9 @@ impl Draw for DateRangePicker {
         let panel_width = rect.width / panels.max(1) as u32;
         for panel in 0..panels {
             let panel_x = rect.x + (panel as u32 * panel_width) as i32;
-            let (year, month) = self.panel_month(panel);
             let header_band =
                 Rect::new(panel_x + 20, header_top + 6, panel_width.saturating_sub(40), 18);
-            let header_text = format!("{} {year}", month_name_for(month));
+            let header_text = self.header_text(panel);
             context.draw_text_fitted_cow(
                 header_band,
                 &header_text,
@@ -1108,6 +1148,7 @@ fn draw_month_panel(
 
     let mut day_buf = [0u8; 2];
     let focus_date = picker.focus_date;
+    let preview = picker.hover_preview_range();
     for cell_idx in 0..layout.total_cells {
         let Some(date) = picker.date_at_panel_cell(panel, cell_idx) else {
             continue;
@@ -1132,6 +1173,7 @@ fn draw_month_panel(
         let is_today = is_start || is_end;
         let in_range = picker.is_in_range(date);
         let is_hover = picker.hover_date == Some(date);
+        let in_preview = preview.is_some_and(|(low, high)| date >= low && date <= high);
         let is_focused = focus_date == Some(date);
         // A day outside the configured bounds is not selectable, and it says so in the picture
         // (MISC-08): the fill is skipped and the ink is the disabled tone, so a user can see why
@@ -1144,6 +1186,10 @@ fn draw_month_panel(
             context.fill_rounded_rect(cell_rect, 4, range_color);
         } else if allowed && is_hover && is_enabled {
             context.fill_rounded_rect(cell_rect, 4, surface.blend(&text_color, 0.16));
+        } else if allowed && in_preview && is_enabled {
+            // The pending range from the start date to the hovered day, painted more faintly than
+            // a committed range so the two cannot be mistaken for each other (MISC-07).
+            context.fill_rounded_rect(cell_rect, 4, accent.with_alpha(40));
         } else if allowed && is_today && is_enabled {
             let today_color = if is_start || is_end {
                 accent.with_alpha(200)
@@ -1173,7 +1219,7 @@ fn draw_month_panel(
             text_color.blend(&surface, 0.55)
         } else if is_start || is_end {
             surface
-        } else if in_range {
+        } else if in_range || in_preview {
             accent
         } else {
             text_color
@@ -2146,5 +2192,67 @@ mod tests {
         picker.handle_event(&Event::key_press(crate::event::key_codes::RIGHT, 0));
         assert_eq!(picker.focus_date(), Some((2025, 7, 1)));
         assert_eq!(picker.display_month(), 7);
+    }
+
+    /// The header text is formatted once per page and follows a page change (MISC-05).
+    #[test]
+    fn the_month_header_is_cached_and_rebuilt_when_the_page_moves() {
+        let mut picker = make_picker();
+        assert_eq!(&*picker.header_text(0), "Jan 2025");
+        // A second read is the cached value, not a fresh allocation with stale inputs.
+        assert_eq!(&*picker.header_text(0), "Jan 2025");
+
+        picker.set_display_page(2025, 2);
+        assert_eq!(&*picker.header_text(0), "Feb 2025");
+        picker.set_double_month(true);
+        assert_eq!(&*picker.header_text(1), "Mar 2025");
+    }
+
+    /// Range membership matches date order at both boundaries (MISC-06).
+    #[test]
+    fn range_membership_and_bounds_use_date_order() {
+        let mut picker = make_picker();
+        picker.set_start_date(Some((2025, 1, 10)));
+        picker.set_end_date(Some((2025, 1, 20)));
+        assert!(!picker.is_in_range((2025, 1, 9)));
+        assert!(picker.is_in_range((2025, 1, 10)));
+        assert!(picker.is_in_range((2025, 1, 15)));
+        assert!(picker.is_in_range((2025, 1, 20)));
+        assert!(!picker.is_in_range((2025, 1, 21)));
+
+        picker.set_minimum_date(Some((2025, 2, 1)));
+        picker.set_maximum_date(Some((2025, 2, 28)));
+        assert!(!picker.accepts_date((2025, 1, 31)));
+        assert!(picker.accepts_date((2025, 2, 1)));
+        assert!(picker.accepts_date((2025, 2, 28)));
+        assert!(!picker.accepts_date((2025, 3, 1)));
+    }
+
+    /// A start date plus a hovered day previews the pending range in either direction, and the
+    /// paint reflects it (MISC-07).
+    #[test]
+    fn hovering_after_a_start_previews_the_pending_range() {
+        let mut picker = make_picker();
+        picker.set_start_date(Some((2025, 1, 10)));
+
+        picker.hover_date = Some((2025, 1, 15));
+        assert_eq!(picker.hover_preview_range(), Some(((2025, 1, 10), (2025, 1, 15))));
+        picker.hover_date = Some((2025, 1, 5));
+        assert_eq!(picker.hover_preview_range(), Some(((2025, 1, 5), (2025, 1, 10))));
+
+        // A committed range has nothing left to preview.
+        picker.set_end_date(Some((2025, 1, 20)));
+        assert_eq!(picker.hover_preview_range(), None);
+
+        // The preview is visible, not just recorded.
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut previewed = make_picker();
+        previewed.set_start_date(Some((2025, 1, 10)));
+        previewed.hover_date = Some((2025, 1, 15));
+        let preview_svg = render_to_svg(&mut previewed);
+        let mut plain = make_picker();
+        plain.set_start_date(Some((2025, 1, 10)));
+        let plain_svg = render_to_svg(&mut plain);
+        assert_ne!(plain_svg, preview_svg, "the pending range must be painted");
     }
 }

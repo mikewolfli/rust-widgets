@@ -165,10 +165,19 @@ pub struct KeySequenceEdit {
     /// every frame, so an idle field allocated two or three strings per paint for a value that had
     /// not changed. Every write that can change the text marks this cache dirty through
     /// [`KeySequenceEdit::invalidate_display`], and `draw` rebuilds only when it is. The rendered
-    /// string is byte-identical to what the per-frame form produced.
+    /// string is byte-identical to what the per-frame form produced, plus the in-progress modifier
+    /// prefix described by [`Self::pending_modifiers`].
     display_text: String,
     /// Whether [`KeySequenceEdit::display_text`] still describes the current state.
     display_dirty: bool,
+    /// The modifiers currently held down while recording, in this type's bitmask.
+    ///
+    /// A lone modifier press records no chord, so the field used to stay on the bare recording
+    /// prompt until a non-modifier key completed the shortcut — the user could not see that the
+    /// modifier they were holding had been recognised (ADV-010). The mask is shown as an
+    /// intermediate state and cleared when the modifier is released, when a chord completes, or
+    /// when recording stops.
+    pending_modifiers: u32,
 }
 impl KeySequenceEdit {
     /// Creates an editor with no sequence set and recording stopped.
@@ -192,6 +201,7 @@ impl KeySequenceEdit {
             restoring_history: false,
             display_text: String::new(),
             display_dirty: true,
+            pending_modifiers: 0,
         }
     }
     /// Returns the current sequence; compare with [`KeySequence::is_empty`] to
@@ -368,6 +378,7 @@ impl KeySequenceEdit {
     pub fn start_recording(&mut self) {
         if !self.recording {
             self.recording = true;
+            self.pending_modifiers = 0;
             self.invalidate_display();
         }
     }
@@ -379,6 +390,7 @@ impl KeySequenceEdit {
     pub fn stop_recording(&mut self) {
         if self.recording {
             self.recording = false;
+            self.pending_modifiers = 0;
             self.invalidate_display();
             self.editing_finished.emit();
         }
@@ -454,6 +466,14 @@ impl KeySequenceEdit {
                     }
                     self.display_text.push_str(&chord.to_display_string());
                 }
+            } else if self.pending_modifiers != 0 {
+                // A modifier is held but no key has completed the chord yet. Showing the prefix
+                // with a trailing `+` is the intermediate state a user expects to see while
+                // pressing Ctrl/Shift/Alt/Meta (ADV-010).
+                self.display_text.push(' ');
+                self.display_text
+                    .push_str(&KeySequence::new(self.pending_modifiers, 0, "").to_display_string());
+                self.display_text.push('+');
             }
         } else if self.key_sequence.is_empty() {
             self.display_text.push_str("Click to set shortcut...");
@@ -528,21 +548,41 @@ impl EventHandler for KeySequenceEdit {
             Event::FocusLost => {
                 self.stop_recording();
             }
+            Event::KeyRelease { key, .. } if self.recording => {
+                // Releasing the modifier drops its intermediate prefix. A release of a
+                // non-modifier key changes nothing: the chord was completed on its press.
+                if let Some(bit) = modifier_key_bit(*key) {
+                    if self.pending_modifiers & bit != 0 {
+                        self.pending_modifiers &= !bit;
+                        self.invalidate_display();
+                        self.base.request_redraw();
+                    }
+                }
+            }
             Event::KeyPress { key, modifiers } if self.recording => {
                 // Escape clears recording without saving
                 if *key == key_codes::ESCAPE {
                     if self.recording {
                         self.recording = false;
+                        self.pending_modifiers = 0;
                         self.invalidate_display();
                     }
                     return;
                 }
-                // Ignore modifier-only keys. The set matches the modifier bits
-                // `modifiers_from_event` maps (including Meta/Super), so a lone modifier press is
-                // not recorded as a shortcut key while a modified chord still is.
-                if is_modifier_key(*key) {
+                // A modifier-only key records no chord, but it is the first half of one: show
+                // it as an intermediate state until the chord completes or the key is released
+                // (ADV-010). The bit comes from the key itself, so the mask does not depend on
+                // whether the backend already reports the modifier in the event's bits.
+                if let Some(bit) = modifier_key_bit(*key) {
+                    if self.pending_modifiers & bit == 0 {
+                        self.pending_modifiers |= bit;
+                        self.invalidate_display();
+                        self.base.request_redraw();
+                    }
                     return;
                 }
+                // The chord is complete, so the intermediate prefix no longer describes it.
+                self.pending_modifiers = 0;
                 let key_name = key_code_to_name(*key);
                 let modifiers = Self::modifiers_from_event(*modifiers);
                 let chord = KeySequence::new(modifiers, *key, key_name);
@@ -615,14 +655,21 @@ fn key_code_to_name(key: u32) -> String {
     }
 }
 
-/// Whether `key` is one of the modifier keys themselves.
+/// The sequence-bitmask bit a lone modifier key contributes, or `None` for any other key.
 ///
 /// The five coded modifiers are the ones [`KeySequenceEdit::modifiers_from_event`] translates:
 /// Shift (16), Control (17), Alt (18) and Meta/Super (91 left, 92 right, and 224, which some hosts
-/// send for either). Recording ignores every one of them so a bare modifier press cannot become a
-/// shortcut; a chord that *includes* one still records it through the event's modifier bits.
-fn is_modifier_key(key: u32) -> bool {
-    matches!(key, 16 | 17 | 18 | 91 | 92 | 224)
+/// send for either). The `KeySequence` convention is ctrl `0x01`, alt `0x02`, shift `0x04`, meta
+/// `0x08`; both left and right variants map to the same bit, which is the convention
+/// [`KeySequenceEdit::modifiers_from_event`] already follows.
+fn modifier_key_bit(key: u32) -> Option<u32> {
+    match key {
+        16 => Some(0x04),            // Shift
+        17 => Some(0x01),            // Ctrl
+        18 => Some(0x02),            // Alt
+        91 | 92 | 224 => Some(0x08), // Meta / Super
+        _ => None,
+    }
 }
 
 /// The virtual-key code for a display name this widget can produce.
@@ -1337,5 +1384,36 @@ mod tests {
             editor.set("can_redo", CapabilityValue::Bool(true)),
             Err(CapabilityAccessError::ReadOnlyProperty)
         );
+    }
+
+    /// Holding a modifier while recording shows the in-progress chord (ADV-010).
+    #[test]
+    fn a_held_modifier_is_shown_while_recording() {
+        let mut editor = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
+        editor.start_recording();
+        editor.refresh_display_text();
+        assert_eq!(editor.display_text, "Recording...");
+
+        editor.handle_event(&Event::key_press(17, 0b0010)); // Ctrl
+        editor.refresh_display_text();
+        assert_eq!(editor.display_text, "Recording... Ctrl+");
+
+        editor.handle_event(&Event::key_press(16, 0b0011)); // + Shift
+        editor.refresh_display_text();
+        assert_eq!(editor.display_text, "Recording... Ctrl+Shift+");
+
+        editor.handle_event(&Event::key_release(16, 0b0001));
+        editor.refresh_display_text();
+        assert_eq!(editor.display_text, "Recording... Ctrl+");
+
+        editor.handle_event(&Event::key_release(17, 0));
+        editor.refresh_display_text();
+        assert_eq!(editor.display_text, "Recording...", "the prefix clears with the release");
+
+        // Completing the chord replaces the intermediate state with the value.
+        editor.handle_event(&Event::key_press(17, 0b0010));
+        editor.handle_event(&Event::key_press(67, 0b0010)); // Ctrl+C
+        editor.refresh_display_text();
+        assert_eq!(editor.display_text, "Ctrl+C");
     }
 }

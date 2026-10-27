@@ -80,6 +80,11 @@ pub struct ToastStack {
     scroll_offset: usize,
     /// Whether rows paint a translucent (vibrant) fill.
     translucent: bool,
+    /// A host-assigned offset that clears another overlay control (SP-124).
+    ///
+    /// A bottom-anchored stack rises by this amount and a top-anchored one descends, so a host can
+    /// put a snackbar and a toast stack in one column without changing either control's anchor.
+    overlay_offset: i32,
     /// Whether each row paints a trailing close button (SP-72).
     row_close_visible: bool,
     /// Measured action-label widths, keyed by label and font size.
@@ -122,6 +127,7 @@ impl ToastStack {
             shown_at_ms: Vec::new(),
             scroll_offset: 0,
             translucent: false,
+            overlay_offset: 0,
             row_close_visible: true,
             action_widths: RefCell::new(crate::compat::HashMap::new()),
             toast_activated: Signal1::new(),
@@ -208,6 +214,31 @@ impl ToastStack {
     /// Returns whether rows are translucent.
     pub fn is_translucent(&self) -> bool {
         self.translucent
+    }
+
+    /// The host-assigned offset that clears another overlay control (SP-124).
+    pub fn overlay_offset(&self) -> i32 {
+        self.overlay_offset
+    }
+
+    /// Moves the stack clear of the controls a host stacked before it (SP-124).
+    ///
+    /// Zero is the unstacked picture, so a host that never coordinates is unaffected.
+    pub fn set_overlay_offset(&mut self, offset: i32) {
+        if self.overlay_offset == offset {
+            return;
+        }
+        self.overlay_offset = offset;
+        self.base.request_redraw();
+    }
+
+    /// The vertical space the stack currently claims in the host's stack.
+    pub fn overlay_height(&self) -> u32 {
+        if self.toasts.is_empty() {
+            0
+        } else {
+            self.stack_band().height
+        }
     }
 
     /// The number of oldest rows scrolled out of view.
@@ -503,8 +534,9 @@ impl ToastStack {
         let y = match self.anchor {
             ToastAnchor::BottomLeft | ToastAnchor::BottomRight => {
                 rect.y + rect.height.saturating_sub(height.min(rect.height)) as i32
+                    - self.overlay_offset
             }
-            ToastAnchor::TopLeft | ToastAnchor::TopRight => rect.y,
+            ToastAnchor::TopLeft | ToastAnchor::TopRight => rect.y + self.overlay_offset,
         };
         Rect::new(x, y, width, height.min(rect.height))
     }

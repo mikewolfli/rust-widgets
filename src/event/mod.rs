@@ -60,8 +60,7 @@ pub use propagation::{
     ancestor_chain, consume_event, is_consumed, route_event, take_consumed, DispatchPhase,
     Propagation,
 };
-pub use r#loop::AnimationFrameRequest;
-pub use r#loop::EventLoop;
+pub use r#loop::{AnimationFrameRequest, EventFilterFn, EventLoop, GESTURE_LONG_PRESS_TIMER_ID};
 pub use timer::IdleTask;
 pub use timer::TimerManager;
 pub use timer::TimerPrecision;

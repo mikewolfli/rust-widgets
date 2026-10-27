@@ -1111,13 +1111,16 @@ mod tests {
         );
 
         // A ring whose thickness equals its radius has no hole for the label, so there is
-        // nowhere legal to put it — it is dropped rather than overprinted on the arc.
+        // nowhere legal to put it — it is dropped rather than overprinted on the arc. The
+        // witness is the *text* ink box: a drawn run always carries one, so `None` means no
+        // reading is in the document. The subpath counter cannot serve here because it counts
+        // the `M` of **every** `<path>` — the ring's own annulus included — so a dropped
+        // reading still leaves the ring's single contour behind.
         let mut solid = Arc::new(Rect::new(0, 0, 200, 200));
         solid.set_show_value(true);
         solid.set_thickness(99);
-        assert_eq!(
-            reading_ink(&mut solid, 200),
-            (0, None),
+        assert!(
+            reading_ink(&mut solid, 200).1.is_none(),
             "with no ring hole the reading must be dropped, not drawn over the arc"
         );
     }

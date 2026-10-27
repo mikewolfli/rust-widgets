@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use super::super::{PathPickerError, PathPurpose};
+use super::super::{PathFilter, PathPickerError, PathPurpose};
 use cocoa::base::{id, nil, BOOL, NO, YES};
 // `NSAutoreleasePool` is the trait that provides `autorelease()`: without it the call below does
 // not resolve, which is how the first probe compile of this file failed.
@@ -13,6 +13,51 @@ use objc::{class, msg_send, sel, sel_impl};
 /// Named rather than written as a bare `1` at the comparison, because it is the one number a
 /// reader has to know to read the result handling below.
 const NS_MODAL_RESPONSE_OK: i64 = 1;
+
+/// Applies the caller's filters to `panel`, as far as AppKit can express them (P-203).
+///
+/// `allowedFileTypes` is **one** allowed set, not a list of named filters: the panel has no filter
+/// dropdown, so the per-filter descriptions cannot be shown and the union of every filter's
+/// extensions is the only constraint the panel can enforce. A `*` entry means "every file", so a
+/// list containing one leaves the panel unrestricted — narrowing it to the union of the other
+/// entries would hide files the caller explicitly allowed.
+///
+/// A directory chooser ignores filters: `NSOpenPanel` in that mode picks a folder, which has no
+/// extension to match.
+///
+/// # Safety
+///
+/// Called from [`choose_path_with_filters`] inside its AppKit main-thread block, with a live panel
+/// and an autorelease pool in place (the two strings below are autoreleased into it).
+unsafe fn apply_filters(panel: id, purpose: &PathPurpose, filters: &[PathFilter]) {
+    if !matches!(purpose, PathPurpose::OpenFile | PathPurpose::SaveFile) || filters.is_empty() {
+        return;
+    }
+    let mut unrestricted = false;
+    let mut extensions: Vec<id> = Vec::new();
+    for filter in filters {
+        for extension in &filter.extensions {
+            let extension = extension.trim().trim_start_matches('.');
+            if extension == "*" {
+                unrestricted = true;
+            } else if !extension.is_empty() {
+                // `init_str` returns +1; the enclosing pool takes it over.
+                extensions.push(NSString::alloc(nil).init_str(extension).autorelease());
+            }
+        }
+    }
+    // An empty union means every filter named no file at all, which would ask AppKit to allow
+    // nothing — the same answer as leaving the panel alone, without the risk of a panel that can
+    // never accept a selection.
+    if unrestricted || extensions.is_empty() {
+        return;
+    }
+    let allowed: id = msg_send![class!(NSMutableArray), array];
+    for extension in extensions {
+        let _: () = msg_send![allowed, addObject: extension];
+    }
+    let _: () = msg_send![panel, setAllowedFileTypes: allowed];
+}
 
 /// Presents AppKit's file picker and answers with what the user chose.
 ///
@@ -31,6 +76,17 @@ const NS_MODAL_RESPONSE_OK: i64 = 1;
 pub(crate) fn choose_path(
     purpose: PathPurpose,
     title: &str,
+) -> Result<Option<std::path::PathBuf>, PathPickerError> {
+    choose_path_with_filters(purpose, title, &[])
+}
+
+/// [`choose_path`] with the caller's filters offered in the panel (P-203).
+///
+/// See [`apply_filters`] for what AppKit can and cannot express.
+pub(crate) fn choose_path_with_filters(
+    purpose: PathPurpose,
+    title: &str,
+    filters: &[PathFilter],
 ) -> Result<Option<std::path::PathBuf>, PathPickerError> {
     // SAFETY: every message below is sent from the main thread (checked first, because a modal
     // session off-main raises) to objects AppKit owns for the duration of the call. The title
@@ -58,6 +114,7 @@ pub(crate) fn choose_path(
         // to the enclosing pool, which AppKit's main thread has.
         let title_object = NSString::alloc(nil).init_str(title).autorelease();
         let _: () = msg_send![panel, setTitle: title_object];
+        apply_filters(panel, &purpose, filters);
 
         match purpose {
             PathPurpose::SelectDirectory => {

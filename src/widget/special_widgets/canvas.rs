@@ -20,6 +20,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use alloc::collections::VecDeque;
+use core::cell::{Ref, RefCell};
 use core::ops::Deref;
 
 /// A uniform scale and translation applied to every drawing command a [`Canvas`] stores.
@@ -174,6 +175,19 @@ fn next_layer_cache_key() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
+/// How many commands one replay chunk covers.
+const COMMAND_CHUNK_SIZE: usize = 32;
+
+/// A contiguous block of a layer's commands and their combined logical bounds.
+///
+/// `bounds` is `None` when any command in the block has no cullable bounds, which means the
+/// block must always be replayed (SP-110).
+struct CommandChunk {
+    start: usize,
+    end: usize,
+    bounds: Option<Rect>,
+}
+
 /// One canvas layer: a named, independently orderable and hideable command list.
 ///
 /// A `VecDeque` rather than a `Vec` because the command limit evicts from the
@@ -187,6 +201,58 @@ struct CanvasLayer {
     /// Identity for the render layer cache. A new key is handed out whenever the layer's own
     /// content or the canvas transform changes, which is the assertion the cache relies on.
     cache_key: u64,
+    /// Bumped whenever a command is added, removed or rewritten; keys the chunk index.
+    revision: u64,
+    /// The chunk index, rebuilt lazily when `revision` moves (SP-110).
+    chunks: RefCell<Option<(u64, Vec<CommandChunk>)>>,
+}
+
+impl CanvasLayer {
+    /// Gives the layer a fresh render-cache identity and invalidates its chunk index.
+    fn touch(&mut self) {
+        self.cache_key = next_layer_cache_key();
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Rebuilds the chunk bounds when the command list has changed.
+    fn ensure_chunks(&self) {
+        if self.chunks.borrow().as_ref().is_some_and(|(revision, _)| *revision == self.revision) {
+            return;
+        }
+        let mut chunks = Vec::new();
+        let mut start = 0usize;
+        let mut bounds: Option<Rect> = None;
+        let mut uncullable = false;
+        for (index, stored) in self.commands.iter().enumerate() {
+            match command_bounds(&stored.command) {
+                Some(command) => {
+                    bounds = Some(match bounds {
+                        Some(current) => current.union(&command),
+                        None => command,
+                    });
+                }
+                None => uncullable = true,
+            }
+            if (index + 1) % COMMAND_CHUNK_SIZE == 0 {
+                chunks.push(CommandChunk {
+                    start,
+                    end: index + 1,
+                    bounds: if uncullable { None } else { bounds },
+                });
+                start = index + 1;
+                bounds = None;
+                uncullable = false;
+            }
+        }
+        if start < self.commands.len() {
+            chunks.push(CommandChunk {
+                start,
+                end: self.commands.len(),
+                bounds: if uncullable { None } else { bounds },
+            });
+        }
+        *self.chunks.borrow_mut() = Some((self.revision, chunks));
+    }
 }
 
 /// A command removed by undo, retained so redo can put it back.
@@ -290,6 +356,10 @@ pub struct Canvas {
     pub zoom_changed: Signal1<f32>,
     /// Emitted with the index of the command picked by a primary press.
     pub command_picked: Signal1<usize>,
+    /// Bumped whenever the visible command set changes; keys the hit-test index (SP-111).
+    hit_revision: u64,
+    /// The `(flattened index, logical bounds)` rows of every visible command.
+    hit_cache: RefCell<Option<(u64, Vec<(usize, Rect)>)>>,
 }
 
 impl Canvas {
@@ -327,7 +397,41 @@ impl Canvas {
             content_changed: Signal1::new(),
             zoom_changed: Signal1::new(),
             command_picked: Signal1::new(),
+            hit_revision: 0,
+            hit_cache: RefCell::new(None),
         }
+    }
+
+    /// Marks the hit-test index stale after the visible command set changes.
+    fn invalidate_hit_cache(&mut self) {
+        self.hit_revision = self.hit_revision.wrapping_add(1);
+    }
+
+    /// The cached `(index, bounds)` rows of every visible command.
+    fn hit_entries(&self) -> Ref<'_, Vec<(usize, Rect)>> {
+        if !self
+            .hit_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|(revision, _)| *revision == self.hit_revision)
+        {
+            let mut entries = Vec::new();
+            let mut start = 0usize;
+            for layer in &self.layers {
+                if layer.visible {
+                    for (index, stored) in layer.commands.iter().enumerate() {
+                        if let Some(bounds) = command_bounds(&stored.command) {
+                            entries.push((start + index, bounds));
+                        }
+                    }
+                }
+                start += layer.commands.len();
+            }
+            *self.hit_cache.borrow_mut() = Some((self.hit_revision, entries));
+        }
+        Ref::map(self.hit_cache.borrow(), |cache| {
+            &cache.as_ref().expect("the hit index was just built").1
+        })
     }
 
     /// The typed pointer-press signal that the published `mouse_pressed` event resolves to.
@@ -352,6 +456,7 @@ impl Canvas {
     pub fn clear(&mut self) {
         self.layers.clear();
         self.command_total = 0;
+        self.invalidate_hit_cache();
         self.current_layer = None;
         self.undo_stack.clear();
         self.redo_stack.clear();
@@ -390,6 +495,8 @@ impl Canvas {
             visible: true,
             commands: VecDeque::new(),
             cache_key: next_layer_cache_key(),
+            revision: 0,
+            chunks: RefCell::new(None),
         });
         self.current_layer = Some(id);
         self.layer_changed.emit(self.layers.len());
@@ -404,6 +511,7 @@ impl Canvas {
             return true;
         }
         layer.visible = visible;
+        self.invalidate_hit_cache();
         self.layer_changed.emit(self.layers.len());
         self.base.request_redraw();
         true
@@ -424,6 +532,7 @@ impl Canvas {
         }
         let layer = self.layers.remove(from);
         self.layers.insert(to.min(self.layers.len()), layer);
+        self.invalidate_hit_cache();
         self.layer_changed.emit(self.layers.len());
         self.base.request_redraw();
         true
@@ -452,6 +561,7 @@ impl Canvas {
             self.current_layer = None;
         }
         let count = self.command_count();
+        self.invalidate_hit_cache();
         self.layer_changed.emit(self.layers.len());
         self.content_changed.emit(count);
         self.base.request_redraw();
@@ -550,8 +660,9 @@ impl Canvas {
                         stored
                     })
                     .collect();
-                layer.cache_key = next_layer_cache_key();
+                layer.touch();
             }
+            self.invalidate_hit_cache();
         }
         self.base.request_redraw();
     }
@@ -723,13 +834,14 @@ impl Canvas {
                     command: undone.command,
                     replay: None,
                 });
-                self.layers[layer_index].cache_key = next_layer_cache_key();
+                self.layers[layer_index].touch();
                 self.command_total = self.command_total.saturating_add(1);
                 restored.push((undone.layer_id, seq));
             }
             if restored.is_empty() {
                 continue;
             }
+            self.invalidate_hit_cache();
             self.undo_stack.push_back(restored);
             self.trim_undo_stack();
             self.trim_to_limit();
@@ -778,6 +890,8 @@ impl Canvas {
             visible: true,
             commands: VecDeque::new(),
             cache_key: next_layer_cache_key(),
+            revision: 0,
+            chunks: RefCell::new(None),
         });
         self.current_layer = Some(id);
         self.layer_changed.emit(self.layers.len());
@@ -792,7 +906,8 @@ impl Canvas {
         let removed = commands.remove(index).map(|stored| stored.command);
         if removed.is_some() {
             self.command_total = self.command_total.saturating_sub(1);
-            self.layers[layer_index].cache_key = next_layer_cache_key();
+            self.layers[layer_index].touch();
+            self.invalidate_hit_cache();
         }
         removed
     }
@@ -817,6 +932,8 @@ impl Canvas {
             let Some(layer_index) = self.oldest_command_layer() else { break };
             let layer_id = self.layers[layer_index].id;
             let Some(removed) = self.layers[layer_index].commands.pop_front() else { break };
+            self.layers[layer_index].touch();
+            self.invalidate_hit_cache();
             self.command_total = self.command_total.saturating_sub(1);
             let seq = removed.seq;
             for step in &mut self.undo_stack {
@@ -864,7 +981,8 @@ impl Canvas {
         let seq = self.next_command_seq;
         self.next_command_seq += 1;
         self.layers[layer_index].commands.push_back(StoredCommand { seq, command, replay: None });
-        self.layers[layer_index].cache_key = next_layer_cache_key();
+        self.layers[layer_index].touch();
+        self.invalidate_hit_cache();
         self.command_total = self.command_total.saturating_add(1);
         self.redo_stack.clear();
         let reference = (layer_id, seq);
@@ -930,21 +1048,14 @@ impl Canvas {
     /// rather than from a prebuilt offset table (SP-P53).
     pub fn hit_test(&self, point: Point) -> Option<usize> {
         let local = self.transform.inverse_point(point);
-        let mut end = self.command_total;
-        for layer in self.layers.iter().rev() {
-            let start = end.saturating_sub(layer.commands.len());
-            if layer.visible {
-                for (command_index, stored) in layer.commands.iter().enumerate().rev() {
-                    if let Some(bounds) = command_bounds(&stored.command) {
-                        if bounds.contains_point(local) {
-                            return Some(start + command_index);
-                        }
-                    }
-                }
-            }
-            end = start;
-        }
-        None
+        // The bounds are cached with the visible command set, so a press no longer walks every
+        // path command to rebuild them; the vector is searched back-to-front for the topmost hit
+        // (SP-111).
+        self.hit_entries()
+            .iter()
+            .rev()
+            .find(|(_, bounds)| bounds.contains_point(local))
+            .map(|(index, _)| *index)
     }
 
     /// Exports the canvas to an SVG document.
@@ -1381,21 +1492,36 @@ impl Draw for Canvas {
         // off-screen mark, and replaying them costs the rasteriser a full pass for pixels
         // nobody can see.
         let transform = self.transform;
+        let viewport = logical_viewport(transform, rect);
         for layer in &mut self.layers {
             if !layer.visible || layer.commands.is_empty() {
                 continue;
             }
+            layer.ensure_chunks();
             let key = layer.cache_key;
             context.push_layer_group(rect, None, 1.0, Some(key));
-            for stored in &mut layer.commands {
-                let command = stored.replay_under(transform);
-                if let Some(bounds) = command_bounds(command) {
-                    if !rects_intersect(rect, bounds) {
+            // The chunk index answers "which blocks can be seen" in one bounds test each, so a
+            // panned surface skips whole blocks instead of walking every command (SP-110).
+            let chunks = layer.chunks.borrow();
+            let chunk_list: &[CommandChunk] =
+                chunks.as_ref().map(|(_, chunks)| chunks.as_slice()).unwrap_or(&[]);
+            for chunk in chunk_list {
+                if let Some(bounds) = chunk.bounds {
+                    if !rects_intersect(viewport, bounds) {
                         continue;
                     }
                 }
-                context.execute_command_ref(command);
+                for stored in layer.commands.range_mut(chunk.start..chunk.end) {
+                    let command = stored.replay_under(transform);
+                    if let Some(bounds) = command_bounds(command) {
+                        if !rects_intersect(rect, bounds) {
+                            continue;
+                        }
+                    }
+                    context.execute_command_ref(command);
+                }
             }
+            drop(chunks);
             context.pop_layer();
         }
         // Draw border to make canvas area visible
@@ -1428,8 +1554,13 @@ impl EventHandler for Canvas {
                 self.last_mouse_pos = *pos;
                 self.base.set_mouse_pressed(true);
                 self.mouse_pressed.emit_at(*pos, *button);
-                if let Some(index) = self.hit_test(*pos) {
-                    self.command_picked.emit(index);
+                // A pick is only meaningful when something observes it. Skipping the hit test
+                // with no subscriber keeps a press on a large drawing from walking the index
+                // for a signal nobody listens to (SP-111).
+                if self.command_picked.slot_count() > 0 {
+                    if let Some(index) = self.hit_test(*pos) {
+                        self.command_picked.emit(index);
+                    }
                 }
             }
             Event::MouseRelease { pos, button } if *button == 1 => {
@@ -1785,6 +1916,19 @@ fn command_bounds(command: &RenderCommand) -> Option<Rect> {
     }
 }
 
+/// The visible surface rectangle expressed in the commands' logical coordinates.
+///
+/// Chunk bounds are stored in logical space, so culling them against this rectangle avoids
+/// transforming every block and the rounding that would come with it.
+fn logical_viewport(transform: CanvasTransform, rect: Rect) -> Rect {
+    let top_left = transform.inverse_point(Point::new(rect.x, rect.y));
+    let bottom_right = transform
+        .inverse_point(Point::new(rect.x + rect.width as i32, rect.y + rect.height as i32));
+    let x = top_left.x.min(bottom_right.x);
+    let y = top_left.y.min(bottom_right.y);
+    Rect::new(x, y, (bottom_right.x - x).max(0) as u32, (bottom_right.y - y).max(0) as u32)
+}
+
 /// Whether two rectangles overlap.
 fn rects_intersect(a: Rect, b: Rect) -> bool {
     a.x < b.x + b.width as i32
@@ -2035,5 +2179,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!(canvas.zoom_range(), (0.5, 8.0));
+    }
+
+    /// SP-111: the hit index follows content and visibility changes without going stale.
+    #[test]
+    fn hit_index_tracks_content_and_layer_visibility() {
+        let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
+        canvas.fill_rect(Rect::new(10, 10, 40, 40), Color::RED);
+        assert_eq!(canvas.hit_test(Point::new(20, 20)), Some(0));
+
+        // A later command covering the same point is on top.
+        canvas.fill_rect(Rect::new(15, 15, 40, 40), Color::BLUE);
+        assert_eq!(canvas.hit_test(Point::new(20, 20)), Some(1));
+
+        // Hiding the layer removes both, and showing it restores the index.
+        assert!(canvas.set_layer_visible(0, false));
+        assert_eq!(canvas.hit_test(Point::new(20, 20)), None);
+        assert!(canvas.set_layer_visible(0, true));
+        assert_eq!(canvas.hit_test(Point::new(20, 20)), Some(1));
+
+        canvas.clear();
+        assert_eq!(canvas.hit_test(Point::new(20, 20)), None, "a cleared canvas picks nothing");
+    }
+
+    /// SP-110: commands are indexed in blocks whose bounds can be culled whole.
+    #[test]
+    fn replay_chunks_group_commands_by_their_bounds() {
+        let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
+        for _ in 0..COMMAND_CHUNK_SIZE {
+            canvas.fill_rect(Rect::new(0, 0, 5, 5), Color::RED);
+        }
+        for _ in 0..COMMAND_CHUNK_SIZE {
+            canvas.fill_rect(Rect::new(10_000, 0, 5, 5), Color::BLUE);
+        }
+
+        canvas.layers[0].ensure_chunks();
+        let chunks = canvas.layers[0].chunks.borrow();
+        let chunks = chunks.as_ref().map(|(_, chunks)| chunks.as_slice()).unwrap_or(&[]);
+        assert_eq!(chunks.len(), 2, "64 commands divided into two blocks");
+
+        let viewport = logical_viewport(
+            CanvasTransform { scale: 1.0, offset: Point::new(-10_000, 0) },
+            Rect::new(0, 0, 200, 100),
+        );
+        assert!(!rects_intersect(viewport, chunks[0].bounds.expect("the near block has bounds")));
+        assert!(rects_intersect(viewport, chunks[1].bounds.expect("the far block has bounds")));
     }
 }

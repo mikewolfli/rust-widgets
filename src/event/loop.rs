@@ -36,6 +36,21 @@ pub type EventDispatchFn = Arc<dyn Fn(ObjectId, &Event) + Send + Sync>;
 /// be driven by the loop rather than by every host's hand-written key handler.
 pub type EventShortcutFn = Arc<dyn Fn(&Event) -> bool + Send + Sync>;
 
+/// Type alias for a global event filter (W-09).
+///
+/// A filter sees every event about to be dispatched, with the target it was posted for. Returning
+/// `true` **consumes** the event: no later filter runs, the shortcut hook is not consulted, and
+/// nothing is delivered. Returning `false` passes it on. Filters run in registration order, so the
+/// first one to claim an event wins.
+pub type EventFilterFn = Arc<dyn Fn(ObjectId, &Event) -> bool + Send + Sync>;
+
+/// The timer id the loop arms for its own long-press deadline (W-11).
+///
+/// One id per target: a new touch re-arms it, and a touch end or cancel stops it. The value is
+/// outside the range a host normally uses for its own timers so an accidental collision is
+/// unlikely, and the loop's stops are scoped to targets it saw a touch begin on.
+pub const GESTURE_LONG_PRESS_TIMER_ID: u32 = 0x6765_7374;
+
 /// The idle-task id [`EventLoop::install_reactive_idle_pump`] registers under.
 ///
 /// A fixed id gives the registration replace-on-re-register semantics (the same id removes the
@@ -74,6 +89,65 @@ fn monotonic_ms(epoch: crate::compat::Instant) -> u64 {
 #[cfg(feature = "touch")]
 fn feeds_the_gesture_engine(event: &Event) -> bool {
     event.is_touch() || matches!(event, Event::Timer { .. })
+}
+
+/// Whether `event` is a mouse-move spelling this loop may coalesce (W-10).
+///
+/// # Why only mouse moves
+///
+/// A mouse move carries a position and nothing else, and only the last position in a frame is
+/// observable, so folding several into one loses nothing a consumer can see. `PointerMove`
+/// carries stylus pressure and tilt samples that an ink consumer reads per event, and `TouchMove`
+/// feeds the gesture recognisers (swipe direction, fling velocity), so merging either would
+/// change a decision rather than just save work.
+#[cfg(not(alloc_frugal))]
+fn is_coalescable_move(event: &Event) -> bool {
+    matches!(event, Event::MouseMove { .. } | Event::MouseMoveLegacy(_))
+}
+
+/// Collapses **consecutive** mouse moves for one target in a turn's dispatch buffer to the last
+/// position (W-10). Returns how many events were absorbed.
+///
+/// # What "consecutive" protects
+///
+/// Only an adjacent run is merged. A move, another target's event, then another move of the first
+/// target keeps both moves, so the relative order between different targets is never changed. An
+/// event of another kind between two moves ends the run for the same reason — a press must not be
+/// reordered past the moves around it.
+///
+/// # Why this is the whole coalescing policy
+///
+/// The threaded loop dispatches one drained buffer per turn, and a turn is the frame boundary the
+/// host observes: everything coalesced here would have been delivered within the same frame, each
+/// copy overwritten by the next. Absorbed events are still counted as drained, so the per-turn
+/// budget accounting and the "nothing is dropped" guarantee are unchanged — they are *merged*, not
+/// discarded.
+#[cfg(not(alloc_frugal))]
+fn coalesce_pointer_moves(buffer: &mut Vec<(ObjectId, Event)>) -> usize {
+    if buffer.len() < 2 {
+        return 0;
+    }
+    let mut write = 0usize;
+    let mut absorbed = 0usize;
+    for read in 0..buffer.len() {
+        let merges_into_previous = write > 0
+            && is_coalescable_move(&buffer[read].1)
+            && buffer[write - 1].0 == buffer[read].0
+            && is_coalescable_move(&buffer[write - 1].1);
+        if merges_into_previous {
+            // Move the newer position into the slot the older move occupies, so the run keeps
+            // its original position in the buffer and the later copy is dropped.
+            buffer[write - 1].1 = core::mem::replace(&mut buffer[read].1, Event::Paint);
+            absorbed += 1;
+        } else {
+            if write != read {
+                buffer.swap(write, read);
+            }
+            write += 1;
+        }
+    }
+    buffer.truncate(write);
+    absorbed
 }
 
 /// Per-target gesture engines with a lifecycle, so a long-lived loop does not grow forever
@@ -430,6 +504,29 @@ pub struct EventLoop {
     /// This is the event-loop half of W-14/W-15: one entry point asks the shortcut registry (the
     /// only conflict judge) and triggers the command through `ActionManager`.
     shortcut_dispatch: Option<EventShortcutFn>,
+    /// Host filters consulted for every event, in registration order (W-09).
+    ///
+    /// # Why the loop needs a general hook
+    ///
+    /// The only interception point was `shortcut_dispatch`, which runs for key presses and for
+    /// nothing else. A host could not suppress a pointer stream, rewrite a modal-blocked event, or
+    /// observe every event with the loop's own target without re-implementing dispatch. Each
+    /// filter may consume an event (return `true`), which short-circuits the rest of the chain,
+    /// the accelerator hook and delivery. The chain is empty by default, so an existing host sees
+    /// exactly the old behaviour.
+    event_filters: Vec<EventFilterFn>,
+    /// Whether same-frame mouse moves are coalesced to their last position before dispatch (W-10).
+    ///
+    /// On by default: the pointer stream is the highest-frequency input a desktop produces, and
+    /// an intermediate position inside one frame that no handler can observe is pure work. A host
+    /// that counts moves or replays them can turn it off through
+    /// [`EventLoop::set_pointer_move_coalescing`].
+    ///
+    /// Only the threaded loop has a frame-sized dispatch buffer to coalesce within; the `mini`
+    /// pump delivers one event per call, so the setting does not exist there rather than existing
+    /// and doing nothing.
+    #[cfg(not(alloc_frugal))]
+    coalesce_pointer_moves: bool,
     /// Resolves a control's parent for the capture/bubble route.
     ///
     /// # Why propagation is on by default (W-01)
@@ -558,6 +655,9 @@ impl EventLoop {
             thread_handle: None,
             dispatch_fn: None,
             shortcut_dispatch: None,
+            event_filters: Vec::new(),
+            #[cfg(not(alloc_frugal))]
+            coalesce_pointer_moves: true,
             parent_lookup: Arc::new(runtime_parent),
             key_state: KeyRepeatState::new(),
             clock_origin: crate::compat::Instant::now(),
@@ -623,6 +723,15 @@ impl EventLoop {
         let queue = Arc::clone(&self.queue);
         let dispatch_fn = self.dispatch_fn.clone();
         let shortcut_dispatch = self.shortcut_dispatch.clone();
+        // The filter chain moves onto the loop thread with the rest of the dispatch state: a filter
+        // added after `start` would never run, so `add_event_filter` refuses that (W-09).
+        let event_filters = core::mem::take(&mut self.event_filters);
+        #[cfg(not(alloc_frugal))]
+        let coalesce_move_setting = self.coalesce_pointer_moves;
+        // The gesture recognisers' self-armed timer (W-11). The handle shares the manager's timer
+        // set, so the deadline is armed from the loop thread while the manager stays on the host's.
+        #[cfg(feature = "touch")]
+        let gesture_timer = self.timer_manager.arm_handle();
         let parent_lookup = Arc::clone(&self.parent_lookup);
         #[cfg(feature = "touch")]
         let mut gesture_engines = GestureRegistry::new();
@@ -675,6 +784,10 @@ impl EventLoop {
                     };
                     for target in releases {
                         gesture_engines.release(target);
+                        // W-11: a target that is gone cannot have a press to complete, so drop
+                        // the deadline the loop armed for it rather than letting it fire into a
+                        // target the host has already torn down.
+                        let _ = gesture_timer.stop(target, GESTURE_LONG_PRESS_TIMER_ID);
                     }
                 }
                 // The dispatch closure borrows the gesture registry for its lifetime, so phase 1
@@ -701,6 +814,21 @@ impl EventLoop {
                         PER_TURN_EVENT_DRAIN_CAP.saturating_sub(pending),
                     ) > 0
                         || pending > 0;
+
+                    // W-10: fold same-frame mouse moves into their last position before
+                    // dispatch. The merged events stay counted as drained (they were consumed
+                    // from the queue), so the boundedness and no-loss accounting above is
+                    // unchanged; only the redundant intermediate positions stop being delivered.
+                    #[cfg(not(alloc_frugal))]
+                    if coalesce_move_setting {
+                        let absorbed = coalesce_pointer_moves(&mut high_events)
+                            + coalesce_pointer_moves(&mut normal_events);
+                        if absorbed > 0 {
+                            log::trace!(
+                                "[event-loop] coalesced {absorbed} same-frame mouse move(s)"
+                            );
+                        }
+                    }
 
                     // One dispatch helper shared by the High and Normal phases, so both honour the
                     // same animation-frame cancellation and gesture-routing rules (and neither is a
@@ -729,12 +857,32 @@ impl EventLoop {
                             return;
                         }
 
+                        // W-09: the host's filter chain, in registration order. A filter that
+                        // claims the event consumes it: no later filter, no accelerator and no
+                        // delivery. The chain is empty unless a host added one, so the default
+                        // path is byte-for-byte the old one. Filters see the event the host
+                        // posted, before any canonicalisation or synthesis, so "intercept this
+                        // event" means the event that actually arrived.
+                        for filter in &event_filters {
+                            if filter(target, event) {
+                                return;
+                            }
+                        }
+
+                        // W-001: one canonical form for every dispatch-side rule. The legacy
+                        // aliases forward to their modern variants here, so the repeat tracking,
+                        // double-click judgement, gesture feed and accelerator hook have one
+                        // spelling to branch on instead of two. The *delivered* event keeps the
+                        // spelling the host posted, so a control that matches `MouseDown` still
+                        // receives it.
+                        let canonical = event.clone().into_canonical();
+
                         // The accelerator hook runs before the focused control sees the key.
                         // A consumed key press must not also be delivered as text/activation:
                         // the host asked the shortcut path to own it. Non-key events are
                         // untouched, so the hook has exactly one trigger condition.
                         if let Some(shortcut) = shortcut_ref {
-                            if matches!(event, Event::KeyPress { .. }) && shortcut(event) {
+                            if matches!(canonical, Event::KeyPress { .. }) && shortcut(&canonical) {
                                 return;
                             }
                         }
@@ -763,7 +911,7 @@ impl EventLoop {
                         // for a code that is already held is the platform auto-repeat, and the
                         // flag is scoped to this delivery so a consumer can branch on it without
                         // an event-layout change. A `KeyRelease` clears the held bit at once.
-                        let repeat = match event {
+                        let repeat = match &canonical {
                             Event::KeyPress { key, .. } => key_ref.note_press(*key),
                             Event::KeyRelease { key, .. } => {
                                 key_ref.note_release(*key);
@@ -783,7 +931,7 @@ impl EventLoop {
                         // borrow that `delivery` holds. Declared without an initialiser so the
                         // allocation only happens on the arm that needs it.
                         let single_click_replay: Event;
-                        let delivery: &Event = match event {
+                        let delivery: &Event = match &canonical {
                             Event::MousePress { pos, button, modifiers } => {
                                 if double_click_ref.observe_press(
                                     target,
@@ -795,6 +943,8 @@ impl EventLoop {
                                     synthesized_double_click =
                                         Some(Event::mouse_double_click(pos.x, pos.y, *button));
                                 }
+                                // Deliver the host's spelling; the alias was only canonicalised
+                                // for the rules above (W-001).
                                 event
                             }
                             Event::MouseDoubleClick { pos, button } => {
@@ -822,12 +972,43 @@ impl EventLoop {
                         };
 
                         #[cfg(feature = "touch")]
-                        let maybe_gesture_event =
-                            if feeds_the_gesture_engine(event) || is_touch_cancel(event) {
-                                gesture_ref.process(target, event, monotonic_ms(gesture_epoch))
-                            } else {
-                                None
-                            };
+                        let maybe_gesture_event = if feeds_the_gesture_engine(&canonical)
+                            || is_touch_cancel(&canonical)
+                        {
+                            // W-11: the long press has no event of its own to react to while
+                            // the finger is held still, so the loop arms the deadline the
+                            // recognisers are waiting for. Host-armed timers still work (they
+                            // are just no longer *required*): an extra `Event::Timer` for a
+                            // hold that already fired is a no-op, because the recogniser's
+                            // `fired` latch ignores it.
+                            match &canonical {
+                                Event::TouchBegin { .. } => {
+                                    let interval = Duration::from_millis(
+                                        crate::gesture::tuning().long_press_min_ms,
+                                    );
+                                    if let Err(error) = gesture_timer.start(
+                                        target,
+                                        GESTURE_LONG_PRESS_TIMER_ID,
+                                        interval,
+                                    ) {
+                                        log::warn!(
+                                            "[event-loop] cannot arm the long-press timer for \
+                                             {target:?}: {error}"
+                                        );
+                                    }
+                                }
+                                Event::TouchEnd { .. } => {
+                                    let _ = gesture_timer.stop(target, GESTURE_LONG_PRESS_TIMER_ID);
+                                }
+                                other if is_touch_cancel(other) => {
+                                    let _ = gesture_timer.stop(target, GESTURE_LONG_PRESS_TIMER_ID);
+                                }
+                                _ => {}
+                            }
+                            gesture_ref.process(target, &canonical, monotonic_ms(gesture_epoch))
+                        } else {
+                            None
+                        };
 
                         if let Some(_dispatch) = dispatch_fn_ref {
                             // The repeat flag is scoped around the whole route, so every node the
@@ -1055,15 +1236,24 @@ impl EventLoop {
             // The frame was cancelled: treat it as consumed work, not a dispatch.
             return true;
         }
-        if matches!(event, Event::KeyPress { .. }) {
+        // W-09: the host's filter chain, in registration order; a filter can consume the event.
+        // The chain is empty by default, so this loop is the previous behaviour exactly.
+        for filter in &self.event_filters {
+            if filter(target, &event) {
+                return true;
+            }
+        }
+        // W-001: one canonical spelling for the dispatch-side rules; delivery keeps the host's.
+        let canonical = event.clone().into_canonical();
+        if matches!(canonical, Event::KeyPress { .. }) {
             if let Some(shortcut) = self.shortcut_dispatch.as_ref() {
-                if shortcut(&event) {
+                if shortcut(&canonical) {
                     return true;
                 }
             }
         }
         // W-204: the mini profile derives the repeat fact from the same held-key stream.
-        let repeat = match &event {
+        let repeat = match &canonical {
             Event::KeyPress { key, .. } => self.key_state.note_press(*key),
             Event::KeyRelease { key, .. } => {
                 self.key_state.note_release(*key);
@@ -1075,7 +1265,7 @@ impl EventLoop {
         let now_ms = monotonic_ms(self.clock_origin);
         let mut synthesized_double_click = None;
         let single_click_replay: Event;
-        let delivery: &Event = match &event {
+        let delivery: &Event = match &canonical {
             Event::MousePress { pos, button, modifiers } => {
                 if self.double_click.observe_press(target, *pos, *button, *modifiers, now_ms) {
                     synthesized_double_click =
@@ -1230,6 +1420,71 @@ impl EventLoop {
     /// the event path instead of leaving it host-driven.
     pub fn set_shortcut_dispatch(&mut self, f: EventShortcutFn) {
         self.shortcut_dispatch = Some(f);
+    }
+
+    /// Appends a host filter to the chain consulted before every dispatch (W-09).
+    ///
+    /// Filters run in the order they were added. Returning `true` from one consumes the event:
+    /// later filters, the accelerator hook and delivery are all skipped. An empty chain is the
+    /// default and changes nothing, so this is an opt-in interception point rather than a new
+    /// mandatory step.
+    ///
+    /// # Returns
+    ///
+    /// `false` when the loop is already running: the threaded loop moved the chain onto its own
+    /// thread, so a filter appended now could never run. `mini` has no loop thread and accepts a
+    /// filter at any time, because `pump_once` reads the chain from `self`.
+    pub fn add_event_filter(&mut self, filter: EventFilterFn) -> bool {
+        #[cfg(not(alloc_frugal))]
+        if *lock(&self.running) {
+            return false;
+        }
+        self.event_filters.push(filter);
+        true
+    }
+
+    /// Removes the filter at `index`, returning it when the index was in range.
+    ///
+    /// The index is the position in the registration order, so a host that keeps the index of
+    /// the filter it added can remove exactly that one. After [`Self::start`] the threaded loop
+    /// owns the chain, so every index reports `None` there.
+    pub fn remove_event_filter(&mut self, index: usize) -> Option<EventFilterFn> {
+        if index >= self.event_filters.len() {
+            return None;
+        }
+        Some(self.event_filters.remove(index))
+    }
+
+    /// Removes every event filter, returning how many were removed (W-09).
+    pub fn clear_event_filters(&mut self) -> usize {
+        let removed = self.event_filters.len();
+        self.event_filters.clear();
+        removed
+    }
+
+    /// How many filters are currently registered (W-09).
+    pub fn event_filter_count(&self) -> usize {
+        self.event_filters.len()
+    }
+
+    /// Enables or disables same-frame mouse-move coalescing (W-10).
+    ///
+    /// Coalescing is on by default. With it on, consecutive `MouseMove` events for one target in
+    /// a turn's dispatch buffer are merged to their last position before delivery; the total
+    /// position change a handler can observe is unchanged, only the redundant intermediate
+    /// positions inside one frame are not delivered. Turning it off restores one delivery per
+    /// posted move.
+    ///
+    /// Must be called before [`Self::start`]: the loop thread reads the setting when it spawns.
+    #[cfg(not(alloc_frugal))]
+    pub fn set_pointer_move_coalescing(&mut self, enabled: bool) {
+        self.coalesce_pointer_moves = enabled;
+    }
+
+    /// Whether same-frame mouse-move coalescing is enabled (W-10).
+    #[cfg(not(alloc_frugal))]
+    pub fn pointer_move_coalescing(&self) -> bool {
+        self.coalesce_pointer_moves
     }
 
     /// Installs a parent resolver override, replacing the built-in one.
@@ -2591,6 +2846,217 @@ mod tests {
             *delivered.lock().unwrap(),
             vec![vec![2]],
             "the event after a panicking one must still be delivered"
+        );
+    }
+
+    /// W-09: the filter chain sees every event before delivery, runs in registration order, and a
+    /// filter that returns `true` consumes the event (later filters and delivery are skipped).
+    #[test]
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    fn the_filter_chain_runs_in_order_and_can_consume_an_event() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<(&'static str, String)>::new()));
+        let delivered = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+
+        let mut el = EventLoop::new();
+        let delivered_out = Arc::clone(&delivered);
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            if let Event::Custom { name, .. } = event {
+                if name.as_ref() != "__stop_wake" {
+                    delivered_out.lock().unwrap().push(name.to_string());
+                }
+            }
+        }));
+
+        let first_seen = Arc::clone(&seen);
+        assert!(
+            el.add_event_filter(Arc::new(move |_target, event| {
+                let Event::Custom { name, .. } = event else { return false };
+                if name.as_ref() == "__stop_wake" {
+                    return false;
+                }
+                first_seen.lock().unwrap().push(("first", name.to_string()));
+                name.as_ref() == "blocked"
+            })),
+            "a filter added before `start` is accepted"
+        );
+        let second_seen = Arc::clone(&seen);
+        assert!(el.add_event_filter(Arc::new(move |_target, event| {
+            let Event::Custom { name, .. } = event else { return false };
+            if name.as_ref() == "__stop_wake" {
+                return false;
+            }
+            second_seen.lock().unwrap().push(("second", name.to_string()));
+            false
+        })));
+        assert_eq!(el.event_filter_count(), 2);
+
+        el.post_event(
+            1,
+            Event::Custom { name: "blocked".into(), payload: vec![] },
+            EventPriority::Normal,
+        )
+        .unwrap();
+        el.post_event(
+            1,
+            Event::Custom { name: "allowed".into(), payload: vec![] },
+            EventPriority::Normal,
+        )
+        .unwrap();
+
+        el.start();
+        let deadline = std::time::Instant::now() + Duration::from_millis(2_000);
+        while delivered.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        el.stop();
+
+        assert_eq!(
+            *delivered.lock().unwrap(),
+            vec!["allowed".to_string()],
+            "the claimed event must not be delivered"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                ("first", "blocked".to_string()),
+                ("first", "allowed".to_string()),
+                ("second", "allowed".to_string())
+            ],
+            "filters run in registration order; a claim only short-circuits the claimed event"
+        );
+        assert!(
+            !el.add_event_filter(Arc::new(|_, _| false)),
+            "the loop thread owns the chain after `start`, so a late filter is refused"
+        );
+        assert_eq!(el.clear_event_filters(), 0, "the chain moved onto the loop thread");
+    }
+
+    /// W-10: consecutive same-target mouse moves inside one turn arrive as the last position,
+    /// while events of another kind end the run so their relative order is preserved.
+    #[test]
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    fn same_frame_mouse_moves_are_coalesced_to_their_last_position() {
+        fn run(coalesce: bool) -> Vec<i32> {
+            let delivered = Arc::new(std::sync::Mutex::new(Vec::<i32>::new()));
+            let mut el = EventLoop::new();
+            el.set_pointer_move_coalescing(coalesce);
+            assert_eq!(el.pointer_move_coalescing(), coalesce);
+            let out = Arc::clone(&delivered);
+            el.set_dispatch_fn(Arc::new(move |_target, event| match event {
+                Event::MouseMove { pos } => out.lock().unwrap().push(pos.x),
+                Event::Paint => out.lock().unwrap().push(-1),
+                Event::Custom { name, .. } if name.as_ref() == "done" => {
+                    out.lock().unwrap().push(-2);
+                }
+                _ => {}
+            }));
+
+            for x in [1, 2, 3] {
+                el.post_event(1, Event::mouse_move(x, 0), EventPriority::Normal).unwrap();
+            }
+            el.post_event(1, Event::Paint, EventPriority::Normal).unwrap();
+            for x in [4, 5] {
+                el.post_event(1, Event::mouse_move(x, 0), EventPriority::Normal).unwrap();
+            }
+            el.post_event(
+                9,
+                Event::Custom { name: "done".into(), payload: vec![] },
+                EventPriority::Normal,
+            )
+            .unwrap();
+
+            el.start();
+            let deadline = std::time::Instant::now() + Duration::from_millis(2_000);
+            while !delivered.lock().unwrap().contains(&-2) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            el.stop();
+            let seen = delivered.lock().unwrap().clone();
+            seen
+        }
+
+        assert_eq!(
+            run(true),
+            vec![3, -1, 5, -2],
+            "each run of same-target moves collapses to its last position"
+        );
+        assert_eq!(
+            run(false),
+            vec![1, 2, 3, -1, 4, 5, -2],
+            "disabling coalescing restores one delivery per posted move"
+        );
+    }
+
+    /// W-001: the legacy `MouseDown` spelling is judged by the same dispatch-side rules as
+    /// `MousePress`, so two legacy presses now produce the synthesized double-click, while the
+    /// delivered presses keep the spelling the host posted.
+    #[test]
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    fn legacy_mouse_down_pairs_are_judged_as_double_clicks() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+        let mut el = EventLoop::new();
+        let out = Arc::clone(&seen);
+        el.set_dispatch_fn(Arc::new(move |_target, event| match event {
+            Event::MouseDown(_) => out.lock().unwrap().push("down"),
+            Event::MouseDoubleClick { .. } => out.lock().unwrap().push("double"),
+            Event::Custom { name, .. } if name.as_ref() == "done" => {
+                out.lock().unwrap().push("done");
+            }
+            _ => {}
+        }));
+
+        let p = crate::core::Point::new(20, 20);
+        el.post_event(4, Event::MouseDown((p, 1)), EventPriority::Normal).unwrap();
+        el.post_event(4, Event::MouseDown((p, 1)), EventPriority::Normal).unwrap();
+        el.post_event(
+            9,
+            Event::Custom { name: "done".into(), payload: vec![] },
+            EventPriority::Normal,
+        )
+        .unwrap();
+
+        el.start();
+        let deadline = std::time::Instant::now() + Duration::from_millis(2_000);
+        while !seen.lock().unwrap().contains(&"done") && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        el.stop();
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["down", "down", "double", "done"],
+            "the legacy press keeps its spelling and gains the same double-click judgement"
+        );
+    }
+
+    /// W-11: a stationary touch becomes a long press without the host arming a timer first.
+    #[test]
+    #[cfg(all(feature = "touch", not(alloc_frugal), not(target_arch = "wasm32")))]
+    fn a_stationary_touch_is_a_long_press_without_a_host_armed_timer() {
+        let produced = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+        let mut el = EventLoop::new();
+        let out = Arc::clone(&produced);
+        el.set_dispatch_fn(Arc::new(move |_target, event| match event {
+            Event::LongPress { .. } => out.lock().unwrap().push("long"),
+            Event::Custom { name, .. } if name.as_ref() == "done" => {
+                out.lock().unwrap().push("done");
+            }
+            _ => {}
+        }));
+
+        el.start();
+        el.post_event(3, Event::touch_begin(10, 10, 1), EventPriority::Normal).unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(3_000);
+        while !produced.lock().unwrap().contains(&"long") && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        el.post_event(3, Event::touch_end(10, 10, 1), EventPriority::Normal).unwrap();
+        el.stop();
+
+        assert!(
+            produced.lock().unwrap().contains(&"long"),
+            "the loop must arm the long-press deadline itself"
         );
     }
 }

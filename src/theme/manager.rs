@@ -542,18 +542,33 @@ impl ThemeManager {
     /// produce by selecting a name before registering anything; callers that can distinguish the
     /// two ask [`Self::current_theme`] first.
     pub fn effective_colors(&self) -> Colors {
-        let Some(theme) = self.current_theme() else {
-            return Colors::default();
+        let colors = match self.current_theme() {
+            None => Colors::default(),
+            Some(theme) => {
+                let Some(crossfade) = &self.crossfade else {
+                    return self.forced_palette_or(theme.colors.clone());
+                };
+                if crossfade.duration_ms == 0 {
+                    theme.colors.clone()
+                } else {
+                    let progress = (crossfade.elapsed_ms as f32 / crossfade.duration_ms as f32)
+                        .clamp(0.0, 1.0);
+                    let eased = crate::style::EasingFunction::EaseOut.apply(progress);
+                    crossfade.from.blend(&theme.colors, eased)
+                }
+            }
         };
-        let Some(crossfade) = &self.crossfade else {
-            return theme.colors.clone();
-        };
-        if crossfade.duration_ms == 0 {
-            return theme.colors.clone();
-        }
-        let progress = (crossfade.elapsed_ms as f32 / crossfade.duration_ms as f32).clamp(0.0, 1.0);
-        let eased = crate::style::EasingFunction::EaseOut.apply(progress);
-        crossfade.from.blend(&theme.colors, eased)
+        self.forced_palette_or(colors)
+    }
+
+    /// Replaces `colors` with the high-contrast palette when one is active.
+    ///
+    /// Applied to the palette as well as to a resolved style so a control that reads a role
+    /// directly (`semantic_color`, `layer_color`, a link) moves with the forced mode. The
+    /// override is a user preference rather than a property of the theme, so it is applied
+    /// after the crossfade and survives a theme switch.
+    fn forced_palette_or(&self, colors: Colors) -> Colors {
+        self.high_contrast.forced_colors().unwrap_or(colors)
     }
 
     /// Advances a running theme crossfade by `delta_ms`.
@@ -708,7 +723,7 @@ impl ThemeManager {
                 if let Some(token) = self.current_theme().and_then(|t| t.overrides.styles.get(&key))
                 {
                     let theme = self.current_theme();
-                    apply_token(&mut style, token, theme);
+                    apply_token_as_child(&mut style, token, theme);
                     break;
                 }
             }
@@ -744,10 +759,13 @@ impl ThemeManager {
     /// Applied **last** everywhere, so neither a theme override nor a state variant can
     /// reintroduce a low-contrast colour.
     fn apply_high_contrast(&self, style: &mut WidgetStyle) {
-        if let Some((background, foreground)) = self.high_contrast.forced_pair() {
-            style.background_color = Some(background);
-            style.text_color = Some(foreground);
-            // A gradient or a texture would defeat the point of a flat forced pair.
+        if let Some(forced) = self.high_contrast.forced_colors() {
+            style.background_color = Some(forced.background);
+            style.text_color = Some(forced.foreground);
+            // A border is drawn on the surface, so it takes the ink. Leaving it at the
+            // theme's value let a low-contrast outline survive a forced mode.
+            style.border_color = Some(forced.outline);
+            // A gradient or a texture would defeat the point of a flat forced palette.
             style.background_gradient = None;
         }
     }
@@ -793,7 +811,7 @@ impl ThemeManager {
                 if !theme.overrides.styles.is_empty() {
                     let key = format!("{class_name}:{}", state.state_suffix());
                     if let Some(token) = theme.overrides.styles.get(&key) {
-                        apply_token(&mut style, token, Some(theme));
+                        apply_token_as_child(&mut style, token, Some(theme));
                     }
                 }
             }
@@ -1064,6 +1082,32 @@ fn apply_token(style: &mut WidgetStyle, token: &super::ThemeStyleToken, theme: O
     // an `else if let Some(fonts) = fonts { let _ = fonts; }` branch here that claimed reading the
     // theme's token set "is what makes the token set reachable at all" -- it was a no-op, because
     // nothing read the discarded value and the base font comes from `role_base_style`.
+}
+
+/// Applies a state/class token as a **child** of the style resolved so far (STY-005).
+///
+/// A token states only what changes; every property it leaves out keeps the base value. That
+/// is exactly [`WidgetStyle::inherit_from`]'s contract, so the token is resolved into its own
+/// style and inherited from the base rather than written directly onto it. The three
+/// non-`Option` geometry fields and the shadow are seeded from the base first: padding/margin/
+/// spacing deliberately do not inherit (a control's own metric is not its parent's), and an
+/// explicit `shadow: none` must be distinguishable from "the token did not mention a shadow".
+fn apply_token_as_child(
+    style: &mut WidgetStyle,
+    token: &super::ThemeStyleToken,
+    theme: Option<&Theme>,
+) {
+    let mut overlay = WidgetStyle::default();
+    overlay.padding = style.padding;
+    overlay.margin = style.margin;
+    overlay.spacing = style.spacing;
+    overlay.shadow = style.shadow.clone();
+    // A surface token is applied *onto* the resolved face (see `apply_surface_token`), so the
+    // overlay must start from the base face; otherwise the token machinery writes an identity
+    // `solid` surface for every state, discarding the role's bevel and elevation.
+    overlay.surface = style.surface;
+    apply_token(&mut overlay, token, theme);
+    *style = overlay.inherit_from(style);
 }
 
 /// Applies a token's four surface dimensions onto the style's resolved face.
@@ -1972,7 +2016,7 @@ impl Default for Theme {
             },
             spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
             icons: IconTokens::default(),
-            borders: Borders { width: 1, radius: 4, shadow: true },
+            borders: Borders { width: 1, radius: 4, shadow: true, ..Borders::default() },
             // This preset is the flat one, and it says so with the rule rather than with a list of
             // kinds: every role's bevel and elevation is flattened, in `role_base_style`, for every
             // kind. See that function for why the list had to go.
@@ -2056,6 +2100,10 @@ impl Theme {
             surface_container_high: Color { r: 40, g: 40, b: 44, a: 255 },
             inverse_surface: Color { r: 228, g: 225, b: 229, a: 255 },
             on_inverse_surface: Color { r: 49, g: 48, b: 51, a: 255 },
+            link: Color { r: 138, g: 180, b: 248, a: 255 },
+            link_visited: Color { r: 187, g: 134, b: 252, a: 255 },
+            placeholder_text: Color { r: 158, g: 158, b: 158, a: 255 },
+            bright_text: Color { r: 255, g: 255, b: 255, a: 255 },
         };
         Self {
             name: "dark".to_string(),
@@ -2074,7 +2122,7 @@ impl Theme {
             },
             spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
             icons: IconTokens::default(),
-            borders: Borders { width: 1, radius: 4, shadow: true },
+            borders: Borders { width: 1, radius: 4, shadow: true, ..Borders::default() },
             // The dark preset is flat too, for the same reason the default one is: the two shipped
             // presets are the crate's existing appearance, and their 377 snapshots are the safety
             // rope (BLUE24 §10A.6 criterion 9). The **dimensional** style is a separate, opt-in
@@ -2183,7 +2231,7 @@ impl Theme {
             ..Theme::default()
         };
         theme.appearance = AppearanceMode::Light;
-        theme.borders = Borders { width: 1, radius: 6, shadow: true };
+        theme.borders = Borders { width: 1, radius: 6, shadow: true, ..Borders::default() };
         theme.colors = Colors {
             background: Color::rgb(236, 236, 236),
             foreground: Color::rgb(29, 29, 31),
@@ -2205,6 +2253,10 @@ impl Theme {
             surface_container_high: Color::rgb(255, 255, 255),
             inverse_surface: Color::rgb(29, 29, 31),
             on_inverse_surface: Color::rgb(245, 245, 247),
+            link: accent,
+            link_visited: Color::rgb(88, 86, 214),
+            placeholder_text: Color::rgb(142, 142, 147),
+            bright_text: Color::rgb(255, 255, 255),
         };
         // The state table (hover/pressed/checked fills) is derived from a palette, so replacing
         // the palette without re-deriving it would leave those fills describing the replaced
@@ -2239,7 +2291,7 @@ impl Theme {
             ..Theme::dark()
         };
         theme.appearance = AppearanceMode::Dark;
-        theme.borders = Borders { width: 1, radius: 6, shadow: true };
+        theme.borders = Borders { width: 1, radius: 6, shadow: true, ..Borders::default() };
         theme.colors = Colors {
             background: Color::rgb(30, 30, 30),
             foreground: Color::rgb(245, 245, 247),
@@ -2258,6 +2310,10 @@ impl Theme {
             surface_container_high: Color::rgb(58, 58, 60),
             inverse_surface: Color::rgb(245, 245, 247),
             on_inverse_surface: Color::rgb(29, 29, 31),
+            link: accent,
+            link_visited: Color::rgb(94, 92, 230),
+            placeholder_text: Color::rgb(142, 142, 147),
+            bright_text: Color::rgb(255, 255, 255),
         };
         theme.overrides.styles = crate::theme::preset_states::preset_state_overrides(&theme.colors);
         if let Some(family) = register_macos_system_ui_face() {

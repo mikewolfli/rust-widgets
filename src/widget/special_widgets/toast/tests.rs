@@ -473,3 +473,26 @@ fn a_toast_stack_occupies_only_its_rows() {
         "an empty stack must still paint its one-row region, in:\n{svg}"
     );
 }
+
+/// A host-assigned stack offset lifts a bottom-anchored stack clear of the control reserved
+/// before it, and zero leaves the historical picture untouched (SP-124).
+#[test]
+fn a_host_stack_offset_moves_the_rows_without_changing_the_anchor() {
+    let mut stack = ToastStack::new(Rect::new(0, 0, 240, 140));
+    stack.push(ToastItem::new("a", "first", ToastLevel::Info, 3000));
+    stack.push(ToastItem::new("b", "second", ToastLevel::Info, 3000));
+    assert_eq!(stack.overlay_height(), 60, "two rows at the default 30 px");
+
+    let baseline = crate::widget::svg::render_to_svg(&mut stack);
+    let panel = "x=\"0\" y=\"80\" width=\"240\" height=\"60\"";
+    assert!(baseline.contains(panel), "the unstacked rows sit at the bottom:\n{baseline}");
+
+    stack.set_overlay_offset(24);
+    assert_eq!(stack.overlay_offset(), 24);
+    let shifted = crate::widget::svg::render_to_svg(&mut stack);
+    let shifted_panel = "x=\"0\" y=\"56\" width=\"240\" height=\"60\"";
+    assert!(
+        shifted.contains(shifted_panel),
+        "the offset must lift the rows by its own value:\n{shifted}"
+    );
+}

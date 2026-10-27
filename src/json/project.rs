@@ -386,8 +386,11 @@ pub fn load_actions_from_file(
     actions_from_json(&text)
 }
 
-/// The depth bound, matching the loader's.
-pub const MAX_DEPTH: u32 = 64;
+/// The depth bound, re-exported from the JSON module's single definition.
+///
+/// Keeping the public name here preserves the existing API while removing the second numeric
+/// definition: [`crate::json::MAX_DEPTH`] is the one value both readers consult (JSON-010).
+pub use crate::json::MAX_DEPTH;
 
 /// Appends `widget`/`body` and its whole subtree to `nodes`, in pre-order.
 ///

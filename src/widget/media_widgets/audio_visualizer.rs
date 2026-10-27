@@ -24,9 +24,9 @@
 //! configurable bar count and spacing.
 
 use alloc::collections::VecDeque;
-use core::cell::Cell;
+use core::cell::{Cell, Ref, RefCell};
 
-use crate::core::{Color, Rect};
+use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
@@ -58,6 +58,20 @@ pub enum VisualizerMode {
     Spectrum,
 }
 
+/// How [`AudioVisualizer`] lays its bars out.
+///
+/// This is orthogonal to [`VisualizerMode`]: the mode decides what a bar's level *means* and the
+/// shape decides where that bar is drawn. The default is [`VisualizerShape::Bars`], the layout the
+/// control has always painted, so opting into a circular layout cannot change an existing picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VisualizerShape {
+    /// Vertical bars across the control, the historical layout.
+    #[default]
+    Bars,
+    /// Bars radiate from the control's centre, one per level, around a full circle.
+    Circular,
+}
+
 /// Audio waveform/spectrum visualization widget.
 ///
 /// Renders vertical bars derived from audio samples (normalized -1.0 to 1.0). The default
@@ -87,6 +101,18 @@ pub struct AudioVisualizer {
     /// `Cell` rather than `&mut self` because `bar_value` is a `&self` query used by both the paint
     /// path and [`Widget::is_animating`].
     spectrum_cache: Cell<Option<[f32; SPECTRUM_BINS]>>,
+    /// Monotonic revision of the inputs [`AudioVisualizer::bar_value`] derives levels from.
+    ///
+    /// Bumped whenever the samples, the host spectrum, the mode or the bar count changes, which
+    /// is exactly when the levels can differ (MW-005).
+    level_revision: u64,
+    /// Levels for [`Self::level_revision`], shared by the smoother, the peak markers and the paint.
+    ///
+    /// Without it the same frame derived every level up to three times: once in the smoother, once
+    /// in the peak-hold sweep and once in the paint.
+    level_cache: RefCell<Option<(u64, Vec<f32>)>>,
+    /// Where the bars are laid out.
+    shape: VisualizerShape,
     /// Number of vertical bars to display.
     bar_count: usize,
     /// Spacing between bars in pixels.
@@ -189,6 +215,9 @@ impl AudioVisualizer {
             mode: VisualizerMode::Waveform,
             spectrum: None,
             spectrum_cache: Cell::new(None),
+            level_revision: 0,
+            level_cache: RefCell::new(None),
+            shape: VisualizerShape::Bars,
             bar_count,
             bar_spacing: 2.0,
             bar_color: None,
@@ -224,6 +253,7 @@ impl AudioVisualizer {
         let skip = data.len().saturating_sub(SAMPLE_HISTORY_LIMIT);
         self.samples = data.into_iter().skip(skip).map(|v| v.clamp(-1.0, 1.0)).collect();
         self.spectrum_cache.set(None);
+        self.invalidate_levels();
         if !self.smoothed_levels.is_empty() {
             self.smoothing_moving = true;
         }
@@ -246,6 +276,7 @@ impl AudioVisualizer {
             self.push_sample(sample);
         }
         self.spectrum_cache.set(None);
+        self.invalidate_levels();
         if !self.smoothed_levels.is_empty() {
             self.smoothing_moving = true;
         }
@@ -267,6 +298,7 @@ impl AudioVisualizer {
     pub fn add_sample(&mut self, value: f32) {
         self.push_sample(value);
         self.spectrum_cache.set(None);
+        self.invalidate_levels();
         if !self.smoothed_levels.is_empty() {
             self.smoothing_moving = true;
         }
@@ -336,6 +368,7 @@ impl AudioVisualizer {
     pub fn clear_samples(&mut self) {
         self.samples.clear();
         self.spectrum_cache.set(None);
+        self.invalidate_levels();
         self.base.request_redraw();
     }
 
@@ -357,6 +390,7 @@ impl AudioVisualizer {
             return;
         }
         self.mode = mode;
+        self.invalidate_levels();
         let name = match mode {
             VisualizerMode::Waveform => "waveform",
             VisualizerMode::Spectrum => "spectrum",
@@ -412,6 +446,7 @@ impl AudioVisualizer {
             .map(|bin| if bin.is_finite() { bin.clamp(0.0, 1.0) } else { 0.0 })
             .collect();
         self.spectrum = if sanitized.is_empty() { None } else { Some(sanitized) };
+        self.invalidate_levels();
         self.base.request_redraw();
     }
 
@@ -422,6 +457,7 @@ impl AudioVisualizer {
             return;
         }
         self.bar_count = bar_count;
+        self.invalidate_levels();
         // Both per-bar vectors resize together. They are indexed alike, so resizing one alone left
         // the other short -- and the marker walk, which indexes both, would have panicked on the
         // next tick after any widening.
@@ -437,6 +473,68 @@ impl AudioVisualizer {
     /// Returns the current bar count.
     pub fn bar_count(&self) -> usize {
         self.bar_count
+    }
+
+    /// How the bars are laid out.
+    pub fn shape(&self) -> VisualizerShape {
+        self.shape
+    }
+
+    /// Selects the bar layout.
+    ///
+    /// [`VisualizerShape::Bars`] is the default and paints exactly the historical picture; the
+    /// circular variant is opt-in (MW-006).
+    pub fn set_shape(&mut self, shape: VisualizerShape) {
+        if self.shape == shape {
+            return;
+        }
+        self.shape = shape;
+        self.base.request_redraw();
+    }
+
+    /// Marks the cached per-bar levels stale.
+    fn invalidate_levels(&mut self) {
+        self.level_revision = self.level_revision.wrapping_add(1);
+    }
+
+    /// Paints the levels as radial bars around the control's centre.
+    ///
+    /// The level list is the one the bar layout uses, so both shapes show the same measurement; a
+    /// bar grows outward from a fixed inner radius and the peaks, when enabled, are short
+    /// perpendicular ticks at their own radius (MW-006).
+    fn draw_circular(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        explicit_bar_color: Option<Color>,
+    ) {
+        let centre = rect.center();
+        let radius = (rect.width.min(rect.height) as f32 / 2.0 - 6.0).max(4.0);
+        let inner = (radius * 0.45).min(radius);
+        let step = core::f32::consts::TAU / self.bar_count as f32;
+        for (index, &level) in self.bar_buffer.iter().enumerate() {
+            let angle = -core::f32::consts::FRAC_PI_2 + index as f32 * step;
+            let (sin, cos) = angle.sin_cos();
+            let value = level.clamp(0.0, 1.0);
+            let outer = inner + (radius - inner) * value;
+            let from = Point::new(centre.x + (cos * inner) as i32, centre.y + (sin * inner) as i32);
+            let to = Point::new(centre.x + (cos * outer) as i32, centre.y + (sin * outer) as i32);
+            context.draw_line(from, to, level_color(value, explicit_bar_color));
+            if self.peak_hold {
+                let peak = self.peak_values.get(index).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                if peak > 0.0 {
+                    let peak_radius = inner + (radius - inner) * peak;
+                    let px = centre.x + (cos * peak_radius) as i32;
+                    let py = centre.y + (sin * peak_radius) as i32;
+                    let half = 3.0;
+                    context.draw_line(
+                        Point::new(px - (-sin * half) as i32, py - (cos * half) as i32),
+                        Point::new(px + (-sin * half) as i32, py + (cos * half) as i32),
+                        Color::rgba(255, 255, 100, 255),
+                    );
+                }
+            }
+        }
     }
 
     /// Sets the spacing between bars in pixels.
@@ -615,6 +713,34 @@ impl AudioVisualizer {
         if self.bar_count == 0 || index >= self.bar_count {
             return 0.0;
         }
+        self.cached_levels().get(index).copied().unwrap_or(0.0)
+    }
+
+    /// The levels for the current revision, derived once and shared by every consumer.
+    fn cached_levels(&self) -> Ref<'_, Vec<f32>> {
+        let stale = match &*self.level_cache.borrow() {
+            Some((revision, levels)) => {
+                *revision != self.level_revision || levels.len() != self.bar_count
+            }
+            None => true,
+        };
+        if stale {
+            let mut levels = Vec::with_capacity(self.bar_count);
+            for index in 0..self.bar_count {
+                levels.push(self.raw_bar_value(index));
+            }
+            *self.level_cache.borrow_mut() = Some((self.level_revision, levels));
+        }
+        Ref::map(self.level_cache.borrow(), |slot| {
+            &slot.as_ref().expect("the level cache was filled above").1
+        })
+    }
+
+    /// The uncached level of bar `index`; only [`Self::cached_levels`] calls this.
+    fn raw_bar_value(&self, index: usize) -> f32 {
+        if self.bar_count == 0 || index >= self.bar_count {
+            return 0.0;
+        }
         match self.mode {
             VisualizerMode::Waveform => self.waveform_bar_value(index),
             VisualizerMode::Spectrum => self.spectrum_bar_value(index),
@@ -763,6 +889,21 @@ fn peak_in_band(bins: &[f32], start: usize, end: usize) -> f32 {
         return 0.0;
     }
     bins[start..end].iter().copied().fold(0.0, f32::max)
+}
+
+/// The fill a bar of `value` takes: the caller's colour, or the level gradient.
+fn level_color(value: f32, explicit: Option<Color>) -> Color {
+    if let Some(color) = explicit {
+        return color;
+    }
+    let intensity = (value * 255.0) as u8;
+    if value > 0.7 {
+        Color::rgba(255, intensity, intensity, 255)
+    } else if value > 0.4 {
+        Color::rgba(intensity, 200, 255, 255)
+    } else {
+        Color::rgba(intensity / 2, intensity / 2, 200, 255)
+    }
 }
 
 /// Reverses the low `bits` bits of `value`, the permutation a radix-2 FFT applies first.
@@ -1026,6 +1167,11 @@ impl Draw for AudioVisualizer {
         }
         let explicit_bar_color = self.bar_color;
 
+        if self.shape == VisualizerShape::Circular {
+            self.draw_circular(context, rect, explicit_bar_color);
+            return;
+        }
+
         for (i, &value) in self.bar_buffer.iter().enumerate() {
             let value = value.min(1.0);
             let bar_height = (value * half_height).max(1.0);
@@ -1039,16 +1185,7 @@ impl Draw for AudioVisualizer {
 
             // Color gradient based on amplitude. A caller's colour replaces the gradient for
             // every bar, which is what makes `set_bar_color` visible (MW-02).
-            let intensity = (value * 255.0) as u8;
-            let bar_color = explicit_bar_color.unwrap_or_else(|| {
-                if value > 0.7 {
-                    Color::rgba(255, intensity, intensity, 255)
-                } else if value > 0.4 {
-                    Color::rgba(intensity, 200, 255, 255)
-                } else {
-                    Color::rgba(intensity / 2, intensity / 2, 200, 255)
-                }
-            });
+            let bar_color = level_color(value, explicit_bar_color);
 
             if self.mirror {
                 // Draw only top half-bar and mirror it
@@ -1723,5 +1860,42 @@ mod tests {
         assert_eq!(av.samples().len(), SAMPLE_HISTORY_LIMIT);
         // The newest block tail survives, in order.
         assert_eq!(av.samples()[SAMPLE_HISTORY_LIMIT - 1], block[block.len() - 1]);
+    }
+
+    /// Every consumer of a level reads the same cached derivation for a given revision (MW-005).
+    #[test]
+    fn the_bar_levels_are_derived_once_per_revision() {
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        av.set_bar_count(8);
+        av.set_mode(VisualizerMode::Spectrum);
+        av.set_spectrum(vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]);
+        assert!(av.level_cache.borrow().is_none(), "nothing is derived before it is read");
+        for index in 0..av.bar_count() {
+            assert_eq!(av.bar_value(index), av.raw_bar_value(index));
+        }
+        let cached_revision = av.level_cache.borrow().as_ref().map(|(rev, _)| *rev);
+        assert_eq!(cached_revision, Some(av.level_revision));
+        // A second pass shares the cache rather than bumping the revision.
+        let revision = av.level_revision;
+        let _ = av.bar_value(0);
+        assert_eq!(av.level_revision, revision);
+        // A new input invalidates it.
+        av.set_spectrum(vec![1.0; 8]);
+        assert_ne!(av.level_revision, revision);
+        assert_eq!(av.bar_value(0), 1.0);
+    }
+
+    /// The circular shape is opt-in and paints a different picture from the default bars.
+    #[test]
+    fn the_circular_shape_is_opt_in_and_reaches_the_pixels() {
+        let build = |shape| -> String {
+            let mut av = AudioVisualizer::new(Rect::new(0, 0, 120, 120));
+            av.set_bar_count(12);
+            av.set_shape(shape);
+            av.set_samples(vec![0.5, 0.8, 0.2, 0.9]);
+            render_to_svg(&mut av)
+        };
+        assert_eq!(AudioVisualizer::new(Rect::new(0, 0, 10, 10)).shape(), VisualizerShape::Bars);
+        assert_ne!(build(VisualizerShape::Bars), build(VisualizerShape::Circular));
     }
 }

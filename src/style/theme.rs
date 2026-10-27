@@ -361,6 +361,14 @@ pub struct Colors {
     pub inverse_surface: Color,
     /// Ink legible on [`Colors::inverse_surface`].
     pub on_inverse_surface: Color,
+    /// Colour of an unvisited hyperlink.
+    pub link: Color,
+    /// Colour of an already-followed hyperlink.
+    pub link_visited: Color,
+    /// Placeholder / hint text in an empty editable field.
+    pub placeholder_text: Color,
+    /// Text that must stay legible on a strongly coloured face.
+    pub bright_text: Color,
 }
 
 /// The active theme's colour for `token`, or `None` when no theme is active.
@@ -635,6 +643,46 @@ impl HighContrastMode {
             Self::WhiteOnBlack => Some((Color::BLACK, Color::WHITE)),
             Self::Custom { fg, bg } => Some((bg, fg)),
         }
+    }
+
+    /// The full palette this mode forces, if any.
+    ///
+    /// # Why every role and not only the pair
+    ///
+    /// [`Self::forced_pair`] covers the *page* — its fill and its ink — but a control also
+    /// reads roles that are not derived from either: a link, an error message, a focus ring, a
+    /// raised card. Leaving those at the theme's values made a high-contrast mode that looked
+    /// forced on a plain panel and low-contrast on a coloured one. Every role is therefore
+    /// answered from the forced pair: surfaces take the background, everything that is drawn
+    /// **on** a surface takes the foreground. That is deliberately a loss of semantic colour —
+    /// a user asking for maximum contrast has asked for legibility before decoration.
+    pub fn forced_colors(self) -> Option<Colors> {
+        let (background, foreground) = self.forced_pair()?;
+        Some(Colors {
+            background,
+            foreground,
+            primary: foreground,
+            secondary: foreground,
+            accent: foreground,
+            error: foreground,
+            warning: foreground,
+            success: foreground,
+            disabled: foreground,
+            info: foreground,
+            outline: foreground,
+            outline_variant: foreground,
+            // A scrim dims what is behind it; in a forced mode the honest dimming is the
+            // forced background itself, so the layer stays inside the two-colour palette.
+            scrim: background,
+            surface_container: background,
+            surface_container_high: background,
+            inverse_surface: background,
+            on_inverse_surface: foreground,
+            link: foreground,
+            link_visited: foreground,
+            placeholder_text: foreground,
+            bright_text: foreground,
+        })
     }
 
     /// The WCAG contrast ratio this mode's pair achieves, or `None` for

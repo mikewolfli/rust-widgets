@@ -8,7 +8,7 @@
 //! instantiation, the [`EventHandlerMap`] connects those names to Rust
 //! closures.
 
-use crate::compat::HashMap;
+use crate::compat::{HashMap, String};
 use core::cell::RefCell;
 
 use crate::WidgetTriggerEvent;
@@ -189,6 +189,15 @@ impl EventHandlerMap {
         self.handlers.len()
     }
 
+    /// The registered handler names, in the map's own iteration order.
+    ///
+    /// Used by the batch binder in `crate::json::event_route`: a control can bind every published
+    /// event that already has a handler of the same name without the caller listing the names a
+    /// second time (W-301).
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.handlers.keys().map(String::as_str)
+    }
+
     /// Returns true if no handlers are registered.
     pub fn is_empty(&self) -> bool {
         self.handlers.is_empty()
@@ -295,6 +304,15 @@ pub fn invoke_global_handler(name: &str, ctx: &EventHandlerContext) -> bool {
         handler(ctx);
     }
     true
+}
+
+/// The names registered in the global handler map **on this thread**.
+///
+/// Exposed crate-wide for the batch binder, which needs the set of names a document's handlers were
+/// registered under rather than a single lookup. The answer follows the same thread affinity as
+/// [`invoke_global_handler`].
+pub(crate) fn global_handler_names() -> crate::compat::Vec<alloc::string::String> {
+    GLOBAL_EVENT_HANDLERS.with(|handlers| handlers.borrow().names().map(String::from).collect())
 }
 
 /// Clear all registered global handlers.

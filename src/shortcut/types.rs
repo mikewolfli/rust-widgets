@@ -698,6 +698,55 @@ impl core::ops::BitOrAssign for Modifiers {
         self.0 |= rhs.0;
     }
 }
+/// The level a shortcut binding lives at (W-12).
+///
+/// # Why a control is a third level next to global and window
+///
+/// The manager had two levels: the process-wide table, and a stack of host-named scopes (a window,
+/// a modal dialog). A control that wants a local chord — an editor's "indent" inside the code
+/// view, a canvas's arrow-key pan — had to invent a scope name, push it whenever it received
+/// focus and pop it when focus left, and repeat that bookkeeping on every focus change. Getting it
+/// wrong left a chord that fired while another control was focused (a stuck push) or stopped
+/// firing while it was (a missed push).
+///
+/// Naming the control as a scope target removes that bookkeeping: a binding registered for control
+/// `C` resolves only while `C` appears in the focus chain the host publishes through
+/// [`ShortcutManager::set_focus_chain_lookup`](crate::shortcut::ShortcutManager::set_focus_chain_lookup).
+/// With no lookup installed no control scope resolves, which is exactly the pre-W-12 behaviour for
+/// a binding that was never registered.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ShortcutScope {
+    /// The process-wide table; active unconditionally.
+    Global,
+    /// A host-named context, active while its name is on the scope stack.
+    Window(String),
+    /// One control, active while it is in the focus chain.
+    Control(crate::core::ObjectId),
+}
+
+impl ShortcutScope {
+    /// The key stored in [`ShortcutEntry::scope`]; `None` for [`Self::Global`].
+    ///
+    /// A control scope is spelled `control:<id>`, the same textual form a host already uses to
+    /// name a window, so the internal tables and the public `scope` field keep one representation.
+    /// The prefix is what keeps a control id from colliding with a host's window name.
+    pub fn scope_key(&self) -> Option<String> {
+        match self {
+            Self::Global => None,
+            Self::Window(name) => Some(name.clone()),
+            Self::Control(control) => Some(control_scope_key(*control)),
+        }
+    }
+}
+
+/// The scope key of control `control` (see [`ShortcutScope::scope_key`]).
+///
+/// Separate from the enum so the manager can test a candidate string without constructing a
+/// `ShortcutScope` for every binding in the focus chain.
+pub fn control_scope_key(control: crate::core::ObjectId) -> String {
+    format!("control:{control}")
+}
+
 /// A shortcut binding registered in the global shortcut system.
 ///
 /// # Not the same as `crate::widget::input_widgets::shortcut_editor::ShortcutEntry`
@@ -729,6 +778,10 @@ pub struct ShortcutEntry {
     ///
     /// `None` is the global scope and behaves exactly as before scopes existed, so an existing
     /// `register` call keeps its current semantics.
+    ///
+    /// A **control** scope (W-12) is spelled `control:<id>` by [`ShortcutScope::scope_key`], the
+    /// same representation, so this field stays one string form rather than growing a parallel
+    /// identity.
     pub scope: Option<String>,
 }
 

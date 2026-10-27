@@ -213,6 +213,12 @@ pub struct NotificationCenter {
     level_filter: Option<NotificationLevel>,
     /// Maximum retained notifications; zero keeps every item.
     max_items: usize,
+    /// Nesting depth of a bulk edit; per-item signals are suppressed while it is positive.
+    bulk_edit: usize,
+    /// Whether arrivals are silent: they are enqueued without the slide-in.
+    do_not_disturb: bool,
+    /// Emitted once after a bulk list operation, with the resulting item count.
+    pub items_changed: Signal1<usize>,
     /// Emitted when selected notification changes. Payload is id.
     pub notification_selected: Signal1<String>,
     /// Emitted when notification is activated. Payload is id.
@@ -264,6 +270,9 @@ impl NotificationCenter {
             group_by_day: false,
             level_filter: None,
             max_items: 0,
+            bulk_edit: 0,
+            do_not_disturb: false,
+            items_changed: Signal1::new(),
             notification_selected: Signal1::new(),
             notification_activated: Signal1::new(),
             unread_count_changed: Signal1::new(),
@@ -375,9 +384,11 @@ impl NotificationCenter {
         let capacity = (self.geometry().height / self.row_height.max(1)) as usize;
         self.scroll_offset =
             self.scroll_offset.min(self.items.len().saturating_sub(capacity.max(1)));
-        self.notification_dismissed.emit(removed.id);
-        if !removed.read {
-            self.unread_count_changed.emit(self.unread_count());
+        if self.bulk_edit == 0 {
+            self.notification_dismissed.emit(removed.id);
+            if !removed.read {
+                self.unread_count_changed.emit(self.unread_count());
+            }
         }
         self.invalidate_layout();
         self.base.request_layout();
@@ -454,10 +465,19 @@ impl NotificationCenter {
         let mut y = rect.y + self.header_height();
         let mut rows = Vec::new();
         let mut previous_day = None;
-        for (index, item) in self.items.iter().enumerate().skip(self.scroll_offset) {
+        // `scroll_offset` counts **visible** rows. Skipping raw indices made the offset mean two
+        // different things once a level filter was active, so a filtered list could scroll past
+        // rows that were not on screen (SP-108).
+        let mut visible_position = 0usize;
+        for (index, item) in self.items.iter().enumerate() {
             if !self.item_matches_filter(item) {
                 continue;
             }
+            if visible_position < self.scroll_offset {
+                visible_position += 1;
+                continue;
+            }
+            visible_position += 1;
             let mut day_label = None;
             if self.group_by_day && item.day_index().is_some() && item.day_index() != previous_day {
                 y += 14;
@@ -509,14 +529,22 @@ impl NotificationCenter {
         if self.selected_index.is_none() {
             self.selected_index = Some(0);
         }
-        // The arriving item slides in from the trailing edge. `jump_to(false)` first, so the first
-        // painted frame is the start of the movement rather than a snap into its middle.
-        self.reveal.jump_to(false);
-        self.reveal.set_open(true);
+        if self.do_not_disturb {
+            // Do-not-disturb enqueues without the pop: the row is present immediately rather than
+            // sliding in, so an arrival cannot interrupt what the reader is doing (SP-109).
+            self.reveal.jump_to(true);
+        } else {
+            // The arriving item slides in from the trailing edge. `jump_to(false)` first, so the
+            // first painted frame is the start of the movement rather than a snap into its middle.
+            self.reveal.jump_to(false);
+            self.reveal.set_open(true);
+        }
         self.enforce_item_cap();
         self.clamp_scroll_to_visible();
         self.invalidate_layout();
-        self.unread_count_changed.emit(self.unread_count());
+        if self.bulk_edit == 0 {
+            self.unread_count_changed.emit(self.unread_count());
+        }
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -526,9 +554,43 @@ impl NotificationCenter {
         self.items.clear();
         self.selected_index = None;
         self.invalidate_layout();
-        self.unread_count_changed.emit(0);
+        if self.bulk_edit == 0 {
+            self.unread_count_changed.emit(0);
+            self.items_changed.emit(0);
+        }
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Enables or disables do-not-disturb.
+    ///
+    /// Off is the historical behaviour: an arrival slides in. On, an arrival is still enqueued and
+    /// still counted unread, but it does not animate (SP-109).
+    pub fn set_do_not_disturb(&mut self, enabled: bool) {
+        if self.do_not_disturb == enabled {
+            return;
+        }
+        self.do_not_disturb = enabled;
+        self.base.request_redraw();
+    }
+
+    /// Whether do-not-disturb is enabled.
+    pub fn do_not_disturb(&self) -> bool {
+        self.do_not_disturb
+    }
+
+    /// Starts a bulk edit whose per-item signals are collapsed into one `items_changed`.
+    fn begin_bulk(&mut self) {
+        self.bulk_edit = self.bulk_edit.saturating_add(1);
+    }
+
+    /// Ends a bulk edit, publishing the resulting count and unread total once.
+    fn end_bulk(&mut self) {
+        self.bulk_edit = self.bulk_edit.saturating_sub(1);
+        if self.bulk_edit == 0 {
+            self.items_changed.emit(self.items.len());
+            self.unread_count_changed.emit(self.unread_count());
+        }
     }
 
     /// Sets the level filter, or `None` to show every level.
@@ -576,6 +638,62 @@ impl NotificationCenter {
     /// The number of rows the filter lets through.
     fn visible_count(&self) -> usize {
         self.items.iter().filter(|item| self.item_matches_filter(item)).count()
+    }
+
+    /// The raw item indices the current filter shows, in list order.
+    fn visible_indices(&self) -> Vec<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| self.item_matches_filter(item))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// Moves the selection by `delta` positions **within the visible set**, then scrolls it into
+    /// view. A filtered-out row can neither be reached by the arrow keys nor be selected by them
+    /// (SP-108).
+    fn move_selection_by(&mut self, delta: isize) {
+        let visible = self.visible_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let current = self
+            .selected_index
+            .and_then(|selected| visible.iter().position(|index| *index == selected));
+        let next = match current {
+            Some(position) => {
+                (position as isize + delta).clamp(0, visible.len() as isize - 1) as usize
+            }
+            None => 0,
+        };
+        let index = visible[next];
+        if self.select_index(index) {
+            self.ensure_index_visible(index);
+        }
+    }
+
+    /// Scrolls the list so `index` is one of the visible rows.
+    fn ensure_index_visible(&mut self, index: usize) {
+        let visible = self.visible_indices();
+        let Some(position) = visible.iter().position(|visible| *visible == index) else {
+            return;
+        };
+        let capacity = (self.geometry().height / self.row_height.max(1)).max(1) as usize;
+        let max_offset = visible.len().saturating_sub(capacity);
+        let offset = if position < self.scroll_offset {
+            position
+        } else if position >= self.scroll_offset + capacity {
+            position + 1 - capacity
+        } else {
+            return;
+        };
+        let offset = offset.min(max_offset);
+        if offset != self.scroll_offset {
+            self.scroll_offset = offset;
+            self.invalidate_layout();
+            self.base.request_redraw();
+        }
     }
 
     /// Evicts the oldest items until the cap holds. Removal goes through [`Self::remove`], so
@@ -874,10 +992,14 @@ impl WidgetProperties for NotificationCenter {
                 for record in list.items() {
                     items.push(notification_item_from_record(record)?);
                 }
+                // One bulk edit: a list replacement is one change, so it publishes one
+                // `items_changed` instead of one unread signal per pushed row (SP-107).
+                self.begin_bulk();
                 self.clear();
                 for item in items {
                     self.push(item);
                 }
+                self.end_bulk();
                 Ok(())
             }
             _ => base_property_set(self, name, value),
@@ -977,24 +1099,8 @@ impl EventHandler for NotificationCenter {
                 }
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
-                38 => {
-                    if let Some(index) = self.selected_index {
-                        if index > 0 {
-                            let _ = self.select_index(index - 1);
-                        }
-                    } else if !self.items.is_empty() {
-                        let _ = self.select_index(0);
-                    }
-                }
-                40 => {
-                    if let Some(index) = self.selected_index {
-                        if index + 1 < self.items.len() {
-                            let _ = self.select_index(index + 1);
-                        }
-                    } else if !self.items.is_empty() {
-                        let _ = self.select_index(0);
-                    }
-                }
+                38 => self.move_selection_by(-1),
+                40 => self.move_selection_by(1),
                 13 => {
                     let _ = self.activate_selected();
                 }
@@ -1465,5 +1571,84 @@ mod tests {
 
         let got = activated.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec!["n2".to_string()]);
+    }
+
+    /// SP-107: a whole-list write publishes one batch signal, not one per pushed row.
+    #[test]
+    fn item_list_replacement_emits_one_batch_signal() {
+        let mut center = sample_center();
+        let records = center.get("items").expect("the list reads as records");
+
+        let changed = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let changed_sink = changed.clone();
+        center.items_changed.connect(move |count| {
+            if let Ok(mut guard) = changed_sink.lock() {
+                guard.push(*count);
+            }
+        });
+        let unread = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let unread_sink = unread.clone();
+        center.unread_count_changed.connect(move |count| {
+            if let Ok(mut guard) = unread_sink.lock() {
+                guard.push(*count);
+            }
+        });
+
+        center.set("items", records).expect("the records round-trip");
+        let changed = changed.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        let unread = unread.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(changed, vec![3], "one batch signal for the whole replacement");
+        assert_eq!(unread, vec![3], "one unread signal, not one per item");
+    }
+
+    /// SP-108: keyboard navigation walks only the filtered rows and scrolls them into view.
+    #[test]
+    fn keyboard_navigation_respects_the_level_filter_and_scrolls() {
+        let mut center = NotificationCenter::new(Rect::new(0, 0, 420, 72));
+        for index in 0..5 {
+            center.push(NotificationItem::new(
+                crate::compat::format!("n{index}"),
+                crate::compat::format!("Row {index}"),
+                "body",
+                if index == 2 { NotificationLevel::Warning } else { NotificationLevel::Info },
+            ));
+        }
+        center.set_level_filter(Some(NotificationLevel::Warning));
+        center.handle_event(&Event::key_press(40, 0));
+        assert_eq!(center.selected_id(), Some("n2"), "the first visible row is the warning");
+
+        center.set_level_filter(None);
+        assert!(center.select_index(0));
+        for _ in 0..3 {
+            center.handle_event(&Event::key_press(40, 0));
+        }
+        assert_eq!(center.selected_id(), Some("n3"));
+        assert_eq!(center.scroll_offset(), 2, "the selection is scrolled into the two-row view");
+        {
+            let rows = center.layout_rows();
+            assert_eq!(rows.first().map(|row| row.item), Some(2));
+        }
+
+        for _ in 0..3 {
+            center.handle_event(&Event::key_press(38, 0));
+        }
+        assert_eq!(center.selected_id(), Some("n0"));
+        assert_eq!(center.scroll_offset(), 0, "moving up scrolls back to the first row");
+    }
+
+    /// SP-109: do-not-disturb enqueues without the arrival animation; off keeps it.
+    #[test]
+    fn do_not_disturb_enqueues_without_the_slide_in() {
+        let mut center = NotificationCenter::new(Rect::new(0, 0, 420, 160));
+        assert!(!center.do_not_disturb());
+        center.push(NotificationItem::new("n1", "One", "body", NotificationLevel::Info));
+        assert_eq!(center.reveal.value(), 0.0, "an ordinary arrival starts its slide");
+
+        center.set_do_not_disturb(true);
+        assert!(center.do_not_disturb());
+        center.push(NotificationItem::new("n2", "Two", "body", NotificationLevel::Info));
+        assert_eq!(center.items().len(), 2, "the item is still enqueued");
+        assert_eq!(center.reveal.value(), 1.0, "the arrival is not animated");
+        assert!(!center.is_animating());
     }
 }

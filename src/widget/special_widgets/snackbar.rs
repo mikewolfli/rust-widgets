@@ -34,6 +34,75 @@ const SNACKBAR_PROGRESS_HEIGHT: u32 = 3;
 /// The default cap on messages waiting behind the visible one.
 const SNACKBAR_MAX_QUEUED: usize = 4;
 
+/// The share of the bar's width a horizontal swipe must cross to dismiss it (SP-117).
+const SNACKBAR_SWIPE_FRACTION: f32 = 0.4;
+
+/// The vertical gap a shared overlay stack leaves between two controls (SP-124).
+const OVERLAY_STACK_GAP: u32 = 6;
+
+/// One control a host stacks vertically with the others (SP-124).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayKind {
+    /// A [`Snackbar`].
+    Snackbar,
+    /// A toast stack.
+    ToastStack,
+}
+
+/// Assigns non-overlapping vertical offsets to the overlay controls that share a host.
+///
+/// The snackbar and the toast stack each anchor independently inside their own rectangle, so a
+/// host that shows both at the bottom of a window used to have them paint over each other. This is
+/// the host-side coordinator the missing piece called for: the host reserves a height per visible
+/// control, in the order it wants them stacked, and writes [`Self::offset`] back to each control.
+#[derive(Debug, Clone, Default)]
+pub struct OverlayStack {
+    entries: Vec<(OverlayKind, u32)>,
+}
+
+impl OverlayStack {
+    /// Creates an empty stack.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Reserves `height` for `kind`, keeping its position when it is already registered.
+    pub fn reserve(&mut self, kind: OverlayKind, height: u32) {
+        if let Some(entry) = self.entries.iter_mut().find(|(entry, _)| *entry == kind) {
+            entry.1 = height;
+        } else {
+            self.entries.push((kind, height));
+        }
+    }
+
+    /// Releases the slot `kind` held.
+    pub fn release(&mut self, kind: OverlayKind) {
+        self.entries.retain(|(entry, _)| *entry != kind);
+    }
+
+    /// The offset `kind` must apply so it sits clear of the controls reserved before it.
+    pub fn offset(&self, kind: OverlayKind) -> i32 {
+        let mut offset = 0u32;
+        for (entry, height) in &self.entries {
+            if *entry == kind {
+                return offset.min(i32::MAX as u32) as i32;
+            }
+            offset = offset.saturating_add(*height).saturating_add(OVERLAY_STACK_GAP);
+        }
+        0
+    }
+
+    /// The number of reserved slots.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether no slot is reserved.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// Where the bar sits within the control's rectangle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SnackbarAnchor {
@@ -100,6 +169,14 @@ pub struct Snackbar {
     queue: Vec<(String, Option<String>, Option<String>)>,
     /// Where the bar sits in the control's rectangle.
     anchor: SnackbarAnchor,
+    /// Whether a horizontal swipe over the bar dismisses it (SP-117).
+    swipe_to_dismiss: bool,
+    /// The x where the active swipe began, or `None` when no drag is in progress.
+    swipe_origin_x: Option<i32>,
+    /// The live horizontal drag distance, in pixels.
+    swipe_offset: f32,
+    /// A host-assigned offset that clears another overlay (SP-124).
+    overlay_offset: i32,
     /// Emitted when action is triggered.
     pub action_triggered: Signal1<String>,
     /// Emitted when snackbar is dismissed.
@@ -125,6 +202,10 @@ impl Snackbar {
             max_queued: SNACKBAR_MAX_QUEUED,
             queue: Vec::new(),
             anchor: SnackbarAnchor::default(),
+            swipe_to_dismiss: false,
+            swipe_origin_x: None,
+            swipe_offset: 0.0,
+            overlay_offset: 0,
             action_triggered: Signal1::new(),
             dismissed: Signal1::new(),
         }
@@ -232,6 +313,65 @@ impl Snackbar {
         self.base.request_redraw();
     }
 
+    /// Whether a horizontal swipe dismisses the bar.
+    pub fn is_swipe_to_dismiss(&self) -> bool {
+        self.swipe_to_dismiss
+    }
+
+    /// Enables or disables swipe-to-dismiss.
+    ///
+    /// Off by default, so the historical button/timeout dismissal is unchanged. When on, a left or
+    /// right drag whose distance crosses [`Self::swipe_threshold`] dismisses the bar on release —
+    /// the same commit-on-release rule `SwipeToDismiss` uses.
+    pub fn set_swipe_to_dismiss(&mut self, enabled: bool) {
+        if self.swipe_to_dismiss == enabled {
+            return;
+        }
+        self.swipe_to_dismiss = enabled;
+        if !enabled {
+            self.swipe_origin_x = None;
+            self.swipe_offset = 0.0;
+        }
+        self.base.request_redraw();
+    }
+
+    /// The live horizontal drag distance, or zero at rest.
+    pub fn swipe_offset(&self) -> f32 {
+        self.swipe_offset
+    }
+
+    /// The distance a swipe must cross to dismiss the bar.
+    pub fn swipe_threshold(&self) -> f32 {
+        let width = self.geometry().width as f32;
+        (width * SNACKBAR_SWIPE_FRACTION).clamp(24.0, 160.0)
+    }
+
+    /// The host-assigned offset that clears another overlay control (SP-124).
+    pub fn overlay_offset(&self) -> i32 {
+        self.overlay_offset
+    }
+
+    /// Moves the bar clear of the controls a host stacked before it (SP-124).
+    ///
+    /// The sign follows the anchor: a bottom-anchored bar rises by `offset`, a top-anchored one
+    /// descends. Zero is the unstacked picture, so a host that never coordinates is unaffected.
+    pub fn set_overlay_offset(&mut self, offset: i32) {
+        if self.overlay_offset == offset {
+            return;
+        }
+        self.overlay_offset = offset;
+        self.base.request_redraw();
+    }
+
+    /// The vertical space the bar currently claims in the host's stack.
+    pub fn overlay_height(&self) -> u32 {
+        if self.visible {
+            dimensions::SNACKBAR_HEIGHT
+        } else {
+            0
+        }
+    }
+
     /// Sets how long the bar stays visible after it is shown.
     ///
     /// Zero (the default) keeps the previous behaviour: the bar waits for `dismiss` or an
@@ -289,6 +429,8 @@ impl Snackbar {
     /// Dismisses snackbar.
     pub fn dismiss(&mut self) {
         if self.visible {
+            self.swipe_origin_x = None;
+            self.swipe_offset = 0.0;
             self.visible = false;
             // Aimed at closed before the signal, so a listener that immediately pushes a new
             // message re-opens from wherever the exit had got to rather than from the bottom.
@@ -336,7 +478,7 @@ impl Snackbar {
     /// The bar's rectangle, placed by the anchor inside the control.
     fn bar_rect(&self) -> Rect {
         let rect = self.geometry();
-        match self.anchor {
+        let mut band = match self.anchor {
             SnackbarAnchor::Center => {
                 ControlMetrics::full_width_band(rect, dimensions::SNACKBAR_HEIGHT)
             }
@@ -344,7 +486,17 @@ impl Snackbar {
                 ControlMetrics::bottom_band(rect, dimensions::SNACKBAR_HEIGHT)
             }
             SnackbarAnchor::Top => ControlMetrics::top_band(rect, dimensions::SNACKBAR_HEIGHT),
+        };
+        // A live swipe drags the bar with the pointer; at rest the offset is zero.
+        band.x = band.x.saturating_add(self.swipe_offset as i32);
+        // A host-stacked overlay moves away from the edge it is anchored to.
+        match self.anchor {
+            SnackbarAnchor::Bottom => band.y = band.y.saturating_sub(self.overlay_offset),
+            SnackbarAnchor::Top | SnackbarAnchor::Center => {
+                band.y = band.y.saturating_add(self.overlay_offset)
+            }
         }
+        band
     }
 
     fn action_rect(&self) -> Option<Rect> {
@@ -552,7 +704,7 @@ impl EventHandler for Snackbar {
         }
 
         match event {
-            Event::MouseEnter { .. } | Event::MouseMove { .. } => {
+            Event::MouseEnter { .. } => {
                 // `self.base.handle_event` above already recorded the hover; the bar's own
                 // reveal keeps whatever progress it has, so the transition is unaffected (SP-67).
                 if !self.base.is_hovered() {
@@ -560,7 +712,23 @@ impl EventHandler for Snackbar {
                     self.base.request_redraw();
                 }
             }
+            Event::MouseMove { pos } => {
+                // A drag in progress follows the pointer and paints the bar shifted (SP-117).
+                if let Some(origin) = self.swipe_origin_x {
+                    self.swipe_offset = (pos.x - origin) as f32;
+                    self.base.request_redraw();
+                }
+                if !self.base.is_hovered() {
+                    self.base.set_hovered(true);
+                    self.base.request_redraw();
+                }
+            }
             Event::MouseLeave { .. } => {
+                // A pointer that leaves mid-drag must not leave the bar parked off its seat.
+                if self.swipe_origin_x.take().is_some() {
+                    self.swipe_offset = 0.0;
+                    self.base.request_redraw();
+                }
                 if self.base.is_hovered() {
                     self.base.set_hovered(false);
                     self.base.request_redraw();
@@ -570,7 +738,25 @@ impl EventHandler for Snackbar {
                 if let Some(rect) = self.action_rect() {
                     if Self::point_in_rect(*pos, rect) {
                         let _ = self.trigger_action();
+                        return;
                     }
+                }
+                if self.swipe_to_dismiss && Self::point_in_rect(*pos, self.bar_rect()) {
+                    self.swipe_origin_x = Some(pos.x);
+                    self.swipe_offset = 0.0;
+                }
+            }
+            Event::MouseRelease { pos, button: 1 } => {
+                let Some(origin) = self.swipe_origin_x.take() else {
+                    return;
+                };
+                self.swipe_offset = (pos.x - origin) as f32;
+                let committed = self.swipe_offset.abs() >= self.swipe_threshold();
+                self.swipe_offset = 0.0;
+                if committed {
+                    self.dismiss();
+                } else {
+                    self.base.request_redraw();
                 }
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
@@ -939,5 +1125,63 @@ mod tests {
             action.y + action.height as i32 <= bar_band.y + bar_band.height as i32,
             "the button ends on the bar"
         );
+    }
+
+    /// Swipe-to-dismiss is opt-in; a drag past the threshold retires the bar, a short one springs
+    /// it back (SP-117).
+    #[test]
+    fn a_swipe_past_the_threshold_dismisses_the_bar() {
+        let mut bar = Snackbar::new(Rect::new(0, 0, 300, 100));
+        bar.set_anchor(SnackbarAnchor::Bottom);
+        bar.show("Saved");
+        assert!(bar.is_visible());
+
+        // With the gesture off, a drag is inert.
+        bar.handle_event(&Event::mouse_press(10, 90, 1));
+        bar.handle_event(&Event::mouse_move(280, 90));
+        bar.handle_event(&Event::mouse_release(280, 90, 1));
+        assert!(bar.is_visible(), "a disabled swipe must not dismiss");
+        assert_eq!(bar.swipe_offset(), 0.0);
+
+        // Enabled: a drag that follows the pointer and crosses 40% of the width commits.
+        bar.set_swipe_to_dismiss(true);
+        assert!(bar.swipe_threshold() <= 120.0);
+        bar.handle_event(&Event::mouse_press(10, 90, 1));
+        bar.handle_event(&Event::mouse_move(160, 90));
+        assert_eq!(bar.swipe_offset(), 150.0);
+        bar.handle_event(&Event::mouse_release(160, 90, 1));
+        assert!(!bar.is_visible(), "a swipe past the threshold must dismiss");
+        assert_eq!(bar.swipe_offset(), 0.0);
+
+        // A short drag falls below the threshold and leaves the bar up.
+        bar.show("Still here");
+        bar.handle_event(&Event::mouse_press(10, 90, 1));
+        bar.handle_event(&Event::mouse_move(40, 90));
+        bar.handle_event(&Event::mouse_release(40, 90, 1));
+        assert!(bar.is_visible(), "a short drag must not dismiss");
+    }
+
+    /// The shared stack assigns each overlay a disjoint vertical offset (SP-124).
+    #[test]
+    fn the_overlay_stack_separates_the_snackbar_and_toast_stack() {
+        let mut stack = OverlayStack::new();
+        stack.reserve(OverlayKind::Snackbar, 48);
+        stack.reserve(OverlayKind::ToastStack, 90);
+        assert_eq!(stack.len(), 2);
+        assert_eq!(stack.offset(OverlayKind::Snackbar), 0);
+        assert_eq!(stack.offset(OverlayKind::ToastStack), 54, "height plus the gap");
+
+        let mut bar = Snackbar::new(Rect::new(0, 0, 300, 200));
+        bar.set_anchor(SnackbarAnchor::Bottom);
+        bar.show("Stacked");
+        let unstacked = bar.bar_rect();
+        bar.set_overlay_offset(stack.offset(OverlayKind::Snackbar));
+        assert_eq!(bar.bar_rect(), unstacked);
+        bar.set_overlay_offset(stack.offset(OverlayKind::ToastStack));
+        assert_eq!(bar.bar_rect().y, unstacked.y - 54, "the bar moved clear of the stack");
+
+        stack.release(OverlayKind::Snackbar);
+        assert_eq!(stack.offset(OverlayKind::ToastStack), 0);
+        assert_eq!(stack.offset(OverlayKind::Snackbar), 0, "a released kind has no slot");
     }
 }

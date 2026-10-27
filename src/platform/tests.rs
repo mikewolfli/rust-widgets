@@ -887,3 +887,95 @@ fn thread_id_as_u64() -> u64 {
         .and_then(|(_, tail)| tail.trim_end_matches(')').parse().ok())
         .unwrap_or(0)
 }
+
+/// A backend that offers the synchronous picker but has no filter control.
+///
+/// The point of the type is the missing `choose_path_with_filters` override: it must inherit the
+/// trait default, which is the pass-through surface P-203 asked for. Everything it does not test
+/// is forwarded to `StubPlatform`, so the four required methods have real bodies rather than
+/// placeholders.
+struct PickerWithoutFilters {
+    inner: StubPlatform,
+}
+
+impl PickerWithoutFilters {
+    fn new() -> Self {
+        Self { inner: StubPlatform::new("picker-without-filters", PlatformFamily::Desktop) }
+    }
+}
+
+impl Platform for PickerWithoutFilters {
+    fn backend_name(&self) -> &'static str {
+        self.inner.backend_name()
+    }
+    fn family(&self) -> PlatformFamily {
+        self.inner.family()
+    }
+    fn init(&self) {
+        self.inner.init();
+    }
+    fn run(&self) {
+        self.inner.run();
+    }
+    fn quit(&self) -> bool {
+        self.inner.quit()
+    }
+    fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
+        self.inner.create_window(title, x, y, width, height)
+    }
+    fn choose_path(
+        &self,
+        purpose: crate::platform::PathPurpose,
+        title: &str,
+    ) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
+        assert!(
+            matches!(purpose, crate::platform::PathPurpose::OpenFile),
+            "the delegation must carry the purpose through unchanged"
+        );
+        assert_eq!(title, "choose", "the delegation must carry the title through unchanged");
+        Ok(Some(std::path::PathBuf::from("/tmp/chosen.txt")))
+    }
+}
+
+/// The filter-aware call must reach a backend's own picker even when it cannot express filters.
+///
+/// This is the contract that makes the new surface additive: a backend that never opted in keeps
+/// answering through `choose_path`, so adding filters to the call cannot turn a working picker into
+/// an `Unsupported`. An empty filter list is the same request, not an error case.
+#[test]
+fn the_filter_variant_delegates_to_choose_path_by_default() {
+    use crate::compat::{String, Vec};
+    use crate::platform::{PathFilter, PathPurpose};
+
+    let backend = PickerWithoutFilters::new();
+    let filters = [PathFilter {
+        description: String::from("Images"),
+        extensions: Vec::from([String::from("png"), String::from("jpg")]),
+    }];
+    assert_eq!(
+        backend.choose_path_with_filters(PathPurpose::OpenFile, "choose", &filters),
+        Ok(Some(std::path::PathBuf::from("/tmp/chosen.txt"))),
+        "the default must forward to the backend's own picker, not answer Unsupported"
+    );
+    assert_eq!(
+        backend.choose_path_with_filters(PathPurpose::OpenFile, "choose", &[]),
+        Ok(Some(std::path::PathBuf::from("/tmp/chosen.txt"))),
+        "an empty filter list is the same request as choose_path"
+    );
+}
+
+/// A backend with no picker keeps reporting `Unsupported` through the filter-aware call.
+///
+/// The second half of the delegation contract: a filter list does not make a missing picker
+/// appear, so the flag/method agreement [`PlatformCapabilities::file_dialog`] documents still
+/// holds for the new entry point.
+#[test]
+fn the_filter_variant_reports_unsupported_when_there_is_no_picker() {
+    use crate::platform::{PathPickerError, PathPurpose};
+
+    let stub = StubPlatform::new("no-picker", PlatformFamily::Desktop);
+    assert_eq!(
+        stub.choose_path_with_filters(PathPurpose::OpenFile, "choose", &[]),
+        Err(PathPickerError::Unsupported)
+    );
+}

@@ -169,52 +169,27 @@ pub(crate) fn system_fonts() -> Vec<crate::platform::types::SystemFont> {
 
 // ─── Environment facts (B28.06) ───
 
-/// How long a cached `NSWorkspace`/`NSLocale` fact may be reused.
-///
-/// `Platform::environment_generation` reads each of these facts on every style-environment poll
-/// (250 ms, `src/style/environment.rs`). One second is the same TTL the Windows backend uses for the
-/// same facts: it is far below the rate at which a user flips an accessibility switch, and it
-/// removes AppKit round trips from the frame cycle.
-const ENVIRONMENT_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+// P-302: the TTL slot and its invalidation rule live once, in the shared wrapper, so this backend
+// cannot drift from the sibling macOS backend or from Windows, and a notification invalidates all
+// of them through `Platform::notify_environment_changed`.
+#[cfg(not(alloc_frugal))]
+use crate::platform::environment_cache::{cached_environment_fact, EnvironmentFactCache};
 
-/// The slot shape shared by every cached fact below.
-type EnvironmentFactCache<T> = std::sync::OnceLock<Mutex<Option<(std::time::Instant, T)>>>;
-
-/// Re-reads one AppKit environment fact at most once per [`ENVIRONMENT_TTL`].
-///
-/// # Cached facts and their invalidation trigger
-///
-/// | fact | slot | source |
-/// |---|---|---|
-/// | `high_contrast` | [`HIGH_CONTRAST_CACHE`] | `NSWorkspace.accessibilityDisplayShouldIncreaseContrast` |
-/// | `reduce_motion` | [`REDUCE_MOTION_CACHE`] | `NSWorkspace.accessibilityDisplayShouldReduceMotion` |
-/// | `system_locale` | [`SYSTEM_LOCALE_CACHE`] | `NSLocale.currentLocale`, then `LC_ALL`/`LANG` |
-///
-/// **Invalidation trigger: TTL expiry only.** The system-colour observer in [`super::environment`]
-/// refreshes the accent palette but does not clear these slots (the missing push source is tracked
-/// as issue P-201), so a changed switch becomes visible within one second and no later. The read
-/// runs with no lock held, so concurrent misses sample the host rather than queueing.
+/// The `mini` profile compiles no environment cache (see `platform::environment_cache`), so the
+/// same call has to stay available without one: the reading goes straight to AppKit on every
+/// question. That is the honest shape for a sized profile — it trades the repeated read for the
+/// slot — and it keeps the three call sites below identical in every build.
+#[cfg(alloc_frugal)]
 fn cached_environment_fact<T: Copy>(
-    cache: &'static EnvironmentFactCache<T>,
+    _cache: &'static EnvironmentFactCache<T>,
     read: impl FnOnce() -> T,
 ) -> T {
-    // `get_or_init`, not `get`: an uninitialised `OnceLock` answers `None` forever, so `get` here
-    // would read the slot, find it absent, run the read and drop the value — a cache that never
-    // caches anything.
-    let slot = cache.get_or_init(|| Mutex::new(None));
-    if let Ok(guard) = slot.lock() {
-        if let Some((sampled_at, value)) = *guard {
-            if sampled_at.elapsed() < ENVIRONMENT_TTL {
-                return value;
-            }
-        }
-    }
-    let value = read();
-    if let Ok(mut guard) = slot.lock() {
-        *guard = Some((std::time::Instant::now(), value));
-    }
-    value
+    read()
 }
+
+/// The slot shape, declared only where [`cached_environment_fact`] really caches.
+#[cfg(alloc_frugal)]
+type EnvironmentFactCache<T> = std::sync::OnceLock<Mutex<Option<(std::time::Instant, T)>>>;
 
 static HIGH_CONTRAST_CACHE: EnvironmentFactCache<bool> = std::sync::OnceLock::new();
 static REDUCE_MOTION_CACHE: EnvironmentFactCache<bool> = std::sync::OnceLock::new();
@@ -224,7 +199,7 @@ static SYSTEM_LOCALE_CACHE: EnvironmentFactCache<Option<&'static str>> = std::sy
 ///
 /// `NSWorkspace.accessibilityDisplayShouldIncreaseContrast` is the AppKit answer to the system
 /// "Increase contrast" setting. `NSWorkspace` is thread-safe as a shared singleton, so this does
-/// not require a main-thread marker. Cached for [`ENVIRONMENT_TTL`]; see
+/// not require a main-thread marker. Cached for [`crate::platform::environment_cache::ENVIRONMENT_TTL`]; see
 /// [`cached_environment_fact`] for the invalidation trigger.
 pub(crate) fn high_contrast() -> bool {
     cached_environment_fact(&HIGH_CONTRAST_CACHE, || {
@@ -235,7 +210,7 @@ pub(crate) fn high_contrast() -> bool {
 /// Whether the user asked for reduced motion.
 ///
 /// `NSWorkspace.accessibilityDisplayShouldReduceMotion`, the macOS "Reduce motion" setting. Cached
-/// for [`ENVIRONMENT_TTL`]; see [`cached_environment_fact`] for the invalidation trigger.
+/// for [`crate::platform::environment_cache::ENVIRONMENT_TTL`]; see [`cached_environment_fact`] for the invalidation trigger.
 pub(crate) fn reduce_motion() -> bool {
     cached_environment_fact(&REDUCE_MOTION_CACHE, || {
         NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()

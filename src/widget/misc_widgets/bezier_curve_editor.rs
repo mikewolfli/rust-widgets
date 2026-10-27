@@ -30,6 +30,9 @@ const HANDLE_RADIUS: u32 = 8;
 /// expressing it as a blend weight lets the grid follow the resolved surface.
 const GRID_ALPHA: f32 = 0.24;
 
+/// How many cubic steps one segment's painted polyline is sampled at.
+const CURVE_SAMPLES_PER_SEGMENT: usize = 50;
+
 /// One cubic segment of the editor's piecewise curve.
 ///
 /// `t0..t1` is the segment's span in the curve's **global** parameter, so splitting a segment
@@ -136,6 +139,17 @@ pub struct BezierCurveEditor {
     cp2_label: String,
     /// The point pair [`Self::cp1_label`] / [`Self::cp2_label`] were formatted from.
     label_points: Option<((f32, f32), (f32, f32))>,
+    /// The curve's sampled pixel polyline, flattened end to end.
+    ///
+    /// A sample is a pure function of the geometry and the control points, so an idle frame
+    /// reuses it instead of evaluating the cubic 50 times per segment (ADV-011). The ranges
+    /// below say where each segment lives inside this buffer.
+    curve_samples: Vec<Point>,
+    /// One `(start, end)` range per segment inside [`Self::curve_samples`].
+    curve_sample_ranges: Vec<(usize, usize)>,
+    /// The geometry and segments [`Self::curve_samples`] was built from; `None` before the
+    /// first sample.
+    curve_sample_inputs: Option<(Rect, Vec<CubicSegment>)>,
     /// Emitted when the curve changes. Passes the first segment's two control handles.
     ///
     /// The payload is kept as the historical pair so the published event schema is unchanged;
@@ -180,6 +194,9 @@ impl BezierCurveEditor {
             cp1_label: String::new(),
             cp2_label: String::new(),
             label_points: None,
+            curve_samples: Vec::new(),
+            curve_sample_ranges: Vec::new(),
+            curve_sample_inputs: None,
             curve_changed: Signal1::new(),
         }
     }
@@ -568,6 +585,33 @@ impl BezierCurveEditor {
         (x, y)
     }
 
+    /// Rebuilds the sampled curve when the geometry or a control point moved (ADV-011).
+    ///
+    /// Called at the top of `draw`, before it borrows `self` through the style, so the rest of
+    /// the frame reads the cached polyline instead of recomputing the cubic.
+    fn refresh_curve_samples(&mut self, rect: Rect) {
+        let unchanged = self.curve_sample_inputs.as_ref().is_some_and(|(cached_rect, segments)| {
+            *cached_rect == rect && *segments == self.segments
+        });
+        if unchanged {
+            return;
+        }
+        self.curve_samples.clear();
+        self.curve_sample_ranges.clear();
+        for index in 0..self.segments.len() {
+            let segment = self.segments[index];
+            let start = self.curve_samples.len();
+            self.curve_samples.push(self.curve_to_pixel(segment.p0.0, segment.p0.1));
+            for step in 1..=CURVE_SAMPLES_PER_SEGMENT {
+                let u = step as f32 / CURVE_SAMPLES_PER_SEGMENT as f32;
+                let (x, y) = Self::cubic_bezier(u, segment.p0, segment.p1, segment.p2, segment.p3);
+                self.curve_samples.push(self.curve_to_pixel(x, y));
+            }
+            self.curve_sample_ranges.push((start, self.curve_samples.len()));
+        }
+        self.curve_sample_inputs = Some((rect, self.segments.clone()));
+    }
+
     /// Emits the curve_changed signal with current control points.
     fn emit_curve_changed(&self) {
         self.curve_changed.emit(self.current_handles());
@@ -820,6 +864,9 @@ impl Draw for BezierCurveEditor {
         // Before anything borrows `self` for the frame, so a moved point refreshes the readouts
         // and a static curve reuses them (K-P11).
         self.refresh_control_point_labels();
+        // Same rule for the sampled polyline: one evaluation of the cubic per moved frame, none
+        // on an idle one (ADV-011).
+        self.refresh_curve_samples(rect);
         let is_enabled = self.base.is_enabled();
         let margin = HANDLE_RADIUS as i32 + 4;
         let draw_w = (rect.width as i32 - 2 * margin).max(1) as f32;
@@ -927,7 +974,6 @@ impl Draw for BezierCurveEditor {
         // A handle the pointer is over, and the one being dragged, gains a halo in its own
         // hue. Both facts come from the same `hit_test_handle` the press uses, so the handle that
         // lights up is the handle a drag would move — on every segment, not just the first.
-        const SAMPLES_PER_SEGMENT: usize = 50;
         for (index, segment) in self.segments.iter().enumerate() {
             let seg_p0 = self.curve_to_pixel(segment.p0.0, segment.p0.1);
             let seg_p3 = self.curve_to_pixel(segment.p3.0, segment.p3.1);
@@ -936,14 +982,11 @@ impl Draw for BezierCurveEditor {
             context.draw_line(seg_p0, seg_cp1, poly_color);
             context.draw_line(seg_p3, seg_cp2, poly_color);
 
-            let mut prev = seg_p0;
-            for step in 1..=SAMPLES_PER_SEGMENT {
-                let u = step as f32 / SAMPLES_PER_SEGMENT as f32;
-                let (cx, cy) =
-                    Self::cubic_bezier(u, segment.p0, segment.p1, segment.p2, segment.p3);
-                let cur = self.curve_to_pixel(cx, cy);
-                context.draw_line_stroke(prev, cur, curve_color, 2);
-                prev = cur;
+            // The polyline the cache holds is the one the per-frame loop used to build,
+            // point for point; drawing it is all that remains of the sampling work.
+            let (start, end) = self.curve_sample_ranges[index];
+            for pair in self.curve_samples[start..end].windows(2) {
+                context.draw_line_stroke(pair[0], pair[1], curve_color, 2);
             }
 
             Self::draw_handle(
@@ -1439,5 +1482,26 @@ mod tests {
         for index in 0..4 {
             assert_point_close(merged[index], original[index], "nested round trip");
         }
+    }
+
+    /// The sampled polyline is rebuilt only when the geometry or a control point moves.
+    #[test]
+    fn idle_frames_reuse_the_curve_samples() {
+        let mut editor = default_editor();
+        let _ = crate::widget::svg::render_to_svg(&mut editor);
+        let cached = editor.curve_samples.clone();
+        assert_eq!(editor.curve_sample_ranges.len(), 1, "one range per segment");
+        assert_eq!(
+            cached.len(),
+            CURVE_SAMPLES_PER_SEGMENT + 1,
+            "the endpoint plus one sample per step"
+        );
+
+        let _ = crate::widget::svg::render_to_svg(&mut editor);
+        assert_eq!(editor.curve_samples, cached, "an idle frame reuses the polyline");
+
+        editor.set_control_point1(0.1, 0.2);
+        let _ = crate::widget::svg::render_to_svg(&mut editor);
+        assert_ne!(editor.curve_samples, cached, "a moved control point resamples");
     }
 }

@@ -3,7 +3,10 @@
 
 //! SegmentedControl widget.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+use core::cell::RefCell;
+
+use crate::compat::Rc;
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -26,6 +29,28 @@ const SEGMENT_ICON_SLOT: i32 = 18;
 
 /// The narrowest a content-fitted segment may become.
 const DEFAULT_MIN_SEGMENT_WIDTH: u32 = 56;
+
+/// How far one wheel notch scrolls an overflowing content-fitted bar, in pixels.
+const SEGMENT_SCROLL_STEP: i32 = 24;
+
+/// The inputs one laid-out bar depends on besides its cached revision.
+#[derive(Clone, PartialEq)]
+struct SegmentLayoutKey {
+    revision: u64,
+    geometry: Rect,
+    font: Font,
+    scroll: i32,
+}
+
+/// The bar and segment rectangles shared by the paint, the hit test and the assertions.
+struct SegmentLayout {
+    /// The visible viewport: the full control width when the content overflows.
+    band: Rect,
+    /// The segment rectangles in painting order, already shifted by the scroll offset.
+    rects: Vec<Rect>,
+    /// The largest scroll offset the content supports; zero when it fits.
+    max_scroll: i32,
+}
 
 /// Single segment entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +193,12 @@ pub struct SegmentedControl {
     /// The selected indices in multi-select mode. Ignored in single-select mode, where
     /// `selected_index` is the whole answer.
     selected_set: Vec<usize>,
+    /// Horizontal scroll of a content-fitted bar whose segments exceed the viewport (SP-104).
+    scroll_x: i32,
+    /// Bumped whenever the items, the fitting policy or the font changes.
+    layout_revision: u64,
+    /// The single-pass layout, reused until the key above changes (SP-103).
+    layout_cache: RefCell<Option<(SegmentLayoutKey, Rc<SegmentLayout>)>>,
     /// Emitted when selected segment changes. Payload is selected id.
     pub selection_changed: Signal1<String>,
 }
@@ -189,13 +220,23 @@ impl SegmentedControl {
             multi_select: false,
             disabled: Vec::new(),
             selected_set: Vec::new(),
+            scroll_x: 0,
+            layout_revision: 0,
+            layout_cache: RefCell::new(None),
             selection_changed: Signal1::new(),
         }
+    }
+
+    /// Marks the cached layout stale; the next paint or hit test rebuilds it.
+    fn invalidate_layout(&mut self) {
+        self.layout_revision = self.layout_revision.wrapping_add(1);
     }
 
     /// Replaces all segment items.
     pub fn set_items(&mut self, items: Vec<SegmentItem>) {
         self.items = items;
+        self.scroll_x = 0;
+        self.invalidate_layout();
         self.disabled = vec![false; self.items.len()];
         self.selected_set.clear();
         self.selected_index = if self.items.is_empty() { None } else { Some(0) };
@@ -216,6 +257,7 @@ impl SegmentedControl {
     pub fn add_item(&mut self, item: SegmentItem) -> usize {
         let index = self.items.len();
         self.items.push(item);
+        self.invalidate_layout();
         self.disabled.push(false);
         if self.selected_index.is_none() {
             self.selected_index = Some(index);
@@ -237,6 +279,8 @@ impl SegmentedControl {
             return None;
         }
         let removed = self.items.remove(index);
+        self.scroll_x = 0;
+        self.invalidate_layout();
         if index < self.disabled.len() {
             self.disabled.remove(index);
         }
@@ -319,6 +363,8 @@ impl SegmentedControl {
             return;
         }
         self.size_to_fit = size_to_fit;
+        self.scroll_x = 0;
+        self.invalidate_layout();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -335,6 +381,8 @@ impl SegmentedControl {
             return;
         }
         self.min_segment_width = width;
+        self.scroll_x = 0;
+        self.invalidate_layout();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -480,6 +528,7 @@ impl SegmentedControl {
         while candidate >= 0 && candidate <= last {
             if self.item_enabled(candidate as usize) {
                 let _ = self.set_selected_index(candidate as usize);
+                self.ensure_index_visible(candidate as usize);
                 return;
             }
             candidate += step;
@@ -546,27 +595,53 @@ impl SegmentedControl {
     /// through `segment_widths` — `O(n²)` per frame on a control whose whole job is laying out a
     /// handful of segments. The hit test paid the same cost on every pointer move (SP-P65). One
     /// pass here gives both paths the same rectangles.
-    fn segment_layout(&self) -> (Rect, Vec<Rect>) {
+    fn segment_layout(&self) -> Rc<SegmentLayout> {
+        let key = SegmentLayoutKey {
+            revision: self.layout_revision,
+            geometry: self.geometry(),
+            font: effective_font(self.base.style()).clone(),
+            scroll: self.scroll_x,
+        };
+        if let Some((cached, layout)) = self.layout_cache.borrow().as_ref() {
+            if *cached == key {
+                return layout.clone();
+            }
+        }
+        let layout = Rc::new(self.compute_segment_layout());
+        *self.layout_cache.borrow_mut() = Some((key, layout.clone()));
+        layout
+    }
+
+    /// Builds the layout for the current items, size and scroll offset.
+    fn compute_segment_layout(&self) -> SegmentLayout {
         let full =
             ControlMetrics::full_width_band(self.geometry(), dimensions::SEGMENTED_CONTROL_HEIGHT);
         if self.items.is_empty() {
-            return (full, Vec::new());
+            return SegmentLayout { band: full, rects: Vec::new(), max_scroll: 0 };
         }
         let desired = if self.size_to_fit { self.desired_segment_widths() } else { Vec::new() };
-        let band = if self.size_to_fit {
+        let (band, widths, max_scroll) = if self.size_to_fit {
             let total: u32 = desired.iter().sum();
-            Rect::new(full.x, full.y, total.min(full.width), full.height)
+            if total <= full.width {
+                // Content smaller than the track: the extra room stays empty rather than being
+                // handed to a short label, which is the whole point of fitting to content.
+                (Rect::new(full.x, full.y, total.max(1), full.height), desired, 0)
+            } else {
+                // Content overflows: keep every segment at its content width and scroll the bar
+                // horizontally instead of compressing labels past readability (SP-104).
+                (full, desired, (total - full.width) as i32)
+            }
         } else {
-            full
+            (full, self.widths_from_desired(&desired, full.width), 0)
         };
-        let widths = self.widths_from_desired(&desired, band.width);
+        let scroll = self.scroll_x.clamp(0, max_scroll);
         let mut rects = Vec::with_capacity(widths.len());
-        let mut x = band.x;
+        let mut x = band.x - scroll;
         for width in widths {
             rects.push(Rect::new(x, band.y, width, band.height));
             x += width as i32;
         }
-        (band, rects)
+        SegmentLayout { band, rects, max_scroll }
     }
 
     /// One segment's rectangle from the single-pass layout.
@@ -578,7 +653,7 @@ impl SegmentedControl {
         if index >= self.items.len() || self.items.is_empty() {
             return None;
         }
-        self.segment_layout().1.get(index).copied()
+        self.segment_layout().rects.get(index).copied()
     }
 
     /// The bar the control actually paints: full width, `dimensions::SEGMENTED_CONTROL_HEIGHT`
@@ -592,12 +667,14 @@ impl SegmentedControl {
     /// the drawn pill disagree with the 32 px `size_hint` the control reports. Deriving the
     /// band once here is what keeps the paint, the hit test and the reported size on one
     /// value.
+    #[cfg(test)]
     fn track_band(&self) -> Rect {
-        self.segment_layout().0
+        self.segment_layout().band
     }
 
     fn hit_index(&self, pos: Point) -> Option<usize> {
-        let (band, rects) = self.segment_layout();
+        let layout = self.segment_layout();
+        let band = layout.band;
         if pos.x < band.x
             || pos.x >= band.x + band.width as i32
             || pos.y < band.y
@@ -605,7 +682,33 @@ impl SegmentedControl {
         {
             return None;
         }
-        rects.iter().position(|seg| pos.x >= seg.x && pos.x < seg.x + seg.width as i32)
+        layout.rects.iter().position(|seg| pos.x >= seg.x && pos.x < seg.x + seg.width as i32)
+    }
+
+    /// Scrolls the content-fitted bar so `index` sits inside the viewport.
+    fn ensure_index_visible(&mut self, index: usize) {
+        let layout = self.segment_layout();
+        if layout.max_scroll == 0 {
+            return;
+        }
+        let Some(segment) = layout.rects.get(index).copied() else {
+            return;
+        };
+        let left = layout.band.x;
+        let right = left + layout.band.width as i32;
+        let segment_right = segment.x + segment.width as i32;
+        let next = if segment.x < left {
+            self.scroll_x - (left - segment.x)
+        } else if segment_right > right {
+            self.scroll_x + (segment_right - right)
+        } else {
+            return;
+        };
+        let next = next.clamp(0, layout.max_scroll);
+        if next != self.scroll_x {
+            self.scroll_x = next;
+            self.base.request_redraw();
+        }
     }
 }
 
@@ -615,6 +718,9 @@ impl Widget for SegmentedControl {
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
+        // The segment widths are measured with the effective font, so a theme change can move
+        // every boundary even when the item list and the rectangle are unchanged.
+        self.invalidate_layout();
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -824,6 +930,19 @@ impl EventHandler for SegmentedControl {
                     self.base.request_redraw();
                 }
             }
+            Event::Wheel { delta, .. } => {
+                let layout = self.segment_layout();
+                if layout.max_scroll == 0 {
+                    return;
+                }
+                let notches = if delta.x != 0 { delta.x } else { delta.y };
+                let next =
+                    (self.scroll_x + notches * SEGMENT_SCROLL_STEP).clamp(0, layout.max_scroll);
+                if next != self.scroll_x {
+                    self.scroll_x = next;
+                    self.base.request_redraw();
+                }
+            }
             Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.hit_index(*pos) {
                     if !self.item_enabled(index) {
@@ -847,6 +966,7 @@ impl EventHandler for SegmentedControl {
                             (0..self.items.len()).find(|index| self.item_enabled(*index))
                         {
                             let _ = self.set_selected_index(first);
+                            self.ensure_index_visible(first);
                         }
                     }
                     Some(crate::shortcut::Key::End) if !self.items.is_empty() => {
@@ -854,6 +974,7 @@ impl EventHandler for SegmentedControl {
                             (0..self.items.len()).rev().find(|index| self.item_enabled(*index))
                         {
                             let _ = self.set_selected_index(last);
+                            self.ensure_index_visible(last);
                         }
                     }
                     Some(crate::shortcut::Key::Up) if primary => {
@@ -861,6 +982,7 @@ impl EventHandler for SegmentedControl {
                             (0..self.items.len()).find(|index| self.item_enabled(*index))
                         {
                             let _ = self.set_selected_index(first);
+                            self.ensure_index_visible(first);
                         }
                     }
                     Some(crate::shortcut::Key::Down) if primary && !self.items.is_empty() => {
@@ -868,6 +990,7 @@ impl EventHandler for SegmentedControl {
                             (0..self.items.len()).rev().find(|index| self.item_enabled(*index))
                         {
                             let _ = self.set_selected_index(last);
+                            self.ensure_index_visible(last);
                         }
                     }
                     _ => {}
@@ -946,10 +1069,11 @@ impl Draw for SegmentedControl {
         // 240x120 stadium with no segment division in it — the segments inherited the same
         // height, so there was nothing to divide — and it disagreed with the 32 px size the
         // control reports. The band is the single derivation the paint and the hit test share.
-        let band = self.track_band();
-        // One layout pass for the whole frame: the fills, the dividers, the indicator and the
-        // labels all read the same rectangles (SP-P65).
-        let (_, segment_rects) = self.segment_layout();
+        // One cached layout for the whole frame: the fills, the dividers, the indicator and the
+        // labels all read the same rectangles (SP-P65, SP-103).
+        let layout = self.segment_layout();
+        let band = layout.band;
+        let segment_rects = &layout.rects;
 
         context.fill_rect(band, bar);
         context.draw_rect(band, divider);
@@ -964,10 +1088,12 @@ impl Draw for SegmentedControl {
                 && !self.is_selected(index)
                 && self.item_enabled(index)
             {
-                context.fill_rect(seg, hovered_bg);
+                if let Some(visible) = seg.intersection(&band) {
+                    context.fill_rect(visible, hovered_bg);
+                }
             }
 
-            if index > 0 {
+            if index > 0 && seg.x >= band.x && seg.x < band.x + band.width as i32 {
                 context.draw_line(
                     Point::new(seg.x, seg.y),
                     Point::new(seg.x, seg.y + seg.height as i32),
@@ -1000,7 +1126,9 @@ impl Draw for SegmentedControl {
                 if !self.is_selected(index) {
                     continue;
                 }
-                context.fill_rect(seg, selected_bg);
+                if let Some(visible) = seg.intersection(&band) {
+                    context.fill_rect(visible, selected_bg);
+                }
             }
         } else if let (Some(from), Some(to)) = (
             segment_rects.get(self.slide_from).copied(),
@@ -1014,7 +1142,9 @@ impl Draw for SegmentedControl {
                 lerp(from.width as i32, to.width as i32).max(1) as u32,
                 from.height,
             );
-            context.fill_rect(indicator, selected_bg);
+            if let Some(visible) = indicator.intersection(&band) {
+                context.fill_rect(visible, selected_bg);
+            }
         }
 
         // ── Segment labels ──
@@ -1052,22 +1182,25 @@ impl Draw for SegmentedControl {
                     (seg.x + seg.width as i32 - SEGMENT_LABEL_INSET - label_x).max(0) as u32;
                 let font = effective_font(style);
                 let measured = context.measure_text(&item.label, font).width;
-                if measured <= label_width {
-                    context.draw_text(
-                        Point::new(label_x, line.y),
-                        &item.label,
-                        font,
-                        label_color,
-                        HorizontalAlignment::Left,
-                    );
-                } else if label_width > 0 {
-                    context.draw_text_fitted_cow(
-                        Rect::new(label_x, line.y, label_width, line.height),
-                        &item.label,
-                        font,
-                        label_color,
-                        HorizontalAlignment::Left,
-                    );
+                let label_rect = Rect::new(label_x, line.y, label_width, line.height);
+                if let Some(visible) = label_rect.intersection(&band) {
+                    if measured <= label_width {
+                        context.draw_text(
+                            Point::new(label_x, line.y),
+                            &item.label,
+                            font,
+                            label_color,
+                            HorizontalAlignment::Left,
+                        );
+                    } else if label_width > 0 {
+                        context.draw_text_fitted_cow(
+                            visible,
+                            &item.label,
+                            font,
+                            label_color,
+                            HorizontalAlignment::Left,
+                        );
+                    }
                 }
                 if let Some(icon) = item.icon {
                     let side = 12u32.min(seg.height.saturating_sub(4)).max(1);
@@ -1077,10 +1210,12 @@ impl Draw for SegmentedControl {
                         side,
                         side,
                     );
-                    if let Err(error) =
-                        crate::widget::paint_icon(context, icon.into(), icon_rect, label_color)
-                    {
-                        log::warn!("segment '{}' icon failed: {error:?}", item.id);
+                    if icon_rect.intersection(&band).is_some() {
+                        if let Err(error) =
+                            crate::widget::paint_icon(context, icon.into(), icon_rect, label_color)
+                        {
+                            log::warn!("segment '{}' icon failed: {error:?}", item.id);
+                        }
                     }
                 }
             }
@@ -1760,5 +1895,61 @@ mod tests {
         control.set("min_segment_width", CapabilityValue::UInt(90)).expect("writable");
         assert_eq!(control.min_segment_width(), 90);
         assert!(control.segment_rect(0).expect("segment 0").width >= 90);
+    }
+
+    /// SP-103: one layout is shared until its inputs change.
+    #[test]
+    fn segment_layout_is_cached_until_its_inputs_change() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 300, 30));
+        control.set_items(sample_items());
+        let first = control.segment_layout();
+        let second = control.segment_layout();
+        assert!(Rc::ptr_eq(&first, &second), "two reads of one revision must share the layout");
+
+        control.set_min_segment_width(70);
+        let rebuilt = control.segment_layout();
+        assert!(!Rc::ptr_eq(&first, &rebuilt), "a layout input change must rebuild");
+        let cached = control.segment_layout();
+        assert!(Rc::ptr_eq(&rebuilt, &cached));
+    }
+
+    /// SP-104: overflowing content keeps its width and scrolls instead of being squeezed.
+    #[test]
+    fn overflowing_content_scrolls_horizontally() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 200, 30));
+        let long = "A caption that is far wider than half of the bar";
+        control.set_items(vec![
+            SegmentItem::new("a", "A"),
+            SegmentItem::new("b", long),
+            SegmentItem::new("c", long),
+        ]);
+        control.set_size_to_fit(true);
+
+        let layout = control.segment_layout();
+        assert!(layout.max_scroll > 0, "three long captions must overflow a 200 px bar");
+        let first = layout.rects[0];
+        let content_width: u32 = layout.rects.iter().map(|rect| rect.width).sum();
+        assert!(
+            content_width > layout.band.width,
+            "the segments must keep their content width, not compress: {content_width} vs {}",
+            layout.band.width
+        );
+        assert_eq!(first.x, layout.band.x, "an unscrolled bar starts at its left edge");
+
+        control.handle_event(&Event::wheel(0, 3, 0));
+        let scrolled = control.segment_layout();
+        assert_eq!(
+            scrolled.rects[0].x,
+            first.x - 3 * SEGMENT_SCROLL_STEP,
+            "three wheel notches must move the content left"
+        );
+        // The hit test reads the scrolled rectangles, so the visible first segment now begins
+        // off the left edge and the second fills the viewport.
+        let y = scrolled.band.y + scrolled.band.height as i32 / 2;
+        assert!(
+            scrolled.rects[0].x + scrolled.rects[0].width as i32 <= scrolled.band.x,
+            "three notches scroll the short first segment fully out of view"
+        );
+        assert_eq!(control.hit_index(Point::new(scrolled.band.x + 1, y)), Some(1));
     }
 }

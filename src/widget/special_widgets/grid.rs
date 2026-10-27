@@ -35,6 +35,27 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// The height reserved for the column-heading band, when headings are present.
 const GRID_HEADER_HEIGHT: u32 = 22;
 
+/// The width reserved for the row-heading column, when row headings are present.
+const GRID_ROW_HEADER_WIDTH: u32 = 60;
+
+/// The frame tables derived from the model and the viewport (SP-114).
+///
+/// They are a pure function of the span list, the selection, the column widths, the page and the
+/// geometry, so a frame that changes none of them reuses the previous tables instead of allocating
+/// three new ones.
+struct GridFrameTables {
+    /// The model revision the tables were built from.
+    revision: u64,
+    /// The geometry the tables were built for.
+    geometry: Rect,
+    /// Cell spans keyed by `(row, column)`.
+    spans: crate::compat::HashMap<(u32, u32), (u32, u32)>,
+    /// Selected cells as a lookup set.
+    selected: crate::compat::HashMap<(u32, u32), ()>,
+    /// Every column's offset from the body's left edge.
+    column_offsets: Vec<i32>,
+}
+
 /// Grid widget for layout management.
 ///
 /// Displays a visual grid with configurable rows, columns, spacing,
@@ -85,6 +106,28 @@ pub struct GridWidget {
     cells: Vec<Vec<String>>,
     /// Optional column headings, one per column.
     headers: Vec<String>,
+    /// Optional row headings, one per row. A non-empty list reserves a leading band (SP-115).
+    row_headers: Vec<String>,
+    /// Whether a cell edit is currently in progress (SP-115).
+    editing_cell: Option<(u32, u32)>,
+    /// The text being edited while [`Self::editing_cell`] is set.
+    edit_buffer: String,
+    /// The editor's insertion point, as a character index into `edit_buffer`.
+    edit_caret: usize,
+    /// Whether a double-click or Enter starts an in-place edit. Off preserves the historical
+    /// read-only grid.
+    editable: bool,
+    /// The model revision the frame tables are invalidated with (SP-114).
+    frame_revision: u64,
+    /// How many times the frame tables have been rebuilt, for the cache test.
+    #[cfg_attr(not(test), allow(dead_code))]
+    frame_builds: u64,
+    /// The cached frame tables; `None` until the first draw after an invalidation.
+    frame_cache: Option<GridFrameTables>,
+    /// Emitted when an in-place edit starts, with the cell.
+    pub edit_requested: Signal1<(u32, u32)>,
+    /// Emitted with `(row, column, text)` when an edit is committed.
+    pub cell_edited: Signal1<(u32, u32, String)>,
     /// Emitted when a cell is clicked.
     pub cell_clicked: Signal1<(u32, u32)>,
     /// Emitted when pointer hover changes to another cell.
@@ -120,6 +163,16 @@ impl GridWidget {
             page: 0,
             cells: Vec::new(),
             headers: Vec::new(),
+            row_headers: Vec::new(),
+            editing_cell: None,
+            edit_buffer: String::new(),
+            edit_caret: 0,
+            editable: false,
+            frame_revision: 0,
+            frame_builds: 0,
+            frame_cache: None,
+            edit_requested: Signal1::new(),
+            cell_edited: Signal1::new(),
             cell_clicked: Signal1::new(),
             cell_hovered: Signal1::new(),
             context_menu_requested: Signal1::new(),
@@ -150,6 +203,16 @@ impl GridWidget {
             page: 0,
             cells: Vec::new(),
             headers: Vec::new(),
+            row_headers: Vec::new(),
+            editing_cell: None,
+            edit_buffer: String::new(),
+            edit_caret: 0,
+            editable: false,
+            frame_revision: 0,
+            frame_builds: 0,
+            frame_cache: None,
+            edit_requested: Signal1::new(),
+            cell_edited: Signal1::new(),
             cell_clicked: Signal1::new(),
             cell_hovered: Signal1::new(),
             context_menu_requested: Signal1::new(),
@@ -173,6 +236,7 @@ impl GridWidget {
         self.rows = rows;
         self.sync_cells();
         self.update_cell_dimensions();
+        self.invalidate_frame_cache();
         self.base.request_redraw();
     }
     /// Returns the number of columns.
@@ -188,6 +252,7 @@ impl GridWidget {
         self.columns = columns;
         self.sync_cells();
         self.update_cell_dimensions();
+        self.invalidate_frame_cache();
         self.base.request_redraw();
     }
 
@@ -204,6 +269,7 @@ impl GridWidget {
         }
         self.spacing = spacing;
         self.update_cell_dimensions();
+        self.invalidate_frame_cache();
         self.base.request_redraw();
     }
 
@@ -257,6 +323,117 @@ impl GridWidget {
         true
     }
 
+    // ── Cell editing (SP-115) ──────────────────────────────
+
+    /// Whether a double-click or Enter starts an in-place edit.
+    pub fn is_editable(&self) -> bool {
+        self.editable
+    }
+
+    /// Enables or disables in-place cell editing.
+    ///
+    /// Editing is off by default, so a grid that was a read-only layout guide stays one.
+    pub fn set_editable(&mut self, editable: bool) {
+        if self.editable == editable {
+            return;
+        }
+        self.editable = editable;
+        if !editable {
+            self.cancel_edit();
+        }
+        self.base.request_redraw();
+    }
+
+    /// The cell being edited, if any.
+    pub fn editing_cell(&self) -> Option<(u32, u32)> {
+        self.editing_cell
+    }
+
+    /// Starts editing `(row, column)`, seeding the buffer with the cell's current text.
+    ///
+    /// Returns `false` when editing is disabled or the address is outside the grid.
+    pub fn begin_edit(&mut self, row: u32, column: u32) -> bool {
+        if !self.editable || row >= self.rows || column >= self.columns {
+            return false;
+        }
+        if self.editing_cell == Some((row, column)) {
+            return true;
+        }
+        self.edit_buffer = self.cell_text(row, column).to_string();
+        self.edit_caret = self.edit_buffer.chars().count();
+        self.editing_cell = Some((row, column));
+        self.focused_cell = Some((row, column));
+        self.edit_requested.emit((row, column));
+        self.base.request_redraw();
+        true
+    }
+
+    /// Commits the text being edited into its cell and emits `cell_edited`.
+    ///
+    /// Returns `false` when no edit is active.
+    pub fn commit_edit(&mut self) -> bool {
+        let Some((row, column)) = self.editing_cell.take() else {
+            return false;
+        };
+        let text = core::mem::take(&mut self.edit_buffer);
+        self.edit_caret = 0;
+        if row < self.rows && column < self.columns {
+            self.set_cell_text(row, column, text.clone());
+            self.cell_edited.emit((row, column, text));
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// Abandons the edit without writing anything.
+    pub fn cancel_edit(&mut self) {
+        if self.editing_cell.is_none() {
+            return;
+        }
+        self.editing_cell = None;
+        self.edit_buffer.clear();
+        self.edit_caret = 0;
+        self.base.request_redraw();
+    }
+
+    /// The text in the active edit buffer.
+    pub fn edit_text(&self) -> &str {
+        &self.edit_buffer
+    }
+
+    fn invalidate_frame_cache(&mut self) {
+        self.frame_revision = self.frame_revision.wrapping_add(1);
+        self.frame_cache = None;
+    }
+
+    /// Rebuilds the frame tables when the model or the geometry has moved (SP-114).
+    fn ensure_frame_tables(&mut self) {
+        let geometry = self.base.geometry();
+        if self.frame_cache.as_ref().is_some_and(|cache| {
+            cache.revision == self.frame_revision && cache.geometry == geometry
+        }) {
+            return;
+        }
+        self.update_cell_dimensions();
+        let spans = self
+            .spans
+            .iter()
+            .map(|(row, column, row_span, column_span)| {
+                ((*row, *column), (*row_span, *column_span))
+            })
+            .collect();
+        let selected = self.selected_cells.iter().map(|cell| (*cell, ())).collect();
+        let column_offsets = self.column_offsets();
+        self.frame_builds = self.frame_builds.wrapping_add(1);
+        self.frame_cache = Some(GridFrameTables {
+            revision: self.frame_revision,
+            geometry,
+            spans,
+            selected,
+            column_offsets,
+        });
+    }
+
     /// The column headings, one per column.
     pub fn headers(&self) -> &[String] {
         &self.headers
@@ -272,8 +449,39 @@ impl GridWidget {
         }
         self.headers = headers;
         self.update_cell_dimensions();
+        self.invalidate_frame_cache();
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// The row headings, one per row; empty means no heading column.
+    pub fn row_headers(&self) -> &[String] {
+        &self.row_headers
+    }
+
+    /// Replaces the row headings.
+    ///
+    /// A non-empty list reserves a leading band the same way the column headings reserve a top
+    /// band, so a row's title cannot be mistaken for a cell's data. Passing an empty list restores
+    /// the previous geometry, which is the historical picture (SP-115).
+    pub fn set_row_headers(&mut self, headers: Vec<String>) {
+        if self.row_headers == headers {
+            return;
+        }
+        self.row_headers = headers;
+        self.update_cell_dimensions();
+        self.invalidate_frame_cache();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The width of the row-heading column, or zero when no row headings are set.
+    pub fn row_header_width(&self) -> u32 {
+        if self.row_headers.is_empty() {
+            0
+        } else {
+            GRID_ROW_HEADER_WIDTH.min(self.base.geometry().width)
+        }
     }
 
     fn sync_cells(&mut self) {
@@ -284,24 +492,28 @@ impl GridWidget {
         }
     }
 
-    /// The band the matrix itself occupies, below the heading row when one is present.
+    /// The band the matrix itself occupies, below the heading row when one is present and right of
+    /// the row-heading column when one is present.
     fn body_rect(&self) -> Rect {
         let rect = self.base.geometry();
-        if self.headers.is_empty() {
-            return rect;
-        }
-        let header = GRID_HEADER_HEIGHT.min(rect.height);
-        Rect::new(rect.x, rect.y + header as i32, rect.width, rect.height - header)
+        let header = if self.headers.is_empty() { 0 } else { GRID_HEADER_HEIGHT.min(rect.height) };
+        let row_header = self.row_header_width();
+        Rect::new(
+            rect.x + row_header as i32,
+            rect.y + header as i32,
+            rect.width.saturating_sub(row_header),
+            rect.height.saturating_sub(header),
+        )
     }
 
-    /// Whether `pos` lands in the heading band.
+    /// Whether `pos` lands in the column-heading band.
     fn hit_header(&self, pos: Point) -> bool {
         let rect = self.base.geometry();
         let body = self.body_rect();
         body.y > rect.y
             && pos.y >= rect.y
             && pos.y < body.y
-            && pos.x >= rect.x
+            && pos.x >= body.x
             && pos.x < rect.x + rect.width as i32
     }
 
@@ -337,7 +549,7 @@ impl GridWidget {
 
     /// Returns the cell column for a given x-coordinate, or `None` if outside.
     fn cell_at_x(&self, x: i32) -> Option<u32> {
-        let rect = self.base.geometry();
+        let rect = self.body_rect();
         if x < rect.x || x >= rect.x + rect.width as i32 {
             return None;
         }
@@ -372,6 +584,7 @@ impl GridWidget {
         }
         self.column_widths[column as usize] = width.map(|width| width.max(1));
         self.update_cell_dimensions();
+        self.invalidate_frame_cache();
         self.base.request_layout();
         self.base.request_redraw();
         true
@@ -384,6 +597,7 @@ impl GridWidget {
         }
         self.column_widths = widths;
         self.update_cell_dimensions();
+        self.invalidate_frame_cache();
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -481,6 +695,7 @@ impl GridWidget {
         if row_span > 1 || column_span > 1 {
             self.spans.push((row, column, row_span, column_span));
         }
+        self.invalidate_frame_cache();
         self.base.request_redraw();
         true
     }
@@ -504,6 +719,7 @@ impl GridWidget {
             self.selected_cells.clear();
             self.selected_cells.push(keep);
         }
+        self.invalidate_frame_cache();
         self.base.request_redraw();
     }
 
@@ -542,6 +758,7 @@ impl GridWidget {
                 }
             }
         }
+        self.invalidate_frame_cache();
         self.base.request_redraw();
     }
 
@@ -551,6 +768,7 @@ impl GridWidget {
             return;
         }
         self.selected_cells.clear();
+        self.invalidate_frame_cache();
         self.base.request_redraw();
     }
 
@@ -563,6 +781,7 @@ impl GridWidget {
         self.page_rows = rows_per_page;
         self.page = 0;
         self.update_cell_dimensions();
+        self.invalidate_frame_cache();
         self.base.request_redraw();
     }
 
@@ -585,6 +804,7 @@ impl GridWidget {
         }
         self.page = page;
         self.update_cell_dimensions();
+        self.invalidate_frame_cache();
         self.page_changed.emit(page);
         self.base.request_redraw();
     }
@@ -652,6 +872,7 @@ impl Widget for GridWidget {
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
         self.update_cell_dimensions();
+        self.invalidate_frame_cache();
     }
 
     /// Returns a size hint proportional to rows x columns.
@@ -892,7 +1113,7 @@ impl WidgetProperties for GridWidget {
 impl Draw for GridWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        self.update_cell_dimensions();
+        self.ensure_frame_tables();
         let body = self.body_rect();
 
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
@@ -961,31 +1182,28 @@ impl Draw for GridWidget {
         let selection_fill = ink.blend(&cell_fill, 0.72);
         let hover_fill = ink.blend(&cell_fill, 0.88);
         let cell_font = crate::widget::metrics::role_font(self.style(), 12.0);
-        // One span table and one selected-cell set for the whole frame: the per-cell linear scans
-        // made a dense selection and a spanned grid `O(cells × (spans + selection))` (SP-P74).
-        let span_table: crate::compat::HashMap<(u32, u32), (u32, u32)> = self
-            .spans
-            .iter()
-            .map(|(row, column, row_span, column_span)| {
-                ((*row, *column), (*row_span, *column_span))
-            })
-            .collect();
-        let selected_table: crate::compat::HashMap<(u32, u32), ()> =
-            self.selected_cells.iter().map(|cell| (*cell, ())).collect();
-        let column_offsets = self.column_offsets();
+        // The frame tables come from the cache: a still frame reuses the span table, the selection
+        // set and the column offsets instead of rebuilding all three (SP-114).
+        let tables =
+            self.frame_cache.as_ref().expect("ensure_frame_tables() populates the frame cache");
         for row in self.first_row()..self.first_row() + self.visible_rows() {
             for column in 0..self.columns {
-                let Some(cell) =
-                    self.cell_rect_in(row, column, Some(&span_table), Some(&column_offsets))
-                else {
+                let Some(cell) = self.cell_rect_in(
+                    row,
+                    column,
+                    Some(&tables.spans),
+                    Some(&tables.column_offsets),
+                ) else {
                     continue;
                 };
-                if selected_table.contains_key(&(row, column)) {
+                if tables.selected.contains_key(&(row, column)) {
                     context.fill_rect(cell, selection_fill);
                 } else if self.hovered_cell == Some((row, column)) {
                     context.fill_rect(cell, hover_fill);
                 }
-                let text = self.cell_text(row, column);
+                let editing = self.editing_cell == Some((row, column));
+                let text =
+                    if editing { self.edit_buffer.as_str() } else { self.cell_text(row, column) };
                 if !text.is_empty() {
                     let line = context.text_line(cell, &cell_font);
                     let inset = 3u32.min(cell.width / 2);
@@ -1002,6 +1220,22 @@ impl Draw for GridWidget {
                         HorizontalAlignment::Left,
                     );
                 }
+                if editing {
+                    // The caret follows the buffer, so a mid-string edit is visible rather than
+                    // only committed on Enter.
+                    let prefix: String = self.edit_buffer.chars().take(self.edit_caret).collect();
+                    let caret_x =
+                        cell.x + 3 + context.measure_text(&prefix, &cell_font).width as i32;
+                    context.fill_rect(
+                        Rect::new(
+                            caret_x.min(cell.x + cell.width as i32 - 1),
+                            cell.y + 3,
+                            1,
+                            cell.height.saturating_sub(6).max(1),
+                        ),
+                        ink,
+                    );
+                }
             }
         }
 
@@ -1010,8 +1244,16 @@ impl Draw for GridWidget {
         // Headings reserve their own band above the matrix, so a heading cannot be mistaken
         // for row 0's data and the cell geometry stays a single derivation (`body_rect`).
         if !self.headers.is_empty() && body.y > rect.y {
-            let band = Rect::new(rect.x, rect.y, rect.width, (body.y - rect.y) as u32);
+            let band = Rect::new(body.x, rect.y, body.width, (body.y - rect.y) as u32);
             context.fill_rect(band, ink.blend(&cell_fill, 0.9));
+            // The corner cell above the row headings belongs to neither band; painting it with the
+            // heading tint keeps the two bands from looking like one continuous strip.
+            if self.row_header_width() > 0 {
+                context.fill_rect(
+                    Rect::new(rect.x, rect.y, self.row_header_width(), (body.y - rect.y) as u32),
+                    ink.blend(&cell_fill, 0.82),
+                );
+            }
             let font = crate::widget::metrics::role_font(self.style(), 11.0);
             for column in 0..self.columns {
                 let Some(title) = self.headers.get(column as usize) else {
@@ -1031,6 +1273,53 @@ impl Draw for GridWidget {
             context.draw_line(
                 Point::new(band.x, band.y + band.height as i32),
                 Point::new(band.x + band.width as i32, band.y + band.height as i32),
+                border_color,
+            );
+        }
+
+        // ── Row headings (SP-115) ──
+        // A non-empty list reserves a leading column, so a row's title cannot be mistaken for the
+        // first cell's data. The band shares the body's vertical derivation, so a page that shows
+        // rows 4..8 labels those rows and not rows 0..4.
+        let row_header_width = self.row_header_width();
+        if row_header_width > 0 && !self.row_headers.is_empty() {
+            let band_x = rect.x;
+            context.fill_rect(
+                Rect::new(band_x, body.y, row_header_width, body.height),
+                ink.blend(&cell_fill, 0.9),
+            );
+            let font = crate::widget::metrics::role_font(self.style(), 11.0);
+            let rows = self.visible_rows();
+            for visible in 0..rows {
+                let row = self.first_row() + visible;
+                let Some(title) = self.row_headers.get(row as usize) else {
+                    continue;
+                };
+                let y = body.y + (visible * (self.cell_height + self.spacing)) as i32;
+                if y >= body.y + body.height as i32 {
+                    break;
+                }
+                let height = self.cell_height.min((body.y + body.height as i32 - y).max(0) as u32);
+                let line = context.text_line(
+                    Rect::new(band_x + 3, y, row_header_width.saturating_sub(6), height),
+                    &font,
+                );
+                context.draw_text_fitted_cow(
+                    Rect::new(
+                        band_x + 3,
+                        line.y,
+                        row_header_width.saturating_sub(6).max(1),
+                        line.height,
+                    ),
+                    title,
+                    &font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+            context.draw_line(
+                Point::new(body.x, body.y),
+                Point::new(body.x, body.y + body.height as i32),
                 border_color,
             );
         }
@@ -1094,6 +1383,69 @@ impl EventHandler for GridWidget {
         if !self.base.is_enabled() {
             return;
         }
+
+        // An active in-place edit owns the keyboard until it commits or cancels (SP-115).
+        if self.editing_cell.is_some() {
+            match event {
+                Event::TextInput { text } | Event::ImeCommit { text } => {
+                    let filtered: String = text.chars().filter(|ch| !ch.is_control()).collect();
+                    if filtered.is_empty() {
+                        return;
+                    }
+                    let mut chars: Vec<char> = self.edit_buffer.chars().collect();
+                    let at = self.edit_caret.min(chars.len());
+                    chars.splice(at..at, filtered.chars());
+                    self.edit_buffer = chars.into_iter().collect();
+                    self.edit_caret = at + filtered.chars().count();
+                    self.base.request_redraw();
+                }
+                Event::KeyPress { key, .. } => match crate::shortcut::Key::from_key_code(*key) {
+                    Some(crate::shortcut::Key::Enter) => {
+                        self.commit_edit();
+                    }
+                    Some(crate::shortcut::Key::Escape) => self.cancel_edit(),
+                    Some(crate::shortcut::Key::Backspace) => {
+                        if self.edit_caret > 0 {
+                            let mut chars: Vec<char> = self.edit_buffer.chars().collect();
+                            chars.remove(self.edit_caret - 1);
+                            self.edit_caret -= 1;
+                            self.edit_buffer = chars.into_iter().collect();
+                            self.base.request_redraw();
+                        }
+                    }
+                    Some(crate::shortcut::Key::Delete) => {
+                        let length = self.edit_buffer.chars().count();
+                        if self.edit_caret < length {
+                            let mut chars: Vec<char> = self.edit_buffer.chars().collect();
+                            chars.remove(self.edit_caret);
+                            self.edit_buffer = chars.into_iter().collect();
+                            self.base.request_redraw();
+                        }
+                    }
+                    Some(crate::shortcut::Key::Left) => {
+                        self.edit_caret = self.edit_caret.saturating_sub(1);
+                        self.base.request_redraw();
+                    }
+                    Some(crate::shortcut::Key::Right) => {
+                        self.edit_caret =
+                            (self.edit_caret + 1).min(self.edit_buffer.chars().count());
+                        self.base.request_redraw();
+                    }
+                    Some(crate::shortcut::Key::Home) => {
+                        self.edit_caret = 0;
+                        self.base.request_redraw();
+                    }
+                    Some(crate::shortcut::Key::End) => {
+                        self.edit_caret = self.edit_buffer.chars().count();
+                        self.base.request_redraw();
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+            return;
+        }
+
         match *event {
             Event::MouseMove { pos } => {
                 if let Some(cell) = self.cell_at(pos) {
@@ -1122,6 +1474,16 @@ impl EventHandler for GridWidget {
                     self.cell_clicked.emit(cell);
                 }
             }
+            Event::MouseDoubleClick { pos, button: 1 } => {
+                // Double-click is the reachable edit gesture when the control is editable; with
+                // editing off it stays an ordinary pair of presses (SP-115).
+                if self.editable {
+                    if let Some((row, column)) = self.cell_at(pos) {
+                        self.select_cell((row, column));
+                        self.begin_edit(row, column);
+                    }
+                }
+            }
             Event::MouseRelease { pos: _, button: 1 } => {
                 self.base.set_mouse_pressed(false);
             }
@@ -1146,6 +1508,12 @@ impl EventHandler for GridWidget {
                     Some(crate::shortcut::Key::Home) => column = 0,
                     Some(crate::shortcut::Key::End) => column = self.columns.saturating_sub(1),
                     Some(crate::shortcut::Key::Enter) | Some(crate::shortcut::Key::Space) => {
+                        // Enter into an editable cell starts the edit rather than re-committing
+                        // the selection; with editing off the historical behaviour is unchanged.
+                        if self.editable && pressed == Some(crate::shortcut::Key::Enter) {
+                            self.begin_edit(current.0, current.1);
+                            return;
+                        }
                         self.select_cell(current);
                         self.cell_clicked.emit(current);
                         return;
@@ -1403,5 +1771,83 @@ mod tests {
         grid.set_geometry(Rect::new(0, 0, 200, 300));
         assert_eq!(grid.cell_width(), 100);
         assert_eq!(grid.cell_height(), 150);
+    }
+
+    /// A still frame reuses the span/selection/offset tables; a model or viewport change rebuilds
+    /// them (SP-114).
+    #[test]
+    fn the_frame_tables_are_reused_until_the_model_or_viewport_moves() {
+        use crate::widget::svg::render_to_svg;
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 120, 120), 2, 2);
+
+        let _ = render_to_svg(&mut grid);
+        assert_eq!(grid.frame_builds, 1, "the first draw builds the tables");
+
+        // The same model and geometry: no second build.
+        let _ = render_to_svg(&mut grid);
+        assert_eq!(grid.frame_builds, 1, "a still frame rebuilt the frame tables");
+
+        // A selection change invalidates the selected-cell set.
+        grid.select_cell((0, 1));
+        let _ = render_to_svg(&mut grid);
+        assert_eq!(grid.frame_builds, 2);
+
+        // A viewport change invalidates the column offsets and the cell dimensions.
+        grid.set_geometry(Rect::new(0, 0, 200, 200));
+        let _ = render_to_svg(&mut grid);
+        assert_eq!(grid.frame_builds, 3);
+    }
+
+    /// Row headings reserve a leading band, so the matrix starts to the right of it and every cell
+    /// shares what is left (SP-115).
+    #[test]
+    fn row_headers_reserve_a_leading_band() {
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 200, 100), 2, 2);
+        assert_eq!(grid.cell_at(Point::new(10, 10)), Some((0, 0)));
+        assert_eq!(grid.column_width(0), 100);
+
+        grid.set_row_headers(vec![String::from("Alpha"), String::from("Beta")]);
+        assert_eq!(grid.row_header_width(), GRID_ROW_HEADER_WIDTH);
+        // The heading column is not part of the matrix any more.
+        assert_eq!(grid.cell_at(Point::new(10, 10)), None);
+        assert_eq!(grid.cell_at(Point::new(GRID_ROW_HEADER_WIDTH as i32 + 10, 10)), Some((0, 0)));
+        // Two columns share the 140 px left of the heading band.
+        assert_eq!(grid.column_width(0), 70);
+        assert_eq!(grid.column_width(1), 70);
+
+        grid.set_row_headers(Vec::new());
+        assert_eq!(grid.row_header_width(), 0);
+        assert_eq!(grid.cell_at(Point::new(10, 10)), Some((0, 0)));
+    }
+
+    /// Editing is off by default; when enabled, a double-click starts it and Enter commits the
+    /// buffer into the cell, emitting `cell_edited` (SP-115).
+    #[test]
+    fn in_place_editing_is_opt_in_and_commits_the_buffer() {
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 100, 100), 2, 2);
+        grid.handle_event(&Event::mouse_double_click(10, 10, 1));
+        assert_eq!(grid.editing_cell(), None, "a read-only grid must not start an edit");
+        assert!(!grid.begin_edit(0, 0));
+
+        let edited = Arc::new(Mutex::new(Vec::<(u32, u32, String)>::new()));
+        let sink = edited.clone();
+        grid.cell_edited.connect(move |cell| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push((*cell).clone());
+            }
+        });
+
+        grid.set_editable(true);
+        grid.handle_event(&Event::mouse_double_click(10, 10, 1));
+        assert_eq!(grid.editing_cell(), Some((0, 0)));
+        grid.handle_event(&Event::text_input("Hello"));
+        grid.handle_event(&Event::key_press(13, 0));
+
+        assert_eq!(grid.editing_cell(), None);
+        assert_eq!(grid.cell_text(0, 0), "Hello");
+        assert_eq!(
+            edited.lock().expect("edited lock poisoned").clone(),
+            vec![(0, 0, String::from("Hello"))]
+        );
     }
 }

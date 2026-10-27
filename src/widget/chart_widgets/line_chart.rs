@@ -808,7 +808,12 @@ impl LineChart {
                 if !extents.valid {
                     return (0.0, 10.0);
                 }
-                Self::padded_range(extents.x_min, extents.x_max)
+                let range = Self::padded_range(extents.x_min, extents.x_max);
+                if self.x_axis_config.scale == AxisScale::Logarithmic {
+                    Self::log_domain_range(range, extents.x_min)
+                } else {
+                    range
+                }
             }
         }
     }
@@ -1100,9 +1105,30 @@ impl LineChart {
                 if !extents.valid {
                     return (0.0, 10.0);
                 }
-                Self::padded_range(extents.y_min, extents.y_max)
+                let range = Self::padded_range(extents.y_min, extents.y_max);
+                if self.y_axis_config.scale == AxisScale::Logarithmic {
+                    Self::log_domain_range(range, extents.y_min)
+                } else {
+                    range
+                }
             }
         }
+    }
+
+    /// Clamps an auto-resolved range into the positive domain a logarithmic axis needs.
+    ///
+    /// The linear padding can push the lower bound to or below zero, where the logarithm
+    /// is undefined and [`AxisConfig::fraction`] silently falls back to the linear
+    /// mapping. When the data itself reaches into positive territory the lower bound is
+    /// raised to the smallest positive data value, so the requested logarithmic scale
+    /// actually reaches the projection; data with no positive values keeps that linear
+    /// fallback.
+    fn log_domain_range(range: (f64, f64), data_min: f64) -> (f64, f64) {
+        let (min, max) = range;
+        if min > 0.0 || max <= 0.0 || !data_min.is_finite() || data_min <= 0.0 {
+            return range;
+        }
+        (min.max(data_min), max)
     }
 
     /// Expands a raw data range by the historical 10 % padding.

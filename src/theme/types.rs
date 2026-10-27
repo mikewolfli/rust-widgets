@@ -534,6 +534,36 @@ pub struct Colors {
     /// The ink legible on [`Colors::inverse_surface`].
     #[cfg_attr(not(alloc_frugal), serde(default = "default_on_inverse_surface_color"))]
     pub on_inverse_surface: Color,
+    /// The colour of an unvisited hyperlink.
+    ///
+    /// A link is not a primary action: it is inline text that happens to navigate, so it
+    /// gets a role of its own rather than reusing `primary` and making every button and
+    /// every link unable to move independently. The `link_visited` pair below is the other
+    /// half of the same fact.
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_link_color"))]
+    pub link: Color,
+    /// The colour of an already-followed hyperlink.
+    ///
+    /// Deliberately a second role: browsing history is a fact a reader relies on, and a
+    /// palette that cannot express it forces a control to bend `link` or `primary` into a
+    /// meaning neither owns.
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_link_visited_color"))]
+    pub link_visited: Color,
+    /// Placeholder / hint text in an empty editable field.
+    ///
+    /// A placeholder has to recede from the value the user typed, so it is darker or lighter
+    /// than `foreground` rather than equal to it; deriving that mix per control is how a
+    /// field's hint and its own text drifted apart.
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_placeholder_text_color"))]
+    pub placeholder_text: Color,
+    /// Text that must stay legible against a strongly coloured face (Qt calls this
+    /// "bright text").
+    ///
+    /// Kept separate from `on_inverse_surface` because that role describes an inverted
+    /// *surface*, while this one describes an emphasis on an already-coloured surface (a
+    /// selected row, a highlighted label).
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_bright_text_color"))]
+    pub bright_text: Color,
 }
 
 /// Default info color used for backward-compatible deserialization.
@@ -551,6 +581,30 @@ const fn default_info_color() -> Color {
 #[cfg(not(alloc_frugal))]
 const fn default_outline_color() -> Color {
     Color::rgb(121, 116, 126)
+}
+
+/// Default link colour (`#2196F3`, the light preset's action blue).
+#[cfg(not(alloc_frugal))]
+const fn default_link_color() -> Color {
+    Color::rgb(33, 150, 243)
+}
+
+/// Default visited-link colour (`#673AB7`, Material deep purple).
+#[cfg(not(alloc_frugal))]
+const fn default_link_visited_color() -> Color {
+    Color::rgb(103, 58, 183)
+}
+
+/// Default placeholder/hint text colour (`#757575`, Material grey 600).
+#[cfg(not(alloc_frugal))]
+const fn default_placeholder_text_color() -> Color {
+    Color::rgb(117, 117, 117)
+}
+
+/// Default bright text colour (`#FFFFFF`, legible on any saturated face).
+#[cfg(not(alloc_frugal))]
+const fn default_bright_text_color() -> Color {
+    Color::rgb(255, 255, 255)
 }
 
 /// Default secondary separator colour (`#CAC4D0`, M3's light `outlineVariant`).
@@ -622,6 +676,10 @@ impl Colors {
                 .blend(&other.surface_container_high, weight),
             inverse_surface: self.inverse_surface.blend(&other.inverse_surface, weight),
             on_inverse_surface: self.on_inverse_surface.blend(&other.on_inverse_surface, weight),
+            link: self.link.blend(&other.link, weight),
+            link_visited: self.link_visited.blend(&other.link_visited, weight),
+            placeholder_text: self.placeholder_text.blend(&other.placeholder_text, weight),
+            bright_text: self.bright_text.blend(&other.bright_text, weight),
         }
     }
 }
@@ -661,6 +719,10 @@ impl Default for Colors {
             surface_container_high: Color::rgb(236, 230, 240),
             inverse_surface: Color::rgb(49, 48, 51),
             on_inverse_surface: Color::rgb(244, 239, 244),
+            link: Color::rgb(33, 150, 243),
+            link_visited: Color::rgb(103, 58, 183),
+            placeholder_text: Color::rgb(117, 117, 117),
+            bright_text: Color::rgb(255, 255, 255),
         }
     }
 }
@@ -861,16 +923,80 @@ pub enum IconSlot {
     Large,
 }
 
+/// One side of a bordered face.
+///
+/// A closed set on purpose: a border side is a fact about the rectangle, and a caller that
+/// spells it as a bare `u8` can put left where top belongs with nothing to catch it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BorderSide {
+    /// The top edge.
+    Top,
+    /// The right edge.
+    Right,
+    /// The bottom edge.
+    Bottom,
+    /// The left edge.
+    Left,
+}
+
 /// Border and elevation behavior tokens.
 #[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
+#[cfg_attr(not(alloc_frugal), serde(default))]
 #[derive(Debug, Clone)]
 pub struct Borders {
-    /// Default border width.
+    /// Default border width, and the fallback for every side that does not state its own.
     pub width: u32,
     /// Default corner radius.
     pub radius: u32,
     /// Whether drop shadows are enabled.
     pub shadow: bool,
+    /// Top edge width. `None` uses [`Borders::width`].
+    #[cfg_attr(not(alloc_frugal), serde(default, skip_serializing_if = "Option::is_none"))]
+    pub top: Option<u32>,
+    /// Right edge width. `None` uses [`Borders::width`].
+    #[cfg_attr(not(alloc_frugal), serde(default, skip_serializing_if = "Option::is_none"))]
+    pub right: Option<u32>,
+    /// Bottom edge width. `None` uses [`Borders::width`].
+    #[cfg_attr(not(alloc_frugal), serde(default, skip_serializing_if = "Option::is_none"))]
+    pub bottom: Option<u32>,
+    /// Left edge width. `None` uses [`Borders::width`].
+    #[cfg_attr(not(alloc_frugal), serde(default, skip_serializing_if = "Option::is_none"))]
+    pub left: Option<u32>,
+}
+
+impl Borders {
+    /// The width of one edge, falling back to the uniform [`Borders::width`].
+    ///
+    /// # Why the per-side fields are `Option`
+    ///
+    /// A theme file written before the four edges existed omits them. An `u32` with a serde
+    /// default would then resolve those omissions to `0` — a border that silently disappears —
+    /// whereas `None` means exactly what the older file said: "use the uniform width". The
+    /// getter is the single read point, so a renderer never has to remember the fallback.
+    pub fn side_width(&self, side: BorderSide) -> u32 {
+        let stated = match side {
+            BorderSide::Top => self.top,
+            BorderSide::Right => self.right,
+            BorderSide::Bottom => self.bottom,
+            BorderSide::Left => self.left,
+        };
+        match stated {
+            Some(width) => width,
+            None => self.width,
+        }
+    }
+
+    /// Whether every edge still shares the uniform [`Borders::width`].
+    pub fn is_uniform(&self) -> bool {
+        self.top.is_none() && self.right.is_none() && self.bottom.is_none() && self.left.is_none()
+    }
+}
+
+impl Default for Borders {
+    /// The historical single-value border: 1 px, radius 4, shadows on, every edge unstated.
+    fn default() -> Self {
+        Self { width: 1, radius: 4, shadow: true, top: None, right: None, bottom: None, left: None }
+    }
 }
 
 impl Theme {
@@ -1394,5 +1520,46 @@ mod system_accent_tests {
         assert_ne!(middle.background, dark.background);
         assert_ne!(middle.foreground, light.foreground);
         assert_ne!(middle.foreground, dark.foreground);
+    }
+
+    /// STY-004: the four text roles a palette lacked are populated, opaque and theme-driven.
+    #[test]
+    fn the_link_and_text_roles_are_populated_and_move_between_presets() {
+        let light = Colors::default();
+        let dark = crate::theme::Theme::dark().colors;
+        for (name, color) in [
+            ("link", light.link),
+            ("link_visited", light.link_visited),
+            ("placeholder_text", light.placeholder_text),
+            ("bright_text", light.bright_text),
+        ] {
+            assert_eq!(color.a, 255, "{name} must be an opaque role, not translucent black");
+        }
+        assert_ne!(light.link, dark.link, "a link follows the appearance");
+        assert_ne!(light.link_visited, dark.link_visited);
+        assert_ne!(light.placeholder_text, dark.placeholder_text);
+        assert_ne!(
+            light.blend(&dark, 0.5).link,
+            light.link,
+            "the blend path covers the new roles too"
+        );
+    }
+
+    /// THM-001: a border edge that states no width still resolves through the uniform token, so
+    /// a theme file written before the four edges existed renders exactly as it did.
+    #[test]
+    fn a_border_side_without_its_own_width_uses_the_uniform_width() {
+        let uniform = Borders::default();
+        assert!(uniform.is_uniform());
+        for side in [BorderSide::Top, BorderSide::Right, BorderSide::Bottom, BorderSide::Left] {
+            assert_eq!(uniform.side_width(side), uniform.width);
+        }
+
+        let per_side = Borders { top: Some(3), left: Some(0), ..Borders::default() };
+        assert_eq!(per_side.side_width(BorderSide::Top), 3, "a stated edge wins");
+        assert_eq!(per_side.side_width(BorderSide::Left), 0, "zero is a statement, not absence");
+        assert_eq!(per_side.side_width(BorderSide::Right), per_side.width);
+        assert_eq!(per_side.side_width(BorderSide::Bottom), per_side.width);
+        assert!(!per_side.is_uniform());
     }
 }

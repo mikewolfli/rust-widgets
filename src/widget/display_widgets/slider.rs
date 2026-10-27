@@ -2526,6 +2526,10 @@ mod tests {
     fn set_slider_position_without_tracking_applies_on_release() {
         let mut s = make_slider();
         s.set_tracking(false);
+        // A groove click is a discrete page gesture now — the press is consumed and no
+        // position is recorded — so the release-apply contract is pinned on a drag start,
+        // which is what a jump-mode click is.
+        s.set_track_click(SliderTrackClick::Jump);
         s.base.set_geometry(Rect::new(0, 0, 200, 30));
         s.handle_event(&Event::mouse_press(80, 15, 1));
         s.handle_event(&Event::mouse_release(80, 15, 1));

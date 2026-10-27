@@ -221,6 +221,22 @@ impl Widget for MarkdownToolbar {
 
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves the toolbar's published action event.
+    ///
+    /// The capability layer can only reach an event through this method; without the arm the
+    /// `action_triggered` name is declared but inert. See `DiffViewer`'s note on why the arms are
+    /// explicit.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "action_triggered" => {
+                Some(EventSignalRef::mapped("action_triggered", &self.action_triggered, |value| {
+                    CapabilityValue::String(value.clone())
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl WidgetProperties for MarkdownToolbar {
@@ -302,6 +318,21 @@ impl EventHandler for MarkdownToolbar {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SP-022: the toolbar's published action event resolves to its signal.
+    #[test]
+    fn action_triggered_is_reachable_through_the_capability_event() {
+        let toolbar = MarkdownToolbar::new(Rect::new(0, 0, 240, 28));
+        let resolved =
+            toolbar.event_signal_dyn("action_triggered").expect("the published event must resolve");
+        assert_eq!(resolved.name(), "action_triggered");
+        assert!(toolbar.event_signal_dyn("no_such_event").is_none());
     }
 }
 

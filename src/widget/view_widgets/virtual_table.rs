@@ -485,14 +485,24 @@ impl VirtualTable {
     }
 
     /// The x offset of `column`'s left edge, measured from the cells' left edge.
+    ///
+    /// The layout is the authority while the source provides columns; past its last column — and
+    /// with no source at all, where the layout is empty — the uniform stride answers instead, so a
+    /// cell's box stays `column * column_width` for any index.
     fn column_offset(&self, column: usize) -> i32 {
         self.with_column_layout(|layout| {
             layout
                 .offsets
                 .get(column)
                 .copied()
-                .unwrap_or_else(|| layout.offsets.last().copied().unwrap_or(0))
+                .unwrap_or_else(|| self.uniform_column_offset(column))
         })
+    }
+
+    /// The offset the uniform stride assigns to `column`, saturated against `i32`.
+    fn uniform_column_offset(&self, column: usize) -> i32 {
+        let stride = self.column_width.max(1) as u64;
+        (column as u64).saturating_mul(stride).min(i32::MAX as u64) as i32
     }
 
     /// The absolute column painted at viewport-local ordinal `local`.
@@ -517,8 +527,14 @@ impl VirtualTable {
     }
 
     /// How many visible columns of `width` fit starting at the scroll position.
+    ///
+    /// With no source the layout is empty, so the uniform stride decides by division — the same
+    /// answer the historical `width / column_width` gave.
     fn visible_column_capacity(&self, width: u32) -> usize {
         self.with_column_layout(|layout| {
+            if layout.widths.is_empty() {
+                return (width / self.column_width.max(1)).max(1) as usize;
+            }
             let mut used = 0u32;
             let mut count = 0usize;
             for column in self.scroll_column.min(layout.widths.len())..layout.widths.len() {
@@ -1214,6 +1230,14 @@ impl VirtualTable {
         let offset = x - left;
         let scroll_offset = self.column_offset(self.scroll_column);
         self.with_column_layout(|layout| {
+            if layout.widths.is_empty() {
+                // No source: the uniform stride is the only geometry, so the hit test is the
+                // division that inverts `Self::cell_rect`, rejecting the gap the same way.
+                let stride = self.column_width.max(1) as i32;
+                let local = (offset / stride) as usize;
+                return (offset % stride < stride - 2)
+                    .then_some(self.scroll_column.saturating_add(local));
+            }
             let start = self.scroll_column.min(layout.widths.len());
             for column in start..layout.widths.len() {
                 let width = layout.widths[column];

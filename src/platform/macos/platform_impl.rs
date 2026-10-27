@@ -259,6 +259,20 @@ impl Platform for MacOSPlatform {
         super::file_picker::choose_path(purpose, title)
     }
 
+    /// [`Self::choose_path`] with the caller's filters applied to the panel (P-203).
+    ///
+    /// AppKit's panel exposes one allowed-type set rather than a named filter list, so the union
+    /// of the requested extensions is what it can enforce; `file_picker::apply_filters` records
+    /// the rest of the limit.
+    fn choose_path_with_filters(
+        &self,
+        purpose: crate::platform::PathPurpose,
+        title: &str,
+        filters: &[crate::platform::PathFilter],
+    ) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
+        super::file_picker::choose_path_with_filters(purpose, title, filters)
+    }
+
     /// Hands a URL or path to the system's default handler by spawning `open`.
     ///
     /// See [`Platform::open_external`] for why this returns on hand-off rather than on the

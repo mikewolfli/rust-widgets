@@ -491,6 +491,65 @@ const DEPENDENCY_PADDING: i32 = 8;
 /// Height reserved for the editor's caption.
 const DEPENDENCY_HEADER: i32 = 18;
 
+/// The row shape of the `dependency_edges` property.
+///
+/// An edge is one flat record. `kind` carries the same `fts`/`sts`/`ftf` token a gantt task's
+/// `dependencies` field uses, so the two list-shaped contracts in this family describe an edge
+/// identically. The identity field is the successor: it is present on every edge and gives a
+/// designer a stable handle to list against, while duplicate edges (which `set_dependencies`
+/// already refuses) are left to that method rather than refused twice with two different errors.
+pub const DEPENDENCY_SCHEMA: crate::widget::capability::RecordSchema =
+    crate::widget::capability::RecordSchema {
+        fields: &[
+            crate::widget::capability::RecordField::required(
+                "predecessor",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::required(
+                "successor",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+            crate::widget::capability::RecordField::optional(
+                "kind",
+                crate::widget::capability::PropertyValueKind::String,
+            ),
+        ],
+        id_field: "successor",
+        ids_unique: false,
+        ids_required: false,
+    };
+
+/// One row of [`DEPENDENCY_SCHEMA`].
+fn dependency_record(dependency: &Dependency) -> crate::widget::capability::RecordValue {
+    crate::widget::capability::RecordValue::new()
+        .with("predecessor", CapabilityValue::String(dependency.predecessor.clone()))
+        .with("successor", CapabilityValue::String(dependency.successor.clone()))
+        .with("kind", CapabilityValue::String(dependency.kind.token().to_string()))
+}
+
+/// Rebuilds one [`Dependency`] from a row of [`DEPENDENCY_SCHEMA`].
+fn dependency_from_record(
+    record: &crate::widget::capability::RecordValue,
+) -> Result<Dependency, CapabilityAccessError> {
+    let text = |name: &str| match record.get(name) {
+        Some(CapabilityValue::String(value)) => Ok(value.clone()),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    };
+    let kind = match record.get("kind") {
+        None | Some(CapabilityValue::Null) => DependencyKind::default(),
+        Some(CapabilityValue::String(token)) => {
+            DependencyKind::from_token(token).ok_or_else(|| {
+                CapabilityAccessError::ConstraintViolation {
+                    property: crate::compat::String::from("dependency_edges"),
+                    reason: crate::compat::format!("unknown dependency kind: {token}"),
+                }
+            })?
+        }
+        Some(_) => return Err(CapabilityAccessError::TypeMismatch),
+    };
+    Ok(Dependency { predecessor: text("predecessor")?, successor: text("successor")?, kind })
+}
+
 /// A list of dependency edges that can be selected, added and removed.
 ///
 /// Each edge occupies one row. Pressing a row reports it through
@@ -721,6 +780,14 @@ impl WidgetProperties for DependencyEditor {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "dependencies" => Ok(CapabilityValue::UInt(self.dependencies.len() as u64)),
+            // The whole edge list as records (SP-123). `dependencies` stays the count it has always
+            // been; this is the read/write face that can say *which* edges exist.
+            "dependency_edges" => {
+                Ok(CapabilityValue::Records(crate::widget::capability::RecordList::from_items(
+                    &DEPENDENCY_SCHEMA,
+                    self.dependencies.iter().map(dependency_record).collect(),
+                )))
+            }
             "editable" => Ok(CapabilityValue::Bool(self.editable)),
             _ => base_property_get(self, name),
         }
@@ -732,6 +799,26 @@ impl WidgetProperties for DependencyEditor {
                 self.set_editable(expect_bool(value)?);
                 Ok(())
             }
+            // A whole-list replacement through `set_dependencies`, so the record face and the
+            // concrete API cannot disagree about duplicates or self-edges.
+            "dependency_edges" => {
+                let CapabilityValue::Records(list) = value else {
+                    return Err(CapabilityAccessError::TypeMismatch);
+                };
+                list.validate_against(&DEPENDENCY_SCHEMA).map_err(|violation| {
+                    CapabilityAccessError::ConstraintViolation {
+                        property: crate::compat::String::from("dependency_edges"),
+                        reason: crate::compat::format!("{violation}"),
+                    }
+                })?;
+                let dependencies = list
+                    .items()
+                    .iter()
+                    .map(dependency_from_record)
+                    .collect::<Result<Vec<_>, CapabilityAccessError>>()?;
+                self.set_dependencies(dependencies);
+                Ok(())
+            }
             // A count cannot say *which* edges to keep; the list is replaced through
             // `set_dependencies`, which carries the identities.
             "dependencies" => Err(CapabilityAccessError::ReadOnlyProperty),
@@ -740,7 +827,7 @@ impl WidgetProperties for DependencyEditor {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["dependencies", "editable", BASE_PROPERTY_NAMES]
+        property_names_of!["dependencies", "dependency_edges", "editable", BASE_PROPERTY_NAMES]
     }
 }
 
@@ -816,5 +903,67 @@ impl Draw for DependencyEditor {
                 context.draw_line(end, Point::new(end.x - 4, end.y + 3), border);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The edge list has a records read/write face, while `dependencies` stays the count it was
+    /// (SP-123).
+    #[test]
+    fn the_dependency_edges_property_round_trips_records() {
+        let mut editor = DependencyEditor::new(Rect::new(0, 0, 260, 160));
+        editor.set_dependencies(vec![Dependency::with_kind(
+            "a",
+            "b",
+            DependencyKind::StartToStart,
+        )]);
+
+        let records = match editor.get("dependency_edges").expect("the list is readable") {
+            CapabilityValue::Records(records) => records,
+            other => panic!("dependency_edges must read as Records, got {other:?}"),
+        };
+        assert_eq!(records.len(), 1);
+        let row = &records.items()[0];
+        assert_eq!(row.get("predecessor"), Some(&CapabilityValue::String(String::from("a"))));
+        assert_eq!(row.get("successor"), Some(&CapabilityValue::String(String::from("b"))));
+        assert_eq!(row.get("kind"), Some(&CapabilityValue::String(String::from("sts"))));
+
+        // A whole-list write goes through `set_dependencies`, so duplicates and self-edges keep
+        // their existing rule.
+        let list = crate::widget::capability::RecordList::from_items(
+            &DEPENDENCY_SCHEMA,
+            vec![
+                crate::widget::capability::RecordValue::new()
+                    .with("predecessor", CapabilityValue::String(String::from("x")))
+                    .with("successor", CapabilityValue::String(String::from("y")))
+                    .with("kind", CapabilityValue::String(String::from("ftf"))),
+                crate::widget::capability::RecordValue::new()
+                    .with("predecessor", CapabilityValue::String(String::from("x")))
+                    .with("successor", CapabilityValue::String(String::from("y"))),
+            ],
+        );
+        editor
+            .set("dependency_edges", CapabilityValue::Records(list))
+            .expect("the records are writable");
+        assert_eq!(editor.dependencies().len(), 1, "the duplicate is refused as before");
+        assert_eq!(editor.dependencies()[0].kind, DependencyKind::FinishToFinish);
+        assert_eq!(
+            editor.get("dependencies").expect("the count still reads"),
+            CapabilityValue::UInt(1)
+        );
+
+        // An unknown kind token is a constraint violation, not a silent default.
+        let bad = crate::widget::capability::RecordList::from_items(
+            &DEPENDENCY_SCHEMA,
+            vec![crate::widget::capability::RecordValue::new()
+                .with("predecessor", CapabilityValue::String(String::from("p")))
+                .with("successor", CapabilityValue::String(String::from("q")))
+                .with("kind", CapabilityValue::String(String::from("wat")))],
+        );
+        assert!(editor.set("dependency_edges", CapabilityValue::Records(bad)).is_err());
+        assert_eq!(editor.dependencies().len(), 1, "a refused write keeps the live list");
     }
 }

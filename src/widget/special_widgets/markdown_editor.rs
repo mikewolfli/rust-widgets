@@ -274,6 +274,19 @@ impl LineIndex {
             _ => 0,
         }
     }
+
+    /// The byte span `[start, end)` of `line` in a document of `text_len` bytes.
+    ///
+    /// `None` when `line` is past the end. Callers slice the document with this instead of
+    /// rescanning it, which is what keeps hit-testing and caret placement on the same table.
+    fn line_span(&self, line: usize, text_len: usize) -> Option<(usize, usize)> {
+        let start = self.starts.get(line).copied()?.min(text_len);
+        let end = match self.starts.get(line + 1) {
+            Some(next) => next.saturating_sub(1).min(text_len),
+            None => text_len,
+        };
+        Some((start, end.max(start)))
+    }
 }
 
 /// The find bar's state.
@@ -351,8 +364,18 @@ pub struct MarkdownEditor {
     revision: u64,
     /// `line_count` / `word_count` / `heading_count`, keyed by revision.
     metrics: RefCell<Option<(u64, Metrics)>>,
-    /// Parsed preview rows, keyed by line index and text hash.
-    preview_cache: HashMap<(usize, u64), Rc<ParsedLine>>,
+    /// Parsed preview rows, keyed by the row's content and the context it was parsed under.
+    ///
+    /// The key deliberately does **not** carry the row's index: inserting a line above the
+    /// viewport shifted every index and re-parsed the whole visible page even though no visible
+    /// text had changed.
+    preview_cache: HashMap<PreviewKey, Rc<ParsedLine>>,
+    /// The header line's formatting buffer, reused across frames.
+    ///
+    /// The header is rebuilt every frame from the revision-keyed metrics; `format!` gave it a
+    /// fresh `String` each time, so a still editor allocated once per frame for text that had not
+    /// changed.
+    header_buffer: String,
     /// Per-line block classification, rebuilt when the revision changes.
     blocks: Vec<BlockStart>,
     /// Whether the line *after* each line is a table divider, so a row can be recognised as a
@@ -415,6 +438,7 @@ impl MarkdownEditor {
             revision: 0,
             metrics: RefCell::new(None),
             preview_cache: HashMap::new(),
+            header_buffer: String::new(),
             blocks: Vec::new(),
             table_header: Vec::new(),
             blocks_revision: u64::MAX,
@@ -655,17 +679,25 @@ impl MarkdownEditor {
     }
 
     /// The selected text, when a selection exists.
+    ///
+    /// The selection is stored as ordered character offsets, so the text is taken by slicing the
+    /// bytes those offsets address. The previous form collected the *whole* document into a
+    /// character vector on every call, which made copying one word cost O(document).
     pub fn selected_text(&self) -> Option<String> {
         let (start, end) = self.selection?;
-        let chars: Vec<char> = self.text.chars().collect();
-        let start = start.min(chars.len());
-        let end = end.min(chars.len());
-        Some(chars[start..end.max(start)].iter().collect())
+        let total = self.total_char_count();
+        let start = start.min(total);
+        let end = end.min(total).max(start);
+        let start_byte = self.char_offset_to_byte(start);
+        let end_byte = self.char_offset_to_byte(end);
+        Some(self.text[start_byte..end_byte].to_string())
     }
 
     /// Selects the whole document.
     pub fn select_all(&mut self) {
-        let length = self.text.chars().count();
+        // The length comes from the cached line tables; counting the document's characters here
+        // walked it once per call.
+        let length = self.total_char_count();
         self.selection_anchor = Some((0, 0));
         self.apply_selection(if length == 0 { None } else { Some((0, length)) });
         self.cursor_line = self.edit_line_count().saturating_sub(1);
@@ -907,9 +939,65 @@ impl MarkdownEditor {
     pub fn tick(&mut self, delta_ms: u32) -> bool {
         let owes_frame = self.cursor_blink.tick(delta_ms);
         if owes_frame {
-            self.base.request_redraw();
+            // A blink flips one glyph-wide bar, so a damage-tracking host is asked for that
+            // rectangle instead of the whole control.
+            self.request_caret_repaint();
         }
         owes_frame
+    }
+
+    /// The caret's own rectangle, or `None` when this frame has no caret on screen.
+    ///
+    /// Preview has no caret and an off-screen caret has nothing to paint, so both answer
+    /// `None` and the caller keeps the whole-control repaint.
+    #[cfg(not(alloc_frugal))]
+    fn caret_rect(&self) -> Option<Rect> {
+        if self.preview_mode {
+            return None;
+        }
+        let row = self
+            .cursor_line
+            .checked_sub(self.visible_start())
+            .filter(|row| *row < self.visible_line_count())?;
+        let rect = self.geometry();
+        let font = effective_font(self.base.style());
+        let (line_start, line_end) = self.cursor_line_span();
+        let line = &self.text[line_start..line_end];
+        let caret_byte = byte_offset_of_char(line, self.cursor_col);
+        let x = rect.x + 12 + estimate_text_width(&line[..caret_byte], font, 1.0) as i32;
+        let y = rect.y + TEXT_TOP + (row as i32) * TEXT_ROW_HEIGHT;
+        if y + 14 > rect.y + rect.height as i32 || x > rect.x + rect.width as i32 - 12 {
+            return None;
+        }
+        // The composition is drawn at the caret, so a frame painting it owns that width too.
+        let width = match &self.preedit {
+            Some(preedit) => estimate_text_width(&preedit.text, font, 1.0).max(1),
+            None => 1,
+        };
+        Some(Rect::new(x, y - 2, width, TEXT_ROW_HEIGHT as u32))
+    }
+
+    /// Submits one caret-blink frame as damage bounded by the caret's own rectangle.
+    ///
+    /// This mirrors the crate's other animated controls: a mounted control in a damage-tracking
+    /// repaint mode asks for the rectangle it changed, while every other host keeps the
+    /// whole-control request it already understood.
+    fn request_caret_repaint(&self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            if let (Some(bounds), Some(id)) =
+                (self.caret_rect(), crate::widget::runtime::registry_id_of(self.id()))
+            {
+                if crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full
+                {
+                    crate::widget::runtime::request_repaint_rect(id, bounds);
+                    self.base.redraw_requested.emit();
+                    return;
+                }
+            }
+        }
+        self.base.request_redraw();
     }
 
     /// Whether the caret is drawn on the current frame.
@@ -1149,7 +1237,11 @@ impl MarkdownEditor {
         self.clamp_cursor();
         self.selection_anchor = None;
         self.apply_selection(None);
-        self.text_changed.emit(self.text.clone());
+        // The payload is the whole document, so the clone is only paid when there is somebody to
+        // receive it; the signal contract itself is unchanged.
+        if self.text_changed.slot_count() > 0 {
+            self.text_changed.emit(self.text.clone());
+        }
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -1205,14 +1297,9 @@ impl MarkdownEditor {
     /// callers cannot index past the string even before [`Self::clamp_cursor`] runs.
     fn cursor_line_span(&self) -> (usize, usize) {
         self.with_line_index(|index| {
-            let Some(&start) = index.starts.get(self.cursor_line) else {
-                return (self.text.len(), self.text.len());
-            };
-            let end = match index.starts.get(self.cursor_line + 1) {
-                Some(next) => next.saturating_sub(1),
-                None => self.text.len(),
-            };
-            (start, end.max(start))
+            index
+                .line_span(self.cursor_line, self.text.len())
+                .unwrap_or((self.text.len(), self.text.len()))
         })
     }
 
@@ -1265,7 +1352,10 @@ impl MarkdownEditor {
             )));
         }
         self.clamp_cursor();
-        self.text_changed.emit(self.text.clone());
+        // A whole-document payload is worth cloning only when a subscriber will receive it.
+        if self.text_changed.slot_count() > 0 {
+            self.text_changed.emit(self.text.clone());
+        }
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -1474,15 +1564,36 @@ impl MarkdownEditor {
     /// The content of `line`, without its `\n`.
     fn line_slice(&self, line: usize) -> &str {
         self.with_line_index(|index| {
-            let Some(&start_byte) = index.starts.get(line) else {
-                return "";
-            };
-            let end_byte = match index.starts.get(line + 1) {
-                Some(next) => next.saturating_sub(1),
-                None => self.text.len(),
-            };
-            &self.text[start_byte..end_byte]
+            index.line_span(line, self.text.len()).map_or("", |(start, end)| &self.text[start..end])
         })
+    }
+
+    /// The `(column, line length)` a pointer at `x` (relative to the text column) hits in `line`.
+    ///
+    /// The line comes from the cached offset tables rather than from a fresh scan for its `nth`
+    /// `\n`, which was one pass over every line above the hit row per press and per drag move.
+    /// The width cache is borrowed as its own field so it can be mutated beside the line borrow.
+    fn hit_column(&mut self, line: usize, x: i32) -> (usize, usize) {
+        let font = effective_font(self.base.style());
+        self.ensure_line_index();
+        let index = self.line_index.borrow();
+        let Some((_, table)) = index.as_ref() else {
+            return (0, 0);
+        };
+        let Some((start, end)) = table.line_span(line, self.text.len()) else {
+            return (0, 0);
+        };
+        let mut offset = 0i32;
+        let mut column = 0usize;
+        for ch in self.text[start..end].chars() {
+            let width = cached_char_width(&mut self.char_widths, ch, font, 1.0);
+            if x < offset + width / 2 {
+                break;
+            }
+            offset += width;
+            column += 1;
+        }
+        (column, table.char_lens.get(line).copied().unwrap_or(column))
     }
 
     /// Indents (`indent == true`) or outdents the selected lines by one level.
@@ -1904,25 +2015,10 @@ impl EventHandler for MarkdownEditor {
                 if line >= self.edit_line_count() {
                     return;
                 }
-                let font = effective_font(self.base.style());
-                let x = pos.x - rect.x - 12;
-                // The line is borrowed, not copied: a drag over the document copied one line per
-                // pointer move. `text`, `char_widths` and the style are disjoint fields, so the
-                // immutable line borrow and the mutable width cache coexist.
-                let (column, line_chars) = {
-                    let line_text = self.text.split('\n').nth(line).unwrap_or("");
-                    let mut offset = 0i32;
-                    let mut column = 0usize;
-                    for ch in line_text.chars() {
-                        let width = cached_char_width(&mut self.char_widths, ch, font, 1.0);
-                        if x < offset + width / 2 {
-                            break;
-                        }
-                        offset += width;
-                        column += 1;
-                    }
-                    (column, line_text.chars().count())
-                };
+                // The column is resolved against the cached line tables, not by rescanning the
+                // document: the old form walked every line above the hit row on every press and
+                // drag move, and it resolved the column through a different path than the caret.
+                let (column, line_chars) = self.hit_column(line, pos.x - rect.x - 12);
                 let shift = crate::shortcut::Modifiers::from_event_bits(*modifiers)
                     .contains(crate::shortcut::Modifiers::SHIFT);
                 self.cursor_line = line;
@@ -1955,22 +2051,8 @@ impl EventHandler for MarkdownEditor {
                     if row >= 0 {
                         let line = (self.visible_start() + row as usize)
                             .min(self.edit_line_count().saturating_sub(1));
-                        let font = effective_font(self.base.style());
-                        let x = pos.x - rect.x - 12;
-                        let (column, line_chars) = {
-                            let line_text = self.text.split('\n').nth(line).unwrap_or("");
-                            let mut offset = 0i32;
-                            let mut column = 0usize;
-                            for ch in line_text.chars() {
-                                let width = cached_char_width(&mut self.char_widths, ch, font, 1.0);
-                                if x < offset + width / 2 {
-                                    break;
-                                }
-                                offset += width;
-                                column += 1;
-                            }
-                            (column, line_text.chars().count())
-                        };
+                        // Same table, same answer as the press that started the drag.
+                        let (column, line_chars) = self.hit_column(line, pos.x - rect.x - 12);
                         self.cursor_line = line;
                         self.cursor_col = column.min(line_chars);
                         self.sync_selection_from_anchor();
@@ -2396,20 +2478,29 @@ impl Draw for MarkdownEditor {
         );
 
         // The counts come from the revision-keyed cache, so a still frame walks no document.
+        // The line is formatted into the editor's own buffer: `format!` allocated a fresh
+        // `String` per frame for text that only changes with the document or the find query.
         let metrics = self.metrics_snapshot();
-        let header = if self.find.visible {
-            format!("Find: {}   (Enter next, Esc close)", self.find.query)
-        } else if self.preview_mode {
-            format!(
-                "Markdown Preview  lines:{} words:{} headings:{}",
-                metrics.lines, metrics.words, metrics.headings
-            )
-        } else {
-            format!(
-                "Markdown Edit  lines:{} words:{} headings:{}",
-                metrics.lines, metrics.words, metrics.headings
-            )
-        };
+        let mut header = core::mem::take(&mut self.header_buffer);
+        header.clear();
+        {
+            use core::fmt::Write;
+            let _ = if self.find.visible {
+                write!(header, "Find: {}   (Enter next, Esc close)", self.find.query)
+            } else if self.preview_mode {
+                write!(
+                    header,
+                    "Markdown Preview  lines:{} words:{} headings:{}",
+                    metrics.lines, metrics.words, metrics.headings
+                )
+            } else {
+                write!(
+                    header,
+                    "Markdown Edit  lines:{} words:{} headings:{}",
+                    metrics.lines, metrics.words, metrics.headings
+                )
+            };
+        }
         // The mounted find bar replaces the plain header text while it is open: it paints the
         // query, the match counter and its policy toggles, and a second header underneath would
         // be an unreadable overprint.
@@ -2427,6 +2518,9 @@ impl Draw for MarkdownEditor {
                 HorizontalAlignment::Left,
             );
         }
+        // The buffer goes back into the editor for the next frame; it was only borrowed for the
+        // duration of the call above.
+        self.header_buffer = header;
 
         let start = self.visible_start();
         let count = self.visible_line_count();
@@ -2482,7 +2576,16 @@ impl Draw for MarkdownEditor {
 
                 if self.preview_mode {
                     let block = blocks.get(idx).copied().unwrap_or(BlockStart::Normal);
-                    let key = (idx, text_hash(line));
+                    // The key is the row's content and parse context, never its index, so an
+                    // edit that shifts the page keeps every unchanged row parsed.
+                    let key = PreviewKey::new(
+                        line,
+                        block,
+                        gfm,
+                        highlight,
+                        table_headers.get(idx).copied().unwrap_or(false),
+                        font,
+                    );
                     let parsed = match cache.get(&key).cloned() {
                         Some(parsed) => parsed,
                         None => {
@@ -2512,16 +2615,25 @@ impl Draw for MarkdownEditor {
                     );
                 }
             }
-            // The cache is keyed by line index and text hash, so entries for lines that moved or
+            // The cache is keyed by content and parse context, so entries for rows that moved or
             // changed are simply unused. When the table outgrows its bound only the entries that
-            // no longer describe a live line are dropped: clearing it rebuilt every visible line
+            // no longer describe a live row are dropped: clearing it rebuilt every visible line
             // on the next frame.
             let bound = line_total.saturating_mul(4).saturating_add(64);
             if cache.len() > bound {
-                let live: std::collections::HashSet<(usize, u64)> = text
+                let live: std::collections::HashSet<PreviewKey> = text
                     .split('\n')
                     .enumerate()
-                    .map(|(index, line)| (index, text_hash(line)))
+                    .map(|(index, line)| {
+                        PreviewKey::new(
+                            line,
+                            blocks.get(index).copied().unwrap_or(BlockStart::Normal),
+                            gfm,
+                            highlight,
+                            table_headers.get(index).copied().unwrap_or(false),
+                            font,
+                        )
+                    })
                     .collect();
                 cache.retain(|key, _| live.contains(key));
             }
@@ -2614,6 +2726,59 @@ fn text_hash(text: &str) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
     }
     hash
+}
+
+/// The cache key of one parsed preview row.
+///
+/// A key is the row's text plus every input the parse reads: its block context (a fenced-code
+/// line is tokenised differently from prose), the GFM and highlighting flags, whether a table
+/// divider follows, and the font size its runs were measured at. The row's position is not an
+/// input to the parse, so it is not part of the key.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct PreviewKey {
+    /// Hash of the row's source text.
+    text: u64,
+    /// Hash of the block context [`parse_preview_line`] is given.
+    block: u64,
+    /// `gfm | highlight << 1 | table_follows << 2`.
+    flags: u8,
+    /// The measurement font size, as raw bits.
+    font_size_bits: u32,
+}
+
+impl PreviewKey {
+    /// The key for `line` parsed with `block` under the editor's current options.
+    fn new(
+        line: &str,
+        block: BlockStart,
+        gfm: bool,
+        highlight: bool,
+        table_follows: bool,
+        font: &Font,
+    ) -> Self {
+        Self {
+            text: text_hash(line),
+            block: block_cache_key(block),
+            flags: u8::from(gfm) | (u8::from(highlight) << 1) | (u8::from(table_follows) << 2),
+            font_size_bits: font.size().to_bits(),
+        }
+    }
+}
+
+/// A stable hash of the block context a preview row is parsed in.
+fn block_cache_key(block: BlockStart) -> u64 {
+    use core::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    match block {
+        BlockStart::Normal => 0u8.hash(&mut hasher),
+        BlockStart::Fence => 1u8.hash(&mut hasher),
+        BlockStart::Code(language, state) => {
+            2u8.hash(&mut hasher);
+            language.hash(&mut hasher);
+            state.hash(&mut hasher);
+        }
+    }
+    hasher.finish()
 }
 
 /// The largest character boundary at or below `offset`.
@@ -5191,5 +5356,179 @@ mod issue_2_8_tests {
         assert_eq!(editor.text(), "one\ntwo\nthree!");
         assert_eq!(editor.cursor_line(), 2);
         assert_eq!(editor.cursor_col(), 6);
+    }
+}
+
+#[cfg(test)]
+mod issue_20261026_tests {
+    use super::*;
+
+    fn draw_once(editor: &mut MarkdownEditor) {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+        let mut backend = SoftwarePaintBackend::new(crate::core::Size::new(400, 300), 1.0);
+        backend.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            editor.draw(&mut context);
+        }
+        backend.end_frame();
+    }
+
+    /// SP-002: a press resolves the row through the line index, and a drag extends it from the
+    /// same table — multi-byte text included.
+    #[test]
+    fn pointer_hit_testing_resolves_columns_through_the_line_index() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+        let mut text = String::new();
+        for index in 0..59 {
+            text.push_str(&format!("line {index}\n"));
+        }
+        text.push_str("中文abc");
+        editor.set_text(text);
+        assert!(editor.goto_line(59), "the multi-byte line is reachable");
+
+        let row = 59 - editor.visible_start();
+        let font = effective_font(editor.base().style());
+        // The press is measured the way the hit test measures glyphs, so the column is the
+        // boundary it is meant to be rather than a string-level shaping result.
+        let mut after_two = 12i32;
+        for ch in "中文".chars() {
+            let mut buffer = [0u8; 4];
+            after_two += estimate_text_width(ch.encode_utf8(&mut buffer), font, 1.0) as i32;
+        }
+        editor.handle_event(&Event::mouse_press_with(
+            after_two,
+            TEXT_TOP + row as i32 * TEXT_ROW_HEIGHT,
+            1,
+            0,
+        ));
+        assert_eq!(editor.cursor_line(), 59, "the press lands on the multi-byte line");
+        assert_eq!(editor.cursor_col(), 2, "two whole glyphs precede the caret");
+
+        editor.handle_event(&Event::mouse_move(12, TEXT_TOP + row as i32 * TEXT_ROW_HEIGHT));
+        assert_eq!(
+            editor.selection(),
+            Some((editor.doc_char_offset(59, 0), editor.doc_char_offset(59, 2))),
+            "the drag extends from the line start to the press column"
+        );
+    }
+
+    /// SP-003: the selected text is taken from its own offsets, and `select_all` reads the
+    /// cached character count.
+    #[test]
+    fn the_selection_is_taken_from_its_own_offsets() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("añb\n世界");
+        assert_eq!(editor.total_char_count(), 6);
+
+        editor.select_byte_range(1, 3);
+        assert_eq!(editor.selection(), Some((1, 2)));
+        assert_eq!(editor.selected_text().as_deref(), Some("ñ"));
+
+        editor.select_byte_range(0, 8);
+        assert_eq!(editor.selection(), Some((0, 5)));
+        assert_eq!(editor.selected_text().as_deref(), Some("añb\n世"));
+
+        editor.select_all();
+        assert_eq!(editor.selection(), Some((0, 6)));
+        assert_eq!(editor.selected_text().as_deref(), Some("añb\n世界"));
+    }
+
+    /// SP-004: the preview cache is keyed by what a row parses to, so identical rows share an
+    /// entry and inserting a line above does not evict the rows below it.
+    #[test]
+    fn the_preview_cache_is_keyed_by_content_not_position() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+        editor.set_preview_mode(true);
+        editor.set_text("alpha\nalpha\nalpha");
+        draw_once(&mut editor);
+        assert_eq!(editor.preview_cache.len(), 1, "identical rows share one parse");
+
+        editor.set_text("inserted\nalpha\nalpha\nalpha");
+        draw_once(&mut editor);
+        assert_eq!(
+            editor.preview_cache.len(),
+            2,
+            "the shifted rows keep their entries instead of re-parsing"
+        );
+    }
+
+    /// SP-005: the header is formatted into the editor's own buffer, so a still frame does not
+    /// allocate a fresh `String`.
+    #[test]
+    fn the_header_buffer_is_reused_across_frames() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        editor.set_text("one\ntwo");
+        draw_once(&mut editor);
+        let capacity = editor.header_buffer.capacity();
+        let start = editor.header_buffer.as_ptr();
+        assert!(editor.header_buffer.starts_with("Markdown Edit"));
+        draw_once(&mut editor);
+        assert_eq!(editor.header_buffer.capacity(), capacity, "the buffer is not reallocated");
+        assert_eq!(editor.header_buffer.as_ptr(), start, "the same buffer is reused");
+    }
+
+    /// SP-001: the published signal still carries the whole document to whoever listens.
+    #[test]
+    fn text_changed_still_reports_the_whole_document_to_a_subscriber() {
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 240));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        editor.text_changed.connect(move |text| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(text.as_ref().clone());
+            }
+        });
+        editor.set_text("fresh");
+        assert_eq!(
+            seen.lock().ok().map(|guard| guard.clone()).unwrap_or_default(),
+            vec!["fresh".to_string()]
+        );
+    }
+
+    /// SP-006: a blink frame in a damage-tracking mode damages only the caret's rectangle.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_blink_frame_damages_only_the_caret_rect() {
+        use crate::widget::runtime;
+
+        let mut editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+        editor.set_text("one\ntwo");
+        let caret = editor.caret_rect().expect("the caret is on screen");
+        assert_eq!(caret.width, 1, "the blink owns a one-pixel bar");
+        let id = runtime::register(crate::compat::Box::new(editor)).expect("registry");
+        assert!(runtime::set_repaint_mode(id, runtime::RepaintMode::Dirty));
+        assert!(runtime::with_widget_mut(id, |widget| widget.tick(600)).unwrap_or(false));
+        assert_eq!(runtime::dirty_rects(id), vec![caret], "only the caret rectangle is repainted");
+        runtime::unregister(id);
+    }
+
+    /// SP-006: the default repaint mode still takes the whole-control path.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_blink_frame_in_full_mode_keeps_the_whole_control_repaint() {
+        use crate::widget::runtime;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let editor = MarkdownEditor::new(Rect::new(0, 0, 420, 300));
+        let id = runtime::register(crate::compat::Box::new(editor)).expect("registry");
+        assert!(runtime::set_repaint_mode(id, runtime::RepaintMode::Full));
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let counter = redraws.clone();
+        let _ = runtime::with_widget(id, |widget| {
+            widget.base().redraw_requested.connect(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            })
+        });
+
+        assert_eq!(runtime::with_widget_mut(id, |widget| widget.tick(600)), Some(true));
+        assert_eq!(
+            redraws.load(Ordering::Relaxed),
+            1,
+            "Full mode keeps the whole-control redraw request"
+        );
+        assert!(runtime::dirty_rects(id).is_empty(), "no damage rectangle is recorded");
+        runtime::unregister(id);
     }
 }

@@ -1,8 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use super::{Key, Modifiers, PlatformShortcutStyle, Shortcut, ShortcutEntry};
-use crate::compat::{format, HashMap, String, Vec};
+use super::{
+    control_scope_key, Key, Modifiers, PlatformShortcutStyle, Shortcut, ShortcutEntry,
+    ShortcutScope,
+};
+use crate::compat::{format, Arc, Box, HashMap, String, Vec};
+use crate::core::ObjectId;
 use crate::event::Event;
 use crate::signal::Signal1;
 /// Global shortcut manager for registering and dispatching shortcuts.
@@ -36,6 +40,13 @@ pub struct ShortcutManager {
     index: HashMap<(Key, Modifiers), Vec<IndexedBinding>>,
     /// Active scope stack, bottom first. Resolution walks it in reverse (top first).
     scopes: Vec<ActiveScope>,
+    /// The host's focus chain, outermost last, when a control-scoped binding is in use (W-12).
+    ///
+    /// `None` (the default) means no control scope resolves, which is the behaviour before control
+    /// scopes existed. The closure is supplied by the host rather than read from the widget
+    /// runtime: `shortcut` has no access to the focus tree (and the runtime is compiled out of the
+    /// stripped profiles), so the host states the fact instead of the manager guessing.
+    focus_chain: Option<Arc<dyn Fn() -> Vec<ObjectId> + Send + Sync>>,
     /// Emitted when a shortcut is triggered.
     pub shortcut_triggered: Signal1<String>,
     /// Emitted when a shortcut conflict is detected.
@@ -76,6 +87,7 @@ impl ShortcutManager {
             entries: HashMap::new(),
             index: HashMap::new(),
             scopes: Vec::new(),
+            focus_chain: None,
             shortcut_triggered: Signal1::new(),
             conflict_detected: Signal1::new(),
         }
@@ -89,6 +101,37 @@ impl ShortcutManager {
         description: impl Into<String>,
     ) -> bool {
         self.register_scoped(None, action_id, shortcut, description)
+    }
+
+    /// Registers a shortcut bound to one control (W-12).
+    ///
+    /// The binding resolves only while `control_id` is in the focus chain supplied through
+    /// [`Self::set_focus_chain_lookup`], so a control's local chord stops firing the moment focus
+    /// leaves it — without the host pushing and popping a scope on every focus change.
+    ///
+    /// A control scope wins over a window scope and over the global table on the same chord; that
+    /// is what makes a local rebinding possible at all. With no focus-chain lookup installed, a
+    /// binding registered here never resolves (nothing can claim the control is focused).
+    ///
+    /// # Why the focus fact is not read here
+    ///
+    /// `shortcut` is a plain registry: the focus tree lives in the widget runtime, which the
+    /// stripped profiles do not compile, and a second source of truth for "what is focused"
+    /// would be the drift this module exists to avoid. The host that owns both publishes the
+    /// chain once through [`Self::set_focus_chain_lookup`].
+    pub fn register_for_control(
+        &mut self,
+        control_id: ObjectId,
+        action_id: impl Into<String>,
+        shortcut: Shortcut,
+        description: impl Into<String>,
+    ) -> bool {
+        self.register_scoped(
+            ShortcutScope::Control(control_id).scope_key(),
+            action_id,
+            shortcut,
+            description,
+        )
     }
 
     /// Registers a shortcut in `scope` instead of the global scope.
@@ -162,13 +205,31 @@ impl ShortcutManager {
     }
 
     /// Removes `entry`'s chord from the table its scope belongs to.
+    ///
+    /// # Only the binding that still owns the chord is removed (W-02)
+    ///
+    /// The table removal is guarded by the action id the table currently routes to. An entry can
+    /// outlive its table row only in a race or a stale copy; removing the row unconditionally then
+    /// deleted whichever binding holds that chord *now* — the exact "a chord removal takes a
+    /// different action's binding with it" failure. The guard makes the removal exact (scope +
+    /// chord + action) and leaves every other binding of the same chord alone.
     fn remove_binding(&mut self, entry: &ShortcutEntry) {
         match &entry.scope {
             Some(scope) => {
-                self.scoped_shortcuts.remove(&(scope.clone(), entry.shortcut.clone()));
+                let key = (scope.clone(), entry.shortcut.clone());
+                if self.scoped_shortcuts.get(&key).is_some_and(|action| action == &entry.action_id)
+                {
+                    self.scoped_shortcuts.remove(&key);
+                }
             }
             None => {
-                self.shortcuts.remove(&entry.shortcut);
+                if self
+                    .shortcuts
+                    .get(&entry.shortcut)
+                    .is_some_and(|action| action == &entry.action_id)
+                {
+                    self.shortcuts.remove(&entry.shortcut);
+                }
             }
         }
         self.remove_indexed(entry.scope.as_deref(), &entry.shortcut, &entry.action_id);
@@ -236,15 +297,69 @@ impl ShortcutManager {
             false
         }
     }
-    /// Unregisters a shortcut by key combination.
+    /// Unregisters a shortcut by key combination (the **global** binding only).
+    ///
+    /// # Scope (W-02)
+    ///
+    /// A chord is not unique across scopes: the same chord may be global, bound in a window scope
+    /// and bound for a control. This call removes the **global** binding and nothing else. Use
+    /// [`Self::unregister_shortcut_in`] for a window scope and
+    /// [`Self::unregister_for_control`] for a control scope.
+    ///
+    /// The entry is removed only when it still describes this exact binding (no scope, this chord),
+    /// so a removal can never delete a scoped action's entry — which would leave that scope's
+    /// table row pointing at an action id with no entry, i.e. a binding that answers the chord but
+    /// resolves to nothing. Returns `false` when the global table has no such chord.
     pub fn unregister_shortcut(&mut self, shortcut: &Shortcut) -> bool {
-        if let Some(action_id) = self.shortcuts.remove(shortcut) {
-            self.remove_indexed(None, shortcut, &action_id);
+        let Some(action_id) = self.shortcuts.get(shortcut).cloned() else {
+            return false;
+        };
+        self.shortcuts.remove(shortcut);
+        let owns_entry = self
+            .entries
+            .get(&action_id)
+            .is_some_and(|entry| entry.scope.is_none() && &entry.shortcut == shortcut);
+        if owns_entry {
             self.entries.remove(&action_id);
-            true
-        } else {
-            false
         }
+        self.remove_indexed(None, shortcut, &action_id);
+        true
+    }
+
+    /// Unregisters `shortcut` from exactly one named scope (W-02).
+    ///
+    /// The `(scope, chord)` pair is matched exactly — a chord bound in another scope, or globally,
+    /// is untouched. The action entry is removed only if it still describes this binding, so the
+    /// removal cannot orphan another action's table row.
+    ///
+    /// Returns `false` when the scope does not hold that chord.
+    pub fn unregister_shortcut_in(
+        &mut self,
+        scope: impl Into<String>,
+        shortcut: &Shortcut,
+    ) -> bool {
+        let scope = scope.into();
+        let key = (scope.clone(), shortcut.clone());
+        let Some(action_id) = self.scoped_shortcuts.remove(&key) else {
+            return false;
+        };
+        let owns_entry = self.entries.get(&action_id).is_some_and(|entry| {
+            entry.scope.as_deref() == Some(scope.as_str()) && &entry.shortcut == shortcut
+        });
+        if owns_entry {
+            self.entries.remove(&action_id);
+        }
+        self.remove_indexed(Some(scope.as_str()), shortcut, &action_id);
+        true
+    }
+
+    /// Unregisters `shortcut` from the scope of `control_id` (W-02, W-12).
+    ///
+    /// Convenience over [`Self::unregister_shortcut_in`] with
+    /// [`ShortcutScope::Control`]`(control_id)`'s key, so a caller that registered the binding
+    /// through [`Self::register_for_control`] does not have to spell the internal key.
+    pub fn unregister_for_control(&mut self, control_id: ObjectId, shortcut: &Shortcut) -> bool {
+        self.unregister_shortcut_in(control_scope_key(control_id), shortcut)
     }
 
     /// Returns whether an action ID is already registered.
@@ -323,27 +438,54 @@ impl ShortcutManager {
     /// Resolves the action registered for a key press, applying the matching
     /// rule documented on [`ShortcutManager::matches_binding`].
     ///
-    /// # Resolution order (W-201)
+    /// # Resolution order (W-201, W-12)
     ///
-    /// The active scope stack is walked from the top down. A matching binding in a scope wins over
-    /// every lower scope and over the global scope. A **modal** scope terminates the walk whether
-    /// or not it matched, which is what shields the layers below a modal dialog. After the stack is
-    /// exhausted, global bindings are consulted exactly as before scopes existed.
+    /// 1. **Control scopes**, in focus-chain order (innermost first). A binding registered for the
+    ///    focused control wins over every window scope and over the global table — that is what a
+    ///    local rebinding means. With no focus-chain lookup installed this step is skipped, which
+    ///    is exactly the behaviour before control scopes existed.
+    /// 2. The active scope stack is walked from the top down. A matching binding in a scope wins
+    ///    over every lower scope and over the global scope. A **modal** scope terminates the walk
+    ///    whether or not it matched, which is what shields the layers below a modal dialog.
+    /// 3. After the stack is exhausted, global bindings are consulted exactly as before scopes
+    ///    existed.
     ///
-    /// The global fallback used to be a linear scan over the entries **on purpose**: the hash map
-    /// is the reverse index ([`Self::get_action`]), but a second matching path would be a second
-    /// rule. That property is kept (W-P01): the chord index only fetches the candidates for the
-    /// pressed `(key, normalized modifiers)` in O(1) — every candidate is still judged by the one
-    /// function, [`Self::matches_binding`], so registry dispatch and an unregistered widget action
-    /// cannot disagree about a chord. When two bindings in one scope can answer to the same press
-    /// (a physical-Control binding and a `primary` binding under the desktop lift), the bucket
-    /// keeps their registration order, so the winner is deterministic.
+    /// The global fallback is still a linear scan over the entries **on purpose**: the hash map is
+    /// the reverse index ([`Self::get_action`]), but a second matching path would be a second
+    /// rule. The chord index only fetches the candidates for the pressed `(key, normalized
+    /// modifiers)`; every candidate is still judged by [`Self::matches_binding`], so registry
+    /// dispatch and an unregistered widget action cannot disagree about a chord. When two bindings
+    /// in one scope can answer to the same press (a physical-Control binding and a `primary`
+    /// binding under the desktop lift), the bucket keeps their registration order, so the winner
+    /// is deterministic (W-P01).
+    ///
+    /// **Reachability of control scopes (W-12):** the focus-chain lookup is installed by the
+    /// host, and this crate installs none — `shortcut` cannot read the widget runtime's focus
+    /// tree (it is compiled out of the stripped profiles), so claiming a chain here would be a
+    /// guess. Without the lookup, a control binding simply never resolves.
     fn lookup(&self, key: Key, modifiers: Modifiers) -> Option<String> {
         // The same normalization `matches_binding` applies, used here only to pick the bucket;
         // acceptance is still decided per candidate by `matches_binding` below.
         let style = crate::platform::platform_facts().shortcut_style();
         let normalized = Self::normalize_event_modifiers(modifiers, style);
         let bucket = self.index.get(&(key, normalized))?;
+        // W-12: control scopes first, innermost first. Each candidate is still judged by the one
+        // matching rule, so the platform lift behaves identically here and in a window scope.
+        if let Some(focus_chain) = self.focus_chain.as_ref() {
+            for control in focus_chain() {
+                let control_scope = control_scope_key(control);
+                let matched = bucket
+                    .iter()
+                    .find(|binding| {
+                        binding.scope.as_deref() == Some(control_scope.as_str())
+                            && Self::matches_binding(&binding.shortcut, key, modifiers)
+                    })
+                    .map(|binding| binding.action_id.clone());
+                if matched.is_some() {
+                    return matched;
+                }
+            }
+        }
         for active in self.scopes.iter().rev() {
             let matched = bucket
                 .iter()
@@ -374,6 +516,39 @@ impl ShortcutManager {
     /// rarely useful.
     pub fn push_scope(&mut self, scope: impl Into<String>) {
         self.scopes.push(ActiveScope { id: scope.into(), modal: false });
+    }
+
+    /// Installs the host's focus-chain lookup, which is what makes control scopes resolve (W-12).
+    ///
+    /// The closure returns the currently focused control first, then each ancestor outwards — the
+    /// order the focus tree walks. A binding registered through [`Self::register_for_control`] for
+    /// a control in that list then wins over window and global bindings on the same chord.
+    ///
+    /// # What a host has to publish
+    ///
+    /// Only controls that are actually reachable count: a control behind a modal dialog should not
+    /// be in the chain while the modal is up, because its local chords must not fire. The host
+    /// owns that fact (it built both trees), so it is stated here rather than guessed.
+    ///
+    /// # Clearing
+    ///
+    /// [`Self::clear_focus_chain_lookup`] restores the "no control scope resolves" behaviour,
+    /// which is the default and the pre-W-12 behaviour.
+    pub fn set_focus_chain_lookup(&mut self, lookup: Box<dyn Fn() -> Vec<ObjectId> + Send + Sync>) {
+        self.focus_chain = Some(Arc::from(lookup));
+    }
+
+    /// Removes the focus-chain lookup, reporting whether one was installed (W-12).
+    pub fn clear_focus_chain_lookup(&mut self) -> bool {
+        self.focus_chain.take().is_some()
+    }
+
+    /// Whether `control_id` has `shortcut` registered as a control-scoped binding (W-12).
+    ///
+    /// Says nothing about the focus chain: the binding may exist and not resolve because the
+    /// control is not focused, which is the point of a control scope.
+    pub fn has_control_shortcut(&self, control_id: ObjectId, shortcut: &Shortcut) -> bool {
+        self.has_scoped_shortcut(&control_scope_key(control_id), shortcut)
     }
 
     /// Pushes a **modal** scope: it wins like any other scope and also stops the lookup from

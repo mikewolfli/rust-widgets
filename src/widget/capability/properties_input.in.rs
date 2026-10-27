@@ -32,6 +32,9 @@ macro_rules! impl_properties_input {
             ),
             PropertySchema::new("tick_interval", PropertyValueKind::Int, true, true),
             PropertySchema::new("tracking", PropertyValueKind::Bool, true, true),
+            // The groove-click policy, published as the reader's own tokens so a
+            // document can select between the page step and the historical jump.
+            PropertySchema::enumerated("track_click", true, true, &["page", "jump"]),
             PropertySchema::new("slider_position", PropertyValueKind::Int, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),

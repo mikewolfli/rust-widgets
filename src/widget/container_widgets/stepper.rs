@@ -813,12 +813,15 @@ mod tests {
     fn holding_a_button_repeats_through_the_shared_timer() {
         let mut s = Stepper::new(Rect::new(0, 0, 120, 30));
         assert!(s.auto_repeat());
+        // One repeat per interval, spelled out so the assertion below is about the timer and
+        // not about the default interval's value.
+        s.set_auto_repeat_interval(100);
         let plus = s.plus_rect();
         let pos = Point::new(plus.x + plus.width as i32 / 2, plus.y + plus.height as i32 / 2);
         s.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
         assert_eq!(s.value(), 1, "the press itself steps once");
         assert!(s.is_animating(), "a held button owes frames");
-        assert!(!s.tick(16), "the first tick only starts the delay");
+        assert!(s.tick(16), "the hold still owes frames while the delay runs");
         assert!(s.tick(500), "the hold is still active after the delay");
         assert_eq!(s.value(), 2, "the first repeat arrives after the delay");
         assert!(s.tick(100));

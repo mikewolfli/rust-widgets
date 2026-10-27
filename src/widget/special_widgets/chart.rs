@@ -14,7 +14,7 @@ use crate::widget::metrics::{effective_font, role_font};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::fmt::Write as _;
 /// The chart styles [`ChartWidget`] can switch between at runtime.
 ///
@@ -157,13 +157,14 @@ pub struct ChartWidget {
     show_tooltip: bool,
     /// Names shown in the legend; shorter or longer than the series list is tolerated.
     series_names: Vec<String>,
-    /// Reused polyline buffer for the line and area renderers.
-    ///
-    /// Both styles rebuilt a `Vec<Point>` per series per frame. The point set is a pure function
-    /// of the data and the plot geometry, so the previous frame's allocation is refilled instead.
-    plot_points: Vec<Point>,
     /// Reused closed-polygon buffer for the area fill.
-    polygon_points: Vec<Point>,
+    polygon_points: RefCell<Vec<Point>>,
+    /// Projected vertices of every series, keyed by the state they were derived from.
+    ///
+    /// The line, area and scatter marks are a pure function of the data, the visible window, the
+    /// plot rectangle and the reveal progress, so a still frame reuses the previous frame's vertex
+    /// lists instead of walking every series again (SP-014).
+    projection_cache: RefCell<Option<ProjectionCache>>,
     /// Bumped whenever `series` is replaced, so derived geometry can be keyed on it.
     data_generation: u64,
     /// Cached pie wedges aligned with the slice index, keyed by the panel and the data generation.
@@ -232,8 +233,8 @@ impl ChartWidget {
             show_legend: false,
             show_tooltip: false,
             series_names: Vec::new(),
-            plot_points: Vec::new(),
-            polygon_points: Vec::new(),
+            polygon_points: RefCell::new(Vec::new()),
+            projection_cache: RefCell::new(None),
             data_generation: 0,
             pie_wedges: None,
             zoom_x: None,
@@ -333,6 +334,77 @@ impl ChartWidget {
         self.restart_reveal();
         self.revalidate_hover();
         self.base.request_redraw();
+    }
+
+    /// Appends one value to the first series, creating it when the chart is empty.
+    ///
+    /// The append path exists because replacing the whole list through [`Self::set_data`] is the
+    /// only way a growing series could be fed, and it copies every retained value on each update
+    /// (SP-013). A seed call on an empty chart produces the same one-series state `set_data` would.
+    pub fn push_point(&mut self, value: f64) {
+        if self.series.is_empty() {
+            self.series.push(Vec::new());
+            self.series_visible.push(true);
+        }
+        if let Some(series) = self.series.first_mut() {
+            series.push(value);
+            self.data_generation = self.data_generation.wrapping_add(1);
+            self.base.request_redraw();
+        }
+    }
+
+    /// Appends one value to series `index`; returns whether the series exists.
+    ///
+    /// An absent series is refused rather than created, because the series' name, colour and
+    /// visibility are already fixed by its position and a caller-supplied index past the end is a
+    /// mistake, not a request to grow the chart.
+    pub fn push_point_to_series(&mut self, index: usize, value: f64) -> bool {
+        let Some(series) = self.series.get_mut(index) else {
+            return false;
+        };
+        series.push(value);
+        self.data_generation = self.data_generation.wrapping_add(1);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Appends to the first series while keeping at most `capacity` values.
+    ///
+    /// This is the rolling-window append a live feed needs: the oldest values are dropped from the
+    /// front once the window is full. When the horizontal zoom window ended at the former last
+    /// value (a viewport following the newest sample), the window is shifted by the number of
+    /// dropped values, so the visible slice keeps advancing instead of falling behind the data.
+    ///
+    /// Returns whether `capacity` allowed an append; zero is refused because a zero-length window
+    /// cannot hold the value that was just supplied.
+    pub fn push_point_bounded(&mut self, value: f64, capacity: usize) -> bool {
+        if capacity == 0 {
+            return false;
+        }
+        let previous_len = point_count_for(self.chart_type, self.data().len());
+        if self.series.is_empty() {
+            self.series.push(Vec::new());
+            self.series_visible.push(true);
+        }
+        let Some(series) = self.series.first_mut() else {
+            return false;
+        };
+        series.push(value);
+        let dropped = series.len().saturating_sub(capacity);
+        if dropped > 0 {
+            series.drain(0..dropped);
+        }
+        self.data_generation = self.data_generation.wrapping_add(1);
+        if dropped > 0 {
+            if let Some((low, high)) = self.zoom_x {
+                if high >= previous_len as f64 {
+                    self.zoom_x = Some(((low - dropped as f64).max(0.0), high - dropped as f64));
+                }
+            }
+        }
+        self.revalidate_hover();
+        self.base.request_redraw();
+        true
     }
 
     /// Sets the chart data labels.
@@ -605,6 +677,77 @@ impl ChartWidget {
         grow_value(value, baseline, self.reveal.value() as f64)
     }
 
+    /// The projected vertices of every series for the current frame.
+    ///
+    /// Line, area and scatter share the same derivation shape: walk the visible slice once and
+    /// map each value through the plot area. The result is a pure function of the data generations,
+    /// the zoom windows, the plot rectangle and the reveal progress, so it is cached on exactly
+    /// those (SP-014). A still frame therefore replays the previous vertex lists; a changed one
+    /// rebuilds them once for all series instead of once per series.
+    fn projections(&self, plot: &PlotArea) -> Ref<'_, Vec<Vec<Point>>> {
+        let key = ProjectionKey {
+            data_generation: self.data_generation,
+            visibility_generation: self.visibility_generation,
+            chart_type: self.chart_type,
+            plot: (plot.left, plot.right, plot.baseline_y, plot.top_y),
+            zoom_x: self.zoom_x.map(|(low, high)| (low.to_bits(), high.to_bits())),
+            zoom_y: self.zoom_y.map(|(low, high)| (low.to_bits(), high.to_bits())),
+            reveal: self.reveal.value().to_bits(),
+        };
+        let fresh = self.projection_cache.borrow().as_ref().is_some_and(|cache| cache.key == key);
+        if !fresh {
+            let (start, end) = self.zoom_bounds();
+            let visible_count = end.saturating_sub(start).max(1);
+            let range = self.plot_range();
+            let progress = self.reveal.value() as f64;
+            let zoom_y = self.zoom_y;
+            let mut cache = self.projection_cache.borrow_mut();
+            let cache =
+                cache.get_or_insert_with(|| ProjectionCache { key, start, series: Vec::new() });
+            // The inner lists are kept across rebuilds, so an animating chart does not allocate a
+            // fresh vertex list per series per frame.
+            cache.series.resize_with(self.series.len(), Vec::new);
+            cache.start = start;
+            for (index, data) in self.series.iter().enumerate() {
+                let points = &mut cache.series[index];
+                points.clear();
+                let end = end.min(data.len());
+                let start = start.min(end);
+                match self.chart_type {
+                    ChartType::Line | ChartType::Area => {
+                        points.extend(data[start..end].iter().enumerate().map(
+                            |(offset, value)| Point {
+                                x: plot.x_for(offset, visible_count, 0),
+                                y: project_value_y(
+                                    zoom_y,
+                                    plot,
+                                    grow_value(*value, range.0, progress),
+                                    range,
+                                ),
+                            },
+                        ));
+                    }
+                    ChartType::Scatter => {
+                        let slot = (plot.right - plot.left).max(1) / visible_count as i32;
+                        points.extend(data[start..end].iter().enumerate().map(
+                            |(offset, value)| Point {
+                                x: plot.left + offset as i32 * slot + slot / 2,
+                                y: project_value_y(zoom_y, plot, *value, range),
+                            },
+                        ));
+                    }
+                    // Only the styles whose marks are a vertex sequence are cached; the others
+                    // read their data directly while painting.
+                    _ => break,
+                }
+            }
+            cache.key = key;
+        }
+        Ref::map(self.projection_cache.borrow(), |cache| {
+            &cache.as_ref().expect("the cache was just populated").series
+        })
+    }
+
     /// The `(x, y)` extremes across every series, for the styles that share one
     /// value axis.
     ///
@@ -641,8 +784,8 @@ impl ChartWidget {
 
 /// Maps `value` to a y coordinate under an optional vertical window.
 ///
-/// A free function rather than a method because the line and area renderers fill a buffer that
-/// borrows the widget mutably while they map each vertex.
+/// A free function because both the cached projection builder and the bar/waterfall/candlestick
+/// renderers map points through it without each re-deriving the window's ratio.
 fn project_value_y(
     zoom: Option<(f64, f64)>,
     area: &PlotArea,
@@ -682,6 +825,32 @@ fn point_count_for(chart_type: ChartType, len: usize) -> usize {
     } else {
         len / per_point
     }
+}
+
+/// Everything the projected vertex lists depend on.
+///
+/// Floats are compared through their bit patterns because the cache is an exact-reuse question:
+/// a window that differs by one bit is a different projection, and an approximation would let the
+/// cache answer with a pixel that no longer follows the data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProjectionKey {
+    data_generation: u64,
+    visibility_generation: u64,
+    chart_type: ChartType,
+    /// `(left, right, baseline_y, top_y)` of the plot area.
+    plot: (i32, i32, i32, i32),
+    zoom_x: Option<(u64, u64)>,
+    zoom_y: Option<(u64, u64)>,
+    reveal: u32,
+}
+
+/// The projected vertices of every series for one [`ProjectionKey`].
+struct ProjectionCache {
+    key: ProjectionKey,
+    /// The first data index the vertex lists start at, shared by every series.
+    start: usize,
+    /// One vertex list per series, aligned with `ChartWidget::series`.
+    series: Vec<Vec<Point>>,
 }
 impl Widget for ChartWidget {
     fn base(&self) -> &BaseWidget {
@@ -936,30 +1105,42 @@ impl Draw for ChartWidget {
                 }
             }
             ChartType::Line => {
-                let range = self.plot_range();
+                let (start, _) = self.zoom_bounds();
+                let projected = self.projections(&plot);
                 for index in 0..self.series.len() {
                     if !self.is_series_visible(index) {
                         continue;
                     }
-                    self.draw_line_chart(context, rect, &plot, index, range);
+                    let Some(points) = projected.get(index) else {
+                        continue;
+                    };
+                    self.draw_line_chart(context, rect, &plot, index, start, points);
                 }
             }
             ChartType::Area => {
-                let range = self.plot_range();
+                let (start, _) = self.zoom_bounds();
+                let projected = self.projections(&plot);
                 for index in 0..self.series.len() {
                     if !self.is_series_visible(index) {
                         continue;
                     }
-                    self.draw_area_chart(context, rect, &plot, index, range);
+                    let Some(points) = projected.get(index) else {
+                        continue;
+                    };
+                    self.draw_area_chart(context, rect, &plot, index, start, points);
                 }
             }
             ChartType::Scatter => {
-                let range = self.plot_range();
+                let (start, _) = self.zoom_bounds();
+                let projected = self.projections(&plot);
                 for index in 0..self.series.len() {
                     if !self.is_series_visible(index) {
                         continue;
                     }
-                    self.draw_scatter_chart(context, rect, &plot, index, range);
+                    let Some(points) = projected.get(index) else {
+                        continue;
+                    };
+                    self.draw_scatter_chart(context, rect, &plot, index, start, points);
                 }
             }
             ChartType::Pie => {
@@ -1619,44 +1800,24 @@ impl ChartWidget {
 
     /// Draws a polyline for series `series_index`.
     fn draw_line_chart(
-        &mut self,
+        &self,
         context: &mut RenderContext,
         rect: Rect,
         area: &PlotArea,
         series_index: usize,
-        (min, max): (f64, f64),
+        start: usize,
+        points: &[Point],
     ) {
-        let point_count = match self.series.get(series_index) {
-            Some(data) if data.len() >= 2 => data.len(),
-            _ => return,
-        };
-        let color = Self::series_color(series_index);
-        let progress = self.reveal.value() as f64;
-        let zoom = self.zoom_y;
-        let (start, end) = self.zoom_bounds();
-        let visible_count = end.saturating_sub(start).max(1);
-        {
-            // The data borrow and the buffer borrow are disjoint fields, so the polyline is
-            // refilled in place rather than collected into a fresh `Vec`.
-            let Some(data) = self.series.get(series_index) else {
-                return;
-            };
-            let points = &mut self.plot_points;
-            points.clear();
-            points.extend(data[start..end].iter().enumerate().map(|(offset, &val)| Point {
-                x: area.x_for(offset, visible_count, 0),
-                // Same reveal as the bars: every vertex climbs from the **axis minimum**, so a
-                // line grows out of the baseline instead of sliding in from wherever the series
-                // happened to start.
-                y: project_value_y(zoom, area, grow_value(val, min, progress), (min, max)),
-            }));
+        // The series must have at least two values, which is the line the style draws; the
+        // visible window may hold one of them without suppressing the series' mark.
+        if !self.series.get(series_index).is_some_and(|data| data.len() >= 2) {
+            return;
         }
-        let _ = point_count;
-
-        for pair in self.plot_points.windows(2) {
+        let color = Self::series_color(series_index);
+        for pair in points.windows(2) {
             context.draw_line_stroke(pair[0], pair[1], color, 2);
         }
-        for (offset, point) in self.plot_points.iter().enumerate() {
+        for (offset, point) in points.iter().enumerate() {
             let i = start + offset;
             context.fill_circle(*point, 3, color);
             if series_index == 0 {
@@ -1683,62 +1844,42 @@ impl ChartWidget {
     /// line chart's data model and hit-test exactly, which is the condition rule
     /// #80 sets for extending rather than adding.
     fn draw_area_chart(
-        &mut self,
+        &self,
         context: &mut RenderContext,
         rect: Rect,
         area: &PlotArea,
         series_index: usize,
-        (min, max): (f64, f64),
+        start: usize,
+        points: &[Point],
     ) {
-        let point_count = match self.series.get(series_index) {
-            Some(data) if data.len() >= 2 => data.len(),
-            _ => return,
-        };
-        let color = Self::series_color(series_index);
-        let progress = self.reveal.value() as f64;
-        let zoom = self.zoom_y;
-        let (start, end) = self.zoom_bounds();
-        let visible_count = end.saturating_sub(start).max(1);
-        {
-            let Some(data) = self.series.get(series_index) else {
-                return;
-            };
-            let points = &mut self.plot_points;
-            points.clear();
-            points.extend(data[start..end].iter().enumerate().map(|(offset, &val)| Point {
-                x: area.x_for(offset, visible_count, 0),
-                // Same reveal as the line: the fill tracks the polyline, so the two share the
-                // mapping rather than each computing its own height.
-                y: project_value_y(zoom, area, grow_value(val, min, progress), (min, max)),
-            }));
+        if !self.series.get(series_index).is_some_and(|data| data.len() >= 2) {
+            return;
         }
-        let _ = point_count;
-
+        let color = Self::series_color(series_index);
         // Fill as one closed polygon: the area under a piecewise-linear curve is a polygon, so
         // one filled path replaces a one-pixel column per x. The polygon is built in the reused
         // buffer instead of cloning the vertex list first.
         let baseline_y = area.baseline_y;
-        {
-            let (plot, polygon) = (&self.plot_points, &mut self.polygon_points);
-            polygon.clear();
-            polygon.extend_from_slice(plot);
-            polygon.extend(plot.iter().rev().map(|point| Point::new(point.x, baseline_y)));
-        }
+        let mut polygon = self.polygon_points.borrow_mut();
+        polygon.clear();
+        polygon.extend_from_slice(points);
+        polygon.extend(points.iter().rev().map(|point| Point::new(point.x, baseline_y)));
         // The command shares a snapshot of the polygon (G-02), so `polygon_points` stays the
         // reusable buffer the next frame refills.
         let command = crate::render::RenderCommand::DrawPath {
-            points: self.polygon_points.as_slice().into(),
+            points: polygon.as_slice().into(),
             closed: true,
             color,
             filled: true,
             width: 0,
         };
         context.execute_command_ref(&command);
-        for pair in self.plot_points.windows(2) {
+        drop(polygon);
+        for pair in points.windows(2) {
             context.draw_line_stroke(pair[0], pair[1], color, 2);
         }
         if series_index == 0 {
-            for (offset, point) in self.plot_points.iter().enumerate() {
+            for (offset, point) in points.iter().enumerate() {
                 let i = start + offset;
                 if let Some(label) = self.labels.get(i) {
                     draw_truncated_label(
@@ -2195,28 +2336,21 @@ impl ChartWidget {
         rect: Rect,
         area: &PlotArea,
         series_index: usize,
-        (min, max): (f64, f64),
+        start: usize,
+        points: &[Point],
     ) {
-        let data = match self.series.get(series_index) {
-            Some(data) if !data.is_empty() => data,
-            _ => return,
-        };
+        if points.is_empty() {
+            return;
+        }
         let color = Self::series_color(series_index);
-        let (start, end) = self.zoom_bounds();
-        let visible_count = end.saturating_sub(start).max(1);
-        let slot = (area.right - area.left).max(1) / visible_count as i32;
-        for (offset, &val) in data[start..end].iter().enumerate() {
+        for (offset, point) in points.iter().enumerate() {
             let i = start + offset;
-            // Scatter uses the slot centre, since unconnected markers have no
-            // line to sit on.
-            let x = area.left + (offset as i32) * slot + slot / 2;
-            let y = self.project_y(area, val, (min, max));
-            context.fill_circle(Point { x, y }, 3, color);
+            context.fill_circle(*point, 3, color);
             if series_index == 0 {
                 if let Some(label) = self.labels.get(i) {
                     draw_truncated_label(
                         context,
-                        x,
+                        point.x,
                         area.baseline_y,
                         label,
                         rect.x + rect.width as i32,
@@ -3153,5 +3287,83 @@ mod issue_2_8_tests {
         assert!(anchor.x > 0);
         chart.set_hover_readout_external(true);
         assert!(chart.hover_readout_external());
+    }
+
+    /// SP-013: appending is incremental, and the bounded form keeps a rolling window.
+    #[test]
+    fn appending_points_is_incremental_and_bounded() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 120));
+        chart.push_point(1.0);
+        chart.push_point(2.0);
+        assert_eq!(chart.data(), &[1.0, 2.0]);
+        assert_eq!(chart.series().len(), 1);
+        assert!(!chart.push_point_to_series(3, 9.0), "an absent series is refused");
+        assert!(chart.push_point_to_series(0, 3.0));
+        assert_eq!(chart.series()[0], vec![1.0, 2.0, 3.0]);
+
+        assert!(chart.push_point_bounded(4.0, 2));
+        assert_eq!(chart.data(), &[3.0, 4.0], "the oldest value leaves the window");
+        assert!(!chart.push_point_bounded(5.0, 0), "a zero-capacity window is refused");
+        assert_eq!(chart.data(), &[3.0, 4.0]);
+    }
+
+    /// SP-013: a window that followed the newest sample advances with the rolling data.
+    #[test]
+    fn a_bounded_append_advances_a_following_zoom_window() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 120));
+        chart.set_data(vec![0.0; 6]);
+        chart.set_zoom_range(Some((4.0, 6.0)));
+        assert!(chart.push_point_bounded(6.0, 6));
+        assert_eq!(chart.zoom_range(), Some((3.0, 5.0)));
+
+        chart.set_zoom_range(Some((0.0, 2.0)));
+        assert!(chart.push_point_bounded(7.0, 6));
+        assert_eq!(
+            chart.zoom_range(),
+            Some((0.0, 2.0)),
+            "a window that is not at the end stays where the reader put it"
+        );
+    }
+
+    /// SP-014: the cached projection is exactly the vertex mapping the renderers used.
+    #[test]
+    fn the_projection_cache_matches_the_direct_mapping_and_invalidates() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 120));
+        chart.set_chart_type(ChartType::Line);
+        chart.set_data(vec![1.0, 4.0, 2.0, 8.0]);
+        while chart.tick(1000) {}
+
+        let plot = PlotArea::of(Rect::new(0, 0, 200, 120), 12);
+        let range = chart.plot_range();
+        let expected: Vec<Point> = chart
+            .data()
+            .iter()
+            .enumerate()
+            .map(|(index, value)| Point {
+                x: plot.x_for(index, 4, 0),
+                y: project_value_y(chart.zoom_y, &plot, grow_value(*value, range.0, 1.0), range),
+            })
+            .collect();
+
+        assert_eq!(chart.projections(&plot)[0], expected);
+        let key = chart.projection_cache.borrow().as_ref().expect("built").key;
+        let _ = chart.projections(&plot);
+        assert_eq!(
+            chart.projection_cache.borrow().as_ref().expect("still cached").key,
+            key,
+            "a still frame reuses the projection"
+        );
+
+        chart.set_series(vec![vec![9.0, 9.0, 9.0, 9.0]]);
+        while chart.tick(1000) {}
+        let refreshed = chart.projections(&plot);
+        let range = chart.plot_range();
+        assert_eq!(refreshed[0].len(), 4);
+        assert_eq!(refreshed[0][0].y, plot.y_for(9.0, range.0, range.1));
+        assert_ne!(
+            chart.projection_cache.borrow().as_ref().expect("rebuilt").key,
+            key,
+            "new data is a new projection"
+        );
     }
 }

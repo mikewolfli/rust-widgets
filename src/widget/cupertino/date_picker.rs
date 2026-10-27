@@ -22,6 +22,26 @@ use crate::widget::misc_widgets::date_utils::{days_in_month, MONTH_NAMES};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// The slowest flick, in rows per nominal 16 ms frame, that coasts after release.
+///
+/// Below one row per frame the flick was a deliberate single-row drag, which has already been
+/// applied while the pointer moved; nothing is left to coast.
+const FLING_MIN_ROWS_PER_FRAME: f32 = 1.0;
+/// Per-millisecond share by which a coast's speed decays.
+///
+/// At 16 ms the wheel keeps a little over half its speed, which is the friction a discrete row
+/// wheel reads as: the first frames step, the later ones step more slowly. A per-metre rate
+/// rather than a fixed per-frame factor keeps long frames decaying by the same amount of time.
+const FLING_DECAY_PER_MS: f32 = 0.03;
+/// The speed, in rows per nominal 16 ms frame, below which the coast is over.
+const FLING_REST_ROWS_PER_FRAME: f32 = 0.2;
+/// The farthest a released flick may carry the wheel, in rows.
+///
+/// The decay already bounds the coast, but an event stream that delivers a huge pointer delta in
+/// one sample would otherwise start the wheel at an arbitrarily high speed, so the travel is
+/// capped as well.
+const FLING_MAX_ROWS: f32 = 6.0;
+
 /// Parses an ISO `YYYY-MM-DD` date into a `(year, month, day)` tuple.
 ///
 /// Returns `None` for anything that is not exactly that shape, so the property
@@ -111,6 +131,16 @@ pub struct CupertinoDatePicker {
     drag_column: usize,
     /// Estimated drag velocity in rows per frame, applied on release as inertia.
     drag_velocity: f32,
+    /// Rows of inertial travel a released flick still owes; `0.0` when the wheel is at rest.
+    fling_remaining: f32,
+    /// The coast's speed, in rows per nominal 16 ms frame; decayed once per tick.
+    fling_speed: f32,
+    /// Fractional rows carried between frames, so a slow coast still reaches its row.
+    fling_accum: f32,
+    /// The column the coast steps.
+    fling_column: usize,
+    /// Whether the coast steps forward (towards a later value).
+    fling_forward: bool,
     /// How far the rows are rolled by the step animation, `0.0` settled to `1.0` just stepped.
     roll: PropertyDriver,
     /// The direction (`-1` or `1`) of the last step, so the roll travels the same way.
@@ -171,6 +201,11 @@ impl CupertinoDatePicker {
             drag_last_y: None,
             drag_column: 0,
             drag_velocity: 0.0,
+            fling_remaining: 0.0,
+            fling_speed: 0.0,
+            fling_accum: 0.0,
+            fling_column: 0,
+            fling_forward: true,
             roll: PropertyDriver::at(0.0, MotionSlot::Normal),
             roll_direction: 1,
             date_changed: Signal1::new(),
@@ -476,14 +511,47 @@ impl CupertinoDatePicker {
         self.base.request_redraw();
     }
 
-    /// Advances the roll animation; `true` while it is still moving.
+    /// Advances the roll animation and any coast left by a flick; `true` while still moving.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        self.roll.tick(delta_ms)
+        let mut moving = self.roll.tick(delta_ms);
+        if self.fling_speed != 0.0 {
+            let frames = delta_ms as f32 / 16.0;
+            let travel = (self.fling_speed * frames).min(self.fling_remaining);
+            self.fling_accum += travel;
+            // Whole rows only; the remainder stays accumulated, so the tail of the coast still
+            // steps instead of being cut off between two rows.
+            let steps = self.fling_accum as i32;
+            if steps > 0 {
+                self.fling_accum -= steps as f32;
+                for _ in 0..steps {
+                    self.apply_step(self.logical_column(self.fling_column), self.fling_forward);
+                }
+                self.base.request_redraw();
+            }
+            self.fling_remaining -= travel;
+            let decay = (1.0 - FLING_DECAY_PER_MS * delta_ms as f32).clamp(0.0, 1.0);
+            self.fling_speed *= decay;
+            if self.fling_remaining <= f32::EPSILON || self.fling_speed < FLING_REST_ROWS_PER_FRAME
+            {
+                self.fling_speed = 0.0;
+                self.fling_remaining = 0.0;
+                self.fling_accum = 0.0;
+            }
+            moving = true;
+        }
+        moving
     }
 
-    /// Whether the roll animation is between two positions.
+    /// Whether the roll animation or a flick's coast is still in flight.
     pub fn is_animating(&self) -> bool {
-        self.roll.is_moving()
+        self.roll.is_moving() || self.fling_speed != 0.0
+    }
+
+    /// Stops a coast in flight, so the next step starts from where the wheel is now.
+    fn stop_fling(&mut self) {
+        self.fling_remaining = 0.0;
+        self.fling_speed = 0.0;
+        self.fling_accum = 0.0;
     }
 
     /// Starts a roll in `direction` (`-1` or `1`) after a step.
@@ -1005,6 +1073,9 @@ impl EventHandler for CupertinoDatePicker {
 
         match event {
             Event::MousePress { pos, button: 1, .. } => {
+                // Touching a coasting wheel grabs it, so the flick does not keep stepping under
+                // the finger that has just landed on it.
+                self.stop_fling();
                 self.drag_accum = 0.0;
                 self.drag_last_y = Some(pos.y as f32);
                 self.drag_column = self.column_at(pos.x);
@@ -1042,18 +1113,22 @@ impl EventHandler for CupertinoDatePicker {
             Event::MouseRelease { button: 1, .. } => {
                 self.drag_last_y = None;
                 self.drag_accum = 0.0;
-                // Inertia: a fast flick keeps stepping a little after release. The estimate is
+                // Inertia: a fast flick keeps stepping after release, with the speed decaying
+                // each frame instead of the whole estimate landing in this one. The estimate is
                 // per nominal 16 ms frame, so it is independent of the host's actual rate.
-                let extra = (self.drag_velocity.abs() as i32).min(3);
-                if extra > 0 {
-                    for _ in 0..extra {
-                        self.apply_step(
-                            self.logical_column(self.drag_column),
-                            self.drag_velocity < 0.0,
-                        );
-                    }
-                }
+                let speed = self.drag_velocity.abs().min(FLING_MAX_ROWS);
+                let forward = self.drag_velocity < 0.0;
                 self.drag_velocity = 0.0;
+                self.stop_fling();
+                if speed >= FLING_MIN_ROWS_PER_FRAME {
+                    self.fling_column = self.drag_column;
+                    self.fling_forward = forward;
+                    self.fling_speed = speed;
+                    // The budget is larger than the release speed: the decay, not the release
+                    // sample, is what decides how far the wheel coasts.
+                    self.fling_remaining = FLING_MAX_ROWS;
+                    self.base.request_redraw();
+                }
             }
             _ => {}
         }
@@ -1387,6 +1462,9 @@ mod tests {
         });
         picker.handle_event(&Event::MouseMove { pos: Point::new(20, 130) });
         picker.handle_event(&Event::MouseRelease { pos: Point::new(20, 130), button: 1 });
+        // The release only *starts* the coast (CB-001); the steps it owes land on the following
+        // frames, so the drag is observed after one of them.
+        picker.tick(16);
         assert!(picker.selected_date() != start, "dragging past a row steps the wheel");
     }
 
@@ -1427,5 +1505,99 @@ mod tests {
         assert_eq!(picker.selected_time().1, 0, "the selection snaps into the new step");
         picker.set_selected_time(9, 59);
         assert_eq!(picker.selected_time().1, 45, "setters snap to the minute step");
+    }
+
+    /// CB-001: a released flick coasts over the following frames instead of spending its whole
+    /// inertia in the release event.
+    ///
+    /// The release used to apply `min(velocity, 3)` steps at a constant rate inside
+    /// `handle_event`, so the wheel jumped and stopped. The coast now starts at the release speed
+    /// and decays each tick, which is what makes the wheel read as a wheel rather than a slider.
+    #[test]
+    fn a_flick_coasts_after_release_on_a_decaying_speed() {
+        let mut picker = CupertinoDatePicker::new(Rect::new(0, 0, 300, 200));
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(20, 80),
+            button: 1,
+            modifiers: 0,
+        });
+        // A fast upward flick: two whole rows in one sample, i.e. four rows per nominal frame.
+        picker.handle_event(&Event::MouseMove { pos: Point::new(20, 16) });
+        let after_move = picker.selected_date().0;
+        picker.handle_event(&Event::MouseRelease { pos: Point::new(20, 16), button: 1 });
+
+        assert_eq!(
+            picker.selected_date().0,
+            after_move,
+            "the release itself no longer spends the inertia in one frame"
+        );
+        assert!(picker.is_animating(), "the released flick owes animation frames");
+
+        picker.tick(16);
+        assert!(
+            picker.selected_date().0 > after_move,
+            "the coast continues stepping on the next frame"
+        );
+
+        // The coast is bounded and comes to rest, so a flick can never spin the wheel forever.
+        let mut frames = 0;
+        while picker.is_animating() && frames < 200 {
+            picker.tick(16);
+            frames += 1;
+        }
+        assert!(!picker.is_animating(), "the coast decays to rest");
+        let coasted = picker.selected_date().0 - after_move;
+        assert!(coasted >= 1, "the flick carries the wheel past the drag's last row");
+        assert!(
+            coasted <= FLING_MAX_ROWS as i32,
+            "the coast is bounded: {coasted} rows exceeds {FLING_MAX_ROWS}"
+        );
+    }
+
+    /// A release slower than one row per frame is a deliberate drag, not a flick: it coasts
+    /// nowhere, which is the historical gate on inertia.
+    #[test]
+    fn a_slow_release_does_not_coast() {
+        let mut picker = CupertinoDatePicker::new(Rect::new(0, 0, 300, 200));
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(20, 80),
+            button: 1,
+            modifiers: 0,
+        });
+        picker.handle_event(&Event::MouseMove { pos: Point::new(20, 70) });
+        picker.handle_event(&Event::MouseRelease { pos: Point::new(20, 70), button: 1 });
+        let released = picker.selected_date().0;
+        for _ in 0..20 {
+            picker.tick(16);
+        }
+        assert_eq!(picker.selected_date().0, released, "a slow drag does not coast");
+    }
+
+    /// A press grabs a coasting wheel: the coast stops instead of stepping under the new press.
+    #[test]
+    fn a_press_stops_a_coasting_wheel() {
+        let mut picker = CupertinoDatePicker::new(Rect::new(0, 0, 300, 200));
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(20, 80),
+            button: 1,
+            modifiers: 0,
+        });
+        picker.handle_event(&Event::MouseMove { pos: Point::new(20, 16) });
+        picker.handle_event(&Event::MouseRelease { pos: Point::new(20, 16), button: 1 });
+        assert!(picker.is_animating(), "the flick is coasting");
+
+        // The press steps the tapped row once and cancels the coast.
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(20, 80),
+            button: 1,
+            modifiers: 0,
+        });
+        let grabbed = picker.selected_date().0;
+        picker.tick(16);
+        assert_eq!(
+            picker.selected_date().0,
+            grabbed,
+            "no coast step follows the press that grabbed the wheel"
+        );
     }
 }

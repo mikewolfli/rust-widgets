@@ -98,6 +98,13 @@
 //! path is re-evaluated, and `src/layout/inspector.rs` (the other caller of the
 //! structures this module builds) is retired too.
 
+/// Maximum nested depth for the JSON tree readers (prevents stack overflow).
+///
+/// One constant serves both the runtime loader and the project reader: the two used to declare
+/// their own `64`, so a document accepted by one could be refused by the other after either copy
+/// was tuned. See JSON-010.
+pub const MAX_DEPTH: u32 = 64;
+
 mod element;
 mod event_route;
 mod events;
@@ -110,11 +117,11 @@ mod schema_factory;
 
 pub use element::BoundJsonLayout;
 pub use event_route::{
-    bind_marker_event, bind_published_event, context_for, context_for_with_payload, is_marker_key,
-    json_event_binding, marker_for_key, marker_key_for, marker_key_names,
-    markers_without_published_counterpart, published_event_name, release_widget_bindings,
-    retained_binding_count, DynamicBinding, JsonEventBinding, JsonTriggerMarker, EVENTS_KEY,
-    MARKER_KEYS,
+    bind_all_published_events, bind_marker_event, bind_published_event, context_for,
+    context_for_with_payload, is_marker_key, json_event_binding, marker_for_key, marker_key_for,
+    marker_key_names, markers_without_published_counterpart, published_event_name,
+    release_widget_bindings, retained_binding_count, DynamicBinding, JsonEventBinding,
+    JsonTriggerMarker, EVENTS_KEY, MARKER_KEYS, UNRESOLVED_PUBLISHED_NAME,
 };
 pub use events::{
     clear_global_handlers, cross_thread_skips, invoke_global_handler, register_global_handler,

@@ -10,11 +10,12 @@
 //! Registration surface (out of scope for this file): canonical name `subtitle_bar`, kind
 //! [`WidgetKind::Label`].
 
-use crate::compat::Vec;
+use crate::compat::{Arc, Mutex, Vec};
 use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
-use crate::signal::GenericSignal;
+use crate::signal::{ConnectionScope, GenericSignal};
+use crate::widget::media_widgets::video_player::{SubtitleCue, VideoPlayer};
 use crate::widget::metrics::role_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
@@ -38,6 +39,22 @@ pub struct SubtitleBar {
     position: SubtitlePosition,
     /// Emitted when the caption text changes.
     pub text_changed: GenericSignal,
+    /// The live binding to a player's clock, when one is followed.
+    binding: Option<SubtitleBinding>,
+}
+
+/// A continuous subscription to a player's clock.
+///
+/// The bound caption is resolved in the signal callback, so painting never walks the cue list;
+/// `_scope` disconnects the subscription when the binding is replaced or dropped (MW-016).
+struct SubtitleBinding {
+    caption: Arc<Mutex<String>>,
+    _scope: ConnectionScope,
+}
+
+/// The cue visible at `time`, using the same half-open `[start, end)` rule as the player.
+fn cue_at(cues: &[SubtitleCue], time: f64) -> Option<&SubtitleCue> {
+    cues.iter().find(|cue| time >= cue.start && time < cue.end)
 }
 
 impl SubtitleBar {
@@ -51,6 +68,7 @@ impl SubtitleBar {
             background_opacity: 150,
             position: SubtitlePosition::Bottom,
             text_changed: GenericSignal::new(),
+            binding: None,
         }
     }
 
@@ -135,6 +153,56 @@ impl SubtitleBar {
         self.position = position;
         self.base.request_redraw();
     }
+
+    /// Follows `player` continuously: the band paints the cue at the player's clock.
+    ///
+    /// The previous binding is disconnected first, so calling this twice does not leave a stale
+    /// subscription behind. The cue list is the player's active subtitle track at bind time; a
+    /// host that switches tracks calls this again (the player announces the switch through
+    /// `subtitle_track_selected`) (MW-016).
+    pub fn follow_video_player(&mut self, player: &VideoPlayer) {
+        let cues = player
+            .subtitle_track()
+            .and_then(|index| player.subtitle_tracks().get(index))
+            .map(|track| track.cues.clone())
+            .unwrap_or_default();
+        let initial =
+            cue_at(&cues, player.current_time()).map(|cue| cue.text.clone()).unwrap_or_default();
+        let caption = Arc::new(Mutex::new(initial));
+        let cues = Arc::new(cues);
+        let scope = ConnectionScope::new();
+        let sink = Arc::clone(&caption);
+        let shared_cues = Arc::clone(&cues);
+        player.time_updated.connect_ref_scoped(&scope, move |time| {
+            let next = cue_at(&shared_cues, *time).map(|cue| cue.text.clone()).unwrap_or_default();
+            let mut text = crate::compat::lock(&sink);
+            if *text != next {
+                *text = next;
+            }
+        });
+        self.binding = Some(SubtitleBinding { caption, _scope: scope });
+        self.base.request_redraw();
+    }
+
+    /// Whether the band is following a player's clock.
+    pub fn is_following_player(&self) -> bool {
+        self.binding.is_some()
+    }
+
+    /// Stops following the player and returns to the explicit [`Self::text`].
+    pub fn stop_following_player(&mut self) {
+        if self.binding.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// The caption the band paints: the followed cue when bound, else the explicit text.
+    pub fn current_caption(&self) -> String {
+        match &self.binding {
+            Some(binding) => crate::compat::lock(&binding.caption).clone(),
+            None => self.text.clone(),
+        }
+    }
 }
 
 impl Widget for SubtitleBar {
@@ -162,14 +230,18 @@ impl EventHandler for SubtitleBar {
 impl Draw for SubtitleBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        if rect.width == 0 || rect.height == 0 || self.text.trim().is_empty() {
+        // Hold the bound caption's guard only for this paint; the signal writes it from the
+        // player's clock, so the band stays in step without the host copying text (MW-016).
+        let bound = self.binding.as_ref().map(|binding| crate::compat::lock(&binding.caption));
+        let text: &str = bound.as_deref().map(String::as_str).unwrap_or(&self.text);
+        if rect.width == 0 || rect.height == 0 || text.trim().is_empty() {
             return;
         }
         let style = self.base.style();
         let font = &role_font(style, 14.0 * self.font_scale);
         let line_height = context.measure_text("M", font).height.max(1) + 2;
         let ranges = crate::widget::text_utils::wrap_to_width(
-            &self.text,
+            text,
             rect.width.saturating_sub(16),
             &mut |text: &str| context.measure_text(text, font).width,
         );
@@ -183,7 +255,7 @@ impl Draw for SubtitleBar {
         };
         context.fill_rect(band, Color::rgba(0, 0, 0, self.background_opacity));
         for (index, range) in lines.into_iter().enumerate() {
-            let Some(text) = self.text.get(range) else {
+            let Some(line) = text.get(range) else {
                 continue;
             };
             context.draw_text_fitted_cow(
@@ -193,7 +265,7 @@ impl Draw for SubtitleBar {
                     band.width.saturating_sub(16),
                     line_height,
                 ),
-                text,
+                line,
                 font,
                 Color::WHITE,
                 HorizontalAlignment::Center,
@@ -215,5 +287,36 @@ mod tests {
         assert_eq!(bar.max_lines(), 1);
         bar.clear();
         assert_eq!(bar.text(), "");
+    }
+
+    /// The band follows a player's clock through a subscription rather than a one-time snapshot
+    /// (MW-016).
+    #[test]
+    fn following_a_player_keeps_the_caption_in_step_with_the_clock() {
+        let mut player = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_duration(10.0);
+        player.set_subtitle_tracks(vec![
+            crate::widget::media_widgets::video_player::SubtitleTrack::new(
+                "s1",
+                "English",
+                vec![SubtitleCue::new(0.0, 2.0, "hello"), SubtitleCue::new(2.0, 4.0, "world")],
+            ),
+        ]);
+        player.set_subtitle_track(0).expect("the track exists");
+
+        let mut bar = SubtitleBar::new(Rect::new(0, 0, 320, 48));
+        bar.set_text("explicit");
+        bar.follow_video_player(&player);
+        assert!(bar.is_following_player());
+        assert_eq!(bar.current_caption(), "hello");
+
+        player.seek(3.0);
+        assert_eq!(bar.current_caption(), "world", "the clock updates the caption");
+        player.seek(0.5);
+        assert_eq!(bar.current_caption(), "hello");
+
+        bar.stop_following_player();
+        assert!(!bar.is_following_player());
+        assert_eq!(bar.current_caption(), "explicit");
     }
 }

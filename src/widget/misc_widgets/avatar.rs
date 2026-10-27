@@ -716,6 +716,224 @@ impl EventHandler for Avatar {
     }
 }
 
+/// A horizontal stack of overlapping avatars with an optional overflow count.
+///
+/// The group is a composition rather than a new primitive: each member is an [`Avatar`], and the
+/// group only owns their layout and the `+N` bubble. `max_visible` bounds the painted members
+/// (`0` paints every member) and `spacing` is the step between adjacent origins (a `0` step
+/// selects the quarter-overlap default), which is the "spacing / limit configurable" shape the
+/// issue asks for.
+pub struct GroupAvatar {
+    base: BaseWidget,
+    avatars: Vec<Avatar>,
+    /// Step between adjacent avatar origins in pixels; `0` selects the default overlap.
+    spacing: i32,
+    /// Maximum members painted; `0` paints every member.
+    max_visible: usize,
+}
+
+impl GroupAvatar {
+    /// Creates an empty group with the given geometry.
+    pub fn new(geometry: Rect) -> Self {
+        Self {
+            base: BaseWidget::new(WidgetKind::Avatar, geometry, "GroupAvatar"),
+            avatars: Vec::new(),
+            spacing: 0,
+            max_visible: 0,
+        }
+    }
+
+    /// The members, in paint order.
+    pub fn avatars(&self) -> &[Avatar] {
+        &self.avatars
+    }
+
+    /// The number of members.
+    pub fn len(&self) -> usize {
+        self.avatars.len()
+    }
+
+    /// Whether the group has no members.
+    pub fn is_empty(&self) -> bool {
+        self.avatars.is_empty()
+    }
+
+    /// Appends a member.
+    pub fn push_avatar(&mut self, avatar: Avatar) {
+        self.avatars.push(avatar);
+        self.base.request_redraw();
+    }
+
+    /// Replaces every member.
+    pub fn set_avatars(&mut self, avatars: Vec<Avatar>) {
+        self.avatars = avatars;
+        self.base.request_redraw();
+    }
+
+    /// The configured step between adjacent origins.
+    pub fn spacing(&self) -> i32 {
+        self.spacing
+    }
+
+    /// Sets the step between adjacent origins; `0` restores the quarter-overlap default.
+    pub fn set_spacing(&mut self, spacing: i32) {
+        if self.spacing == spacing {
+            return;
+        }
+        self.spacing = spacing;
+        self.base.request_redraw();
+    }
+
+    /// The maximum number of painted members (`0` means all).
+    pub fn max_visible(&self) -> usize {
+        self.max_visible
+    }
+
+    /// Sets the maximum number of painted members; the rest are folded into `+N`.
+    pub fn set_max_visible(&mut self, max_visible: usize) {
+        if self.max_visible == max_visible {
+            return;
+        }
+        self.max_visible = max_visible;
+        self.base.request_redraw();
+    }
+
+    /// The number of members folded into the `+N` bubble.
+    pub fn overflow_count(&self) -> usize {
+        self.avatars.len().saturating_sub(self.visible_count())
+    }
+
+    /// The number of members painted as avatars.
+    fn visible_count(&self) -> usize {
+        if self.max_visible == 0 {
+            self.avatars.len()
+        } else {
+            self.max_visible.min(self.avatars.len())
+        }
+    }
+
+    /// The side length of one member.
+    ///
+    /// Capped at [`dimensions::AVATAR_SIZE`] because [`Avatar`]'s draw path uses its hint as the
+    /// painted disc, so a larger slot would not paint a larger avatar.
+    fn avatar_side(&self) -> u32 {
+        self.geometry().height.min(dimensions::AVATAR_SIZE).max(1)
+    }
+
+    /// The step between adjacent origins, resolving the default overlap.
+    fn step(&self, side: u32) -> i32 {
+        if self.spacing == 0 {
+            (side as i32 * 3 / 4).max(1)
+        } else {
+            self.spacing.max(1)
+        }
+    }
+
+    /// The box of member (or the overflow bubble, when `index == visible_count`) at `index`.
+    fn child_rect(&self, index: usize) -> Rect {
+        let rect = self.geometry();
+        let side = self.avatar_side();
+        let step = self.step(side);
+        let shown = self.visible_count() + usize::from(self.overflow_count() > 0);
+        let total = if shown == 0 { 0 } else { side as i32 + step * (shown as i32 - 1) };
+        let left = rect.x + ((rect.width as i32 - total) / 2).max(0);
+        let top = rect.y + ((rect.height as i32 - side as i32) / 2).max(0);
+        Rect::new(left + step * index as i32, top, side, side)
+    }
+
+    /// Paints the `+N` bubble in `slot`.
+    fn paint_overflow(&self, context: &mut RenderContext, slot: Rect, count: usize) {
+        let style = self.base.style();
+        let palette = crate::style::palette_shared();
+        let window = palette.as_ref().map(|colors| colors.background).unwrap_or(Color::WHITE);
+        let ink = style.text_color.unwrap_or_else(|| {
+            palette.as_ref().map(|colors| colors.foreground).unwrap_or(Color::BLACK)
+        });
+        let fill = match style.background_color {
+            Some(resolved) if resolved != window => resolved,
+            _ => window.blend(&ink, 0.10),
+        };
+        let center = Point::new(slot.x + slot.width as i32 / 2, slot.y + slot.height as i32 / 2);
+        context.fill_circle(center, slot.width / 2, fill);
+        let font = Font::bold("Arial", (slot.width as f32 * 0.38).max(8.0));
+        let text = format!("+{count}");
+        context.draw_text_fitted_cow(
+            slot,
+            &text,
+            &font,
+            fill.contrast_color(),
+            HorizontalAlignment::Center,
+        );
+    }
+}
+
+impl Widget for GroupAvatar {
+    fn base(&self) -> &BaseWidget {
+        &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
+    fn base_mut(&mut self) -> &mut BaseWidget {
+        &mut self.base
+    }
+
+    fn size_hint(&self) -> crate::core::Size {
+        let side = self.avatar_side();
+        let shown = self.visible_count() + usize::from(self.overflow_count() > 0);
+        let step = self.step(side);
+        let width = side as i32 + step * shown.saturating_sub(1) as i32;
+        crate::core::Size::new(width.max(1) as u32, side)
+    }
+    impl_draw_bridge!();
+    impl_widget_property_hooks!();
+}
+
+impl WidgetProperties for GroupAvatar {
+    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+        base_property_get(self, name)
+    }
+
+    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError> {
+        base_property_set(self, name, value)
+    }
+
+    fn property_names(&self) -> &'static [&'static str] {
+        property_names_of![BASE_PROPERTY_NAMES]
+    }
+}
+
+impl EventHandler for GroupAvatar {
+    fn handle_event(&mut self, event: &Event) {
+        self.base.handle_event(event);
+    }
+}
+
+impl Draw for GroupAvatar {
+    fn draw(&mut self, context: &mut RenderContext) {
+        let rect = self.geometry();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let visible = self.visible_count();
+        let overflow = self.overflow_count();
+        let overflow_slot = if overflow > 0 { Some(self.child_rect(visible)) } else { None };
+
+        for index in 0..visible {
+            let slot = self.child_rect(index);
+            let avatar = &mut self.avatars[index];
+            if avatar.geometry() != slot {
+                avatar.set_geometry(slot);
+            }
+            avatar.draw(context);
+        }
+
+        if let Some(slot) = overflow_slot {
+            self.paint_overflow(context, slot, overflow);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1109,6 +1327,48 @@ mod tests {
         });
         assert!(hit.load(Ordering::SeqCst), "a press on the disc reports the click");
         assert!(avatar.event_signal_dyn("avatar_clicked").is_some());
+    }
+
+    /// A group overlaps its members, folds the rest into `+N`, and still paints a symbol.
+    #[test]
+    fn a_group_overlaps_members_and_folds_the_overflow() {
+        let mut group = GroupAvatar::new(Rect::new(0, 0, 240, 40));
+        assert!(group.is_empty());
+        for name in ["A", "B", "C", "D"] {
+            let mut member = Avatar::new(Rect::new(0, 0, 40, 40));
+            member.set_text(name);
+            group.push_avatar(member);
+        }
+        assert_eq!(group.len(), 4);
+        assert_eq!(group.overflow_count(), 0);
+
+        let first = group.child_rect(0);
+        let second = group.child_rect(1);
+        assert_eq!(first.y, second.y, "members share a baseline");
+        assert!(second.x > first.x, "members advance to the right");
+        assert!(
+            second.x - first.x < first.width as i32,
+            "the default step overlaps the neighbouring disc"
+        );
+
+        group.set_max_visible(3);
+        assert_eq!(group.overflow_count(), 1);
+        let svg = crate::widget::svg::render_to_svg(&mut group);
+        assert!(svg.starts_with("<svg"));
+
+        // The capped group folds the fourth member into the bubble, so its picture differs from
+        // the uncapped group's picture.
+        let mut all = GroupAvatar::new(Rect::new(0, 0, 240, 40));
+        for name in ["A", "B", "C", "D"] {
+            let mut member = Avatar::new(Rect::new(0, 0, 40, 40));
+            member.set_text(name);
+            all.push_avatar(member);
+        }
+        let uncapped = crate::widget::svg::render_to_svg(&mut all);
+        assert_ne!(uncapped, svg, "the +N bubble must be painted");
+
+        group.set_spacing(40);
+        assert_eq!(group.child_rect(1).x - group.child_rect(0).x, 40);
     }
 
     /// The smallest valid PNG: a 2x2 truecolour-with-alpha image whose first pixel is opaque red.

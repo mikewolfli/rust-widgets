@@ -686,10 +686,20 @@ impl MdiArea {
             return Point::new(0, 0);
         };
         let area = self.geometry();
-        let min_x = (bounds.x - area.x).min(0);
-        let min_y = (bounds.y - area.y).min(0);
-        let max_x = (bounds.x + bounds.width as i32 - area.x - area.width as i32).max(min_x);
-        let max_y = (bounds.y + bounds.height as i32 - area.y - area.height as i32).max(min_y);
+        // C-008: when the content is at least as large as the viewport on an axis, the pan may
+        // range until the content exactly covers the viewport. When it is smaller, the pan may
+        // only move it while the whole content stays inside the viewport. Either way a gesture
+        // cannot leave an empty area with no way back.
+        let (min_x, max_x) = if bounds.width >= area.width {
+            (bounds.x - area.x, bounds.x + bounds.width as i32 - area.x - area.width as i32)
+        } else {
+            (bounds.x + bounds.width as i32 - area.x - area.width as i32, bounds.x - area.x)
+        };
+        let (min_y, max_y) = if bounds.height >= area.height {
+            (bounds.y - area.y, bounds.y + bounds.height as i32 - area.y - area.height as i32)
+        } else {
+            (bounds.y + bounds.height as i32 - area.y - area.height as i32, bounds.y - area.y)
+        };
         Point::new(offset.x.clamp(min_x, max_x), offset.y.clamp(min_y, max_y))
     }
 

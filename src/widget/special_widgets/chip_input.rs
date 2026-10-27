@@ -48,6 +48,12 @@ pub struct ChipInput {
     pub text_changed: Signal1<String>,
     /// Emitted with the current item count when a commit is refused by `max_count`.
     pub limit_reached: Signal1<usize>,
+    /// Emitted with the labels of every committed chip after a change.
+    ///
+    /// This is the control's route onto the event bus: `tags_changed` is the event the shared
+    /// `tag_input` capability already declares, and the spelling is the same one `TagInput` uses
+    /// (SP-121).
+    pub tags_changed: Signal1<Vec<String>>,
 }
 
 impl ChipInput {
@@ -67,6 +73,7 @@ impl ChipInput {
             chip_removed: Signal1::new(),
             text_changed: Signal1::new(),
             limit_reached: Signal1::new(),
+            tags_changed: Signal1::new(),
         }
     }
 
@@ -78,7 +85,19 @@ impl ChipInput {
     /// Replaces the committed items.
     pub fn set_items(&mut self, items: Vec<ChipItem>) {
         self.band.set_items(items);
+        self.emit_tags_changed();
         self.base.request_redraw();
+    }
+
+    /// The labels of every committed chip.
+    pub fn tags(&self) -> Vec<String> {
+        self.band.items().iter().map(|item| item.label.clone()).collect()
+    }
+
+    /// Publishes the live tag list after an item change.
+    fn emit_tags_changed(&mut self) {
+        let tags = self.tags();
+        self.tags_changed.emit(tags);
     }
 
     /// The chip band, for a host that wants its selection or its signals.
@@ -183,6 +202,9 @@ impl ChipInput {
             added += 1;
         }
         self.text_changed.emit(String::new());
+        if added > 0 {
+            self.emit_tags_changed();
+        }
         self.base.request_redraw();
         added
     }
@@ -209,6 +231,7 @@ impl ChipInput {
         for id in removed {
             self.chip_removed.emit(id);
         }
+        self.emit_tags_changed();
         self.base.request_redraw();
     }
 
@@ -218,6 +241,7 @@ impl ChipInput {
         if let Some(item) = items.pop() {
             self.band.set_items(items);
             self.chip_removed.emit(item.id);
+            self.emit_tags_changed();
             self.base.request_redraw();
         }
     }
@@ -284,6 +308,26 @@ impl Widget for ChipInput {
 
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Resolves the one event this control publishes onto the bus.
+    ///
+    /// `tag_input` is the shared capability this control is registered under (its aliases include
+    /// `chip_input`), and `tags_changed` is the event it declares. The four control-specific
+    /// signals are emitted on the concrete type; publishing them by name needs payload rows in
+    /// `capability/event_payloads.rs`, which is outside this change (SP-121).
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "tags_changed" => {
+                Some(EventSignalRef::mapped("tags_changed", &self.tags_changed, |tags| {
+                    CapabilityValue::Tuple(
+                        tags.iter().map(|tag| CapabilityValue::String(tag.clone())).collect(),
+                    )
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl WidgetProperties for ChipInput {
@@ -523,5 +567,41 @@ impl Draw for ChipInput {
         if self.base.is_enabled() {
             context.fill_rect(Rect::new(caret_x, caret_y - 1, 1, 15), ink);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// The live tag list is published after a commit, a removal and a clear, and the control
+    /// resolves the event the shared capability declares (SP-121).
+    #[test]
+    fn tags_changed_publishes_after_every_item_change() {
+        let mut input = ChipInput::new(Rect::new(0, 0, 240, 60));
+        let seen = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let sink = Arc::clone(&seen);
+        input.tags_changed.connect(move |tags| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push((*tags).clone());
+            }
+        });
+
+        input.set_text("alpha,beta");
+        assert_eq!(input.commit(), 2);
+
+        // A refused duplicate adds nothing, so no event is published for it.
+        input.set_text("beta");
+        assert_eq!(input.commit(), 0);
+
+        input.clear();
+        assert_eq!(
+            seen.lock().expect("tags lock poisoned").clone(),
+            vec![vec![String::from("alpha"), String::from("beta")], Vec::new()]
+        );
+
+        // The declared event resolves to this signal, so a hub subscription reaches it.
+        assert!(input.event_signal_dyn("tags_changed").is_some());
     }
 }

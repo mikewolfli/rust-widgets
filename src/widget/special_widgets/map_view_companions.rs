@@ -138,6 +138,10 @@ pub struct TileLoader {
     cache: HashMap<TileKey, TileEntry>,
     /// Insertion order, used for oldest-first eviction.
     order: alloc::collections::VecDeque<TileKey>,
+    /// Revision of the cache contents, so the status label moves only when the counts can (SP-120).
+    cache_revision: u64,
+    /// The cached status label and the key it was built for: revision and zoom range.
+    status_cache: Option<(u64, u8, u8, String)>,
     /// Emitted when the host supplies pixels for a tile.
     pub tile_loaded: Signal1<TileKey>,
     /// Emitted when the host reports that a tile could not be fetched.
@@ -156,6 +160,8 @@ impl TileLoader {
             cache_limit: 256,
             cache: HashMap::new(),
             order: alloc::collections::VecDeque::new(),
+            cache_revision: 0,
+            status_cache: None,
             tile_loaded: Signal1::new(),
             tile_failed: Signal1::new(),
         }
@@ -263,6 +269,7 @@ impl TileLoader {
             self.cache.insert(key, TileEntry { payload: None });
             self.order.push_back(key);
             self.evict_over_limit();
+            self.cache_revision = self.cache_revision.wrapping_add(1);
             self.base.request_redraw();
         }
         Ok(TileRequest { key, url, cached })
@@ -318,6 +325,7 @@ impl TileLoader {
             return false;
         };
         entry.payload = Some(payload);
+        self.cache_revision = self.cache_revision.wrapping_add(1);
         self.tile_loaded.emit(key);
         self.base.request_redraw();
         true
@@ -329,6 +337,7 @@ impl TileLoader {
             return false;
         }
         self.order.retain(|queued| *queued != key);
+        self.cache_revision = self.cache_revision.wrapping_add(1);
         self.tile_failed.emit(key);
         self.base.request_redraw();
         true
@@ -338,6 +347,7 @@ impl TileLoader {
     pub fn clear_cache(&mut self) {
         self.cache.clear();
         self.order.clear();
+        self.cache_revision = self.cache_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -375,7 +385,28 @@ impl TileLoader {
                 break;
             };
             self.cache.remove(&oldest);
+            self.cache_revision = self.cache_revision.wrapping_add(1);
         }
+    }
+
+    /// The status label, rebuilt only when the cache revision or the zoom range moves (SP-120).
+    fn status_text(&mut self) -> &str {
+        let key = (self.cache_revision, self.min_zoom, self.max_zoom);
+        let stale = self
+            .status_cache
+            .as_ref()
+            .is_none_or(|(revision, min, max, _)| (*revision, *min, *max) != key);
+        if stale {
+            let status = format!(
+                "Tiles {}/{}  z{}-{}",
+                self.cached_count(),
+                self.cache.len(),
+                self.min_zoom,
+                self.max_zoom
+            );
+            self.status_cache = Some((key.0, key.1, key.2, status));
+        }
+        self.status_cache.as_ref().map(|(_, _, _, text)| text.as_str()).unwrap_or("")
     }
 }
 
@@ -500,6 +531,9 @@ impl EventHandler for TileLoader {
 impl Draw for TileLoader {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        // The label is resolved before the style borrow so the cached string can be read
+        // immutably while the style is borrowed (SP-120).
+        self.status_text();
         let style = self.base.style();
         let (surface, border, ink) = companion_palette(style, "tile_loader");
         context.face_with_gradient(rect, surface, None, Default::default(), 0, Color::BLACK);
@@ -510,16 +544,10 @@ impl Draw for TileLoader {
             border,
             1,
         );
-        let status = format!(
-            "Tiles {}/{}  z{}-{}",
-            self.cached_count(),
-            self.cache.len(),
-            self.min_zoom,
-            self.max_zoom
-        );
+        let status = self.status_cache.as_ref().map(|(_, _, _, text)| text.as_str()).unwrap_or("");
         context.draw_text_fitted_cow(
             Rect::new(rect.x + 4, rect.y + 2, rect.width.saturating_sub(8), 14),
-            &status,
+            status,
             effective_font(style),
             ink,
             HorizontalAlignment::Left,
@@ -551,6 +579,11 @@ pub struct ZoomControl {
     zoom_level: f32,
     min: f32,
     max: f32,
+    /// The measured label boxes, keyed by the resolved font (SP-120).
+    ///
+    /// The three labels are static strings, so their sizes change only when the font does; the
+    /// draw used to measure all three on every frame.
+    metrics_cache: core::cell::RefCell<Option<(crate::core::Font, [(u32, u32); 3])>>,
     /// Emitted with the new level after a change.
     pub zoom_requested: Signal1<f32>,
 }
@@ -563,6 +596,7 @@ impl ZoomControl {
             zoom_level: 1.0,
             min: 0.25,
             max: 8.0,
+            metrics_cache: core::cell::RefCell::new(None),
             zoom_requested: Signal1::new(),
         }
     }
@@ -798,17 +832,40 @@ impl Draw for ZoomControl {
                 border,
                 1,
             );
+            let font = effective_font(style);
+            // The measured label boxes are cached with the font they were measured with, so a
+            // still strip costs no shaping pass (SP-120).
+            let stale =
+                self.metrics_cache.borrow().as_ref().is_none_or(|(cached, _)| cached != font);
+            if stale {
+                let labels = ["-", "1:1", "+"];
+                let mut measured = [(0u32, 0u32); 3];
+                for (slot, label) in measured.iter_mut().zip(labels) {
+                    let metrics = context.measure_text(label, font);
+                    *slot = (metrics.width, metrics.height);
+                }
+                *self.metrics_cache.borrow_mut() = Some((font.clone(), measured));
+            }
             let label = match button {
                 ZoomButton::Out => "-",
                 ZoomButton::Reset => "1:1",
                 ZoomButton::In => "+",
             };
-            let font = effective_font(style);
-            let metrics = context.measure_text(label, font);
+            let index = match button {
+                ZoomButton::Out => 0,
+                ZoomButton::Reset => 1,
+                ZoomButton::In => 2,
+            };
+            let (width, height) = self
+                .metrics_cache
+                .borrow()
+                .as_ref()
+                .map(|(_, sizes)| sizes[index])
+                .unwrap_or((0, 0));
             context.draw_text(
                 Point::new(
-                    button_rect.x + (button_rect.width as i32 - metrics.width as i32) / 2,
-                    button_rect.y + (button_rect.height as i32 - metrics.height as i32) / 2,
+                    button_rect.x + (button_rect.width as i32 - width as i32) / 2,
+                    button_rect.y + (button_rect.height as i32 - height as i32) / 2,
                 ),
                 label,
                 font,
@@ -889,6 +946,11 @@ pub struct ScaleBar {
     meters_per_pixel: f64,
     units: ScaleUnits,
     style: ScaleBarStyle,
+    /// The cached label and the scale/unit/width key it was built for (SP-120).
+    ///
+    /// The label used to be formatted on every frame, so a still map paid for the same string
+    /// sixty times a second.
+    label_cache: Option<(u64, ScaleUnits, u32, String)>,
 }
 
 impl ScaleBar {
@@ -899,6 +961,7 @@ impl ScaleBar {
             meters_per_pixel: 1.0,
             units: ScaleUnits::Metric,
             style: ScaleBarStyle::Plain,
+            label_cache: None,
         }
     }
 
@@ -962,6 +1025,19 @@ impl ScaleBar {
     pub fn label(&self) -> String {
         let available = (f64::from(self.geometry().width) - 2.0 * SCALE_BAR_PADDING).max(16.0);
         format_scale_distance(self.units, self.bar_distance(available))
+    }
+
+    /// Rebuilds the draw-path label only when the scale, the units or the width moves (SP-120).
+    fn refresh_label(&mut self) {
+        let key = (self.meters_per_pixel.to_bits(), self.units, self.geometry().width);
+        let stale = self
+            .label_cache
+            .as_ref()
+            .is_none_or(|(bits, units, width, _)| (*bits, *units, *width) != key);
+        if stale {
+            let label = self.label();
+            self.label_cache = Some((key.0, key.1, key.2, label));
+        }
     }
 
     /// The width of the bar in pixels at the current scale.
@@ -1096,6 +1172,7 @@ impl EventHandler for ScaleBar {
 impl Draw for ScaleBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
+        self.refresh_label();
         let style = self.base.style();
         let (surface, border, ink) = companion_palette(style, "scale_bar");
         if self.style == ScaleBarStyle::Boxed {
@@ -1120,11 +1197,11 @@ impl Draw for ScaleBar {
         for x in [left, right] {
             context.draw_line(Point::new(x, bottom - 3), Point::new(x, bottom), ink);
         }
-        let label = self.label();
+        let label = self.label_cache.as_ref().map(|(_, _, _, label)| label.as_str()).unwrap_or("");
         if !label.is_empty() {
             context.draw_text(
                 Point::new(left, bottom - 16),
-                &label,
+                label,
                 effective_font(style),
                 ink,
                 HorizontalAlignment::Left,
@@ -1316,5 +1393,55 @@ impl Draw for Compass {
                 ink,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tile status, the scale label and the zoom strip's label metrics are rebuilt only when
+    /// their inputs move, not on every frame (SP-120).
+    #[test]
+    fn derived_labels_are_cached_until_their_inputs_move() {
+        use crate::widget::svg::render_to_svg;
+
+        let mut loader = TileLoader::new(Rect::new(0, 0, 180, 24));
+        let _ = render_to_svg(&mut loader);
+        let status = loader.status_cache.as_ref().expect("the first draw builds the label");
+        assert_eq!(status.0, 0, "the revision starts at zero");
+        let status_text = status.3.clone();
+
+        // No model change: the same cached string and the same revision.
+        let _ = render_to_svg(&mut loader);
+        let reused = loader.status_cache.as_ref().expect("the cache survives");
+        assert_eq!(reused.3, status_text);
+        assert_eq!(reused.0, 0);
+
+        // A cache mutation moves the revision and the counts, so the next draw rebuilds.
+        let _ = loader.load_tile(2, 1, 1).expect("a tile in the world");
+        let _ = render_to_svg(&mut loader);
+        let rebuilt = loader.status_cache.as_ref().expect("a draw rebuilds");
+        assert_ne!(rebuilt.0, 0);
+        assert_ne!(rebuilt.3, status_text);
+
+        let mut bar = ScaleBar::new(Rect::new(0, 0, 120, 24));
+        let _ = render_to_svg(&mut bar);
+        let first = bar.label_cache.as_ref().expect("the scale label").3.clone();
+        let _ = render_to_svg(&mut bar);
+        assert_eq!(bar.label_cache.as_ref().expect("cached").3, first);
+        bar.set_scale(10.0);
+        let _ = render_to_svg(&mut bar);
+        assert_ne!(bar.label_cache.as_ref().expect("rebuilt").3, first);
+
+        let mut zoom = ZoomControl::new(Rect::new(0, 0, 96, 28));
+        let _ = render_to_svg(&mut zoom);
+        let first = zoom.metrics_cache.borrow().as_ref().expect("measured labels").1;
+        let _ = render_to_svg(&mut zoom);
+        assert_eq!(
+            zoom.metrics_cache.borrow().as_ref().expect("cached labels").1,
+            first,
+            "a still zoom strip re-measured its labels"
+        );
     }
 }

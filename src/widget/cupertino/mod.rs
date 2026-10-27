@@ -26,7 +26,7 @@ pub mod segmented_control;
 // Re-exports from core
 pub use core::{CupertinoAlertDialog, CupertinoSlider, CupertinoSwitch};
 pub use date_picker::CupertinoDatePicker;
-pub use material::{MaterialNavigationRail, MaterialSnackbar, RailItem};
+pub use material::{MaterialNavigationRail, MaterialSnackbar, NavigationRailLabelMode, RailItem};
 pub use nav_bar::{CupertinoNavigationBar, NavBarItem, NavBarTitleMode};
 pub use navigation_stack::CupertinoNavigationStack;
 pub use segmented_control::{CupertinoSegment, CupertinoSegmentedControl, SegmentTint};

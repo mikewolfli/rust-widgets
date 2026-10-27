@@ -23,63 +23,43 @@ use crate::platform::windows::types::*;
 use crate::platform::DropEvent;
 use std::sync::atomic::Ordering;
 
-/// Re-reads a slow Windows environment fact at most once per the one-second environment TTL.
-///
-/// `drive_frame` refreshes the style environment every frame, and on Windows each fact is a
-/// registry or GDI transaction: at 60 fps that is 120 registry reads a second for values a user
-/// changes on the order of days. The cache trades a one-second propagation delay for a settings
-/// change against removing that steady cost — the same shape (and TTL) the monitoring probes in
-/// `os_probes` use, and far below the rate at which anyone flips a system theme.
-///
-/// # What is cached, and when it is invalidated
-///
-/// Every slow environment fact this backend answers goes through this wrapper, each with its own
-/// slot:
-///
-/// | fact | slot | source |
-/// |---|---|---|
-/// | `text_scale` | [`TEXT_SCALE_CACHE`] | `Software\\Microsoft\\Accessibility` registry value |
-/// | `system_theme` | [`SYSTEM_THEME_CACHE`] | `Themes\\Personalize` registry value |
-/// | `dpi_scale_factor` | [`DPI_SCALE_CACHE`] | `GetDeviceCaps(LOGPIXELSX)` |
-/// | `high_contrast` | [`HIGH_CONTRAST_CACHE`] | `SystemParametersInfoW(SPI_GETHIGHCONTRAST)` |
-/// | `reduce_motion` | [`REDUCE_MOTION_CACHE`] | `SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION)` |
-/// | `system_locale` | [`SYSTEM_LOCALE_CACHE`] | `GetUserDefaultLocaleName` |
-///
-/// **Invalidation trigger: TTL expiry only.** A slot is re-read when its one-second window has
-/// elapsed, so a settings change becomes visible within that window at the latest. There
-/// is deliberately no push-based clear: `WM_SETTINGCHANGE` is not routed into this backend yet
-/// (the notification-source gap tracked as issue P-201), and this module must not claim a
-/// notification it does not receive. When that hook is added it must clear these slots, which is
-/// why each slot is a named static rather than a closure-local `OnceLock`.
-#[cfg(target_os = "windows")]
+// The environment facts this backend answers go through the shared cache in
+// [`crate::platform::environment_cache`], the same wrapper the Linux, Android and locale paths
+// use (P-302). This backend used to keep a local copy whose only invalidation trigger was its own
+// one-second TTL, so a notification could not drop a reading and the TTL could drift from every
+// other backend's. The shared wrapper records the process-wide notification revision as well as
+// the time, so `Platform::notify_environment_changed` — and the `WM_SETTINGCHANGE` arm in
+// `types::wnd_proc` that feeds it — invalidates every slot at once (P-208/P-302).
+//
+// Each slot is a named static rather than a closure-local `OnceLock`, so the fact it holds stays
+// greppable:
+//
+// | fact | slot | source |
+// |---|---|---|
+// | `text_scale` | [`TEXT_SCALE_CACHE`] | `Software\\Microsoft\\Accessibility` registry value |
+// | `system_theme` | [`SYSTEM_THEME_CACHE`] | `Themes\\Personalize` registry value |
+// | `dpi_scale_factor` | [`DPI_SCALE_CACHE`] | `GetDeviceCaps(LOGPIXELSX)` |
+// | `high_contrast` | [`HIGH_CONTRAST_CACHE`] | `SystemParametersInfoW(SPI_GETHIGHCONTRAST)` |
+// | `reduce_motion` | [`REDUCE_MOTION_CACHE`] | `SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION)` |
+// | `system_locale` | [`SYSTEM_LOCALE_CACHE`] | `GetUserDefaultLocaleName` |
+#[cfg(all(target_os = "windows", not(alloc_frugal)))]
+use crate::platform::environment_cache::{cached_environment_fact, EnvironmentFactCache};
+
+/// The `mini` profile compiles no environment cache (see `platform::environment_cache`), so the
+/// same call has to stay available without one: the reading goes to the registry or
+/// `SystemParametersInfoW` on every question. That is the honest shape for a sized profile — it
+/// trades the repeated read for the slot — and it keeps the call sites below identical in every
+/// build.
+#[cfg(all(target_os = "windows", alloc_frugal))]
 fn cached_environment_fact<T: Copy>(
-    cache: &'static EnvironmentFactCache<T>,
+    _cache: &'static EnvironmentFactCache<T>,
     read: impl FnOnce() -> T,
 ) -> T {
-    const ENVIRONMENT_TTL: std::time::Duration = std::time::Duration::from_secs(1);
-    // `get_or_init`, not `get`: a `OnceLock` that nobody initialises answers `None` forever, so
-    // the earlier version of this wrapper read every slot, found it absent, ran the read and then
-    // dropped the value — a TTL cache that never cached, which is why the registry facts below
-    // were still being re-read on every style-environment poll. Initialising the slot here is what
-    // makes the TTL real.
-    let slot = cache.get_or_init(|| std::sync::Mutex::new(None));
-    if let Ok(guard) = slot.lock() {
-        if let Some((sampled_at, value)) = *guard {
-            if sampled_at.elapsed() < ENVIRONMENT_TTL {
-                return value;
-            }
-        }
-    }
-    // The read runs with no lock held: a registry or `SystemParametersInfoW` transaction must not
-    // serialise every thread that asks for an environment fact.
-    let value = read();
-    if let Ok(mut guard) = slot.lock() {
-        *guard = Some((std::time::Instant::now(), value));
-    }
-    value
+    read()
 }
 
-#[cfg(target_os = "windows")]
+/// The slot shape, declared only where [`cached_environment_fact`] really caches.
+#[cfg(all(target_os = "windows", alloc_frugal))]
 type EnvironmentFactCache<T> =
     std::sync::OnceLock<std::sync::Mutex<Option<(std::time::Instant, T)>>>;
 
@@ -1290,6 +1270,20 @@ impl Platform for WindowsPlatform {
         super::file_picker::choose_path(purpose, title)
     }
 
+    /// [`Self::choose_path`] with the caller's filters in the dialog's filter list (P-203).
+    ///
+    /// The win32 common dialogs express the list as `label\0*.ext[;*.ext]\0…`, which is what
+    /// `file_picker::filter_list` builds. A directory chooser ignores the list: `SHBrowseForFolderW`
+    /// has no filter control.
+    fn choose_path_with_filters(
+        &self,
+        purpose: crate::platform::PathPurpose,
+        title: &str,
+        filters: &[crate::platform::PathFilter],
+    ) -> Result<Option<std::path::PathBuf>, crate::platform::PathPickerError> {
+        super::file_picker::choose_path_with_filters(purpose, title, filters)
+    }
+
     /// Hands a URL or path to the shell's default handler through `cmd /C start`.
     ///
     /// The empty `""` after `start` is its *window title* argument: without it, a quoted
@@ -1680,6 +1674,12 @@ impl Platform for WindowsPlatform {
             // `types::release_library_window`). Registered after the handle is known-good so a
             // failed creation does not leave a phantom window in the count.
             super::types::register_library_window();
+            // P-303: the TSF probe ran when the platform was constructed, which may have been
+            // before this thread had a window at all, and its answer was then fixed for the life
+            // of the process. Re-probe now that an `HWND` exists, so `capabilities().ime`
+            // — which reads `has_native_ime` — reports an input context the host can really
+            // have. One COM activation per window, not per frame.
+            let _ = self.ime_bridge.refresh_native_availability();
             // SAFETY: `hwnd` was just returned by `CreateWindowExW` above and checked
             // non-null, so it is a live window for the life of this backend.
             unsafe { self.bind_native_handle(widget_id, hwnd) };

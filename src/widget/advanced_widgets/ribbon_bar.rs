@@ -555,9 +555,17 @@ impl RibbonBar {
     }
 
     /// Sets the title of the tab at the given index.
+    ///
+    /// A write that changes the stored text requests a repaint, so the new label reaches
+    /// the frame; writing the title it already holds is a no-op (ADV-008).
     pub fn set_tab_title(&mut self, index: usize, title: impl Into<String>) {
+        let title = title.into();
         if let Some(t) = self.tabs.get_mut(index) {
-            *t = title.into();
+            if *t == title {
+                return;
+            }
+            *t = title;
+            self.base.request_redraw();
         }
     }
 
@@ -1650,6 +1658,10 @@ impl RibbonBar {
         };
 
         let layout = self.item_layout();
+        // The font is a property of the control, not of a group or an item: resolving it inside the
+        // loop asked the theme for the same face once per item per frame (ADV-007). One
+        // resolution here is the face every label below paints with.
+        let font = effective_font(self.style());
         for (gi, gr, item_rects) in layout.iter() {
             let group = &groups[*gi];
 
@@ -1682,7 +1694,6 @@ impl RibbonBar {
                         if let Some(tip) = self.key_tip(self.current_tab_index, *gi, *ii) {
                             let badge = Rect::new(ir.x + 2, ir.y + 2, 18, 14);
                             context.fill_rect(badge, palette.accent);
-                            let font = effective_font(self.style());
                             context.draw_text_fitted_cow(
                                 badge,
                                 tip,
@@ -1698,7 +1709,7 @@ impl RibbonBar {
                         // glyph box starts at the origin, so `Center` is the alignment the item
                         //'s own middle line needs; the old `Left` started every label at the
                         // item's centre, which is why a large item's text ran past its column.
-                        let item_font = effective_font(self.style());
+                        let item_font = font;
                         let mut label_y = ir.y + 2;
                         if let Some(source) = item.icon_source() {
                             let icon_rect = Rect::new(
@@ -1747,7 +1758,7 @@ impl RibbonBar {
                         // Small: icon and text side by side. The icon column is reserved only when
                         // the item actually has an icon; without one the label starts at the
                         // item's own inset instead of at an empty `SMALL_ICON_SIZE` gap.
-                        let item_font = effective_font(self.style());
+                        let item_font = font;
                         let item_line = context.text_line(*ir, item_font);
                         let mut label_x = ir.x + 4;
                         if let Some(source) = item.icon_source() {
@@ -1811,7 +1822,6 @@ impl RibbonBar {
             // connects `group_overflow_clicked` to show the rest in a menu.
             if let Some(rect) = self.group_overflow_rect(*gi) {
                 context.fill_rect(rect, palette.item_hover);
-                let font = effective_font(self.style());
                 context.draw_text_fitted_cow(
                     rect,
                     "…",
@@ -1828,7 +1838,7 @@ impl RibbonBar {
             // The group title is a single line in a strip that is only one line tall, so its own
             // centred line box is where the text belongs; `title_y + GROUP_TITLE_HEIGHT / 2` put
             // the glyph box's top edge on the strip's middle line instead.
-            let title_font = effective_font(self.style());
+            let title_font = font;
             let title_line = context.text_line(title_rect, title_font);
             context.draw_text(
                 Point::new(gr.x + 2, title_line.y),
@@ -2907,5 +2917,31 @@ mod tests {
         // And leaving hides it.
         ribbon.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
         assert!(ribbon.tooltips.tooltip().is_none());
+    }
+
+    /// Rewriting a tab title repaints, and a redundant write does not (ADV-008).
+    #[test]
+    fn set_tab_title_requests_a_repaint_only_on_change() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut ribbon = RibbonBar::new(Rect::new(0, 0, 400, 200));
+        ribbon.add_tab("Home");
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&redraws);
+        ribbon.base().redraw_requested_signal().connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        ribbon.set_tab_title(0, "Start");
+        assert_eq!(redraws.load(Ordering::SeqCst), 1, "a changed title must repaint");
+        assert_eq!(ribbon.tab_title(0), Some("Start"));
+
+        ribbon.set_tab_title(0, "Start");
+        assert_eq!(redraws.load(Ordering::SeqCst), 1, "a redundant write must not repaint");
+
+        // An out-of-range index writes nothing and paints nothing.
+        ribbon.set_tab_title(9, "Nowhere");
+        assert_eq!(redraws.load(Ordering::SeqCst), 1);
     }
 }

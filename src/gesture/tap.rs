@@ -48,6 +48,9 @@ impl GestureRecognizer for TapGesture {
                 let start = self.start_pos?;
                 let start_time = self.start_time?;
                 let dt = now_ms.saturating_sub(start_time);
+                // A single tap's own travel is bounded by `max_stationary_distance`. The
+                // double-tap recogniser allows `DOUBLE_TAP_SEPARATION_FACTOR` times that between
+                // its two taps; the ratio is documented on that shared constant (W-03).
                 if dt < tuning().tap_timeout_ms
                     && super::distance(start, *pos) < tuning().max_stationary_distance
                 {
@@ -434,5 +437,55 @@ mod tests {
         let produced =
             gesture.process(&Event::TouchEnd { pos: Point::new(1010, 0), touch_id: 2 }, 100);
         assert!(produced.is_none(), "a far release must not be a TwoFingerTap, got {produced:?}");
+    }
+
+    /// W-03: one tap is bounded by `max_stationary_distance`, while the gap between the two taps
+    /// of a double-tap is bounded by `max_stationary_distance * DOUBLE_TAP_SEPARATION_FACTOR`.
+    ///
+    /// Driving the two recognisers with the same tuning is what makes the ratio observable: a
+    /// distance that is *not* a single tap is still a legal double-tap separation, and a distance
+    /// past the factor is not.
+    #[test]
+    fn the_single_tap_bound_and_the_two_tap_separation_differ_by_the_documented_factor() {
+        use crate::event::double_click::DOUBLE_TAP_SEPARATION_FACTOR;
+        let previous = crate::gesture::set_tuning(Some(crate::gesture::GestureTuning {
+            max_stationary_distance: 10.0,
+            double_tap_timeout_ms: 400,
+            tap_timeout_ms: 300,
+            ..Default::default()
+        }));
+
+        // One tap travelling past the single-tap bound is a drag, not a tap.
+        let mut tap = TapGesture::new();
+        assert!(tap
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0)
+            .is_none());
+        assert!(
+            tap.process(&Event::TouchEnd { pos: Point::new(12, 0), touch_id: 1 }, 50).is_none(),
+            "12 px of travel is past the 10 px single-tap bound"
+        );
+
+        // The same 12 px *between two taps* is inside the pair bound (2 × 10 px).
+        let inside = (10.0 * DOUBLE_TAP_SEPARATION_FACTOR - 2.0) as i32;
+        let mut double = DoubleTapGesture::new();
+        assert!(double.process(&Event::Tap { pos: Point::new(0, 0) }, 0).is_none());
+        assert!(
+            matches!(
+                double.process(&Event::Tap { pos: Point::new(inside, 0) }, 100),
+                Some(Event::DoubleTap { .. })
+            ),
+            "a separation inside the factor completes the double-tap"
+        );
+
+        // Past the factor it is two independent taps, not a pair.
+        let outside = (10.0 * DOUBLE_TAP_SEPARATION_FACTOR + 1.0) as i32;
+        let mut double = DoubleTapGesture::new();
+        assert!(double.process(&Event::Tap { pos: Point::new(0, 0) }, 0).is_none());
+        assert!(
+            double.process(&Event::Tap { pos: Point::new(outside, 0) }, 100).is_none(),
+            "a separation past the factor must not complete the double-tap"
+        );
+
+        crate::gesture::set_tuning(previous);
     }
 }

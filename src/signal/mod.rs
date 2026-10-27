@@ -27,8 +27,14 @@
 //!   slot whose callback is busy on another thread: rather than block or drop the value,
 //!   the emit clones the `T` onto that slot's pending queue for the running thread to
 //!   deliver. (A `T: Clone` bound is therefore inherent to the deferred-delivery design.)
-//! - **Priority sorting** happens on each emit — slots are sorted by priority rank
-//!   before invocation. For signals with many slots, this adds a small O(n log n) cost.
+//! - **Priority order** is maintained by the slot storage, not computed per emit: each signal
+//!   keeps one handle list per priority bucket, so `emit` walks High → Normal → Low in
+//!   connection order by reading those buckets (a single-subscriber signal takes a direct path
+//!   with no snapshot at all). There is no per-emit sort and therefore no O(n log n) step; the
+//!   cost of keeping the buckets in order is paid on connect/disconnect/priority change.
+//! - **Emit snapshots** the ordered handles into a reused per-thread buffer, then looks each one
+//!   up under a short shared lock and invokes it with no signal lock held (so a callback may
+//!   re-enter the same signal). A nested emit finds the buffer borrowed and uses its own.
 //! - **`ConnectionScope`** uses a `Mutex<Vec<Box<dyn FnOnce()>>>` for thread-safe
 //!   connection tracking. Disconnect is deferred to scope drop or explicit `clear()`.
 //!
@@ -47,7 +53,9 @@ mod event_signal_ref;
 mod generic_signal;
 mod hub;
 pub use core_signal::{ConnectionHandle, ConnectionScope, Priority, Signal};
-pub use event_bridge::{is_wired, unwired_events, EventSignalBinder};
+pub use event_bridge::{
+    is_wired, payload_kind, payload_kinds, unwired_events, EventPayloadKind, EventSignalBinder,
+};
 pub use event_signal_ref::EventSignalRef;
 pub use generic_signal::{GenericSignal, Signal1};
 pub use hub::CustomSignalHub;

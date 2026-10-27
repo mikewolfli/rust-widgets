@@ -1579,12 +1579,14 @@ impl DataGrid {
         &self.column_resized
     }
 
-    /// The selected cells, expanded from the current behaviour.
+    /// The selected units, in insertion order.
     ///
-    /// In row behaviour every column of a selected row is listed and in column behaviour every row
-    /// of a selected column; the mode decides the unit, so one accessor serves all three. A
-    /// `select_all` is expanded here as well, which is why a caller that only needs the units should
-    /// prefer [`Self::selected_indexes`].
+    /// The stored unit is the cell itself in `Cells` behaviour, `(row, 0)` in `Rows` behaviour and
+    /// `(0, column)` in `Columns` behaviour (V-004): one accessor serves all three by handing back
+    /// what the selection stores, and whether a whole row or column is covered is
+    /// [`Self::selection_contains`]'s lookup. A `select_all` keeps no units, so it is expanded
+    /// here; a caller that needs the distinct rows or columns should prefer
+    /// [`Self::selected_indexes`].
     pub fn selected_cells(&self) -> Vec<(usize, usize)> {
         if self.all_selected {
             let columns = self.column_count();
@@ -1592,23 +1594,7 @@ impl DataGrid {
                 .flat_map(|row| (0..columns).map(move |column| (row, column)))
                 .collect();
         }
-        match self.selection_behavior {
-            DataGridSelectionBehavior::Cells => self.selected_cells.iter().copied().collect(),
-            DataGridSelectionBehavior::Rows => {
-                let columns = self.column_count();
-                self.selected_cells
-                    .iter()
-                    .flat_map(|(row, _)| (0..columns).map(move |column| (*row, column)))
-                    .collect()
-            }
-            DataGridSelectionBehavior::Columns => {
-                let rows = self.row_count();
-                self.selected_cells
-                    .iter()
-                    .flat_map(|(_, column)| (0..rows).map(move |row| (row, *column)))
-                    .collect()
-            }
-        }
+        self.selected_cells.iter().copied().collect()
     }
 
     /// The distinct rows (`Cells`/`Rows`) or columns (`Columns`) in the selection.

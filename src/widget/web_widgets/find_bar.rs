@@ -24,6 +24,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::role_font;
+use crate::widget::web_widgets::web_engine::WebEngineView;
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -143,6 +144,40 @@ impl WebFindBar {
     /// Requests the previous match, wrapping at the start.
     pub fn previous_match(&mut self) {
         self.previous_requested.emit();
+    }
+
+    /// Runs this bar's query against `view` and adopts the reported match progress.
+    ///
+    /// This is the missing join between the companion and the engine: before it existed the bar
+    /// emitted `search_requested` and the view's `find_text` was reachable only by hand, so neither
+    /// called the other (MW-014). The view's whole-word option is honoured, so the bar and the
+    /// engine agree about the options the match was made with.
+    pub fn apply_to(&mut self, view: &mut WebEngineView) -> (usize, usize) {
+        if self.query.is_empty() {
+            view.clear_find();
+            self.set_match_progress(0, 0);
+            return (0, 0);
+        }
+        let whole_word = view.find_whole_word();
+        let (count, _selected) =
+            view.find_text_with_options(self.query(), self.case_sensitive, whole_word, false);
+        let (index, _) = view.find_progress();
+        self.set_match_progress(index, count);
+        (index, count)
+    }
+
+    /// Advances `view` to the next match and reports it through the bar.
+    pub fn next_in(&mut self, view: &mut WebEngineView) -> Option<(usize, usize)> {
+        let (index, total) = view.find_next()?;
+        self.set_match_progress(index + 1, total);
+        Some((index + 1, total))
+    }
+
+    /// Advances `view` to the previous match and reports it through the bar.
+    pub fn previous_in(&mut self, view: &mut WebEngineView) -> Option<(usize, usize)> {
+        let (index, total) = view.find_previous()?;
+        self.set_match_progress(index + 1, total);
+        Some((index + 1, total))
     }
 }
 
@@ -467,5 +502,25 @@ mod tests {
         assert_eq!(closes.load(order), 1);
         assert_eq!(bar.get("visible").unwrap(), CapabilityValue::Bool(false));
         assert_eq!(bar.command("no_such_command"), Err(CapabilityAccessError::UnknownCommand));
+    }
+
+    /// The companion drives the engine's find API and adopts its counter (MW-014).
+    #[test]
+    fn the_bar_searches_and_steps_a_web_view() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 320, 240));
+        view.load_html("<p>cat category cat</p>");
+        let mut bar = WebFindBar::new(Rect::new(0, 0, 320, 36));
+        bar.open();
+        bar.set_query("cat");
+        assert_eq!(bar.apply_to(&mut view), (1, 3));
+        assert_eq!(bar.match_progress(), (1, 3));
+        assert_eq!(bar.next_in(&mut view), Some((2, 3)));
+        assert_eq!(bar.match_progress(), (2, 3));
+        assert_eq!(bar.previous_in(&mut view), Some((1, 3)));
+
+        // The engine's whole-word option narrows the same query to the two whole words.
+        view.set_find_whole_word(true);
+        assert_eq!(bar.apply_to(&mut view), (1, 2));
+        assert_eq!(bar.match_progress(), (1, 2));
     }
 }

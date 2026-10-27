@@ -256,6 +256,105 @@ pub struct TimerManager {
     sender: EventSender,
 }
 
+/// A handle to a [`TimerManager`]'s timer set, usable away from the manager itself (W-11).
+///
+/// # Why the loop thread needs this
+///
+/// A long press produces no further touch event while the finger is held still: the only thing
+/// that changes is time, so the recogniser needs a [`Event::Timer`](crate::event::Event::Timer)
+/// tick to fire. The event loop owns its `TimerManager` on the host thread but dispatches on the
+/// loop thread, and the manager cannot be cloned (it owns the worker's join handle). This handle
+/// shares only the timer set, so the loop can arm the deadline its recognisers are waiting for
+/// instead of requiring the host to arm a timer by hand (W-11).
+///
+/// Dropping the handle changes nothing: the timer set lives as long as the manager.
+pub(crate) struct TimerArm {
+    #[cfg(not(alloc_frugal))]
+    state: Arc<TimerShared>,
+    #[cfg(alloc_frugal)]
+    state: Arc<Mutex<TimerState>>,
+}
+
+impl TimerArm {
+    /// Starts or replaces a **one-shot, precise** timer for `(target, id)`.
+    ///
+    /// Same rules as [`TimerManager::start_timer`]: a zero interval is refused and an
+    /// unrepresentable deadline is reported rather than panicking.
+    pub(crate) fn start(
+        &self,
+        target: ObjectId,
+        id: u32,
+        interval: Duration,
+    ) -> Result<(), String> {
+        schedule_into(&self.state, target, id, interval, false, TimerPrecision::Precise)
+    }
+
+    /// Stops the timer for `(target, id)`, reporting whether one was scheduled.
+    pub(crate) fn stop(&self, target: ObjectId, id: u32) -> bool {
+        stop_in(&self.state, target, id)
+    }
+}
+
+/// The one schedule body shared by [`TimerManager::start_timer_with_precision`] and
+/// [`TimerArm::start`], so the two entry points cannot disagree about validation or wake-up.
+#[cfg(not(alloc_frugal))]
+fn schedule_into(
+    state: &Arc<TimerShared>,
+    target: ObjectId,
+    id: u32,
+    interval: Duration,
+    repeating: bool,
+    precision: TimerPrecision,
+) -> Result<(), String> {
+    if interval.is_zero() {
+        return Err("timer interval must be > 0".to_string());
+    }
+    let next_fire = next_fire_deadline(interval)?;
+    let tolerance = precision.tolerance();
+    lock(&state.state).schedule((target, id), interval, repeating, next_fire, tolerance);
+    // The worker may be parked indefinitely (no timers) or until an older deadline; an added
+    // timer can be nearer than that, so it must be woken to recompute.
+    state.notify();
+    Ok(())
+}
+
+/// The `mini` form: no worker thread to wake, so the caller's `pump` observes the change.
+#[cfg(alloc_frugal)]
+fn schedule_into(
+    state: &Arc<Mutex<TimerState>>,
+    target: ObjectId,
+    id: u32,
+    interval: Duration,
+    repeating: bool,
+    precision: TimerPrecision,
+) -> Result<(), String> {
+    if interval.is_zero() {
+        return Err("timer interval must be > 0".to_string());
+    }
+    let next_fire = next_fire_deadline(interval)?;
+    let tolerance = precision.tolerance();
+    lock(state).schedule((target, id), interval, repeating, next_fire, tolerance);
+    Ok(())
+}
+
+/// The one stop body shared by [`TimerManager::stop_timer`] and [`TimerArm::stop`].
+#[cfg(not(alloc_frugal))]
+fn stop_in(state: &Arc<TimerShared>, target: ObjectId, id: u32) -> bool {
+    let removed = lock(&state.state).timers.remove(&(target, id)).is_some();
+    if removed {
+        // The stopped timer may have been the nearest deadline; the worker must recompute
+        // rather than wake at a deadline that no longer exists.
+        state.notify();
+    }
+    removed
+}
+
+/// The `mini` form of [`stop_in`].
+#[cfg(alloc_frugal)]
+fn stop_in(state: &Arc<Mutex<TimerState>>, target: ObjectId, id: u32) -> bool {
+    lock(state).timers.remove(&(target, id)).is_some()
+}
+
 impl TimerManager {
     /// Create a timer manager bound to an event sender.
     #[cfg(not(alloc_frugal))]
@@ -440,28 +539,20 @@ impl TimerManager {
         repeating: bool,
         precision: TimerPrecision,
     ) -> Result<(), String> {
-        if interval.is_zero() {
-            return Err("timer interval must be > 0".to_string());
-        }
+        schedule_into(&self.state, target, id, interval, repeating, precision)
+    }
 
-        let next_fire = next_fire_deadline(interval)?;
-        let tolerance = precision.tolerance();
-        self.lock_timers().schedule((target, id), interval, repeating, next_fire, tolerance);
-        // The worker may be parked indefinitely (no timers) or until an older deadline;
-        // an added timer can be nearer than that, so it must be woken to recompute.
-        self.notify_worker();
-        Ok(())
+    /// A handle that can start and stop this manager's timers from another thread (W-11).
+    ///
+    /// Used by the event loop to arm the long-press deadline on its dispatch thread; it shares
+    /// the timer set rather than the manager, so the worker's lifecycle stays with the manager.
+    pub(crate) fn arm_handle(&self) -> TimerArm {
+        TimerArm { state: Arc::clone(&self.state) }
     }
 
     /// Stop one timer by `(target, id)`.
     pub fn stop_timer(&self, target: ObjectId, id: u32) -> bool {
-        let removed = self.lock_timers().timers.remove(&(target, id)).is_some();
-        if removed {
-            // The stopped timer may have been the nearest deadline; the worker must
-            // recompute rather than wake at a deadline that no longer exists.
-            self.notify_worker();
-        }
-        removed
+        stop_in(&self.state, target, id)
     }
 
     /// Stop all timers belonging to one target.

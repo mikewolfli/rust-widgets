@@ -44,6 +44,43 @@ use chrono::Weekday;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Days since `1970-01-01` for a proleptic Gregorian date.
+///
+/// Howard Hinnant's `days_from_civil`. The calendar rules match [`Date`]'s own (a
+/// leap year is divisible by 4, except centuries, except millennia), so the ordinal is
+/// exact for every year `i32` represents. A whole-day step used to walk one day at a
+/// time — O(days) for a step that is a single subtraction and a single inverse (ADV-002).
+fn days_from_civil(year: i32, month: u8, day: u8) -> i64 {
+    let year = i64::from(year) - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400; // 0..=399
+    let month_index = (i64::from(month) + 9) % 12; // March = 0
+    let day_of_year = (153 * month_index + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+/// The inverse of [`days_from_civil`].
+///
+/// The year is returned as `i64` because an ordinal far outside the `i32` year range is
+/// representable; the caller clamps it rather than wrapping on the cast.
+fn civil_from_days(days: i64) -> (i64, u8, u8) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097; // 0..=146096
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153; // 0..=11
+    let day = (day_of_year - (153 * month_prime + 2) / 5 + 1) as u8;
+    let month = (if month_prime < 10 { month_prime + 3 } else { month_prime - 9 }) as u8;
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month, day)
+}
+
 /// Combined date-time value.
 ///
 /// This is a plain pair: the fields are public, so they can be replaced
@@ -625,7 +662,29 @@ impl DateTimeEdit {
     }
 
     /// Shifts a date by whole days, rolling months and years.
+    ///
+    /// Valid dates take the ordinal path: one `days_from_civil` and one inverse, so an
+    /// hour/minute/second carry of thousands of days costs the same as a carry of one
+    /// (ADV-002). An invalid combination (the fields are public and may be assigned
+    /// directly) keeps the historical per-day walk, which is the only defined answer
+    /// for a date no calendar contains.
     fn shift_date(date: &mut Date, days: i32) {
+        if days == 0 {
+            return;
+        }
+        if !date.is_valid() {
+            Self::shift_date_by_walking(date, days);
+            return;
+        }
+        let ordinal = days_from_civil(date.year(), date.month(), date.day());
+        let (year, month, day) = civil_from_days(ordinal.saturating_add(i64::from(days)));
+        date.set_year(year.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
+        date.set_month(month);
+        date.set_day(day);
+    }
+
+    /// The historical one-day-at-a-time shift, kept for invalid component combinations.
+    fn shift_date_by_walking(date: &mut Date, days: i32) {
         for _ in 0..days.unsigned_abs() {
             if days > 0 {
                 if date.day() < date.days_in_month() {
@@ -1997,5 +2056,47 @@ mod tests {
         assert_eq!(fin.load(Ordering::SeqCst), 1);
         assert!(editor.event_signal_dyn("date_changed").is_some());
         assert!(editor.event_signal_dyn("editing_finished").is_some());
+    }
+
+    /// The ordinal step and the historical day-by-day walk agree on every valid date.
+    #[test]
+    fn a_whole_day_step_matches_the_walk() {
+        for start in [
+            Date::new(2023, 12, 31),
+            Date::new(2024, 2, 28),
+            Date::new(2024, 3, 1),
+            Date::new(1752, 9, 14),
+            Date::new(9999, 12, 31),
+        ] {
+            for days in [
+                -800, -401, -400, -366, -365, -60, -31, -1, 1, 28, 31, 59, 60, 365, 366, 400, 401,
+                800,
+            ] {
+                let mut fast = start;
+                DateTimeEdit::shift_date(&mut fast, days);
+                let mut slow = start;
+                DateTimeEdit::shift_date_by_walking(&mut slow, days);
+                assert_eq!(fast, slow, "{start} {:+} days", days);
+            }
+        }
+    }
+
+    /// A large carry reaches the right day without walking it one at a time.
+    #[test]
+    fn a_large_step_lands_on_the_same_day() {
+        let mut date = Date::new(2024, 1, 31);
+        DateTimeEdit::shift_date(&mut date, 400);
+        assert_eq!(date, Date::new(2025, 3, 6));
+
+        let mut back = Date::new(2024, 3, 1);
+        DateTimeEdit::shift_date(&mut back, -1);
+        assert_eq!(back, Date::new(2024, 2, 29), "the leap day is stepped over");
+
+        // An hour carry of 100_000 days is one subtraction on the ordinal path.
+        let mut far = Date::new(2020, 1, 1);
+        DateTimeEdit::shift_date(&mut far, 100_000);
+        let mut reference = Date::new(2020, 1, 1);
+        DateTimeEdit::shift_date_by_walking(&mut reference, 100_000);
+        assert_eq!(far, reference);
     }
 }

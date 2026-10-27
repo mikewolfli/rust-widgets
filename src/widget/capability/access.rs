@@ -444,6 +444,7 @@ pub fn default_widget_property_default_value(
             "tick_position" => CapabilityValue::String("none".to_string()),
             "tick_interval" => CapabilityValue::Int(0),
             "tracking" => CapabilityValue::Bool(true),
+            "track_click" => CapabilityValue::String("page".to_string()),
             "slider_position" => CapabilityValue::Int(0),
             _ => return None,
         },
@@ -1545,6 +1546,7 @@ pub fn default_widget_property_default_value(
             "min_value" => CapabilityValue::UInt(0),
             "max_value" => CapabilityValue::UInt(100),
             "chart_type" => CapabilityValue::String("line".to_string()),
+            "hover_enabled" => CapabilityValue::Bool(true),
             _ => return None,
         },
         WidgetKind::ImageView => match property_name {
@@ -1968,6 +1970,8 @@ pub fn default_widget_property_default_value(
             // declare was neither readable back nor writable: `Color::parse_hex("")`
             // is a type mismatch.)
             "color" => CapabilityValue::Null,
+            "icon_rotation" => CapabilityValue::Float(0.0),
+            "icon_flip" => CapabilityValue::String("none".to_string()),
             _ => return None,
         },
         WidgetKind::DropdownMenu => match property_name {
@@ -2427,6 +2431,8 @@ pub fn default_widget_property_default_value(
             "show_seconds" => CapabilityValue::Bool(false),
             // Mirrors `ClockTimeSource::default()` (`Manual`).
             "time_source" => CapabilityValue::String("manual".to_string()),
+            "display" => CapabilityValue::String("dial".to_string()),
+            "utc_offset" => CapabilityValue::Null,
             _ => return None,
         },
         WidgetKind::Gauge => match property_name {
@@ -2608,6 +2614,12 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::DependencyEditor => match property_name {
             "dependencies" => CapabilityValue::UInt(0),
+            // An editor starts with no edges: the empty list of the declared schema.
+            "dependency_edges" => {
+                CapabilityValue::Records(crate::widget::capability::RecordList::new(
+                    &crate::widget::special_widgets::gantt_widget::companions::DEPENDENCY_SCHEMA,
+                ))
+            }
             "editable" => CapabilityValue::Bool(true),
             _ => return None,
         },

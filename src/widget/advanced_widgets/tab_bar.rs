@@ -6,7 +6,7 @@ use crate::compat::Cow;
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
-use crate::signal::Signal1;
+use crate::signal::{GenericSignal, Signal1};
 
 use crate::widget::capability::coercion::{
     expect_bool, expect_text_direction, expect_u32_saturating, expect_usize, text_direction_to_str,
@@ -449,6 +449,12 @@ pub struct TabBar {
     pub tab_close_requested: Signal1<usize>,
     /// Emitted when a tab is moved; payload is `(old_index, new_index)`.
     pub tab_moved: Signal1<(usize, usize)>,
+    /// Emitted when the strip's empty area is double-clicked, requesting a new tab.
+    ///
+    /// The control cannot create a tab on its own — the page the new tab would show
+    /// belongs to the host — so the gesture is reported rather than acted on. A host
+    /// with no subscription therefore sees no behaviour change (ADV-009).
+    pub new_tab_requested: GenericSignal,
     /// The host-side hover/delay/show pipeline for tab tooltips (ADV-11).
     ///
     /// `TabBarTab::tooltip` was stored, published and never read, so a truncated title — the very
@@ -508,6 +514,7 @@ impl TabBar {
             current_changed: Signal1::new(),
             tab_close_requested: Signal1::new(),
             tab_moved: Signal1::new(),
+            new_tab_requested: GenericSignal::new(),
             tooltips: TooltipManager::new(geometry),
             tooltip_source: None,
             tooltip_now_ms: 0,
@@ -1954,6 +1961,19 @@ impl EventHandler for TabBar {
                     self.base.request_redraw();
                 }
             }
+            // A double click on the strip's empty space asks the host for a new tab; a
+            // double click on a tab or on the scroll chrome is not that gesture (ADV-009).
+            Event::MouseDoubleClick { pos, button } if *button == 1 => {
+                if self.geometry().contains_point(*pos) && self.tab_at_position(*pos).is_none() {
+                    let on_scroll_button =
+                        self.scroll_button_rects().is_some_and(|(left, right)| {
+                            left.contains_point(*pos) || right.contains_point(*pos)
+                        });
+                    if !on_scroll_button {
+                        self.new_tab_requested.emit();
+                    }
+                }
+            }
             // A wheel over the strip walks the visible run, which is what `scroll_by` was
             // written for and what the event path never reached (ADV-13). One notch is one tab;
             // the event's positive y means "towards the end of the run".
@@ -3036,5 +3056,28 @@ mod tests {
         assert_eq!(record_schema.names(), vec!["title", "tooltip", "enabled", "icon_source"]);
         assert!(!record_schema.ids_unique && !record_schema.ids_required);
         assert_eq!(record_schema, &TAB_BAR_TAB_SCHEMA);
+    }
+
+    /// A double click on empty strip space requests a new tab; on a tab it does not (ADV-009).
+    #[test]
+    fn a_double_click_on_empty_space_requests_a_new_tab() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut bar = TabBar::new(Rect::new(0, 0, 400, 24));
+        bar.add_tab("First".to_string());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&requests);
+        bar.new_tab_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // The single tab ends well before x = 350.
+        bar.handle_event(&Event::mouse_double_click(350, 12, 1));
+        assert_eq!(requests.load(Ordering::SeqCst), 1, "empty space requests a tab");
+
+        let tab = bar.tab_rect(0).expect("the tab has a box");
+        bar.handle_event(&Event::mouse_double_click(tab.x + 2, tab.y + 2, 1));
+        assert_eq!(requests.load(Ordering::SeqCst), 1, "a tab is not empty space");
     }
 }

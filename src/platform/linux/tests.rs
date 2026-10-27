@@ -184,6 +184,9 @@ fn gtk_native_backend_lifecycle() {
             None,
             "no native handle exists when GTK could not be initialized"
         );
+        // A text write is still a record write here; the point is that the title path does not
+        // reach for GTK off the toolkit's thread (P-205).
+        assert!(backend.set_widget_text(window, "Renamed"));
         return;
     }
 
@@ -194,6 +197,52 @@ fn gtk_native_backend_lifecycle() {
     // ── Window ──
     let window = backend.create_window("TestWindow", 50, 50, 400, 300);
     assert!(window > 0, "Window should be created");
+
+    // ── Window title (P-205) ──
+    //
+    // `WindowHandle::set_title` routes through `set_widget_text`, so the GTK toplevel's title must
+    // change with the record. Before this override the write updated only the in-process record
+    // and the title bar kept the string passed to `create_window` for the window's whole life.
+    assert!(backend.set_widget_text(window, "Renamed"), "an existing window accepts a text write");
+    {
+        use crate::core::MutexExt;
+        use gtk::prelude::*;
+        let native = backend.native.lock_guard();
+        let title = native.windows.get(&window).and_then(|window| window.title());
+        assert_eq!(
+            title.as_deref(),
+            Some("Renamed"),
+            "the native title bar must follow the state write, not only the record"
+        );
+    }
+
+    // ── DPI follows the pointer's monitor (P-207) ──
+    //
+    // The reported scale must be GDK's scale for the monitor a new window would open on — the one
+    // under the pointer, or the primary when the pointer is outside every monitor — rather than
+    // the first monitor in the enumeration, which is what the code read while its doc said
+    // otherwise.
+    if let Some(display) = gtk::gdk::Display::default() {
+        use gtk::prelude::*;
+        let pointer_monitor =
+            display.default_seat().and_then(|seat| seat.pointer()).and_then(|pointer| {
+                let (_, x, y) = pointer.position();
+                display.monitor_at_point(x, y)
+            });
+        if let Some(monitor) = pointer_monitor.or_else(|| display.primary_monitor()) {
+            // The same environment factor `dpi_scale_factor` layers on top of GDK's integer scale.
+            let fractional = std::env::var("GDK_DPI_SCALE")
+                .ok()
+                .and_then(|value| value.trim().parse::<f32>().ok())
+                .filter(|value| *value > 0.0)
+                .unwrap_or(1.0);
+            assert_eq!(
+                backend.dpi_scale_factor(),
+                monitor.scale_factor() as f32 * fractional,
+                "the scale must be the pointer's monitor (or the primary), not monitor 0"
+            );
+        }
+    }
 
     // ── Invalidation ──
     //

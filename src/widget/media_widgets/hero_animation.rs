@@ -210,7 +210,13 @@ impl HeroAnimation {
         let clamped = progress.clamp(0.0, 1.0);
         if (self.animation_progress - clamped).abs() > 0.001 {
             self.animation_progress = clamped;
-            self.progress_label = format!("Progress: {:.0}%", clamped * 100.0);
+            // `format!` allocated a fresh label on every animated frame. The buffer is cleared and
+            // rewritten instead, so its capacity is reused (MW-009).
+            self.progress_label.clear();
+            let _ = core::fmt::Write::write_fmt(
+                &mut self.progress_label,
+                format_args!("Progress: {:.0}%", clamped * 100.0),
+            );
             if (clamped - 1.0).abs() < 0.001 {
                 self.is_animating = false;
                 self.animation_completed.emit();
@@ -977,5 +983,21 @@ mod tests {
         assert_eq!(ha.target_tint(), red);
         ha.set_progress(0.5);
         assert_eq!(ha.progress_label, "Progress: 50%");
+    }
+
+    /// The progress label reuses its buffer across frames instead of allocating per frame
+    /// (MW-009).
+    #[test]
+    fn the_progress_label_reuses_its_buffer_while_animating() {
+        let mut ha = HeroAnimation::new(Rect::new(0, 0, 300, 200));
+        ha.set_progress(0.1);
+        let allocated = ha.progress_label.as_ptr();
+        ha.set_progress(0.2);
+        assert_eq!(ha.progress_label, "Progress: 20%");
+        assert_eq!(
+            ha.progress_label.as_ptr(),
+            allocated,
+            "a changed percentage must rewrite in place, not reallocate"
+        );
     }
 }

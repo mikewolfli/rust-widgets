@@ -14,6 +14,18 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The angle, in radians, at which a non-wrapping dial's scale starts.
+///
+/// The scale occupies 270° of the face and leaves the remaining 90° as a gap at the
+/// bottom. Every place that maps between a position and an angle reads this pair of
+/// constants, so the needle, the notch ring and the hit test cannot disagree about
+/// where the gap is.
+const NON_WRAPPING_START: f64 = -std::f64::consts::PI * 0.75;
+
+/// The angular sweep, in radians, of a non-wrapping dial's scale (270°).
+const NON_WRAPPING_SWEEP: f64 = std::f64::consts::PI * 1.5;
+
 /// Dial (rotary knob) widget.
 ///
 /// Holds an integer value in an inclusive `minimum ..= maximum` range and
@@ -33,6 +45,14 @@ pub struct Dial {
     wrapping: bool,
     /// Whether a pointer drag is in flight.
     dragging: bool,
+    /// Whether a pointer drag snaps the value to `single_step` boundaries.
+    ///
+    /// A drag names a continuous value, but a dial configured with a step is a
+    /// discrete control: without snapping, dragging a 10-step dial lands on 37,
+    /// which no keyboard path can reach. Defaults to `true`, matching the dial's
+    /// documented step semantics; `set_snap_drag_to_step(false)` restores the
+    /// continuous value for a caller that wants it.
+    snap_drag_to_step: bool,
     /// The notch ring's tick segments, reused across frames.
     ///
     /// The ring is a pure function of the centre, the two tick radii, the tick count and the
@@ -87,6 +107,7 @@ impl Dial {
             notch_target: 3.7,
             wrapping: false,
             dragging: false,
+            snap_drag_to_step: true,
             notch_ticks: Vec::new(),
             notch_key: None,
             value_changed: Signal1::new(),
@@ -297,7 +318,7 @@ impl Dial {
         if wrapping {
             fraction * 2.0 * std::f64::consts::PI - std::f64::consts::PI
         } else {
-            -std::f64::consts::PI * 0.75 + fraction * std::f64::consts::PI * 1.5
+            NON_WRAPPING_START + fraction * NON_WRAPPING_SWEEP
         }
     }
 
@@ -325,9 +346,7 @@ impl Dial {
         let fraction = if self.wrapping {
             ((angle + std::f64::consts::PI) / (2.0 * std::f64::consts::PI)).rem_euclid(1.0)
         } else {
-            let start = -std::f64::consts::PI * 0.75;
-            let sweep = std::f64::consts::PI * 1.5;
-            ((angle - start) / sweep).clamp(0.0, 1.0)
+            ((angle - NON_WRAPPING_START) / NON_WRAPPING_SWEEP).clamp(0.0, 1.0)
         };
         let range = self.maximum as f64 - self.minimum as f64;
         let value = self.minimum as f64 + fraction * range;
@@ -338,8 +357,57 @@ impl Dial {
         if wrapping {
             2.0 * std::f64::consts::PI
         } else {
-            std::f64::consts::PI * 1.5
+            NON_WRAPPING_SWEEP
         }
+    }
+
+    /// Whether a pointer drag snaps the value to `single_step` boundaries.
+    pub fn snap_drag_to_step(&self) -> bool {
+        self.snap_drag_to_step
+    }
+
+    /// Enables or disables snapping a pointer drag to `single_step` boundaries.
+    ///
+    /// Requests a redraw because the next drag's result depends on the flag. See
+    /// [`Dial::snap_drag_to_step`] for why snapping is the default.
+    pub fn set_snap_drag_to_step(&mut self, snap: bool) {
+        if self.snap_drag_to_step == snap {
+            return;
+        }
+        self.snap_drag_to_step = snap;
+        self.base.request_redraw();
+    }
+
+    /// Rounds `value` to the nearest `single_step` boundary measured from
+    /// `minimum`, clamped into the configured range.
+    ///
+    /// The boundary origin is the range's own minimum, the same origin the notch
+    /// ring and the needle use. A step of `1` (the default) is a no-op.
+    fn snap_value(&self, value: i32) -> i32 {
+        if !self.snap_drag_to_step || self.single_step <= 1 {
+            return value;
+        }
+        let step = self.single_step as i64;
+        let offset = (value as i64 - self.minimum as i64).rem_euclid(step);
+        let delta = if offset * 2 >= step { step - offset } else { -offset };
+        let low = self.minimum.min(self.maximum) as i64;
+        let high = self.minimum.max(self.maximum) as i64;
+        (value as i64 + delta).min(high).max(low) as i32
+    }
+
+    /// The value a drag position names, snapped to the configured step.
+    ///
+    /// A position at the dial's exact centre names the current value rather than
+    /// a new one (see [`Dial::value_at_point`]), so it is left unsnapped: pressing
+    /// the hub must not move a value the user did not point at.
+    fn drag_value_at(&self, pos: Point) -> i32 {
+        let rect = self.geometry();
+        let centre_x = rect.x as f64 + rect.width as f64 / 2.0;
+        let centre_y = rect.y as f64 + rect.height as f64 / 2.0;
+        if pos.x as f64 == centre_x && pos.y as f64 == centre_y {
+            return self.value;
+        }
+        self.snap_value(self.value_at_point(pos))
     }
 }
 impl Widget for Dial {
@@ -487,13 +555,13 @@ impl EventHandler for Dial {
                 if self.geometry().contains_point(*pos) {
                     self.slider_pressed.emit();
                     self.dragging = true;
-                    let value = self.value_at_point(*pos);
+                    let value = self.drag_value_at(*pos);
                     self.set_value(value);
                 }
             }
             Event::MouseMove { pos } => {
                 if self.dragging {
-                    let value = self.value_at_point(*pos);
+                    let value = self.drag_value_at(*pos);
                     self.set_value(value);
                 }
             }
@@ -1076,5 +1144,37 @@ mod tests {
         assert!((70..=80).contains(&bottom), "the bottom of a wrapping dial is ~75, got {bottom}");
         let left = d.value_at_point(Point::new(10, 40));
         assert!(left <= 2 || left >= 98, "the 9 o'clock position is the wrap point, got {left}");
+    }
+
+    /// A drag snaps to the configured step, and the caller can turn that off.
+    #[test]
+    fn a_drag_snaps_to_the_single_step() {
+        let mut d = Dial::new(Rect::new(0, 0, 80, 80));
+        d.set_range(0, 100);
+        d.set_single_step(10);
+        assert!(d.snap_drag_to_step(), "snapping is the documented default");
+
+        // ~52 on the sweep, which is not a reachable keyboard value.
+        d.handle_event(&Event::mouse_press(73, 43, 1));
+        assert_eq!(d.value(), 50, "the press snaps to the nearest step");
+
+        // ~57 on the sweep: the nearest step is 60.
+        d.handle_event(&Event::mouse_move(70, 50));
+        assert_eq!(d.value(), 60);
+
+        d.set_snap_drag_to_step(false);
+        d.handle_event(&Event::mouse_move(70, 50));
+        assert_eq!(d.value(), 57, "with snapping off the continuous reading is used");
+    }
+
+    /// The non-wrapping gap is stated once and read by every angle consumer.
+    #[test]
+    fn the_non_wrapping_sweep_has_one_source() {
+        assert_eq!(Dial::angle_at_fraction(0.0, false), NON_WRAPPING_START);
+        assert_eq!(Dial::angle_at_fraction(1.0, false), NON_WRAPPING_START + NON_WRAPPING_SWEEP);
+        assert_eq!(Dial::sweep_radians(false), NON_WRAPPING_SWEEP);
+        // The scale sweeps three quarters of a turn, leaving the bottom gap.
+        assert!((NON_WRAPPING_SWEEP - 1.5 * std::f64::consts::PI).abs() < 1e-12);
+        assert!((NON_WRAPPING_START + 0.75 * std::f64::consts::PI).abs() < 1e-12);
     }
 }

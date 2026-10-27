@@ -1709,6 +1709,9 @@ impl DockArea {
             split_of: None,
             split_orientation: Orientation::Vertical,
         });
+        // C-001: the new panel is active, and the host learns it through the same emission
+        // every other dock mutation makes.
+        self.active_dock_changed.emit(widget);
         self.arrange();
         true
     }

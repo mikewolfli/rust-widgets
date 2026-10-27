@@ -342,11 +342,12 @@ struct SignalInner<T: Clone + Send + 'static> {
     slots: RwLock<HashMap<ConnectionHandle, SlotEntry<T>>>,
     /// Connection order per priority bucket (index = `Priority::rank`).
     ///
-    /// Maintained on connect/disconnect/priority change/once-removal so `emit` can walk the
-    /// buckets directly. The old emit path built a snapshot of the `HashMap`, whose order is
-    /// unspecified, and sorted it on every emission; this makes the documented
-    /// "High → Normal → Low, then connection order" contract a property of the storage
-    /// rather than work repeated per frame.
+    /// Maintained on connect/disconnect/priority change/once-removal, so emit never sorts: it
+    /// copies the bucket handles into a per-thread snapshot (reused between emits) and walks that
+    /// in High → Normal → Low, connection order. The old emit path instead snapshotted the
+    /// `HashMap`, whose order is unspecified, and sorted it on every emission; keeping the order in
+    /// storage makes the documented "High → Normal → Low, then connection order" contract a
+    /// property of the data rather than work repeated per frame.
     order: RwLock<[Vec<ConnectionHandle>; 3]>,
 }
 

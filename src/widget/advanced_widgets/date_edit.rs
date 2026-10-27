@@ -597,6 +597,39 @@ pub struct DateEdit {
     /// The popup rectangle last pushed into the embedded calendar, so a field move is detected
     /// without a dirty flag at every geometry write.
     calendar_sync_rect: Rect,
+    /// The three value sections' measured boxes and the inputs they were measured for (ADV-003).
+    ///
+    /// A `RefCell` because `draw` resolves `style` once, which holds an immutable borrow of
+    /// `self` for the rest of the pass — the same reason `Calendar` caches its day line boxes.
+    section_zone_cache: crate::compat::RefCell<SectionZoneCache>,
+}
+
+/// The three value sections' measured boxes and the inputs they were measured for.
+#[derive(Default)]
+struct SectionZoneCache {
+    /// `None` before the first measured draw, and after a state whose text cannot be measured
+    /// (the special-value text).
+    key: Option<SectionZoneKey>,
+    /// Year, month, day — the [`DateSection`] order.
+    zones: [Rect; 3],
+}
+
+/// Everything a section box's measured layout depends on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SectionZoneKey {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    /// The trailing chrome (calendar arrow and/or spin buttons) the text stops before.
+    trailing: u32,
+    font_size_bits: u32,
+    font_weight: u16,
+    font_family_hash: u64,
+    /// The measured advance of each section's own rendered text, in pixels.
+    year_px: u32,
+    month_px: u32,
+    day_px: u32,
 }
 impl DateEdit {
     /// Creates a date editor occupying `geometry`.
@@ -635,6 +668,7 @@ impl DateEdit {
             editing_finished: GenericSignal::new(),
             calendar_sync_dirty: true,
             calendar_sync_rect: Rect::new(0, 0, 0, 0),
+            section_zone_cache: crate::compat::RefCell::new(SectionZoneCache::default()),
         }
     }
     /// Returns the current date.
@@ -986,23 +1020,166 @@ impl DateEdit {
 
     /// The box one section occupies inside the value text.
     ///
-    /// The three zones are equal thirds of the text run. A custom `display_format` can
-    /// place the components in any order, and the control does not parse the pattern to
-    /// recover their positions, so the zones are the documented approximation: the
-    /// underline and the pointer target agree with each other, which is what a user
-    /// needs, rather than disagreeing about a parsed layout.
+    /// After the first paint the boxes follow the **measured** advance of each section's
+    /// rendered text, so a four-digit year is wider than a two-digit month and the underline
+    /// sits under the digits it marks (ADV-003). Before a paint — or after a geometry/font
+    /// change that has not been painted yet — the documented equal-thirds approximation is
+    /// answered instead, so a caller always gets a usable box. Both the pointer target and
+    /// the underline read this method, so they cannot disagree with each other.
     pub fn section_zone(&self, section: DateSection) -> Rect {
+        if let Some(zones) = self.measured_section_zones() {
+            return zones[Self::section_index(section)];
+        }
+        self.approximate_section_zone(section)
+    }
+
+    /// The thirds approximation used before the first measured paint.
+    fn approximate_section_zone(&self, section: DateSection) -> Rect {
         let rect = self.geometry();
-        let trailing = if self.calendar_popup { CALENDAR_ARROW_W } else { 0 }
-            + if self.spin_buttons { 24 } else { 0 };
-        let width = rect.width.saturating_sub(12 + trailing);
+        let width = rect.width.saturating_sub(12 + self.trailing_chrome_width());
         let third = width / 3;
-        let index = match section {
+        Rect::new(
+            rect.x + 6 + Self::section_index(section) as i32 * third as i32,
+            rect.y,
+            third,
+            rect.height,
+        )
+    }
+
+    /// The index of `section` in the year/month/day order the cache stores.
+    fn section_index(section: DateSection) -> usize {
+        match section {
             DateSection::Year => 0,
             DateSection::Month => 1,
             DateSection::Day => 2,
+        }
+    }
+
+    /// The width the trailing chrome (calendar arrow and/or spin buttons) reserves.
+    fn trailing_chrome_width(&self) -> u32 {
+        let arrow = if self.calendar_popup { CALENDAR_ARROW_W } else { 0 };
+        let spin = if self.spin_buttons { 24 } else { 0 };
+        arrow + spin
+    }
+
+    /// The measured boxes, when the cache still describes the current geometry and font.
+    fn measured_section_zones(&self) -> Option<[Rect; 3]> {
+        let rect = self.geometry();
+        let cache = self.section_zone_cache.borrow();
+        let key = cache.key?;
+        if key.x == rect.x
+            && key.y == rect.y
+            && key.width == rect.width
+            && key.height == rect.height
+            && key.trailing == self.trailing_chrome_width()
+        {
+            Some(cache.zones)
+        } else {
+            None
+        }
+    }
+
+    /// Re-measures the three section boxes when their text, font or geometry changed.
+    ///
+    /// Called from `draw`, which is the only place a renderer can measure text. The widths
+    /// are the sections' own rendered labels; the available run is then divided in those
+    /// proportions, so the sum of the boxes is still the whole text run.
+    fn refresh_section_zones(&self, context: &RenderContext, rect: Rect, font: &crate::core::Font) {
+        // The special-value text replaces the whole value and has no section structure, so the
+        // documented thirds approximation is the only answer that stays true.
+        let special =
+            self.special_value_text.as_deref().filter(|_| self.date == self.minimum).is_some();
+        if special {
+            self.section_zone_cache.borrow_mut().key = None;
+            return;
+        }
+
+        let trailing = self.trailing_chrome_width();
+        let available = rect.width.saturating_sub(12 + trailing);
+        if available == 0 {
+            self.section_zone_cache.borrow_mut().key = None;
+            return;
+        }
+
+        let mut labels = [String::new(), String::new(), String::new()];
+        let components = [
+            DateTimeComponents { year: Some(self.date.year()), ..Default::default() },
+            DateTimeComponents { month: Some(self.date.month()), ..Default::default() },
+            DateTimeComponents { day: Some(self.date.day()), ..Default::default() },
+        ];
+        for (index, (label, component)) in labels.iter_mut().zip(components).enumerate() {
+            if !format_with_pattern_into(&self.display_format, component, label) {
+                label.clear();
+            }
+            // Keep only the rendered digits. The pattern's separators and literal words belong to
+            // the run between the sections, not to a section's own box, so measuring `2026--` for
+            // a year would overstate it. A negative year's sign is restored explicitly.
+            label.retain(|ch| ch.is_ascii_digit());
+            if index == 0 && self.date.year() < 0 && !label.is_empty() {
+                label.insert(0, '-');
+            }
+        }
+        if labels[0].is_empty() {
+            let _ = write!(labels[0], "{:04}", self.date.year());
+        }
+        if labels[1].is_empty() {
+            let _ = write!(labels[1], "{:02}", self.date.month());
+        }
+        if labels[2].is_empty() {
+            let _ = write!(labels[2], "{:02}", self.date.day());
+        }
+
+        let widths = [
+            context.measure_text(&labels[0], font).width.max(1),
+            context.measure_text(&labels[1], font).width.max(1),
+            context.measure_text(&labels[2], font).width.max(1),
+        ];
+        let total: u64 = widths.iter().map(|width| u64::from(*width)).sum();
+        if total == 0 {
+            self.section_zone_cache.borrow_mut().key = None;
+            return;
+        }
+
+        let mut family_hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in font.family().as_bytes() {
+            family_hash ^= u64::from(*byte);
+            family_hash = family_hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let key = SectionZoneKey {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            trailing,
+            font_size_bits: font.size().to_bits(),
+            font_weight: font.weight(),
+            font_family_hash: family_hash,
+            year_px: widths[0],
+            month_px: widths[1],
+            day_px: widths[2],
         };
-        Rect::new(rect.x + 6 + index * third as i32, rect.y, third, rect.height)
+        if self.section_zone_cache.borrow().key == Some(key) {
+            return;
+        }
+
+        let start = rect.x + 6;
+        let mut cumulative = 0u64;
+        let mut boundaries = [start; 4];
+        for index in 0..3 {
+            cumulative += u64::from(widths[index]);
+            boundaries[index + 1] = start + ((u64::from(available) * cumulative) / total) as i32;
+        }
+        let zones: [Rect; 3] = core::array::from_fn(|index| {
+            Rect::new(
+                boundaries[index],
+                rect.y,
+                (boundaries[index + 1] - boundaries[index]) as u32,
+                rect.height,
+            )
+        });
+        let mut cache = self.section_zone_cache.borrow_mut();
+        cache.key = Some(key);
+        cache.zones = zones;
     }
 
     /// The section containing `pos`, when the point is on the value text.
@@ -1594,6 +1771,9 @@ impl Draw for DateEdit {
             .saturating_sub(12)
             .saturating_sub(if self.calendar_popup { CALENDAR_ARROW_W } else { 0 })
             .saturating_sub(if self.spin_buttons { 24 } else { 0 });
+        // The renderer is the only component that can measure text, so the section boxes are
+        // refreshed here, from the same run the value is painted into (ADV-003).
+        self.refresh_section_zones(context, rect, font);
         context.draw_text_fitted_cow(
             Rect { x: rect.x + 6, y: line.y, width: text_width, height: line.height },
             text.as_str(),
@@ -2613,5 +2793,36 @@ mod tests {
         assert_eq!(*finished.lock().unwrap(), 1);
         edit.handle_event(&Event::FocusLost);
         assert_eq!(*finished.lock().unwrap(), 2);
+    }
+
+    /// The painted section boxes follow the measured text, not equal thirds (ADV-003).
+    #[test]
+    fn the_value_zones_follow_the_measured_text() {
+        let mut edit = DateEdit::new(Rect::new(0, 0, 240, 30));
+        edit.set_date(Date::new(2026, 6, 8));
+
+        // Before a paint the documented thirds approximation answers.
+        let year_before = edit.section_zone(DateSection::Year);
+        let month_before = edit.section_zone(DateSection::Month);
+        assert_eq!(year_before.width, month_before.width);
+
+        let _ = crate::widget::svg::render_to_svg(&mut edit);
+
+        let year = edit.section_zone(DateSection::Year);
+        let month = edit.section_zone(DateSection::Month);
+        let day = edit.section_zone(DateSection::Day);
+        assert!(
+            year.width > month.width,
+            "a four-digit year must be wider than a two-digit month ({} vs {})",
+            year.width,
+            month.width
+        );
+        assert_eq!(year.x + year.width as i32, month.x, "the boxes are contiguous");
+        assert_eq!(month.x + month.width as i32, day.x, "the boxes are contiguous");
+        assert_eq!(day.x + day.width as i32, 240 - 6, "they cover the whole value run");
+
+        // The pointer target is the same measured box the underline uses.
+        edit.handle_event(&Event::mouse_press(year.x + 2, year.y + 2, 1));
+        assert_eq!(edit.current_section(), Some(DateSection::Year));
     }
 }

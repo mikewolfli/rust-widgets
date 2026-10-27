@@ -51,7 +51,10 @@ use crate::window::Window;
 use crate::index::WidgetKind;
 
 /// Maximum nested depth for recursive instantiation (prevents stack overflow).
-const MAX_DEPTH: u32 = 64;
+///
+/// The value lives in [`crate::json::MAX_DEPTH`] so the loader and the project reader cannot
+/// drift (JSON-010).
+const MAX_DEPTH: u32 = crate::json::MAX_DEPTH;
 
 /// The declaration a **published-name** wire was reached from, for its refusal diagnostic.
 ///
@@ -4068,5 +4071,31 @@ mod tests {
         crate::json::clear_global_handlers();
         crate::widget::runtime::unregister(button);
         crate::widget::runtime::unregister(canvas);
+    }
+
+    /// W-301: one call binds every published name that already has a same-named handler.
+    #[test]
+    fn a_batch_binding_reaches_every_published_name_with_a_handler() {
+        use core::sync::atomic::Ordering;
+        crate::json::clear_global_handlers();
+        let calls = counting_handler("clicked");
+        let button = mount_probe_button();
+
+        let bound = crate::json::bind_all_published_events(button, "button");
+        assert_eq!(bound, 1, "only `clicked` has a handler among the button's published names");
+        crate::widget::runtime::with_widget_mut(button, |widget| widget.base().clicked.emit());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the batch wire must reach the control's signal"
+        );
+
+        // Additive, matching `bind_published_event`: a second call makes a second subscription.
+        assert_eq!(crate::json::bind_all_published_events(button, "button"), 1);
+        crate::widget::runtime::with_widget_mut(button, |widget| widget.base().clicked.emit());
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "the batch binder does not de-duplicate");
+
+        crate::json::clear_global_handlers();
+        crate::widget::runtime::unregister(button);
     }
 }

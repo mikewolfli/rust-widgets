@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::{Box, HashMap, MiniToString, String};
+use crate::compat::{Arc, Box, HashMap, MiniToString, String};
 use crate::data_binding::traits::*;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// A computed/derived value that auto-updates when its dependencies change.
 ///
@@ -11,10 +12,18 @@ use crate::data_binding::traits::*;
 /// listener is notified only when the recomputed value differs from the cached
 /// value, so notification reflects real state transitions rather than the mere
 /// act of invalidating a dependency.
+///
+/// # Dependency tracking (BIND-011)
+///
+/// [`depend_on`](Self::depend_on) subscribes the computed value to a [`Binding`], so a model change
+/// marks it dirty without the caller remembering an `invalidate` call. A computed value with no
+/// dependencies keeps the old manual behaviour exactly: nothing is observed and only an explicit
+/// [`invalidate`](Self::invalidate) schedules a recomputation.
 pub struct Computed<T: Clone + Send + 'static> {
     compute_fn: Box<dyn Fn() -> T>,
     cached: T,
-    dirty: bool,
+    /// Shared so a dependency subscription can mark this value dirty from outside `&mut self`.
+    dirty: Arc<AtomicBool>,
     listeners: HashMap<String, BoxedListener>,
 }
 
@@ -32,7 +41,7 @@ impl<T: Clone + Send + 'static> Computed<T> {
         Self {
             compute_fn: Box::new(compute),
             cached: initial,
-            dirty: false,
+            dirty: Arc::new(AtomicBool::new(false)),
             listeners: HashMap::new(),
         }
     }
@@ -45,14 +54,11 @@ impl<T: Clone + Send + 'static> Computed<T> {
     where
         T: PartialEq,
     {
-        if self.dirty {
+        if self.dirty.swap(false, Ordering::SeqCst) {
             let new_value = (self.compute_fn)();
             if new_value != self.cached {
                 self.cached = new_value;
-                self.dirty = false;
                 self.notify_listeners();
-            } else {
-                self.dirty = false;
             }
         }
         self.cached.clone()
@@ -71,12 +77,41 @@ impl<T: Clone + Send + 'static> Computed<T> {
     /// Invalidating a dependency does not imply the value changed; listeners are
     /// notified only after a real recomputation produces a different output.
     pub fn invalidate(&mut self) {
-        self.dirty = true;
+        self.dirty.store(true, Ordering::SeqCst);
+    }
+
+    /// Subscribe this computed value to `binding`, so a change to it invalidates the derivation
+    /// automatically (BIND-011).
+    ///
+    /// # Why the subscription holds a weak reference
+    ///
+    /// The binding owns the listener, and the listener captures the dirty flag. A strong flag would
+    /// keep the computed value's state alive for as long as the model lives — a computed value that
+    /// was dropped would still react to model changes forever. The subscription therefore upgrades a
+    /// `Weak`, and a dropped computed value makes it a no-op.
+    ///
+    /// `key` names the subscription; a second `depend_on` with the same key replaces the first, which
+    /// is what keeps a rebuilt view from accumulating listeners.
+    pub fn depend_on<U>(
+        &mut self,
+        binding: &crate::data_binding::Binding<U>,
+        key: &str,
+    ) -> &mut Self
+    where
+        U: Clone + Send + 'static,
+    {
+        let dirty = Arc::downgrade(&self.dirty);
+        binding.observe(key, move |_value| {
+            if let Some(dirty) = dirty.upgrade() {
+                dirty.store(true, Ordering::SeqCst);
+            }
+        });
+        self
     }
 
     /// Check whether the computed value has been invalidated.
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.dirty.load(Ordering::SeqCst)
     }
 
     /// Subscribe to value changes.
@@ -198,10 +233,42 @@ mod tests {
         assert_eq!(notified_count.load(Ordering::SeqCst), 2);
     }
 
+    /// BIND-011: a dependency change invalidates the derivation without a manual call.
+    #[test]
+    fn a_dependency_invalidates_the_computed_value() {
+        let source = crate::data_binding::Binding::new(2);
+        let observed = source.clone();
+        let mut doubled = Computed::new(move || observed.get() * 2, 0);
+        doubled.invalidate();
+        assert_eq!(doubled.get(), 4, "the starting value is derived once");
+        assert!(!doubled.is_dirty());
+
+        doubled.depend_on(&source, "source");
+        source.set(3);
+        assert!(doubled.is_dirty(), "the model change must schedule a recomputation");
+        assert_eq!(doubled.get(), 6, "the next read reflects the new dependency value");
+        assert!(!doubled.is_dirty(), "a recomputation clears the dirty flag");
+    }
+
+    /// BIND-011: dropping the computed value must not leave a live subscription behind.
+    #[test]
+    fn a_dropped_computed_value_stops_observing_its_dependency() {
+        let source = crate::data_binding::Binding::new(1);
+        {
+            let observed = source.clone();
+            let mut derived = Computed::new(move || observed.get() + 1, 0);
+            derived.depend_on(&source, "source");
+            assert_eq!(source.listener_count(), 1);
+        }
+        // The listener is still registered on the binding (the binding owns it), but its captured
+        // `Weak` cannot upgrade, so a change is a no-op rather than a use-after-free.
+        source.set(2);
+        assert_eq!(source.get(), 2);
+    }
+
     #[test]
     fn test_computed_get_cached() {
         let mut c = Computed::new(|| 99, 0);
-
         // get_cached returns the initial value before any get() call
         assert_eq!(c.get_cached(), 0);
 

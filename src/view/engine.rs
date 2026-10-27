@@ -164,6 +164,15 @@ pub struct ViewEngine {
     viewport: Option<crate::core::Size>,
     /// The view revision and viewport of the last build, used to skip a redundant rebuild.
     last_build_key: Option<(u64, Option<crate::core::Size>)>,
+    /// The revision the mounted **pre-built** tree's root declared, or `None`.
+    ///
+    /// This is the pre-built tree counterpart of `last_build_key`: a caller handing a [`Node`]
+    /// tree to [`ViewEngine::update_tree`] has no `View::state_revision`, but the root's
+    /// [`subtree_revision`](crate::view::Node::subtree_revision) is the same assertion about the
+    /// same tree, so it is what the fast path compares (VW-003). It is cleared by every path that
+    /// installs a tree the caller did not hand in, so a view-built tree can never be reused on
+    /// the strength of a number a different producer wrote.
+    current_revision: Option<u64>,
     /// Maps the previous tree's *shape* to live ids, so the diff can address controls.
     ///
     /// Populated when the engine mounts or applies an `Insert`: ids for nodes it created,
@@ -226,6 +235,7 @@ impl ViewEngine {
             layout: crate::json::BoundJsonLayout::new(),
             viewport: None,
             last_build_key: None,
+            current_revision: None,
             id_of_path: crate::compat::HashMap::new(),
             layers: Vec::new(),
             generation: 0,
@@ -415,7 +425,11 @@ impl ViewEngine {
         // while `update` can still take the revision fast path.
         self.last_build_key = None;
         let root = self.describe(view, ctx);
-        self.mount_built(root, create, resolver)
+        let report = self.mount_built(Rc::new(root), create, resolver);
+        // A view-built tree is compared by the view's own revision channel (`last_build_key`), so
+        // the pre-built tree key must not describe it (VW-003).
+        self.current_revision = None;
+        report
     }
 
     /// Mount a **pre-built** declaration tree, creating its controls (G-406).
@@ -434,16 +448,43 @@ impl ViewEngine {
         create: &dyn Fn(&Node) -> Option<ObjectId>,
     ) -> ApplyReport {
         self.last_build_key = None;
-        self.mount_built(root.clone(), create, None)
+        self.mount_built(Rc::new(root.clone()), create, None)
+    }
+
+    /// [`Self::mount_tree`] taking the tree **by shared reference**, with no copy (VW-003).
+    ///
+    /// A caller that already owns its declaration as `Rc<Node>` — a loader that keeps the
+    /// previous document, a cache, a view that memoises its tree — would otherwise pay one deep
+    /// copy of the whole tree per mount purely so the engine could own it. Handing the `Rc` over
+    /// makes the engine's tree *be* the caller's allocation: the same pointer, no walk over the
+    /// nodes, and no second copy of every property value.
+    ///
+    /// Sharing is safe because a [`Node`] tree is immutable in this engine: the diff reads it,
+    /// `apply` writes the *controls* it names, and the engine never mutates the declarations it
+    /// holds. The caller must therefore not mutate a tree after handing it over — `Rc` gives it no
+    /// way to, short of `Rc::get_mut` on a tree the engine is still holding.
+    ///
+    /// Mounting remains authoritative, exactly as [`Self::mount_tree`]: the previous tree is torn
+    /// down and the supplied tree's controls are created from scratch.
+    pub fn mount_tree_shared(
+        &mut self,
+        root: Rc<Node>,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+    ) -> ApplyReport {
+        self.last_build_key = None;
+        self.mount_built(root, create, None)
     }
 
     fn mount_built(
         &mut self,
-        root: Node,
+        root: Rc<Node>,
         create: &dyn Fn(&Node) -> Option<ObjectId>,
         resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
     ) -> ApplyReport {
         let mut report = ApplyReport::default();
+
+        // The mounted tree's revision is what a later `update_tree` compares against (VW-003).
+        self.current_revision = root.subtree_revision;
 
         // Drop the previous tree entirely, so its controls do not linger as orphans and so
         // the new ids cannot collide with a stale path entry. A full clear is required
@@ -508,7 +549,7 @@ impl ViewEngine {
         // before their parent's, which is the order a callback that touches its subtree needs.
         self.run_mount_hooks(&root, root_id, &[]);
 
-        self.current = Some(Rc::new(root));
+        self.current = Some(root);
         // The mounted tree changed, so a snapshot taken before this mount is stale.
         self.generation = self.generation.wrapping_add(1);
         report
@@ -612,13 +653,7 @@ impl ViewEngine {
         create: &dyn Fn(&Node) -> Option<ObjectId>,
         signal: &RowSignal,
     ) -> DiffReport {
-        self.update_with_optional_icon_resolver(
-            view,
-            &Context::new(),
-            create,
-            None,
-            Some(signal.container.as_str()),
-        )
+        self.update_scoped(view, create, signal.container.as_str())
     }
 
     /// [`Self::update_rows`] with a [`Context`] the view may read while describing its tree.
@@ -629,13 +664,46 @@ impl ViewEngine {
         create: &dyn Fn(&Node) -> Option<ObjectId>,
         signal: &RowSignal,
     ) -> DiffReport {
-        self.update_with_optional_icon_resolver(
-            view,
-            ctx,
-            create,
-            None,
-            Some(signal.container.as_str()),
-        )
+        self.update_scoped_with(view, ctx, create, signal.container.as_str())
+    }
+
+    /// Rebuild `view` and diff **only the subtree under `container`** (VW-002).
+    ///
+    /// This is the primitive the row-signal door above and a host's keyed binding notification
+    /// both use: the scope is the [`Node::key`] of the container that changed, and nothing else
+    /// in the tree is compared. The caller's assertion is the same one
+    /// [`RowSignal`](crate::view::RowSignal) documents — nothing outside `container` changed
+    /// since the last build — because the engine cannot verify it more cheaply than the full
+    /// diff the scope exists to avoid.
+    ///
+    /// A scope the diff cannot honour (the key is missing from either tree, sits at a different
+    /// path, or resolves to a different control) falls back to a full diff, so a stale key costs
+    /// a rebuild rather than leaving the tree stale.
+    ///
+    /// # What is still full
+    ///
+    /// The `build` call, exactly as [`Self::update_rows`] documents: a [`View`] has no smaller
+    /// description to ask for. A container that also declares a revision avoids that cost through
+    /// [`Node::revision`](crate::view::Node::revision), because the build then hands back the
+    /// retained children instead of describing them.
+    pub fn update_scoped(
+        &mut self,
+        view: &dyn View,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+        container: &str,
+    ) -> DiffReport {
+        self.update_scoped_with(view, &Context::new(), create, container)
+    }
+
+    /// [`Self::update_scoped`] with a [`Context`] the view may read while describing its tree.
+    pub fn update_scoped_with(
+        &mut self,
+        view: &dyn View,
+        ctx: &Context,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+        container: &str,
+    ) -> DiffReport {
+        self.update_with_optional_icon_resolver(view, ctx, create, None, Some(container))
     }
 
     /// [`Self::update_with`] with an explicit resource resolver for inserted and changed icons.
@@ -668,7 +736,13 @@ impl ViewEngine {
             // clone, diff or apply (G-165). The tree did not change, so the generation does not
             // advance either — a snapshot taken before this call is still current.
             BuildOutcome::Reused => DiffReport::default(),
-            BuildOutcome::Built(next) => self.commit_update(next, create, resolver, scope),
+            BuildOutcome::Built(next) => {
+                let report = self.commit_update(Rc::new(next), create, resolver, scope);
+                // A tree this engine described is compared by the view's revision channel, never
+                // by the pre-built tree key (VW-003).
+                self.current_revision = None;
+                report
+            }
         }
     }
 
@@ -690,16 +764,93 @@ impl ViewEngine {
             self.mount_tree(root, create);
             return DiffReport::default();
         }
+        // VW-003: answer the cheap cases before copying the tree. A caller that re-submits the
+        // same document must not pay a deep copy of it to find out that nothing changed.
+        if self.mounted_tree_is(root) {
+            return self.reuse_mounted_tree();
+        }
         // A raw tree bypasses the revision channel: a key recorded for a `View` does not
         // describe this build, so the next view update must rebuild.
         self.last_build_key = None;
-        self.commit_update(root.clone(), create, None, None)
+        let revision = root.subtree_revision;
+        let report = self.commit_update(Rc::new(root.clone()), create, None, None);
+        self.current_revision = revision;
+        report
+    }
+
+    /// [`Self::update_tree`] taking the tree **by shared reference**, with no copy (VW-003).
+    ///
+    /// # What this changes
+    ///
+    /// [`Self::update_tree`] takes `&Node`, so it has to own a copy before the engine can install
+    /// it; that copy is the whole tree, once per update. A caller that already owns its document
+    /// as an `Rc<Node>` hands the handle over instead: submitting the *same* allocation twice is
+    /// then one pointer comparison, and submitting a new one installs it without walking the old
+    /// tree to copy it.
+    ///
+    /// # Why nothing has to be migrated
+    ///
+    /// Focus, selection and scroll live in the **live controls**, which this engine never
+    /// recreates for a declaration that did not change: a diff emits no patch for an unchanged
+    /// node, so its control keeps its id and its state. There is therefore no tree-level state to
+    /// carry across a shared install — the migration is local to the nodes the batch names, and a
+    /// reused tree names none.
+    pub fn update_tree_shared(
+        &mut self,
+        root: Rc<Node>,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+    ) -> DiffReport {
+        if self.current.is_none() {
+            self.mount_tree_shared(root, create);
+            return DiffReport::default();
+        }
+        // The same allocation the engine already holds cannot describe anything else, so this is
+        // an exact answer rather than an assertion about revisions.
+        if self.current.as_ref().is_some_and(|mounted| Rc::ptr_eq(mounted, &root)) {
+            return self.reuse_mounted_tree();
+        }
+        if self.mounted_tree_is(&root) {
+            return self.reuse_mounted_tree();
+        }
+        self.last_build_key = None;
+        let revision = root.subtree_revision;
+        let report = self.commit_update(root, create, None, None);
+        self.current_revision = revision;
+        report
+    }
+
+    /// Whether `root` is, as far as the engine can tell cheaply, the mounted tree (VW-003).
+    ///
+    /// The revision is the caller's assertion that every node beneath it would describe
+    /// identically while the number is unchanged — the pre-built tree counterpart of
+    /// [`View::state_revision`], which is what [`ViewEngine::update`] compares. The root control is
+    /// checked too, so a tree that changed *kind* takes the ordinary path and still warns about a
+    /// root replacement. A root with no revision answers `false`: there is nothing to compare, and
+    /// the diff is the honest answer.
+    fn mounted_tree_is(&self, root: &Node) -> bool {
+        let (Some(revision), Some(mounted)) = (root.subtree_revision, self.current.as_ref()) else {
+            return false;
+        };
+        self.current_revision == Some(revision)
+            && mounted.widget == root.widget
+            && mounted.key == root.key
+    }
+
+    /// Answers an update that found nothing to do, without touching the tree.
+    ///
+    /// The tree is unchanged, so the generation does not advance (a snapshot taken before the
+    /// call is still current) and the batch is empty. `last_build_key` is cleared because the raw
+    /// tree still bypassed the view channel: a later `View` update must rebuild rather than trust
+    /// a revision recorded before this tree arrived.
+    fn reuse_mounted_tree(&mut self) -> DiffReport {
+        self.last_build_key = None;
+        DiffReport::default()
     }
 
     /// Diff `next` against the mounted tree, apply the batch, and install the new tree.
     fn commit_update(
         &mut self,
-        next: Node,
+        next: Rc<Node>,
         create: &dyn Fn(&Node) -> Option<ObjectId>,
         resolver: Option<&dyn crate::widget::icon_source::IconResourceResolver>,
         scope: Option<&str>,
@@ -868,7 +1019,7 @@ impl ViewEngine {
         // the new tree only once it is installed. `created` is computed from the patch paths
         // **before** the move into `self.current`, so no clone of the whole tree is needed.
         let created = self.created_ids_this_batch(&report.patches);
-        self.current = Some(Rc::new(next));
+        self.current = Some(next);
         if let Some(next) = self.current.as_ref() {
             self.run_mount_hooks_for_created(next, &[], &created);
         }
@@ -3197,6 +3348,124 @@ mod tests {
         let report = engine.update_tree(&new, &create);
         assert_eq!(report.patch_count(), 1, "one property write: {:?}", report.patches);
         assert_eq!(engine.id_at(&[0]), Some(greeting), "the label keeps its control");
+    }
+
+    /// VW-003: a pre-built tree whose root revision did not change is not copied, diffed or
+    /// applied — the fast path `update_tree` used to skip.
+    #[test]
+    fn an_unchanged_prebuilt_tree_is_reused() {
+        let next = Cell::new(1u64);
+        let create = |_node: &Node| {
+            let id = next.get();
+            next.set(id + 1);
+            Some(id)
+        };
+        let tree = Node::new("window")
+            .key("root")
+            .revision(7)
+            .child(Node::new("label").key("greeting").prop("text", s("hello")));
+        let mut engine = ViewEngine::new();
+        engine.mount_tree(&tree, &create);
+        let greeting = engine.id_at(&[0]).expect("the label is mounted");
+        let generation = engine.generation();
+
+        let report = engine.update_tree(&tree, &create);
+        assert!(report.is_unchanged(), "a reused tree produced {:?}", report.patches);
+        assert_eq!(engine.generation(), generation, "a reused tree is not a mutation");
+        assert_eq!(engine.id_at(&[0]), Some(greeting), "and its control is untouched");
+
+        // A new revision takes the ordinary path: the tree is copied and diffed.
+        let changed = Node::new("window")
+            .key("root")
+            .revision(8)
+            .child(Node::new("label").key("greeting").prop("text", s("goodbye")));
+        let report = engine.update_tree(&changed, &create);
+        assert_eq!(report.patch_count(), 1, "one property write: {:?}", report.patches);
+        assert_eq!(engine.id_at(&[0]), Some(greeting), "the label keeps its control");
+    }
+
+    /// VW-003: the tree is installed by reference, so re-submitting it costs one pointer compare
+    /// and no copy of the declaration.
+    #[test]
+    fn a_shared_prebuilt_tree_is_installed_by_reference() {
+        let next = Cell::new(1u64);
+        let create = |_node: &Node| {
+            let id = next.get();
+            next.set(id + 1);
+            Some(id)
+        };
+        let tree = Rc::new(
+            Node::new("window")
+                .key("root")
+                .child(Node::new("label").key("greeting").prop("text", s("hello"))),
+        );
+        let mut engine = ViewEngine::new();
+        engine.mount_tree_shared(Rc::clone(&tree), &create);
+        assert_eq!(
+            Rc::strong_count(&tree),
+            2,
+            "the engine holds the caller's allocation, not a copy of it"
+        );
+        let greeting = engine.id_at(&[0]).expect("the label is mounted");
+        let generation = engine.generation();
+
+        let report = engine.update_tree_shared(Rc::clone(&tree), &create);
+        assert!(report.is_unchanged(), "the same allocation describes the same tree");
+        assert_eq!(engine.generation(), generation, "and it is not a mutation");
+        assert_eq!(Rc::strong_count(&tree), 2, "the shared tree is still the same allocation");
+        assert_eq!(engine.id_at(&[0]), Some(greeting), "the label keeps its control");
+
+        // A new shared tree is diffed as usual, and the unchanged control keeps its identity —
+        // which is what carries its focus and selection across the update.
+        let changed = Rc::new(
+            Node::new("window")
+                .key("root")
+                .child(Node::new("label").key("greeting").prop("text", s("goodbye"))),
+        );
+        let report = engine.update_tree_shared(changed, &create);
+        assert_eq!(report.patch_count(), 1, "one property write: {:?}", report.patches);
+        assert_eq!(
+            engine.id_at(&[0]),
+            Some(greeting),
+            "an unchanged declaration keeps its control, and with it its focus and selection"
+        );
+    }
+
+    /// VW-003: the pre-built fast path never answers for a tree this engine described from a
+    /// view, because the two revision numbers are not about the same tree.
+    #[test]
+    fn a_view_built_tree_never_answers_the_prebuilt_fast_path() {
+        struct RevisionedRoot;
+
+        impl View for RevisionedRoot {
+            fn build(&self) -> Node {
+                Node::new("window")
+                    .key("root")
+                    .revision(3)
+                    .child(Node::new("label").key("greeting").prop("text", s("from the view")))
+            }
+        }
+
+        let next = Cell::new(1u64);
+        let create = |_node: &Node| {
+            let id = next.get();
+            next.set(id + 1);
+            Some(id)
+        };
+        let mut engine = ViewEngine::new();
+        engine.mount(&RevisionedRoot, &create);
+
+        let tree = Node::new("window")
+            .key("root")
+            .revision(3)
+            .child(Node::new("label").key("greeting").prop("text", s("from the tree")));
+        let report = engine.update_tree(&tree, &create);
+        assert_eq!(
+            report.patch_count(),
+            1,
+            "the same number from a different producer is not a reason to reuse: {:?}",
+            report.patches
+        );
     }
 }
 

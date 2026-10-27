@@ -427,6 +427,86 @@ impl Node {
         self
     }
 
+    /// Append one child per row of `model`, addressed by index and role (VW-001).
+    ///
+    /// The model interface is the one [`RowModel`](crate::view::RowModel) declares: a row
+    /// count, a stable key per index, and a value per [`RowRole`](crate::view::RowRole). This
+    /// method is the **view** half — it decides which node a row becomes — so a model never
+    /// learns a control's property vocabulary and a view never learns where the rows come
+    /// from. A builder reads the row through [`RowRef`](crate::view::RowRef), which is one
+    /// `&dyn RowModel` plus an index, so a view can keep the model behind a trait object and
+    /// still write one closure.
+    ///
+    /// [`Self::children_keyed`] over a caller-owned array remains the default path and is
+    /// unchanged: a list with no model keeps building exactly as it did. Both share the
+    /// container-revision reuse below, so a model-backed list is not a second, unoptimised
+    /// code path.
+    ///
+    /// # The model's key wins over the builder's
+    ///
+    /// A row's key comes from the model when it supplies one, because the model is the only
+    /// place that knows a row's identity across rebuilds. A model that answers `None` leaves
+    /// whatever `make` set (usually nothing), which the diff then matches positionally and
+    /// reports — the same visible degradation keyless `children_keyed` output has.
+    ///
+    /// ```
+    /// use rust_widgets::view::{Node, RowModel, RowRole};
+    /// use rust_widgets::widget::capability::CapabilityValue;
+    ///
+    /// struct Names(Vec<CapabilityValue>);
+    ///
+    /// impl RowModel for Names {
+    ///     fn len(&self) -> usize { self.0.len() }
+    ///     fn key(&self, index: usize) -> Option<String> { Some(format!("n{index}")) }
+    ///     fn value(&self, index: usize, role: RowRole) -> Option<&CapabilityValue> {
+    ///         match role { RowRole::Display => self.0.get(index), _ => None }
+    ///     }
+    /// }
+    ///
+    /// let model = Names(vec![
+    ///     CapabilityValue::String("a".into()),
+    ///     CapabilityValue::String("b".into()),
+    /// ]);
+    /// let list = Node::new("list").children_model(&model, |row| {
+    ///     let mut node = Node::new("label");
+    ///     if let Some(text) = row.text() {
+    ///         node = node.prop("text", text.clone());
+    ///     }
+    ///     node
+    /// });
+    /// assert_eq!(list.children.len(), 2);
+    /// assert_eq!(list.children[1].key_str(), Some("n1"));
+    /// ```
+    pub fn children_model(
+        mut self,
+        model: &dyn super::row_signal::RowModel,
+        make: impl Fn(super::row_signal::RowRef<'_>) -> Node,
+    ) -> Self {
+        // The same reuse [`Self::children_keyed`] performs, on the same condition, so the two
+        // builders cannot drift: a revisioned container that did not change hands back its
+        // retained children instead of describing rows again.
+        if self.children.is_empty() {
+            if let (Some(revision), Some(key)) = (self.subtree_revision, self.key.as_deref()) {
+                if let Some(retained) =
+                    super::revision::retained_children(&self.widget, key, revision)
+                {
+                    self.children = retained;
+                    return self;
+                }
+            }
+        }
+        for index in 0..model.len() {
+            let row = super::row_signal::RowRef::new(model, index);
+            let key = row.key();
+            let mut node = make(row);
+            if let Some(key) = key {
+                node.key = Some(key);
+            }
+            self.children.push(node);
+        }
+        self
+    }
+
     /// Read one property back, for tests and for views that branch on their own state.
     pub fn prop_value(&self, name: &str) -> Option<&CapabilityValue> {
         self.props.get(name)

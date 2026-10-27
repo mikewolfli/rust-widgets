@@ -437,6 +437,13 @@ pub struct PieMenu {
     /// frame for point lists whose length depends only on the item count. These buffers keep their
     /// capacity across frames; `clear()` at the start of each contour is the only reuse protocol.
     paint_scratch: crate::compat::RefCell<PieMenuScratch>,
+    /// The wedges' contours, rebuilt only when the geometry or the item angles change.
+    ///
+    /// A wedge is a pure function of the centre, the two radii and its two angles, so a static
+    /// frame used to rebuild every contour — one sample per two pixels of arc, per wedge — to
+    /// reproduce byte-for-byte the same points (ADV-006). Hover changes only the fill colour,
+    /// which is read after the contour, so it does not invalidate the cache.
+    slice_paths: crate::compat::RefCell<SlicePathCache>,
 }
 
 /// The scratch buffers a [`PieMenu`] reuses while building its paths.
@@ -446,6 +453,67 @@ struct PieMenuScratch {
     points: Vec<Point>,
     /// The `(start, end)` ranges of the contours inside [`Self::points`].
     contours: Vec<(usize, usize)>,
+}
+
+/// The inputs that decide a ring's wedge geometry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SlicePathKey {
+    center_x: i32,
+    center_y: i32,
+    outer_bits: u32,
+    inner_bits: u32,
+    /// FNV-1a over every active item's start/end angle bits, so an angle edit invalidates.
+    angles_hash: u64,
+    /// The number of slots the cached list is indexed by, including separators.
+    item_count: usize,
+}
+
+impl SlicePathKey {
+    /// Folds the draw inputs into one comparable value.
+    fn of(center: Point, outer: f32, inner: f32, items: &[PieMenuItem]) -> Self {
+        let mut angles_hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for item in items {
+            // The separator flag decides whether the slot paints at all, so it is part of the
+            // geometry key even though a separator has no meaningful angles.
+            let mut mix = |byte: u8| {
+                angles_hash ^= u64::from(byte);
+                angles_hash = angles_hash.wrapping_mul(0x0000_0100_0000_01b3);
+            };
+            mix(u8::from(item.is_separator()));
+            for bits in [item.angle_start().to_bits(), item.angle_end().to_bits()] {
+                for byte in bits.to_le_bytes() {
+                    mix(byte);
+                }
+            }
+        }
+        angles_hash ^= items.len() as u64;
+        Self {
+            center_x: center.x,
+            center_y: center.y,
+            outer_bits: outer.to_bits(),
+            inner_bits: inner.to_bits(),
+            angles_hash,
+            item_count: items.len(),
+        }
+    }
+}
+
+/// One wedge's contour, in the form [`RenderContext::fill_path_non_zero`] takes.
+#[derive(Default)]
+struct SlicePath {
+    /// The contour's points; empty when the slot paints nothing (a separator).
+    points: Vec<Point>,
+    /// The `(start, end)` range of the contour inside [`Self::points`].
+    contour: (usize, usize),
+}
+
+/// The per-slot wedge contours and the inputs they were built for.
+#[derive(Default)]
+struct SlicePathCache {
+    /// `None` before the first build, so an empty key can never be mistaken for a hit.
+    key: Option<SlicePathKey>,
+    /// One entry per slot in `active_items()`, including separators (empty paths).
+    slices: Vec<SlicePath>,
 }
 
 impl PieMenu {
@@ -491,6 +559,7 @@ impl PieMenu {
             about_to_show: GenericSignal::new(),
             about_to_hide: GenericSignal::new(),
             paint_scratch: crate::compat::RefCell::new(PieMenuScratch::default()),
+            slice_paths: crate::compat::RefCell::new(SlicePathCache::default()),
         }
     }
 
@@ -1157,23 +1226,24 @@ impl PieMenu {
         }
     }
 
-    /// Fills the annular wedge between two angles.
+    /// Builds one wedge's contour into `path`.
     ///
     /// One closed contour — the outer arc, then the inner arc back — filled with the non-zero
     /// rule. The previous form was the same strip fan as the track, so each wedge was striped at
     /// the same two-pixel pitch and showed the track through its own gaps; the two radial edge
     /// strokes it needed to close the shape are part of this polygon and are gone with it.
-    #[allow(clippy::too_many_arguments)]
-    fn fill_slice(
-        &self,
-        context: &mut RenderContext,
+    ///
+    /// A slot that paints nothing (a separator, a degenerate sweep) leaves `path` empty.
+    fn build_slice_path(
         center: Point,
         outer_r: f32,
         inner_r: f32,
         angle_start: f32,
         angle_end: f32,
-        color: Color,
+        path: &mut SlicePath,
     ) {
+        path.points.clear();
+        path.contour = (0, 0);
         let delta_angle = angle_end - angle_start;
         let outer = outer_r.max(0.0);
         let inner = inner_r.max(0.0).min(outer);
@@ -1184,13 +1254,9 @@ impl PieMenu {
         // One sample per two pixels of the outer arc, bounded so a thin sliver still encloses an
         // area (a contour needs three points) and a large sweep stays affordable.
         let steps = (outer * delta_angle.abs() / 2.0).ceil().clamp(8.0, 256.0) as u32;
-        let mut scratch = self.paint_scratch.borrow_mut();
-        let scratch = &mut *scratch;
-        scratch.points.clear();
-        scratch.contours.clear();
         for index in 0..=steps {
             let angle = angle_start + delta_angle * (index as f32 / steps as f32);
-            scratch.points.push(Point::from_f32(
+            path.points.push(Point::from_f32(
                 center.x as f32 + outer * angle.cos(),
                 center.y as f32 + outer * angle.sin(),
             ));
@@ -1198,19 +1264,45 @@ impl PieMenu {
         if inner > 0.0 {
             for index in (0..=steps).rev() {
                 let angle = angle_start + delta_angle * (index as f32 / steps as f32);
-                scratch.points.push(Point::from_f32(
+                path.points.push(Point::from_f32(
                     center.x as f32 + inner * angle.cos(),
                     center.y as f32 + inner * angle.sin(),
                 ));
             }
         } else {
             // A full pie closes at the centre instead of along an inner arc.
-            scratch.points.push(center);
+            path.points.push(center);
         }
-        scratch.contours.push((0usize, scratch.points.len()));
-        if let Err(error) = context.fill_path_non_zero(&scratch.points, &scratch.contours, color) {
-            log::warn!("pie menu slice could not be filled: {error:?}");
+        path.contour = (0, path.points.len());
+    }
+
+    /// Rebuilds every wedge's contour when the radius, the centre or an angle changed.
+    ///
+    /// The list is indexed exactly like `active_items()`, so the draw loop can read a slot's
+    /// contour without searching for it. A separator gets an empty path.
+    fn refresh_slice_paths(&self, center: Point, outer_r: f32, inner_r: f32) {
+        let items = self.active_items();
+        let key = SlicePathKey::of(center, outer_r, inner_r, items);
+        let mut cache = self.slice_paths.borrow_mut();
+        if cache.key == Some(key) {
+            return;
         }
+        cache.slices.clear();
+        for item in items {
+            let mut path = SlicePath::default();
+            if !item.is_separator() {
+                Self::build_slice_path(
+                    center,
+                    outer_r,
+                    inner_r,
+                    item.angle_start(),
+                    item.angle_end(),
+                    &mut path,
+                );
+            }
+            cache.slices.push(path);
+        }
+        cache.key = Some(key);
     }
 
     /// The fill the enabled, un-highlighted wedges take: one visible step off the track
@@ -1580,6 +1672,9 @@ impl Draw for PieMenu {
         // acquired per wedge (and per-wedge recomputation of a constant blend is waste).
         let hover_fill = self.hover_color();
         let wedge_fill = self.slice_color(ring, ink);
+        // A static ring reuses the contours the previous frame built; only a radius, centre or
+        // angle change rebuilds them. Hover and disabled state are colours, read below.
+        self.refresh_slice_paths(center, outer_r, inner_r);
         // Draw each slice
         for (i, item) in self.active_items().iter().enumerate() {
             if item.is_separator() {
@@ -1597,15 +1692,19 @@ impl Draw for PieMenu {
                 wedge_fill
             };
 
-            self.fill_slice(
-                context,
-                center,
-                outer_r,
-                inner_r,
-                item.angle_start(),
-                item.angle_end(),
-                base_color,
-            );
+            let cache = self.slice_paths.borrow();
+            let Some(path) = cache.slices.get(i) else {
+                continue;
+            };
+            if !path.points.is_empty() {
+                if let Err(error) = context.fill_path_non_zero(
+                    &path.points,
+                    core::slice::from_ref(&path.contour),
+                    base_color,
+                ) {
+                    log::warn!("pie menu slice {i} could not be filled: {error:?}");
+                }
+            }
         }
 
         // Draw separator lines between slices (radial lines)
@@ -3024,5 +3123,36 @@ mod tests {
         // the control enforces uniqueness itself and the schema does not claim otherwise.
         assert!(!record_schema.ids_unique && !record_schema.ids_required);
         assert_eq!(record_schema, &PIE_MENU_ITEM_SCHEMA);
+    }
+
+    /// A static ring reuses its wedge contours; hover and a resize are handled as stated.
+    #[test]
+    fn an_idle_menu_reuses_its_slice_paths() {
+        let mut menu = PieMenu::new(Point::new(80, 80), 70.0);
+        menu.add_item("Cut");
+        menu.add_item("Copy");
+        menu.add_item("Paste");
+        menu.show_at(Point::new(80, 80));
+        menu.set_animation_progress(1.0);
+
+        let _ = render_to_svg(&mut menu);
+        let key = menu.slice_paths.borrow().key.expect("the first frame built the paths");
+        let lengths: Vec<usize> =
+            menu.slice_paths.borrow().slices.iter().map(|path| path.points.len()).collect();
+        assert_eq!(lengths.len(), 3, "one cached contour per slot");
+        assert!(lengths.iter().all(|len| *len > 0), "every wedge encloses an area");
+
+        let _ = render_to_svg(&mut menu);
+        assert_eq!(menu.slice_paths.borrow().key, Some(key), "an idle frame reuses the paths");
+
+        // Hover is a fill colour, not geometry, so it must not rebuild the contours.
+        menu.hovered_index = Some(1);
+        let _ = render_to_svg(&mut menu);
+        assert_eq!(menu.slice_paths.borrow().key, Some(key), "hover does not resample");
+
+        // A radius change is geometry, so it must rebuild.
+        menu.set_radius(60.0);
+        let _ = render_to_svg(&mut menu);
+        assert_ne!(menu.slice_paths.borrow().key, Some(key), "a resize rebuilds the paths");
     }
 }

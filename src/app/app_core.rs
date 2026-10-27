@@ -7,7 +7,7 @@ use crate::core::ObjectId;
 use crate::WidgetTriggerEvent;
 
 use super::handle::{dispatch_trigger, WindowHandle};
-use super::lifecycle::AppLifecycle;
+use super::lifecycle::{AppLifecycle, AppLifecycleState};
 
 // ═══════════════════════════════════════════════════════════════
 // AppConfig
@@ -167,22 +167,91 @@ impl App {
 
     /// Register a callback invoked once after [`init`](App::init) completes.
     ///
-    /// Returns `self` so calls can be chained.
+    /// Returns `self` so calls can be chained. Adding a second callback keeps the first: the
+    /// callbacks form a subscription set, so the later registration no longer overwrites the earlier
+    /// one (APP-011).
     pub fn on_startup<F: FnOnce() + Send + 'static>(self, f: F) -> Self {
-        with_startup(|slot| {
-            *slot = Some(Box::new(f));
-        });
+        with_startup(|callbacks| callbacks.push(Box::new(f)));
         self
     }
 
     /// Register a callback invoked once before the event loop exits.
     ///
-    /// Returns `self` so calls can be chained.
+    /// Returns `self` so calls can be chained. Like [`Self::on_startup`], registrations accumulate
+    /// rather than replacing one another (APP-011).
     pub fn on_shutdown<F: FnOnce() + Send + 'static>(self, f: F) -> Self {
-        with_shutdown(|slot| {
-            *slot = Some(Box::new(f));
-        });
+        with_shutdown(|callbacks| callbacks.push(Box::new(f)));
         self
+    }
+
+    /// Subscribe to application-level broadcast events (APP-012).
+    ///
+    /// The events are DPI changes, clipboard changes and drag/drop reports — facts about the
+    /// application rather than about one control, so they do not travel the widget trigger queue.
+    /// Returns `self` so calls can be chained; subscriptions are additive.
+    pub fn on_application_event<F>(self, listener: F) -> Self
+    where
+        F: FnMut(&ApplicationEvent) + Send + 'static,
+    {
+        subscribe_application_events(listener);
+        self
+    }
+
+    /// Bring the application's lifecycle in line with the phase the **platform** last reported
+    /// (APP-010).
+    ///
+    /// # Why the app layer owns this translation
+    ///
+    /// Android, iOS and HarmonyOS report lifecycle transitions into
+    /// [`platform::lifecycle`](crate::platform::lifecycle), which is a process-wide record rather
+    /// than a callback channel. [`AppLifecycle`] tracks the same states but was driven only by the
+    /// host calling `transition` by hand, so a real suspend never reached lifecycle listeners. This
+    /// method is the join: `Active` maps to [`Foreground`](AppLifecycleState::Foreground),
+    /// `Inactive` to [`Suspended`](AppLifecycleState::Suspended) and `Background` to
+    /// [`Background`](AppLifecycleState::Background).
+    ///
+    /// Returns whether the application state changed. Calling it when the platform has reported
+    /// nothing (`None`) leaves the state alone, so a desktop host that never reports a phase is
+    /// unaffected.
+    pub fn sync_platform_lifecycle(&mut self) -> bool {
+        let Some(reported) = crate::platform::lifecycle::lifecycle_state() else {
+            return false;
+        };
+        let next = match reported {
+            crate::platform::MobileLifecycleState::Active => AppLifecycleState::Foreground,
+            crate::platform::MobileLifecycleState::Inactive => AppLifecycleState::Suspended,
+            crate::platform::MobileLifecycleState::Background => AppLifecycleState::Background,
+        };
+        let changed = self.lifecycle.state() != next;
+        self.lifecycle.transition(next);
+        changed
+    }
+
+    /// Emits a [`LifecycleEvent::MemoryWarning`] to every lifecycle listener (APP-010).
+    ///
+    /// The platform layer has no memory-warning notification to subscribe to, so the reachable
+    /// channel is an explicit call: a host that receives the OS warning (or whose
+    /// [`Self::check_memory_pressure`] crosses its threshold) reports it here. This is what makes
+    /// the event reachable at all, instead of a variant nothing could ever emit.
+    pub fn notify_memory_warning(&mut self) {
+        self.lifecycle.emit_memory_warning();
+    }
+
+    /// Samples the platform's process memory utilization and emits a memory warning when it is at
+    /// or above `threshold` (`0.0..=1.0`).
+    ///
+    /// Returns whether a warning was emitted. A backend that cannot measure memory answers `None`,
+    /// and an unmeasurable value is **not** treated as zero pressure: nothing is emitted and
+    /// `false` is returned, so "cannot tell" never looks like "plenty of memory".
+    pub fn check_memory_pressure(&mut self, threshold: f32) -> bool {
+        let Some(utilization) = crate::platform::get_platform().process_memory_utilization() else {
+            return false;
+        };
+        if utilization >= threshold.clamp(0.0, 1.0) {
+            self.lifecycle.emit_memory_warning();
+            return true;
+        }
+        false
     }
 
     /// Initialize global platform and (optionally) i18n subsystems.
@@ -319,16 +388,138 @@ impl App {
 
 crate::impl_default_via_new!(App);
 
-// ── Startup / shutdown one-shot callbacks ─────────────────────
+// ── Startup / shutdown callback sets (APP-011) ───────────────
 // Using OnceLock + Mutex instead of thread_local! so callbacks
 // are available across threads (e.g. in run_async).
+//
+// The slots are `Vec`s: a single `Option` made a second registration silently replace the first,
+// so two components could not both observe startup. The order is registration order, and each
+// callback fires once.
 
 use crate::compat::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::OnceLock;
 
-static STARTUP: OnceLock<Mutex<Option<Box<dyn FnOnce() + Send>>>> = OnceLock::new();
-static SHUTDOWN: OnceLock<Mutex<Option<Box<dyn FnOnce() + Send>>>> = OnceLock::new();
+type StartupCallback = Box<dyn FnOnce() + Send>;
+type ShutdownCallback = Box<dyn FnOnce() + Send>;
+
+static STARTUP: OnceLock<Mutex<Vec<StartupCallback>>> = OnceLock::new();
+static SHUTDOWN: OnceLock<Mutex<Vec<ShutdownCallback>>> = OnceLock::new();
+
+/// An application-level event that does not belong to one control (APP-012).
+///
+/// # Why these are not widget triggers
+///
+/// A DPI change, a clipboard write and a completed drop are facts about the **application**: they
+/// have no single target widget, and a host may need to react even when no control is focused.
+/// Reporting them through [`WidgetTriggerEvent`] would invent a widget id for a fact that has none,
+/// so they travel this channel instead.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ApplicationEvent {
+    /// The display scale factor changed; `scale` is the new factor.
+    DpiChanged {
+        /// The new scale factor, as the platform reports it.
+        scale: f32,
+    },
+    /// The clipboard's text was replaced through the library's own entry point.
+    ClipboardChanged {
+        /// The text that was written.
+        text: crate::compat::String,
+    },
+    /// A drag operation was accepted by the backend.
+    DragStarted {
+        /// The widget the drag started from.
+        source_widget_id: ObjectId,
+        /// The payload's MIME type.
+        mime: crate::compat::String,
+    },
+    /// A drop was completed and dequeued.
+    DropCompleted {
+        /// The completed drop event.
+        event: crate::platform::DropEvent,
+    },
+}
+
+/// Application-level listeners, process-wide because the facts are.
+static APPLICATION_LISTENERS: OnceLock<Mutex<Vec<Box<dyn FnMut(&ApplicationEvent) + Send>>>> =
+    OnceLock::new();
+
+/// Subscribes `listener` to application-level events, returning the new subscription count.
+///
+/// `listener` is invoked for every event published after this call. A listener that re-subscribes
+/// during dispatch is honoured on the next event: dispatch takes the current set out of the lock
+/// before invoking, so the mutex is never held across a callback.
+pub fn subscribe_application_events<F>(listener: F) -> usize
+where
+    F: FnMut(&ApplicationEvent) + Send + 'static,
+{
+    let lock = APPLICATION_LISTENERS.get_or_init(|| Mutex::new(Vec::new()));
+    let mut listeners = lock.lock().unwrap_or_else(|error| error.into_inner());
+    listeners.push(Box::new(listener));
+    listeners.len()
+}
+
+/// Removes every application-level listener. For tests and for a host shutting its event loop down.
+pub fn clear_application_event_listeners() {
+    let lock = APPLICATION_LISTENERS.get_or_init(|| Mutex::new(Vec::new()));
+    lock.lock().unwrap_or_else(|error| error.into_inner()).clear();
+}
+
+/// Publishes `event` to every current application-level listener, returning how many ran.
+///
+/// The listener set is taken out of the lock before dispatch, so a listener may subscribe (or
+/// clear) without deadlocking. Listeners registered during dispatch are appended after the ones
+/// that already ran, so a later event reaches every subscriber exactly once.
+pub fn publish_application_event(event: &ApplicationEvent) -> usize {
+    let lock = APPLICATION_LISTENERS.get_or_init(|| Mutex::new(Vec::new()));
+    let mut listeners = {
+        let mut guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+        core::mem::take(&mut *guard)
+    };
+    let count = listeners.len();
+    for listener in listeners.iter_mut() {
+        listener(event);
+    }
+    let mut guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+    let registered_during_dispatch = core::mem::take(&mut *guard);
+    listeners.extend(registered_during_dispatch);
+    *guard = listeners;
+    count
+}
+
+/// The last DPI scale factor observed by [`publish_dpi_change_if_needed`].
+static LAST_DPI_SCALE: OnceLock<Mutex<Option<f32>>> = OnceLock::new();
+
+/// Compares the platform's current DPI scale factor with the last one and publishes a
+/// [`ApplicationEvent::DpiChanged`] when it changed (APP-012).
+///
+/// The first call records the baseline and publishes nothing: there is no previous value to have
+/// changed from, and reporting an initial "change" would make every application receive one event
+/// at startup that no user action produced. Returns the new scale when an event was published.
+pub fn publish_dpi_change_if_needed() -> Option<f32> {
+    let scale = crate::dpi_scale_factor();
+    let lock = LAST_DPI_SCALE.get_or_init(|| Mutex::new(None));
+    let changed = {
+        let mut last = lock.lock().unwrap_or_else(|error| error.into_inner());
+        match *last {
+            Some(previous) if (previous - scale).abs() > f32::EPSILON => {
+                *last = Some(scale);
+                true
+            }
+            Some(_) => false,
+            None => {
+                *last = Some(scale);
+                false
+            }
+        }
+    };
+    if changed {
+        publish_application_event(&ApplicationEvent::DpiChanged { scale });
+        Some(scale)
+    } else {
+        None
+    }
+}
 
 /// Whether the accessibility subsystem is enabled for the running application.
 ///
@@ -353,43 +544,43 @@ pub(crate) fn accessibility_enabled() -> bool {
 
 fn with_startup<F, R>(f: F) -> R
 where
-    F: FnOnce(&mut Option<Box<dyn FnOnce() + Send>>) -> R,
+    F: FnOnce(&mut Vec<StartupCallback>) -> R,
 {
-    let lock = STARTUP.get_or_init(|| Mutex::new(None));
+    let lock = STARTUP.get_or_init(|| Mutex::new(Vec::new()));
     let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
     f(&mut guard)
 }
 
 fn with_shutdown<F, R>(f: F) -> R
 where
-    F: FnOnce(&mut Option<Box<dyn FnOnce() + Send>>) -> R,
+    F: FnOnce(&mut Vec<ShutdownCallback>) -> R,
 {
-    let lock = SHUTDOWN.get_or_init(|| Mutex::new(None));
+    let lock = SHUTDOWN.get_or_init(|| Mutex::new(Vec::new()));
     let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
     f(&mut guard)
 }
 
-/// Run a registered startup callback, releasing the lock before invoking it.
+/// Runs every registered startup callback, releasing the lock before invoking any of them.
 ///
-/// The callback is taken out of the slot and invoked **after** the guard is dropped. A startup
+/// The callbacks are taken out of the set and invoked **after** the guard is dropped. A startup
 /// callback that re-registers a startup callback must not re-lock the same non-reentrant `Mutex`
 /// while it is already held on this thread — that was a same-thread deadlock. A callback
 /// re-registered here takes effect on the next [`fire_startup`] (i.e. the next `init`).
 fn fire_startup() {
-    let cb = with_startup(|slot| slot.take());
-    if let Some(cb) = cb {
-        cb();
+    let callbacks = with_startup(core::mem::take);
+    for callback in callbacks {
+        callback();
     }
 }
 
-/// Run a registered shutdown callback, releasing the lock before invoking it.
+/// Runs every registered shutdown callback, releasing the lock before invoking any of them.
 ///
 /// Mirrors [`fire_startup`]: a shutdown callback that re-registers a shutdown callback takes
 /// effect on the next [`fire_shutdown`] (i.e. the next `run`/`run_async`), and never deadlocks.
 fn fire_shutdown() {
-    let cb = with_shutdown(|slot| slot.take());
-    if let Some(cb) = cb {
-        cb();
+    let callbacks = with_shutdown(core::mem::take);
+    for callback in callbacks {
+        callback();
     }
 }
 
@@ -406,6 +597,7 @@ fn trace_runtime_route(stage: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::lifecycle::LifecycleEvent;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 
@@ -472,6 +664,96 @@ mod tests {
 
         fire_shutdown();
         assert_eq!(calls.load(Ordering::SeqCst), 11, "the re-registered callback runs later");
+    }
+
+    /// APP-011: a second startup subscription is added rather than replacing the first.
+    #[test]
+    fn every_startup_subscription_runs() {
+        let _lock = app_init_test_lock();
+        let first = Arc::new(AtomicU32::new(0));
+        let second = Arc::new(AtomicU32::new(0));
+        let f = Arc::clone(&first);
+        let s = Arc::clone(&second);
+        let _app = App::new()
+            .on_startup(move || {
+                f.fetch_add(1, Ordering::SeqCst);
+            })
+            .on_startup(move || {
+                s.fetch_add(1, Ordering::SeqCst);
+            });
+
+        fire_startup();
+        assert_eq!(first.load(Ordering::SeqCst), 1, "the first subscription must run");
+        assert_eq!(second.load(Ordering::SeqCst), 1, "the second must not replace the first");
+    }
+
+    /// APP-010: the platform's reported phase drives the application lifecycle, and the memory
+    /// warning has a reachable emitter.
+    #[test]
+    fn platform_lifecycle_drives_the_app_state_and_memory_warnings_are_reachable() {
+        use crate::platform::MobileLifecycleState;
+        let _guard = crate::compat::lock(&crate::platform::lifecycle::TEST_LOCK);
+        let mut app = App::new();
+        app.lifecycle_mut().transition(AppLifecycleState::Foreground);
+
+        assert!(crate::platform::lifecycle::set_state(MobileLifecycleState::Background));
+        assert!(app.sync_platform_lifecycle(), "a changed platform phase must transition the app");
+        assert_eq!(app.lifecycle().state(), AppLifecycleState::Background);
+        assert!(!app.sync_platform_lifecycle(), "a repeated phase is not a transition");
+
+        let warned = Arc::new(AtomicU32::new(0));
+        let counter = Arc::clone(&warned);
+        app.lifecycle_mut().add_listener(Box::new(move |event| {
+            if event == LifecycleEvent::MemoryWarning {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+        app.notify_memory_warning();
+        assert_eq!(
+            warned.load(Ordering::SeqCst),
+            1,
+            "the memory-warning channel must be reachable"
+        );
+
+        // Restore the process-wide phase so another test does not inherit this one's background.
+        assert!(crate::platform::lifecycle::set_state(MobileLifecycleState::Active));
+    }
+
+    /// APP-012: application-level facts reach every subscriber without a widget id.
+    #[test]
+    fn application_events_reach_every_subscriber() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        clear_application_event_listeners();
+
+        let seen = Arc::new(AtomicU32::new(0));
+        let first = Arc::clone(&seen);
+        subscribe_application_events(move |_event| {
+            first.fetch_add(1, Ordering::SeqCst);
+        });
+        let second = Arc::clone(&seen);
+        subscribe_application_events(move |_event| {
+            second.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let published = publish_application_event(&ApplicationEvent::ClipboardChanged {
+            text: crate::compat::String::from("copied"),
+        });
+        assert_eq!(published, 2);
+        assert_eq!(seen.load(Ordering::SeqCst), 2, "both subscriptions receive one event each");
+
+        assert!(publish_application_event(&ApplicationEvent::DpiChanged { scale: 2.0 }) == 2);
+        assert_eq!(seen.load(Ordering::SeqCst), 4);
+
+        // The DPI helper reports a change only after a baseline exists, so a second immediate read
+        // publishes nothing. (The first call may publish if another test moved the platform value.)
+        let _ = publish_dpi_change_if_needed();
+        assert!(
+            publish_dpi_change_if_needed().is_none(),
+            "an unchanged DPI scale must not fabricate a change event"
+        );
+
+        clear_application_event_listeners();
     }
 
     /// Serialises the tests that drive `App::init`, because `init` mutates two process-wide

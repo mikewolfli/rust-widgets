@@ -32,7 +32,81 @@ pub struct StateOverlay {
     pub checked: bool,
 }
 
+/// One of the independent layers [`StateOverlay`] can carry.
+///
+/// A named set rather than four `bool` arguments, so a caller asking "which layer wins?"
+/// cannot transpose two flags, and so [`StateOverlay::layer_weight`] has one spelling per
+/// layer to answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OverlayLayer {
+    /// The pointer is over the control.
+    Hovered,
+    /// The control is being held down.
+    Pressed,
+    /// Keyboard focus worth a ring.
+    Focused,
+    /// A latched on/selected fact.
+    Checked,
+}
+
+impl OverlayLayer {
+    /// Every layer, in the order the vocabulary is documented.
+    pub const ALL: &'static [OverlayLayer] =
+        &[Self::Hovered, Self::Pressed, Self::Focused, Self::Checked];
+
+    /// The layer's precedence, higher meaning later on the pixel.
+    pub const fn weight(self) -> u8 {
+        match self {
+            Self::Hovered => 1,
+            Self::Pressed => 2,
+            // A latch persists after the gesture that made it, so it outranks both gestures.
+            Self::Checked => 3,
+            // The focus ring is the accessibility channel: it is drawn over every fill.
+            Self::Focused => 4,
+        }
+    }
+}
+
 impl StateOverlay {
+    /// The relative precedence of one overlay layer while several hold at once.
+    ///
+    /// # What the number is (and is not)
+    ///
+    /// This is an **ordering**, not an opacity: the fill blend factors live in
+    /// [`Self::fill_blend`], and they answer a different question (how far to move a colour).
+    /// A draw path that has to decide which of several simultaneous facts gets the last word —
+    /// a focus ring over a checked fill, a press over a hover — reads this instead of inventing
+    /// an order at the call site. `0` means the layer is not set at all.
+    ///
+    /// The order is: a press outranks a hover (it already implies one), a latched check outranks
+    /// both (it persists after the gesture), and the focus ring has the last word because it is
+    /// the accessibility channel and must stay visible over every fill.
+    pub const fn layer_weight(&self, layer: OverlayLayer) -> u8 {
+        let set = match layer {
+            OverlayLayer::Hovered => self.hovered,
+            OverlayLayer::Pressed => self.pressed,
+            OverlayLayer::Focused => self.focused,
+            OverlayLayer::Checked => self.checked,
+        };
+        if set {
+            layer.weight()
+        } else {
+            0
+        }
+    }
+
+    /// The layer that wins when several hold at once, or `None` for an empty overlay.
+    ///
+    /// Ties are impossible because every layer has a distinct weight, so the answer does not
+    /// depend on iteration order.
+    pub fn dominant_layer(&self) -> Option<OverlayLayer> {
+        OverlayLayer::ALL
+            .iter()
+            .copied()
+            .max_by_key(|layer| self.layer_weight(*layer))
+            .filter(|layer| self.layer_weight(*layer) > 0)
+    }
+
     /// The overlay a control's base state alone implies.
     ///
     /// Built from the four facts [`crate::widget::BaseWidget`] maintains, so a control that
@@ -332,5 +406,33 @@ mod tests {
         assert_eq!(pressed.fill_blend(), 0.12, "a press is the firmer step");
         assert_eq!(StateOverlay::default().fill_blend(), 0.0);
         assert!(StateOverlay::default().is_empty());
+    }
+
+    /// STY-006: every combination of overlay facts has a defined precedence, including the two
+    /// layers that used to have no weight at all.
+    #[test]
+    fn every_overlay_layer_has_a_distinct_weight_and_a_combination_order() {
+        let mut weights: Vec<u8> = Vec::new();
+        for layer in OverlayLayer::ALL {
+            let weight = layer.weight();
+            assert!(!weights.contains(&weight), "{layer:?} must not share a weight");
+            weights.push(weight);
+        }
+        assert_eq!(OverlayLayer::ALL.len(), 4, "hovered, pressed, focused and checked");
+
+        let all = StateOverlay { hovered: true, pressed: true, focused: true, checked: true };
+        assert_eq!(all.layer_weight(OverlayLayer::Checked), 3);
+        assert_eq!(all.layer_weight(OverlayLayer::Focused), 4);
+        assert_eq!(all.dominant_layer(), Some(OverlayLayer::Focused));
+
+        // The absent layer weighs nothing, so a combination is never handed a phantom layer.
+        let resting = StateOverlay::default();
+        for layer in OverlayLayer::ALL {
+            assert_eq!(resting.layer_weight(*layer), 0);
+        }
+        assert_eq!(resting.dominant_layer(), None);
+
+        let checked_only = StateOverlay { checked: true, ..StateOverlay::default() };
+        assert_eq!(checked_only.dominant_layer(), Some(OverlayLayer::Checked));
     }
 }

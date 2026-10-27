@@ -3051,7 +3051,17 @@ pub fn window_client_size(window_id: crate::core::ObjectId) -> Option<(u32, u32)
 /// function takes only text; see [`platform_clipboard`] for the rich backend.
 #[cfg(not(alloc_frugal))]
 pub fn set_clipboard_text(text: &str) -> bool {
-    platform::get_platform().set_clipboard_text(text)
+    let written = platform::get_platform().set_clipboard_text(text);
+    // APP-012: a clipboard write is an application-level fact. Publishing it only on success means
+    // a subscriber never sees a change that did not happen; a host that holds no subscription pays
+    // one empty-list check.
+    #[cfg(full_widgets)]
+    if written {
+        app::publish_application_event(&app::ApplicationEvent::ClipboardChanged {
+            text: crate::compat::String::from(text),
+        });
+    }
+    written
 }
 /// The platform clipboard's text contents.
 ///
@@ -3465,7 +3475,16 @@ pub fn begin_drag(source_widget_id: crate::core::ObjectId, mime: &str, payload: 
 /// reported after the user has released, so a drag in progress yields `None`.
 #[cfg(not(alloc_frugal))]
 pub fn poll_drop_event() -> Option<DropEvent> {
-    platform::get_platform().poll_drop_event()
+    let event = platform::get_platform().poll_drop_event();
+    // APP-012: a completed drop is broadcast at the moment it is dequeued, so every subscriber sees
+    // the same one report rather than each polling the platform queue independently.
+    #[cfg(full_widgets)]
+    if let Some(event) = &event {
+        app::publish_application_event(&app::ApplicationEvent::DropCompleted {
+            event: event.clone(),
+        });
+    }
+    event
 }
 /// Queues a drop event as if the user had performed it, for tests.
 ///

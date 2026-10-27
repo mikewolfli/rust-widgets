@@ -1198,8 +1198,24 @@ impl ScrollArea {
         // rectangle visible. The content root used to be centred here while every other
         // descendant used the minimal rule, so the same input produced two different offsets
         // depending on which id the caller happened to hold.
+        //
+        // The content root's rectangle comes from this control's own placement derivation:
+        // the host may not have registered a runtime entry for it, and its box is the
+        // content frame rather than anything the runtime could answer.
         #[cfg(not(alloc_frugal))]
         {
+            // The content root is laid out into the viewport when it is resizable, so its
+            // rectangle cannot say how much content there is. Its extent is the declared content
+            // size, and revealing the root means the minimal scroll to that extent's far corner.
+            if Some(widget_id) == self.widget {
+                self.ensure_visible(Rect::new(
+                    0,
+                    0,
+                    self.content_size.width,
+                    self.content_size.height,
+                ));
+                return true;
+            }
             let Some((x, y, width, height)) = crate::widget_geometry(widget_id) else {
                 return false;
             };

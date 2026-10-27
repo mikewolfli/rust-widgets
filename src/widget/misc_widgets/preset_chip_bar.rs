@@ -17,7 +17,7 @@
 //! listens to [`PresetChipBar::preset_selected`] and applies its own range, filter or page.
 
 use crate::compat::Vec;
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -76,10 +76,47 @@ impl PresetChip {
     }
 }
 
+/// A font's identity, as far as text measurement is concerned.
+type FontKey = (u32, u16, u64);
+
+/// The facts a chip layout is a pure function of.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ChipLayoutKey {
+    rect: Rect,
+    /// The chip-list revision, bumped whenever a chip is added or removed.
+    revision: u64,
+    orientation: ChipOrientation,
+    chip_height: u32,
+    chip_padding: u32,
+    spacing: u32,
+    font: FontKey,
+}
+
+/// The cached chip boxes.
+#[derive(Default)]
+struct ChipLayoutCache {
+    key: Option<ChipLayoutKey>,
+    rects: Vec<(u64, Rect)>,
+}
+
+/// The identity of `font` for measurement caches.
+fn font_key(font: &Font) -> FontKey {
+    let mut family_hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in font.family().as_bytes() {
+        family_hash ^= u64::from(*byte);
+        family_hash = family_hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (font.size().to_bits(), font.weight(), family_hash)
+}
+
 /// A bar of selectable preset chips.
 pub struct PresetChipBar {
     base: BaseWidget,
     presets: Vec<PresetChip>,
+    /// Bumped by every change to `presets`, so the layout cache can invalidate on content.
+    layout_revision: u64,
+    /// The cached chip boxes, rebuilt only when their inputs change (MISC-11).
+    chip_layout: crate::compat::RefCell<ChipLayoutCache>,
     /// The selected chip's id, if one is selected.
     selected_preset_id: Option<u64>,
     /// The id the next [`Self::add_preset`] hands out.
@@ -106,6 +143,8 @@ impl PresetChipBar {
         Self {
             base: BaseWidget::new(WidgetKind::Chip, geometry, "PresetChipBar"),
             presets: Vec::new(),
+            layout_revision: 0,
+            chip_layout: crate::compat::RefCell::new(ChipLayoutCache::default()),
             selected_preset_id: None,
             next_id: 1,
             orientation: ChipOrientation::Horizontal,
@@ -131,6 +170,7 @@ impl PresetChipBar {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         self.presets.push(PresetChip::new(id, label));
+        self.layout_revision = self.layout_revision.wrapping_add(1);
         self.base.request_redraw();
         id
     }
@@ -154,6 +194,7 @@ impl PresetChipBar {
         }
         self.presets.push(PresetChip::new(id, label));
         self.next_id = self.next_id.max(id.saturating_add(1));
+        self.layout_revision = self.layout_revision.wrapping_add(1);
         self.base.request_redraw();
         Ok(id)
     }
@@ -167,6 +208,7 @@ impl PresetChipBar {
             return false;
         };
         self.presets.remove(index);
+        self.layout_revision = self.layout_revision.wrapping_add(1);
         if self.selected_preset_id == Some(id) {
             self.selected_preset_id = None;
         }
@@ -183,6 +225,7 @@ impl PresetChipBar {
             return;
         }
         self.presets.clear();
+        self.layout_revision = self.layout_revision.wrapping_add(1);
         self.selected_preset_id = None;
         self.hovered_id = None;
         self.base.request_redraw();
@@ -270,40 +313,67 @@ impl PresetChipBar {
     }
 
     /// Every chip's box, in bar order.
+    ///
+    /// The boxes depend on the bar geometry, the chip metrics, the font and the chip list, so the
+    /// answer is cached under exactly those facts. A static frame replays the table instead of
+    /// re-measuring every caption and re-walking the row (MISC-11).
     fn chip_rects(&self) -> Vec<(u64, Rect)> {
         let rect = self.base.geometry();
         let style = self.base.style();
         let font = role_font(style, self.chip_font_size());
-        let mut rects = Vec::with_capacity(self.presets.len());
-        let mut cursor = match self.orientation {
-            ChipOrientation::Horizontal => rect.x,
-            ChipOrientation::Vertical => rect.y,
+        let key = ChipLayoutKey {
+            rect,
+            revision: self.layout_revision,
+            orientation: self.orientation,
+            chip_height: self.chip_height,
+            chip_padding: self.chip_padding,
+            spacing: self.spacing,
+            font: font_key(&font),
         };
-        for preset in &self.presets {
-            // The chip is as wide as its caption needs, bounded by the bar: an overflowing caption
-            // is elided by the draw rather than widening the chip past the bar.
-            let text = crate::widget::metrics::estimate_text_width(&preset.label, &font, 1.0);
-            let width = match self.orientation {
-                ChipOrientation::Horizontal => {
-                    (text + self.chip_padding * 2).min(rect.width.max(1))
+        {
+            let mut cache = self.chip_layout.borrow_mut();
+            if cache.key.as_ref() != Some(&key) {
+                let mut rects = Vec::with_capacity(self.presets.len());
+                let mut cursor = match self.orientation {
+                    ChipOrientation::Horizontal => rect.x,
+                    ChipOrientation::Vertical => rect.y,
+                };
+                for preset in &self.presets {
+                    // The chip is as wide as its caption needs, bounded by the bar: an overflowing
+                    // caption is elided by the draw rather than widening the chip past the bar.
+                    let text =
+                        crate::widget::metrics::estimate_text_width(&preset.label, &font, 1.0);
+                    let width = match self.orientation {
+                        ChipOrientation::Horizontal => {
+                            (text + self.chip_padding * 2).min(rect.width.max(1))
+                        }
+                        ChipOrientation::Vertical => rect.width,
+                    };
+                    let chip = match self.orientation {
+                        ChipOrientation::Horizontal => Rect::new(
+                            cursor,
+                            rect.y,
+                            width,
+                            self.chip_height.min(rect.height.max(1)),
+                        ),
+                        ChipOrientation::Vertical => Rect::new(
+                            rect.x,
+                            cursor,
+                            rect.width,
+                            self.chip_height.min(rect.height.max(1)),
+                        ),
+                    };
+                    rects.push((preset.id, chip));
+                    cursor += match self.orientation {
+                        ChipOrientation::Horizontal => width as i32 + self.spacing as i32,
+                        ChipOrientation::Vertical => self.chip_height as i32 + self.spacing as i32,
+                    };
                 }
-                ChipOrientation::Vertical => rect.width,
-            };
-            let chip = match self.orientation {
-                ChipOrientation::Horizontal => {
-                    Rect::new(cursor, rect.y, width, self.chip_height.min(rect.height.max(1)))
-                }
-                ChipOrientation::Vertical => {
-                    Rect::new(rect.x, cursor, rect.width, self.chip_height.min(rect.height.max(1)))
-                }
-            };
-            rects.push((preset.id, chip));
-            cursor += match self.orientation {
-                ChipOrientation::Horizontal => width as i32 + self.spacing as i32,
-                ChipOrientation::Vertical => self.chip_height as i32 + self.spacing as i32,
-            };
+                cache.rects = rects;
+                cache.key = Some(key);
+            }
         }
-        rects
+        self.chip_layout.borrow().rects.clone()
     }
 
     /// The font size a chip's caption is painted at.
@@ -594,5 +664,25 @@ mod tests {
         let (id, rect) = rects[1];
         assert_eq!(bar.preset_at(Point::new(rect.x + 2, rect.y + 2)), Some(id));
         assert_eq!(bar.preset_at(Point::new(-5, -5)), None);
+    }
+
+    /// The cached layout follows both the chip list and the chip metrics (MISC-11).
+    #[test]
+    fn the_layout_cache_follows_the_chips_and_geometry() {
+        let mut bar = bar();
+        assert_eq!(bar.chip_rects().len(), 2);
+        let first_height = bar.chip_rects()[0].1.height;
+
+        bar.add_preset("This month");
+        assert_eq!(bar.chip_rects().len(), 3, "adding a chip invalidates the layout");
+
+        bar.set_chip_height(40);
+        // The bar's own height is 24, which caps a 40 px chip unless the bar grows with it.
+        bar.set_geometry(Rect::new(0, 0, 300, 60));
+        assert_eq!(bar.chip_rects()[0].1.height, 40);
+        assert_ne!(first_height, 40, "the cached boxes follow the new metrics");
+
+        bar.remove_preset(bar.presets()[0].id);
+        assert_eq!(bar.chip_rects().len(), 2);
     }
 }

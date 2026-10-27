@@ -897,7 +897,7 @@ mod tests {
     /// The translated clip point sets are reused; a still frame only bumps a refcount.
     #[test]
     fn shimmer_clip_points_are_cached_between_frames() {
-        let sl = SkeletonLoader::new(Rect::new(0, 0, 200, 100));
+        let mut sl = SkeletonLoader::new(Rect::new(0, 0, 200, 100));
         sl.set_shape(SkeletonShape::Circle(20));
 
         let first = {

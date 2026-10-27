@@ -773,6 +773,10 @@ macro_rules! impl_properties_other {
             // arm accepts only `line` and `bar`, so publishing `pie`/`scatter` here
             // would advertise values the control refuses.
             PropertySchema::enumerated("chart_type", true, true, &["line", "bar"]),
+            // The hover switch, published like the other Bool switches: the getter
+            // reports the switch and the setter mirrors `set_hover_enabled`, which
+            // also clears any marker the previous state left behind.
+            PropertySchema::new("hover_enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -1093,6 +1097,16 @@ macro_rules! impl_properties_other {
             PropertySchema::new("icon_source", PropertyValueKind::IconSpec, true, true),
             PropertySchema::new("size", PropertyValueKind::Float, true, true),
             PropertySchema::new("color", PropertyValueKind::String, true, true),
+            // The transform pair the getter/setter arms serve: the rotation in
+            // degrees, and the flip axis as the reader's own token (the writer
+            // rejects any spelling outside this list).
+            PropertySchema::new("icon_rotation", PropertyValueKind::Float, true, true),
+            PropertySchema::enumerated(
+                "icon_flip",
+                true,
+                true,
+                &["none", "horizontal", "vertical", "both"],
+            ),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -1370,6 +1384,13 @@ macro_rules! impl_properties_other {
             // Where the face's time comes from: the host (`manual`) or the machine clock
             // (`system`). Published as a token so the loader can select it.
             PropertySchema::enumerated("time_source", true, true, &["manual", "system"]),
+            // The face form, published as the reader's own tokens; the writer parses
+            // exactly this list and refuses anything else.
+            PropertySchema::enumerated("display", true, true, &["dial", "digital"]),
+            // The zone offset in minutes. An absent offset reads as `null` and writes
+            // back as `null`, so the kind is the carried value and `null` stays legal
+            // the same way the nullable `shortcut` is.
+            PropertySchema::new("utc_offset", PropertyValueKind::Int, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -1706,6 +1727,13 @@ macro_rules! impl_properties_other {
             // The reader reports the list's length; the list itself is replaced through the
             // control's `set_dependencies` method, so the property is read-only.
             PropertySchema::new("dependencies", PropertyValueKind::UInt, true, false),
+            // The edge list itself, round-tripped through the `Records` contract (SP-123).
+            PropertySchema::records(
+                "dependency_edges",
+                true,
+                true,
+                &crate::widget::special_widgets::gantt_widget::companions::DEPENDENCY_SCHEMA,
+            ),
             PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),

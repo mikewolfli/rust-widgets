@@ -29,6 +29,18 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// pixels with the row's value.
 const ARROW_GUTTER: u32 = 10;
 
+/// The in-progress pointer drag over one drum column.
+///
+/// A drag scrolls the column under the press; the last sample is kept so each `MouseMove` only
+/// contributes whole rows instead of re-deriving the gesture from the control's origin.
+#[derive(Clone, Copy)]
+struct DragScroll {
+    /// The column the press started in: `0` year, `1` month, `2` day.
+    column: usize,
+    /// The y of the last sample that was consumed as whole rows.
+    last_y: i32,
+}
+
 /// Mobile-style date picker with year/month/day column spinners.
 ///
 /// Presents three side-by-side columns for selecting year, month, and day.
@@ -56,6 +68,11 @@ pub struct MobileDatePicker {
     row_text_metrics: crate::compat::RefCell<Option<((u32, u16, u64), u32)>>,
     /// The column the keyboard is on: `0` year, `1` month, `2` day (MISC-12).
     focus_column: usize,
+    /// The last pointer position seen over the control, so a wheel notch can address the column
+    /// under the pointer (the wheel event itself carries no position).
+    pointer: Option<Point>,
+    /// The active drag scroll, if any.
+    drag: Option<DragScroll>,
     /// Emitted with a "YYYY-MM-DD" string when the date changes.
     pub date_changed: Signal1<String>,
 }
@@ -79,6 +96,8 @@ impl MobileDatePicker {
             day_items_count: 31,
             row_text_metrics: crate::compat::RefCell::new(None),
             focus_column: 0,
+            pointer: None,
+            drag: None,
             date_changed: Signal1::new(),
         }
         .with_rebuilt_items()
@@ -420,14 +439,16 @@ impl Draw for MobileDatePicker {
             (day_offset, self.day_items.as_slice(), "Day"),
         ];
 
+        // The today marker is read once for the whole frame rather than once per column: the three
+        // columns ask the same clock the same question, and a date rollover between two columns
+        // could otherwise mark two different days in one picture (MISC-01).
+        let today = chrono::Local::now().date_naive();
+
         for (col_idx, (sel_offset, items, _label)) in columns.iter().enumerate() {
             let col_x = drum_rect.x + (col_idx as u32 * col_width) as i32;
             // The row's line height is one number for the whole font, so it is measured once per
             // font rather than once per visible row per column (K-P13).
             let row_text_height = self.row_text_height(&font, context);
-            // The today marker is read from the clock on each paint rather than cached, so it
-            // follows a date rollover with no invalidation to get wrong (MISC-11).
-            let today = chrono::Local::now().date_naive();
             let is_today_column = |item_index: i32| -> bool {
                 use chrono::Datelike;
                 match col_idx {
@@ -540,9 +561,13 @@ impl Draw for MobileDatePicker {
 }
 
 impl MobileDatePicker {
-    /// Steps the focused column by `delta`, with the same clamping every other path uses.
-    fn step_column(&mut self, delta: i32) {
-        match self.focus_column {
+    /// Applies `delta` steps to one drum column, through the same clamps every path uses.
+    /// `delta` may be larger than one when a drag covers several rows.
+    fn apply_column_delta(&mut self, column: usize, delta: i32) {
+        if delta == 0 {
+            return;
+        }
+        match column {
             0 => {
                 let new_year = self.year.saturating_add(delta);
                 let max_day = days_in_month(new_year, self.month);
@@ -559,6 +584,21 @@ impl MobileDatePicker {
                 self.set_date(self.year, self.month, new_day);
             }
         }
+    }
+
+    /// Steps the focused column by `delta`, with the same clamping every other path uses.
+    fn step_column(&mut self, delta: i32) {
+        self.apply_column_delta(self.focus_column, delta);
+    }
+
+    /// The height of one painted drum row, shared by the press, wheel and drag paths.
+    fn drum_row_height(&self) -> i32 {
+        let rect = self.geometry();
+        let drum_rect = ControlMetrics::center_in(
+            rect,
+            Size::new(rect.width, dimensions::PICKER_ROW_HEIGHT * dimensions::PICKER_VISIBLE_ROWS),
+        );
+        (drum_rect.height / dimensions::PICKER_VISIBLE_ROWS).max(1) as i32
     }
 
     /// The line height of the drum's row text, measured once per font (K-P13).
@@ -592,28 +632,52 @@ impl EventHandler for MobileDatePicker {
 
         match event {
             Event::Wheel { delta, .. } => {
-                // Scroll the year column when vertical wheel is used.
-                // MousePress handles per-column interaction.
+                // The wheel addresses the column under the last pointer position, so one gesture
+                // scrolls whichever drum the user is aiming at (MISC-02). With no recorded pointer
+                // it falls back to the keyboard's column, which keeps the historical year scroll.
+                let column = self.pointer.map(|p| self.column_at(p.x)).unwrap_or(self.focus_column);
                 if delta.y > 0 {
-                    self.set_date(
-                        self.year + 1,
-                        self.month,
-                        self.day.min(days_in_month(self.year + 1, self.month)),
-                    );
+                    self.apply_column_delta(column, 1);
                 } else if delta.y < 0 {
-                    self.set_date(
-                        self.year - 1,
-                        self.month,
-                        self.day.min(days_in_month(self.year - 1, self.month)),
-                    );
+                    self.apply_column_delta(column, -1);
                 }
             }
+            // A pointer move over a pressed column drags that drum: every whole row of travel
+            // contributes one step, so a drag and a wheel reach the same values through the same
+            // clamp. The wheel event carries no position, so the move also records the pointer.
+            Event::MouseMove { pos } => {
+                self.pointer = Some(*pos);
+                let Some(drag) = self.drag else {
+                    return;
+                };
+                let row_height = self.drum_row_height();
+                let travel = drag.last_y - pos.y;
+                if travel.abs() >= row_height {
+                    let steps = travel / row_height;
+                    if let Some(active) = self.drag.as_mut() {
+                        active.last_y -= steps * row_height;
+                    }
+                    self.apply_column_delta(drag.column, steps);
+                }
+            }
+            Event::MouseRelease { .. } => {
+                self.drag = None;
+            }
+            Event::MouseEnter { pos } => {
+                self.pointer = Some(*pos);
+            }
             Event::MousePress { pos, button: 1, .. } => {
+                self.pointer = Some(*pos);
                 let col = self.column_at(pos.x);
+                // Pressing a column focuses it, so the keyboard continues from the column the user
+                // touched and the drag below scrolls the same column.
+                self.focus_column = col;
+                self.drag = Some(DragScroll { column: col, last_y: pos.y });
                 let rect = self.geometry();
                 // The row is resolved against the same fixed-height drum the rows are painted
                 // in, so a click maps to the value under the pointer rather than to a fraction of
                 // the control's height — which picked the wrong row on every non-200 px panel.
+                let row_height = self.drum_row_height();
                 let drum_rect = ControlMetrics::center_in(
                     rect,
                     Size::new(
@@ -621,7 +685,6 @@ impl EventHandler for MobileDatePicker {
                         dimensions::PICKER_ROW_HEIGHT * dimensions::PICKER_VISIBLE_ROWS,
                     ),
                 );
-                let row_height = (drum_rect.height / dimensions::PICKER_VISIBLE_ROWS).max(1) as i32;
                 let rel_y = pos.y - drum_rect.y;
                 let row = rel_y / row_height;
                 // Upper half (row 0-2) = increment, lower half (row 3-4) = decrement
@@ -1079,5 +1142,59 @@ mod tests {
         picker.set_date(2026, 3, 9);
         picker.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
         assert_eq!(confirmed.lock().unwrap().last().map(String::as_str), Some("2026-03-09"));
+    }
+
+    /// A wheel notch addresses the column under the pointer, not always the year (MISC-02).
+    #[test]
+    fn the_wheel_scrolls_the_column_under_the_pointer() {
+        let mut picker = make_picker();
+        // Column width is 80 px: x = 180 is the day column.
+        picker.handle_event(&Event::MouseMove { pos: Point::new(180, 100) });
+        picker.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(picker.day(), 2);
+        assert_eq!(picker.month(), 1);
+        assert_eq!(picker.year(), 2025);
+
+        // Moving over the month column retargets the same gesture.
+        picker.handle_event(&Event::MouseMove { pos: Point::new(100, 100) });
+        picker.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(picker.month(), 2);
+        assert_eq!(picker.year(), 2025);
+    }
+
+    /// Dragging a column scrolls it by whole rows, and the drag ends on release (MISC-02).
+    #[test]
+    fn dragging_a_column_scrolls_it_by_rows() {
+        let mut picker = make_picker();
+        let row_height = picker.drum_row_height();
+        // Press the day column's upper half: one step, and the drag starts here.
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(180, 70),
+            button: 1,
+            modifiers: 0,
+        });
+        let after_press = picker.day();
+        assert_eq!(after_press, 2);
+
+        // Dragging up by three rows is three more steps.
+        picker.handle_event(&Event::MouseMove { pos: Point::new(180, 70 - 3 * row_height) });
+        assert_eq!(picker.day(), after_press + 3);
+        assert_eq!(picker.year(), 2025);
+
+        // A release ends the gesture: later motion does not keep stepping.
+        picker.handle_event(&Event::MouseRelease { pos: Point::new(180, 10), button: 1 });
+        picker.handle_event(&Event::MouseMove { pos: Point::new(180, 70 - 6 * row_height) });
+        assert_eq!(picker.day(), after_press + 3);
+    }
+
+    /// The clock is read once per frame, so the today dot still marks the wall-clock day.
+    #[test]
+    fn the_today_marker_is_painted_for_the_wall_clock_day() {
+        use chrono::Datelike;
+        let today = chrono::Local::now().date_naive();
+        let mut picker = MobileDatePicker::new(Rect::new(0, 0, 300, 200));
+        picker.set_date(today.year(), today.month(), today.day());
+        let svg = crate::widget::svg::render_to_svg(&mut picker);
+        assert!(svg.contains("<circle"), "the today dot must be painted: {svg}");
     }
 }

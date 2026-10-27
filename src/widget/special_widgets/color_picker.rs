@@ -14,6 +14,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::companions::Swatch;
 use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use core::cell::RefCell;
@@ -69,6 +70,16 @@ pub struct ColorPicker {
     hex_buffer: String,
     /// Whether the panel paints its own OK / Cancel row (SP-62).
     show_buttons: bool,
+    /// The recent-colour band, drawn through the shared `Swatch` control (SP-119).
+    ///
+    /// Empty and disabled by default, so a picker that never opts in paints exactly what it did
+    /// before. The band is a standard `Swatch` rather than a second hand-drawn colour grid, which
+    /// is the wiring the companion's own gap called for.
+    recent: Swatch,
+    /// Whether committed colours are recorded into the recent band.
+    recent_enabled: bool,
+    /// The maximum number of recent colours kept.
+    recent_limit: usize,
     /// The cached rail paints; see [`ColorPickerPaintCache`].
     ///
     /// `RefCell` because the cache is refreshed from inside `draw`, which already holds a shared
@@ -115,6 +126,9 @@ impl ColorPicker {
             hex_editing: false,
             hex_buffer: String::new(),
             show_buttons: false,
+            recent: Swatch::new(Rect::new(0, 0, 0, 0)),
+            recent_enabled: false,
+            recent_limit: 8,
             paint_cache: RefCell::new(None),
             presets: vec![
                 Color::rgb(244, 67, 54),
@@ -131,6 +145,9 @@ impl ColorPicker {
             canceled: GenericSignal::new(),
         };
         picker.sync_color_from_hsva();
+        // `Swatch` ships with a default palette; the recent band starts empty so the disabled
+        // control paints exactly what it always did.
+        picker.recent.set_colors(Vec::new());
         picker
     }
 
@@ -150,9 +167,13 @@ impl ColorPicker {
     ///
     /// This is the method a host panel calls from its OK affordance. It reports both the
     /// per-value change (`color_changed`) and the commit (`color_committed`), so an observer
-    /// that only wants the final choice subscribes to the latter.
+    /// that only wants the final choice subscribes to the latter. A commit also enters the recent
+    /// band when that band is enabled (SP-119).
     pub fn pick(&mut self, color: Color) {
         self.set_color(color);
+        if self.recent_enabled {
+            self.record_recent_color(color);
+        }
         self.color_committed.emit(color);
     }
 
@@ -309,6 +330,104 @@ impl ColorPicker {
         &self.presets
     }
 
+    // ── Recent colours (SP-119) ──
+
+    /// Whether committed colours are recorded into the recent band.
+    pub fn is_recent_colors_enabled(&self) -> bool {
+        self.recent_enabled
+    }
+
+    /// Enables or disables the recent-colour band.
+    ///
+    /// Off by default, which is the historical picture: the panel paints no band and records no
+    /// history until the caller opts in.
+    pub fn set_recent_colors_enabled(&mut self, enabled: bool) {
+        if self.recent_enabled == enabled {
+            return;
+        }
+        self.recent_enabled = enabled;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The recent colours, most recent first.
+    pub fn recent_colors(&self) -> &[Color] {
+        self.recent.colors()
+    }
+
+    /// Replaces the recent colours.
+    pub fn set_recent_colors(&mut self, colors: Vec<Color>) {
+        self.recent.set_colors(colors);
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Empties the recent colours.
+    pub fn clear_recent_colors(&mut self) {
+        self.set_recent_colors(Vec::new());
+    }
+
+    /// The maximum number of recent colours kept.
+    pub fn recent_limit(&self) -> usize {
+        self.recent_limit
+    }
+
+    /// Caps the recent band, dropping the oldest entries beyond the cap.
+    pub fn set_recent_limit(&mut self, limit: usize) {
+        let limit = limit.max(1);
+        if self.recent_limit == limit {
+            return;
+        }
+        self.recent_limit = limit;
+        let mut colors = self.recent.colors().to_vec();
+        colors.truncate(limit);
+        self.recent.set_colors(colors);
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Records `color` as the most recent one, removing an earlier occurrence.
+    pub fn record_recent_color(&mut self, color: Color) {
+        let mut colors = self.recent.colors().to_vec();
+        colors.retain(|existing| *existing != color);
+        colors.insert(0, color);
+        colors.truncate(self.recent_limit.max(1));
+        self.recent.set_colors(colors);
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The vertical space the recent band claims, or zero when it is hidden.
+    fn recent_row_height(&self) -> u32 {
+        if self.recent_enabled && !self.recent.colors().is_empty() {
+            RECENT_ROW + MARGIN
+        } else {
+            0
+        }
+    }
+
+    /// The band the recent colours occupy, shared by the paint and the hit test.
+    pub fn recent_band_rect(&self) -> Rect {
+        let rect = self.geometry();
+        Rect::new(
+            rect.x + 8,
+            rect.y + rect.height as i32 - (RECENT_ROW + MARGIN) as i32,
+            rect.width.saturating_sub(16),
+            RECENT_ROW,
+        )
+    }
+
+    /// Keeps the embedded swatch's geometry in step with the band it paints in.
+    fn sync_recent_geometry(&mut self) {
+        let band = self.recent_band_rect();
+        if self.recent.base().geometry() != band {
+            self.recent.base_mut().set_geometry(band);
+        }
+        let columns = (band.width / 22).max(1) as usize;
+        self.recent.set_columns(columns);
+        self.recent.set_cell_size(18);
+    }
+
     /// Replaces the preset palette.
     ///
     /// The palette was six colours fixed at construction, with no writer at all, so a caller's own
@@ -374,10 +493,11 @@ impl ColorPicker {
 
     /// The vertical room below the palette: the readout stack plus the button row when shown.
     fn bottom_stack(&self) -> u32 {
+        let base = Self::BOTTOM_STACK + self.recent_row_height();
         if self.show_buttons {
-            Self::BOTTOM_STACK + Self::BUTTON_ROW
+            base + Self::BUTTON_ROW
         } else {
-            Self::BOTTOM_STACK
+            base
         }
     }
 
@@ -464,7 +584,8 @@ impl ColorPicker {
         if x + 18 > row_end {
             return None;
         }
-        let y = rect.y + rect.height as i32 - (PRESET_ROW + MARGIN) as i32;
+        let y =
+            rect.y + rect.height as i32 - (self.recent_row_height() + PRESET_ROW + MARGIN) as i32;
         Some(Rect::new(x, y, 18, 18))
     }
 
@@ -519,6 +640,10 @@ impl Widget for ColorPicker {
     }
     fn set_state_theme_hook(&mut self) {
         crate::style::reapply_active_theme_state(self);
+        // The recent band is an owned control, so a theme change has to reach it too.
+        if self.recent_enabled {
+            crate::theme::apply_theme_to_widget(&mut self.recent);
+        }
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -679,6 +804,34 @@ impl EventHandler for ColorPicker {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
+        }
+
+        // The recent band is a real Swatch: it owns its hit test, selection and activation, so
+        // forwarding the pointer event keeps one meaning per click across the crate (SP-119).
+        if self.recent_enabled && !self.recent.colors().is_empty() {
+            self.sync_recent_geometry();
+            let band = self.recent_band_rect();
+            let over_band = match event {
+                Event::MousePress { pos, .. }
+                | Event::MouseMove { pos }
+                | Event::MouseRelease { pos, .. }
+                | Event::MouseDoubleClick { pos, .. } => Self::point_in_rect(*pos, band),
+                _ => false,
+            };
+            if over_band {
+                let before = self.recent.selected_color();
+                let activate =
+                    matches!(event, Event::MousePress { .. } | Event::MouseDoubleClick { .. });
+                self.recent.handle_event(event);
+                let after = self.recent.selected_color();
+                if activate && (after != before || matches!(event, Event::MouseDoubleClick { .. }))
+                {
+                    if let Some(color) = after {
+                        self.set_color(color);
+                    }
+                }
+                return;
+            }
         }
 
         match event {
@@ -912,8 +1065,8 @@ impl Draw for ColorPicker {
                 hex_height: metrics.height,
             });
         }
-        let cache = self.paint_cache.borrow();
-        let Some(cache) = cache.as_ref() else { return };
+        let cache_guard = self.paint_cache.borrow();
+        let Some(cache) = cache_guard.as_ref() else { return };
         // The saturation/value square: a horizontal white-to-hue ramp overlayed with a vertical
         // transparent-to-black ramp. That is the same two-dimensional colour space the click
         // mapping reads, so the pixel under the pointer and the picked colour agree — the flat
@@ -948,7 +1101,7 @@ impl Draw for ColorPicker {
         // dark grey, which only outlined light swatches.
         let swatch_rect = Rect::new(
             rect.x + rect.width as i32 - 70,
-            rect.y + rect.height as i32 - (PRESET_ROW + MARGIN) as i32,
+            rect.y + rect.height as i32 - (self.recent_row_height() + PRESET_ROW + MARGIN) as i32,
             56,
             PRESET_ROW,
         );
@@ -1031,6 +1184,15 @@ impl Draw for ColorPicker {
                 HorizontalAlignment::Center,
             );
         }
+
+        // The recent band is painted last, over its own reserved strip. The `Swatch` control
+        // fills the strip, so nothing from the panel shows through a stale hand-drawn copy.
+        // The paint cache borrow is dropped first: the band mutates its own geometry below.
+        drop(cache_guard);
+        if self.recent_enabled && !self.recent.colors().is_empty() {
+            self.sync_recent_geometry();
+            self.recent.draw(context);
+        }
     }
 }
 
@@ -1045,6 +1207,8 @@ impl Draw for ColorPicker {
 /// regardless of the ratio.
 const READOUT_LINE: u32 = 14;
 const PRESET_ROW: u32 = 18;
+/// The recent-colour band: one 18 px swatch plus the shared control's 4 px inset on each side.
+const RECENT_ROW: u32 = 26;
 const MARGIN: u32 = 4;
 
 /// Converts RGB color to HSV components: `(hue, saturation, value)`.
@@ -1291,5 +1455,47 @@ mod tests {
         let previewed = record_colors(&picker.color_previewed);
         picker.set_hsva(0, 255, 255, 255);
         assert_eq!(colours(&previewed).len(), 1);
+    }
+
+    /// The recent band is opt-in, keeps the newest first, de-duplicates and honours its cap. The
+    /// band is a real `Swatch`, so a click in it applies the selected colour (SP-119).
+    #[test]
+    fn the_recent_colour_band_is_opt_in_and_clickable() {
+        let mut picker = ColorPicker::new(Rect::new(0, 0, 300, 260));
+        assert!(picker.recent_colors().is_empty());
+        assert!(!picker.is_recent_colors_enabled());
+
+        // Off by default: a commit records nothing and paints nothing.
+        picker.pick(Color::rgb(1, 2, 3));
+        assert!(picker.recent_colors().is_empty());
+        assert_eq!(picker.recent_row_height(), 0);
+
+        picker.set_recent_colors_enabled(true);
+        picker.pick(Color::rgb(1, 2, 3));
+        picker.pick(Color::rgb(4, 5, 6));
+        picker.pick(Color::rgb(1, 2, 3));
+        assert_eq!(
+            picker.recent_colors(),
+            &[Color::rgb(1, 2, 3), Color::rgb(4, 5, 6)],
+            "newest first, no duplicate"
+        );
+        assert!(picker.recent_row_height() > 0, "a non-empty band reserves its strip");
+
+        // A cap drops the oldest entries.
+        picker.set_recent_limit(1);
+        assert_eq!(picker.recent_colors(), &[Color::rgb(1, 2, 3)]);
+
+        // Selecting a swatch applies it through the embedded control. The first cell starts
+        // selected, so move the selection to the second cell and click back onto the first.
+        picker.set_recent_colors(vec![Color::rgb(10, 20, 30), Color::rgb(40, 50, 60)]);
+        picker.recent.set_selected_index(1);
+        let band = picker.recent_band_rect();
+        // The swatch control insets its grid by 4 px and draws 18 px cells with a 4 px gap.
+        picker.handle_event(&Event::mouse_press(band.x + 4 + 9, band.y + 4 + 9, 1));
+        assert_eq!(picker.color(), Color::rgb(10, 20, 30));
+
+        // The paint path accepts the band without panicking.
+        let svg = crate::widget::svg::render_to_svg(&mut picker);
+        assert!(!svg.is_empty());
     }
 }

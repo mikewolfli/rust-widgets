@@ -38,6 +38,7 @@
 //! `ControlBackend`. `WidgetKind::RadarChart` is its own kind rather than a
 //! `chart_type` token, because its data model is series-over-dimensions.
 
+use core::cell::RefCell;
 use core::fmt::Write as _;
 
 use crate::core::{deg_to_rad, Color, HorizontalAlignment, Point, Rect, Size};
@@ -120,6 +121,22 @@ fn label_box(x: i32, y: i32, width: i32, height: i32, rect: Rect) -> Rect {
     Rect::new(x.clamp(rect.x, max_x), y.clamp(rect.y, max_y), width as u32, height as u32)
 }
 
+/// The data-derived values every vertex projection reads, cached per data revision.
+///
+/// `data_max` scans every series and `axis_maximum` consulted it again for every vertex, so a
+/// frame with `s` series over `a` axes scanned the data `s * a + 1` times (SP-101). The ratios are
+/// the projection's only data-dependent half — geometry and the entry animation stay per frame —
+/// so caching them leaves the painted geometry bit-identical while removing the repeated scans.
+#[derive(Debug, Default)]
+struct RadarProjection {
+    /// The `data_revision` this cache was built for; `None` until the first read.
+    revision: Option<u64>,
+    /// The shared maximum, or `None` when the data has no positive finite value.
+    data_max: Option<f64>,
+    /// `series[s][a]`'s clamped `value / axis_max`, index-aligned with `series`.
+    ratios: Vec<Vec<f32>>,
+}
+
 /// A radar (spider) chart: several series measured against shared dimension axes.
 ///
 /// # Data model
@@ -167,6 +184,10 @@ pub struct RadarChart {
     pub vertex_clicked: Signal1<(usize, usize)>,
     /// Emitted with `(series, visible)` after a series is shown or hidden.
     pub series_visibility_changed: Signal1<(usize, bool)>,
+    /// Bumped whenever the data or the axis maxima change, keying the projection cache.
+    data_revision: u64,
+    /// The cached data maximum and per-vertex projection ratios (SP-101).
+    projection: RefCell<RadarProjection>,
 }
 
 impl RadarChart {
@@ -194,7 +215,14 @@ impl RadarChart {
             vertex_hovered: Signal1::new(),
             vertex_clicked: Signal1::new(),
             series_visibility_changed: Signal1::new(),
+            data_revision: 0,
+            projection: RefCell::new(RadarProjection::default()),
         }
+    }
+
+    /// Marks the projection cache stale after a change to the data or the axis maxima.
+    fn invalidate_projection(&mut self) {
+        self.data_revision = self.data_revision.wrapping_add(1);
     }
 
     /// Sets a maximum for each dimension.
@@ -208,6 +236,7 @@ impl RadarChart {
             return;
         }
         self.axis_maxima = maxima;
+        self.invalidate_projection();
         self.base.request_redraw();
     }
 
@@ -285,6 +314,7 @@ impl RadarChart {
         }
         self.axes = axes;
         self.hovered_axis = None;
+        self.invalidate_projection();
         self.base.request_redraw();
         true
     }
@@ -305,6 +335,7 @@ impl RadarChart {
         // A visibility flag belongs to a *position*, and replacing the list keeps the reader's
         // per-position choices where they still address a series.
         self.series_visible.resize(self.series.len(), true);
+        self.invalidate_projection();
         self.base.request_redraw();
     }
 
@@ -395,6 +426,7 @@ impl RadarChart {
         let index = self.series.len();
         self.series.push(values);
         self.series_visible.resize(self.series.len(), true);
+        self.invalidate_projection();
         self.base.request_redraw();
         index
     }
@@ -456,18 +488,60 @@ impl RadarChart {
     /// comparable; scaling each series against its own maximum would make a series
     /// of small numbers look identical to one of large numbers.
     fn data_max(&self) -> Option<f64> {
-        let max = self
+        self.sync_projection();
+        self.projection.borrow().data_max
+    }
+
+    /// Rebuilds the projection cache when the data revision has moved.
+    fn sync_projection(&self) {
+        let mut cache = self.projection.borrow_mut();
+        if cache.revision == Some(self.data_revision) {
+            return;
+        }
+        let data_max = Self::aggregate_max(&self.series);
+        let axis_count = self.axes.len();
+        let axis_maxima: Vec<Option<f64>> =
+            (0..axis_count).map(|axis| self.resolved_axis_maximum(axis, data_max)).collect();
+        let ratios = self
             .series
+            .iter()
+            .map(|values| {
+                axis_maxima
+                    .iter()
+                    .enumerate()
+                    .map(|(axis, maximum)| {
+                        let value = values.get(axis).copied().unwrap_or(0.0);
+                        maximum.map_or(0.0, |maximum| (value / maximum).clamp(0.0, 1.0) as f32)
+                    })
+                    .collect()
+            })
+            .collect();
+        *cache = RadarProjection { revision: Some(self.data_revision), data_max, ratios };
+    }
+
+    /// The largest finite positive value across every series.
+    fn aggregate_max(series: &[Vec<f64>]) -> Option<f64> {
+        let max = series
             .iter()
             .flatten()
             .copied()
             .filter(|value| value.is_finite())
             .fold(f64::NEG_INFINITY, f64::max);
-        if max.is_finite() && max > 0.0 {
-            Some(max)
-        } else {
-            None
+        (max.is_finite() && max > 0.0).then_some(max)
+    }
+
+    /// The configured maximum of `axis`, falling back to the shared data maximum.
+    fn resolved_axis_maximum(&self, axis: usize, data_max: Option<f64>) -> Option<f64> {
+        match self.axis_maxima.get(axis).copied() {
+            Some(value) if value.is_finite() && value > 0.0 => Some(value),
+            _ => data_max,
         }
+    }
+
+    /// The cached projection ratio of `series` on `axis`, or `None` for an unset series.
+    fn projection_ratio(&self, series: usize, axis: usize) -> Option<f32> {
+        self.sync_projection();
+        self.projection.borrow().ratios.get(series).and_then(|row| row.get(axis)).copied()
     }
 
     /// The geometry the plot is drawn within.
@@ -510,10 +584,16 @@ impl RadarChart {
     }
 
     /// The point a series reaches on `axis`, given the plot geometry.
+    #[cfg(test)]
     fn vertex(&self, center: Point, radius: u32, angle: f32, value: f64, max: f64) -> Point {
         // Negative values would point backwards past the centre, which a radar
         // chart has no way to show; they are clamped to the centre.
         let ratio = (value / max).clamp(0.0, 1.0) as f32;
+        Self::vertex_from_ratio(center, radius, angle, ratio)
+    }
+
+    /// The point at `ratio` of the radius, where the ratio comes from the projection cache.
+    fn vertex_from_ratio(center: Point, radius: u32, angle: f32, ratio: f32) -> Point {
         let r = radius as f32 * ratio;
         Point::new(center.x + (r * angle.cos()) as i32, center.y + (r * angle.sin()) as i32)
     }
@@ -762,7 +842,7 @@ impl Draw for RadarChart {
         let font = role_font(self.style(), 10.0);
 
         let axis_count = self.axis_count();
-        let Some(max) = self.data_max() else {
+        let Some(_max) = self.data_max() else {
             self.draw_placeholder(context, rect, &font, &chrome);
             return;
         };
@@ -787,15 +867,17 @@ impl Draw for RadarChart {
             if !self.is_series_visible(series_index) {
                 continue;
             }
-            self.draw_series(context, center, radius, max, series_index, &mut vertices);
+            self.draw_series(context, center, radius, series_index, &mut vertices);
         }
         // The hovered vertex is marked so the pointer's nearest point is visible before a
         // click commits to it.
         if let Some((series, axis)) = self.hovered_vertex {
             if self.is_series_visible(series) {
                 if let Some(value) = self.value_at(series, axis) {
-                    let axis_max = self.axis_maximum(axis).unwrap_or(max);
-                    let point = self.vertex(center, radius, self.axis_angle(axis), value, axis_max);
+                    let _ = value;
+                    let ratio = self.projection_ratio(series, axis).unwrap_or(0.0);
+                    let point =
+                        Self::vertex_from_ratio(center, radius, self.axis_angle(axis), ratio);
                     context.fill_circle(point, 3, Self::series_color(series));
                     context.draw_circle_stroke(point, 5, chrome.border, 1);
                 }
@@ -806,7 +888,7 @@ impl Draw for RadarChart {
         }
         // The hovered spoke last, so it is legible over every polygon.
         if let Some(axis) = self.hovered_axis {
-            self.draw_hover_spoke(context, center, radius, axis, max, &chrome);
+            self.draw_hover_spoke(context, center, radius, axis, &chrome);
         }
     }
 }
@@ -1012,13 +1094,12 @@ impl RadarChart {
         context: &mut RenderContext,
         center: Point,
         radius: u32,
-        max: f64,
         series_index: usize,
         vertices: &mut Vec<Point>,
     ) {
-        let Some(values) = self.series.get(series_index) else {
+        if self.series.get(series_index).is_none() {
             return;
-        };
+        }
         let axis_count = self.axis_count();
         if axis_count == 0 {
             return;
@@ -1030,10 +1111,9 @@ impl RadarChart {
             let angle = self.axis_angle(axis);
             // A missing dimension reads as zero, which lands on the centre,
             // matching `value_at` returning `None` for it.
-            let value = values.get(axis).copied().unwrap_or(0.0);
-            let axis_max = self.axis_maximum(axis).unwrap_or(max);
+            let ratio = self.projection_ratio(series_index, axis).unwrap_or(0.0);
             let scaled_radius = (radius as f32 * scale).max(0.0) as u32;
-            vertices.push(self.vertex(center, scaled_radius, angle, value, axis_max));
+            vertices.push(Self::vertex_from_ratio(center, scaled_radius, angle, ratio));
         }
 
         // Fill first, then stroke: the render context has no filled-polygon
@@ -1124,7 +1204,6 @@ impl RadarChart {
         center: Point,
         radius: u32,
         axis: usize,
-        max: f64,
         chrome: &RadarChrome,
     ) {
         if axis >= self.axis_count() {
@@ -1146,7 +1225,8 @@ impl RadarChart {
             let Some(value) = self.value_at(series_index, axis) else {
                 continue;
             };
-            let marker = self.vertex(center, radius, angle, value, max);
+            let ratio = self.projection_ratio(series_index, axis).unwrap_or(0.0);
+            let marker = Self::vertex_from_ratio(center, radius, angle, ratio);
             context.fill_circle(marker, 4, Self::series_color(series_index));
             label.clear();
             // A named series is identified by its name; an unnamed one keeps the old bare value, so
@@ -1250,16 +1330,16 @@ impl RadarChart {
     /// side of the spoke they clicked.
     fn nearest_series(&self, axis: usize, pos: Point) -> Option<usize> {
         let (center, radius) = self.geometry_center_radius()?;
-        let max = self.data_max()?;
+        // No positive data means the polygons are placeholders, so there is no series to pick.
+        let _ = self.data_max()?;
         let angle = self.axis_angle(axis);
         let mut best: Option<(usize, i64)> = None;
         for series_index in 0..self.series.len() {
             if !self.is_series_visible(series_index) {
                 continue;
             }
-            let value = self.value_at(series_index, axis).unwrap_or(0.0);
-            let axis_max = self.axis_maximum(axis).unwrap_or(max);
-            let vertex = self.vertex(center, radius, angle, value, axis_max);
+            let ratio = self.projection_ratio(series_index, axis).unwrap_or(0.0);
+            let vertex = Self::vertex_from_ratio(center, radius, angle, ratio);
             let dx = (vertex.x - pos.x) as i64;
             let dy = (vertex.y - pos.y) as i64;
             // Squared distance, which orders identically to the distance and
@@ -1275,7 +1355,9 @@ impl RadarChart {
     /// The vertex nearest `pos`, within a pointer-sized tolerance.
     fn vertex_at(&self, pos: Point) -> Option<(usize, usize)> {
         let (center, radius) = self.geometry_center_radius()?;
-        let max = self.data_max()?;
+        if self.data_max().is_none() {
+            return None;
+        }
         if !self.base.contains_point_with_touch_expansion(pos) {
             return None;
         }
@@ -1285,9 +1367,8 @@ impl RadarChart {
                 continue;
             }
             for axis in 0..self.axis_count() {
-                let value = self.value_at(series_index, axis).unwrap_or(0.0);
-                let axis_max = self.axis_maximum(axis).unwrap_or(max);
-                let point = self.vertex(center, radius, self.axis_angle(axis), value, axis_max);
+                let ratio = self.projection_ratio(series_index, axis).unwrap_or(0.0);
+                let point = Self::vertex_from_ratio(center, radius, self.axis_angle(axis), ratio);
                 let dx = i64::from(point.x - pos.x);
                 let dy = i64::from(point.y - pos.y);
                 let distance = dx * dx + dy * dy;
@@ -1782,5 +1863,35 @@ mod tests {
             .count();
         assert_eq!(radials, 4, "4 dimensions must emit one radial each, got {radials}");
         assert_eq!(edges, 4, "each data edge is stroked exactly once, got {edges}");
+    }
+
+    /// SP-101: the projection cache follows the data revision instead of going stale.
+    #[test]
+    fn projection_cache_tracks_data_and_axis_changes() {
+        let mut chart = chart();
+        assert_eq!(chart.data_max(), Some(90.0));
+        let first = chart.projection_ratio(0, 0).expect("series zero has axis zero");
+        assert!((first - (80.0 / 90.0) as f32).abs() < 1e-6, "first ratio was {first}");
+
+        // Replacing the data must rebuild both the maximum and every ratio.
+        chart.set_series(vec![vec![10.0, 20.0, 30.0, 40.0, 50.0]]);
+        assert_eq!(chart.data_max(), Some(50.0));
+        let ratio = chart.projection_ratio(0, 0).expect("series zero still has axis zero");
+        assert!((ratio - 0.2).abs() < 1e-6, "ratio after set_series was {ratio}");
+
+        // A per-axis maximum is part of the projection key too.
+        chart.set_axis_maxima(vec![100.0]);
+        assert_eq!(chart.axis_maximum(0), Some(100.0));
+        let ratio =
+            chart.projection_ratio(0, 0).expect("the axis maximum did not remove the ratio");
+        assert!((ratio - 0.1).abs() < 1e-6, "ratio after set_axis_maxima was {ratio}");
+
+        // Appending a series keeps the cached per-axis maximum but extends the ratios.
+        chart.add_series(vec![200.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(chart.data_max(), Some(200.0));
+        assert_eq!(chart.axis_maximum(0), Some(100.0));
+        let ratio = chart.projection_ratio(1, 0).expect("the appended series is projected");
+        assert!((ratio - 1.0).abs() < 1e-6, "an over-max value is clamped to 1.0, got {ratio}");
+        assert_eq!(chart.projection_ratio(9, 0), None);
     }
 }

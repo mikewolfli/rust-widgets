@@ -23,6 +23,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::media_widgets::subtitle_bar::SubtitleBar;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 
@@ -336,6 +337,30 @@ pub struct VideoPlayer {
     play_rect: Option<Rect>,
     volume_rect: Option<Rect>,
     fullscreen_rect: Option<Rect>,
+    /// The formatted timecode label, reused between paints (MW-001).
+    time_label: String,
+    /// The whole-second position and duration the cached label was built from.
+    time_label_key: (u32, u32),
+    /// The formatted playback-rate label, reused between paints (MW-001).
+    rate_label: String,
+    /// The tenths of the rate the cached label was built from.
+    rate_label_key: Option<u32>,
+    /// Cached subtitle line ranges and the inputs they were wrapped for (MW-002).
+    subtitle_wrap: core::cell::RefCell<Option<SubtitleWrap>>,
+    /// Emitted with the selected audio track index (MW-004).
+    pub audio_track_selected: Signal1<usize>,
+    /// Emitted with the selected subtitle track index (MW-004).
+    pub subtitle_track_selected: Signal1<usize>,
+    /// An attached caption companion, which follows this player's clock (MW-016).
+    subtitle_companion: Option<Box<SubtitleBar>>,
+}
+
+/// One cached subtitle wrap, keyed by the caption and the band it was fitted to.
+struct SubtitleWrap {
+    text: String,
+    width: u32,
+    line_height: u32,
+    ranges: Vec<(usize, usize)>,
 }
 
 impl VideoPlayer {
@@ -390,6 +415,14 @@ impl VideoPlayer {
             play_rect: None,
             volume_rect: None,
             fullscreen_rect: None,
+            time_label: String::new(),
+            time_label_key: (u32::MAX, u32::MAX),
+            rate_label: String::new(),
+            rate_label_key: None,
+            subtitle_wrap: core::cell::RefCell::new(None),
+            audio_track_selected: Signal1::new(),
+            subtitle_track_selected: Signal1::new(),
+            subtitle_companion: None,
         }
     }
 
@@ -570,6 +603,9 @@ impl VideoPlayer {
             return Ok(());
         }
         self.active_audio_track = Some(index);
+        // A track switch is an observable state change, so it is announced rather than only
+        // painted (MW-004). The name follows the existing `*_selected` selection signals.
+        self.audio_track_selected.emit(index);
         self.base.request_redraw();
         Ok(())
     }
@@ -603,15 +639,51 @@ impl VideoPlayer {
                 self.subtitle_tracks.len()
             ));
         }
+        let changed = self.active_subtitle_track != Some(index);
         self.active_subtitle_track = Some(index);
         let cues = self.subtitle_tracks[index].cues.clone();
         self.set_subtitles(cues);
+        if changed {
+            // Selection is announced only on a real switch (MW-004).
+            self.subtitle_track_selected.emit(index);
+        }
         Ok(())
     }
 
     /// The selected subtitle track index, when one is selected.
     pub fn subtitle_track(&self) -> Option<usize> {
         self.active_subtitle_track
+    }
+
+    /// Attaches a caption companion to this player.
+    ///
+    /// The companion follows this player's clock (it subscribes in [`SubtitleBar::follow_video_player`])
+    /// and paints the caption band in place of the player's own cue layer, so a host gets the
+    /// multi-line band without positioning it. The default (no companion) leaves the existing
+    /// paint path untouched (MW-016).
+    pub fn attach_subtitle_bar(&mut self, mut bar: SubtitleBar) {
+        bar.follow_video_player(self);
+        self.subtitle_companion = Some(Box::new(bar));
+        self.base.request_redraw();
+    }
+
+    /// The attached caption companion, if any.
+    pub fn subtitle_bar(&self) -> Option<&SubtitleBar> {
+        self.subtitle_companion.as_deref()
+    }
+
+    /// The attached caption companion, mutably, if any.
+    pub fn subtitle_bar_mut(&mut self) -> Option<&mut SubtitleBar> {
+        self.subtitle_companion.as_deref_mut()
+    }
+
+    /// Detaches the caption companion and returns to the built-in cue layer.
+    pub fn detach_subtitle_bar(&mut self) -> Option<SubtitleBar> {
+        let bar = self.subtitle_companion.take().map(|bar| *bar);
+        if bar.is_some() {
+            self.base.request_redraw();
+        }
+        bar
     }
 
     /// The container metadata reported by the host.
@@ -774,6 +846,37 @@ impl VideoPlayer {
         }
     }
 
+    /// Reports that playback is stalled waiting for data, or that it has resumed.
+    ///
+    /// The control performs no I/O, so only the host knows when a buffer underrun starts and
+    /// ends. `true` moves the reported status to [`MediaStatus::Buffering`] (without changing
+    /// `is_playing`, which records the user's intent); `false` restores `Playing` or `Paused`
+    /// according to that intent. The simulated clock does not advance while buffering, so a
+    /// stalled stream does not appear to play through the gap (MW-003).
+    pub fn set_buffering(&mut self, buffering: bool) {
+        if self.source.is_empty() {
+            return;
+        }
+        if buffering {
+            if self.status != MediaStatus::Buffering {
+                self.set_status(MediaStatus::Buffering);
+                self.base.request_redraw();
+            }
+        } else if self.status == MediaStatus::Buffering {
+            self.set_status(if self.is_playing {
+                MediaStatus::Playing
+            } else {
+                MediaStatus::Paused
+            });
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether the host has reported that playback is waiting for data.
+    pub fn is_buffering(&self) -> bool {
+        self.status == MediaStatus::Buffering
+    }
+
     /// Reports a playback failure, moving the status to [`MediaStatus::Error`].
     pub fn report_error(&mut self, message: impl Into<String>) {
         self.set_status(MediaStatus::Error);
@@ -819,7 +922,11 @@ impl VideoPlayer {
         if !self.is_playing {
             self.is_playing = true;
             self.pipeline = VideoPipelineState::Decoding;
-            self.set_status(MediaStatus::Playing);
+            // A host-reported buffer stall outranks the user's play request: playback is intended,
+            // but the clock must stay still until the host says data is available (MW-003).
+            if self.status != MediaStatus::Buffering {
+                self.set_status(MediaStatus::Playing);
+            }
             self.playback_started.emit();
             self.base.request_redraw();
         }
@@ -1026,6 +1133,79 @@ impl VideoPlayer {
         true
     }
 
+    /// Rebuilds the timecode label only when the displayed whole seconds change (MW-001).
+    ///
+    /// `format!` built a fresh `String` on every paint. The buffer is cleared and rewritten
+    /// instead, so after the first frame its capacity is reused and a steady clock allocates
+    /// nothing; the key is exactly the pair of values the label is derived from.
+    fn update_time_label(&mut self, shown_time: f64) {
+        let key = (shown_time.max(0.0) as u32, self.duration.max(0.0) as u32);
+        if self.time_label_key == key {
+            return;
+        }
+        self.time_label.clear();
+        let _ = write!(
+            self.time_label,
+            "{:02}:{:02}/{:02}:{:02}",
+            key.0 / 60,
+            key.0 % 60,
+            key.1 / 60,
+            key.1 % 60,
+        );
+        self.time_label_key = key;
+    }
+
+    /// Whether the playback-rate label is shown at all.
+    fn has_rate_label(&self) -> bool {
+        (self.playback_rate - 1.0).abs() > 0.01
+    }
+
+    /// Rebuilds the playback-rate label only when the shown tenths change (MW-001).
+    fn update_rate_label(&mut self) {
+        if !self.has_rate_label() {
+            return;
+        }
+        let key = (self.playback_rate * 10.0).round() as u32;
+        if self.rate_label_key == Some(key) {
+            return;
+        }
+        self.rate_label.clear();
+        let _ = write!(self.rate_label, "{:.1}x", self.playback_rate);
+        self.rate_label_key = Some(key);
+    }
+
+    /// The wrapped subtitle ranges for `text`, reusing the previous result while it still fits.
+    ///
+    /// Wrapping calls the text measurer once per candidate break, which is the expensive part of
+    /// painting a cue; doing it on every frame made a long caption re-wrap at frame rate (MW-002).
+    /// The cache is keyed by the caption itself and the band it is fitted to, so a new cue, a
+    /// resized player or a changed font height re-wraps exactly once.
+    fn subtitle_lines<'a>(
+        &'a self,
+        text: &str,
+        width: u32,
+        line_height: u32,
+        measure: &mut dyn FnMut(&str) -> u32,
+    ) -> core::cell::Ref<'a, Vec<(usize, usize)>> {
+        let stale = match &*self.subtitle_wrap.borrow() {
+            Some(cached) => {
+                cached.text != text || cached.width != width || cached.line_height != line_height
+            }
+            None => true,
+        };
+        if stale {
+            let ranges = crate::widget::text_utils::wrap_to_width(text, width, measure)
+                .into_iter()
+                .map(|range| (range.start, range.end))
+                .collect();
+            *self.subtitle_wrap.borrow_mut() =
+                Some(SubtitleWrap { text: text.to_string(), width, line_height, ranges });
+        }
+        core::cell::Ref::map(self.subtitle_wrap.borrow(), |slot| {
+            &slot.as_ref().expect("the cache was filled above").ranges
+        })
+    }
+
     /// Advances the simulated playback clock by the given number of seconds
     /// (scaled by playback rate).
     /// This simulates video frame advancement; no media is decoded.
@@ -1037,7 +1217,12 @@ impl VideoPlayer {
     /// clock backwards past zero. Both are input errors with no timeline position, so the tick is a
     /// no-op that reports "not finished" rather than corrupting the state.
     pub fn tick(&mut self, delta_secs: f64) -> bool {
-        if !self.is_playing || self.duration <= 0.0 || !delta_secs.is_finite() || delta_secs < 0.0 {
+        if !self.is_playing
+            || self.status == MediaStatus::Buffering
+            || self.duration <= 0.0
+            || !delta_secs.is_finite()
+            || delta_secs < 0.0
+        {
             return false;
         }
 
@@ -1410,16 +1595,25 @@ impl Draw for VideoPlayer {
         //
         // Drawn above the transport bar so a cue never sits under the controls. The band is
         // fitted to the player's width, and a cue outside its own time range draws nothing.
-        if self.subtitles_enabled {
+        if let Some(companion) = self.subtitle_companion.as_mut() {
+            // The companion owns its own band; it is given the video area (above the transport
+            // bar) so its bottom/top placement lands where the built-in band would (MW-016).
+            let area_height = (control_bar_top - rect.y).max(0) as u32;
+            companion.set_geometry(Rect::new(rect.x, rect.y, rect.width, area_height));
+            if let Some(drawable) = crate::widget::draw_bridge::draw_of(companion.as_mut()) {
+                drawable.draw(context);
+            }
+        } else if self.subtitles_enabled {
             if let Some(cue) = self.subtitle_at(self.current_time) {
                 // A cue is wrapped to the player's width and the band grows with the line
                 // count, capped at three lines; a long sentence used to be truncated to one
-                // strip (MW-09).
+                // strip (MW-09). The wrap itself is cached by caption and band width (MW-002).
                 let band_width = rect.width.saturating_sub(16).max(1);
                 let line_height = context.measure_text("M", font).height.max(1);
-                let ranges = crate::widget::text_utils::wrap_to_width(
+                let ranges = self.subtitle_lines(
                     &cue.text,
                     band_width.saturating_sub(12),
+                    line_height,
                     &mut |text: &str| context.measure_text(text, font).width,
                 );
                 let lines = ranges.len().clamp(1, 3);
@@ -1433,8 +1627,8 @@ impl Draw for VideoPlayer {
                 );
                 if band.y > rect.y {
                     context.fill_rounded_rect(band, 4, Color::rgba(0, 0, 0, 150));
-                    for (line, range) in ranges.iter().take(lines).enumerate() {
-                        let Some(text) = cue.text.get(range.clone()) else {
+                    for (line, (start, end)) in ranges.iter().take(lines).enumerate() {
+                        let Some(text) = cue.text.get(*start..*end) else {
                             continue;
                         };
                         let row = Rect::new(
@@ -1487,17 +1681,14 @@ impl Draw for VideoPlayer {
         let seek_bar_height = dimensions::VIDEO_SEEK_BAR_HEIGHT;
         // Both labels render in place: `format!` built a fresh `String` for the timestamp
         // and another for the rate every frame. A drag previews the position it would seek to.
+        // The buffers are kept on the control and rebuilt only when their value changes (MW-001).
         let shown_time = self.scrub_time.unwrap_or(self.current_time);
-        let mut time_text = String::new();
-        let _ = write!(
-            time_text,
-            "{:02}:{:02}/{:02}:{:02}",
-            (shown_time as u32) / 60,
-            (shown_time as u32) % 60,
-            (self.duration as u32) / 60,
-            (self.duration as u32) % 60,
-        );
-        let time_metrics = context.measure_text(&time_text, font);
+        self.update_time_label(shown_time);
+        self.update_rate_label();
+        let has_rate = self.has_rate_label();
+        let time_text = &self.time_label;
+        let rate_text = &self.rate_label;
+        let time_metrics = context.measure_text(time_text, font);
         let time_width = time_metrics.width as i32;
         let vol_side = 16u32;
         let vol_box = Rect::new(
@@ -1511,13 +1702,8 @@ impl Draw for VideoPlayer {
             Rect::new(vol_box.x - fs_side as i32 - 24, control_bar_y, fs_side, control_bar_height);
         // The rate label is measured once and the metrics reused for both the layout and
         // the draw; the old form measured it twice and allocated the text as an `Option<String>`.
-        let has_rate = (self.playback_rate - 1.0).abs() > 0.01;
-        let mut rate_text = String::new();
-        if has_rate {
-            let _ = write!(rate_text, "{:.1}x", self.playback_rate);
-        }
         let rate_metrics =
-            if has_rate { Some(context.measure_text(&rate_text, font)) } else { None };
+            if has_rate { Some(context.measure_text(rate_text, font)) } else { None };
         let rate_width = rate_metrics.as_ref().map(|m| m.width as i32).unwrap_or(0);
         // The rate label sits left of the fullscreen icon; the time label sits left of the
         // whole right-hand group. Both gaps are real, so neither label can overlap an icon.
@@ -1559,7 +1745,7 @@ impl Draw for VideoPlayer {
         let time_y = control_bar_y + (control_bar_height as i32 - time_metrics.height as i32) / 2;
         context.draw_text(
             Point::new(time_x, time_y),
-            &time_text,
+            time_text,
             font,
             Color::rgba(220, 220, 220, 230),
             HorizontalAlignment::Left,
@@ -1577,7 +1763,7 @@ impl Draw for VideoPlayer {
             let rate_y = control_bar_y + (control_bar_height as i32 - metrics.height as i32) / 2;
             context.draw_text(
                 Point::new(rate_x, rate_y),
-                &rate_text,
+                rate_text,
                 font,
                 Color::rgba(255, 220, 100, 230),
                 HorizontalAlignment::Left,
@@ -2307,5 +2493,136 @@ mod tests {
         vp.set("looping", CapabilityValue::Bool(true)).unwrap();
         assert!(vp.is_looping());
         assert_eq!(vp.get("pipeline").unwrap(), CapabilityValue::String("Idle".to_string()));
+    }
+
+    #[test]
+    fn the_timecode_label_is_rebuilt_only_when_its_value_changes() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.set_duration(125.0);
+        vp.update_time_label(65.0);
+        assert_eq!(vp.time_label, "01:05/02:05");
+        let allocated = vp.time_label.as_ptr();
+        // The same displayed second must reuse the buffer, not rewrite it.
+        vp.update_time_label(65.9);
+        assert_eq!(vp.time_label, "01:05/02:05");
+        assert_eq!(vp.time_label.as_ptr(), allocated, "an unchanged label reuses its buffer");
+        // A new second rewrites in place: the capacity acquired above still fits.
+        vp.update_time_label(66.0);
+        assert_eq!(vp.time_label, "01:06/02:05");
+        assert_eq!(vp.time_label.as_ptr(), allocated, "a changed label reuses its capacity");
+    }
+
+    #[test]
+    fn the_rate_label_is_rebuilt_only_when_the_shown_tenths_change() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.set_playback_rate(1.5);
+        vp.update_rate_label();
+        assert_eq!(vp.rate_label, "1.5x");
+        let allocated = vp.rate_label.as_ptr();
+        vp.update_rate_label();
+        assert_eq!(vp.rate_label.as_ptr(), allocated);
+        vp.set_playback_rate(2.0);
+        vp.update_rate_label();
+        assert_eq!(vp.rate_label, "2.0x");
+    }
+
+    #[test]
+    fn the_subtitle_wrap_is_cached_until_the_caption_or_band_changes() {
+        let vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        let measurements = std::cell::Cell::new(0usize);
+        {
+            let ranges = vp.subtitle_lines("a caption that wraps", 48, 14, &mut |_| {
+                measurements.set(measurements.get() + 1);
+                8
+            });
+            assert!(!ranges.is_empty());
+        }
+        let after_first = measurements.get();
+        assert!(after_first > 0);
+        {
+            let _ = vp.subtitle_lines("a caption that wraps", 48, 14, &mut |_| {
+                measurements.set(measurements.get() + 1);
+                8
+            });
+        }
+        assert_eq!(measurements.get(), after_first, "an unchanged caption must not re-wrap");
+        {
+            let _ = vp.subtitle_lines("a caption that wraps", 24, 14, &mut |_| {
+                measurements.set(measurements.get() + 1);
+                8
+            });
+        }
+        assert!(measurements.get() > after_first, "a narrower band must re-wrap");
+    }
+
+    #[test]
+    fn reported_buffering_stalls_the_clock_and_resumes_it() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("stream.m3u8");
+        vp.set_duration(60.0);
+        vp.play();
+        vp.tick(1.0);
+        assert!((vp.current_time() - 1.0).abs() < 1e-9);
+
+        vp.set_buffering(true);
+        assert!(vp.is_buffering());
+        assert_eq!(vp.media_status(), MediaStatus::Buffering);
+        assert!(!vp.tick(1.0), "a stalled clock does not finish playback");
+        assert!((vp.current_time() - 1.0).abs() < 1e-9, "the clock must not advance");
+        assert!(vp.is_playing(), "buffering does not change the user's play intent");
+
+        vp.set_buffering(false);
+        assert_eq!(vp.media_status(), MediaStatus::Playing);
+        vp.tick(1.0);
+        assert!((vp.current_time() - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn switching_tracks_announces_the_selected_index() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        let audio = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let a = audio.clone();
+        vp.audio_track_selected.connect(move |index: std::sync::Arc<usize>| {
+            a.lock().unwrap().push(*index);
+        });
+        let subtitle = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s = subtitle.clone();
+        vp.subtitle_track_selected.connect(move |index: std::sync::Arc<usize>| {
+            s.lock().unwrap().push(*index);
+        });
+
+        vp.set_audio_tracks(vec![AudioTrack::new("a1", "One"), AudioTrack::new("a2", "Two")]);
+        vp.set_audio_track(1).expect("the second track exists");
+        vp.set_audio_track(1).expect("re-selecting is a no-op");
+        assert_eq!(*audio.lock().unwrap(), vec![1], "only a real switch is announced");
+
+        vp.set_subtitle_tracks(vec![
+            SubtitleTrack::new("s1", "One", vec![SubtitleCue::new(0.0, 1.0, "a")]),
+            SubtitleTrack::new("s2", "Two", vec![SubtitleCue::new(0.0, 1.0, "b")]),
+        ]);
+        vp.set_subtitle_track(1).expect("the second track exists");
+        vp.set_subtitle_track(1).expect("re-selecting is a no-op");
+        assert_eq!(*subtitle.lock().unwrap(), vec![1]);
+    }
+
+    /// An attached companion follows the player rather than taking a one-time snapshot (MW-016).
+    #[test]
+    fn an_attached_subtitle_bar_follows_the_player_clock() {
+        use crate::widget::media_widgets::subtitle_bar::SubtitleBar;
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.set_duration(10.0);
+        vp.set_subtitle_tracks(vec![SubtitleTrack::new(
+            "s1",
+            "English",
+            vec![SubtitleCue::new(0.0, 2.0, "hello"), SubtitleCue::new(2.0, 4.0, "world")],
+        )]);
+        vp.set_subtitle_track(0).expect("the track exists");
+        vp.attach_subtitle_bar(SubtitleBar::new(Rect::new(0, 0, 320, 48)));
+        assert!(vp.subtitle_bar().is_some_and(SubtitleBar::is_following_player));
+        vp.seek(3.0);
+        assert_eq!(vp.subtitle_bar().map(SubtitleBar::current_caption), Some("world".to_string()));
+        let detached = vp.detach_subtitle_bar();
+        assert!(detached.is_some());
+        assert!(vp.subtitle_bar().is_none());
     }
 }

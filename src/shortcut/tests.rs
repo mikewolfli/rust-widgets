@@ -529,3 +529,157 @@ fn overlapping_chords_resolve_in_registration_order_within_their_bucket() {
     manager.disable("first");
     assert_eq!(manager.action_for_key(Key::S, Modifiers::CTRL), None);
 }
+
+/// W-02: unregistering a chord removes the **global** binding only. A scoped binding on the same
+/// chord stays registered, stays resolvable while its scope is active, and keeps its entry.
+#[test]
+fn unregistering_a_chord_leaves_the_same_chord_in_scopes_alive() {
+    let chord = Shortcut::primary(Key::S);
+    let mut manager = ShortcutManager::new();
+    assert!(manager.register("global_save", chord.clone(), "Global"));
+    assert!(manager.register_in("window", "window_save", chord.clone(), "Window"));
+    assert!(manager.register_for_control(77, "control_save", chord.clone(), "Control"));
+
+    assert!(
+        manager.unregister_shortcut(&chord),
+        "the global binding exists, so the chord removal reports true"
+    );
+    assert!(!manager.has_shortcut(&chord), "the global table lost the chord");
+    assert!(!manager.contains_action("global_save"), "and the global action's entry is gone");
+
+    // Every other binding on the chord is untouched — no dangling entry, no lost table row.
+    assert!(manager.has_scoped_shortcut("window", &chord));
+    assert!(manager.has_control_shortcut(77, &chord));
+    assert!(manager.contains_action("window_save"));
+    assert!(manager.contains_action("control_save"));
+
+    manager.push_scope("window");
+    assert_eq!(
+        manager.action_for_key(Key::S, Modifiers::PRIMARY).as_deref(),
+        Some("window_save"),
+        "the window binding still resolves after the global one was removed"
+    );
+    manager.pop_scope();
+
+    // The chord is no longer in the global table, so a second removal reports false and changes
+    // nothing (in particular it must not take the scoped entries with it).
+    assert!(!manager.unregister_shortcut(&chord));
+    assert!(manager.has_scoped_shortcut("window", &chord));
+    assert!(manager.has_control_shortcut(77, &chord));
+}
+
+/// W-02: removal matches `(key, scope)` exactly, so removing one scope's binding neither removes
+/// another scope's binding on the same chord nor the control-scoped one.
+#[test]
+fn a_scoped_chord_unregisters_only_in_its_own_scope() {
+    let chord = Shortcut::primary(Key::P);
+    let mut manager = ShortcutManager::new();
+    assert!(manager.register_in("window_a", "a_print", chord.clone(), "A"));
+    assert!(manager.register_in("window_b", "b_print", chord.clone(), "B"));
+    assert!(manager.register_for_control(5, "control_print", chord.clone(), "C"));
+
+    assert!(manager.unregister_shortcut_in("window_a", &chord));
+    assert!(!manager.has_scoped_shortcut("window_a", &chord));
+    assert!(!manager.contains_action("a_print"), "and only its own entry is removed");
+
+    assert!(manager.has_scoped_shortcut("window_b", &chord));
+    assert!(manager.has_control_shortcut(5, &chord));
+    assert!(manager.contains_action("b_print"));
+    assert!(manager.contains_action("control_print"));
+
+    manager.push_scope("window_b");
+    assert_eq!(
+        manager.action_for_key(Key::P, Modifiers::PRIMARY).as_deref(),
+        Some("b_print"),
+        "the sibling window's binding is the one that resolves"
+    );
+    manager.pop_scope();
+
+    // A scope that does not hold the chord reports false without touching anything.
+    assert!(!manager.unregister_shortcut_in("window_a", &chord));
+    assert!(manager.has_scoped_shortcut("window_b", &chord));
+    assert!(manager.has_control_shortcut(5, &chord));
+
+    // The control-scoped convenience entry removes exactly that control's binding.
+    assert!(manager.unregister_for_control(5, &chord));
+    assert!(!manager.has_control_shortcut(5, &chord));
+    assert!(!manager.contains_action("control_print"));
+    assert!(manager.has_scoped_shortcut("window_b", &chord), "window_b is unaffected");
+}
+
+/// W-02 regression: re-registering one action must not remove another action that shares the
+/// chord in the same scope, and the surviving binding must still resolve.
+#[test]
+fn moving_one_action_never_takes_another_actions_chord_with_it() {
+    let chord = Shortcut::primary(Key::R);
+    let mut manager = ShortcutManager::new();
+    assert!(manager.register_in("editor", "run", chord.clone(), "Run"));
+    assert!(manager.register_in("editor", "rename", Shortcut::primary(Key::F2), "Rename"));
+
+    // Move `rename` to the chord `run` does not use; `run` must survive.
+    assert!(manager.register_in("editor", "rename", Shortcut::primary(Key::F3), "Rename"));
+    assert!(manager.has_scoped_shortcut("editor", &chord));
+    assert!(manager.has_scoped_shortcut("editor", &Shortcut::primary(Key::F3)));
+    manager.push_scope("editor");
+    assert_eq!(manager.action_for_key(Key::R, Modifiers::PRIMARY).as_deref(), Some("run"));
+    manager.pop_scope();
+}
+
+/// W-12: a control-scoped binding resolves only while the control is in the focus chain, and it
+/// wins over a window or global binding on the same chord. With no focus-chain lookup installed
+/// nothing changes (the pre-W-12 behaviour).
+#[test]
+fn a_control_scope_resolves_only_inside_the_focus_chain() {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex as StdMutex;
+
+    let chord = Shortcut::primary(Key::B);
+    let mut manager = ShortcutManager::new();
+    assert!(manager.register("bold", chord.clone(), "Bold everywhere"));
+    assert!(manager.register_in("window", "window_bold", chord.clone(), "Window bold"));
+    assert!(manager.register_for_control(42, "control_bold", chord.clone(), "Control bold"));
+
+    // No lookup installed: only the global binding resolves.
+    assert_eq!(manager.action_for_key(Key::B, Modifiers::PRIMARY).as_deref(), Some("bold"));
+
+    let focused: Arc<StdMutex<Vec<crate::core::ObjectId>>> = Arc::new(StdMutex::new(Vec::new()));
+    let chain = Arc::clone(&focused);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let reads_in_closure = Arc::clone(&reads);
+    manager.set_focus_chain_lookup(Box::new(move || {
+        reads_in_closure.fetch_add(1, Ordering::SeqCst);
+        chain.lock().unwrap().clone()
+    }));
+
+    // The control is not in the chain: the global binding still applies.
+    assert_eq!(
+        manager.action_for_key(Key::B, Modifiers::PRIMARY).as_deref(),
+        Some("bold"),
+        "a control scope is inert while the control is not focused"
+    );
+
+    *focused.lock().unwrap() = vec![42];
+    assert_eq!(
+        manager.action_for_key(Key::B, Modifiers::PRIMARY).as_deref(),
+        Some("control_bold"),
+        "the focused control's binding wins over the global one"
+    );
+    manager.push_scope("window");
+    assert_eq!(
+        manager.action_for_key(Key::B, Modifiers::PRIMARY).as_deref(),
+        Some("control_bold"),
+        "the focused control also wins over a window scope"
+    );
+    manager.pop_scope();
+    assert!(reads.load(Ordering::SeqCst) > 0, "the lookup was consulted");
+
+    // Removing the control's binding falls back to the global one even while it is focused.
+    assert!(manager.unregister_for_control(42, &chord));
+    assert!(!manager.has_control_shortcut(42, &chord));
+    assert_eq!(manager.action_for_key(Key::B, Modifiers::PRIMARY).as_deref(), Some("bold"));
+
+    // Clearing the lookup returns to the pre-W-12 behaviour.
+    assert!(manager.clear_focus_chain_lookup());
+    assert!(!manager.clear_focus_chain_lookup(), "a second clear reports nothing to remove");
+}

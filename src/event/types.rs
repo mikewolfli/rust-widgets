@@ -898,6 +898,50 @@ impl Event {
             _ => false,
         }
     }
+
+    /// Returns the canonical spelling of this event (W-001).
+    ///
+    /// # Why the aliases are still here, and what this is for
+    ///
+    /// `MouseDown`, `MouseUp`, `MouseMoveLegacy`, `KeyDown` and `KeyUp` are legacy tuple spellings
+    /// kept so an existing host or control keeps compiling and keeps receiving exactly the variant
+    /// it posts. Removing them would break that API; keeping them as a *second* dispatch path
+    /// would require every dispatch-side rule (auto-repeat tracking, the double-click judgement,
+    /// the gesture feed, the accelerator hook) to spell each rule twice.
+    ///
+    /// This converts an alias to the modern variant it forwards to, so dispatch-side code can
+    /// make its decision on one canonical form while delivery still uses the spelling the host
+    /// posted. An event that is already canonical is returned unchanged, which makes the call
+    /// free on the modern path.
+    ///
+    /// `MouseMoveLegacy` carries a device id and `MouseMove` does not: the legacy field is
+    /// dropped, which is what makes the two the same event for every consumer in this crate (no
+    /// handler reads the legacy device id).
+    pub fn into_canonical(self) -> Self {
+        match self {
+            Self::MouseDown((pos, button)) => Self::MousePress { pos, button, modifiers: 0 },
+            Self::MouseUp((pos, button)) => Self::MouseRelease { pos, button },
+            Self::MouseMoveLegacy((pos, _device)) => Self::MouseMove { pos },
+            Self::KeyDown((key, modifiers)) => Self::KeyPress { key, modifiers },
+            Self::KeyUp((key, modifiers)) => Self::KeyRelease { key, modifiers },
+            other => other,
+        }
+    }
+
+    /// Returns `true` when this event is one of the legacy alias spellings (W-001).
+    ///
+    /// Dispatch code that wants to preserve the alias for delivery while deciding on the
+    /// canonical form uses this to know whether [`Self::into_canonical`] changed anything.
+    pub fn is_legacy_alias(&self) -> bool {
+        matches!(
+            self,
+            Self::MouseDown(_)
+                | Self::MouseUp(_)
+                | Self::MouseMoveLegacy(_)
+                | Self::KeyDown(_)
+                | Self::KeyUp(_)
+        )
+    }
 }
 /// Trait implemented by event targets.
 pub trait EventHandler {
@@ -981,6 +1025,42 @@ mod tests {
     fn mouse_event_gesture_class_is_none() {
         let e = Event::mouse_press(1, 2, 0);
         assert_eq!(e.gesture_class(), None);
+    }
+
+    /// W-001: every legacy spelling forwards to the modern variant, and a modern event is
+    /// returned unchanged (so the canonical call costs nothing on the normal path).
+    #[test]
+    fn a_legacy_alias_canonicalizes_to_its_modern_variant() {
+        let p = Point::new(12, 34);
+        assert!(matches!(
+            Event::MouseDown((p, 1)).into_canonical(),
+            Event::MousePress { pos, button: 1, modifiers: 0 } if pos == p
+        ));
+        assert!(matches!(
+            Event::MouseUp((p, 1)).into_canonical(),
+            Event::MouseRelease { pos, button: 1 } if pos == p
+        ));
+        assert!(matches!(
+            Event::MouseMoveLegacy((p, 7)).into_canonical(),
+            Event::MouseMove { pos } if pos == p
+        ));
+        assert!(matches!(
+            Event::KeyDown((65, 3)).into_canonical(),
+            Event::KeyPress { key: 65, modifiers: 3 }
+        ));
+        assert!(matches!(
+            Event::KeyUp((65, 3)).into_canonical(),
+            Event::KeyRelease { key: 65, modifiers: 3 }
+        ));
+
+        assert!(Event::MouseDown((p, 1)).is_legacy_alias());
+        assert!(!Event::MousePress { pos: p, button: 1, modifiers: 0 }.is_legacy_alias());
+        // A non-alias event is returned unchanged: same variant, same payload.
+        let modern = Event::mouse_move(1, 2);
+        assert!(matches!(
+            modern.clone().into_canonical(),
+            Event::MouseMove { pos } if pos == Point::new(1, 2)
+        ));
     }
 
     /// A context-menu request is a pointer-shaped event with no modifier payload of its own.

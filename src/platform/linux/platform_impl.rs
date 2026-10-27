@@ -116,6 +116,19 @@ fn gdk_dpi_scale_override() -> f32 {
     }
 }
 
+/// The pointer's position in root coordinates, when GDK can report it.
+///
+/// Split out of [`Platform::dpi_scale_factor`] because it is the only part of the monitor choice
+/// that needs a seat: `gdk_device_get_position` answers the screen the pointer is on and the root
+/// coordinates within it, which `gdk_display_get_monitor_at_point` then resolves to a monitor.
+#[cfg(all(unix_desktop, feature = "gtk-native"))]
+fn pointer_position(display: &gtk::gdk::Display) -> Option<(i32, i32)> {
+    let seat = display.default_seat()?;
+    let pointer = seat.pointer()?;
+    let (_, x, y) = pointer.position();
+    Some((x, y))
+}
+
 /// Connects the GTK settings behind the environment facts to the shared notification revision.
 ///
 /// # The defect this closes (P-201)
@@ -502,8 +515,12 @@ impl Platform for LinuxPlatform {
     ///
     /// # The three sources, in order
     ///
-    /// 1. **`gtk-native` with a live display**: the monitor's own `scale_factor()`. This is the
-    ///    authority — it is what GTK itself lays widgets out with.
+    /// 1. **`gtk-native` with a live display**: the scale of the monitor a new window would open
+    ///    on. That is the monitor under the pointer, falling back to the primary monitor when GDK
+    ///    reports no seat or the pointer is outside every monitor (P-207: the code used
+    ///    `monitor(0)`, which is the *first* monitor rather than the one the doc named, so on a
+    ///    mixed-DPI setup the two disagreed). Per-display values are [`Self::displays`]' `scale`
+    ///    field; this method is the one number the layout code consumes.
     /// 2. **`gtk-native` without one** (off the main thread, or no display): GDK's documented
     ///    environment overrides, `GDK_SCALE` (an integer factor) and `GDK_DPI_SCALE` (a
     ///    fractional one layered on top). GTK honours both, so a host that set one and read
@@ -517,9 +534,12 @@ impl Platform for LinuxPlatform {
             if gtk::is_initialized_main_thread() {
                 if let Some(display) = gtk::gdk::Display::default() {
                     // The monitor the pointer is on, which is the one a new window would open
-                    // on — asking the primary monitor instead would report the wrong scale on
-                    // a mixed-DPI setup.
-                    if let Some(monitor) = display.monitor(0) {
+                    // on — asking the first monitor instead reports the wrong scale on a
+                    // mixed-DPI setup.
+                    let monitor = pointer_position(&display)
+                        .and_then(|(x, y)| display.monitor_at_point(x, y))
+                        .or_else(|| display.primary_monitor());
+                    if let Some(monitor) = monitor {
                         let scale = monitor.scale_factor();
                         if scale > 0 {
                             // GDK's fractional component layers on the integer factor; applying
@@ -643,6 +663,41 @@ impl Platform for LinuxPlatform {
             window.hide();
         }
         true
+    }
+
+    /// Renames a toplevel in the state record and on the live GTK window.
+    ///
+    /// # Why a title write needs this override
+    ///
+    /// The application layer's `WindowHandle::set_title` routes through this trait method (it is
+    /// the one text mutator the crate exposes), so without this the record's text changed and the
+    /// title bar kept the string passed to `create_window` for the window's whole life — a real
+    /// host API that visibly did nothing (P-205). macOS's `set_widget_text` has the same two
+    /// halves; this is the GTK equivalent rather than a second, competing setter.
+    ///
+    /// # Why only a toplevel's own id renames a window
+    ///
+    /// A control id also resolves to the window that hosts it, so following that association here
+    /// would rename the window whenever some control's text changed — a silent side effect on an
+    /// unrelated object. Only an id this backend registered in `native.windows` is a window; every
+    /// other id keeps the state-record behaviour it had.
+    ///
+    /// The answer is the record's answer (whether the id exists). A GTK window this thread may not
+    /// touch, or a state-only window created off the main thread, keeps its old title and still
+    /// reports `true` for the write the record accepted.
+    fn set_widget_text(&self, widget_id: crate::core::ObjectId, text: &str) -> bool {
+        let stored = self.state.set_text(widget_id, text);
+        #[cfg(all(unix_desktop, feature = "gtk-native"))]
+        {
+            // GTK widgets are main-thread-only; driving them from anywhere else would abort.
+            if gtk::is_initialized_main_thread() {
+                let window = self.native.lock_guard().windows.get(&widget_id).cloned();
+                if let Some(window) = window {
+                    window.set_title(text);
+                }
+            }
+        }
+        stored
     }
 
     /// Queue a redraw on the surface that paints this id.

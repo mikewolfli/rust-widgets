@@ -28,7 +28,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
     use winapi::um::winuser::NMHDR;
     use winapi::um::winuser::{
         DefWindowProcW, GetDlgCtrlID, PostQuitMessage, WM_CLOSE, WM_COMMAND, WM_DESTROY,
-        WM_ERASEBKGND, WM_GETMINMAXINFO, WM_NOTIFY,
+        WM_ERASEBKGND, WM_GETMINMAXINFO, WM_NOTIFY, WM_SETTINGCHANGE,
     };
     // Every message that is only *matched* by a `widgets_unstripped` arm is imported under the
     // same condition: an unconditional import would be unused on a stripped profile, and an
@@ -223,6 +223,24 @@ pub(crate) unsafe extern "system" fn wnd_proc(
                 }
             }
             0
+        }
+        // The user changed a system setting: theme, an accessibility switch, the DPI.
+        //
+        // # Why this arm exists (P-208 / P-302)
+        //
+        // The style layer watches `environment_notify`'s revision, and the shared environment
+        // cache drops a reading when that revision moves. Nothing on Win32 advanced it, so a
+        // change was noticed only by the 250 ms derived poll and a cached fact could not be
+        // invalidated early at all. Win32 broadcasts this message to every top-level window, so
+        // this is the notification source the caches were waiting for.
+        //
+        // Every `WM_SETTINGCHANGE` bumps the revision rather than filtering on `wParam`: a
+        // spurious bump costs one re-read of a few registry values on the next poll, while
+        // guessing which setting names matter would silently miss a change. The arm is not gated
+        // on `widgets_unstripped` because it touches no `widget::runtime` state.
+        WM_SETTINGCHANGE => {
+            crate::platform::profile::notify_environment_changed();
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         // The **character** the key produced, which `WM_KEYDOWN` cannot supply.
         //

@@ -271,8 +271,44 @@ impl EventSignalBinder {
     /// counts as unwired again, and a brand-new instance of a kind never inherits a sibling's
     /// history. A recorded ledger could not do any of those — it was process-wide, never decreased
     /// on unbind, and conflated repeated connections of one name with other names.
+    ///
+    /// # Shape (W-05)
+    ///
+    /// This is the **count** convenience over [`Self::unwired_event_names_for`], the binder's
+    /// form of [`crate::signal::unwired_events`]. The two used to be different shapes with no
+    /// name-shaped binder query at all (`Option<usize>` here versus `Option<Vec<&str>>` in the
+    /// free function), so a caller that wanted the names of *this binder's* unwired events had to
+    /// re-implement the walk. Both now come from one implementation, so their answers always
+    /// agree: this one is `.len()` of the names query.
     #[cfg(full_widgets)]
     pub fn unwired_events_for<W>(&self, widget: &W) -> Option<usize>
+    where
+        W: crate::widget::Widget,
+    {
+        self.unwired_event_names_for(widget).map(|names| names.len())
+    }
+
+    /// The stripped-profile form, which has no capability table to have wired against.
+    #[cfg(not(full_widgets))]
+    pub fn unwired_events_for<W>(&self, _widget: &W) -> Option<usize>
+    where
+        W: crate::widget::Widget,
+    {
+        None
+    }
+
+    /// The names of `widget`'s published events with **no** live subscription from this binder.
+    ///
+    /// Same result shape as [`crate::signal::unwired_events`] — `None` when there is nothing to
+    /// ask about, `Some(names)` otherwise — so the two queries can be compared and used
+    /// interchangeably (W-05). The free function answers for a mounted id and *any* subscriber;
+    /// this answers for one binder and one live `&widget`.
+    ///
+    /// `None` when this binder has never wired anything or is detached, for the same reason
+    /// [`Self::unwired_events_for`] documents: "not wired yet" must not look like "everything is
+    /// wired". `Some(empty)` means every published name is wired by this binder.
+    #[cfg(full_widgets)]
+    pub fn unwired_event_names_for<W>(&self, widget: &W) -> Option<alloc::vec::Vec<&'static str>>
     where
         W: crate::widget::Widget,
     {
@@ -283,17 +319,19 @@ impl EventSignalBinder {
         }
         let factory = crate::widget::capability::WidgetFactory::shared();
         let capability = factory.capability_for_kind_instance(widget)?;
-        let unwired = capability
-            .events
-            .iter()
-            .filter(|schema| !self.event_is_wired(widget, schema.name))
-            .count();
-        Some(unwired)
+        Some(
+            capability
+                .events
+                .iter()
+                .filter(|schema| !self.event_is_wired(widget, schema.name))
+                .map(|schema| schema.name)
+                .collect(),
+        )
     }
 
     /// The stripped-profile form, which has no capability table to have wired against.
     #[cfg(not(full_widgets))]
-    pub fn unwired_events_for<W>(&self, _widget: &W) -> Option<usize>
+    pub fn unwired_event_names_for<W>(&self, _widget: &W) -> Option<alloc::vec::Vec<&'static str>>
     where
         W: crate::widget::Widget,
     {
@@ -627,6 +665,149 @@ pub fn unwired_events(widget_id: crate::core::ObjectId) -> Option<alloc::vec::Ve
 pub fn unwired_events(widget_id: crate::core::ObjectId) -> Option<alloc::vec::Vec<&'static str>> {
     let _ = widget_id;
     None
+}
+
+/// The declared payload contract of one published event (principle #95, W-06).
+///
+/// # Why a payload *kind* and not just a name
+///
+/// A hub name says nothing about the value the event carries. This is the event-side
+/// counterpart of a capability's `PropertyValueKind`: a host (or a designer) can tell
+/// "this name is a bare notification" from "this name reports one number" **before** wiring,
+/// which is what lets it choose the value-carrying channel for the second case instead of
+/// discovering the loss after the fact.
+///
+/// # One source of truth
+///
+/// The values are read from the control's capability ([`EventSchema::payload`] and
+/// [`EventSchema::shape`]), the table `tools/derive_event_payloads.py` derives from the real
+/// signal declarations. This type is a query-side *view* of that table, not a second declaration
+/// of it, so a rename or a payload change cannot make the two disagree.
+///
+/// [`EventSchema::payload`]: crate::widget::capability::EventSchema::payload
+/// [`EventSchema::shape`]: crate::widget::capability::EventSchema::shape
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventPayloadKind {
+    /// The event carries no value (`clicked`, `dismissed`).
+    Unit,
+    /// Exactly one value of the named kind (`value_changed` → `Int`).
+    Scalar(crate::widget::capability::PropertyValueKind),
+    /// Zero or one value of the named kind (`Option<T>`); absent is the null case.
+    OptionalScalar(crate::widget::capability::PropertyValueKind),
+    /// A variable-length list of the named kind (`Vec<T>`); an empty list is a real value.
+    List(crate::widget::capability::PropertyValueKind),
+    /// A fixed-size tuple of the named kind; the shape names the arity.
+    Tuple(
+        crate::widget::capability::PropertyValueKind,
+        crate::widget::capability::EventPayloadShape,
+    ),
+    /// An optional pair of the named kind (`Option<(T, T)>`).
+    OptionalTuple2(crate::widget::capability::PropertyValueKind),
+    /// More than one kind in one payload; the named kind is how the whole value travels.
+    Mixed(crate::widget::capability::PropertyValueKind),
+}
+
+impl EventPayloadKind {
+    /// The kind declared by `schema`, or [`Self::Unit`] when it declares no payload.
+    pub fn from_schema(schema: &crate::widget::capability::EventSchema) -> Self {
+        use crate::widget::capability::EventPayloadShape;
+        // `None` payload is the honest spelling of the payload-free majority.
+        let Some(kind) = schema.payload else {
+            return Self::Unit;
+        };
+        // A payload with no declared shape is a declaration gap; report the kind it does declare
+        // rather than inventing an arrangement for it.
+        let Some(shape) = schema.shape else {
+            return Self::Scalar(kind);
+        };
+        match shape {
+            EventPayloadShape::Scalar => Self::Scalar(kind),
+            EventPayloadShape::OptionalScalar => Self::OptionalScalar(kind),
+            EventPayloadShape::ListScalar => Self::List(kind),
+            shape @ (EventPayloadShape::Tuple2
+            | EventPayloadShape::Tuple3
+            | EventPayloadShape::Tuple4) => Self::Tuple(kind, shape),
+            EventPayloadShape::OptionalTuple2 => Self::OptionalTuple2(kind),
+            EventPayloadShape::Mixed => Self::Mixed(kind),
+        }
+    }
+
+    /// Whether the event carries no value at all.
+    pub fn is_payload_free(&self) -> bool {
+        matches!(self, Self::Unit)
+    }
+
+    /// The declared value kind, or `None` for a payload-free event.
+    pub fn value_kind(&self) -> Option<crate::widget::capability::PropertyValueKind> {
+        match self {
+            Self::Unit => None,
+            Self::Scalar(kind)
+            | Self::OptionalScalar(kind)
+            | Self::List(kind)
+            | Self::Tuple(kind, _)
+            | Self::OptionalTuple2(kind)
+            | Self::Mixed(kind) => Some(*kind),
+        }
+    }
+}
+
+/// The declared payload kind of `event_name` on the mounted control at `widget_id` (W-06).
+///
+/// `None` means the id is not a mounted control, the capability table is compiled out, or the
+/// control does not publish that name — the same absent answer [`unwired_events`] uses, so a
+/// caller can tell "no declaration" from "declared unit".
+pub fn payload_kind(
+    widget_id: crate::core::ObjectId,
+    event_name: &str,
+) -> Option<EventPayloadKind> {
+    #[cfg(full_widgets)]
+    {
+        crate::widget::runtime::read_widget(widget_id, |widget| {
+            let factory = crate::widget::capability::WidgetFactory::shared();
+            let capability = factory.capability_for_kind_instance(widget)?;
+            capability
+                .events
+                .iter()
+                .find(|schema| schema.name == event_name)
+                .map(EventPayloadKind::from_schema)
+        })
+        .flatten()
+    }
+    #[cfg(not(full_widgets))]
+    {
+        let _ = (widget_id, event_name);
+        None
+    }
+}
+
+/// Every published event of `widget_id` with its declared payload kind (W-06).
+///
+/// The declaration surface a host reads before wiring: the names are the capability's own, so
+/// this is the same set `forward_all` walks, each paired with the type it carries. `None` when
+/// there is nothing to ask about (no such mounted control, or the table is compiled out).
+pub fn payload_kinds(
+    widget_id: crate::core::ObjectId,
+) -> Option<alloc::vec::Vec<(&'static str, EventPayloadKind)>> {
+    #[cfg(full_widgets)]
+    {
+        crate::widget::runtime::read_widget(widget_id, |widget| {
+            let factory = crate::widget::capability::WidgetFactory::shared();
+            let capability = factory.capability_for_kind_instance(widget)?;
+            Some(
+                capability
+                    .events
+                    .iter()
+                    .map(|schema| (schema.name, EventPayloadKind::from_schema(schema)))
+                    .collect(),
+            )
+        })
+        .flatten()
+    }
+    #[cfg(not(full_widgets))]
+    {
+        let _ = widget_id;
+        None
+    }
 }
 
 /// Resolves `event_name` on `widget` and requires that the reference declares that name.
@@ -1071,5 +1252,84 @@ mod tests {
             None,
             "a detached binder has nowhere to wire, so it must not claim a history"
         );
+    }
+
+    /// W-05: the binder's name-shaped query and its count query are one answer in two shapes, and
+    /// they agree with the "never wired means no answer" rule.
+    #[test]
+    fn the_unwired_queries_share_one_shape_and_one_answer() {
+        use crate::compat::Vec as CompatVec;
+        use crate::widget::Widget;
+
+        let r = Rect::new(0, 0, 100, 40);
+        let button = crate::widget::base_widgets::button::Button::new("b".to_string(), r);
+        let hub = std::sync::Arc::new(crate::signal::hub::CustomSignalHub::new());
+        let mut binder = EventSignalBinder::new(hub);
+
+        // Never wired: both shapes report "no answer", not an empty result.
+        assert_eq!(binder.unwired_event_names_for(&button), None);
+        assert_eq!(binder.unwired_events_for(&button), None);
+
+        assert!(binder.forward_all(&button) > 0, "the button contributes published events");
+        let names: CompatVec<&'static str> =
+            binder.unwired_event_names_for(&button).expect("wired once, so there is an answer");
+        assert!(names.is_empty(), "`forward_all` wired every published name");
+        assert_eq!(
+            binder.unwired_events_for(&button),
+            Some(names.len()),
+            "the count is exactly the length of the name list"
+        );
+
+        // After unbinding, both shapes report every name as unwired again.
+        binder.unbind_all();
+        let names = binder.unwired_event_names_for(&button).expect("still has a history");
+        assert!(!names.is_empty(), "the removed wires count as unwired");
+        assert_eq!(binder.unwired_events_for(&button), Some(names.len()));
+
+        let mut detached = EventSignalBinder::detached();
+        detached.forward_unit("clicked", button.clicked_signal());
+        assert_eq!(
+            detached.unwired_event_names_for(&button),
+            None,
+            "a detached binder has nowhere to wire, so it has no answer"
+        );
+    }
+
+    /// W-06: every published event exposes its declared payload kind, sourced from the capability
+    /// table rather than a parallel declaration.
+    #[test]
+    fn published_events_declare_their_payload_kind() {
+        use super::{payload_kind, payload_kinds, EventPayloadKind};
+
+        let r = Rect::new(0, 0, 100, 40);
+        let id = crate::widget::runtime::register(alloc::boxed::Box::new(
+            crate::widget::base_widgets::button::Button::new("b".to_string(), r),
+        ))
+        .expect("a button mounts");
+
+        let declared = payload_kinds(id).expect("a mounted button has a published set");
+        assert!(
+            declared.iter().any(|(name, kind)| *name == "clicked" && kind.is_payload_free()),
+            "`clicked` carries no value"
+        );
+        assert_eq!(payload_kind(id, "clicked"), Some(EventPayloadKind::Unit));
+        assert_eq!(payload_kind(id, "not_published"), None, "an unknown name has no declaration");
+        crate::widget::runtime::unregister(id);
+        assert_eq!(payload_kinds(id), None, "an unmounted id has nothing to declare");
+
+        // A payload-carrying event declares its kind and shape, not unit.
+        let area_id = crate::widget::runtime::register(alloc::boxed::Box::new(
+            crate::widget::input_widgets::textarea::TextArea::new(String::new(), r),
+        ))
+        .expect("a text area mounts");
+        let declared = payload_kinds(area_id).expect("mounted");
+        let (_, kind) = declared
+            .into_iter()
+            .find(|(name, _)| *name == "cursor_position_changed")
+            .expect("a text area publishes `cursor_position_changed`");
+        assert!(!kind.is_payload_free(), "`cursor_position_changed` carries a value");
+        assert!(kind.value_kind().is_some(), "and declares which kind it is");
+        assert_eq!(payload_kind(area_id, "cursor_position_changed"), Some(kind));
+        crate::widget::runtime::unregister(area_id);
     }
 }

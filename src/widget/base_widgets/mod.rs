@@ -164,12 +164,17 @@ impl AutoRepeat {
             return 0;
         }
         let overdue = elapsed - self.delay_ms;
+        // The `+ 1` is the repeat owed at the moment the delay elapses. It belongs only to the
+        // tick that crosses the delay: later frames start from `delay + remainder`, so their
+        // `overdue` is already measured past that boundary and counting it again would fire an
+        // extra repeat each frame.
+        let crossed_delay = previous < self.delay_ms;
         let (due, remainder) = match self.interval_ms {
             // A zero interval means "as fast as the host ticks": one repeat per frame, and the
             // clock stays at the delay so the next frame can owe another.
             0 => (1, 0),
             interval => (
-                overdue.checked_div(interval).unwrap_or(0) + 1,
+                overdue.checked_div(interval).unwrap_or(0) + u32::from(crossed_delay),
                 overdue.checked_rem(interval).unwrap_or(0),
             ),
         };

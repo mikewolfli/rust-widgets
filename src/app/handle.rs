@@ -1086,6 +1086,91 @@ pub fn unwired_binding_count() -> usize {
     UNWIRED_BINDINGS.with(|count| count.get())
 }
 
+/// A per-widget account of the bindings the handle layer currently holds (W-300).
+///
+/// # Why one report rather than one number
+///
+/// `unwired_binding_count` answers "how many bindings were refused?", but a host debugging a wire
+/// needs the other half: "how many bindings does this control actually have, and of which kind?".
+/// Counting a control's click callbacks without its close connections makes "the click works but
+/// close does not" impossible to see from the API, so every table the layer owns is reported here.
+/// The counts are of **subscriptions**, not handler names: two declarations that share a handler
+/// name are two bindings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BindingReport {
+    /// Callbacks held by the legacy per-widget click table.
+    pub click_callbacks: usize,
+    /// Callbacks held by the legacy per-widget value-changed table.
+    pub value_callbacks: usize,
+    /// Lock-free closures registered by `on_click`.
+    pub local_callbacks: usize,
+    /// Connections recorded for the widget's own `clicked` signal.
+    pub click_connections: usize,
+    /// Connections recorded for the widget's own `closed` signal.
+    pub close_connections: usize,
+    /// Connections recorded for payload-carrying `on_triggered` events.
+    pub triggered_connections: usize,
+}
+
+impl BindingReport {
+    /// The total number of subscriptions across every table.
+    pub fn total(&self) -> usize {
+        self.click_callbacks
+            + self.value_callbacks
+            + self.local_callbacks
+            + self.click_connections
+            + self.close_connections
+            + self.triggered_connections
+    }
+}
+
+/// The bindings currently held for `widget_id`, per table (W-300).
+///
+/// A table that is borrowed at the moment of the query contributes `0` rather than panicking: this
+/// runs from callback-adjacent code, and a refused borrow means the answer cannot be read, not that
+/// the widget has no bindings. The own-signal connections are counted by kind, so a caller can tell
+/// a click wire from a close wire on the same control.
+pub fn binding_report(widget_id: ObjectId) -> BindingReport {
+    let click_callbacks = CLICK_CALLBACKS
+        .with(|map| map.try_borrow().ok().and_then(|map| map.get(&widget_id).map(Vec::len)))
+        .unwrap_or(0);
+    let value_callbacks = VALUE_CALLBACKS
+        .with(|map| map.try_borrow().ok().and_then(|map| map.get(&widget_id).map(Vec::len)))
+        .unwrap_or(0);
+    let local_callbacks = LOCAL_CALLBACKS
+        .with(|map| {
+            map.try_borrow().ok().map(|map| map.keys().filter(|(id, _)| *id == widget_id).count())
+        })
+        .unwrap_or(0);
+    let (click_connections, close_connections, triggered_connections) = SIGNAL_CONNECTIONS
+        .with(|map| {
+            map.try_borrow().ok().map(|map| {
+                let mut clicked = 0;
+                let mut closed = 0;
+                let mut triggered = 0;
+                if let Some(connections) = map.get(&widget_id) {
+                    for connection in connections {
+                        match connection.kind {
+                            SignalKind::Clicked => clicked += 1,
+                            SignalKind::Closed => closed += 1,
+                            SignalKind::Triggered | SignalKind::TriggeredEntry => triggered += 1,
+                        }
+                    }
+                }
+                (clicked, closed, triggered)
+            })
+        })
+        .unwrap_or((0, 0, 0));
+    BindingReport {
+        click_callbacks,
+        value_callbacks,
+        local_callbacks,
+        click_connections,
+        close_connections,
+        triggered_connections,
+    }
+}
+
 /// Clears the unwired-binding count. Exists so a test can assert about one scenario rather than
 /// about every scenario that ran before it on the same thread.
 pub fn reset_unwired_binding_count() {
@@ -5440,6 +5525,29 @@ mod tests {
     use crate::core::ObjectId;
     use alloc::rc::Rc;
     use core::cell::RefCell;
+
+    /// W-300: the per-widget binding account names each table rather than one aggregate.
+    #[test]
+    fn a_binding_report_counts_each_table() {
+        let id = crate::widget::runtime::register(Box::new(crate::widget::Button::new(
+            "probe".to_string(),
+            crate::core::Rect::new(0, 0, 80, 24),
+        )))
+        .expect("a button mounts");
+
+        register_click_callback(id, || {});
+        register_close_callback(id, || {});
+        let report = binding_report(id);
+        assert_eq!(report.local_callbacks, 2, "on_click and on_close each store one closure");
+        assert_eq!(report.click_connections, 1);
+        assert_eq!(report.close_connections, 1);
+        assert_eq!(report.triggered_connections, 0);
+        assert_eq!(report.total(), 4, "every table contributes to the total");
+
+        remove_callbacks(id);
+        assert_eq!(binding_report(id), BindingReport::default(), "a teardown empties every table");
+        crate::widget::runtime::unregister(id);
+    }
 
     #[test]
     fn remove_callbacks_cleans_up() {

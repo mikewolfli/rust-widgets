@@ -147,6 +147,13 @@ pub struct TerminalView {
     selection_anchor: Option<usize>,
     /// Uncommitted IME composition text, drawn at the caret.
     preedit: String,
+    /// The caret's rectangle on the last painted frame.
+    ///
+    /// Only the paint path can measure the prompt and every input glyph with the frame's own
+    /// metrics, so the box is recorded there rather than re-derived by a second path that could
+    /// disagree by a pixel. `None` before the first frame and whenever the terminal draws no
+    /// caret.
+    caret_rect: Option<Rect>,
     /// The declared character grid, as `(columns, rows)`; `None` derives it from the geometry.
     grid: Option<(u32, u32)>,
     /// The screen buffer a full-screen program has put the control into.
@@ -211,6 +218,7 @@ impl TerminalView {
             input_cursor: 0,
             selection_anchor: None,
             preedit: String::new(),
+            caret_rect: None,
             grid: None,
             screen: None,
             command_submitted: Signal1::new(),
@@ -820,10 +828,35 @@ impl TerminalView {
         let owes_frame = self.cursor.tick(delta_ms);
         if owes_frame {
             // The caret's two halves are different pictures, so the frame that flips it must
-            // repaint. Without this the blink would advance and never be drawn.
-            self.base.request_redraw();
+            // repaint. Only the caret's own box changed, so that is the damage a
+            // damage-tracking host is asked for.
+            self.request_caret_repaint();
         }
         owes_frame
+    }
+
+    /// Submits one caret-blink frame as damage bounded by the caret's own rectangle.
+    ///
+    /// Mirrors the crate's other animated controls: a mounted control in a damage-tracking
+    /// repaint mode asks for the rectangle it changed, while every other host keeps the
+    /// whole-control request it already understood. The rectangle is the one the last frame
+    /// drew; before the first frame there is none and the whole control is repainted.
+    fn request_caret_repaint(&self) {
+        #[cfg(not(alloc_frugal))]
+        {
+            if let (Some(bounds), Some(id)) =
+                (self.caret_rect, crate::widget::runtime::registry_id_of(self.id()))
+            {
+                if crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full
+                {
+                    crate::widget::runtime::request_repaint_rect(id, bounds);
+                    self.base.redraw_requested.emit();
+                    return;
+                }
+            }
+        }
+        self.base.request_redraw();
     }
 
     /// Returns output lines.
@@ -899,17 +932,43 @@ impl TerminalView {
         self.base.request_redraw();
     }
 
-    /// Feeds `line` to the screen grid and republishes the grid as the output buffer.
+    /// Feeds `line` to the screen grid and republishes the rows it changed.
+    ///
+    /// Only the rows the program actually touched are turned back into text. Materialising the
+    /// whole grid on every chunk made per-write cost O(grid) instead of O(written cells).
     fn feed_screen(&mut self, line: &str) {
         let columns = self.grid().0.max(1) as usize;
-        let lines = if let Some(screen) = self.screen.as_mut() {
-            screen.resize(columns);
-            screen.feed(line);
-            screen.to_lines()
-        } else {
+        let Some(screen) = self.screen.as_mut() else {
             return;
         };
-        self.lines = lines;
+        screen.resize(columns);
+        screen.feed(line);
+        let Some((first, last)) = screen.take_dirty() else {
+            return;
+        };
+        // The grid is authoritative in screen mode, so a line that is not a grid row (for example
+        // one `submit` appended) is dropped, exactly as the full materialisation dropped it. Rows
+        // that were trimmed as empty still exist in the grid and may carry text now, so the buffer
+        // is then grown to the grid before any row is patched into it.
+        self.lines.truncate(screen.cells.len());
+        while self.lines.len() < screen.cells.len() {
+            self.lines.push(String::new());
+        }
+        if first == 0 && last >= screen.cells.len() {
+            self.lines = screen.to_lines();
+            return;
+        }
+        for row in first..last.min(screen.cells.len()) {
+            if let Some(text) = screen.row_text(row) {
+                if let Some(slot) = self.lines.get_mut(row) {
+                    *slot = text;
+                }
+            }
+        }
+        // Trailing empty rows are not part of the buffer, exactly as `to_lines` drops them.
+        while self.lines.len() > 1 && self.lines.last().is_some_and(|line| line.is_empty()) {
+            self.lines.pop();
+        }
     }
 
     /// Appends several output lines with one layout pass.
@@ -1622,7 +1681,7 @@ impl Draw for TerminalView {
             // the next run, so a coloured prompt line is not a second copy of the parser.
             let mut x = rect.x + 8;
             for run in runs {
-                let color = match run.color {
+                let base_ink = match run.color {
                     Some(color) => {
                         if run.dim {
                             color.blend(&background, 0.4)
@@ -1635,17 +1694,29 @@ impl Draw for TerminalView {
                 };
                 let width = run.width;
                 // SGR reverse swaps the glyph's ink and its cell's fill, so the run reads as a
-                // selection or an error banner instead of ordinary text.
-                let (ink, cell_fill) =
-                    if run.reverse { (background, Some(color)) } else { (color, None) };
+                // selection or an error banner instead of ordinary text. An explicit background
+                // (SGR 40-47, 100-107, 48;…) is the same cell fill without the swap.
+                let (ink, cell_fill) = if run.reverse {
+                    (run.bg.unwrap_or(background), Some(base_ink))
+                } else {
+                    (base_ink, run.bg)
+                };
                 if let Some(fill) = cell_fill {
                     context
                         .fill_rect(Rect::new(x, y, width.max(1) as u32, prompt_line_height), fill);
                 }
+                // SGR 3 selects the italic face. The run's advance was measured with the upright
+                // face, which the backend shapes at the same width, so the saved width still
+                // places the following run correctly.
+                let glyph_font = if run.italic {
+                    std::borrow::Cow::Owned(prompt_font.with_italic(true))
+                } else {
+                    std::borrow::Cow::Borrowed(prompt_font)
+                };
                 context.draw_text(
                     crate::core::Point::new(x, y),
                     &run.text,
-                    prompt_font,
+                    &glyph_font,
                     ink,
                     HorizontalAlignment::Left,
                 );
@@ -1656,7 +1727,7 @@ impl Draw for TerminalView {
                     context.draw_text(
                         crate::core::Point::new(x + 1, y),
                         &run.text,
-                        prompt_font,
+                        &glyph_font,
                         ink,
                         HorizontalAlignment::Left,
                     );
@@ -1740,33 +1811,33 @@ impl Draw for TerminalView {
         // The caret sits at the input cursor, in the prompt's own ink — it is the same line,
         // continued. Its x is the measured advance of the characters before it, so it tracks
         // in-line movement rather than always sitting after the whole string.
-        if self.base.is_enabled() && (self.cursor.is_visible() || !self.caret_blink_enabled) {
+        //
+        // The box is resolved on every frame, visible or not, because the blink's damage
+        // rectangle has to be the same box on both halves of the cycle.
+        let caret_box = if self.base.is_enabled() {
             let caret_x = caret_x.min(rect.x + rect.width as i32 - 2).max(rect.x + 8);
             let cell = context.measure_text("M", prompt_font).width.max(1);
-            match self.caret_style {
-                CaretStyle::Line => {
-                    context.fill_rect(
-                        Rect::new(caret_x, prompt_y, 1, prompt_line_height.max(1)),
-                        prompt_color,
-                    );
-                }
-                CaretStyle::Block => {
-                    context.fill_rect(
-                        Rect::new(caret_x, prompt_y, cell, prompt_line_height.max(1)),
-                        prompt_color.with_alpha(140),
-                    );
-                }
-                CaretStyle::Underline => {
-                    context.fill_rect(
-                        Rect::new(
-                            caret_x,
-                            prompt_y + prompt_line_height.saturating_sub(2) as i32,
-                            cell,
-                            2,
-                        ),
-                        prompt_color,
-                    );
-                }
+            Some(match self.caret_style {
+                CaretStyle::Line => Rect::new(caret_x, prompt_y, 1, prompt_line_height.max(1)),
+                CaretStyle::Block => Rect::new(caret_x, prompt_y, cell, prompt_line_height.max(1)),
+                CaretStyle::Underline => Rect::new(
+                    caret_x,
+                    prompt_y + prompt_line_height.saturating_sub(2) as i32,
+                    cell,
+                    2,
+                ),
+            })
+        } else {
+            None
+        };
+        self.caret_rect = caret_box;
+        if self.cursor.is_visible() || !self.caret_blink_enabled {
+            if let Some(caret) = caret_box {
+                let fill = match self.caret_style {
+                    CaretStyle::Block => prompt_color.with_alpha(140),
+                    CaretStyle::Line | CaretStyle::Underline => prompt_color,
+                };
+                context.fill_rect(caret, fill);
             }
         }
     }
@@ -1777,8 +1848,12 @@ impl Draw for TerminalView {
 struct AnsiRun {
     text: String,
     color: Option<Color>,
+    /// The run's background (SGR 40-47, 100-107, or 48;…), resolved against the palette.
+    bg: Option<Color>,
     dim: bool,
     bold: bool,
+    /// The run is italic (SGR 3).
+    italic: bool,
     /// The run is underlined (SGR 4).
     underline: bool,
     /// The run swaps its foreground and background (SGR 7).
@@ -1790,27 +1865,53 @@ struct AnsiRun {
     width: i32,
 }
 
-/// One cell of the cursor-addressed screen.
-#[derive(Clone, Copy)]
-struct ScreenCell {
-    ch: char,
-    color: Option<u8>,
+/// One SGR colour: an xterm palette index or a 24-bit truecolour triple.
+///
+/// The screen grid stores this rather than a resolved [`Color`] so a palette change still
+/// recolours text that was written before it: the index is resolved on the line pipeline, exactly
+/// as a shell's own escape sequences are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SgrColor {
+    /// An xterm palette index, `0..=255`.
+    Indexed(u8),
+    /// A 24-bit truecolour triple.
+    Rgb(u8, u8, u8),
+}
+
+/// The SGR state a screen cell is written with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SgrStyle {
+    fg: Option<SgrColor>,
+    bg: Option<SgrColor>,
     dim: bool,
     bold: bool,
+    italic: bool,
     underline: bool,
     reverse: bool,
 }
 
-impl Default for ScreenCell {
-    fn default() -> Self {
-        Self { ch: ' ', color: None, dim: false, bold: false, underline: false, reverse: false }
-    }
+/// The SGR state the line pipeline parses, with colours already resolved against the palette.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct RunStyle {
+    color: Option<Color>,
+    background: Option<Color>,
+    dim: bool,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    reverse: bool,
 }
 
-impl ScreenCell {
-    /// The SGR state this cell paints with.
-    fn style(&self) -> (Option<u8>, bool, bool, bool, bool) {
-        (self.color, self.dim, self.bold, self.underline, self.reverse)
+/// One cell of the cursor-addressed screen.
+#[derive(Clone, Copy)]
+struct ScreenCell {
+    ch: char,
+    style: SgrStyle,
+}
+
+impl Default for ScreenCell {
+    fn default() -> Self {
+        Self { ch: ' ', style: SgrStyle::default() }
     }
 }
 
@@ -1826,7 +1927,18 @@ struct ScreenBuffer {
     column: usize,
     columns: usize,
     /// The SGR state new characters are written with.
-    style: (Option<u8>, bool, bool, bool, bool),
+    style: SgrStyle,
+    /// The rows whose materialised text changed since the last [`Self::take_dirty`], as
+    /// `(first, last_exclusive)`.
+    ///
+    /// A program writes at its cursor, so this is usually one row. Tracking the range is what lets
+    /// the line buffer be patched instead of being re-materialised from the whole grid on every
+    /// chunk of output.
+    dirty: Option<(usize, usize)>,
+    /// How many rows have been turned back into text; read by the tests that pin the incremental
+    /// path, and compiled away otherwise.
+    #[cfg(test)]
+    materialized_rows: usize,
 }
 
 impl ScreenBuffer {
@@ -1837,8 +1949,29 @@ impl ScreenBuffer {
             row: 0,
             column: 0,
             columns: columns.max(1),
-            style: (None, false, false, false, false),
+            style: SgrStyle::default(),
+            dirty: None,
+            #[cfg(test)]
+            materialized_rows: 0,
         }
+    }
+
+    /// Marks `row` as needing its text rebuilt.
+    fn mark_dirty(&mut self, row: usize) {
+        self.dirty = Some(match self.dirty {
+            Some((first, last)) => (first.min(row), last.max(row + 1)),
+            None => (row, row + 1),
+        });
+    }
+
+    /// Marks every row as needing its text rebuilt.
+    fn mark_all_dirty(&mut self) {
+        self.dirty = Some((0, self.cells.len()));
+    }
+
+    /// Takes the pending row range, if any.
+    fn take_dirty(&mut self) -> Option<(usize, usize)> {
+        self.dirty.take()
     }
 
     /// Re-sizes the grid when the control's own column count changed.
@@ -1852,6 +1985,8 @@ impl ScreenBuffer {
             row.resize(columns, ScreenCell::default());
         }
         self.column = self.column.min(columns - 1);
+        // A narrower grid truncates cells, so every row's text can change.
+        self.mark_all_dirty();
     }
 
     /// Ensures the cursor's row exists.
@@ -1908,12 +2043,12 @@ impl ScreenBuffer {
             self.column = 0;
         }
         self.ensure_row();
-        let (color, dim, bold, underline, reverse) = self.style;
         if let Some(row) = self.cells.get_mut(self.row) {
             if let Some(cell) = row.get_mut(self.column) {
-                *cell = ScreenCell { ch, color, dim, bold, underline, reverse };
+                *cell = ScreenCell { ch, style: self.style };
             }
         }
+        self.mark_dirty(self.row);
         self.column += 1;
     }
 
@@ -1951,32 +2086,49 @@ impl ScreenBuffer {
     /// Applies an SGR parameter list to the write style.
     fn apply_style(&mut self, values: &[u32]) {
         if values.is_empty() {
-            self.style = (None, false, false, false, false);
+            self.style = SgrStyle::default();
             return;
         }
         let mut index = 0usize;
         while index < values.len() {
             match values[index] {
-                0 => self.style = (None, false, false, false, false),
-                // The tuple is `(color, dim, bold, underline, reverse)`.
-                1 => self.style.2 = true,
-                2 => self.style.1 = true,
-                4 => self.style.3 = true,
-                7 => self.style.4 = true,
+                0 => self.style = SgrStyle::default(),
+                1 => self.style.bold = true,
+                2 => self.style.dim = true,
+                3 => self.style.italic = true,
+                4 => self.style.underline = true,
+                7 => self.style.reverse = true,
                 22 => {
-                    self.style.1 = false;
-                    self.style.2 = false;
+                    self.style.dim = false;
+                    self.style.bold = false;
                 }
-                24 => self.style.3 = false,
-                27 => self.style.4 = false,
-                39 => self.style.0 = None,
-                30..=37 => self.style.0 = Some((values[index] - 30) as u8),
-                90..=97 => self.style.0 = Some((values[index] - 90 + 8) as u8),
+                23 => self.style.italic = false,
+                24 => self.style.underline = false,
+                27 => self.style.reverse = false,
+                39 => self.style.fg = None,
+                49 => self.style.bg = None,
+                30..=37 => {
+                    self.style.fg = Some(SgrColor::Indexed((values[index] - 30) as u8));
+                }
+                40..=47 => {
+                    self.style.bg = Some(SgrColor::Indexed((values[index] - 40) as u8));
+                }
+                90..=97 => {
+                    self.style.fg = Some(SgrColor::Indexed((values[index] - 90 + 8) as u8));
+                }
+                100..=107 => {
+                    self.style.bg = Some(SgrColor::Indexed((values[index] - 100 + 8) as u8));
+                }
                 38 => {
-                    if let (Some(&5), Some(entry)) = (values.get(index + 1), values.get(index + 2))
-                    {
-                        self.style.0 = Some((*entry).min(15) as u8);
-                        index += 2;
+                    if let Some((color, consumed)) = extended_sgr_color(values, index) {
+                        self.style.fg = Some(color);
+                        index += consumed;
+                    }
+                }
+                48 => {
+                    if let Some((color, consumed)) = extended_sgr_color(values, index) {
+                        self.style.bg = Some(color);
+                        index += consumed;
                     }
                 }
                 _ => {}
@@ -2017,6 +2169,7 @@ impl ScreenBuffer {
                 *cell = ScreenCell::default();
             }
         }
+        self.mark_dirty(row);
     }
 
     /// Clears the cursor's line: mode 0 to the end, 1 from the start, 2 whole.
@@ -2043,27 +2196,35 @@ impl ScreenBuffer {
                 }
             }
         }
+        self.mark_dirty(self.row);
+    }
+
+    /// One grid row as text with SGR sequences, trailing blanks trimmed.
+    fn row_text(&mut self, row: usize) -> Option<String> {
+        let cells = self.cells.get(row)?;
+        let mut out = String::new();
+        let mut current = SgrStyle::default();
+        for cell in cells {
+            if cell.style != current {
+                emit_sgr(&mut out, cell.style);
+                current = cell.style;
+            }
+            out.push(cell.ch);
+        }
+        while out.ends_with(' ') {
+            out.pop();
+        }
+        #[cfg(test)]
+        {
+            self.materialized_rows += 1;
+        }
+        Some(out)
     }
 
     /// The grid as text lines with SGR sequences, ready for the line pipeline.
-    fn to_lines(&self) -> Vec<String> {
-        let mut lines = Vec::with_capacity(self.cells.len());
-        for row in &self.cells {
-            let mut out = String::new();
-            let mut current = (None, false, false, false, false);
-            for cell in row {
-                let style = cell.style();
-                if style != current {
-                    emit_sgr(&mut out, style);
-                    current = style;
-                }
-                out.push(cell.ch);
-            }
-            while out.ends_with(' ') {
-                out.pop();
-            }
-            lines.push(out);
-        }
+    fn to_lines(&mut self) -> Vec<String> {
+        let mut lines: Vec<String> =
+            (0..self.cells.len()).filter_map(|row| self.row_text(row)).collect();
         while lines.len() > 1 && lines.last().is_some_and(|line| line.is_empty()) {
             lines.pop();
         }
@@ -2072,30 +2233,75 @@ impl ScreenBuffer {
 }
 
 /// Writes the SGR sequence that selects `style`.
-fn emit_sgr(out: &mut String, style: (Option<u8>, bool, bool, bool, bool)) {
+fn emit_sgr(out: &mut String, style: SgrStyle) {
     out.push_str("\u{1b}[0");
-    if style.1 {
+    if style.dim {
         out.push_str(";2");
     }
-    if style.2 {
+    if style.bold {
         out.push_str(";1");
     }
-    if style.3 {
+    if style.italic {
+        out.push_str(";3");
+    }
+    if style.underline {
         out.push_str(";4");
     }
-    if style.4 {
+    if style.reverse {
         out.push_str(";7");
     }
-    if let Some(index) = style.0 {
-        if index < 8 {
+    emit_sgr_color(out, style.fg, false);
+    emit_sgr_color(out, style.bg, true);
+    out.push('m');
+}
+
+/// Appends the parameters selecting `color`, using the background ranges when asked.
+fn emit_sgr_color(out: &mut String, color: Option<SgrColor>, background: bool) {
+    match color {
+        None => {}
+        // The eight and bright-eight ranges have their own SGR numbers; only a wider index needs
+        // the extended `38;5;n` form.
+        Some(SgrColor::Indexed(index)) if index < 8 => {
             out.push(';');
-            out.push_str(&(30 + index as u32).to_string());
-        } else {
+            out.push_str(&(if background { 40 } else { 30 } + index as u32).to_string());
+        }
+        Some(SgrColor::Indexed(index)) if index < 16 => {
             out.push(';');
-            out.push_str(&(90 + (index as u32 - 8)).to_string());
+            out.push_str(&(if background { 100 } else { 90 } + (index as u32 - 8)).to_string());
+        }
+        Some(SgrColor::Indexed(index)) => {
+            out.push_str(if background { ";48;5;" } else { ";38;5;" });
+            out.push_str(&index.to_string());
+        }
+        Some(SgrColor::Rgb(r, g, b)) => {
+            out.push_str(if background { ";48;2;" } else { ";38;2;" });
+            out.push_str(&r.to_string());
+            out.push(';');
+            out.push_str(&g.to_string());
+            out.push(';');
+            out.push_str(&b.to_string());
         }
     }
-    out.push('m');
+}
+
+/// Parses the `5;n` or `2;r;g;b` form that follows SGR 38/48.
+///
+/// Returns the colour and how many parameters beyond `index` it consumed, so the caller can skip
+/// them instead of reading the same numbers as ordinary attributes.
+fn extended_sgr_color(values: &[u32], index: usize) -> Option<(SgrColor, usize)> {
+    match values.get(index + 1) {
+        Some(5) => {
+            let entry = *values.get(index + 2)?;
+            Some((SgrColor::Indexed(entry.min(255) as u8), 2))
+        }
+        Some(2) => {
+            let r = *values.get(index + 2)?;
+            let g = *values.get(index + 3)?;
+            let b = *values.get(index + 4)?;
+            Some((SgrColor::Rgb(r.min(255) as u8, g.min(255) as u8, b.min(255) as u8), 4))
+        }
+        _ => None,
+    }
 }
 
 /// Whether `text` carries a cursor-addressing or clearing sequence.
@@ -2121,14 +2327,19 @@ fn contains_cursor_control(text: &str) -> bool {
     false
 }
 
-/// Parsed and wrapped output rows, keyed by `(revision, wrap width, palette)`.
+/// Parsed and wrapped output rows, keyed by the source lines they came from.
 ///
-/// # Why the whole buffer is parsed once per key and not per frame
+/// # Why the buffer is parsed once per change and not per frame
 ///
 /// The paint path used to call [`ansi_runs`] for every visible line on every frame, allocating a
-/// `String` per run, and measured every run's text again. Neither answer can change between two
-/// frames that share a revision, a width and a palette, so both are cached and invalidated by
-/// exactly those three facts.
+/// `String` per run, and measured every run's text again. Neither answer can change while the
+/// line, its layout and its palette stay the same, so both are cached.
+///
+/// # Why an append is not a rebuild
+///
+/// A line's rows depend only on that line, so a change re-parses the lines from the first one
+/// that differs instead of the whole buffer. A terminal that prints a line per second no longer
+/// re-parses its whole scrollback on every line.
 #[derive(Default)]
 struct OutputLineCache {
     /// One entry per painted row; a soft-wrapped logical line contributes several.
@@ -2138,10 +2349,21 @@ struct OutputLineCache {
     /// Each logical line with its escape sequences removed, so character hit-testing does not
     /// re-strip the line on every pointer move.
     plain: Vec<String>,
+    /// The source text of each logical line, so an unchanged line is not parsed again.
+    ///
+    /// A revision bump says *something* changed; comparing the text says which line it was.
+    sources: Vec<String>,
+    /// `row_starts[i]` is the index in [`Self::rows`] of logical line `i`'s first painted row.
+    /// The final entry is the length of [`Self::rows`] itself.
+    row_starts: Vec<usize>,
     /// The buffer revision the rows were parsed from.
     revision: u64,
-    /// The full invalidation key, or `None` after an explicit invalidation.
-    key: Option<(u64, u32, u64)>,
+    /// The layout key (wrap width, wrapping on/off, palette), or `None` after an invalidation.
+    key: Option<(u32, bool, u64)>,
+    /// How many logical lines have been parsed in total. Read by the tests that pin the
+    /// incremental path and compiled away otherwise.
+    #[cfg(test)]
+    parsed_lines: usize,
 }
 
 impl OutputLineCache {
@@ -2184,7 +2406,7 @@ impl CharWidthCache {
     }
 }
 
-/// Parses and wraps the output buffer when the cache key changed.
+/// Parses and wraps the output buffer from the first line that changed.
 #[allow(clippy::too_many_arguments)]
 fn ensure_output_rows(
     cache: &mut OutputLineCache,
@@ -2197,73 +2419,131 @@ fn ensure_output_rows(
     width: i32,
     palette: &[Color; 16],
 ) {
-    let key = (revision, width.max(0) as u32, palette_key(palette));
-    if cache.key == Some(key) {
+    let key = (width.max(0) as u32, wrap, palette_key(palette));
+    let layout_changed = cache.key != Some(key);
+    if !layout_changed && cache.revision == revision {
         return;
     }
-    let (rows, origins, plain) =
-        build_output_rows(lines, char_widths, context, font, width, wrap, palette);
-    cache.rows = rows;
-    cache.origins = origins;
-    cache.plain = plain;
+    // A layout change invalidates every row; otherwise everything above the first differing
+    // line is kept and only the tail is parsed.
+    let split = if layout_changed {
+        cache.rows.clear();
+        cache.origins.clear();
+        cache.plain.clear();
+        cache.sources.clear();
+        cache.row_starts.clear();
+        cache.row_starts.push(0);
+        0
+    } else {
+        let mut common = cache
+            .sources
+            .iter()
+            .zip(lines.iter())
+            .position(|(cached, live)| cached != live)
+            .unwrap_or_else(|| cache.sources.len().min(lines.len()));
+        // A scrollback trim drops lines from the front, shifting every survivor down: the first
+        // live line is then not the cached first line, and without this the whole scrollback would
+        // be re-parsed for each new line once the depth limit was reached. The overlap is verified
+        // in full, so a repeated line cannot fake the shift and a mismatch falls back to a rebuild.
+        if common == 0 {
+            let shift = lines
+                .first()
+                .and_then(|first| cache.sources.iter().position(|cached| cached == first))
+                .filter(|shift| {
+                    *shift > 0
+                        && cache
+                            .sources
+                            .get(*shift..)
+                            .is_some_and(|tail| tail.iter().zip(lines.iter()).all(|(a, b)| a == b))
+                });
+            if let Some(shift) = shift {
+                let row_start = cache.row_starts.get(shift).copied().unwrap_or(cache.rows.len());
+                drop(cache.rows.drain(0..row_start));
+                drop(cache.origins.drain(0..row_start));
+                for origin in cache.origins.iter_mut() {
+                    *origin = origin.saturating_sub(shift);
+                }
+                drop(cache.plain.drain(0..shift));
+                drop(cache.sources.drain(0..shift));
+                drop(cache.row_starts.drain(0..shift));
+                for start in cache.row_starts.iter_mut() {
+                    *start = start.saturating_sub(row_start);
+                }
+                common = cache.sources.len().min(lines.len());
+            }
+        }
+        let row_start = cache.row_starts.get(common).copied().unwrap_or(cache.rows.len());
+        cache.rows.truncate(row_start);
+        cache.origins.truncate(row_start);
+        cache.plain.truncate(common);
+        cache.sources.truncate(common);
+        cache.row_starts.truncate(common + 1);
+        common
+    };
+    for (index, line) in lines.iter().enumerate().skip(split) {
+        let (rows, plain) =
+            parse_output_line(line, char_widths, context, font, width, wrap, palette);
+        let painted = rows.len();
+        cache.rows.extend(rows);
+        cache.origins.extend(core::iter::repeat(index).take(painted));
+        cache.plain.push(plain);
+        cache.sources.push(line.clone());
+        cache.row_starts.push(cache.rows.len());
+        #[cfg(test)]
+        {
+            cache.parsed_lines += 1;
+        }
+    }
     cache.revision = revision;
     cache.key = Some(key);
 }
 
-/// Parses every logical line and splits it into painted rows no wider than `width`.
+/// Parses one logical output line and splits it into painted rows no wider than `width`.
 ///
-/// Returns the rows and the logical line index each row came from. Wrapping is per *glyph*, so a
+/// Returns the rows and the line with its escape sequences removed. Wrapping is per *glyph*, so a
 /// CJK character is never cut in half: the old path stopped the run when it reached the right
 /// edge, which dropped the rest of the line and could stop in the middle of a glyph's advance.
-fn build_output_rows(
-    lines: &[String],
+fn parse_output_line(
+    line: &str,
     char_widths: &mut CharWidthCache,
     context: &mut RenderContext,
     font: &Font,
     width: i32,
     wrap: bool,
     palette: &[Color; 16],
-) -> (Vec<Vec<AnsiRun>>, Vec<usize>, Vec<String>) {
-    let mut rows: Vec<Vec<AnsiRun>> = Vec::with_capacity(lines.len());
-    let mut origins: Vec<usize> = Vec::with_capacity(lines.len());
-    let mut plain: Vec<String> = Vec::with_capacity(lines.len());
-    for (index, line) in lines.iter().enumerate() {
-        plain.push(strip_ansi(line));
-        let mut runs = ansi_runs(line, palette);
-        // Widths are resolved here, once per revision, rather than for every run on every frame.
-        for run in &mut runs {
-            run.width = context.measure_text(&run.text, font).width as i32;
-        }
-        if !wrap || width <= 0 {
-            origins.push(index);
-            rows.push(runs);
-            continue;
-        }
-        let mut row: Vec<AnsiRun> = Vec::new();
-        let mut x = 0i32;
-        for run in runs {
-            let mut chunk = String::new();
-            for ch in run.text.chars() {
-                let advance = char_widths.width(ch, font, context);
-                if x > 0 && x + advance > width {
-                    if !chunk.is_empty() {
-                        row.push(measured_run(core::mem::take(&mut chunk), &run, font, context));
-                    }
-                    origins.push(index);
-                    rows.push(core::mem::take(&mut row));
-                    x = 0;
-                }
-                chunk.push(ch);
-                x += advance;
-            }
-            if !chunk.is_empty() {
-                row.push(measured_run(chunk, &run, font, context));
-            }
-        }
-        origins.push(index);
-        rows.push(row);
+) -> (Vec<Vec<AnsiRun>>, String) {
+    let plain = strip_ansi(line);
+    let mut runs = ansi_runs(line, palette);
+    // Widths are resolved here, once per change, rather than for every run on every frame.
+    for run in &mut runs {
+        run.width = context.measure_text(&run.text, font).width as i32;
     }
-    (rows, origins, plain)
+    if !wrap || width <= 0 {
+        return (vec![runs], plain);
+    }
+    let mut rows: Vec<Vec<AnsiRun>> = Vec::new();
+    let mut row: Vec<AnsiRun> = Vec::new();
+    let mut x = 0i32;
+    for run in runs {
+        let mut chunk = String::new();
+        for ch in run.text.chars() {
+            let advance = char_widths.width(ch, font, context);
+            if x > 0 && x + advance > width {
+                if !chunk.is_empty() {
+                    row.push(measured_run(core::mem::take(&mut chunk), &run, font, context));
+                }
+                rows.push(core::mem::take(&mut row));
+                x = 0;
+            }
+            chunk.push(ch);
+            x += advance;
+        }
+        if !chunk.is_empty() {
+            row.push(measured_run(chunk, &run, font, context));
+        }
+    }
+    rows.push(row);
+    (rows, plain)
 }
 
 /// Builds one run of `text` carrying `source`'s style, measuring its advance once.
@@ -2277,8 +2557,10 @@ fn measured_run(
     AnsiRun {
         text,
         color: source.color,
+        bg: source.bg,
         dim: source.dim,
         bold: source.bold,
+        italic: source.italic,
         underline: source.underline,
         reverse: source.reverse,
         width,
@@ -2396,17 +2678,13 @@ fn palette_key(palette: &[Color; 16]) -> u64 {
 /// Splits one line into SGR-styled runs.
 ///
 /// The parser understands the subset a shell and a progress program actually emit: reset,
-/// bold/dim/underline/reverse, the sixteen basic colours, and 256-colour foregrounds. Any other
-/// control sequence is consumed and ignored, so it cannot leak its escape bytes into the visible
-/// text.
+/// bold/dim/italic/underline/reverse, the sixteen basic colours and their bright halves, 256-colour
+/// and truecolour foregrounds and backgrounds. Any other control sequence is consumed and ignored,
+/// so it cannot leak its escape bytes into the visible text.
 fn ansi_runs(line: &str, palette: &[Color; 16]) -> Vec<AnsiRun> {
     let mut runs = Vec::new();
     let mut current = String::new();
-    let mut color = None;
-    let mut dim = false;
-    let mut bold = false;
-    let mut underline = false;
-    let mut reverse = false;
+    let mut style = RunStyle::default();
     let mut chars = line.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch != '\u{1b}' {
@@ -2423,24 +2701,18 @@ fn ansi_runs(line: &str, palette: &[Color; 16]) -> Vec<AnsiRun> {
                 if !current.is_empty() {
                     runs.push(AnsiRun {
                         text: core::mem::take(&mut current),
-                        color,
-                        dim,
-                        bold,
-                        underline,
-                        reverse,
+                        color: style.color,
+                        bg: style.background,
+                        dim: style.dim,
+                        bold: style.bold,
+                        italic: style.italic,
+                        underline: style.underline,
+                        reverse: style.reverse,
                         width: 0,
                     });
                 }
                 if next == 'm' {
-                    apply_sgr(
-                        &params,
-                        &mut color,
-                        &mut dim,
-                        &mut bold,
-                        &mut underline,
-                        &mut reverse,
-                        palette,
-                    );
+                    apply_sgr(&params, &mut style, palette);
                 }
                 break;
             }
@@ -2448,64 +2720,82 @@ fn ansi_runs(line: &str, palette: &[Color; 16]) -> Vec<AnsiRun> {
         }
     }
     if !current.is_empty() {
-        runs.push(AnsiRun { text: current, color, dim, bold, underline, reverse, width: 0 });
+        runs.push(AnsiRun {
+            text: current,
+            color: style.color,
+            bg: style.background,
+            dim: style.dim,
+            bold: style.bold,
+            italic: style.italic,
+            underline: style.underline,
+            reverse: style.reverse,
+            width: 0,
+        });
     }
     runs
 }
 
+/// Resolves one parsed SGR colour against the sixteen-colour palette.
+fn resolve_sgr_color(color: SgrColor, palette: &[Color; 16]) -> Color {
+    match color {
+        SgrColor::Indexed(index) => xterm_color(index as u32, palette),
+        SgrColor::Rgb(r, g, b) => Color::rgb(r, g, b),
+    }
+}
+
 /// Applies one SGR parameter list to the current run's style.
-fn apply_sgr(
-    params: &str,
-    color: &mut Option<Color>,
-    dim: &mut bool,
-    bold: &mut bool,
-    underline: &mut bool,
-    reverse: &mut bool,
-    palette: &[Color; 16],
-) {
+fn apply_sgr(params: &str, style: &mut RunStyle, palette: &[Color; 16]) {
     let values: Vec<u32> = params.split(';').filter_map(|part| part.parse::<u32>().ok()).collect();
     if values.is_empty() {
-        *color = None;
-        *dim = false;
-        *bold = false;
-        *underline = false;
-        *reverse = false;
+        *style = RunStyle::default();
         return;
     }
     let mut index = 0usize;
     while index < values.len() {
         match values[index] {
-            0 => {
-                *color = None;
-                *dim = false;
-                *bold = false;
-                *underline = false;
-                *reverse = false;
-            }
+            0 => *style = RunStyle::default(),
             // SGR 1 is bold. It used to share the dim arm's result (`*dim = false`), which
             // silently discarded every bold run — a bold prompt rendered as ordinary text.
-            1 => *bold = true,
-            2 => *dim = true,
+            1 => style.bold = true,
+            2 => style.dim = true,
+            3 => style.italic = true,
             // 4 underline and 7 reverse are the two attributes a build log and an error banner
             // rely on; they were parsed away and never painted.
-            4 => *underline = true,
-            7 => *reverse = true,
+            4 => style.underline = true,
+            7 => style.reverse = true,
             // 22 is "normal intensity": it clears *both* bold and dim.
             22 => {
-                *dim = false;
-                *bold = false;
+                style.dim = false;
+                style.bold = false;
             }
-            24 => *underline = false,
-            27 => *reverse = false,
-            39 => *color = None,
-            30..=37 => *color = Some(basic_ansi_color((values[index] - 30) as usize, palette)),
+            23 => style.italic = false,
+            24 => style.underline = false,
+            27 => style.reverse = false,
+            39 => style.color = None,
+            49 => style.background = None,
+            30..=37 => style.color = Some(basic_ansi_color((values[index] - 30) as usize, palette)),
+            40..=47 => {
+                style.background = Some(basic_ansi_color((values[index] - 40) as usize, palette));
+            }
             // The bright range addresses the upper half of the palette; mapping it onto the
             // lower half made `ESC[91m` and `ESC[31m` the same colour.
-            90..=97 => *color = Some(basic_ansi_color((values[index] - 90 + 8) as usize, palette)),
+            90..=97 => {
+                style.color = Some(basic_ansi_color((values[index] - 90 + 8) as usize, palette))
+            }
+            100..=107 => {
+                style.background =
+                    Some(basic_ansi_color((values[index] - 100 + 8) as usize, palette));
+            }
             38 => {
-                if let (Some(&5), Some(entry)) = (values.get(index + 1), values.get(index + 2)) {
-                    *color = Some(xterm_color(*entry, palette));
-                    index += 2;
+                if let Some((color, consumed)) = extended_sgr_color(&values, index) {
+                    style.color = Some(resolve_sgr_color(color, palette));
+                    index += consumed;
+                }
+            }
+            48 => {
+                if let Some((color, consumed)) = extended_sgr_color(&values, index) {
+                    style.background = Some(resolve_sgr_color(color, palette));
+                    index += consumed;
                 }
             }
             _ => {}
@@ -3046,5 +3336,149 @@ mod issue_2_8_tests {
         // Two characters into the row is index 2; the escape run must not count.
         assert_eq!(terminal.output_char_at(0, 2), 0);
         assert!(terminal.output_char_at(0, 200) >= 6);
+    }
+}
+
+#[cfg(test)]
+mod issue_20261026_tests {
+    use super::*;
+
+    /// SP-009: the line parser understands truecolour, backgrounds and the italic bit.
+    #[test]
+    fn sgr_truecolour_background_and_italic_survive_parsing() {
+        let palette = default_ansi_palette(true);
+        let runs = ansi_runs("\u{1b}[3;38;2;1;2;3;48;5;200mX\u{1b}[0mY", &palette);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].color, Some(Color::rgb(1, 2, 3)));
+        assert_eq!(runs[0].bg, Some(xterm_color(200, &palette)));
+        assert!(runs[0].italic);
+        assert_eq!(runs[1].color, None, "the reset clears the foreground");
+        assert_eq!(runs[1].bg, None, "the reset clears the background");
+        assert!(!runs[1].italic);
+    }
+
+    /// SP-009: a cursor-addressed grid keeps the whole colour range instead of clamping it.
+    #[test]
+    fn the_screen_grid_keeps_the_full_sgr_colour_range() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 320, 200));
+        terminal.append_output("\u{1b}[2J\u{1b}[38;5;200m\u{1b}[48;2;10;20;30m\u{1b}[3mA");
+        let palette = default_ansi_palette(true);
+        let runs = ansi_runs(&terminal.lines()[0], &palette);
+        assert_eq!(
+            runs[0].color,
+            Some(xterm_color(200, &palette)),
+            "an entry past the first sixteen is not clamped to the palette"
+        );
+        assert_eq!(runs[0].bg, Some(Color::rgb(10, 20, 30)), "truecolour backgrounds survive");
+        assert!(runs[0].italic, "the italic bit survives the grid");
+    }
+
+    /// SP-007: an append re-parses only the lines that changed.
+    #[test]
+    fn appending_output_parses_only_the_new_line() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.append_output("one");
+        terminal.append_output("two");
+        crate::widget::svg::render_to_svg(&mut terminal);
+        let first = terminal.output_cache.parsed_lines;
+        assert_eq!(first, 2, "both lines are parsed on the first frame");
+
+        crate::widget::svg::render_to_svg(&mut terminal);
+        assert_eq!(terminal.output_cache.parsed_lines, first, "an unchanged frame parses nothing");
+
+        terminal.append_output("three");
+        crate::widget::svg::render_to_svg(&mut terminal);
+        assert_eq!(
+            terminal.output_cache.parsed_lines,
+            first + 1,
+            "only the appended line is parsed again"
+        );
+        assert_eq!(terminal.output_cache.rows.len(), 3);
+    }
+
+    /// SP-008: a screen write re-materialises only the rows it touched.
+    #[test]
+    fn a_screen_write_materialises_only_the_row_it_changed() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 320, 200));
+        terminal.append_output("\u{1b}[2J\u{1b}[1;1Hrow one");
+        terminal.append_output("\u{1b}[2;1Hrow two");
+        terminal.append_output("\u{1b}[3;1Hrow three");
+        let before = terminal.screen.as_ref().map(|screen| screen.materialized_rows).unwrap_or(0);
+
+        terminal.append_output("\u{1b}[2;2HX");
+        let after = terminal.screen.as_ref().map(|screen| screen.materialized_rows).unwrap_or(0);
+        assert_eq!(after - before, 1, "one row is rebuilt, not the whole grid");
+        assert_eq!(terminal.lines().len(), 3);
+        assert_eq!(terminal.lines()[1], "rXw two");
+    }
+
+    /// SP-007: a scrollback trim shifts the buffer instead of invalidating every row.
+    #[test]
+    fn a_scrollback_trim_keeps_the_surviving_rows_parsed() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.set_scrollback_lines(3);
+        for line in ["one", "two", "three"] {
+            terminal.append_output(line);
+        }
+        crate::widget::svg::render_to_svg(&mut terminal);
+        let first = terminal.output_cache.parsed_lines;
+
+        terminal.append_output("four");
+        crate::widget::svg::render_to_svg(&mut terminal);
+        assert_eq!(
+            terminal.output_cache.parsed_lines,
+            first + 1,
+            "the surviving rows keep their entries"
+        );
+        assert_eq!(
+            terminal.output_cache.plain,
+            vec!["two".to_string(), "three".to_string(), "four".to_string()]
+        );
+    }
+
+    /// SP-006: a blink frame in a damage-tracking mode damages only the caret's rectangle.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_blink_frame_damages_only_the_caret_rect() {
+        use crate::widget::runtime;
+
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 320, 200));
+        terminal.set_input_line("abc");
+        crate::widget::svg::render_to_svg(&mut terminal);
+        let caret = terminal.caret_rect.expect("the caret was painted");
+        let id = runtime::register(crate::compat::Box::new(terminal)).expect("registry");
+        assert!(runtime::set_repaint_mode(id, runtime::RepaintMode::Dirty));
+        assert!(runtime::with_widget_mut(id, |widget| widget.tick(600)).unwrap_or(false));
+        assert_eq!(runtime::dirty_rects(id), vec![caret], "only the caret box is repainted");
+        runtime::unregister(id);
+    }
+
+    /// SP-006: the default repaint mode still takes the whole-control path.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_blink_frame_in_full_mode_keeps_the_whole_control_repaint() {
+        use crate::widget::runtime;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let terminal = TerminalView::new(Rect::new(0, 0, 320, 200));
+        let id = runtime::register(crate::compat::Box::new(terminal)).expect("registry");
+        assert!(runtime::set_repaint_mode(id, runtime::RepaintMode::Full));
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let counter = redraws.clone();
+        let _ = runtime::with_widget(id, |widget| {
+            widget.base().redraw_requested.connect(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            })
+        });
+
+        assert_eq!(runtime::with_widget_mut(id, |widget| widget.tick(600)), Some(true));
+        assert_eq!(
+            redraws.load(Ordering::Relaxed),
+            1,
+            "Full mode keeps the whole-control redraw request"
+        );
+        assert!(runtime::dirty_rects(id).is_empty(), "no damage rectangle is recorded");
+        runtime::unregister(id);
     }
 }

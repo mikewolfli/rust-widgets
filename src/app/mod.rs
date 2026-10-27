@@ -16,7 +16,10 @@ mod handle;
 pub mod lifecycle;
 mod wiring;
 
-pub use app_core::{App, AppConfig};
+pub use app_core::{
+    clear_application_event_listeners, publish_application_event, publish_dpi_change_if_needed,
+    subscribe_application_events, App, AppConfig, ApplicationEvent,
+};
 /// Records a binding that was accepted by its caller but can never fire.
 ///
 /// `pub(crate)` rather than private to `handle`: the JSON loader also refuses a binding
@@ -28,14 +31,15 @@ pub(crate) use handle::record_unwired_binding;
 #[cfg(test)]
 pub(crate) use handle::set_widget_value_callback as handle_set_widget_value_callback;
 pub use handle::{
-    dispatch_trigger, drain_triggers, reset_unwired_binding_count, unwired_binding_count,
-    ButtonHandle, CheckBoxHandle, CheckState, ComboBoxHandle, CustomWidgetHandle,
-    CustomWidgetMountError, DialogHandle, EchoMode, FrameHandle, GridWidgetHandle, LabelHandle,
-    LineEditHandle, ListBoxHandle, ListModel, ListViewHandle, MenuBarHandle, MenuHandle,
-    MenuItemHandle, MessageBoxHandle, PanelHandle, ProgressBarHandle, RadioButtonHandle,
-    ScrollAreaHandle, ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, SplitterHandle,
-    StatusBarHandle, SurfaceHandle, SurfaceMountError, TabWidgetHandle, TextEditHandle,
-    ToolBarHandle, WebViewHandle, WidgetHandle, WindowHandle, WindowOptions,
+    binding_report, dispatch_trigger, drain_triggers, remove_callbacks,
+    reset_unwired_binding_count, unwired_binding_count, BindingReport, ButtonHandle,
+    CheckBoxHandle, CheckState, ComboBoxHandle, CustomWidgetHandle, CustomWidgetMountError,
+    DialogHandle, EchoMode, FrameHandle, GridWidgetHandle, LabelHandle, LineEditHandle,
+    ListBoxHandle, ListModel, ListViewHandle, MenuBarHandle, MenuHandle, MenuItemHandle,
+    MessageBoxHandle, PanelHandle, ProgressBarHandle, RadioButtonHandle, ScrollAreaHandle,
+    ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, SplitterHandle, StatusBarHandle,
+    SurfaceHandle, SurfaceMountError, TabWidgetHandle, TextEditHandle, ToolBarHandle,
+    WebViewHandle, WidgetHandle, WindowHandle, WindowOptions,
 };
 pub use wiring::{
     assemble_event_loop, assemble_event_loop_with, default_dispatch_fn, default_parent_lookup,

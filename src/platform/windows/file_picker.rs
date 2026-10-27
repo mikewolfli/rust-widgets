@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use super::super::{PathPickerError, PathPurpose};
+use super::super::{PathFilter, PathPickerError, PathPurpose};
 // `String`/`Vec` come from the compat bridge rather than the prelude: the `mini` profile is
 // `no_std`, so the std prelude that normally supplies them is suppressed and this module failed to
 // compile for `--target x86_64-pc-windows-msvc --features mini` with `cannot find type Vec` /
@@ -18,6 +18,58 @@ const PATH_BUFFER_LEN: usize = 4096;
 /// The filter list the dialog shows, as comdlg32 wants it: pairs of `label\0pattern\0`, terminated
 /// by an empty pattern.
 const FILTER_ALL_FILES: &str = "All files\0*.*\0\0";
+
+/// Builds the `lpstrFilter` buffer for the requested filters.
+///
+/// Each entry becomes `description\0*.ext[;*.ext]\0`, and the whole list ends with one extra NUL —
+/// the format `OPENFILENAMEW` documents. Two cases have no expression in that format and are
+/// handled the way the toolkit itself does:
+///
+/// * `*` is "every file", which Win32 spells `*.*` (not `*`).
+/// * A filter with no extensions names no file at all. Win32 reads an empty pattern as the end of
+///   the list, so such an entry cannot be shown without truncating every filter after it; it is
+///   skipped. When every entry is skipped the dialog keeps the catch-all list, which is the same
+///   answer as asking for no filters.
+fn filter_list(filters: &[PathFilter]) -> String {
+    let mut out = String::new();
+    let mut written = 0usize;
+    for filter in filters {
+        let Some(patterns) = win_filter_patterns(filter) else {
+            continue;
+        };
+        out.push_str(&filter.description);
+        out.push('\0');
+        out.push_str(&patterns);
+        out.push('\0');
+        written += 1;
+    }
+    if written == 0 {
+        return String::from(FILTER_ALL_FILES);
+    }
+    out.push('\0');
+    out
+}
+
+/// One filter's `*.ext;*.ext` pattern text, or `None` when it names no file.
+fn win_filter_patterns(filter: &PathFilter) -> Option<String> {
+    let mut patterns: Vec<String> = Vec::new();
+    for extension in &filter.extensions {
+        let extension = extension.trim().trim_start_matches('.');
+        if extension.is_empty() {
+            continue;
+        }
+        if extension == "*" {
+            patterns.push(String::from("*.*"));
+        } else {
+            patterns.push(format!("*.{extension}"));
+        }
+    }
+    if patterns.is_empty() {
+        None
+    } else {
+        Some(patterns.join(";"))
+    }
+}
 
 /// Presents the Win32 picker and answers with what the user chose.
 ///
@@ -39,14 +91,31 @@ pub(crate) fn choose_path(
     purpose: PathPurpose,
     title: &str,
 ) -> Result<Option<PathBuf>, PathPickerError> {
+    choose_path_with_filters(purpose, title, &[])
+}
+
+/// [`choose_path`] with the caller's filter list offered in the dialog.
+///
+/// Filters select **files**, so a directory chooser ignores them: `SHBrowseForFolderW` has no
+/// filter control at all, and pretending the list applied would report a constraint the user never
+/// saw.
+pub(crate) fn choose_path_with_filters(
+    purpose: PathPurpose,
+    title: &str,
+    filters: &[PathFilter],
+) -> Result<Option<PathBuf>, PathPickerError> {
     match purpose {
         PathPurpose::SelectDirectory => browse_for_folder(title),
-        PathPurpose::OpenFile | PathPurpose::SaveFile => file_dialog(purpose, title),
+        PathPurpose::OpenFile | PathPurpose::SaveFile => file_dialog(purpose, title, filters),
     }
 }
 
 /// The open/save dialog, sharing everything except the two flags that differ.
-fn file_dialog(purpose: PathPurpose, title: &str) -> Result<Option<PathBuf>, PathPickerError> {
+fn file_dialog(
+    purpose: PathPurpose,
+    title: &str,
+    filters: &[PathFilter],
+) -> Result<Option<PathBuf>, PathPickerError> {
     use winapi::um::commdlg::{
         CommDlgExtendedError, GetOpenFileNameW, GetSaveFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST,
         OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
@@ -55,7 +124,9 @@ fn file_dialog(purpose: PathPurpose, title: &str) -> Result<Option<PathBuf>, Pat
     let saving = matches!(purpose, PathPurpose::SaveFile);
     let mut buffer = [0u16; PATH_BUFFER_LEN];
     let title_wide: Vec<u16> = std::ffi::OsStr::new(title).encode_wide().chain(Some(0)).collect();
-    let filter_wide: Vec<u16> = FILTER_ALL_FILES.encode_utf16().collect();
+    // `filter_list` already ends with the format's trailing NUL, so `encode_utf16` is the whole
+    // translation: the embedded `\0` bytes become the separators comdlg32 expects.
+    let filter_wide: Vec<u16> = filter_list(filters).encode_utf16().collect();
 
     // SAFETY: `OPENFILENAMEW` is a C struct of plain integers, pointers and `u32` flags, for which
     // an all-zero value is the documented "unset" state; every pointer stored below points into a
@@ -66,6 +137,8 @@ fn file_dialog(purpose: PathPurpose, title: &str) -> Result<Option<PathBuf>, Pat
     ofn.lpstrTitle = title_wide.as_ptr();
     ofn.lpstrFile = buffer.as_mut_ptr();
     ofn.nMaxFile = PATH_BUFFER_LEN as u32;
+    // The first entry is selected, which matches the crate's own painted dialog (DLG-009).
+    ofn.nFilterIndex = 1;
     ofn.Flags = OFN_EXPLORER
         | OFN_NOCHANGEDIR
         | OFN_PATHMUSTEXIST

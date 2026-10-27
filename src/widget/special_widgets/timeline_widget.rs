@@ -217,6 +217,10 @@ pub struct TimelineWidget {
     lane_cache: RefCell<Option<(u64, TimelineLaneMode, Vec<Vec<usize>>)>>,
     /// The pointer gesture in progress, if any.
     drag: Option<TimelineDrag>,
+    /// The span the dragged bar is previewed at, while a drag is in progress (SP-113).
+    drag_preview: Option<(usize, i64, i64)>,
+    /// Whether the time labels use a 1-2-5 step, time formatting and density markers (SP-112).
+    auto_time_step: bool,
     /// Emitted when selected item changes. Payload is selected item id.
     pub item_selected: Signal1<String>,
     /// Emitted when the visible time range changes. Payload is `(start, end)`.
@@ -249,6 +253,8 @@ impl TimelineWidget {
             items_revision: 1,
             lane_cache: RefCell::new(None),
             drag: None,
+            drag_preview: None,
+            auto_time_step: false,
             item_selected: Signal1::new(),
             viewport_changed: Signal1::new(),
             item_hovered: Signal1::new(),
@@ -306,6 +312,109 @@ impl TimelineWidget {
         self.show_time_labels = show;
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Whether the time labels use the automatic step and formatted labels.
+    pub fn auto_time_step(&self) -> bool {
+        self.auto_time_step
+    }
+
+    /// Enables the automatic 1-2-5 time step, `m:ss` labels and density markers.
+    ///
+    /// Off by default: the historical header is four equal divisions with bare numbers, and a
+    /// caller opts into the scale it wants (SP-112).
+    pub fn set_auto_time_step(&mut self, auto: bool) {
+        if self.auto_time_step == auto {
+            return;
+        }
+        self.auto_time_step = auto;
+        self.base.request_redraw();
+    }
+
+    /// The tick values the header draws.
+    ///
+    /// The historical layout divides the viewport into [`TIME_LABEL_TICKS`] equal parts. The
+    /// automatic layout picks a 1-2-5 step with the chart family's [`nice_tick_step`] and lands
+    /// the ticks on round multiples of that step (SP-112).
+    ///
+    /// [`nice_tick_step`]: crate::widget::chart_widgets::charts::nice_tick_step
+    fn time_ticks(&self) -> Vec<i64> {
+        if !self.auto_time_step {
+            let span = self.viewport_end - self.viewport_start;
+            return (0..=TIME_LABEL_TICKS)
+                .map(|tick| {
+                    let ratio = tick as f64 / f64::from(TIME_LABEL_TICKS);
+                    self.viewport_start + (span as f64 * ratio).round() as i64
+                })
+                .collect();
+        }
+        let span = (self.viewport_end - self.viewport_start).max(1) as f64;
+        let step =
+            crate::widget::chart_widgets::charts::nice_tick_step(span, TIME_LABEL_TICKS as usize);
+        // Timeline coordinates are integer instants, so a fractional step is rounded up to one
+        // unit rather than producing duplicate labels.
+        let step = if step.is_finite() { (step.round() as i64).max(1) } else { 1 };
+        let first = (self.viewport_start as f64 / step as f64).ceil() as i64 * step;
+        let mut ticks = Vec::new();
+        let mut value = first;
+        while value <= self.viewport_end && ticks.len() < 32 {
+            ticks.push(value);
+            value = match value.checked_add(step) {
+                Some(next) => next,
+                None => break,
+            };
+        }
+        if ticks.is_empty() {
+            ticks.push(self.viewport_start);
+        }
+        ticks
+    }
+
+    /// Formats one automatic tick as `m:ss`, or `h:mm:ss` past an hour.
+    fn format_time_label(value: i64) -> String {
+        let sign = if value < 0 { "-" } else { "" };
+        let total = value.unsigned_abs();
+        let hours = total / 3600;
+        let minutes = (total / 60) % 60;
+        let seconds = total % 60;
+        if hours > 0 {
+            crate::compat::format!("{sign}{hours}:{minutes:02}:{seconds:02}")
+        } else {
+            crate::compat::format!("{sign}{minutes}:{seconds:02}")
+        }
+    }
+
+    /// Start times where at least three items begin close together, with their counts.
+    ///
+    /// "Close" is a twelfth of the visible span, so the marker follows the zoom instead of being
+    /// tied to a fixed unit (SP-112).
+    fn dense_clusters(&self) -> Vec<(i64, usize)> {
+        let span = (self.viewport_end - self.viewport_start).max(1) as f64;
+        let threshold = ((span / 12.0).ceil() as i64).max(1);
+        let mut starts: Vec<i64> = self.items.iter().map(|item| item.start).collect();
+        starts.sort_unstable();
+        let mut clusters = Vec::new();
+        let mut current: Option<(i64, usize)> = None;
+        for start in starts {
+            match current {
+                Some((first, count)) if start - first <= threshold => {
+                    current = Some((first, count + 1));
+                }
+                Some((first, count)) => {
+                    if count >= 3 {
+                        clusters.push((first, count));
+                    }
+                    current = Some((start, 1));
+                }
+                None => current = Some((start, 1)),
+            }
+        }
+        if let Some((first, count)) = current {
+            if count >= 3 {
+                clusters.push((first, count));
+            }
+        }
+        clusters
     }
 
     /// Returns the row assignment mode.
@@ -431,6 +540,7 @@ impl TimelineWidget {
         self.selected_index = None;
         self.items_revision = self.items_revision.wrapping_add(1);
         self.drag = None;
+        self.drag_preview = None;
         self.recompute_viewport();
         self.base.request_layout();
         self.base.request_redraw();
@@ -622,9 +732,11 @@ impl TimelineWidget {
             }
             TimelineDrag::Move { index, origin_x, start, end } => {
                 let delta = self.pixels_to_time(pos.x - origin_x, track_w);
+                let next = (index, start + delta, end + delta);
                 if let Some(item) = self.items.get(index) {
-                    self.item_moved.emit((item.id.clone(), start + delta, end + delta));
+                    self.item_moved.emit((item.id.clone(), next.1, next.2));
                 }
+                self.drag_preview = Some(next);
                 self.drag = Some(TimelineDrag::Move { index, origin_x, start, end });
                 self.base.request_redraw();
             }
@@ -635,6 +747,7 @@ impl TimelineWidget {
                 if let Some(item) = self.items.get(index) {
                     self.item_resized.emit((item.id.clone(), next_start, end));
                 }
+                self.drag_preview = Some((index, next_start, end));
                 self.drag = Some(TimelineDrag::ResizeStart { index, origin_x, start, end });
                 self.base.request_redraw();
             }
@@ -644,6 +757,7 @@ impl TimelineWidget {
                 if let Some(item) = self.items.get(index) {
                     self.item_resized.emit((item.id.clone(), start, next_end));
                 }
+                self.drag_preview = Some((index, start, next_end));
                 self.drag = Some(TimelineDrag::ResizeEnd { index, origin_x, start, end });
                 self.base.request_redraw();
             }
@@ -913,6 +1027,9 @@ impl EventHandler for TimelineWidget {
             }
             Event::MouseLeave { .. } => {
                 self.drag = None;
+                if self.drag_preview.take().is_some() {
+                    self.base.request_redraw();
+                }
                 if self.hovered_index.take().is_some() {
                     self.item_hovered.emit(None);
                     self.base.request_redraw();
@@ -974,6 +1091,9 @@ impl EventHandler for TimelineWidget {
             }
             Event::MouseRelease { .. } => {
                 self.drag = None;
+                if self.drag_preview.take().is_some() {
+                    self.base.request_redraw();
+                }
             }
             Event::Wheel { delta, modifiers } => {
                 let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
@@ -1093,19 +1213,56 @@ impl Draw for TimelineWidget {
                 Point::new(header.x + header.width as i32, header.y + header.height as i32 - 1),
                 separator,
             );
-            let span = self.viewport_end - self.viewport_start;
-            for tick in 0..=TIME_LABEL_TICKS {
-                let ratio = tick as f64 / f64::from(TIME_LABEL_TICKS);
-                let value = self.viewport_start + (span as f64 * ratio).round() as i64;
-                let x = track_x + (track_w as f64 * ratio) as i32;
-                let band = Rect::new((x - 24).max(rect.x), header.y, 48, header.height);
-                context.draw_text_line_cow(
-                    band,
-                    &value.to_string(),
-                    effective_font(style),
-                    text_color.blend(&background, 0.3),
-                    HorizontalAlignment::Center,
-                );
+            let auto = self.auto_time_step;
+            let ink = text_color.blend(&background, 0.3);
+            if auto {
+                for value in self.time_ticks() {
+                    let x = self.project_x(value, track_x, track_w);
+                    let band = Rect::new((x - 24).max(rect.x), header.y, 48, header.height);
+                    context.draw_text_line_cow(
+                        band,
+                        &Self::format_time_label(value),
+                        effective_font(style),
+                        ink,
+                        HorizontalAlignment::Center,
+                    );
+                }
+            } else {
+                // The historical four equal divisions, kept at their original arithmetic so the
+                // default header is unchanged.
+                let span = self.viewport_end - self.viewport_start;
+                for tick in 0..=TIME_LABEL_TICKS {
+                    let ratio = tick as f64 / f64::from(TIME_LABEL_TICKS);
+                    let value = self.viewport_start + (span as f64 * ratio).round() as i64;
+                    let x = track_x + (track_w as f64 * ratio) as i32;
+                    let band = Rect::new((x - 24).max(rect.x), header.y, 48, header.height);
+                    context.draw_text_line_cow(
+                        band,
+                        &value.to_string(),
+                        effective_font(style),
+                        ink,
+                        HorizontalAlignment::Center,
+                    );
+                }
+            }
+            // Dense start times get one marker instead of a wall of overprinted bars; the count
+            // says how many arrivals the marker stands for (SP-112).
+            if auto {
+                for (start, count) in self.dense_clusters() {
+                    let x = self.project_x(start, track_x, track_w);
+                    context.fill_circle(
+                        Point::new(x, header.y + header.height as i32 - 3),
+                        2,
+                        text_color,
+                    );
+                    context.draw_text(
+                        Point::new(x + 4, header.y + 1),
+                        &crate::compat::format!("+{count}"),
+                        effective_font(style),
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
             }
         }
 
@@ -1170,6 +1327,23 @@ impl Draw for TimelineWidget {
                 let bar_w = (x1 - x0).max(2) as u32;
                 let bar_rect = Rect::new(x0, y + 6, bar_w, self.row_height.saturating_sub(12));
                 context.fill_rect(bar_rect, bar);
+                // While a drag is in progress the pending span is painted over the bar at the
+                // place it will occupy, so the pointer's effect is visible before release
+                // (SP-113). A plain alpha fill reuses the bar's own colour.
+                if let Some((preview_index, preview_start, preview_end)) = self.drag_preview {
+                    if preview_index == *index {
+                        let px0 = self.project_x(preview_start, track_x, track_w);
+                        let px1 = self.project_x(preview_end, track_x, track_w).max(px0 + 2);
+                        let preview = Rect::new(
+                            px0,
+                            y + 6,
+                            (px1 - px0).max(2) as u32,
+                            self.row_height.saturating_sub(12),
+                        );
+                        context.fill_rect(preview, bar.with_alpha(110));
+                        context.draw_rect(preview, bar.with_alpha(230));
+                    }
+                }
 
                 if self.lane_mode == TimelineLaneMode::LanePacked {
                     let (label_x, label_w, label_color) = if bar_w >= 28 {
@@ -1458,5 +1632,52 @@ mod tests {
 
         let got = hovered.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec![Some("a".to_string()), None]);
+    }
+
+    /// SP-112: the automatic header uses round 1-2-5 ticks with time labels.
+    #[test]
+    fn auto_time_step_uses_round_ticks_and_time_labels() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 500, 200));
+        timeline.set_items(sample_items());
+        assert!(!timeline.auto_time_step(), "the historical header is the default");
+
+        timeline.set_auto_time_step(true);
+        assert_eq!(timeline.time_ticks(), vec![0, 10, 20, 30]);
+        assert_eq!(TimelineWidget::format_time_label(0), "0:00");
+        assert_eq!(TimelineWidget::format_time_label(65), "1:05");
+        assert_eq!(TimelineWidget::format_time_label(3_661), "1:01:01");
+        assert_eq!(timeline.dense_clusters(), Vec::new(), "sample starts are far apart");
+    }
+
+    /// SP-112: three nearly simultaneous starts collapse into one counted marker.
+    #[test]
+    fn dense_starts_are_grouped_into_one_marker() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 500, 200));
+        timeline.set_items(vec![
+            TimelineItem::new("a", "A", 0, 5),
+            TimelineItem::new("b", "B", 1, 6),
+            TimelineItem::new("c", "C", 2, 7),
+            TimelineItem::new("d", "D", 20, 25),
+        ]);
+        assert_eq!(timeline.dense_clusters(), vec![(0, 3)]);
+    }
+
+    /// SP-113: a drag paints its pending span before the release commits it.
+    #[test]
+    fn dragging_a_bar_updates_the_preview_span() {
+        let mut timeline = TimelineWidget::new(Rect::new(0, 0, 500, 120));
+        timeline.set_items(sample_items());
+
+        timeline.handle_event(&Event::mouse_press(180, 12, 1));
+        assert!(matches!(timeline.drag, Some(TimelineDrag::Move { index: 0, .. })));
+        timeline.handle_event(&Event::mouse_move(200, 12));
+        assert!(
+            matches!(timeline.drag_preview, Some((0, start, end)) if start > 0 && end > start),
+            "the moved bar must preview its new span: {:?}",
+            timeline.drag_preview
+        );
+
+        timeline.handle_event(&Event::mouse_release(200, 12, 1));
+        assert_eq!(timeline.drag_preview, None, "release clears the preview");
     }
 }

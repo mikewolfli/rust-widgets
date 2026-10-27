@@ -505,6 +505,35 @@ pub enum PathPurpose {
     SelectDirectory,
 }
 
+/// One entry in a system path picker's filter list.
+///
+/// # Why the platform layer repeats a shape the widget layer also has
+///
+/// [`crate::widget::dialog::FileFilter`] is the **library-painted** dialog's type, and the platform
+/// layer must not depend on the widget layer (the dependency runs the other way). The two are
+/// deliberately the same shape — a user-facing description plus extension suffixes written without
+/// the leading dot, with the single entry `*` meaning "every file" — so a host translates one into
+/// the other field by field instead of re-deriving what a filter means (DLG-009).
+///
+/// # How a backend uses it
+///
+/// [`Platform::choose_path_with_filters`](crate::platform::Platform::choose_path_with_filters)
+/// hands these to the host picker. A toolkit whose picker has no per-filter dropdown (AppKit's
+/// `allowedFileTypes` is one allowed set, not a list of named filters) can only express the union;
+/// such a backend applies the union and the description becomes informational. A backend that cannot
+/// express filters at all ignores the list and answers through
+/// [`Platform::choose_path`](crate::platform::Platform::choose_path) — the default, and a stated
+/// limit rather than a silently dropped request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathFilter {
+    /// The label the picker's filter list shows, for example `"Images"`.
+    pub description: String,
+    /// The accepted extension suffixes, written **without** the leading dot (`"png"`, not
+    /// `".png"`). The single entry `"*"` means "every file"; an empty list accepts nothing, which
+    /// is a filter that names no file rather than one that names every file.
+    pub extensions: Vec<String>,
+}
+
 /// Why the host's own path picker did not answer.
 ///
 /// # Why "cancelled" is not one of these

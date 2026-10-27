@@ -35,11 +35,30 @@ const DEFAULT_DOUBLE_CLICK_TIMEOUT_MS: u64 = 400;
 #[cfg(not(feature = "touch"))]
 const DEFAULT_MAX_STATIONARY_DISTANCE: f32 = 15.0;
 
+/// How far apart the two taps of a double-tap may land, as a multiple of the stationary bound
+/// (W-03).
+///
+/// # Why the two thresholds differ, stated once
+///
+/// A **single** tap's own travel must stay below `GestureTuning::max_stationary_distance`
+/// (`gesture/tap.rs`), because moving farther than that is a drag, not a tap. A double-tap is two
+/// *separate* taps, and each may wander within that own bound, so the two down points together can
+/// legitimately be up to twice the single-tap bound apart.
+///
+/// The factor is named here rather than written as `* 2.0` at the comparison, because the 2× gap
+/// between `TapGesture`'s bound and `is_double_click_pair`'s was previously undocumented and read
+/// like a copy/paste drift. Any future change to the ratio has exactly one place to change, and
+/// both the single-tap and the double-tap recognisers read it.
+pub const DOUBLE_TAP_SEPARATION_FACTOR: f32 = 2.0;
+
 /// Whether two `(position, monotonic_ms)` contacts form a double-click pair.
 ///
 /// This is the single spelling of the rule. `gesture::is_double_tap_pair` delegates here with its
 /// runtime tuning, and this module's tracker delegates here with the same tuning, so a change to
 /// the interval or movement bound cannot move one input family without the other (W-203).
+///
+/// The movement bound is `max_stationary_distance * DOUBLE_TAP_SEPARATION_FACTOR`; see that
+/// constant for why a two-tap pair is allowed twice the single tap's bound (W-03).
 pub(crate) fn is_double_click_pair(
     first: (Point, u64),
     second: (Point, u64),
@@ -49,7 +68,8 @@ pub(crate) fn is_double_click_pair(
     let elapsed = second.1.saturating_sub(first.1);
     let dx = (second.0.x as i64 - first.0.x as i64) as f32;
     let dy = (second.0.y as i64 - first.0.y as i64) as f32;
-    elapsed <= timeout_ms && (dx * dx + dy * dy).sqrt() < max_stationary_distance * 2.0
+    elapsed <= timeout_ms
+        && (dx * dx + dy * dy).sqrt() < max_stationary_distance * DOUBLE_TAP_SEPARATION_FACTOR
 }
 
 /// The tuning in force for mouse double-click judging.
@@ -255,6 +275,36 @@ mod tests {
             assert!(!tracker.observe_press(1, Point::new(0, 0), 1, 0, 0));
             assert!(!tracker.observe_press(1, Point::new(500, 500), 1, 0, 100));
         });
+    }
+
+    /// W-03: the two-tap separation bound is one named factor, and it is *not* the single-tap
+    /// bound the tap recogniser uses — the ratio is documented on the constant.
+    #[test]
+    fn the_double_tap_separation_is_the_documented_multiple_of_the_stationary_bound() {
+        const BOUND: f32 = 10.0;
+        // Just under twice the bound is a pair; just over it is not.
+        assert!(is_double_click_pair(
+            (Point::new(0, 0), 0),
+            (Point::new((BOUND * DOUBLE_TAP_SEPARATION_FACTOR - 0.5) as i32, 0), 100),
+            400,
+            BOUND
+        ));
+        assert!(!is_double_click_pair(
+            (Point::new(0, 0), 0),
+            (Point::new((BOUND * DOUBLE_TAP_SEPARATION_FACTOR + 0.5) as i32, 0), 100),
+            400,
+            BOUND
+        ));
+        // A single tap's own travel (`TapGesture`) uses the bound itself, so the pair bound is
+        // wider by exactly the factor: a distance between the two is *not* a pair under the tap
+        // bound but is under the pair bound.
+        assert!(BOUND < BOUND * DOUBLE_TAP_SEPARATION_FACTOR);
+        assert!(is_double_click_pair(
+            (Point::new(0, 0), 0),
+            (Point::new((BOUND + 1.0) as i32, 0), 100),
+            400,
+            BOUND
+        ));
     }
 
     #[test]

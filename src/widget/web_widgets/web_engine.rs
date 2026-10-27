@@ -149,6 +149,28 @@ fn find_all_offsets(haystack: &[u8], needle: &[u8], case_sensitive: bool) -> Vec
     matches
 }
 
+/// Whether the byte may appear inside a word for whole-word find.
+///
+/// Non-ASCII bytes count as word bytes so a multi-byte character's continuation bytes are never
+/// mistaken for a boundary.
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80
+}
+
+/// Whether `haystack[start..start + len]` sits on whole-word boundaries.
+fn is_whole_word_match(haystack: &[u8], start: usize, len: usize) -> bool {
+    if len == 0 || start + len > haystack.len() {
+        return false;
+    }
+    if !is_word_byte(haystack[start]) || !is_word_byte(haystack[start + len - 1]) {
+        return false;
+    }
+    let before = start.checked_sub(1).and_then(|index| haystack.get(index));
+    let after = haystack.get(start + len);
+    !before.is_some_and(|byte| is_word_byte(*byte))
+        && !after.is_some_and(|byte| is_word_byte(*byte))
+}
+
 /// Lifecycle state of the most recent download the host has reported.
 ///
 /// The view performs no network I/O; the host supplies progress through
@@ -180,6 +202,18 @@ enum HtmlBlockKind {
     Heading,
     Link,
     Image,
+}
+
+/// The wrapped line ranges of one page layout, one entry per [`HtmlBlock`].
+///
+/// Image blocks have no text, so their entry is empty; keeping one entry per block is what lets
+/// the paint path zip the blocks and the layout without a second classification pass.
+struct PageLayoutCache {
+    revision: u64,
+    width: u32,
+    zoom_bits: u32,
+    line_height: u32,
+    lines: Vec<Vec<(usize, usize)>>,
 }
 
 /// Splits an HTML document into paintable text blocks.
@@ -346,6 +380,25 @@ pub struct WebEngineView {
     html_content: String,
     /// The paintable blocks parsed from [`Self::html_content`].
     html_blocks: Vec<HtmlBlock>,
+    /// Monotonic revision of [`Self::html_content`] and [`Self::html_blocks`].
+    html_revision: u64,
+    /// The wrapped line ranges from the last page layout, keyed by the inputs that shape them.
+    ///
+    /// Wrapping a block calls the text measurer once per candidate break, and doing that for the
+    /// whole document on every paint was the page's largest per-frame cost (MW-011). The layout is
+    /// recomputed only when the document revision, the content width, the zoom or the line height
+    /// changes.
+    page_layout: Option<PageLayoutCache>,
+    /// The in-progress address-bar edit, when the bar is being edited (MW-012).
+    url_edit: Option<String>,
+    /// Byte offset of the edit caret inside [`Self::url_edit`].
+    url_edit_caret: usize,
+    /// The address bar's rectangle from the last paint, so a press can focus it.
+    url_bar_rect: Option<Rect>,
+    /// The last find used whole-word matching; the default keeps the historical substring match.
+    find_whole_word: bool,
+    /// The case sensitivity of the last find, so a word-toggle can re-run it unchanged.
+    find_case_sensitive: bool,
     /// Vertical page scroll offset in logical pixels (MW-10).
     scroll_offset: i32,
     /// The page's painted content height, measured by the last draw.
@@ -790,6 +843,13 @@ impl WebEngineView {
             cookie_persistence_enabled: false,
             html_content: String::new(),
             html_blocks: Vec::new(),
+            html_revision: 0,
+            page_layout: None,
+            url_edit: None,
+            url_edit_caret: 0,
+            url_bar_rect: None,
+            find_whole_word: false,
+            find_case_sensitive: false,
             scroll_offset: 0,
             page_content_height: 0,
             download_dir: None,
@@ -886,6 +946,132 @@ impl WebEngineView {
             self.url_changed.emit(url.clone());
             self.begin_loading();
             self.update_navigation_state();
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether the address bar is currently being edited (MW-012).
+    pub fn is_editing_url(&self) -> bool {
+        self.url_edit.is_some()
+    }
+
+    /// Opens the address bar for editing, seeding the buffer with the current URL.
+    ///
+    /// The bar used to be a read-only label. Editing is opt-in state on the view rather than a
+    /// second child widget, so its buffer, caret and commit rule are owned here (MW-012).
+    pub fn begin_url_edit(&mut self) {
+        if self.url_edit.is_some() {
+            return;
+        }
+        self.url_edit = Some(self.url.clone());
+        self.url_edit_caret = self.url.len();
+        self.base.request_redraw();
+    }
+
+    /// The in-progress address text, or `None` when the bar is not being edited.
+    pub fn url_edit_text(&self) -> Option<&str> {
+        self.url_edit.as_deref()
+    }
+
+    /// Replaces the in-progress address text and places the caret at its end.
+    pub fn set_url_edit_text(&mut self, text: impl Into<String>) {
+        if let Some(buffer) = self.url_edit.as_mut() {
+            *buffer = text.into();
+            self.url_edit_caret = buffer.len();
+            self.base.request_redraw();
+        }
+    }
+
+    /// The caret's byte offset in the in-progress address, when editing.
+    pub fn url_edit_caret(&self) -> Option<usize> {
+        self.url_edit.as_ref().map(|_| self.url_edit_caret)
+    }
+
+    /// Abandons the edit without navigating.
+    pub fn cancel_url_edit(&mut self) {
+        if self.url_edit.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Commits the edit: navigates to the trimmed address and closes the editor.
+    ///
+    /// Returns whether a new URL was loaded. An empty address is a cancel, and an unchanged
+    /// address closes the editor without a spurious load.
+    pub fn commit_url_edit(&mut self) -> bool {
+        let Some(buffer) = self.url_edit.take() else {
+            return false;
+        };
+        self.base.request_redraw();
+        let url = buffer.trim().to_string();
+        if url.is_empty() || url == self.url {
+            return false;
+        }
+        self.set_url(url);
+        true
+    }
+
+    /// Inserts `text` at the caret.
+    fn url_edit_insert(&mut self, text: &str) {
+        if let Some(buffer) = self.url_edit.as_mut() {
+            let caret = self.url_edit_caret.min(buffer.len());
+            buffer.insert_str(caret, text);
+            self.url_edit_caret = caret + text.len();
+            self.base.request_redraw();
+        }
+    }
+
+    /// Removes the character before the caret.
+    fn url_edit_backspace(&mut self) {
+        if let Some(buffer) = self.url_edit.as_mut() {
+            let caret = self.url_edit_caret.min(buffer.len());
+            if caret > 0 {
+                let mut start = caret - 1;
+                while start > 0 && !buffer.is_char_boundary(start) {
+                    start -= 1;
+                }
+                buffer.replace_range(start..caret, "");
+                self.url_edit_caret = start;
+                self.base.request_redraw();
+            }
+        }
+    }
+
+    /// Removes the character after the caret.
+    fn url_edit_delete(&mut self) {
+        if let Some(buffer) = self.url_edit.as_mut() {
+            let caret = self.url_edit_caret.min(buffer.len());
+            if caret < buffer.len() {
+                let mut end = caret + 1;
+                while end < buffer.len() && !buffer.is_char_boundary(end) {
+                    end += 1;
+                }
+                buffer.replace_range(caret..end, "");
+                self.base.request_redraw();
+            }
+        }
+    }
+
+    /// Moves the caret by one character in `direction`.
+    fn url_edit_move(&mut self, direction: i32) {
+        if let Some(buffer) = self.url_edit.as_ref() {
+            let caret = self.url_edit_caret.min(buffer.len());
+            let next = if direction < 0 {
+                let mut start = caret.saturating_sub(1);
+                while start > 0 && !buffer.is_char_boundary(start) {
+                    start -= 1;
+                }
+                start
+            } else if caret < buffer.len() {
+                let mut end = caret + 1;
+                while end < buffer.len() && !buffer.is_char_boundary(end) {
+                    end += 1;
+                }
+                end
+            } else {
+                caret
+            };
+            self.url_edit_caret = next;
             self.base.request_redraw();
         }
     }
@@ -1040,6 +1226,8 @@ impl WebEngineView {
         // HTML source is retained so script evaluation and introspection work.
         self.html_content = html.to_string();
         self.html_blocks = parse_html_blocks(html);
+        self.html_revision = self.html_revision.wrapping_add(1);
+        self.page_layout = None;
         self.scroll_offset = 0;
         self.clear_find();
         self.url = "data:text/html".to_string();
@@ -1067,6 +1255,8 @@ impl WebEngineView {
         // or layout happens in this simulated view.
         self.html_content = String::from_utf8_lossy(data).into_owned();
         self.html_blocks = parse_html_blocks(&self.html_content);
+        self.html_revision = self.html_revision.wrapping_add(1);
+        self.page_layout = None;
         self.clear_find();
         self.url = base_url.to_string();
         self.push_history(&self.url.clone());
@@ -1427,14 +1617,41 @@ impl WebEngineView {
         case_sensitive: bool,
         backwards: bool,
     ) -> (usize, usize) {
+        // The method keeps its historical signature and honours the option set through
+        // `set_find_whole_word`, whose default is the substring match it always performed.
+        let whole_word = self.find_whole_word;
+        self.find_text_with_options(needle, case_sensitive, whole_word, backwards)
+    }
+
+    /// Counts occurrences with explicit find options, returning `(match_count, selected_offset)`.
+    ///
+    /// `whole_word` requires the match to begin and end on word characters and to be bounded by
+    /// non-word bytes, so `cat` no longer matches the middle of `category` (MW-013). The option
+    /// mirrors the other find surfaces' word toggle (I-025); the default find keeps substring
+    /// matching.
+    pub fn find_text_with_options(
+        &mut self,
+        needle: &str,
+        case_sensitive: bool,
+        whole_word: bool,
+        backwards: bool,
+    ) -> (usize, usize) {
         self.find_needle = needle.to_string();
+        self.find_case_sensitive = case_sensitive;
+        self.find_whole_word = whole_word;
         if needle.is_empty() {
             self.find_matches.clear();
             self.find_current = None;
             return (0, 0);
         }
-        self.find_matches =
+        let mut matches =
             find_all_offsets(self.html_content.as_bytes(), needle.as_bytes(), case_sensitive);
+        if whole_word {
+            matches.retain(|start| {
+                is_whole_word_match(self.html_content.as_bytes(), *start, needle.len())
+            });
+        }
+        self.find_matches = matches;
         let selected_index = if self.find_matches.is_empty() {
             None
         } else if backwards {
@@ -1446,6 +1663,25 @@ impl WebEngineView {
         let selected = selected_index.map(|index| self.find_matches[index]).unwrap_or(0);
         self.base.request_redraw();
         (self.find_matches.len(), selected)
+    }
+
+    /// Whether find requires whole-word boundaries.
+    pub fn find_whole_word(&self) -> bool {
+        self.find_whole_word
+    }
+
+    /// Turns whole-word matching on or off, re-running the active query like the case toggle.
+    pub fn set_find_whole_word(&mut self, whole_word: bool) {
+        if self.find_whole_word == whole_word {
+            return;
+        }
+        self.find_whole_word = whole_word;
+        if !self.find_needle.is_empty() {
+            let needle = self.find_needle.clone();
+            let case_sensitive = self.find_case_sensitive;
+            let _ = self.find_text_with_options(&needle, case_sensitive, whole_word, false);
+        }
+        self.base.request_redraw();
     }
 
     /// Selects the next match, wrapping to the first at the end.
@@ -1956,6 +2192,21 @@ impl EventHandler for WebEngineView {
             Event::MousePress { pos, button, .. }
                 if *button == 1 && self.geometry().contains_point(*pos) =>
             {
+                // The address bar is editable: a press on it takes focus, and a press elsewhere
+                // while editing commits the pending address first (MW-012).
+                let bar = self.url_bar_rect.unwrap_or_else(|| {
+                    ControlMetrics::top_band(self.geometry(), dimensions::WEB_URL_BAR_HEIGHT)
+                });
+                if self.url_edit.is_some() {
+                    if !bar.contains_point(*pos) {
+                        self.commit_url_edit();
+                    }
+                    return;
+                }
+                if bar.contains_point(*pos) {
+                    self.begin_url_edit();
+                    return;
+                }
                 // The zoom controls are part of the page chrome, so they take the click before
                 // it is reported as a page activation (MW-10).
                 if self.zoom_in_rect.is_some_and(|rect| rect.contains_point(*pos)) {
@@ -1974,6 +2225,33 @@ impl EventHandler for WebEngineView {
                 self.set_scroll_offset(self.scroll_offset - delta.y * 48);
             }
             Event::KeyPress { key, modifiers } => {
+                if self.url_edit.is_some() {
+                    // While the address bar has focus it owns the editing keys; the browser
+                    // shortcuts below are suspended for the duration of the edit (MW-012).
+                    match *key {
+                        13 => {
+                            self.commit_url_edit();
+                        }
+                        27 => {
+                            self.cancel_url_edit();
+                        }
+                        8 => self.url_edit_backspace(),
+                        46 => self.url_edit_delete(),
+                        37 => self.url_edit_move(-1),
+                        39 => self.url_edit_move(1),
+                        36 => {
+                            self.url_edit_caret = 0;
+                            self.base.request_redraw();
+                        }
+                        35 => {
+                            self.url_edit_caret =
+                                self.url_edit.as_ref().map(|buffer| buffer.len()).unwrap_or(0);
+                            self.base.request_redraw();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
                 match *key {
                     37 => {
                         // Left arrow — go back
@@ -1994,6 +2272,9 @@ impl EventHandler for WebEngineView {
                         }
                     _ => { /* Other keys are not relevant */ }
                 }
+            }
+            Event::TextInput { text } if self.url_edit.is_some() => {
+                self.url_edit_insert(text);
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -2067,26 +2348,49 @@ impl Draw for WebEngineView {
         // cannot disagree. The bar can also be taller than the view is: `top_band` clamps it,
         // which is what stops a 20 px view from painting a 28 px bar over its own content.
         let bar = ControlMetrics::top_band(g, dimensions::WEB_URL_BAR_HEIGHT);
+        self.url_bar_rect = Some(bar);
         ctx.fill_rect(bar, page.blend(&ink, 0.10));
         let url_font = Font::default_ui();
         let url_h = ctx.measure_text("M", &url_font).height;
+        // An editing bar shows its buffer and a caret; otherwise it is the read-only label it has
+        // always been (MW-012).
+        let editing = self.url_edit.is_some();
+        let url_text: &str = match self.url_edit.as_deref() {
+            Some(buffer) => buffer,
+            None => self.url(),
+        };
         // An empty URL is *nothing to say*, not an empty text element: `draw_text_fitted` on an
         // empty string emitted `<text x="7" y="7" ...></text>` into `web_engine_view.svg` — a
         // zero-content element that a downstream bounds reader still has to handle. The guard
         // is the same one every other labelled control in the crate uses.
-        if !self.url().is_empty() {
+        if editing || !url_text.is_empty() {
+            let line = Rect::new(
+                bar.x + 4,
+                bar.y + (bar.height as i32 - url_h as i32) / 2,
+                bar.width.saturating_sub(8),
+                url_h,
+            );
             ctx.draw_text_fitted_cow(
-                Rect::new(
-                    bar.x + 4,
-                    bar.y + (bar.height as i32 - url_h as i32) / 2,
-                    bar.width.saturating_sub(8),
-                    url_h,
-                ),
-                self.url(),
+                line,
+                url_text,
                 &url_font,
                 ink.blend(&page, 0.35),
                 HorizontalAlignment::Left,
             );
+            if editing {
+                let mut caret = self.url_edit_caret.min(url_text.len());
+                while caret > 0 && !url_text.is_char_boundary(caret) {
+                    caret -= 1;
+                }
+                let prefix = url_text.get(..caret).unwrap_or("");
+                let caret_x = (bar.x + 4 + ctx.measure_text(prefix, &url_font).width as i32)
+                    .min(bar.right() - 4);
+                ctx.draw_line(
+                    Point::new(caret_x, bar.y + 5),
+                    Point::new(caret_x, bar.bottom() - 5),
+                    ink,
+                );
+            }
         }
         // A load in progress paints a quiet hint at the top of the page area; it never hides the
         // content already parsed.
@@ -2122,9 +2426,50 @@ impl Draw for WebEngineView {
                 role_font(self.base.style(), 18.0 * self.zoom_factor).with_bold(true);
             let line_h = ctx.measure_text("M", &page_font).height.max(1) as i32 + 2;
             let text_width = content.width.saturating_sub(24);
+            // Wrapping the whole page every frame re-measured every block (MW-011). The layout is
+            // keyed by the document revision and the three inputs that change a line break: the
+            // content width, the zoom factor and the measured line height. A frame whose page has
+            // not changed reuses the ranges and only paints them.
+            let layout_stale = match &self.page_layout {
+                Some(cache) => {
+                    cache.revision != self.html_revision
+                        || cache.width != text_width
+                        || cache.zoom_bits != self.zoom_factor.to_bits()
+                        || cache.line_height != line_h as u32
+                }
+                None => true,
+            };
+            if layout_stale {
+                let mut lines = Vec::with_capacity(self.html_blocks.len());
+                for block in &self.html_blocks {
+                    if block.kind == HtmlBlockKind::Image {
+                        lines.push(Vec::new());
+                        continue;
+                    }
+                    let font = if block.kind == HtmlBlockKind::Heading {
+                        &heading_font
+                    } else {
+                        &page_font
+                    };
+                    let ranges = crate::widget::text_utils::wrap_to_width(
+                        &block.text,
+                        text_width,
+                        &mut |text: &str| ctx.measure_text(text, font).width,
+                    );
+                    lines.push(ranges.into_iter().map(|range| (range.start, range.end)).collect());
+                }
+                self.page_layout = Some(PageLayoutCache {
+                    revision: self.html_revision,
+                    width: text_width,
+                    zoom_bits: self.zoom_factor.to_bits(),
+                    line_height: line_h as u32,
+                    lines,
+                });
+            }
+            let layout = self.page_layout.as_ref().expect("the layout was filled above");
             let mut y = content.y + 6 - self.scroll_offset;
             ctx.push_clip(content.x, content.y, content.width, content.height);
-            for block in &self.html_blocks {
+            for (block, ranges) in self.html_blocks.iter().zip(layout.lines.iter()) {
                 if block.kind == HtmlBlockKind::Image {
                     let image_rect =
                         Rect::new(content.x + 8, y, text_width.min(180), (line_h * 3) as u32);
@@ -2142,19 +2487,14 @@ impl Draw for WebEngineView {
                 }
                 let font =
                     if block.kind == HtmlBlockKind::Heading { &heading_font } else { &page_font };
-                let ranges = crate::widget::text_utils::wrap_to_width(
-                    &block.text,
-                    text_width,
-                    &mut |text: &str| ctx.measure_text(text, font).width,
-                );
                 let color = match block.kind {
                     HtmlBlockKind::Link => accent,
                     HtmlBlockKind::Heading => ink,
                     _ => ink.blend(&page, 0.25),
                 };
-                for range in ranges {
+                for (start, end) in ranges {
                     if y + line_h >= content.y && y < content.y + content.height as i32 {
-                        if let Some(text) = block.text.get(range) {
+                        if let Some(text) = block.text.get(*start..*end) {
                             ctx.draw_text_fitted_cow(
                                 Rect::new(content.x + 8, y, text_width, line_h as u32),
                                 text,
@@ -2634,6 +2974,77 @@ mod tests {
                 "{name} must document that it is a placeholder facade, got:\n{doc}"
             );
         }
+    }
+
+    /// Whole-word matching excludes substrings and the option survives both find entry points
+    /// (MW-013).
+    #[test]
+    fn whole_word_find_excludes_substrings_and_toggles_the_active_query() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        view.load_html("<p>cat category cat</p>");
+        assert_eq!(view.find_text("cat", false, false), (3, 3));
+        let (count, selected) = view.find_text_with_options("cat", false, true, false);
+        assert_eq!((count, selected), (2, 3));
+        // Setting the option re-runs the active query and the simple entry point honours it.
+        view.set_find_whole_word(true);
+        assert_eq!(view.find_text("cat", false, false), (2, 3));
+        view.set_find_whole_word(false);
+        assert_eq!(view.find_text("cat", false, false), (3, 3));
+        // A query that is not composed of word characters has no whole-word form.
+        assert_eq!(view.find_text_with_options(" ", false, true, false), (0, 0));
+    }
+
+    /// The address bar accepts an edit and navigates on Enter (MW-012).
+    #[test]
+    fn the_url_bar_is_editable_and_commits_on_enter() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        view.load_html("<p>page</p>");
+        let _ = crate::widget::svg::render_to_svg(&mut view);
+        let bar = view.url_bar_rect.expect("the bar was painted");
+        view.handle_event(&Event::MousePress { pos: bar.center(), button: 1, modifiers: 0 });
+        assert!(view.is_editing_url());
+        assert_eq!(view.url_edit_text(), Some("data:text/html"));
+
+        // Editing keys replace the buffer; Escape abandons it.
+        view.handle_event(&Event::KeyPress { key: 8, modifiers: 0 });
+        view.handle_event(&Event::TextInput { text: "/next".to_string() });
+        assert_eq!(view.url_edit_text(), Some("data:text/htm/next"));
+        view.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert!(!view.is_editing_url());
+        assert_eq!(view.url(), "data:text/html");
+
+        // A committed address navigates.
+        view.begin_url_edit();
+        view.set_url_edit_text("https://example.com/next");
+        assert!(view.commit_url_edit());
+        assert!(!view.is_editing_url());
+        assert_eq!(view.url(), "https://example.com/next");
+    }
+
+    /// The wrapped page layout is reused until a document, width or zoom input changes (MW-011).
+    #[test]
+    fn the_page_layout_is_reused_until_a_layout_input_changes() {
+        let mut view = WebEngineView::new(Rect::new(0, 0, 300, 200));
+        view.load_html("<p>alpha beta gamma delta</p><p>second block</p>");
+        let _ = crate::widget::svg::render_to_svg(&mut view);
+        let layout = view.page_layout.as_ref().expect("the page was laid out");
+        assert_eq!(layout.revision, view.html_revision);
+        let lines = layout.lines.as_ptr();
+        let _ = crate::widget::svg::render_to_svg(&mut view);
+        assert_eq!(
+            view.page_layout.as_ref().unwrap().lines.as_ptr(),
+            lines,
+            "a frame with an unchanged page must reuse its layout"
+        );
+        view.set_zoom_factor(2.0);
+        let _ = crate::widget::svg::render_to_svg(&mut view);
+        assert_eq!(
+            view.page_layout.as_ref().unwrap().zoom_bits,
+            2.0f32.to_bits(),
+            "a zoom change re-lays the page"
+        );
+        view.load_html("<p>new</p>");
+        assert!(view.page_layout.is_none(), "a new document invalidates the layout");
     }
 }
 

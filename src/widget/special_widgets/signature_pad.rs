@@ -21,6 +21,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use core::cell::{Ref, RefCell};
+use core::fmt::Write as _;
 
 /// Hands out the identities the render layer cache uses to recognise unchanged committed ink.
 ///
@@ -395,24 +396,31 @@ impl SignaturePad {
     /// exported signature is ink on a transparent background.
     pub fn export_svg(&self) -> String {
         let rect = self.geometry();
-        let mut svg = format!(
+        // One output buffer, written in place: the old form built a `path` string with a fresh
+        // `format!` per point and then copied it into the document, so a long signature allocated
+        // twice per point (SP-105). `write!` renders the number directly into the document.
+        let mut svg = String::with_capacity(64 + self.strokes.len() * 96);
+        let _ = write!(
+            svg,
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"{} {} {} {}\">",
             rect.width, rect.height, rect.x, rect.y, rect.width, rect.height
         );
-        let color =
-            format!("rgb({},{},{})", self.stroke_color.r, self.stroke_color.g, self.stroke_color.b);
         for stroke in &self.strokes {
             let Some(first) = stroke.points().first() else {
                 continue;
             };
-            let mut path = format!("M {} {}", first.x, first.y);
+            let _ = write!(svg, "<path d=\"M {} {}", first.x, first.y);
             for point in &stroke.points()[1..] {
-                path.push_str(&format!(" L {} {}", point.x, point.y));
+                let _ = write!(svg, " L {} {}", point.x, point.y);
             }
-            svg.push_str(&format!(
-                "<path d=\"{path}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n",
+            let _ = writeln!(
+                svg,
+                "\" fill=\"none\" stroke=\"rgb({},{},{})\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+                self.stroke_color.r,
+                self.stroke_color.g,
+                self.stroke_color.b,
                 self.stroke_width.max(1)
-            ));
+            );
         }
         svg.push_str("</svg>");
         svg
@@ -1668,6 +1676,34 @@ mod tests {
         assert_eq!(
             SignatureStroke::new().summary(),
             "points=0;pressure_avg=1.000;pressure_min=1.000;pressure_max=1.000"
+        );
+    }
+
+    /// SP-105: the single-pass SVG writer emits the same document the per-point form did.
+    #[test]
+    fn svg_export_writes_one_path_per_stroke() {
+        let mut p = pad();
+        p.strokes.push(SignatureStroke::from_points(vec![
+            Point::new(1, 2),
+            Point::new(3, 4),
+            Point::new(5, 6),
+        ]));
+        // An empty stroke contributes nothing rather than an empty path.
+        p.strokes.push(SignatureStroke::new());
+        p.strokes.push(SignatureStroke::from_points(vec![Point::new(7, 8)]));
+
+        let svg = p.export_svg();
+        assert_eq!(
+            svg,
+            concat!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"320\" height=\"160\" ",
+                "viewBox=\"0 0 320 160\">",
+                "<path d=\"M 1 2 L 3 4 L 5 6\" fill=\"none\" stroke=\"rgb(20,20,20)\" ",
+                "stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n",
+                "<path d=\"M 7 8\" fill=\"none\" stroke=\"rgb(20,20,20)\" ",
+                "stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n",
+                "</svg>"
+            )
         );
     }
 }

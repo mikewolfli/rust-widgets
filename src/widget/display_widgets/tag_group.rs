@@ -16,7 +16,7 @@
 //! added. Until then it is reachable as
 //! `crate::widget::display_widgets::tag_group::TagGroup`.
 
-use crate::compat::{Arc, RefCell, String, Vec};
+use crate::compat::{Arc, Cell, RefCell, String, Vec};
 use crate::core::{Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;

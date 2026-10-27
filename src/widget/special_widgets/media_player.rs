@@ -136,6 +136,29 @@ impl RepeatMode {
     }
 }
 
+/// One subtitle cue: the half-open interval `[start_ms, end_ms)` and the text shown in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubtitleCue {
+    /// First position the cue is visible at.
+    pub start_ms: u64,
+    /// First position the cue is no longer visible at.
+    pub end_ms: u64,
+    /// The text painted while the cue is active.
+    pub text: String,
+}
+
+impl SubtitleCue {
+    /// Creates a cue, normalising an inverted interval to empty rather than negative.
+    pub fn new(start_ms: u64, end_ms: u64, text: impl Into<String>) -> Self {
+        Self { start_ms, end_ms: end_ms.max(start_ms), text: text.into() }
+    }
+
+    /// Whether `position_ms` falls inside the cue's half-open interval.
+    pub fn contains(&self, position_ms: u64) -> bool {
+        position_ms >= self.start_ms && position_ms < self.end_ms
+    }
+}
+
 /// A media transport: source, clock, transport rule, volume, rate and optional picture.
 ///
 /// The control owns the interaction and the display; decoding and process handling stay with
@@ -208,6 +231,17 @@ pub struct MediaPlayer {
     pub media_ended: GenericSignal,
     /// Emitted with the chapter index when a chapter marker is pressed.
     pub chapter_selected: Signal1<usize>,
+    /// Whether the formatted `position / duration` readout is painted (SP-106).
+    show_time_readout: bool,
+    /// The seek position the pointer is previewing over the transport rule.
+    seek_preview_ms: Option<u64>,
+    /// Buffered ranges as `(start_ms, end_ms)`, painted on the transport rule (SP-106).
+    buffer_ranges: Vec<(u64, u64)>,
+    /// Subtitle cues, painted while the clock is inside one (SP-106).
+    subtitles: Vec<SubtitleCue>,
+    /// Emitted with the seek position while the pointer hovers the transport rule, and with
+    /// `None` when it leaves. Nothing is emitted with no subscribers (SP-106).
+    pub seek_preview: Signal1<Option<u64>>,
 }
 
 impl MediaPlayer {
@@ -241,7 +275,123 @@ impl MediaPlayer {
             source_changed: Signal1::new(),
             media_ended: GenericSignal::new(),
             chapter_selected: Signal1::new(),
+            show_time_readout: false,
+            seek_preview_ms: None,
+            buffer_ranges: Vec::new(),
+            subtitles: Vec::new(),
+            seek_preview: Signal1::new(),
         }
+    }
+
+    /// Whether the time readout is painted.
+    pub fn show_time_readout(&self) -> bool {
+        self.show_time_readout
+    }
+
+    /// Enables the `position / duration` readout. It is off by default, so the historical view
+    /// is unchanged unless a caller asks for it.
+    pub fn set_show_time_readout(&mut self, show: bool) {
+        if self.show_time_readout == show {
+            return;
+        }
+        self.show_time_readout = show;
+        self.base.request_redraw();
+    }
+
+    /// The formatted `position / duration` readout, e.g. `1:05 / 2:05`.
+    pub fn time_readout(&self) -> String {
+        crate::compat::format!(
+            "{} / {}",
+            Self::format_time(self.position_ms()),
+            Self::format_time(self.duration_ms)
+        )
+    }
+
+    /// The `m:ss` or `h:mm:ss` label for a millisecond position.
+    fn format_time(ms: u64) -> String {
+        let seconds = ms / 1000;
+        let hours = seconds / 3600;
+        let minutes = (seconds / 60) % 60;
+        let seconds = seconds % 60;
+        if hours > 0 {
+            crate::compat::format!("{hours}:{minutes:02}:{seconds:02}")
+        } else {
+            crate::compat::format!("{minutes}:{seconds:02}")
+        }
+    }
+
+    /// The seek position the pointer is previewing, if any.
+    pub fn seek_preview_ms(&self) -> Option<u64> {
+        self.seek_preview_ms
+    }
+
+    /// Replaces the buffered ranges shown on the transport rule.
+    pub fn set_buffer_ranges(&mut self, mut ranges: Vec<(u64, u64)>) {
+        for range in &mut ranges {
+            if range.1 < range.0 {
+                core::mem::swap(&mut range.0, &mut range.1);
+            }
+        }
+        if self.buffer_ranges == ranges {
+            return;
+        }
+        self.buffer_ranges = ranges;
+        self.base.request_redraw();
+    }
+
+    /// The buffered ranges as configured.
+    pub fn buffer_ranges(&self) -> &[(u64, u64)] {
+        &self.buffer_ranges
+    }
+
+    /// Replaces the subtitle cues. An empty list is the default and paints nothing.
+    pub fn set_subtitles(&mut self, cues: Vec<SubtitleCue>) {
+        if self.subtitles == cues {
+            return;
+        }
+        self.subtitles = cues;
+        self.base.request_redraw();
+    }
+
+    /// The subtitle cues as configured.
+    pub fn subtitles(&self) -> &[SubtitleCue] {
+        &self.subtitles
+    }
+
+    /// The first cue covering `position_ms`.
+    pub fn subtitle_at(&self, position_ms: u64) -> Option<&str> {
+        self.subtitles.iter().find(|cue| cue.contains(position_ms)).map(|cue| cue.text.as_str())
+    }
+
+    /// The cue covering the current clock position.
+    pub fn active_subtitle(&self) -> Option<&str> {
+        self.subtitle_at(self.position_ms())
+    }
+
+    /// Updates the seek preview, publishing it only when something is listening.
+    ///
+    /// A preview is a hint to the host, so an unwired player must not repaint on every pointer
+    /// move over the rule: with no subscriber the state is still remembered (a later subscriber
+    /// sees the current answer) but no signal and no frame are produced.
+    fn update_seek_preview(&mut self, preview: Option<u64>) {
+        if self.seek_preview_ms == preview {
+            return;
+        }
+        self.seek_preview_ms = preview;
+        if self.seek_preview.slot_count() > 0 {
+            self.seek_preview.emit(preview);
+            self.base.request_redraw();
+        }
+    }
+
+    /// The seek position a pointer at `pos` addresses on the transport rule.
+    fn position_from_point(&self, pos: Point) -> Option<u64> {
+        let bar = self.progress_rect();
+        if bar.width == 0 || self.duration_ms == 0 {
+            return None;
+        }
+        let ratio = ((pos.x - bar.x) as f32 / bar.width as f32).clamp(0.0, 1.0);
+        Some((f64::from(ratio) * self.duration_ms as f64).round() as u64)
     }
 
     /// The master timeline, so a caller can read the rate or ask for a frame verdict.
@@ -270,6 +420,7 @@ impl MediaPlayer {
         self.title_cache = source.rsplit('/').next().unwrap_or(source.as_str()).to_string();
         self.source = Some(source.clone());
         self.duration_ms = duration_ms;
+        self.seek_preview_ms = None;
         self.clock.stop();
         self.clock.set_duration(duration_ms as f64 / 1000.0);
         self.source_changed.emit(source);
@@ -283,6 +434,7 @@ impl MediaPlayer {
         self.source = None;
         self.title_cache = String::from("No media");
         self.duration_ms = 0;
+        self.seek_preview_ms = None;
         self.clock.stop();
         self.clock.set_duration(0.0);
         self.playback_changed.emit(false);
@@ -592,12 +744,9 @@ impl MediaPlayer {
 
     /// Seeks to the ratio under `pos` on the progress rule.
     fn seek_from_point(&mut self, pos: Point) {
-        let bar = self.progress_rect();
-        if bar.width == 0 || self.duration_ms == 0 {
-            return;
+        if let Some(position) = self.position_from_point(pos) {
+            self.seek_to(position);
         }
-        let ratio = ((pos.x - bar.x) as f32 / bar.width as f32).clamp(0.0, 1.0);
-        self.seek_to((f64::from(ratio) * self.duration_ms as f64).round() as u64);
     }
 
     /// Sets the volume from a position on the volume rail.
@@ -986,6 +1135,13 @@ impl EventHandler for MediaPlayer {
                     self.seek_from_point(*pos);
                 } else if self.adjusting_volume {
                     self.volume_from_point(*pos);
+                } else {
+                    let preview = if self.progress_rect().contains_point(*pos) {
+                        self.position_from_point(*pos)
+                    } else {
+                        None
+                    };
+                    self.update_seek_preview(preview);
                 }
             }
             Event::MouseRelease { .. } => {
@@ -995,6 +1151,7 @@ impl EventHandler for MediaPlayer {
             Event::MouseLeave { .. } => {
                 self.scrubbing = false;
                 self.adjusting_volume = false;
+                self.update_seek_preview(None);
             }
             // Other events are not relevant for this widget
             _ => {}
@@ -1151,11 +1308,53 @@ impl Draw for MediaPlayer {
         // The track is a *derivative* of the surface rather than a fourth independent colour: it must
         // read as a recess in whatever the panel is, and stay there when the palette moves.
         context.fill_rect(bar_rect, surface.blend(&ink, 0.14));
+        // Buffered ranges sit between the empty track and the played fill, so a reader can see
+        // what is available without confusing it with what has been watched (SP-106).
+        if self.duration_ms > 0 {
+            let buffered = surface.blend(&ink, 0.28);
+            for (start, end) in &self.buffer_ranges {
+                let start = (*start).min(self.duration_ms);
+                let end = (*end).min(self.duration_ms);
+                if end <= start {
+                    continue;
+                }
+                let x0 = bar_rect.x
+                    + (bar_rect.width as f64 * start as f64 / self.duration_ms as f64) as i32;
+                let x1 = bar_rect.x
+                    + (bar_rect.width as f64 * end as f64 / self.duration_ms as f64) as i32;
+                context.fill_rect(
+                    Rect::new(x0, bar_rect.y, (x1 - x0).max(1) as u32, bar_rect.height),
+                    buffered,
+                );
+            }
+        }
         let fill_w = ((bar_rect.width as f32) * self.progress_ratio()) as u32;
         if fill_w > 0 {
             // The progress fill is a **value indicator**, so it is the accent — exactly as a
             // slider's fill and a progress bar's are — rather than a fixed blue.
             context.fill_rect(Rect::new(bar_rect.x, bar_rect.y, fill_w, bar_rect.height), accent);
+        }
+        // A seek preview is painted only while something is listening to the preview signal, so
+        // an unwired player keeps its historical appearance (SP-106).
+        if self.seek_preview.slot_count() > 0 {
+            if let Some(position) = self.seek_preview_ms {
+                let ratio = (position as f64 / self.duration_ms.max(1) as f64).clamp(0.0, 1.0);
+                let x = bar_rect.x + (bar_rect.width as f64 * ratio) as i32;
+                context.draw_line_stroke(
+                    Point::new(x, bar_rect.y - 4),
+                    Point::new(x, bar_rect.y + bar_rect.height as i32 + 4),
+                    accent,
+                    1,
+                );
+                let band = Rect::new((x - 24).max(bar_rect.x), bar_rect.y - 20, 48, 12);
+                context.draw_text_fitted_cow(
+                    band,
+                    &Self::format_time(position),
+                    font,
+                    accent,
+                    HorizontalAlignment::Center,
+                );
+            }
         }
         // Chapter markers: a thin notch at each chapter's position, so the structure of the
         // media is readable from the transport rule without opening a menu.
@@ -1181,6 +1380,23 @@ impl Draw for MediaPlayer {
                 Rect::new(volume_rail.x, volume_rail.y, volume_w, volume_rail.height),
                 accent,
             );
+        }
+        // The time readout is opt-in so the historical view is unchanged. Right-aligned on the
+        // row above the transport rule, away from the loading text on the left (SP-106).
+        if self.show_time_readout {
+            let readout = self.time_readout();
+            let band = Rect::new(
+                (bar_rect.x + bar_rect.width as i32 - 96).max(bar_rect.x),
+                bar_rect.y - 22,
+                96.min(bar_rect.width),
+                16,
+            );
+            context.draw_text_fitted_cow(band, &readout, font, muted, HorizontalAlignment::Right);
+        }
+        // An active subtitle is painted over the picture area, centred above the transport rule.
+        if let Some(subtitle) = self.active_subtitle() {
+            let band = Rect::new(bar_rect.x, bar_rect.y - 38, bar_rect.width, 16);
+            context.draw_text_fitted_cow(band, subtitle, font, ink, HorizontalAlignment::Center);
         }
         // The rate is shown only when it is not real time, so the ordinary view stays uncluttered.
         if (self.rate - 1.0).abs() > f32::EPSILON {
@@ -1651,5 +1867,69 @@ mod tests {
         assert!(pb.contains(&false));
         let pos = position_events.lock().ok().map(|g| g.clone()).unwrap_or_default();
         assert!(pos.contains(&0));
+    }
+
+    /// SP-106: the time readout formats the clock and is off by default.
+    #[test]
+    fn time_readout_formats_position_and_duration() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 240));
+        assert!(!player.show_time_readout());
+        player.set_source("clip.mp4", 125_000);
+        player.seek_to(65_000);
+        assert_eq!(player.time_readout(), "1:05 / 2:05");
+        player.set_show_time_readout(true);
+        assert!(player.show_time_readout());
+
+        player.set_source("long.mp4", 3_725_000);
+        player.seek_to(3_600_000);
+        assert_eq!(player.time_readout(), "1:00:00 / 1:02:05");
+    }
+
+    /// SP-106: a pointer over the rule previews a seek position and leaves with `None`.
+    #[test]
+    fn seek_preview_reports_the_hovered_position() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_source("clip.mp4", 100_000);
+        let previews = Arc::new(Mutex::new(Vec::<Option<u64>>::new()));
+        let sink = previews.clone();
+        player.seek_preview.connect(move |value| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*value);
+            }
+        });
+
+        let bar = player.progress_rect();
+        let y = bar.y + bar.height as i32 / 2;
+        player.handle_event(&Event::mouse_move(bar.x + bar.width as i32 / 2, y));
+        assert_eq!(player.seek_preview_ms(), Some(50_000));
+
+        player.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert_eq!(player.seek_preview_ms(), None);
+        let got = previews.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
+        assert_eq!(got, vec![Some(50_000), None]);
+    }
+
+    /// SP-106: subtitle cues and buffered ranges are opt-in data, empty by default.
+    #[test]
+    fn subtitle_cues_and_buffer_ranges_are_opt_in() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 240));
+        player.set_source("clip.mp4", 100_000);
+        assert!(player.subtitles().is_empty());
+        assert!(player.buffer_ranges().is_empty());
+
+        player.set_subtitles(vec![
+            SubtitleCue::new(10_000, 20_000, "first line"),
+            SubtitleCue::new(20_000, 30_000, "second line"),
+        ]);
+        player.seek_to(15_000);
+        assert_eq!(player.active_subtitle(), Some("first line"));
+        player.seek_to(20_000);
+        assert_eq!(player.active_subtitle(), Some("second line"), "the interval is half-open");
+        player.seek_to(30_000);
+        assert_eq!(player.active_subtitle(), None);
+
+        // An inverted range is normalised rather than drawn backwards.
+        player.set_buffer_ranges(vec![(30_000, 10_000), (40_000, 60_000)]);
+        assert_eq!(player.buffer_ranges(), &[(10_000, 30_000), (40_000, 60_000)]);
     }
 }

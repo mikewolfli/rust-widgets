@@ -430,6 +430,12 @@ pub struct KanbanBoard {
     column_scroll: Vec<usize>,
     /// Width of one column, in logical pixels.
     column_width: u32,
+    /// Per-column width overrides, keyed by column id.
+    ///
+    /// Keyed by id rather than index so an override follows its column across a reorder. A column
+    /// without an entry uses [`Self::column_width`], which keeps every existing board at the one
+    /// global width it had before overrides existed.
+    column_widths: HashMap<String, u32>,
     /// How far the columns are scrolled left, in pixels.
     horizontal_scroll: i32,
     /// The swimlanes, in display order.
@@ -498,6 +504,7 @@ impl KanbanBoard {
             focused_card: None,
             column_scroll: Vec::new(),
             column_width: DEFAULT_COLUMN_WIDTH,
+            column_widths: HashMap::new(),
             horizontal_scroll: 0,
             lanes: Vec::new(),
             card_lanes: HashMap::new(),
@@ -535,6 +542,8 @@ impl KanbanBoard {
             return None;
         }
         let removed = self.columns.remove(index);
+        // The override belongs to the column that left, not to the index it used to occupy.
+        self.column_widths.remove(&removed.id);
         // A lane assignment names a card; a card that left the board must not keep one.
         let mut selection_touched = false;
         for card in &removed.cards {
@@ -932,19 +941,103 @@ impl KanbanBoard {
             return None;
         }
         let rect = self.geometry();
-        let stride = self.column_width as i32 + COLUMN_GAP;
         // Clamped on read as well as on write: a board that shrank after its offset was set would
         // otherwise paint past its content and show empty space.
         let scroll = self.horizontal_scroll.min(self.max_horizontal_scroll());
         // In lane mode the left strip names the lanes, so the columns begin after it.
         let origin = rect.x + if self.lanes_active() { LANE_HEADER_WIDTH as i32 } else { 0 };
-        let x = origin - scroll + (index as i32) * stride;
-        Some(Rect::new(x, rect.y, self.column_width, rect.height))
+        // Per-column widths make the stride non-uniform, so the column's left edge is the sum of
+        // the widths and gaps before it rather than `index * stride`.
+        let mut x = origin - scroll;
+        for previous in 0..index {
+            x += self.column_width_at(previous) as i32 + COLUMN_GAP;
+        }
+        Some(Rect::new(x, rect.y, self.column_width_at(index), rect.height))
     }
 
     /// Returns the width of one column.
+    ///
+    /// This is the board-wide default; a column with an override reports it from
+    /// [`Self::column_width_at`] instead.
     pub fn column_width(&self) -> u32 {
         self.column_width
+    }
+
+    /// The width column `index` is painted at: its override, or the board-wide default.
+    pub fn column_width_at(&self, index: usize) -> u32 {
+        self.columns
+            .get(index)
+            .and_then(|column| self.column_widths.get(&column.id))
+            .copied()
+            .unwrap_or(self.column_width)
+    }
+
+    /// Overrides the width of column `index`, or clears the override when `width` is `None`.
+    ///
+    /// Returns whether `index` named a column. The width is floored at [`MIN_COLUMN_WIDTH`], the
+    /// same floor [`Self::set_column_width`] applies, so an override cannot produce a column that
+    /// no longer has room for a card title.
+    pub fn set_column_width_at(&mut self, index: usize, width: Option<u32>) -> bool {
+        let Some(column) = self.columns.get(index) else {
+            return false;
+        };
+        let id = column.id.clone();
+        let changed = match width {
+            Some(width) => {
+                let width = width.max(MIN_COLUMN_WIDTH);
+                self.column_widths.insert(id, width) != Some(width)
+            }
+            None => self.column_widths.remove(&id).is_some(),
+        };
+        if changed {
+            self.clamp_horizontal_scroll();
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+        true
+    }
+
+    /// Whether column `index` is collapsed, or `None` when the index names no column.
+    pub fn is_column_collapsed(&self, index: usize) -> Option<bool> {
+        self.columns.get(index).map(|column| column.collapsed)
+    }
+
+    /// Collapses or expands column `index`; returns whether the index named a column.
+    pub fn set_column_collapsed(&mut self, index: usize, collapsed: bool) -> bool {
+        let Some(column) = self.columns.get_mut(index) else {
+            return false;
+        };
+        if column.collapsed == collapsed {
+            return true;
+        }
+        column.collapsed = collapsed;
+        self.invalidate_layout();
+        self.clamp_horizontal_scroll();
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Flips the collapsed state of column `index`; returns whether the index named a column.
+    pub fn toggle_column_collapsed(&mut self, index: usize) -> bool {
+        match self.is_column_collapsed(index) {
+            Some(collapsed) => self.set_column_collapsed(index, !collapsed),
+            None => false,
+        }
+    }
+
+    /// The painted box of a column header's collapse chevron, or `None` for an unknown index.
+    ///
+    /// The same leading-edge cell [`KanbanColumnHeader::collapse_rect`] uses, so the board's
+    /// inline header and the standalone header control present one target at one place.
+    pub fn column_collapse_rect(&self, index: usize) -> Option<Rect> {
+        let column_rect = self.column_rect(index)?;
+        Some(Rect::new(
+            column_rect.x + 4,
+            column_rect.y + (HEADER_HEIGHT as i32 - HEADER_ICON) / 2,
+            HEADER_ICON as u32,
+            HEADER_ICON as u32,
+        ))
     }
 
     /// Sets the width of one column (floored at `MIN_COLUMN_WIDTH`).
@@ -984,8 +1077,10 @@ impl KanbanBoard {
         if self.columns.is_empty() {
             return 0;
         }
-        let content =
-            self.columns.len() as i32 * (self.column_width as i32 + COLUMN_GAP) - COLUMN_GAP;
+        let content: i32 = (0..self.columns.len())
+            .map(|index| self.column_width_at(index) as i32 + COLUMN_GAP)
+            .sum::<i32>()
+            - COLUMN_GAP;
         let lane_strip = if self.lanes_active() { LANE_HEADER_WIDTH as i32 } else { 0 };
         let viewport = (self.geometry().width as i32 - lane_strip).max(0);
         (content - viewport).max(0)
@@ -1036,21 +1131,79 @@ impl KanbanBoard {
         if self.lanes_active() && pos.x < self.geometry().x + LANE_HEADER_WIDTH as i32 {
             return None;
         }
-        (0..self.columns.len())
-            .find(|index| self.column_rect(*index).is_some_and(|rect| rect.contains_point(pos)))
+        // Walked with a running left edge rather than through `column_rect` per index: the
+        // per-column widths make each rect an O(index) sum, and calling it in the loop made the
+        // hit test quadratic in the column count.
+        let rect = self.geometry();
+        let scroll = self.horizontal_scroll.min(self.max_horizontal_scroll());
+        let origin = rect.x + if self.lanes_active() { LANE_HEADER_WIDTH as i32 } else { 0 };
+        let mut x = origin - scroll;
+        for index in 0..self.columns.len() {
+            let width = self.column_width_at(index);
+            if Rect::new(x, rect.y, width, rect.height).contains_point(pos) {
+                return Some(index);
+            }
+            x += width as i32 + COLUMN_GAP;
+        }
+        None
     }
 
     /// The card under `pos`, when the pointer is over one.
     fn card_at(&self, pos: Point) -> Option<CardPosition> {
         let column = self.column_at(pos)?;
         let entries = self.columns.get(column)?;
-        for index in 0..entries.cards.len() {
-            let position = CardPosition { column, card: index };
-            if self.card_rect(position).is_some_and(|rect| rect.contains_point(pos)) {
-                return Some(position);
-            }
+        if entries.collapsed {
+            return None;
         }
-        None
+        // Lane mode paints each card at the ordinal the cached layout gave it, so there is no
+        // closed-form slot to invert; the column is still bounded, and the lane cache makes each
+        // probe constant-time.
+        if self.lanes_active() {
+            for index in 0..entries.cards.len() {
+                let position = CardPosition { column, card: index };
+                if self.card_rect(position).is_some_and(|rect| rect.contains_point(pos)) {
+                    return Some(position);
+                }
+            }
+            return None;
+        }
+        // The flat layout is an arithmetic grid: the slot under the pointer is its y offset from
+        // the first row divided by the row pitch, offset by the column's scroll. Looking the card
+        // up this way makes the hit test O(1) instead of walking every card in the column.
+        let rect = self.column_rect(column)?;
+        let first_y = rect.y + HEADER_HEIGHT as i32;
+        if pos.y < first_y {
+            return None;
+        }
+        let stride = CARD_HEIGHT as i32 + CARD_GAP;
+        let slot = ((pos.y - first_y) / stride) as usize;
+        let scroll = self.column_scroll.get(column).copied().unwrap_or(0);
+        let position = CardPosition { column, card: scroll + slot };
+        // The gap between two cards belongs to neither, and a slot past the column's last card
+        // names no card; `card_rect` returns `None` in both cases.
+        self.card_rect(position).filter(|rect| rect.contains_point(pos)).map(|_| position)
+    }
+
+    /// The inclusive/exclusive range of cards a column paints at its current scroll.
+    ///
+    /// The controller already exposes only the cards of one column at a time; this is that window
+    /// as a range, so the paint loop stops at the viewport edge instead of walking every card that
+    /// the column clip would discard. A lane board has no per-column window and keeps the full
+    /// range, which is exactly the behaviour it had before.
+    fn visible_card_range(&self, column: usize) -> (usize, usize) {
+        let Some(entries) = self.columns.get(column) else {
+            return (0, 0);
+        };
+        if self.lanes_active() {
+            return (0, entries.cards.len());
+        }
+        let scroll = self.column_scroll.get(column).copied().unwrap_or(0).min(entries.cards.len());
+        // One extra card past the last fully visible row: a partially visible card still paints.
+        let end = scroll
+            .saturating_add(self.visible_cards_per_column())
+            .saturating_add(1)
+            .min(entries.cards.len());
+        (scroll, end)
     }
 
     /// The index a card dropped at `pos` would take within `column`.
@@ -1108,12 +1261,14 @@ impl KanbanBoard {
         }
         // The midpoint rule: a pointer past a card's vertical centre inserts after
         // it. This is what makes the drop land where the user's cursor is rather
-        // than always above the card under it.
+        // than always above the card under it. The pointer is relative to the painted window, so
+        // the column's scroll offset is added back to name an index in the model.
         let stride = CARD_HEIGHT as i32 + CARD_GAP;
         let offset = pos.y - first_card_y;
+        let scroll = self.column_scroll.get(column).copied().unwrap_or(0);
         let index = (offset + stride / 2) / stride;
         // Clamped to the column's length: a pointer below the last card appends.
-        (index as usize).min(entries.cards.len())
+        (scroll + index as usize).min(entries.cards.len())
     }
 
     // ── Keyboard and column scrolling ──────────────────────────────────────
@@ -1564,9 +1719,10 @@ impl Widget for KanbanBoard {
     }
 
     fn size_hint(&self) -> Size {
-        // Wide enough for two columns, which is the smallest useful board.
+        // Wide enough for two columns, which is the smallest useful board. An overridden column
+        // contributes its own width, so the hint does not under-report a widened board.
         Size::new(
-            self.column_width * 2 + COLUMN_GAP as u32,
+            self.column_width_at(0) + self.column_width_at(1) + COLUMN_GAP as u32,
             HEADER_HEIGHT + (CARD_HEIGHT + CARD_GAP as u32) * 3,
         )
     }
@@ -1862,6 +2018,15 @@ impl EventHandler for KanbanBoard {
         }
         match event {
             Event::MousePress { pos, button, modifiers } if *button == 1 => {
+                // The collapse chevron is a header target, checked before any card hit: a press on
+                // it must not start a drag or change the selection.
+                let collapse = (0..self.columns.len()).find(|index| {
+                    self.column_collapse_rect(*index).is_some_and(|rect| rect.contains_point(*pos))
+                });
+                if let Some(index) = collapse {
+                    self.toggle_column_collapsed(index);
+                    return;
+                }
                 if let Some(position) = self.card_at(*pos) {
                     let card_id = self
                         .columns
@@ -2269,6 +2434,13 @@ impl KanbanBoard {
         let badge_font = &fonts.badge;
         let title_font = &fonts.title;
         let desc_font = &fonts.desc;
+        // The collapse chevron is the header's leading cell, matching the standalone
+        // `KanbanColumnHeader` control. Its box is also the board's click target.
+        if let Some(icon_rect) = self.column_collapse_rect(index) {
+            let chevron = if collapsed { IconName::ChevronRight } else { IconName::ChevronDown };
+            draw_icon_at(context, icon_rect, header_color, chevron);
+        }
+        let title_left = header_rect.x + 4 + HEADER_ICON + 6;
         let header_line = context.text_line(header_rect, header_font);
         // The badge is measured first so the title knows where to stop: an unbounded
         // title ran underneath the count on the right.
@@ -2284,14 +2456,9 @@ impl KanbanBoard {
         let badge_line = context.text_line(header_rect, badge_font);
         let badge_x =
             header_rect.x + header_rect.width as i32 - CARD_PADDING - badge_metrics.width as i32;
-        let title_width = ((badge_x - 6) - (header_rect.x + CARD_PADDING)).max(0) as u32;
+        let title_width = ((badge_x - 6) - title_left).max(0) as u32;
         context.draw_text_fitted_cow(
-            Rect::new(
-                header_rect.x + CARD_PADDING,
-                header_line.y,
-                title_width,
-                header_line.height.max(1),
-            ),
+            Rect::new(title_left, header_line.y, title_width, header_line.height.max(1)),
             title,
             header_font,
             header_color,
@@ -2334,7 +2501,12 @@ impl KanbanBoard {
         // bounds its cards, so one push/pop per column replaces one per card. Before this a screen
         // of a few hundred cards paid a clip transition for every card in the paint loop.
         context.push_clip(column_rect.x, column_rect.y, column_rect.width, column_rect.height);
-        for (card_index, card) in cards.iter().enumerate() {
+        // Only the cards inside the column's scrolled window are painted: the column clip discards
+        // everything outside it anyway, so walking the whole list made a long column pay per card
+        // per frame for marks that could not reach the screen.
+        let (first_card, last_card) = self.visible_card_range(index);
+        for card_index in first_card..last_card {
+            let card = &cards[card_index];
             let position = CardPosition { column: index, card: card_index };
             let Some(card_rect) = self.card_rect(position) else {
                 continue;
@@ -2519,7 +2691,9 @@ impl KanbanBoard {
         // the board — nothing clips a widget at this layer.
         let label = session.payload().label.clone();
         let board = self.geometry();
-        let ghost_width = self.column_width;
+        let ghost_column =
+            self.hovered_column.filter(|index| *index < self.columns.len()).unwrap_or(0);
+        let ghost_width = self.column_width_at(ghost_column);
         let ghost_x = (current.x - (ghost_width as i32 / 2))
             .clamp(board.x, board.x + board.width.saturating_sub(ghost_width) as i32);
         let ghost_y = (current.y - (CARD_HEIGHT as i32 / 2))
@@ -4325,5 +4499,102 @@ mod issue_2_8_tests {
             assert_eq!(board.position_of(&card.id), Some(position));
         }
         assert!(board.position_of("missing").is_none());
+    }
+
+    /// SP-010: the hit test resolves the slot arithmetically, including under a column scroll.
+    #[test]
+    fn card_hit_test_resolves_the_scrolled_slot() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        board.add_column(KanbanColumn::new("big", "Big"));
+        for index in 0..200 {
+            board.add_card(0, KanbanCard::new(format!("c{index}"), format!("C{index}")));
+        }
+        let rect = board.card_rect(CardPosition { column: 0, card: 5 }).expect("card 5");
+        assert_eq!(
+            board.card_at(Point::new(rect.x + 4, rect.y + 4)),
+            Some(CardPosition { column: 0, card: 5 })
+        );
+
+        board.scroll_column(0, 10);
+        let rect = board.card_rect(CardPosition { column: 0, card: 15 }).expect("card 15");
+        assert_eq!(
+            board.card_at(Point::new(rect.x + 4, rect.y + 4)),
+            Some(CardPosition { column: 0, card: 15 }),
+            "the pointer names the card in the model, not the slot on screen"
+        );
+        // The inter-card gap belongs to neither neighbour.
+        assert_eq!(board.card_at(Point::new(rect.x + 4, rect.y + CARD_HEIGHT as i32 + 1)), None);
+    }
+
+    /// SP-010: a drop in a scrolled column names an index in the model.
+    #[test]
+    fn drop_index_accounts_for_column_scroll() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        board.add_column(KanbanColumn::new("big", "Big"));
+        for index in 0..50 {
+            board.add_card(0, KanbanCard::new(format!("c{index}"), format!("C{index}")));
+        }
+        board.scroll_column(0, 10);
+        let column = board.column_rect(0).expect("column 0");
+        let first_y = column.y + HEADER_HEIGHT as i32;
+        assert_eq!(board.insert_index_at(0, Point::new(column.x + 4, first_y + 4)), 10);
+    }
+
+    /// SP-011: an override changes one column's width; the rest keep the global value.
+    #[test]
+    fn per_column_width_override_defaults_to_the_global_width() {
+        let mut board = KanbanBoard::new(Rect::new(0, 0, 800, 400));
+        board.add_column(KanbanColumn::new("todo", "To Do"));
+        board.add_column(KanbanColumn::new("doing", "Doing"));
+        assert_eq!(board.column_width_at(0), board.column_width());
+        assert!(board.set_column_width_at(0, Some(300)));
+        assert_eq!(board.column_width_at(0), 300);
+        assert_eq!(board.column_width_at(1), board.column_width());
+
+        let first = board.column_rect(0).expect("column 0");
+        let second = board.column_rect(1).expect("column 1");
+        assert_eq!(first.width, 300);
+        assert_eq!(second.x - first.x, 300 + COLUMN_GAP);
+
+        assert!(board.set_column_width_at(0, None));
+        assert_eq!(board.column_width_at(0), board.column_width());
+        assert_eq!(
+            board.column_rect(1).unwrap().x - board.column_rect(0).unwrap().x,
+            DEFAULT_COLUMN_WIDTH as i32 + COLUMN_GAP
+        );
+        assert!(!board.set_column_width_at(9, Some(300)), "no such column");
+        assert!(board.set_column_width_at(0, Some(1)));
+        assert_eq!(board.column_width_at(0), MIN_COLUMN_WIDTH, "floored on write");
+    }
+
+    /// SP-011: a removed column takes its override with it.
+    #[test]
+    fn removing_a_column_drops_its_width_override() {
+        let mut board = board();
+        assert!(board.set_column_width_at(0, Some(300)));
+        board.remove_column(0);
+        assert!(!board.column_widths.contains_key("todo"));
+        board.add_column(KanbanColumn::new("todo", "To Do"));
+        assert_eq!(board.column_width_at(board.columns.len() - 1), board.column_width());
+    }
+
+    /// SP-012: the inline chevron toggles the column, and the board forwards the same state.
+    #[test]
+    fn the_inline_chevron_and_board_api_toggle_collapse() {
+        let mut board = board();
+        let chevron = board.column_collapse_rect(0).expect("column 0 has a chevron");
+        board.handle_event(&Event::mouse_press(chevron.x + 2, chevron.y + 2, 1));
+        assert_eq!(board.is_column_collapsed(0), Some(true));
+        assert!(
+            board.card_rect(CardPosition { column: 0, card: 0 }).is_none(),
+            "a collapsed column lays out no cards"
+        );
+
+        assert!(board.set_column_collapsed(0, false));
+        assert!(board.card_rect(CardPosition { column: 0, card: 0 }).is_some());
+        assert!(board.toggle_column_collapsed(0));
+        assert_eq!(board.is_column_collapsed(0), Some(true));
+        assert_eq!(board.is_column_collapsed(9), None);
+        assert!(!board.toggle_column_collapsed(9));
     }
 }
