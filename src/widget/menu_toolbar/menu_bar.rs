@@ -626,8 +626,18 @@ impl MenuBar {
         let anchor = Point::new(rect.x, rect.y + rect.height as i32);
         // The bar's own geometry is the popup's viewport unless the host declares a
         // larger one: a menu bar sits at the top of the surface its menus drop into, so
-        // its width is the honest horizontal bound.
-        let viewport = bar.union(&Rect::new(0, 0, bar.x.max(0) as u32 + bar.width, 4000));
+        // its width is the honest horizontal bound. The vertical bound is the primary
+        // display's work area; a literal height stopped clamping on any screen taller
+        // than it (M-008).
+        let display_area = {
+            let displays = crate::platform::platform_facts().displays();
+            displays
+                .iter()
+                .find(|display| display.is_primary)
+                .or_else(|| displays.first())
+                .map(|display| display.work_area)
+        };
+        let viewport = Self::popup_viewport(bar, display_area);
         menu.open_at(anchor, viewport);
         self.open_menu_index = Some(index);
         self.active_index = Some(index);
@@ -853,16 +863,42 @@ impl MenuBar {
         }
     }
 
-    /// The entry whose title starts with `letter`, ignoring case and `&` markers.
+    /// The box a drop-down may occupy: the bar's painted span horizontally and the
+    /// display's work area vertically.
+    ///
+    /// `display_area` is `None` when the backend enumerates no display (a host build).
+    /// There is then no vertical fact to clamp against, so the extent is deliberately
+    /// larger than any popup rather than a second invented screen height (M-008).
+    fn popup_viewport(bar: Rect, display_area: Option<Rect>) -> Rect {
+        let width = bar.x.max(0) as u32 + bar.width;
+        let height = display_area
+            .map(|area| area.height)
+            .filter(|height| *height > 0)
+            // Half the `i32` range keeps the later `as i32` conversion positive.
+            .unwrap_or(i32::MAX as u32 / 4);
+        Rect::new(0, 0, width, height)
+    }
+
+    /// The entry a mnemonic `letter` names.
+    ///
+    /// The `&` marker parser from [`crate::widget::menu_toolbar::menu`] is the
+    /// authority when a title carries one, so a bar and its menu rows agree about
+    /// which letter a label advertises. A title with no marker keeps the historical
+    /// first-character answer, which is why an unmarked `"View"` still answers
+    /// Alt+V (M-007).
     fn mnemonic_entry(&self, letter: char) -> Option<usize> {
         let wanted = letter.to_ascii_lowercase();
         self.entries.iter().enumerate().position(|(_, entry)| {
-            entry
-                .title()
-                .trim_start_matches('&')
-                .chars()
-                .next()
-                .is_some_and(|first| first.to_ascii_lowercase() == wanted && entry.is_enabled())
+            if !entry.is_enabled() {
+                return false;
+            }
+            let first = menu_mnemonic(entry.title()).or_else(|| {
+                let stripped = strip_menu_mnemonic(entry.title());
+                // A literal `&&` leaves no marker; the historical answer is the first
+                // character a key can name, which keeps Alt+F working for `"&&File"`.
+                stripped.chars().find(|ch| ch.is_ascii_alphanumeric())
+            });
+            first.is_some_and(|first| first.to_ascii_lowercase() == wanted)
         })
     }
     /// The strip the bar actually paints: a full-width band
@@ -1163,12 +1199,18 @@ impl EventHandler for MenuBar {
                     }
                 }
                 // While a menu is open the highlight follows the pointer: hovering another
-                // entry switches the open drop-down instead of leaving the old one up. A bar
-                // whose entries have no attached menu keeps its original behaviour.
+                // entry switches the open drop-down instead of leaving the old one up. An
+                // entry with no drop-down closes the popup rather than leaving it over a row
+                // the pointer has left, so both entry classes answer the same gesture (M-009).
                 if let Some(open) = self.open_menu_index {
                     if let Some(hovered) = self.hovered_index {
-                        if hovered != open && self.attached_menu(hovered).is_some() {
-                            self.open_attached_menu(hovered);
+                        if hovered != open {
+                            if self.attached_menu(hovered).is_some() {
+                                self.open_attached_menu(hovered);
+                            } else {
+                                self.close_attached_menu();
+                                self.active_index = Some(hovered);
+                            }
                         }
                     }
                 }
@@ -1612,5 +1654,51 @@ mod tests {
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 2, "adding an action rebuilds the platform menu");
         assert_eq!(calls[1], vec!["Quit".to_string()], "and the bridge sees the role group");
+    }
+
+    /// M-007: the `&` marker decides the accelerator when a title carries one; a
+    /// title without a marker keeps the historical first-character answer.
+    #[test]
+    fn mnemonic_parsing_shares_the_marker_rule_with_menu_rows() {
+        let mut bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        bar.add_menu("F&ile");
+        bar.add_menu("View");
+
+        assert_eq!(bar.mnemonic_entry('i'), Some(0), "the marked letter wins");
+        assert_eq!(bar.mnemonic_entry('f'), None, "the first character is not the marker");
+        assert_eq!(bar.mnemonic_entry('v'), Some(1), "an unmarked title keeps its first letter");
+    }
+
+    /// M-008: the popup's vertical bound is the display work area, not a literal.
+    #[test]
+    fn the_popup_viewport_uses_the_real_surface_height() {
+        let bar = Rect::new(0, 0, 320, 24);
+        let viewport = MenuBar::popup_viewport(bar, Some(Rect::new(0, 0, 1920, 1200)));
+        assert_eq!(viewport.width, 320, "the bar's width is the horizontal bound");
+        assert_eq!(viewport.height, 1200, "the display's work area is the vertical bound");
+
+        let fallback = MenuBar::popup_viewport(bar, None);
+        assert!(
+            fallback.height >= 4000,
+            "a host with no display leaves the vertical bound effectively unbounded"
+        );
+    }
+
+    /// M-009: hovering an entry with no drop-down closes the open menu instead of
+    /// leaving it over the entry the pointer just left.
+    #[test]
+    fn hovering_a_plain_entry_closes_the_open_menu() {
+        let mut bar = MenuBar::new(Rect::new(0, 0, 300, 24));
+        bar.add_menu("File");
+        bar.add_menu("Help");
+        bar.attach_menu(0, Menu::new("File", Rect::new(0, 0, 180, 120)));
+        assert!(bar.open_attached_menu(0));
+
+        let help = bar.entry_rect(1).expect("Help has a box");
+        bar.handle_event(&Event::MouseEnter { pos: Point::new(help.x + 2, help.y + 2) });
+        bar.handle_event(&Event::mouse_move(help.x + 2, help.y + 2));
+
+        assert_eq!(bar.open_menu_index(), None, "the plain entry takes the hover");
+        assert_eq!(bar.active_index(), Some(1), "and becomes the active entry");
     }
 }

@@ -87,5 +87,7 @@ pub use performance::{
     AdaptivePerformanceMonitor, AdaptivePerformanceThresholds, PerformanceMonitorStrategy,
     PerformanceSample, PerformanceStats, PerformanceTrap, PerformanceTrapDetector,
 };
-pub use texture_atlas::TextureAtlas;
+// G-228: `TextureAtlas` is deliberately NOT re-exported here. It has zero
+// in-repo callers and is documented in `texture_atlas.rs` as a host-side tool;
+// hosts reach it at `rust_widgets::gpu::texture_atlas::TextureAtlas`.
 pub mod init;

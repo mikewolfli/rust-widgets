@@ -563,16 +563,30 @@ impl ThemeManager {
     /// [`crate::style::PropertyDriver::is_moving`] has, so a frame driver can treat both the same
     /// way: keep scheduling while either says yes.
     ///
-    /// Each step advances the theme revision, because the *effective* palette changed even though
-    /// the theme registry did not; without that, a cached resolved style would keep the frame's
-    /// first blend for the whole transition.
+    /// Each step revalidates the theme revision against the **blended palette's content**:
+    /// the revision moves only when the blend actually produced different colours than the
+    /// previous frame's. That is the same guarantee the old unconditional bump gave — a cached
+    /// resolved style never survives a palette change — without the waste: the blend is the
+    /// only state a tick can change (the registry, the overrides, the fonts and the
+    /// high-contrast mode are all frozen for the length of a transition), so a tick whose
+    /// 8-bit blend equals the previous frame's (the eased head and tail of a transition, or a
+    /// step too small to move a channel) invalidates nothing, and the resolved-style caches
+    /// keep entries that would have re-resolved to exactly what they already held (G-402).
     /// # Locking
     ///
-    /// Runs under the theme mutex. It advances the theme revision but **does not** arm the
+    /// Runs under the theme mutex. It advances the theme revision when the blended palette
+    /// actually moved (see above), but **does not** arm the
     /// global repaint: arming takes the `frame_wait` lock, which would extend the theme lock's
     /// scope into the wake subsystem. The caller arms the repaint after dropping the guard,
     /// which keeps the lock order one-way (theme -> frame_wait).
     pub fn tick_theme_crossfade(&mut self, delta_ms: u32) -> bool {
+        if self.crossfade.is_none() {
+            return false;
+        }
+        // The palette in force before this tick. A tick is the only writer of the blend, so
+        // comparing the palettes on either side of the advance is the whole "did anything the
+        // caches depend on change" question.
+        let before = self.effective_colors();
         let Some(crossfade) = self.crossfade.as_mut() else {
             return false;
         };
@@ -581,7 +595,10 @@ impl ThemeManager {
         if finished {
             self.crossfade = None;
         }
-        bump_theme_revision();
+        let after = self.effective_colors();
+        if before != after {
+            bump_theme_revision();
+        }
         !finished
     }
 
@@ -616,6 +633,17 @@ impl ThemeManager {
     /// Returns a reference to the `theme_changed` signal.
     ///
     /// Connect slots to this signal to be notified when the active theme is switched.
+    ///
+    /// # In-crate wiring (G-404)
+    ///
+    /// Every mounted control subscribes at registration (`finish_registration` in
+    /// `widget/runtime.rs`): the slot only records the control's id, and the recorded
+    /// restyles are merged by `drain_pending_theme_restyle` — from the frame path, or from
+    /// `crate::reapply_active_theme` when a switch path needs the restyle synchronously.
+    /// The deferral exists because emits happen while the caller holds the theme mutex and
+    /// restyling resolves styles through that same non-reentrant lock. Hosts may subscribe
+    /// here too; slots run in connection order, and a host slot must obey the same
+    /// no-theme-lock rule the in-crate slot follows.
     pub fn on_theme_changed(&self) -> &Signal<()> {
         &self.theme_changed
     }
@@ -1223,10 +1251,11 @@ pub fn theme_test_guard() -> crate::compat::MutexGuard<'static, ()> {
 
 // ── The per-thread resolution caches ──
 //
-// Three caches validate against the same `THEME_REVISION`: the resolved style of a kind, the
-// resolved style of a `(kind, state)` pair, and the semantic border of a `(kind, meaning)` pair.
-// They are thread-local because the draw path is per-thread and the values are small; a shared
-// cache would put a lock on the path these caches exist to remove.
+// Four caches validate against the same `THEME_REVISION`: the resolved style of a kind, the
+// resolved style of a `(kind, state)` pair, the resolved style of a `(kind, class)` pair
+// (the JSON layout walk's batch path, G-401), and the semantic border of a `(kind, meaning)`
+// pair. They are thread-local because the draw path is per-thread and the values are small; a
+// shared cache would put a lock on the path these caches exist to remove.
 
 /// One cache entry: the revision it was resolved at, when it was last read, and its value.
 ///
@@ -1289,6 +1318,94 @@ thread_local! {
 
 /// The largest number of resolved names the per-thread style cache keeps.
 const RESOLVED_STYLE_CACHE_LIMIT: usize = 256;
+
+/// One widget kind's cached `(kind, class)` resolutions (G-401).
+///
+/// Split into a class-free slot and a per-class table so a lookup probes `&str` keys at both
+/// levels. A composite `(String, Option<String>)` key would allocate on every probe — and the
+/// walk this cache exists for probes it once per node — while `HashMap<String, _>` accepts a
+/// `&str` probe for free.
+#[derive(Default)]
+struct ResolvedForKindEntry {
+    /// The resolution for a node that declares no `class`.
+    no_class: Option<CacheEntry<Rc<WidgetStyle>>>,
+    /// The resolutions for nodes that declare one, keyed by the class spelling.
+    by_class: HashMap<String, CacheEntry<Rc<WidgetStyle>>>,
+}
+
+impl ResolvedForKindEntry {
+    /// The entry for `class_name`, if one is cached.
+    fn entry_mut(&mut self, class_name: Option<&str>) -> Option<&mut CacheEntry<Rc<WidgetStyle>>> {
+        match class_name {
+            Some(class) => self.by_class.get_mut(class),
+            None => self.no_class.as_mut(),
+        }
+    }
+
+    /// Whether the kind holds no cached resolution at all.
+    fn is_empty(&self) -> bool {
+        self.no_class.is_none() && self.by_class.is_empty()
+    }
+}
+
+/// `widget kind -> its cached resolutions`.
+type ResolvedForStyleCache = HashMap<String, ResolvedForKindEntry>;
+
+// Remembers the last resolved `(kind, class)` style, with the revision it was resolved at.
+//
+// The bound is a working set, not a policy: a layout names a bounded set of kinds and classes,
+// so 256 resolutions cannot thrash for a real document; past the bound the least-recently-used
+// entry is evicted (G-169), not the whole table.
+thread_local! {
+    static RESOLVED_FOR_STYLE_CACHE: crate::compat::RefCell<ResolvedForStyleCache> =
+        crate::compat::RefCell::new(HashMap::new());
+}
+
+/// The largest number of `(kind, class)` resolutions the per-thread cache keeps.
+const RESOLVED_FOR_STYLE_CACHE_LIMIT: usize = 256;
+
+/// The number of cached resolutions across all kinds. A kind row holds one class-free slot
+/// plus one entry per declared class, so the table's `len` under-counts; callers of this are
+/// on the insert path, which a cache miss has already made the expensive one.
+fn resolved_for_cache_len(cache: &ResolvedForStyleCache) -> usize {
+    cache.values().map(|kind| kind.no_class.is_some() as usize + kind.by_class.len()).sum()
+}
+
+/// Removes the single coldest `(kind, class)` resolution, wherever it sits (G-169).
+fn evict_resolved_for_least_recently_used(cache: &mut ResolvedForStyleCache) {
+    // O(capacity) with a constant capacity, which is what the "evict one entry" policy needs.
+    let mut coldest: Option<(String, Option<String>)> = None;
+    let mut coldest_used = u64::MAX;
+    for (kind, entry) in cache.iter() {
+        if let Some(classless) = &entry.no_class {
+            if classless.last_used < coldest_used {
+                coldest_used = classless.last_used;
+                coldest = Some((kind.clone(), None));
+            }
+        }
+        for (class, classed) in entry.by_class.iter() {
+            if classed.last_used < coldest_used {
+                coldest_used = classed.last_used;
+                coldest = Some((kind.clone(), Some(class.clone())));
+            }
+        }
+    }
+    let Some((kind, class)) = coldest else {
+        return;
+    };
+    let Some(row) = cache.get_mut(&kind) else {
+        return;
+    };
+    match class {
+        Some(class) => {
+            row.by_class.remove(&class);
+        }
+        None => row.no_class = None,
+    }
+    if row.is_empty() {
+        cache.remove(&kind);
+    }
+}
 
 /// Advances the revision the resolved-style caches validate against.
 ///
@@ -1527,7 +1644,71 @@ pub fn active_palette_shared() -> Option<Rc<Colors>> {
     Some(colors)
 }
 
+/// Resolves a theme style from a widget **kind** name plus an optional CSS **class**,
+/// sharing the cached value.
+///
+/// This is the batch path for callers that resolve the same `(kind, class)` pair many times
+/// (G-401): the JSON layout loader asks this question once per node, and the uncached
+/// accessor answered it with a theme-mutex lock and a full style rebuild **per node**. The
+/// answer changes only when the theme revision does — the same contract the kind-only
+/// [`resolved_theme_style_shared`] cache validates against — so a 500-node document pays one
+/// resolution per distinct pair per revision, and every later node gets a refcount bump.
+pub fn resolved_theme_style_for_shared(
+    kind_name: &str,
+    class_name: Option<&str>,
+) -> Option<Rc<WidgetStyle>> {
+    let revision = theme_revision();
+    let hit = RESOLVED_FOR_STYLE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let entry = cache.get_mut(kind_name)?.entry_mut(class_name)?;
+        if entry.revision != revision {
+            return None;
+        }
+        // Refreshing the stamp on a hit is what makes eviction LRU rather than arbitrary
+        // (G-169); it costs one thread-local read.
+        entry.mark_used();
+        Some(Rc::clone(&entry.value))
+    });
+    if let Some(style) = hit {
+        return Some(style);
+    }
+
+    let style = {
+        let manager = global_theme_manager();
+        manager.current_theme()?;
+        Rc::new(manager.resolve_style_for(kind_name, class_name, None))
+    };
+    // Re-read the revision: resolving may have initialised the registry, and the seeding
+    // registers the dark preset, which bumps the revision. Storing the earlier value would
+    // make the entry stale the moment it was written.
+    let revision = theme_revision();
+    RESOLVED_FOR_STYLE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if resolved_for_cache_len(&cache) >= RESOLVED_FOR_STYLE_CACHE_LIMIT {
+            // Evict the least-recently-used entry rather than clearing the table. A clear
+            // turned one new pair past the bound into a full re-resolution of every pair the
+            // walk had already paid for (G-169).
+            evict_resolved_for_least_recently_used(&mut cache);
+        }
+        let row = cache.entry(kind_name.to_string()).or_default();
+        let fresh = CacheEntry::new(revision, Rc::clone(&style));
+        match class_name {
+            Some(class) => {
+                row.by_class.insert(class.to_string(), fresh);
+            }
+            None => row.no_class = Some(fresh),
+        }
+    });
+    Some(style)
+}
+
 /// Resolves a theme style from a widget **kind** name plus an optional CSS **class**.
+///
+/// The owned form of [`resolved_theme_style_for_shared`], which it resolves through: the
+/// signature and the semantics are unchanged (it is the same style
+/// [`ThemeManager::resolve_style_for`] produces for the current revision), but a repeated ask
+/// for the same pair is answered from the cache instead of re-locking the theme and
+/// rebuilding the style every call.
 ///
 /// The counterpart of [`resolved_theme_style`] for callers that hold both names, such as the
 /// JSON loader reading a node's `"class"` key. Keep the roles of the two arguments apart: the
@@ -1535,9 +1716,7 @@ pub fn active_palette_shared() -> Option<Rc<Colors>> {
 /// [`ThemeManager::resolve_style_for`] for why passing a class as the role name misclassifies
 /// the widget.
 pub fn resolved_theme_style_for(kind_name: &str, class_name: Option<&str>) -> Option<WidgetStyle> {
-    let manager = global_theme_manager();
-    manager.current_theme()?;
-    Some(manager.resolve_style_for(kind_name, class_name, None))
+    resolved_theme_style_for_shared(kind_name, class_name).map(|style| (*style).clone())
 }
 
 /// Resolves a theme style from a widget **kind** name and its current [`WidgetState`].
@@ -2528,6 +2707,56 @@ mod theme_crossfade_tests {
         assert!(!manager.tick_theme_crossfade(16), "`set_theme` started no transition");
     }
 
+    /// A tick whose blend does not move keeps the resolved-style cache valid (G-402).
+    ///
+    /// # How the test proves the cache survived
+    ///
+    /// [`resolved_theme_style_shared`] hands back the cache entry itself, so a hit and the
+    /// read before it are one `Rc` allocation. The faded switch and a moving tick must
+    /// re-resolve into distinct allocations; a zero-length step cannot move the blend, so
+    /// the read after it must still be the *same* allocation — proof the revision was not
+    /// bumped and the entry the cache held stayed exact.
+    #[test]
+    fn a_tick_that_does_not_move_the_blend_keeps_the_style_cache_valid() {
+        let _guard = crate::theme::theme_test_guard();
+        {
+            let mut manager = global_theme_manager();
+            manager.register_theme(Theme::dark());
+        }
+
+        let steady = resolved_theme_style_shared("button").expect("theme resolves");
+        {
+            let mut manager = global_theme_manager();
+            assert!(manager.set_theme_faded("dark", THEME_CROSSFADE_DEFAULT_MS));
+        }
+        let warm = resolved_theme_style_shared("button").expect("theme resolves");
+        assert!(
+            !Rc::ptr_eq(&steady, &warm),
+            "the faded switch itself must invalidate the resolved-style cache"
+        );
+
+        let half = THEME_CROSSFADE_DEFAULT_MS / 2;
+        {
+            let mut manager = global_theme_manager();
+            assert!(manager.tick_theme_crossfade(half), "halfway through, another frame is owed");
+        }
+        let moved = resolved_theme_style_shared("button").expect("theme resolves");
+        assert!(
+            !Rc::ptr_eq(&warm, &moved),
+            "a tick that moved the blend must invalidate the resolved-style cache"
+        );
+
+        {
+            let mut manager = global_theme_manager();
+            assert!(manager.tick_theme_crossfade(0), "a zero-length step does not finish");
+        }
+        let still = resolved_theme_style_shared("button").expect("theme resolves");
+        assert!(
+            Rc::ptr_eq(&moved, &still),
+            "a tick whose blend did not move must leave the resolved-style cache valid"
+        );
+    }
+
     /// A theme file written before the new fields existed still loads.
     ///
     /// The file is produced by serialising a current theme and deleting the two keys, which is
@@ -3033,6 +3262,158 @@ mod resolution_cache_tests {
                 "the hot sibling state must survive; evicting the whole kind is the G-169 defect"
             );
             assert!(cache.contains_key("brand-new-kind"));
+        });
+    }
+
+    /// A theme whose override table holds exactly the given `<class>: background` entries,
+    /// with a theme-level surface-container fill that differs per theme so even a class-free
+    /// resolution moves on a switch (the Surface role's fill is `surface_container`).
+    fn theme_naming_backgrounds(name: &str, surface: Color, entries: &[(&str, Color)]) -> Theme {
+        let mut styles = crate::compat::BTreeMap::new();
+        for (key, fill) in entries {
+            styles.insert(
+                (*key).to_string(),
+                ThemeStyleToken { background: Some(*fill), ..ThemeStyleToken::default() },
+            );
+        }
+        Theme {
+            name: name.to_string(),
+            colors: Colors { surface_container: surface, ..Theme::default().colors },
+            overrides: ThemeOverrides { styles },
+            ..Theme::default()
+        }
+    }
+
+    /// A `(kind, class)` pair is answered from the cache on a repeat ask, and a theme switch
+    /// invalidates both answers the pair can hold (G-401).
+    ///
+    /// # How the test proves a hit happened
+    ///
+    /// The cache is poisoned through its own storage without touching the revision, the same
+    /// way `a_theme_switch_invalidates_the_semantic_border_cache` does it. If a repeat ask
+    /// re-resolved, it would return the theme's style; it returns the poisoned marker, so the
+    /// ask came from the cache. The switch then has to reach through it, or the poisoned pair
+    /// would outlive the theme it was resolved under.
+    #[test]
+    fn a_kind_class_pair_is_answered_from_the_cache_and_invalidated_by_a_switch() {
+        let _guard = theme_test_guard();
+        RESOLVED_FOR_STYLE_CACHE.with(|cache| cache.borrow_mut().clear());
+
+        let first = Color::rgb(11, 22, 33);
+        let second = Color::rgb(44, 55, 66);
+        {
+            let mut manager = global_theme_manager();
+            manager.register_theme(theme_naming_backgrounds(
+                "pair-a",
+                Color::rgb(1, 1, 1),
+                &[("primary", first)],
+            ));
+            manager.register_theme(theme_naming_backgrounds(
+                "pair-b",
+                Color::rgb(2, 2, 2),
+                &[("primary", second)],
+            ));
+            assert!(manager.set_theme("pair-a"));
+        }
+
+        // Warm both a class-bearing node and a class-free one.
+        let classed = resolved_theme_style_for_shared("probe", Some("primary"))
+            .expect("an active theme resolves a class pair");
+        assert_eq!(classed.background_color, Some(first));
+        let classless = resolved_theme_style_for_shared("probe", None)
+            .expect("an active theme resolves the class-free pair");
+
+        // Poison both entries; a same-revision ask must answer from the cache.
+        let poisoned = Rc::new(WidgetStyle { opacity: Some(0.25), ..WidgetStyle::default() });
+        RESOLVED_FOR_STYLE_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let row = cache.get_mut("probe").expect("the warming asks must have cached the kind");
+            for slot in [Some("primary"), None] {
+                let entry = row.entry_mut(slot).expect("each warmed pair must hold an entry");
+                entry.value = Rc::clone(&poisoned);
+            }
+        });
+        for pair in [Some("primary"), None] {
+            let again = resolved_theme_style_for_shared("probe", pair).expect("the cache answers");
+            assert!(
+                Rc::ptr_eq(&again, &poisoned),
+                "a same-revision ask must be answered from the cache, not re-resolved"
+            );
+        }
+
+        {
+            let mut manager = global_theme_manager();
+            assert!(manager.set_theme("pair-b"));
+        }
+        let switched = resolved_theme_style_for_shared("probe", Some("primary"))
+            .expect("the theme resolves after the switch");
+        assert_eq!(
+            switched.background_color,
+            Some(second),
+            "a theme switch must invalidate the poisoned entry"
+        );
+        let switched_classless = resolved_theme_style_for_shared("probe", None)
+            .expect("the theme resolves after the switch");
+        assert_ne!(
+            *switched_classless, *classless,
+            "a cached class-free style must not outlive the theme it was resolved under"
+        );
+    }
+
+    /// Past the bound, the **coldest** `(kind, class)` entry is evicted — alone, so a hot
+    /// entry keeps its cold sibling (G-169).
+    #[test]
+    fn the_for_style_cache_evicts_one_pair_not_the_whole_kind() {
+        let _guard = theme_test_guard();
+        let revision = theme_revision();
+        RESOLVED_FOR_STYLE_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            cache.clear();
+            let mut hot_kind = ResolvedForKindEntry::default();
+            hot_kind.no_class = Some(CacheEntry {
+                revision,
+                last_used: 1_000,
+                value: Rc::new(WidgetStyle::default()),
+            });
+            hot_kind.by_class.insert(
+                "primary".to_string(),
+                CacheEntry { revision, last_used: 1, value: Rc::new(WidgetStyle::default()) },
+            );
+            cache.insert("probe-kind".to_string(), hot_kind);
+
+            let mut tick = 2u64;
+            while resolved_for_cache_len(&cache) < RESOLVED_FOR_STYLE_CACHE_LIMIT {
+                cache.insert(
+                    format!("filler-{tick}"),
+                    ResolvedForKindEntry {
+                        no_class: Some(CacheEntry {
+                            revision,
+                            last_used: tick,
+                            value: Rc::new(WidgetStyle::default()),
+                        }),
+                        by_class: HashMap::new(),
+                    },
+                );
+                tick += 1;
+            }
+        });
+
+        let _ = resolved_theme_style_for_shared("brand-new-kind", None);
+
+        RESOLVED_FOR_STYLE_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            let row = cache.get("probe-kind").expect("only one pair of the kind was cold");
+            assert!(!row.by_class.contains_key("primary"), "the coldest entry is evicted");
+            assert!(
+                row.no_class.is_some(),
+                "the hot sibling entry must survive; evicting the whole kind is the G-169 defect"
+            );
+            assert!(cache.contains_key("brand-new-kind"));
+            assert_eq!(
+                resolved_for_cache_len(&cache),
+                RESOLVED_FOR_STYLE_CACHE_LIMIT,
+                "the bound still holds"
+            );
         });
     }
 

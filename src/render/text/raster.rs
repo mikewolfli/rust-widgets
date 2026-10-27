@@ -28,6 +28,21 @@
 //!    antialiasing comes from, and it is also what makes a stem narrower than a pixel visible
 //!    instead of vanishing.
 //!
+//! # Coverage modes
+//!
+//! Step three has two resolutions, selected by [`RasterStyle`]:
+//!
+//! * [`AntiAliasMode::Grayscale`], the default, averages the whole pixel into one byte. Every
+//!   caller produced exactly these bytes before the mode existed.
+//! * [`AntiAliasMode::Subpixel`] samples the pixel three times finer horizontally and reports the
+//!   three emitter-sized thirds as `R, G, B` coverage, which a caller blends per frame channel.
+//!   Its output is three bytes per pixel, so it is reached through the styled entry points rather
+//!   than through [`GlyphSource::paint`]'s single-channel contract.
+//!
+//! [`RasterStyle`] also carries a light, opt-in grid alignment ([`Hinting::Light`]) that snaps the
+//! baseline to a whole pixel row; it is off by default, so a caller that does not ask gets the
+//! sub-pixel placement this rasteriser has always used.
+//!
 //! # Why this is not "render with a font crate"
 //!
 //! `ab_glyph`/`fontdue` would rasterise for us and bring a second glyph cache, a second hinting
@@ -102,6 +117,128 @@ const MAX_SUBDIVIDE: u32 = 16;
 /// descender. Drawing from a baseline here is what makes a glyph land visually centred in the cell
 /// the shaper measured for it, instead of hanging off the bottom edge by its descender.
 const ASCENT_SHARE: f32 = 0.82;
+
+/// Sub-samples per device pixel **horizontally** in [`AntiAliasMode::Subpixel`].
+///
+/// A device pixel is three horizontally adjacent light emitters (red, green, blue), so the
+/// subpixel winding grid is this many times finer horizontally than the grayscale one. Each
+/// emitter's coverage is averaged over its own `SUBSAMPLES` columns and all `SUBSAMPLES` rows —
+/// 64 samples, exactly the count [`AntiAliasMode::Grayscale`] uses for the whole pixel — which keeps
+/// the two modes' quantisation identical in the vertical direction.
+const SUBPIXEL_CHANNELS: u32 = 3;
+
+/// How a glyph outline is resolved into per-pixel coverage.
+///
+/// # Why this is an enum and not a boolean
+///
+/// The two members write **different buffer layouts** (one byte per pixel versus three), so a flag
+/// would leave every caller guessing at the buffer size it must reserve. Pairing the mode with
+/// [`Self::bytes_per_pixel`] makes the allocation rule part of the same type the caller passes.
+///
+/// # Why the non-default member is allowed to be unconstructed in some builds
+///
+/// The member is constructed by this module's styled entry points
+/// (`VectorSource::paint_styled`, `rasterize_face_at_weight_styled`) and by the tests that prove the
+/// mode works. The crate's current frame path still asks for [`RasterStyle::DEFAULT`], because the
+/// glyph blend loop that would consume three-channel coverage lives outside this module; a build
+/// that never names the subpixel mode therefore sees the variant unused, which is a fact about the
+/// wiring, not about the implementation.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AntiAliasMode {
+    /// One linear coverage value per device pixel, averaged over an `SUBSAMPLES` x `SUBSAMPLES`
+    /// grid.
+    ///
+    /// This is the behaviour every caller had before this enum existed, and the default. It is the
+    /// only mode the frame-blitting path consumes today (`blend_coverage_bitmap`).
+    #[default]
+    Grayscale,
+    /// Three coverage values per device pixel — red, green, blue — from a grid three times finer
+    /// horizontally.
+    ///
+    /// The values are *coverage*, not pixels: a caller must blend each through its own frame
+    /// channel (`pixel_ops::blend_coverage_bitmap_layout` with `CoverageLayout::Subpixel`).
+    /// Averaging them back into one value would be grayscale at triple the cost, so this mode is
+    /// deliberately not reachable through [`GlyphSource::paint`]'s single-channel contract.
+    Subpixel,
+}
+
+impl AntiAliasMode {
+    /// Bytes of coverage this mode writes per device pixel.
+    pub const fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Grayscale => 1,
+            Self::Subpixel => SUBPIXEL_CHANNELS as usize,
+        }
+    }
+}
+
+/// Whether the rasteriser aligns a glyph to the pixel grid before flattening it.
+///
+/// Like [`AntiAliasMode`], the non-default member is constructed by the styled entry points and
+/// their tests; see that type's note on why a non-test build may not construct it.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Hinting {
+    /// No grid alignment: every flattened vertex keeps the fractional device position the outline
+    /// gives it. This is the default, and it is what makes a glyph legible at any size rather than
+    /// only on whole-pixel positions.
+    #[default]
+    Off,
+    /// Light grid alignment: the baseline is snapped to the nearest whole device-pixel row before
+    /// the outline is flattened (see [`RasterStyle`] for the exact rule).
+    ///
+    /// This is *light*, not full hinting: stem positions and widths, curve control points and the
+    /// glyph's scale are untouched, because changing them would mean this rasteriser also had to
+    /// own the metrics the shaper owns — the "two rulers" defect the text layer exists to prevent.
+    Light,
+}
+
+/// Everything that decides a glyph's coverage except the glyph, the face and the cell.
+///
+/// # Why the default is a documented constant and not just `Default`
+///
+/// [`Self::DEFAULT`] is the promise this change is judged by: it is exactly the previous behaviour
+/// (grayscale AA, no hinting), so a caller that never mentions this type gets the same bytes it
+/// always did. A test pins the output of a few glyphs in this mode against hashes captured before
+/// the mode existed.
+///
+/// # The light-hinting rule, stated exactly
+///
+/// With [`Hinting::Light`] the baseline is `((cell.height as f32) * ASCENT_SHARE).round()` —
+/// `f32::round`, i.e. halves away from zero — instead of the unrounded product. The glyph's origin
+/// inside a cell is `0` in both modes, so the horizontal half of the rule ("snap the origin to the
+/// nearest column") is satisfied by construction and there is nothing to round. No other
+/// coordinate moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RasterStyle {
+    /// How coverage is sampled.
+    pub aa: AntiAliasMode,
+    /// Whether the baseline is snapped to the pixel grid.
+    pub hinting: Hinting,
+}
+
+impl RasterStyle {
+    /// Grayscale antialiasing with no hinting: the output produced before this type existed.
+    pub const DEFAULT: Self = Self { aa: AntiAliasMode::Grayscale, hinting: Hinting::Off };
+
+    /// The byte pair that distinguishes this style in the coverage cache.
+    ///
+    /// The cache key must carry the style or the first caller to rasterise a glyph would decide
+    /// what every later caller with a different style sees — the same class of defect the weight
+    /// component of the key was added to prevent.
+    const fn cache_tag(self) -> (u8, u8) {
+        let aa = match self.aa {
+            AntiAliasMode::Grayscale => 0,
+            AntiAliasMode::Subpixel => 1,
+        };
+        let hinting = match self.hinting {
+            Hinting::Off => 0,
+            Hinting::Light => 1,
+        };
+        (aa, hinting)
+    }
+}
 
 /// A point in glyph design units, offset by the cell's origin.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -221,6 +358,45 @@ impl Placement {
     fn map(&self, x: f32, y: f32) -> Point {
         let scale = self.pixel_size / self.units_per_em;
         Point::new(self.origin_x + x * scale * self.x_direction, self.baseline_y - y * scale)
+    }
+}
+
+/// The device-space transform for one cell, with [`Hinting`] applied.
+///
+/// # The alignment rule
+///
+/// [`Hinting::Light`] rounds the **baseline** to the nearest whole device-pixel row:
+///
+/// ```text
+/// Hinting::Off   baseline_y = cell.height as f32 * ASCENT_SHARE
+/// Hinting::Light baseline_y = (cell.height as f32 * ASCENT_SHARE).round()
+/// ```
+///
+/// `f32::round` rounds halves away from zero, so the choice is deterministic. The glyph origin
+/// inside a cell is `0` in both modes, so the horizontal half of the usual light-hinting rule
+/// ("snap the origin to the nearest column") already holds and nothing is rounded there. No other
+/// coordinate is touched: the scale, the contour points and therefore every stem width stay
+/// fractional.
+///
+/// # Why only the baseline
+///
+/// The baseline is the one line the whole text layer agrees on — the shaper places each cell from
+/// it — so moving it to the grid removes the sub-pixel smear of horizontal stems without making
+/// this rasteriser disagree with the metrics that positioned the cell. Snapping stem edges would
+/// need stem detection, which lives in a hinting engine this crate does not have and which would
+/// change widths the shaper's advances were measured against.
+fn placement_for(cell: Cell, units_per_em: f32, hinting: Hinting) -> Placement {
+    let baseline_y = cell.height as f32 * ASCENT_SHARE;
+    let baseline_y = match hinting {
+        Hinting::Off => baseline_y,
+        Hinting::Light => baseline_y.round(),
+    };
+    Placement {
+        units_per_em,
+        pixel_size: cell.height as f32,
+        origin_x: 0.0,
+        baseline_y,
+        x_direction: 1.0,
     }
 }
 
@@ -360,6 +536,13 @@ struct Accumulator<'a> {
     width: usize,
     /// Sub-sampled height.
     height: usize,
+    /// Sub-samples per device pixel **horizontally**.
+    ///
+    /// `SUBSAMPLES` for [`AntiAliasMode::Grayscale`]; `SUBSAMPLES * SUBPIXEL_CHANNELS` for
+    /// [`AntiAliasMode::Subpixel`]. A field rather than a constant because the subpixel mode needs
+    /// a finer horizontal grid while keeping the vertical one — the two modes' rows must line up,
+    /// but their columns must not.
+    samples_x: u32,
 }
 
 impl Accumulator<'_> {
@@ -372,8 +555,8 @@ impl Accumulator<'_> {
     /// visit every edge for every sample — 16 * cell.area() * edges, which at 400 px is millions of
     /// edge tests for one glyph.
     fn add_edge(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
-        let (x0s, y0s) = (x0 * SUBSAMPLES as f32, y0 * SUBSAMPLES as f32);
-        let (x1s, y1s) = (x1 * SUBSAMPLES as f32, y1 * SUBSAMPLES as f32);
+        let (x0s, y0s) = (x0 * self.samples_x as f32, y0 * SUBSAMPLES as f32);
+        let (x1s, y1s) = (x1 * self.samples_x as f32, y1 * SUBSAMPLES as f32);
         let dy_total = y1s - y0s;
         if dy_total.abs() <= f32::EPSILON {
             // A horizontal edge contributes no crossings under the non-zero rule: it crosses no
@@ -455,6 +638,73 @@ fn resolve_coverage(rows: &[i32], sub_width: usize, cell: Cell, out: &mut [u8]) 
                 }
             }
             out[py * device_w + px] = (inside * 255 / total) as u8;
+        }
+    }
+}
+
+/// Resolves the crossing rows into three coverage bytes per device pixel — red, green, blue, in
+/// that order.
+///
+/// # What "subpixel" means here, precisely
+///
+/// A device pixel is treated as three horizontally adjacent emitters with the leftmost one red.
+/// The winding grid is [`SUBPIXEL_CHANNELS`] times finer horizontally than [`resolve_coverage`]'s,
+/// so an edge's horizontal position is known to a third of a pixel: red counts the samples in the
+/// pixel's first third of columns, green the middle third and blue the last, each across all
+/// `SUBSAMPLES` rows. The three values therefore *differ* on a slanted or curved edge — the extra
+/// horizontal resolution subpixel rendering exists to keep — and coincide on a pixel a vertical
+/// edge passes through.
+///
+/// # Why the winding sweep still starts at the row's left edge
+///
+/// [`resolve_coverage`] documents the invariant: a closed outline contributes as many downward as
+/// upward crossings, so a row's winding is zero at its left edge. That is a property of the
+/// outline, not of the grid's resolution, so it holds here unchanged and each row is swept from
+/// column zero. The sweep is longer only because the grid is wider.
+///
+/// # This is coverage, not a blend
+///
+/// The bytes are per-channel **coverage**. A caller must apply each to its own frame channel —
+/// `pixel_ops::blend_coverage_bitmap_layout` does that for the software frame — and must not
+/// average the three back into one value: averaged subpixel coverage is grayscale coverage at
+/// three times the sampling cost.
+///
+/// `out` must hold at least `cell.area() * SUBPIXEL_CHANNELS` bytes; [`VectorSource::rasterize_into`]
+/// refuses a shorter buffer before calling this.
+fn resolve_subpixel_coverage(rows: &[i32], sub_width: usize, cell: Cell, out: &mut [u8]) {
+    let device_w = cell.width as usize;
+    let device_h = cell.height as usize;
+    let samples = SUBSAMPLES as usize;
+    let channels = SUBPIXEL_CHANNELS as usize;
+    // Samples per channel per pixel: the same 64 the grayscale resolver averages.
+    let total = SUBSAMPLES * SUBSAMPLES;
+    for py in 0..device_h {
+        for px in 0..device_w {
+            // Start column of this pixel: the whole 3*SUBSAMPLES-wide stripe.
+            let first = px * channels * samples;
+            let end = first + channels * samples;
+            let mut inside = [0u32; SUBPIXEL_CHANNELS as usize];
+            for sy in 0..samples {
+                let row = py * samples + sy;
+                let Some(row_slice) = rows.get(row * sub_width..(row + 1) * sub_width) else {
+                    continue;
+                };
+                let mut winding = 0i32;
+                for (offset, value) in row_slice.iter().take(end).enumerate() {
+                    winding += *value;
+                    if offset < first || winding == 0 {
+                        continue;
+                    }
+                    // `offset < end`, so the integer division is bounded by `channels`.
+                    inside[(offset - first) / samples] += 1;
+                }
+            }
+            let base = (py * device_w + px) * channels;
+            if let Some(slots) = out.get_mut(base..base + channels) {
+                for (slot, count) in slots.iter_mut().zip(inside.iter()) {
+                    *slot = (*count * 255 / total) as u8;
+                }
+            }
         }
     }
 }
@@ -694,13 +944,11 @@ fn outline_in_parsed_face_id(
     if units_per_em <= 0.0 {
         return None;
     }
-    let placement = Placement {
-        units_per_em,
-        pixel_size: cell.height as f32,
-        origin_x: 0.0,
-        baseline_y: cell.height as f32 * ASCENT_SHARE,
-        x_direction: 1.0,
-    };
+    // Outlines are geometry, not pixels: the SVG and PDF backends emit these points as a path, and
+    // an SVG/PDF viewer applies its own grid alignment. `Hinting::Off` is therefore not the
+    // default leaking in here — it is the correct request, and it keeps this geometry identical to
+    // the fractions the default rasterisation is built from.
+    let placement = placement_for(cell, units_per_em, Hinting::Off);
     let mut buffer = PointBuffer::new();
     {
         let mut flattener = Flattener::new(placement, &mut buffer);
@@ -804,7 +1052,14 @@ pub struct VectorSource;
 /// A variable face's coverage depends on the instantiated axis coordinate: the same face at 400
 /// and at 700 draws different ink, and a key without the weight would serve the first one asked
 /// for to both. Static faces ignore the weight, so they keep one entry per glyph as before.
-type CoverageKey = (usize, char, u32, u32, u16);
+///
+/// # Why the raster style is part of the key
+///
+/// For the same reason: [`AntiAliasMode::Subpixel`] writes three bytes per pixel and
+/// [`Hinting::Light`] moves the baseline, so one style's buffer must never answer another's
+/// request. The default style's tag is `(0, 0)`, which is the only value a caller that never
+/// mentions [`RasterStyle`] produces — so the default build's cache behaviour is unchanged.
+type CoverageKey = (usize, char, u32, u32, u16, u8, u8);
 
 /// How many rasterised glyph cells are kept per thread.
 ///
@@ -883,8 +1138,15 @@ fn cache_coverage_shared(key: CoverageKey, coverage: crate::compat::Rc<[u8]>) {
 }
 
 /// The coverage-cache key for one rasterisation request.
-fn coverage_key(face: FaceBytes, ch: char, cell: Cell, weight: u16) -> CoverageKey {
-    (face.bytes.as_ptr() as usize, ch, cell.width, cell.height, weight)
+fn coverage_key(
+    face: FaceBytes,
+    ch: char,
+    cell: Cell,
+    weight: u16,
+    style: RasterStyle,
+) -> CoverageKey {
+    let (aa, hinting) = style.cache_tag();
+    (face.bytes.as_ptr() as usize, ch, cell.width, cell.height, weight, aa, hinting)
 }
 
 // Counts cache hits and misses for tests, so a test can prove the cache is on the path.
@@ -918,6 +1180,53 @@ impl VectorSource {
     fn face_for(&self, ch: char) -> Option<FaceBytes> {
         super::font_assets::outline_face_for(ch)
     }
+
+    /// Paints `ch` under an explicit [`RasterStyle`].
+    ///
+    /// [`GlyphSource::paint`] is this function at [`RasterStyle::DEFAULT`], so the trait's
+    /// single-channel contract is unchanged; this entry point is what a caller that wants the
+    /// subpixel layout or light hinting asks for.
+    ///
+    /// # The buffer contract
+    ///
+    /// `out` must hold at least `cell.area() * style.aa.bytes_per_pixel()` bytes: one per pixel
+    /// for [`AntiAliasMode::Grayscale`], three (R, G, B) for [`AntiAliasMode::Subpixel`]. A shorter
+    /// buffer is refused rather than written past. The returned [`Painted`] still reports
+    /// [`InkKind::Coverage`], because both layouts are coverage — the layout the caller asked for
+    /// is what tells it how to read the bytes back. A caller that does not track the style it
+    /// painted with must not ask for subpixel.
+    pub(crate) fn paint_styled(
+        &self,
+        ch: char,
+        cell: Cell,
+        out: &mut [u8],
+        style: RasterStyle,
+    ) -> Option<Painted> {
+        if cell.is_empty() || out.len() < cell.area() * style.aa.bytes_per_pixel() {
+            return None;
+        }
+        let face_bytes = self.face_for(ch)?;
+        // Parsed through the cache rather than here: this is the per-glyph, per-frame path, and
+        // re-reading the table directory for every character of every label was the single largest
+        // cost in a window repaint (measured at 25.6ms of a 26.5ms frame on `demo/control`).
+        // The parse borrows the face's own `'static` bytes, so the reuse copies no font data.
+        //
+        // This entry point has no `Font` and therefore no weight: it paints the face's default
+        // instance. A caller that holds a `Font` (the glyph atlas does) uses
+        // [`rasterize_face_at_weight`], which is this same code path with the axis moved.
+        super::font_assets::with_parsed_face(face_bytes, |face| {
+            Self::paint_in_face(
+                ch,
+                cell,
+                out,
+                face_bytes,
+                crate::core::Font::default_weight(),
+                face,
+                style,
+            )
+        })
+        .flatten()
+    }
 }
 
 impl GlyphSource for VectorSource {
@@ -938,29 +1247,7 @@ impl GlyphSource for VectorSource {
     }
 
     fn paint(&self, ch: char, cell: Cell, out: &mut [u8]) -> Option<Painted> {
-        if cell.is_empty() || out.len() < cell.area() {
-            return None;
-        }
-        let face_bytes = self.face_for(ch)?;
-        // Parsed through the cache rather than here: this is the per-glyph, per-frame path, and
-        // re-reading the table directory for every character of every label was the single largest
-        // cost in a window repaint (measured at 25.6ms of a 26.5ms frame on `demo/control`).
-        // The parse borrows the face's own `'static` bytes, so the reuse copies no font data.
-        //
-        // This entry point has no `Font` and therefore no weight: it paints the face's default
-        // instance. A caller that holds a `Font` (the glyph atlas does) uses
-        // [`rasterize_face_at_weight`], which is this same code path with the axis moved.
-        super::font_assets::with_parsed_face(face_bytes, |face| {
-            Self::paint_in_face(
-                ch,
-                cell,
-                out,
-                face_bytes,
-                crate::core::Font::default_weight(),
-                face,
-            )
-        })
-        .flatten()
+        self.paint_styled(ch, cell, out, RasterStyle::DEFAULT)
     }
 }
 
@@ -992,10 +1279,27 @@ pub(crate) fn rasterize_face_at_weight(
     cell: Cell,
     weight: u16,
 ) -> Option<crate::compat::Rc<[u8]>> {
+    rasterize_face_at_weight_styled(face, ch, cell, weight, RasterStyle::DEFAULT)
+}
+
+/// [`rasterize_face_at_weight`] under an explicit [`RasterStyle`].
+///
+/// The buffer length — and therefore the layout — follows the style: `cell.area()` bytes for
+/// [`AntiAliasMode::Grayscale`], three times that for [`AntiAliasMode::Subpixel`], where each pixel
+/// is `R, G, B`. The style is part of the cache key, so a buffer rasterised for one style is never
+/// handed to a request for another. The atlas and the active stack both ask through the
+/// default-style wrapper above, which is what keeps their bytes identical to before this existed.
+pub(crate) fn rasterize_face_at_weight_styled(
+    face: FaceBytes,
+    ch: char,
+    cell: Cell,
+    weight: u16,
+    style: RasterStyle,
+) -> Option<crate::compat::Rc<[u8]>> {
     if cell.is_empty() {
         return None;
     }
-    let key = coverage_key(face, ch, cell, weight);
+    let key = coverage_key(face, ch, cell, weight, style);
     // A hit hands back the shared buffer itself: the atlas blends straight from it, so the
     // full-cell copy `paint_in_face` must make for its caller-owned `out` is not needed here
     // (G-15).
@@ -1007,9 +1311,9 @@ pub(crate) fn rasterize_face_at_weight(
     #[cfg(test)]
     COVERAGE_CACHE_MISSES.with(|misses| misses.set(misses.get() + 1));
 
-    let mut coverage = crate::compat::vec![0u8; cell.area()];
+    let mut coverage = crate::compat::vec![0u8; cell.area() * style.aa.bytes_per_pixel()];
     super::variable::with_weighted_face(face, weight, |parsed| {
-        VectorSource::rasterize_into(ch, cell, &mut coverage, parsed)
+        VectorSource::rasterize_into(ch, cell, &mut coverage, parsed, style)
     })
     .flatten()?;
     // Stored after the pixels are final, so a later hit answers exactly what this miss did.
@@ -1030,9 +1334,13 @@ impl VectorSource {
         face_bytes: super::font_assets::FaceBytes,
         weight: u16,
         face: &ttf_parser::Face<'_>,
+        style: RasterStyle,
     ) -> Option<Painted> {
-        let area = cell.area();
-        let key: CoverageKey = coverage_key(face_bytes, ch, cell, weight);
+        let area = cell.area() * style.aa.bytes_per_pixel();
+        if out.len() < area {
+            return None;
+        }
+        let key: CoverageKey = coverage_key(face_bytes, ch, cell, weight, style);
         // # Why the cache is consulted before anything else
         //
         // Coverage is a function of (face, instance weight, character, device cell) alone. A repaint
@@ -1055,7 +1363,7 @@ impl VectorSource {
         #[cfg(test)]
         COVERAGE_CACHE_MISSES.with(|misses| misses.set(misses.get() + 1));
 
-        Self::rasterize_into(ch, cell, out, face)?;
+        Self::rasterize_into(ch, cell, out, face, style)?;
         // Stored after the pixels are final, so a later hit answers exactly what this miss did.
         cache_coverage(key, crate::compat::Vec::from(&out[..area]));
 
@@ -1067,12 +1375,22 @@ impl VectorSource {
     ///
     /// Split out so the direct path can write straight into its caller's buffer and the atlas path
     /// can write into the buffer it is about to share — neither pays for the other's copy (G-15).
+    ///
+    /// `out` holds `cell.area() * style.aa.bytes_per_pixel()` bytes on entry and is fully
+    /// overwritten: the grayscale layout is one byte per pixel, the subpixel layout `R, G, B`.
     fn rasterize_into(
         ch: char,
         cell: Cell,
         out: &mut [u8],
         face: &ttf_parser::Face<'_>,
+        style: RasterStyle,
     ) -> Option<()> {
+        // Refuse before rasterising rather than after: a caller that reserved a single-channel
+        // buffer for a three-channel mode must not pay for the sampling to then be told no.
+        let needed = cell.area() * style.aa.bytes_per_pixel();
+        if out.len() < needed {
+            return None;
+        }
         let glyph = face.glyph_index(ch)?;
 
         // The em the caller wants: the cell's height is the line box, and the glyph is scaled to fit
@@ -1083,18 +1401,9 @@ impl VectorSource {
         if units_per_em <= 0.0 {
             return None;
         }
-        let pixel_size = cell.height as f32;
-        let placement = Placement {
-            units_per_em,
-            pixel_size,
-            origin_x: 0.0,
-            // `ttf-parser` reports outlines with y up from the baseline, so this is where the
-            // baseline sits in the cell. `ASCENT_SHARE` is the usual typographic split: most of a
-            // line box is ascender, a little is descender, and a glyph drawn from this baseline
-            // lands visually centred rather than hanging off the bottom.
-            baseline_y: cell.height as f32 * ASCENT_SHARE,
-            x_direction: 1.0,
-        };
+        // The baseline is where `ASCENT_SHARE` puts it, unless `style.hinting` snaps it to the
+        // pixel grid; `placement_for` documents the exact rule and why nothing else moves.
+        let placement = placement_for(cell, units_per_em, style.hinting);
         let mut points = PointBuffer::new();
         {
             let mut flattener = Flattener::new(placement, &mut points);
@@ -1110,7 +1419,14 @@ impl VectorSource {
             }
         }
 
-        let sub_width = cell.width as usize * SUBSAMPLES as usize;
+        // The horizontal grid is the one thing the modes disagree about: grayscale samples the
+        // pixel's whole width, subpixel samples it in three emitter-sized thirds. The vertical
+        // grid is `SUBSAMPLES` rows in both, so the two modes' inks stay comparable in height.
+        let samples_x = match style.aa {
+            AntiAliasMode::Grayscale => SUBSAMPLES,
+            AntiAliasMode::Subpixel => SUBSAMPLES * SUBPIXEL_CHANNELS,
+        };
+        let sub_width = cell.width as usize * samples_x as usize;
         let sub_height = cell.height as usize * SUBSAMPLES as usize;
         let total = sub_width.checked_mul(sub_height)?;
         // The winding scratch is the one thing this cannot keep on the stack: a 400x400 cell at
@@ -1120,12 +1436,19 @@ impl VectorSource {
         let mut rows = crate::render::scratch::ScratchI32::new(total);
 
         {
-            let mut accumulator =
-                Accumulator { rows: &mut rows[..], width: sub_width, height: sub_height };
+            let mut accumulator = Accumulator {
+                rows: &mut rows[..],
+                width: sub_width,
+                height: sub_height,
+                samples_x,
+            };
             fill_outline(&points, &mut accumulator);
         }
-        out[..cell.area()].fill(0);
-        resolve_coverage(&rows, sub_width, cell, out);
+        out[..needed].fill(0);
+        match style.aa {
+            AntiAliasMode::Grayscale => resolve_coverage(&rows, sub_width, cell, out),
+            AntiAliasMode::Subpixel => resolve_subpixel_coverage(&rows, sub_width, cell, out),
+        }
         Some(())
     }
 }
@@ -1786,5 +2109,221 @@ mod tests {
             weighted_points
                 [..weighted_contours[..weighted].iter().map(|&(_, end)| end).max().unwrap_or(0)]
         );
+    }
+
+    // ── The antialiasing style (G-018) ────────────────────────────────────────────────────────
+
+    /// FNV-1a over a coverage buffer: a small digest for pinning pixels.
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100_0000_01b3);
+        }
+        hash
+    }
+
+    /// The default style is the previous behaviour, byte for byte.
+    ///
+    /// # Why the hashes are constants
+    ///
+    /// "The default did not change" is the promise this change is judged by, and only a digest of
+    /// the actual pixels can hold it. These four values were captured from `VectorSource::paint`
+    /// **before** `RasterStyle` existed, on the default (`desktop`) profile, and are reproduced here
+    /// through the styled entry point: a change to the winding arithmetic, the resolve step, the
+    /// ascent constant or the default style would move at least one of them.
+    #[cfg(feature = "fonts-vector-latin")]
+    #[test]
+    fn the_default_style_paints_the_bytes_captured_before_the_style_existed() {
+        assert_eq!(
+            RasterStyle::default(),
+            RasterStyle::DEFAULT,
+            "the type default is the constant"
+        );
+        assert_eq!(AntiAliasMode::Grayscale.bytes_per_pixel(), 1);
+        assert_eq!(AntiAliasMode::Subpixel.bytes_per_pixel(), 3);
+
+        for (ch, w, h, pinned) in [
+            ('A', 16u32, 16u32, 0x88f7_3ba5_29aa_3500u64),
+            ('o', 12, 12, 0x764f_fbfe_10e8_9dd7),
+            ('g', 11, 14, 0xa0b8_1d4b_f6b1_d09e),
+            ('W', 24, 24, 0x2068_4fc4_cb89_0370),
+        ] {
+            let cell = Cell::new(w, h);
+            let mut plain = crate::compat::vec![0u8; cell.area()];
+            let mut styled = crate::compat::vec![0u8; cell.area()];
+            VectorSource::INSTANCE.paint(ch, cell, &mut plain).expect("the Latin face covers it");
+            VectorSource::INSTANCE
+                .paint_styled(ch, cell, &mut styled, RasterStyle::DEFAULT)
+                .expect("the default style needs one byte per pixel, like `paint`");
+            assert_eq!(
+                plain, styled,
+                "{ch} at {w}x{h}: `paint` must be the default style, not a second rasterisation"
+            );
+            assert_eq!(
+                fnv1a(&plain),
+                pinned,
+                "{ch} at {w}x{h}: the default style's pixels moved from the captured baseline"
+            );
+        }
+    }
+
+    /// The subpixel layout is three real per-emitter coverages, not one value repeated.
+    ///
+    /// # What the assertions separate
+    ///
+    /// "Three bytes were written" is satisfied by triplication, and "the channels differ" is
+    /// satisfied by noise. The first loop checks that at least one pixel carries three *different*
+    /// values — which only a horizontally finer grid produces on a curve — and the second checks
+    /// that their total still describes the same outline as the grayscale raster, so the fine grid
+    /// is a re-sampling and not a different shape.
+    #[cfg(feature = "fonts-vector-latin")]
+    #[test]
+    fn subpixel_mode_reports_three_emitter_coverages_that_differ_on_a_curve() {
+        let cell = Cell::new(16, 16);
+        let area = cell.area();
+        let mut gray = crate::compat::vec![0u8; area];
+        VectorSource::INSTANCE.paint('o', cell, &mut gray).expect("the Latin face covers 'o'");
+
+        let mut sub = crate::compat::vec![0u8; area * AntiAliasMode::Subpixel.bytes_per_pixel()];
+        let painted = VectorSource::INSTANCE
+            .paint_styled(
+                'o',
+                cell,
+                &mut sub,
+                RasterStyle { aa: AntiAliasMode::Subpixel, hinting: Hinting::Off },
+            )
+            .expect("the subpixel layout is refused only for a short buffer");
+        assert_eq!(painted.ink, InkKind::Coverage, "per-channel values are still coverage");
+
+        let mut lit = 0usize;
+        let mut max_spread = 0i32;
+        let mut subpixel_sum = 0i64;
+        let mut gray_sum = 0i64;
+        for px in 0..area {
+            let channels = [sub[px * 3], sub[px * 3 + 1], sub[px * 3 + 2]];
+            if channels.iter().any(|value| *value > 0) {
+                lit += 1;
+            }
+            let spread = i32::from(channels[0]) - i32::from(channels[2]);
+            max_spread = max_spread.max(spread.abs());
+            subpixel_sum += channels.iter().map(|v| i64::from(*v)).sum::<i64>();
+            gray_sum += i64::from(gray[px]);
+        }
+        assert!(lit > 0, "the glyph must still draw ink");
+        assert!(
+            max_spread > 8,
+            "a curved edge must cover the three emitters unequally, or the grid is not finer: \
+             max channel spread {max_spread}"
+        );
+        let ratio = subpixel_sum as f64 / (gray_sum.max(1) as f64 * 3.0);
+        assert!(
+            (0.85..1.15).contains(&ratio),
+            "subpixel ink must describe the same outline as grayscale: ratio {ratio:.3}"
+        );
+    }
+
+    /// The style is part of the coverage-cache key, so a hit never crosses layouts.
+    #[cfg(feature = "fonts-vector-latin")]
+    #[test]
+    fn a_coverage_cache_entry_never_crosses_styles() {
+        let cell = Cell::new(16, 16);
+        let area = cell.area();
+        let mut gray_first = crate::compat::vec![0u8; area];
+        let mut sub = crate::compat::vec![0u8; area * 3];
+        let mut gray_second = crate::compat::vec![0u8; area];
+
+        let _ = take_coverage_cache_stats();
+        VectorSource::INSTANCE.paint('A', cell, &mut gray_first).expect("covered");
+        assert_eq!(take_coverage_cache_stats(), (0, 1), "the grayscale buffer is a miss");
+        VectorSource::INSTANCE
+            .paint_styled(
+                'A',
+                cell,
+                &mut sub,
+                RasterStyle { aa: AntiAliasMode::Subpixel, hinting: Hinting::Off },
+            )
+            .expect("covered");
+        assert_eq!(
+            take_coverage_cache_stats(),
+            (0, 1),
+            "a different style is a different key, so it must rasterise rather than read the \
+             one-byte entry as three-byte pixels"
+        );
+        VectorSource::INSTANCE.paint('A', cell, &mut gray_second).expect("covered");
+        assert_eq!(take_coverage_cache_stats(), (1, 0), "the grayscale entry is still a hit");
+        assert_eq!(gray_first, gray_second, "a hit returns the pixels of its own style");
+        assert!(
+            sub.chunks(3)
+                .zip(gray_first.iter())
+                .any(|(triple, gray)| triple != [*gray, *gray, *gray]),
+            "the subpixel buffer must not be the grayscale one replicated three times"
+        );
+    }
+
+    /// The light-hinting rule, asserted on the transform rather than on the pixels.
+    ///
+    /// The rule is exact — the baseline moves to `round(height * ASCENT_SHARE)` and nothing else
+    /// moves — so the honest test is on the `Placement` itself. A pixel test can only say "something
+    /// differs"; this one pins *what* differs and that the scale, the em and the origin do not.
+    #[test]
+    fn light_hinting_snaps_only_the_baseline_to_a_whole_row() {
+        for height in [11u32, 12, 13, 14, 16, 17, 21] {
+            let cell = Cell::new(8, height);
+            let off = placement_for(cell, 1000.0, Hinting::Off);
+            let light = placement_for(cell, 1000.0, Hinting::Light);
+            let expected = height as f32 * ASCENT_SHARE;
+            assert_eq!(off.baseline_y, expected, "off keeps the fractional baseline");
+            assert_eq!(light.baseline_y, expected.round(), "light snaps it to the nearest row");
+            assert_eq!(light.baseline_y.fract(), 0.0, "a snapped baseline has no fraction");
+            assert_eq!(light.origin_x, 0.0, "the cell-local origin is already on the grid");
+            assert_eq!(light.pixel_size, off.pixel_size, "the scale must not move");
+            assert_eq!(light.units_per_em, off.units_per_em);
+            assert_eq!(light.x_direction, off.x_direction);
+        }
+    }
+
+    /// Hinting reaches the pixels when the baseline actually has a fraction to snap.
+    ///
+    /// At 14 px the baseline is `11.48`, so snapping it to `11` must move ink. This is the
+    /// reverse-injection half of the rule test: a `Hinting::Light` that was accepted and ignored
+    /// would leave the two buffers equal.
+    #[cfg(feature = "fonts-vector-latin")]
+    #[test]
+    fn light_hinting_moves_pixels_when_the_baseline_has_a_fraction() {
+        let cell = Cell::new(14, 14);
+        let mut plain = crate::compat::vec![0u8; cell.area()];
+        let mut hinted = crate::compat::vec![0u8; cell.area()];
+        VectorSource::INSTANCE
+            .paint_styled('H', cell, &mut plain, RasterStyle::DEFAULT)
+            .expect("covered");
+        VectorSource::INSTANCE
+            .paint_styled(
+                'H',
+                cell,
+                &mut hinted,
+                RasterStyle { aa: AntiAliasMode::Grayscale, hinting: Hinting::Light },
+            )
+            .expect("covered");
+        assert_ne!(plain, hinted, "moving the baseline by 0.48 px must move ink");
+    }
+
+    /// The buffer contract follows the style: a subpixel request needs three bytes per pixel.
+    #[cfg(feature = "fonts-vector-latin")]
+    #[test]
+    fn a_short_subpixel_buffer_is_refused_and_the_full_one_is_not() {
+        let cell = Cell::new(12, 12);
+        let styled = RasterStyle { aa: AntiAliasMode::Subpixel, hinting: Hinting::Light };
+        let mut short = crate::compat::vec![0u8; cell.area()];
+        assert!(
+            VectorSource::INSTANCE.paint_styled('A', cell, &mut short, styled).is_none(),
+            "one byte per pixel is the grayscale contract, not the subpixel one"
+        );
+        let mut full = crate::compat::vec![0u8; cell.area() * 3];
+        assert!(
+            VectorSource::INSTANCE.paint_styled('A', cell, &mut full, styled).is_some(),
+            "three bytes per pixel is enough for both modes, with or without hinting"
+        );
+        assert!(full.iter().any(|value| *value > 0), "and it draws ink");
     }
 }

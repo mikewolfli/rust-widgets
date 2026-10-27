@@ -9,7 +9,7 @@
 //! rather than showing a blank screen.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::widget::capability::coercion::expect_string;
@@ -59,6 +59,11 @@ pub struct EmptyState {
     /// The wrapped message and each line's measured width, rebuilt only when the message,
     /// the face, the available width or the device scale changes.
     message_wrap: Option<MessageWrapCache>,
+    /// The title's measured extent, reused while the text, face and device scale are unchanged.
+    ///
+    /// The draw pass centred the title with a fresh `measure_text` every frame even though the
+    /// layout and the copy were still.
+    title_measure: Option<TitleMeasureCache>,
 }
 
 /// Cached message layout: the wrapped lines and the width each one was measured at.
@@ -70,6 +75,15 @@ struct MessageWrapCache {
     lines: Vec<(String, u32)>,
 }
 
+/// Cached title extent and the inputs that produced it.
+struct TitleMeasureCache {
+    title: String,
+    font: Font,
+    dpi_scale_bits: u32,
+    width: u32,
+    height: u32,
+}
+
 /// The colours and interaction state shared by both emptiness action buttons.
 struct ActionButtonPaint {
     fill: Color,
@@ -77,6 +91,9 @@ struct ActionButtonPaint {
     /// arm lives in `BaseWidget` and the secondary in `EmptyState::secondary_pressed`, and this
     /// struct only carries the answer into the painter.
     armed: bool,
+    /// Whether the pointer is over the control. Read from the base's hover fact, which is the
+    /// single source every control shares.
+    hovered: bool,
     is_enabled: bool,
     ink: Color,
     surface: Color,
@@ -102,6 +119,7 @@ impl EmptyState {
             action_pressed: GenericSignal::new(),
             secondary_action_pressed: GenericSignal::new(),
             message_wrap: None,
+            title_measure: None,
         }
     }
 
@@ -244,6 +262,27 @@ impl EmptyState {
         self.set_message(description);
     }
 
+    /// Measures the title once per `(text, face, scale)` triple.
+    fn refresh_title_measure(&mut self, context: &RenderContext, font: &Font) -> (u32, u32) {
+        let dpi_scale_bits = context.dpi_scale().to_bits();
+        let fresh = self.title_measure.as_ref().is_some_and(|cache| {
+            cache.title == self.title
+                && cache.font == *font
+                && cache.dpi_scale_bits == dpi_scale_bits
+        });
+        if !fresh {
+            let metrics = context.measure_text(&self.title, font);
+            self.title_measure = Some(TitleMeasureCache {
+                title: self.title.clone(),
+                font: font.clone(),
+                dpi_scale_bits,
+                width: metrics.width,
+                height: metrics.height,
+            });
+        }
+        self.title_measure.as_ref().map(|cache| (cache.width, cache.height)).unwrap_or((0, 0))
+    }
+
     /// Paints one action button in `fill`, with the shared pressed and disabled treatments.
     fn paint_action_button(
         &self,
@@ -253,15 +292,19 @@ impl EmptyState {
         font: &Font,
         paint: ActionButtonPaint,
     ) {
-        let ActionButtonPaint { fill, armed, is_enabled, ink, surface } = paint;
+        let ActionButtonPaint { fill, armed, hovered, is_enabled, ink, surface } = paint;
         let corner_radius = rect.height / 2;
         // A pressed action is a step toward the ink, the same direction every other
         // pressed surface in the crate moves. The resting fill is unchanged, so a
-        // control that is never pressed paints exactly as it did.
+        // control that is never pressed paints exactly as it did. A hovered button is a
+        // smaller step in the same direction, which is what makes the affordance visible
+        // before it is clicked.
         let btn_bg = if !is_enabled {
             ink.blend(&surface, 0.8)
         } else if armed {
             fill.blend(&ink, 0.18)
+        } else if hovered {
+            fill.blend(&ink, 0.08)
         } else {
             fill
         };
@@ -525,8 +568,8 @@ impl Draw for EmptyState {
         // stack height above was built from, so the drawn title and the reserved space agree.
         let title_y = icon_y + icon_height + SECTION_GAP;
         let title_color = self.base.disabled_ink_on(ink, surface);
-        let title_metrics = context.measure_text(&self.title, &title_font);
-        let title_origin = Point::new(center_x - (title_metrics.width as i32 / 2), title_y);
+        let (title_width, _title_height) = self.refresh_title_measure(context, &title_font);
+        let title_origin = Point::new(center_x - (title_width as i32 / 2), title_y);
         context.draw_text(
             title_origin,
             &self.title,
@@ -575,6 +618,7 @@ impl Draw for EmptyState {
                 ActionButtonPaint {
                     fill: action_fill,
                     armed: self.base.is_pressed(),
+                    hovered: self.base.is_hovered(),
                     is_enabled,
                     ink,
                     surface,
@@ -591,6 +635,7 @@ impl Draw for EmptyState {
                     ActionButtonPaint {
                         fill: action_fill.blend(&surface, 0.55),
                         armed: self.secondary_pressed,
+                        hovered: self.base.is_hovered(),
                         is_enabled,
                         ink,
                         surface,
@@ -659,6 +704,18 @@ impl EventHandler for EmptyState {
                         }
                         self.base.request_redraw();
                     }
+                }
+            }
+            // Keyboard activation: a focused empty state's action is reachable without a
+            // pointer, through the same `action_pressed` signal the click emits.
+            Event::KeyPress { key, modifiers: _ } => {
+                self.base.handle_event(event);
+                if self.base.focus_reason().is_some()
+                    && (*key == key_codes::ENTER || *key == key_codes::SPACE)
+                    && self.has_action()
+                {
+                    self.action_pressed.emit();
+                    self.base.request_redraw();
                 }
             }
             _ => {
@@ -1152,5 +1209,54 @@ mod tests {
             es.get("secondary_action_text").unwrap(),
             CapabilityValue::String("Details".into())
         );
+    }
+
+    /// A focused action area commits its action from the keyboard.
+    #[test]
+    fn a_focused_empty_state_activates_its_action_from_the_keyboard() {
+        use crate::event::FocusReason;
+
+        let mut es = EmptyState::new(Rect::new(0, 0, 300, 200));
+        es.set_action_text("Retry");
+        let fired = Arc::new(Mutex::new(0usize));
+        es.action_pressed.connect({
+            let fired = Arc::clone(&fired);
+            move || {
+                *fired.lock().unwrap() += 1;
+            }
+        });
+
+        // Without focus a key is not the control's to consume.
+        es.handle_event(&Event::KeyPress { key: key_codes::ENTER, modifiers: 0 });
+        assert_eq!(*fired.lock().unwrap(), 0);
+
+        es.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        es.handle_event(&Event::KeyPress { key: key_codes::ENTER, modifiers: 0 });
+        assert_eq!(*fired.lock().unwrap(), 1);
+        es.handle_event(&Event::KeyPress { key: key_codes::SPACE, modifiers: 0 });
+        assert_eq!(*fired.lock().unwrap(), 2);
+    }
+
+    /// The title measurement is reused while its text, face and scale are unchanged.
+    #[test]
+    fn the_title_is_measured_once_per_content_revision() {
+        let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 120));
+        let context = RenderContext::new(&mut backend);
+        let mut es = EmptyState::new(Rect::new(0, 0, 300, 200));
+        let font = Font::simple("Sans", 20.0);
+
+        es.refresh_title_measure(&context, &font);
+        let ptr = es.title_measure.as_ref().unwrap().title.as_ptr();
+        es.refresh_title_measure(&context, &font);
+        assert_eq!(
+            es.title_measure.as_ref().unwrap().title.as_ptr(),
+            ptr,
+            "a still title reuses its cached measurement"
+        );
+
+        es.set_title("A much longer heading");
+        let (width, _) = es.refresh_title_measure(&context, &font);
+        assert!(width > 0);
+        assert_eq!(es.title_measure.as_ref().unwrap().title, "A much longer heading");
     }
 }

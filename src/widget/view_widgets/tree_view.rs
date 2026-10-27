@@ -6,6 +6,7 @@ use crate::core::Color;
 use crate::core::HorizontalAlignment;
 use crate::core::Point;
 use crate::core::Rect;
+use crate::event::dnd::{DragPayload, DragSource, DropEffect, DropTarget};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
@@ -121,6 +122,22 @@ impl NodeView {
     }
 }
 
+/// One column of a multi-column tree presentation (V-016).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeColumn {
+    /// The column title.
+    pub title: String,
+    /// Width in logical pixels.
+    pub width: u32,
+}
+
+impl TreeColumn {
+    /// A column with a title and a width of at least one pixel.
+    pub fn new(title: impl Into<String>, width: u32) -> Self {
+        Self { title: title.into(), width: width.max(1) }
+    }
+}
+
 /// Tree model abstraction for tree-like views.
 pub trait TreeModel: Send + Sync {
     /// Number of nodes exposed by model.
@@ -194,6 +211,19 @@ pub trait TreeModel: Send + Sync {
     /// node-addressed counterpart.
     fn fetch_more_path(&self, path: &[usize]) -> bool {
         path.last().is_some_and(|index| self.fetch_more(*index))
+    }
+
+    /// The text painted in `column` of node `index` (V-016).
+    ///
+    /// Column `0` is the label column and defaults to [`Self::node_path`]; every other column
+    /// defaults to `None`, so a model that does not describe columns keeps rendering exactly the
+    /// historical single label. A multi-column model overrides this to supply the extra cells.
+    fn node_column_text(&self, index: usize, column: usize) -> Option<String> {
+        if column == 0 {
+            self.node_path(index)
+        } else {
+            None
+        }
     }
 }
 /// In-memory tree model backed by a vector of nodes.
@@ -384,6 +414,18 @@ pub struct TreeView {
     pub fetch_started: Signal1<Vec<usize>>,
     /// Emitted when a fetch for `path` finishes; the `bool` is whether the model grew.
     pub fetch_finished: Signal1<(Vec<usize>, bool)>,
+    /// Whether vertical indent guide lines are painted (V-016). Off by default.
+    indent_lines: bool,
+    /// Column descriptors for the multi-column presentation (V-016). Empty means the historical
+    /// single label.
+    columns: Vec<TreeColumn>,
+    /// Emitted with `(from_visible_row, to_visible_row)` when a row drag is dropped (V-016).
+    ///
+    /// The model is host-owned and read-only, so the drag cannot commit the move itself; the
+    /// request is the contract, and the host applies it to the model it owns.
+    pub row_move_requested: Signal1<(usize, usize)>,
+    /// Emitted with the effect of a drag that began in this tree (V-016).
+    pub drag_finished: Signal1<DropEffect>,
 }
 impl TreeView {
     /// Creates an empty tree view.
@@ -427,6 +469,10 @@ impl TreeView {
             loading_paths: Vec::new(),
             fetch_started: Signal1::new(),
             fetch_finished: Signal1::new(),
+            indent_lines: false,
+            columns: Vec::new(),
+            row_move_requested: Signal1::new(),
+            drag_finished: Signal1::new(),
         }
     }
     /// Binds an external tree model.
@@ -494,6 +540,22 @@ impl TreeView {
             return self.projection_cache.iter().take(limit).copied().collect();
         }
         self.walk_visible_indices(limit)
+    }
+
+    /// The visible rows from `start`, capped at `limit`.
+    ///
+    /// The paint loop used to ask for `0..scroll_row + capacity` and then `skip(scroll_row)`, so a
+    /// deep scroll copied every row above the viewport into a fresh `Vec` each frame. This cursor
+    /// starts at the first visible row: a current cache is sliced from `start`, and an uncached
+    /// walk stops after `start + limit` rows instead of materialising the prefix (V-010).
+    fn visible_indices_from(&self, start: usize, limit: usize) -> Vec<usize> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        if self.projection_is_current() {
+            return self.projection_cache.iter().skip(start).take(limit).copied().collect();
+        }
+        self.walk_visible_indices(start.saturating_add(limit)).into_iter().skip(start).collect()
     }
 
     /// Whether the cached projection still describes the current model and expansion state.
@@ -1032,9 +1094,44 @@ impl TreeView {
         self.base.request_redraw();
     }
 
+    /// Whether vertical indent guide lines are painted (V-016).
+    pub fn indent_lines(&self) -> bool {
+        self.indent_lines
+    }
+
+    /// Enables or disables the indent guide lines. Off by default, which keeps the historical
+    /// pixels.
+    pub fn set_indent_lines(&mut self, indent_lines: bool) {
+        if self.indent_lines == indent_lines {
+            return;
+        }
+        self.indent_lines = indent_lines;
+        self.base.request_redraw();
+    }
+
+    /// The multi-column descriptors (V-016). Empty means the single label column.
+    pub fn columns(&self) -> &[TreeColumn] {
+        &self.columns
+    }
+
+    /// Replaces the multi-column descriptors.
+    ///
+    /// Column `0` carries the disclosure glyph and the label; each later column reads
+    /// [`TreeModel::node_column_text`]. An empty list restores the single-label presentation.
+    pub fn set_columns(&mut self, columns: Vec<TreeColumn>) {
+        let columns: Vec<TreeColumn> =
+            columns.into_iter().map(|column| TreeColumn::new(column.title, column.width)).collect();
+        if columns == self.columns {
+            return;
+        }
+        self.columns = columns;
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
     /// Returns the label of the visible row `index`.
     pub fn node_path(&self, index: usize) -> Option<String> {
-        let model_index = *self.visible_indices().get(index)?;
+        let model_index = self.visible_index_at(index)?;
         self.model.as_ref()?.node(model_index).map(|node| node.label)
     }
 
@@ -1492,6 +1589,16 @@ impl Widget for TreeView {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Opts the tree into the runtime's drag coordinator as a source (V-016).
+    fn drag_source_mut(&mut self) -> Option<&mut dyn DragSource> {
+        Some(self)
+    }
+
+    /// Opts the tree into the runtime's drag coordinator as a drop target (V-016).
+    fn drop_target_mut(&mut self) -> Option<&mut dyn DropTarget> {
+        Some(self)
+    }
     /// Resolves a published event name to the control's own signal.
     ///
     /// # Why this is explicit
@@ -1579,6 +1686,68 @@ impl Widget for TreeView {
             )),
             _ => None,
         }
+    }
+}
+
+/// A row drag carries its **visible** row index; the label is the node's own text (V-016).
+impl DragSource for TreeView {
+    fn drag_payload(&self, pos: Point) -> Option<DragPayload> {
+        if !self.base.is_enabled() {
+            return None;
+        }
+        let row = self.node_at(pos)?;
+        let model_index = self.visible_index_at(row)?;
+        let label =
+            self.model.as_ref()?.node(model_index).map(|node| node.label).unwrap_or_default();
+        Some(DragPayload::new("text/plain", row.to_string()).with_label(label).with_origin(pos))
+    }
+
+    /// Reports the outcome to the host.
+    fn on_drag_finished(&mut self, effect: DropEffect) {
+        self.drag_finished.emit(effect);
+    }
+}
+
+/// A row dropped on the tree requests a move (V-016).
+///
+/// `TreeModel` is read-only by design (`Arc<dyn TreeModel>`), so the control cannot write the
+/// reorder through to the model it does not own. The drop therefore reports a request, which is
+/// the same ghost/drop path `VirtualList` uses, with the commit point moved to the model owner.
+impl DropTarget for TreeView {
+    fn can_accept(&self, payload: &DragPayload) -> bool {
+        if !self.base.is_enabled() || !payload.is_type("text/plain") {
+            return false;
+        }
+        // A row index only addresses the view that produced it.
+        if !payload.came_from(self.base.id()) {
+            return false;
+        }
+        payload.item_id.parse::<usize>().is_ok_and(|row| row < self.visible_row_count())
+    }
+
+    fn on_drop(&mut self, payload: &DragPayload, pos: Point) -> DropEffect {
+        if !self.can_accept(payload) {
+            return DropEffect::None;
+        }
+        let Ok(from) = payload.item_id.parse::<usize>() else {
+            return DropEffect::None;
+        };
+        let Some(to) = self.node_at(pos) else {
+            return DropEffect::None;
+        };
+        if from != to {
+            self.row_move_requested.emit((from, to));
+        }
+        DropEffect::Move
+    }
+
+    /// Highlights the row a drop would land on.
+    fn preview_rect(&self, payload: &DragPayload, pos: Point) -> Option<Rect> {
+        if !self.can_accept(payload) {
+            return None;
+        }
+        let row = self.node_at(pos)?;
+        self.node_row_rect(row)
     }
 }
 
@@ -1810,10 +1979,13 @@ impl Draw for TreeView {
             // fit), so the projection stops as soon as painting will.
             let content = ControlMetrics::band_inset(rect, TREE_INSET);
             let row_capacity = (content.height / TREE_ROW_HEIGHT as u32) as usize + 1;
-            let rows = self.visible_indices_limited(self.scroll_row.saturating_add(row_capacity));
+            // Start the cursor at the first visible row: the prefix above the viewport is never
+            // materialised, however deep the scroll is (V-010).
+            let rows = self.visible_indices_from(self.scroll_row, row_capacity);
             let font = effective_font(style);
             let reveal = self.expansion_progress();
-            for (visible, &model_index) in rows.iter().enumerate().skip(self.scroll_row) {
+            for (offset, &model_index) in rows.iter().enumerate() {
+                let visible = self.scroll_row + offset;
                 // The row's own rectangle comes from the same derivation the hit test uses, so a
                 // click cannot land on a row other than the one that was painted.
                 let Some(row) = self.node_row_rect(visible) else {
@@ -1846,6 +2018,18 @@ impl Draw for TreeView {
                 // `i32` must draw off-screen rather than wrap onto another row.
                 let depth = i32::try_from(node.depth).unwrap_or(i32::MAX);
                 let indent = TREE_INDENT.saturating_mul(depth.saturating_add(1));
+                // One guide per open ancestor level, from the parent's label origin down to the
+                // row. Off by default, so a settled tree keeps the historical pixels (V-016).
+                if self.indent_lines {
+                    for level in 1..=node.depth {
+                        let guide_x = row.x + TREE_INDENT.saturating_mul(level as i32);
+                        context.draw_line(
+                            Point::new(guide_x, row.y),
+                            Point::new(guide_x, row.y + row.height as i32),
+                            ink.with_alpha(60),
+                        );
+                    }
+                }
                 if node.has_children {
                     // The disclosure glyph is the only thing that says a row can be opened, so it
                     // is drawn from the same derivation the click test uses — the free helper,
@@ -1875,20 +2059,65 @@ impl Draw for TreeView {
                         context.draw_line(c, a, row_ink);
                     }
                 }
-                if !node.label.is_empty() {
-                    let cell = crate::core::Rect::new(
-                        row.x + indent,
-                        row.y,
-                        row.width.saturating_sub(indent.max(0) as u32),
-                        row.height,
-                    );
-                    context.draw_text_fitted_cow(
-                        context.text_line(cell, font),
-                        &node.label,
-                        font,
-                        row_ink,
-                        HorizontalAlignment::Left,
-                    );
+                if self.columns.is_empty() {
+                    if !node.label.is_empty() {
+                        let cell = crate::core::Rect::new(
+                            row.x + indent,
+                            row.y,
+                            row.width.saturating_sub(indent.max(0) as u32),
+                            row.height,
+                        );
+                        context.draw_text_fitted_cow(
+                            context.text_line(cell, font),
+                            &node.label,
+                            font,
+                            row_ink,
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                } else {
+                    // Column 0 carries the indent and the label; every later column is placed
+                    // after the previous descriptor's width (V-016). A model that does not
+                    // describe a column answers `None` and simply paints nothing there.
+                    let mut column_x = row.x;
+                    for (column, descriptor) in self.columns.iter().enumerate() {
+                        let width = descriptor.width.max(1);
+                        if column == 0 {
+                            let cell_width = width.saturating_sub(indent.max(0) as u32);
+                            if cell_width > 0 && !node.label.is_empty() {
+                                let cell = crate::core::Rect::new(
+                                    row.x + indent,
+                                    row.y,
+                                    cell_width,
+                                    row.height,
+                                );
+                                context.draw_text_fitted_cow(
+                                    context.text_line(cell, font),
+                                    &node.label,
+                                    font,
+                                    row_ink,
+                                    HorizontalAlignment::Left,
+                                );
+                            }
+                        } else if let Some(text) = model.node_column_text(model_index, column) {
+                            if !text.is_empty() {
+                                let cell = crate::core::Rect::new(
+                                    column_x,
+                                    row.y,
+                                    width.min(row.width),
+                                    row.height,
+                                );
+                                context.draw_text_fitted_cow(
+                                    context.text_line(cell, font),
+                                    &text,
+                                    font,
+                                    row_ink,
+                                    HorizontalAlignment::Left,
+                                );
+                            }
+                        }
+                        column_x = column_x.saturating_add(width as i32);
+                    }
                 }
             }
 
@@ -1898,7 +2127,9 @@ impl Draw for TreeView {
             if self.loading_indicator_visible {
                 if let Some(path) = self.loading_paths.first() {
                     let pending = path.last().copied().unwrap_or(0);
-                    let visible = self.visible_indices().iter().position(|index| *index == pending);
+                    // The inverse map answers the row directly; the old form materialised the
+                    // whole projection just to call `position` on it (V-010).
+                    let visible = self.visible_position_of(pending);
                     let slot = match visible {
                         Some(row) if row >= self.scroll_row => row - self.scroll_row + 1,
                         Some(_) => 0,
@@ -2772,5 +3003,125 @@ mod tests {
         assert!(view.auto_scroll_to_expanded());
         view.set_auto_scroll_to_expanded(false);
         assert!(!view.auto_scroll_to_expanded());
+    }
+
+    /// V-010: the paint cursor starts at the first visible row instead of materialising a
+    /// prefix and skipping it.
+    #[test]
+    fn the_visible_slice_starts_at_the_scroll_position() {
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 200));
+        view.set_model(Arc::new(VecTreeModel::new(
+            (0..1_000).map(|n| format!("node {n}")).collect(),
+        )));
+
+        let rows = view.visible_indices_from(900, 4);
+        assert_eq!(rows, vec![900, 901, 902, 903], "only the viewport rows are produced");
+        assert_eq!(view.node_path(900), Some("node 900".to_string()));
+        assert_eq!(view.visible_indices_from(998, 10), vec![998, 999], "the tail is clamped");
+    }
+
+    /// V-016: indent guide lines are opt-in and change the painted output.
+    #[test]
+    fn indent_lines_are_off_by_default_and_paint_when_enabled() {
+        struct Nested;
+        impl TreeModel for Nested {
+            fn node_count(&self) -> usize {
+                2
+            }
+            fn node_path(&self, index: usize) -> Option<String> {
+                Some(std::format!("n{index}"))
+            }
+            fn node(&self, index: usize) -> Option<NodeView> {
+                match index {
+                    0 => Some(NodeView {
+                        label: "root".to_string(),
+                        depth: 0,
+                        has_children: true,
+                        expanded: true,
+                    }),
+                    1 => Some(NodeView {
+                        label: "child".to_string(),
+                        depth: 1,
+                        has_children: false,
+                        expanded: false,
+                    }),
+                    _ => None,
+                }
+            }
+        }
+
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 100));
+        view.set_model(Arc::new(Nested));
+        assert!(!view.indent_lines());
+        let plain = crate::widget::svg::render_to_svg(&mut view);
+        view.set_indent_lines(true);
+        assert!(view.indent_lines());
+        let guided = crate::widget::svg::render_to_svg(&mut view);
+        assert_ne!(plain, guided, "the guides are actually painted");
+    }
+
+    /// V-016: a column descriptor array paints the model's extra columns.
+    #[test]
+    fn column_descriptors_paint_extra_cells() {
+        struct MultiColumn;
+        impl TreeModel for MultiColumn {
+            fn node_count(&self) -> usize {
+                2
+            }
+            fn node_path(&self, index: usize) -> Option<String> {
+                Some(std::format!("label{index}"))
+            }
+            fn node_column_text(&self, index: usize, column: usize) -> Option<String> {
+                match column {
+                    0 => self.node_path(index),
+                    _ => Some(std::format!("extra{index}")),
+                }
+            }
+        }
+
+        let mut view = TreeView::new(Rect::new(0, 0, 300, 100));
+        view.set_model(Arc::new(MultiColumn));
+        let single = crate::widget::svg::render_to_svg(&mut view);
+        let single_boxes = crate::widget::svg::text_ink_boxes(&single).len();
+
+        view.set_columns(vec![TreeColumn::new("Name", 120), TreeColumn::new("Extra", 120)]);
+        assert_eq!(view.columns().len(), 2);
+        let multi = crate::widget::svg::render_to_svg(&mut view);
+        let multi_boxes = crate::widget::svg::text_ink_boxes(&multi).len();
+        assert_eq!(multi_boxes, single_boxes * 2, "one extra text run per node");
+
+        view.set_columns(Vec::new());
+        assert!(view.columns().is_empty());
+    }
+
+    /// V-016: a same-control drag reports a move request through the ghost/drop path.
+    #[test]
+    fn a_dropped_row_reports_a_move_request() {
+        let mut view = TreeView::new(Rect::new(0, 0, 200, 100));
+        view.set_model(Arc::new(VecTreeModel::new(vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+        ])));
+
+        let source = view.node_row_rect(0).expect("row 0");
+        let payload = view
+            .drag_payload(Point::new(source.x + 5, source.y + 5))
+            .expect("a payload from row 0")
+            .with_source(view.base().id());
+        assert!(view.can_accept(&payload));
+
+        let requested = Arc::new(std::sync::Mutex::new(Vec::<(usize, usize)>::new()));
+        let sink = Arc::clone(&requested);
+        view.row_move_requested.connect(move |pair| {
+            sink.lock().expect("request sink").push(*pair);
+        });
+
+        let target = view.node_row_rect(2).expect("row 2");
+        assert_eq!(
+            view.on_drop(&payload, Point::new(target.x + 5, target.y + 5)),
+            DropEffect::Move
+        );
+        assert_eq!(*requested.lock().expect("request sink"), vec![(0, 2)]);
     }
 }

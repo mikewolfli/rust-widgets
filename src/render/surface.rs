@@ -303,9 +303,15 @@ impl BevelSpec {
     /// Resolves this specification into a paintable [`Bevel`].
     ///
     /// `border` is the face's resolved border colour, used when no explicit base was stated.
+    /// The line style is the crate-wide default (`Butt` cap, `Miter` join — G-017), which is
+    /// exactly what a bevel has always drawn; a caller that wants rounded ends reaches for
+    /// [`Bevel::with_line_style`] on the resolved value.
     pub fn resolve(self, border: Color) -> Bevel {
         let base = self.base.unwrap_or(border);
-        Bevel::from_base(base).with_direction(self.direction)
+        Bevel::from_base(base).with_direction(self.direction).with_line_style(
+            crate::render::core::command::LineCap::Butt,
+            crate::render::core::command::LineJoin::Miter,
+        )
     }
 }
 
@@ -547,9 +553,22 @@ impl SurfaceStyle {
         // 1. The shadow, if this face is raised. It is behind the face, so it goes first — a
         //    raised face drawn before its own shadow would have the shadow cover it. It goes
         //    through the box-shadow command so the theme's declared `blur` is actually painted:
-        //    a plain rectangle here dropped it, and every raised face cast a hard bar.
+        //    a plain rectangle here dropped it, and every raised face cast a hard bar. A rounded
+        //    face carries its radius through (G-016) so the blur source is the rounded shape.
         if let Some(shadow) = self.shadow(shadow_tint) {
-            context.draw_box_shadow(rect, shadow.color, shadow.x, shadow.y, shadow.blur, 0);
+            if radius > 0 {
+                context.draw_box_shadow_rounded(
+                    rect,
+                    [radius; 4],
+                    shadow.color,
+                    shadow.x,
+                    shadow.y,
+                    shadow.blur,
+                    0,
+                );
+            } else {
+                context.draw_box_shadow(rect, shadow.color, shadow.x, shadow.y, shadow.blur, 0);
+            }
         }
 
         // 2. The fill, with the material's tint applied. `apply_fill` is the identity for a
@@ -607,9 +626,21 @@ impl SurfaceStyle {
         if gradient.is_none() {
             return self.paint(context, rect, fill, border, border_width, radius, shadow_tint);
         }
-        // The shadow, behind the face.
+        // The shadow, behind the face. A rounded face carries its radius through (G-016).
         if let Some(shadow) = self.shadow(shadow_tint) {
-            context.draw_box_shadow(rect, shadow.color, shadow.x, shadow.y, shadow.blur, 0);
+            if radius > 0 {
+                context.draw_box_shadow_rounded(
+                    rect,
+                    [radius; 4],
+                    shadow.color,
+                    shadow.x,
+                    shadow.y,
+                    shadow.blur,
+                    0,
+                );
+            } else {
+                context.draw_box_shadow(rect, shadow.color, shadow.x, shadow.y, shadow.blur, 0);
+            }
         }
         // The gradient fill. A gradient cannot be rounded here because the gradient paint server
         // has no corner rounding; a radius still gets its bevel and edge, which is what keeps a

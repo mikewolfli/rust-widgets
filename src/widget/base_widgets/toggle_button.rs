@@ -307,7 +307,10 @@ impl ToggleButton {
             self.checked_changed.emit(checked);
             self.toggled.emit(checked);
             self.state_changed.emit(self.state());
-            button_group::notify_member_event(self.id(), button_group::MemberEvent::Toggled);
+            button_group::notify_member_event(
+                self.id(),
+                button_group::MemberEvent::Toggled(checked),
+            );
         }
     }
     /// Flips the checked flag through [`ToggleButton::set_checked`], so the
@@ -532,28 +535,45 @@ impl ToggleButton {
     }
 
     /// Moves the keyboard highlight through the enabled rows.
+    ///
+    /// Index-based rather than collecting the enabled rows into a fresh `Vec` on every key:
+    /// the menu's own vector is the entry list, so a held arrow key costs one walk and no
+    /// allocation.
     #[cfg(full_widgets)]
     fn move_menu_highlight(&mut self, forward: bool) {
-        let enabled: Vec<usize> = self
-            .menu_items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| item.enabled)
-            .map(|(i, _)| i)
-            .collect();
-        if enabled.is_empty() {
-            return;
-        }
-        let position = self
-            .active_menu_index
-            .and_then(|active| enabled.iter().position(|index| *index == active));
-        let next = match position {
-            Some(position) if forward => (position + 1) % enabled.len(),
-            Some(position) => (position + enabled.len() - 1) % enabled.len(),
-            None => 0,
+        let next = match self.active_menu_index {
+            Some(active) if self.menu_items.get(active).is_some_and(|item| item.enabled) => {
+                self.step_enabled_index(active, forward)
+            }
+            _ => self.first_enabled_index(),
         };
-        self.active_menu_index = Some(enabled[next]);
-        self.base.request_redraw();
+        if let Some(index) = next {
+            self.active_menu_index = Some(index);
+            self.base.request_redraw();
+        }
+    }
+
+    /// The first enabled row, or `None` when every row is disabled.
+    #[cfg(full_widgets)]
+    fn first_enabled_index(&self) -> Option<usize> {
+        self.menu_items.iter().position(|item| item.enabled)
+    }
+
+    /// The next enabled row from `from`, wrapping and skipping disabled rows.
+    #[cfg(full_widgets)]
+    fn step_enabled_index(&self, from: usize, forward: bool) -> Option<usize> {
+        let len = self.menu_items.len();
+        if len == 0 {
+            return None;
+        }
+        let mut index = from;
+        for _ in 0..len {
+            index = if forward { (index + 1) % len } else { (index + len - 1) % len };
+            if self.menu_items[index].enabled {
+                return Some(index);
+            }
+        }
+        None
     }
     /// Returns whether the button is currently held down.
     pub fn is_pressed(&self) -> bool {
@@ -563,13 +583,23 @@ impl ToggleButton {
     ///
     /// No-op when unchanged, so the signals fire only on an actual edge: a
     /// rising edge emits `pressed_signal`, a falling edge emits
-    /// `released_signal`. Unlike the checked flag, this does not request a
-    /// redraw.
+    /// `released_signal`. An edge requests a repaint, matching the trait's own
+    /// [`Widget::set_pressed`] contract.
     pub fn set_pressed(&mut self, pressed: bool) {
         // The trait default carries both the field write and the theme re-resolution for
         // `toggle_button:pressed`; this inherent method shadows it, so it delegates through the
         // trait object rather than writing the field itself.
+        //
+        // This control's event path records the press in the base **before** it arms the
+        // control, so by the time this runs the base flag may already equal `pressed`. The
+        // trait default then returns early and neither re-resolves the theme nor repaints,
+        // which is exactly the gap B-009 names. Resolve and repaint here when that happens.
+        let base_changed = self.base.is_pressed() != pressed;
         <dyn Widget>::set_pressed(self, pressed);
+        if !base_changed && self.signaled_pressed != pressed {
+            self.set_state_theme_hook();
+            self.base.request_redraw();
+        }
         if self.signaled_pressed == pressed {
             return;
         }
@@ -2030,6 +2060,52 @@ mod tests {
             modifiers: 0,
         });
         assert!(button.is_menu_open(), "the arrow segment opens the menu");
+    }
+
+    #[cfg(full_widgets)]
+    #[test]
+    fn menu_navigation_walks_indices_and_skips_disabled_rows() {
+        use crate::widget::menu_toolbar::menu_button::MenuItem;
+
+        let first = MenuItem::new(1, "One");
+        let mut skipped = MenuItem::new(2, "Two");
+        skipped.enabled = false;
+        let last = MenuItem::new(3, "Three");
+        let mut button = ToggleButton::new("Bold".to_string(), Rect::new(0, 0, 100, 30));
+        button.set_menu(vec![first, skipped, last]);
+        button.open_menu();
+
+        button.move_menu_highlight(true);
+        assert_eq!(button.active_menu_index, Some(2), "a disabled row is skipped");
+        button.move_menu_highlight(true);
+        assert_eq!(button.active_menu_index, Some(0), "the walk wraps");
+        button.move_menu_highlight(false);
+        assert_eq!(button.active_menu_index, Some(2), "the reverse walk wraps too");
+    }
+
+    /// B-009: the event path records the press in the base before the control arms itself, so
+    /// `Widget::set_pressed` returns early. The control must still re-resolve and repaint.
+    #[test]
+    fn set_pressed_requests_a_repaint_when_the_base_already_holds_the_flag() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let mut button = ToggleButton::new("Bold".to_string(), Rect::new(0, 0, 100, 30));
+        let redraws = Arc::new(AtomicU32::new(0));
+        let counter = redraws.clone();
+        let _connection = button.redraw_requested_signal().connect(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // The base has already recorded the press, as it does before this control's arm runs.
+        Widget::base_mut(&mut button).set_pressed(true);
+        let before = redraws.load(Ordering::SeqCst);
+        button.set_pressed(true);
+
+        assert!(
+            redraws.load(Ordering::SeqCst) > before,
+            "an edge whose base flag was already set must still request a repaint"
+        );
     }
 }
 

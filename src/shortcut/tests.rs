@@ -436,3 +436,96 @@ fn shortcut_conflicts_are_scoped() {
     manager.push_scope("window_b");
     assert_eq!(manager.action_for_key(Key::S, Modifiers::PRIMARY).as_deref(), Some("b_save"));
 }
+
+/// W-P01: the chord index must reproduce the linear scan's outcomes.
+///
+/// One dispatch matrix over every path the index touches: the direct bucket, the desktop
+/// `primary` lift bucket, re-registration (a moved binding must leave its old bucket), scoped
+/// shadowing through the same buckets, and unregister.
+#[test]
+fn the_chord_index_preserves_dispatch_outcomes() {
+    let mut manager = ShortcutManager::new();
+    assert!(manager.register("save", Shortcut::primary(Key::S), "Save"));
+    assert!(manager.register("copy", Shortcut::ctrl(Key::C), "Copy"));
+
+    // The binding's own modifier set answers from the direct bucket, on every platform.
+    assert_eq!(manager.action_for_key(Key::S, Modifiers::PRIMARY).as_deref(), Some("save"));
+    assert_eq!(manager.action_for_key(Key::C, Modifiers::CTRL).as_deref(), Some("copy"));
+    // A modifier miss must not resolve: no bucket exists for (S, SHIFT), and `copy` is not
+    // indexed under (C, PRIMARY) nor lifted to it.
+    assert_eq!(manager.action_for_key(Key::S, Modifiers::SHIFT), None);
+    assert_eq!(manager.action_for_key(Key::C, Modifiers::PRIMARY), None);
+    // The lift bucket: a `primary` binding answers to a Control press on desktop only, and a
+    // physical-Control binding never answers to a primary press anywhere.
+    match PlatformShortcutStyle::current() {
+        PlatformShortcutStyle::Desktop => {
+            assert_eq!(manager.action_for_key(Key::S, Modifiers::CTRL).as_deref(), Some("save"));
+        }
+        PlatformShortcutStyle::Mac => {
+            assert_eq!(manager.action_for_key(Key::S, Modifiers::CTRL), None);
+            assert_eq!(manager.action_for_key(Key::C, Modifiers::PRIMARY), None);
+        }
+    }
+
+    // Re-registration moves the binding: the old chord must die with its index entries.
+    assert!(manager.register("save", Shortcut::primary(Key::D), "Save"));
+    assert_eq!(manager.action_for_key(Key::S, Modifiers::PRIMARY), None);
+    assert_eq!(manager.action_for_key(Key::D, Modifiers::PRIMARY).as_deref(), Some("save"));
+
+    // Scoped shadowing walks the same buckets: the innermost active scope wins, and popping
+    // restores the global binding.
+    assert!(manager.register_in("dialog", "dialog_ok", Shortcut::primary(Key::D), "OK"));
+    manager.push_scope("dialog");
+    assert_eq!(manager.action_for_key(Key::D, Modifiers::PRIMARY).as_deref(), Some("dialog_ok"));
+    manager.pop_scope();
+    assert_eq!(manager.action_for_key(Key::D, Modifiers::PRIMARY).as_deref(), Some("save"));
+
+    // Unregistering removes the bucket entry with the binding, and leaves the scoped one alone.
+    assert!(manager.unregister("save"));
+    assert_eq!(manager.action_for_key(Key::D, Modifiers::PRIMARY), None);
+    manager.push_scope("dialog");
+    assert_eq!(manager.action_for_key(Key::D, Modifiers::PRIMARY).as_deref(), Some("dialog_ok"));
+    manager.pop_scope();
+}
+
+/// W-P01 order-sensitive case: a physical-Control binding and a `primary` binding for the same
+/// key can both answer to one press on desktop (the lift). The bucket keeps their registration
+/// order, so the winner is deterministic instead of hash-order dependent.
+#[test]
+fn overlapping_chords_resolve_in_registration_order_within_their_bucket() {
+    let mut manager = ShortcutManager::new();
+    assert!(manager.register("first", Shortcut::ctrl(Key::S), "First"));
+    assert!(manager.register("second", Shortcut::primary(Key::S), "Second"));
+
+    // A primary press reaches only the `primary` binding: the physical-Control binding is
+    // neither indexed under PRIMARY nor lifted to it.
+    assert_eq!(manager.action_for_key(Key::S, Modifiers::PRIMARY).as_deref(), Some("second"));
+
+    match PlatformShortcutStyle::current() {
+        PlatformShortcutStyle::Desktop => {
+            // Both bindings are genuine candidates for the Control press — `matches_binding`
+            // accepts each — so the bucket order decides: first-registered wins.
+            assert!(ShortcutManager::matches_binding(
+                &Shortcut::ctrl(Key::S),
+                Key::S,
+                Modifiers::CTRL
+            ));
+            assert!(ShortcutManager::matches_binding(
+                &Shortcut::primary(Key::S),
+                Key::S,
+                Modifiers::CTRL
+            ));
+            assert_eq!(manager.action_for_key(Key::S, Modifiers::CTRL).as_deref(), Some("first"));
+        }
+        PlatformShortcutStyle::Mac => {
+            // The two chords stay distinct on macOS: the Control press reaches only the physical
+            // binding, because `matches_binding` rejects the lift bucket there.
+            assert_eq!(manager.action_for_key(Key::S, Modifiers::CTRL).as_deref(), Some("first"));
+        }
+    }
+
+    // A disabled entry stays indistinguishable from an absent one: the resolution does not fall
+    // through to the second binding in the bucket.
+    manager.disable("first");
+    assert_eq!(manager.action_for_key(Key::S, Modifiers::CTRL), None);
+}

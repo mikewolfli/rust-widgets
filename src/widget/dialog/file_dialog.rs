@@ -84,6 +84,30 @@ impl std::fmt::Display for FileFilter {
         write!(f, "{} ({})", self.description, exts.join(" "))
     }
 }
+
+/// Whether `name` is accepted by `filter` (DLG-009).
+///
+/// The extension list is the one [`FileFilter::extensions`] documents: suffixes without the
+/// leading dot, with the single entry `"*"` meaning "every file". The comparison is
+/// case-insensitive and anchored at a dot, so `"png"` accepts `shot.PNG` and rejects `png.txt`;
+/// an empty list accepts no files at all (a filter that names nothing), which is why the
+/// catch-all filter spells the wildcard explicitly.
+fn filter_accepts(filter: &FileFilter, name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let mut wildcard = false;
+    let mut matched = false;
+    for extension in &filter.extensions {
+        let extension = extension.trim().trim_start_matches('.');
+        if extension == "*" {
+            wildcard = true;
+        } else if !extension.is_empty()
+            && lower.ends_with(&format!(".{}", extension.to_ascii_lowercase()))
+        {
+            matched = true;
+        }
+    }
+    wildcard || matched
+}
 /// One row in the host-supplied directory listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
@@ -521,10 +545,26 @@ impl FileDialog {
     /// The filter currently in effect.
     ///
     /// Always the first filter after construction or
-    /// [`FileDialog::set_name_filters`], because nothing here changes the
-    /// selection. `None` only if the filter list was emptied.
+    /// [`FileDialog::set_name_filters`]. `None` only if the filter list was emptied.
     pub fn current_filter(&self) -> Option<&FileFilter> {
         self.name_filters.get(self.current_filter)
+    }
+
+    /// Switches the filter in effect and re-lists the directory (DLG-009).
+    ///
+    /// Returns whether the filter changed. An out-of-range index is ignored rather than
+    /// recording a filter that does not exist. The listing is re-read from the host's source
+    /// through the new filter, because "which rows are shown" is a property of the filter, not
+    /// of the widget's last read. Selection and scroll reset, exactly as they do when the
+    /// directory changes.
+    pub fn set_current_filter(&mut self, index: usize) -> bool {
+        if index >= self.name_filters.len() || index == self.current_filter {
+            return false;
+        }
+        self.current_filter = index;
+        self.refresh_entries();
+        self.base.request_redraw();
+        true
     }
     /// Switches the dialog to `mode` and repaints.
     ///
@@ -572,7 +612,7 @@ impl FileDialog {
         self.base.request_redraw();
     }
 
-    /// The rows last read from the host's listing.
+    /// The rows last read from the host's listing, after the current filter (DLG-009).
     pub fn entries(&self) -> &[FileEntry] {
         &self.entries
     }
@@ -635,6 +675,20 @@ impl FileDialog {
         // identity to re-resolve after the order changes.
         let selected_paths = self.selected_files.clone();
         self.sort_column = Some(column);
+        self.order_entries(column);
+        self.selected_rows =
+            selected_paths.iter().filter_map(|path| self.row_for_path(path)).collect();
+        self.sort_changed.emit((column, self.sort_descending));
+        *self.visible_cache.borrow_mut() = None;
+        self.base.request_redraw();
+    }
+
+    /// Orders the current listing by `column` without emitting or touching the selection.
+    ///
+    /// Split out of [`Self::sort_by`] so a re-list (a filter switch, a directory change) can
+    /// restore the caller's order without announcing a sort the caller did not ask for
+    /// (DLG-009).
+    fn order_entries(&mut self, column: SortColumn) {
         let descending = self.sort_descending;
         self.entries.sort_by(|a, b| {
             let by_directory = b.is_directory.cmp(&a.is_directory);
@@ -660,11 +714,6 @@ impl FileDialog {
                 order
             }
         });
-        self.selected_rows =
-            selected_paths.iter().filter_map(|path| self.row_for_path(path)).collect();
-        self.sort_changed.emit((column, self.sort_descending));
-        *self.visible_cache.borrow_mut() = None;
-        self.base.request_redraw();
     }
 
     /// Whether the listing orders the current column descending (DLG-07).
@@ -688,14 +737,32 @@ impl FileDialog {
         }
     }
 
-    /// Re-reads the listing and resets the selection and scroll.
+    /// Re-reads the listing through the current filter and resets the selection and scroll.
+    ///
+    /// # DLG-009: the filter is part of the listing
+    ///
+    /// The filter list was parsed, offered and painted, and never consulted when the rows were
+    /// read: every directory showed every child. Filtering here means every path that re-reads
+    /// a listing — installing a source, changing directory, navigating, and switching filters —
+    /// is filtered by construction. Directories are always kept: a filter selects *files*, and
+    /// hiding a folder would make it unreachable rather than filtered.
     fn refresh_entries(&mut self) {
         self.entries = match self.source.as_ref() {
             Some(source) => source.entries(&self.directory),
             None => Vec::new(),
         };
+        let filter = self.name_filters.get(self.current_filter).cloned();
+        self.entries.retain(|entry| {
+            entry.is_directory
+                || filter.as_ref().map_or(true, |filter| filter_accepts(filter, &entry.name))
+        });
         self.selected_rows.clear();
         self.scroll = 0;
+        *self.visible_cache.borrow_mut() = None;
+        // A re-list keeps the caller's ordering instead of reverting to the host's order.
+        if let Some(column) = self.sort_column {
+            self.order_entries(column);
+        }
     }
 
     /// The label painted beside the file-name strip, or `""` when the catalogue string is used.
@@ -929,6 +996,8 @@ impl FileDialog {
     pub fn set_name_filters(&mut self, filters: Vec<FileFilter>) {
         self.name_filters = filters;
         self.current_filter = 0;
+        // The rows on screen are the filter's answer, so a new filter list re-lists (DLG-009).
+        self.refresh_entries();
         self.base.request_redraw();
     }
     /// Replaces the selection with a single path and emits `file_selected` with
@@ -1843,7 +1912,7 @@ impl Draw for FileDialog {
         // between "this dialog is up and the page is inert" and "a panel was drawn on the page".
         // The `modal` flag was recorded and enforced by the modal stack, and nothing painted it.
         if self.modal {
-            super::draw_modal_scrim(context, self.geometry());
+            super::draw_modal_scrim(context, self.id(), self.geometry(), self.base.parent());
         }
         // The **frame**, not the control's rectangle: see `frame_rect`.
         let rect = self.frame_rect();
@@ -2585,6 +2654,57 @@ mod tests {
         assert_eq!(dialog.selected_file(), Some("src"));
         let svg = crate::widget::svg::render_to_svg(&mut dialog);
         assert!(svg.contains("data-text"), "the listing must paint its rows: {svg}");
+    }
+
+    /// The listing is filtered by the current filter, and switching filters re-lists
+    /// (DLG-009).
+    ///
+    /// # The defect this pins
+    ///
+    /// The filter list was parsed, offered and painted and never consulted when rows were
+    /// read, so the drop-down had no effect on what the directory listing showed.
+    #[test]
+    fn the_current_filter_selects_the_files_the_listing_shows() {
+        struct MixedSource;
+        impl FileEntrySource for MixedSource {
+            fn entries(&self, _directory: &str) -> Vec<FileEntry> {
+                vec![
+                    FileEntry::new("dir", true),
+                    FileEntry::new("photo.PNG", false),
+                    FileEntry::new("notes.txt", false),
+                    FileEntry::new("README", false),
+                ]
+            }
+        }
+
+        fn names(dialog: &FileDialog) -> Vec<&str> {
+            dialog.entries().iter().map(|entry| entry.name.as_str()).collect()
+        }
+
+        let mut dialog = FileDialog::new(Rect::new(0, 0, 420, 320));
+        dialog.set_source(Box::new(MixedSource));
+        assert_eq!(
+            names(&dialog),
+            ["dir", "photo.PNG", "notes.txt", "README"],
+            "the default catch-all filter lists everything"
+        );
+
+        dialog.set_name_filters(vec![
+            FileFilter::new("Images", vec!["png"]),
+            FileFilter::new("Text", vec!["txt"]),
+        ]);
+        assert_eq!(
+            names(&dialog),
+            ["dir", "photo.PNG"],
+            "a filter keeps directories and matching suffixes, case-insensitively"
+        );
+
+        assert!(dialog.set_current_filter(1), "a valid switch reports the change");
+        assert_eq!(names(&dialog), ["dir", "notes.txt"], "switching filters re-lists");
+        assert_eq!(dialog.current_filter().map(|filter| filter.description.as_str()), Some("Text"));
+
+        assert!(!dialog.set_current_filter(7), "an out-of-range filter is ignored");
+        assert_eq!(dialog.current_filter().map(|filter| filter.description.as_str()), Some("Text"));
     }
 
     #[test]

@@ -495,12 +495,22 @@ fn wrap_paragraph(
 ) {
     let mut line_start: Option<usize> = None;
     let mut line_end = 0usize;
+    // The measured width of the line so far (G-319). The fit test used to re-measure the whole
+    // line from its start for every candidate word — O(words²) measured bytes for one line,
+    // which long wrapped lines paid on every frame. Keeping the running total means each word
+    // measures only the segment not yet measured: the separating spaces plus itself. For a
+    // measurement that adds up over glyphs — the renderer's own is a sum of advances — the
+    // segments partition the line exactly, so the total equals the whole-line measure and
+    // every break lands where it did before (`mixed_width_wrapping_matches_the_line_start_measure`).
+    let mut line_width = 0u32;
 
     for word in word_ranges(paragraph) {
         let (word_start, word_end) = (word.start, word.end);
         if let Some(start) = line_start {
-            if measure(&paragraph[start..word_end]) <= max_width {
+            let tail_width = measure(&paragraph[line_end..word_end]);
+            if line_width.saturating_add(tail_width) <= max_width {
                 line_end = word_end;
+                line_width += tail_width;
                 continue;
             }
             // The word does not fit beside the current line: emit the line and start a
@@ -511,9 +521,11 @@ fn wrap_paragraph(
 
         // A new line starts here. If the word fits on its own, it is the line so far;
         // a later word may still join it.
-        if measure(&paragraph[word_start..word_end]) <= max_width {
+        let word_width = measure(&paragraph[word_start..word_end]);
+        if word_width <= max_width {
             line_start = Some(word_start);
             line_end = word_end;
+            line_width = word_width;
             continue;
         }
 
@@ -533,6 +545,10 @@ fn wrap_paragraph(
         }
         line_start = Some(chunk_start);
         line_end = chunk_end;
+        // The open chunk is this line's measured content; measure it once so the next word's
+        // tail comparison starts from the right total. This runs once per word wider than the
+        // line, not once per line.
+        line_width = measure(&paragraph[chunk_start..chunk_end]);
     }
 
     if let Some(start) = line_start {
@@ -853,6 +869,68 @@ mod tests {
         for range in wrap_to_width("\u{4e16}\u{754c} \u{4f60}\u{597d}", 4, &mut measure) {
             assert!("\u{4e16}\u{754c} \u{4f60}\u{597d}".is_char_boundary(range.start));
             assert!("\u{4e16}\u{754c} \u{4f60}\u{597d}".is_char_boundary(range.end));
+        }
+    }
+
+    /// The incremental fit (G-319) breaks mixed-width text exactly where the whole-line
+    /// re-measure did.
+    ///
+    /// The fixed implementation keeps the line's running width and measures only each new
+    /// word's segment (the spaces plus the word); the break decisions these goldens pin were
+    /// derived from the previous behaviour of re-measuring from the line start for every
+    /// candidate word. With a measurement that adds up over glyphs — every renderer's advance
+    /// sum, and the per-character table here — the two are the same numbers, so the goldens
+    /// hold for both. The cases cover a word accepted onto a line, a tail rejected, a word
+    /// wider than the line split at character boundaries (ASCII and multi-byte), and an exact
+    /// fit at the boundary.
+    #[test]
+    fn mixed_width_wrapping_matches_the_line_start_measure() {
+        // A face whose glyphs do not all measure the same: narrow `i`, wide `W`, CJK double-wide.
+        fn mixed(value: &str) -> u32 {
+            value
+                .chars()
+                .map(|ch| match ch {
+                    'i' => 1,
+                    'W' => 7,
+                    '\u{4e16}'..='\u{9fff}' => 10,
+                    _ => 3,
+                })
+                .sum()
+        }
+        fn lines(text: &str, width: u32) -> Vec<&str> {
+            wrap_to_width(text, width, &mut mixed).into_iter().map(|range| &text[range]).collect()
+        }
+
+        assert_eq!(
+            lines("ii WW iii", 10),
+            vec!["ii", "W", "W", "iii"],
+            "`WW` overflows the line and splits; the reopened line then rejects `iii`'s tail"
+        );
+        assert_eq!(
+            lines("i WW i", 12),
+            vec!["i", "W", "W i"],
+            "the over-long word's split emits its first half, and the open chunk still accepts a following narrow word"
+        );
+        assert_eq!(
+            lines("WiW iii", 15),
+            vec!["WiW", "iii"],
+            "a word that exactly fills the line leaves no room for the next tail"
+        );
+        assert_eq!(
+            lines("\u{4e16}\u{754c} WW", 13),
+            vec!["\u{4e16}", "\u{754c}", "W", "W"],
+            "multi-byte words split on character boundaries, never on bytes"
+        );
+
+        // Whatever the input, the contract the goldens pin holds: no line is wider than the
+        // budget, no emitted line starts with a separating space, and every range slices.
+        for text in ["ii WW iii", "i WW i", "WiW iii", "\u{4e16}\u{754c} WW"] {
+            for range in wrap_to_width(text, 13, &mut mixed) {
+                let line = &text[range.clone()];
+                assert!(mixed(line) <= 13, "{line:?} exceeds the width budget");
+                assert!(!line.starts_with(' '), "{line:?} starts with a separating space");
+                assert!(text.is_char_boundary(range.start) && text.is_char_boundary(range.end));
+            }
         }
     }
 

@@ -94,6 +94,10 @@ pub struct RefreshControl {
     accent_color: Option<Color>,
     /// A multiplier applied to the indicator's radius and arrow size (OV-05).
     indicator_scale: f32,
+    /// The label shown while a refresh is running (OV-010).
+    loading_text: String,
+    /// The label shown once the pull has passed its threshold (OV-010).
+    release_text: String,
     /// Emitted when the pull distance exceeds the threshold and the user releases.
     pub refresh_triggered: GenericSignal,
 }
@@ -120,6 +124,8 @@ impl RefreshControl {
             elastic_pull: false,
             accent_color: None,
             indicator_scale: 1.0,
+            loading_text: String::from("Loading..."),
+            release_text: String::from("Release to refresh"),
             refresh_triggered: GenericSignal::new(),
         }
     }
@@ -234,8 +240,17 @@ impl RefreshControl {
     }
 
     /// Sets the pull threshold in pixels.
+    ///
+    /// The value is clamped to at least one pixel and a non-finite write is ignored, matching the
+    /// guard `FAB::set_elevation` already used. A zero or negative threshold would make the
+    /// progress ratio meaningless; the nearest legal value stays readable through
+    /// [`Self::threshold`] (OV-005).
     pub fn set_threshold(&mut self, threshold: f32) {
-        if self.threshold == threshold {
+        if !threshold.is_finite() {
+            return;
+        }
+        let threshold = threshold.max(1.0);
+        if (self.threshold - threshold).abs() < f32::EPSILON {
             return;
         }
         self.threshold = threshold;
@@ -246,6 +261,36 @@ impl RefreshControl {
     /// Returns the pull threshold.
     pub fn threshold(&self) -> f32 {
         self.threshold
+    }
+
+    /// Returns the label shown while a refresh is running (OV-010).
+    pub fn loading_text(&self) -> &str {
+        &self.loading_text
+    }
+
+    /// Sets the label shown while a refresh is running (OV-010).
+    pub fn set_loading_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.loading_text == text {
+            return;
+        }
+        self.loading_text = text;
+        self.base.request_redraw();
+    }
+
+    /// Returns the label shown once the pull has passed its threshold (OV-010).
+    pub fn release_text(&self) -> &str {
+        &self.release_text
+    }
+
+    /// Sets the label shown once the pull has passed its threshold (OV-010).
+    pub fn set_release_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.release_text == text {
+            return;
+        }
+        self.release_text = text;
+        self.base.request_redraw();
     }
 
     /// Called when the user starts pulling down.
@@ -589,7 +634,7 @@ impl Draw for RefreshControl {
                 // The label face is the **effective font** at its role size, so the theme family and
                 // the user's text scale reach it (D09-STYLE-01).
                 let font = role_font(style, 11.0);
-                let label = "Loading...";
+                let label = self.loading_text.as_str();
                 let metrics =
                     crate::widget::base_widgets::measure_cache::measure_text(context, label, &font);
                 let text_x = center_x - (metrics.width as i32) / 2;
@@ -640,7 +685,7 @@ impl Draw for RefreshControl {
                 // 14px offset alone rather than 14 plus a full ascent.
                 if progress >= 1.0 {
                     let font = role_font(style, 11.0);
-                    let label = "Release to refresh";
+                    let label = self.release_text.as_str();
                     let metrics = crate::widget::base_widgets::measure_cache::measure_text(
                         context, label, &font,
                     );
@@ -717,6 +762,14 @@ impl EventHandler for RefreshControl {
             Event::TouchEnd { .. } => {
                 self.drag_origin_y = None;
                 self.end_pull();
+            }
+            // A pointer that leaves during a pull ends the gesture where it last was: past the
+            // threshold the refresh triggers, below it the band springs back. Without this arm
+            // the drag stayed live and a later unrelated move kept pulling (OV-008).
+            Event::MouseLeave { .. } => {
+                if self.drag_origin_y.take().is_some() {
+                    self.end_pull();
+                }
             }
             _ => { /* Other events need no control-specific handling */ }
         }
@@ -857,6 +910,47 @@ mod tests {
         let mut rc = make_refresh_control();
         rc.set_threshold(100.0);
         assert_eq!(rc.threshold(), 100.0);
+    }
+
+    /// The threshold rejects non-finite and non-positive writes and stays queryable (OV-005).
+    #[test]
+    fn the_threshold_falls_back_to_the_nearest_legal_value() {
+        let mut rc = make_refresh_control();
+        rc.set_threshold(-5.0);
+        assert_eq!(rc.threshold(), 1.0, "a negative threshold cannot be pulled past");
+        rc.set_threshold(0.0);
+        assert_eq!(rc.threshold(), 1.0, "zero would make every touch a refresh");
+        rc.set_threshold(f32::NAN);
+        assert_eq!(rc.threshold(), 1.0, "a non-finite write is ignored");
+        rc.set_threshold(90.0);
+        assert_eq!(rc.threshold(), 90.0);
+    }
+
+    /// A pointer that leaves mid-pull ends the gesture at its last distance (OV-008).
+    #[test]
+    fn a_pointer_leaving_mid_pull_ends_the_gesture() {
+        let mut rc = make_refresh_control();
+        rc.handle_event(&Event::MousePress { pos: Point::new(100, 20), button: 1, modifiers: 0 });
+        rc.handle_event(&Event::MouseMove { pos: Point::new(100, 50) });
+        assert_eq!(rc.pull_distance(), 30.0);
+
+        rc.handle_event(&Event::MouseLeave { pos: Point::new(500, 500) });
+        assert_eq!(rc.pull_distance(), 0.0, "the gesture is over once the pointer leaves");
+        assert_eq!(rc.refresh_state(), RefreshState::Idle);
+    }
+
+    /// The two indicator captions are settable, and their defaults are the historical strings
+    /// (OV-010).
+    #[test]
+    fn the_indicator_captions_are_settable_properties() {
+        let mut rc = make_refresh_control();
+        assert_eq!(rc.loading_text(), "Loading...");
+        assert_eq!(rc.release_text(), "Release to refresh");
+
+        rc.set_loading_text("Fetching");
+        rc.set_release_text("Let go");
+        assert_eq!(rc.loading_text(), "Fetching");
+        assert_eq!(rc.release_text(), "Let go");
     }
 
     /// The child content is **registered with the tree**, which is what makes it paint.

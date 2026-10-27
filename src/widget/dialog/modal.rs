@@ -7,7 +7,8 @@
 //! every modal dims the page behind it, so these bodies live in one file rather than being
 //! repeated — which is how six of them came to differ in the first place.
 
-use crate::core::{Color, Rect};
+use crate::compat::{RefCell, Vec};
+use crate::core::{Color, ObjectId, Rect};
 use crate::render::RenderContext;
 
 /// The built-in English labels for the dialog catalogue keys.
@@ -116,9 +117,135 @@ pub(crate) fn move_focus(current: Option<usize>, count: usize, forward: bool) ->
     Some(next)
 }
 
-/// Paints the modal scrim over the control's whole rectangle.
+// The scrim stack: which modal currently owns the one page-dimming plane.
+//
+// # Why the stack lives here and not on the control
+//
+// DLG-001 recorded two halves of the same defect. The plane was painted over each dialog's
+// **own** rectangle, so it dimmed the area behind that dialog rather than the page; and the
+// eight modal dialogs plus `ModalHost` each decided independently whether to paint it, so two
+// dialogs opened together stacked two planes that knew nothing about each other.
+//
+// The window layer is the right owner for both (that is what `ModalHost` already is), but
+// moving the eight controls onto a host they are not mounted under would change their public
+// mounting contract. Until the window hook exists, this registry is the single entry every
+// modal in the family calls: the **page** is resolved from the root the control hangs under
+// (see [`modal_page_rect`]) and the **owner** is the last modal to register. The owning modal
+// paints one full-page plane; the ones below it paint none.
+//
+// The remaining window-layer hook is outside `src/widget/dialog/` and is recorded precisely
+// rather than silently half-implemented:
+//
+// * `src/widget/runtime.rs:6485` (`render_frame_tree`) paints the root and each child, and
+//   `paint_widget_direct` at `6821` has no scrim pass — a true window layer would paint the
+//   plane once per window instead of once per owning control.
+// * `src/lib.rs:2328` (`set_widget_visible`) is the show path six of the eight dialogs use;
+//   a push hook there would make their open order explicit instead of first-paint order.
+thread_local! {
+    static SCRIM_STACK: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };
+}
+
+/// How far [`modal_page_rect`] walks before it stops trusting the parent chain.
 ///
-/// # Why this is one function and not six copies
+/// A widget tree is shallow (window → containers → controls); the bound exists for the same
+/// reason `runtime::TOP_WINDOW_MAX_DEPTH` does — a corrupted chain is answered with the
+/// fallback rather than a hang.
+const MODAL_ROOT_WALK_LIMIT: usize = 64;
+
+/// The page a modal dims: the client box of the root the control hangs under.
+///
+/// # Why the control's own rectangle is the fallback
+///
+/// An unmounted control (a test-held dialog, a control created before it is placed) has no
+/// root to ask, and its own rectangle is the only area it can be drawn into. That fallback is
+/// also the historical behaviour, so a caller that never mounts its dialogs sees no change.
+///
+/// # Why `parent` is passed rather than read from the registry
+///
+/// The call comes from the control's own `draw`, where the runtime has lent the widget out
+/// exclusively: `read_widget(id)` answers `None` for it by design. The parent is already known
+/// to the control (`BaseWidget::parent`), and every step above it is an ordinary read.
+pub(crate) fn modal_page_rect(control: Rect, parent: Option<ObjectId>) -> Rect {
+    let Some(mut current) = parent else {
+        return control;
+    };
+    for _ in 0..MODAL_ROOT_WALK_LIMIT {
+        let Some(next) = crate::widget::runtime::read_widget(current, |widget| widget.parent())
+        else {
+            return control;
+        };
+        match next {
+            Some(parent) => current = parent,
+            None => {
+                // The root: a window's geometry is in operating-system space while its children
+                // are in client coordinates, so the client page is the root's **size** at the
+                // origin. A surface is drawn the same way by its own render pass.
+                return crate::widget::runtime::geometry_of(current)
+                    .map(|root| Rect::new(0, 0, root.width, root.height))
+                    .unwrap_or(control);
+            }
+        }
+    }
+    control
+}
+
+/// Whether `modal` still belongs on the scrim stack.
+///
+/// A mounted control answers through its own visibility. An id the registry cannot read is
+/// either unmounted (a test-held control, a control that has not been placed yet) or lent out
+/// because it is being painted right now — and there is no answer that distinguishes the two,
+/// so the entry is kept: dropping a live modal would let an older one paint over it.
+fn scrim_is_live(modal: ObjectId) -> bool {
+    crate::widget::runtime::read_widget(modal, |widget| widget.is_visible()).unwrap_or(true)
+}
+
+/// Registers `modal` and answers whether it owns the plane.
+///
+/// A repeated draw does **not** re-raise: the order is the open order (or, for a dialog with no
+/// open hook, the order it first painted), not the order the frame happens to visit it. Stale
+/// entries are pruned in the same pass, so a closed modal cannot keep a live one from owning the
+/// plane.
+fn claim_scrim(modal: ObjectId) -> bool {
+    SCRIM_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        stack.retain(|id| *id == modal || scrim_is_live(*id));
+        if !stack.contains(&modal) {
+            stack.push(modal);
+        }
+        stack.last().copied() == Some(modal)
+    })
+}
+
+/// Pushes `modal` as the scrim owner, whether or not it has been painted yet.
+///
+/// [`Dialog::open`](super::dialog_widget::Dialog::open) calls this so a dialog that is opened
+/// second owns the plane from the instant it opens, rather than from the first frame it paints.
+pub(crate) fn push_modal_layer(modal: ObjectId) {
+    SCRIM_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        stack.retain(|id| *id != modal);
+        stack.push(modal);
+    });
+}
+
+/// Removes `modal` from the scrim stack, returning ownership to whatever is below it.
+pub(crate) fn pop_modal_layer(modal: ObjectId) {
+    SCRIM_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if let Some(position) = stack.iter().rposition(|id| *id == modal) {
+            stack.remove(position);
+        }
+    });
+}
+
+/// Paints the modal scrim over the page `control` sits on.
+///
+/// `control` is the dialog's own rectangle and `parent` its direct parent; together they resolve
+/// the root client box through [`modal_page_rect`]. Only the top modal in the shared stack
+/// paints, so two dialogs opened together do not stack two dimming planes: the modal that
+/// opened last owns the page.
+///
+/// # Why this is one function and not eight copies
 ///
 /// Every modal dialog in this module dims the page it sits on, and six of them were silently
 /// missing it: `Dialog` and `MessageBox` were fixed first, then the scan showed
@@ -132,8 +259,13 @@ pub(crate) fn move_focus(current: Option<usize>, count: usize, forward: bool) ->
 /// brightens what it covers is the defect stated in `Colors::scrim`'s own documentation. The
 /// role lets a dark theme dim deliberately while a light theme darkens, and the literal survives
 /// only as the fallback for a theme that predates the role.
-pub(crate) fn draw_modal_scrim(context: &mut RenderContext, page: Rect) {
-    draw_modal_scrim_scaled(context, page, 1.0);
+pub(crate) fn draw_modal_scrim(
+    context: &mut RenderContext,
+    modal: ObjectId,
+    control: Rect,
+    parent: Option<ObjectId>,
+) {
+    draw_modal_scrim_scaled(context, modal, control, parent, 1.0);
 }
 
 /// Paints the modal scrim at `strength` of its resolved opacity, for a backdrop that fades in.
@@ -142,10 +274,24 @@ pub(crate) fn draw_modal_scrim(context: &mut RenderContext, page: Rect) {
 /// both a dark scrim (which must get darker as it arrives) and a light one (which must get lighter):
 /// a blend toward the window fill would move a scrim in the wrong direction in one of the two
 /// appearances. `strength` is clamped, and the whole plane is skipped at zero so a hidden dialog
-/// leaves the page untouched.
-pub(crate) fn draw_modal_scrim_scaled(context: &mut RenderContext, page: Rect, strength: f32) {
+/// leaves the page untouched (and leaves the stack, so the modal below it owns the plane again).
+pub(crate) fn draw_modal_scrim_scaled(
+    context: &mut RenderContext,
+    modal: ObjectId,
+    control: Rect,
+    parent: Option<ObjectId>,
+    strength: f32,
+) {
     let strength = strength.clamp(0.0, 1.0);
     if strength <= 0.0 {
+        pop_modal_layer(modal);
+        return;
+    }
+    let page = modal_page_rect(control, parent);
+    if page.width == 0 || page.height == 0 {
+        return;
+    }
+    if !claim_scrim(modal) {
         return;
     }
     let scrim = crate::style::layer_color(crate::style::LayerColor::Scrim)
@@ -202,5 +348,85 @@ mod tests {
             assert!(!label.is_empty(), "{key} must have a label");
             assert_eq!(resource_fallback(key), Some(*label));
         }
+    }
+
+    /// A later modal owns the single scrim, and closing it hands ownership back down.
+    ///
+    /// # The defect this pins
+    ///
+    /// The eight dialogs painted one scrim each from their own rectangles, so two dialogs open
+    /// together produced two overlapping planes and neither stack existed to say which was on
+    /// top. The registry is the one statement of that order, so it is asserted directly rather
+    /// than inferred from pixels.
+    #[test]
+    fn a_later_modal_owns_the_only_scrim() {
+        const FIRST: ObjectId = 0xA1;
+        const SECOND: ObjectId = 0xA2;
+
+        push_modal_layer(FIRST);
+        assert!(claim_scrim(FIRST), "the first modal owns the plane");
+
+        push_modal_layer(SECOND);
+        assert!(!claim_scrim(FIRST), "a modal below the top must not paint a second plane");
+        assert!(claim_scrim(SECOND), "the later modal owns the plane");
+
+        pop_modal_layer(SECOND);
+        assert!(claim_scrim(FIRST), "closing the top hands ownership back down");
+        pop_modal_layer(FIRST);
+    }
+
+    /// Re-painting a modal must not raise it above one opened later.
+    #[test]
+    fn a_repeated_paint_does_not_reorder_the_scrim_stack() {
+        const BOTTOM: ObjectId = 0xB1;
+        const TOP: ObjectId = 0xB2;
+
+        push_modal_layer(BOTTOM);
+        push_modal_layer(TOP);
+        // A bottom-up paint order visits BOTTOM first every frame; the stack keeps the open order.
+        assert!(!claim_scrim(BOTTOM));
+        assert_eq!(SCRIM_STACK.with(|stack| stack.borrow().clone()), vec![BOTTOM, TOP]);
+        assert!(claim_scrim(TOP));
+
+        pop_modal_layer(TOP);
+        pop_modal_layer(BOTTOM);
+        assert!(SCRIM_STACK.with(|stack| stack.borrow().is_empty()));
+    }
+
+    /// An unmounted control has no root, so its own rectangle is the page it dims.
+    #[test]
+    fn an_unmounted_modal_dims_its_own_rectangle() {
+        let control = Rect::new(10, 20, 200, 120);
+        assert_eq!(modal_page_rect(control, None), control);
+        // An id with no registry entry (a test-held control) answers the same way through the
+        // parent walk: there is no root to resolve.
+        assert_eq!(modal_page_rect(control, Some(0xDEAD_BEEF)), control);
+    }
+
+    /// A mounted modal dims the client box of the root it hangs under, not its own rectangle.
+    #[test]
+    fn a_mounted_modal_dims_the_root_client_box() {
+        use crate::widget::{runtime, Dialog, Window};
+
+        let window = runtime::register(Box::new(Window::new(
+            "scrim-page".to_string(),
+            Rect::new(140, 140, 640, 480),
+        )))
+        .expect("mount window");
+        let dialog = runtime::register(Box::new(Dialog::new(Rect::new(20, 30, 240, 160))))
+            .expect("mount dialog");
+        runtime::with_widget_mut(window, |widget| widget.base_mut().add_child_linked(dialog))
+            .expect("window is mounted");
+
+        let own = runtime::geometry_of(dialog).expect("dialog geometry");
+        let page = modal_page_rect(own, Some(window));
+        assert_eq!(
+            page,
+            Rect::new(0, 0, 640, 480),
+            "the page is the window's client box, not the dialog's own rect: {page:?}"
+        );
+
+        runtime::unregister(dialog);
+        runtime::unregister(window);
     }
 }

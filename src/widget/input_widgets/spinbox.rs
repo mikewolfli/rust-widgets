@@ -103,6 +103,12 @@ pub struct SpinBox {
     /// Not a display-only filter: the value itself is rounded to this precision on every
     /// write, so `get("value")` cannot report a number the user never could have entered.
     decimals: u32,
+    /// Whether the displayed number groups its integer digits in threes.
+    ///
+    /// Display only: grouping is applied after the strict numeric text is formed, so
+    /// parsing and validation still see the ungrouped form. Off by default, which keeps
+    /// the historical output (I-115).
+    thousands_grouping: bool,
     /// Text placed before the number in the displayed value; display only — it
     /// is not part of the parsed numeric value.
     prefix: String,
@@ -201,6 +207,8 @@ pub struct SpinBox {
     binding: Option<crate::data_binding::Binding<CapabilityValue>>,
     /// Milliseconds accumulated while a step button is held.
     repeat_elapsed: u32,
+    /// Total milliseconds the step button has been held, used for acceleration (I-116).
+    repeat_held_ms: u32,
     /// A value-level rule from `data_binding`, applied when a typed entry is committed.
     ///
     /// Distinct from [`Self::validator`], which inspects the *text* as it is typed. This one sees
@@ -232,6 +240,7 @@ struct ValueTextCache {
     value_bits: u64,
     minimum_bits: u64,
     decimals: u32,
+    grouped: bool,
     special: Option<String>,
     text: String,
 }
@@ -528,6 +537,7 @@ impl SpinBox {
             maximum: 99.0,
             single_step: 1.0,
             decimals: 0,
+            thousands_grouping: false,
             prefix: String::new(),
             suffix: String::new(),
             special_value_text: None,
@@ -551,6 +561,7 @@ impl SpinBox {
             validation_failed: Signal1::new(),
             binding: None,
             repeat_elapsed: 0,
+            repeat_held_ms: 0,
             numeric_validator: None,
             numeric_link: Rc::new(RefCell::new(None)),
             decoration_cache: RefCell::new(None),
@@ -748,6 +759,21 @@ impl SpinBox {
     pub fn decimals(&self) -> u32 {
         self.decimals
     }
+    /// Whether the displayed number groups its integer digits in threes.
+    pub fn thousands_grouping(&self) -> bool {
+        self.thousands_grouping
+    }
+    /// Turns display grouping on or off.
+    ///
+    /// Grouping is applied to the painted value and to [`Self::display_text`], never to
+    /// the text a parse sees, so enabling it cannot change what a typed value means.
+    pub fn set_thousands_grouping(&mut self, enabled: bool) {
+        if self.thousands_grouping == enabled {
+            return;
+        }
+        self.thousands_grouping = enabled;
+        self.base.request_redraw();
+    }
     /// Sets the display precision, `0` for an integer spin box.
     ///
     /// Values above [`SPIN_BOX_MAX_DECIMALS`] are clamped rather than accepted: the
@@ -849,27 +875,23 @@ impl SpinBox {
     }
     /// Increments value by single step.
     pub fn step_up(&mut self) {
-        let mut new_value = self.current_value() + self.step_amount();
-        if new_value > self.maximum {
-            if self.wrapping {
-                new_value = self.minimum;
-            } else {
-                new_value = self.maximum;
-            }
+        let target = self.current_value() + self.step_amount();
+        // Wrapping is the only decision the step makes; the range rule is applied once, by
+        // the validator inside `apply_value_f64` (I-108).
+        if target > self.maximum && self.wrapping {
+            self.step_to(self.minimum);
+        } else {
+            self.step_to(target);
         }
-        self.step_to(new_value);
     }
     /// Decrements value by single step.
     pub fn step_down(&mut self) {
-        let mut new_value = self.current_value() - self.step_amount();
-        if new_value < self.minimum {
-            if self.wrapping {
-                new_value = self.maximum;
-            } else {
-                new_value = self.minimum;
-            }
+        let target = self.current_value() - self.step_amount();
+        if target < self.minimum && self.wrapping {
+            self.step_to(self.maximum);
+        } else {
+            self.step_to(target);
         }
-        self.step_to(new_value);
     }
 
     /// The distance one step moves under the current [`SpinBoxStepType`].
@@ -1242,8 +1264,16 @@ impl SpinBox {
             return false;
         };
         self.repeat_elapsed = self.repeat_elapsed.saturating_add(delta_ms);
+        self.repeat_held_ms = self.repeat_held_ms.saturating_add(delta_ms);
         let delay = 400u32;
-        let interval = 120u32;
+        // A held button accelerates: the longer it is held, the shorter the repeat interval
+        // becomes. The thresholds are a monotone step-down of the historical 120 ms interval,
+        // so a short press behaves exactly as before (I-116).
+        let interval = match self.repeat_held_ms {
+            0..=2000 => 120u32,
+            2001..=5000 => 60,
+            _ => 30,
+        };
         if self.repeat_elapsed < delay {
             return true;
         }
@@ -1269,6 +1299,7 @@ impl SpinBox {
     pub fn stop_repeat(&mut self) {
         self.held_step = None;
         self.repeat_elapsed = 0;
+        self.repeat_held_ms = 0;
     }
     /// Returns the formatted number, without prefix or suffix.
     ///
@@ -1298,7 +1329,17 @@ impl SpinBox {
                 return special.clone();
             }
         }
-        format!("{}{}{}", self.prefix, self.formatted_value(), self.suffix)
+        format!("{}{}{}", self.prefix, self.display_number(), self.suffix)
+    }
+
+    /// The formatted number with the display-only grouping rule applied.
+    fn display_number(&self) -> String {
+        let text = self.formatted_value();
+        if self.thousands_grouping {
+            group_thousands(&text)
+        } else {
+            text
+        }
     }
 
     /// The text drawn inside the value's own box: the special value text, or just the number.
@@ -1310,7 +1351,7 @@ impl SpinBox {
                 return special.clone();
             }
         }
-        self.formatted_value()
+        self.display_number()
     }
 
     /// The cached value text, recomputed only when an input of [`Self::value_text`] changes.
@@ -1325,6 +1366,7 @@ impl SpinBox {
                 cache.value_bits != value_bits
                     || cache.minimum_bits != minimum_bits
                     || cache.decimals != self.decimals
+                    || cache.grouped != self.thousands_grouping
                     || cache.special != self.special_value_text
             }
             None => true,
@@ -1335,6 +1377,7 @@ impl SpinBox {
                 value_bits,
                 minimum_bits,
                 decimals: self.decimals,
+                grouped: self.thousands_grouping,
                 special: self.special_value_text.clone(),
                 text,
             });
@@ -1423,6 +1466,34 @@ pub(crate) fn round_to_decimals(value: f64, decimals: u32) -> f64 {
     let text = format!("{:.*}", decimals as usize, value);
     text.parse::<f64>().unwrap_or(value)
 }
+/// Groups the integer part of a numeric string in threes, keeping sign and fraction.
+///
+/// Display only: the input is always the strict `Formatter` output, so the function never
+/// has to decide what a grouping separator means. A text with three digits or fewer is
+/// returned unchanged.
+fn group_thousands(text: &str) -> String {
+    let (sign, rest) = match text.strip_prefix('-') {
+        Some(stripped) => ("-", stripped),
+        None => ("", text),
+    };
+    let split = rest.find('.').unwrap_or(rest.len());
+    let (integer, fraction) = rest.split_at(split);
+    let digits = integer.chars().count();
+    if digits <= 3 {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len() + digits / 3);
+    out.push_str(sign);
+    for (index, ch) in integer.chars().enumerate() {
+        if index != 0 && (digits - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out.push_str(fraction);
+    out
+}
+
 // Implement Widget trait
 
 /// A boolean text predicate adapted to the field's three-way [`Validator`] contract.
@@ -3057,6 +3128,40 @@ mod tests {
         assert!(spin.value() > after_press, "holding the button repeats");
         spin.handle_event(&Event::MouseRelease { pos: center, button: 1 });
         assert!(!spin.tick(500));
+    }
+
+    #[test]
+    fn thousands_grouping_is_off_by_default_and_only_changes_the_display() {
+        let mut spin = SpinBox::new(Rect::new(0, 0, 200, 40));
+        spin.set_range_f64(-10_000_000.0, 10_000_000.0);
+        spin.set_value_f64(1_234_567.0);
+        assert!(!spin.thousands_grouping());
+        assert_eq!(spin.display_text(), "1234567");
+        assert_eq!(spin.formatted_value(), "1234567");
+
+        spin.set_thousands_grouping(true);
+        assert_eq!(spin.display_text(), "1,234,567");
+        assert_eq!(spin.formatted_value(), "1234567", "the parse text stays ungrouped");
+
+        spin.set_decimals(2);
+        spin.set_value_f64(1_234_567.5);
+        assert_eq!(spin.display_text(), "1,234,567.50");
+        spin.set_value_f64(-1_234.0);
+        assert_eq!(spin.display_text(), "-1,234.00");
+    }
+
+    #[test]
+    fn a_long_held_button_accelerates_the_repeat() {
+        let mut spin = SpinBox::new(Rect::new(0, 0, 200, 40));
+        spin.set_range_f64(0.0, 1_000_000.0);
+        spin.set_value_f64(0.0);
+        spin.held_step = Some(true);
+        spin.repeat_held_ms = 6_000;
+        assert!(spin.tick(520));
+        // 400 ms of delay plus four 30 ms intervals after a long hold.
+        assert_eq!(spin.value(), 4, "a held button steps faster once the hold is long");
+        spin.stop_repeat();
+        assert!(!spin.tick(100));
     }
 
     /// The adaptive step grows with the magnitude, and a bound disables its button.

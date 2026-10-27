@@ -370,7 +370,7 @@ fn paint_card(
         return (Rect::new(0, 0, 0, 0), Vec::new(), None);
     }
     if card.modal {
-        super::draw_modal_scrim_scaled(ctx, geometry, reveal);
+        super::draw_modal_scrim_scaled(ctx, base.id(), geometry, base.parent(), reveal);
     }
     let rect = super::scale_about_centre(
         geometry,

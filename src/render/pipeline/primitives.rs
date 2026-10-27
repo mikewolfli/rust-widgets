@@ -8,6 +8,7 @@
 
 use crate::compat::Vec;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::render::arc_helpers::{for_each_arc_sample, normalized_arc_sweep};
 use crate::render::pipeline::pixel_ops::{
     blend_painted_glyph, circle_fill_coverage_grid, circle_stroke_coverage_grid, fill_pixels,
     inset_rect, line_stroke_coverage_grid, pixel_visible, rounded_rect_coverage,
@@ -67,6 +68,31 @@ macro_rules! blend_pixel_clipped {
             write_pixel_with_mode($blend, $frame, $width, $x as u32, $y as u32, $color, $coverage);
         }
     };
+}
+
+/// Which crossings of a scanline count as interior.
+///
+/// The two rules differ only in how they read the running winding: a non-zero winding fills
+/// every pixel with at least one net turn, while even-odd fills every pixel reached by an odd
+/// number of crossings. Both are produced by the same scan-conversion loop, selected here.
+#[derive(Clone, Copy)]
+enum FillRule {
+    /// Interior where the signed winding number is non-zero.
+    NonZero,
+    /// Interior where the number of crossed edges is odd.
+    EvenOdd,
+}
+
+impl FillRule {
+    #[inline]
+    fn contains(self, winding: i32) -> bool {
+        match self {
+            Self::NonZero => winding != 0,
+            // Every crossing contributes ±1, so the parity of the signed sum is the parity of
+            // the number of crossings (two's-complement `& 1` is the parity for negatives too).
+            Self::EvenOdd => (winding & 1) != 0,
+        }
+    }
 }
 
 /// The part of a destination rectangle that is inside the surface and the active clip.
@@ -950,8 +976,13 @@ impl SoftwareSurface {
     }
     /// Draws an arc (partial circle).
     ///
-    /// Angles are normalized to [0, 2π) and the sweep is capped at 2π to
-    /// prevent excessive point generation for very large angle ranges.
+    /// The command-level angles are normalised to `(start, sweep)` and the arc is then walked
+    /// by [`for_each_arc_sample`], the same kernel [`crate::render::draw_arc_segments`] uses.
+    /// The old path sampled with a fixed `0.02` rad step into a `Vec` allocated on every call;
+    /// it also read a whole turn (start 0, end 2π) as a zero sweep and painted a single line
+    /// instead of a circle. Both defects are gone because there is no second sampler left to
+    /// drift: a stroked arc is the polyline through the kernel's samples, a filled arc is the
+    /// triangle fan from the centre over those same samples.
     pub fn draw_arc(
         &mut self,
         center: Point,
@@ -964,54 +995,42 @@ impl SoftwareSurface {
         if radius == 0 {
             return;
         }
-        const TWO_PI: f32 = core::f32::consts::TAU;
-        // Normalize both angles to [0, 2π)
-        let mut start = start_angle % TWO_PI;
-        if start < 0.0 {
-            start += TWO_PI;
+        let (start, sweep) = normalized_arc_sweep(start_angle, end_angle);
+        if sweep < 0.001 {
+            return;
         }
-        let mut end = end_angle % TWO_PI;
-        if end < 0.0 {
-            end += TWO_PI;
-        }
-        // Cap the sweep to at most one full circle
-        let step = 0.02f32;
-        let mut angle = start;
-        let mut points: Vec<Point> = Vec::new();
-        if start <= end {
-            while angle <= end && angle <= start + TWO_PI {
-                let x = center.x + (radius as f32 * angle.cos()).round() as i32;
-                let y = center.y + (radius as f32 * angle.sin()).round() as i32;
-                points.push(Point::new(x, y));
-                angle += step;
-            }
-        } else {
-            // Wraparound case: e.g. start=350° to end=10°
-            while angle < TWO_PI && angle <= start + TWO_PI {
-                let x = center.x + (radius as f32 * angle.cos()).round() as i32;
-                let y = center.y + (radius as f32 * angle.sin()).round() as i32;
-                points.push(Point::new(x, y));
-                angle += step;
-            }
-            angle = 0.0;
-            while angle <= end && angle <= TWO_PI {
-                let x = center.x + (radius as f32 * angle.cos()).round() as i32;
-                let y = center.y + (radius as f32 * angle.sin()).round() as i32;
-                points.push(Point::new(x, y));
-                angle += step;
-            }
-        }
-        let last_x = center.x + (radius as f32 * end.cos()).round() as i32;
-        let last_y = center.y + (radius as f32 * end.sin()).round() as i32;
-        points.push(Point::new(last_x, last_y));
+        let end = start + sweep;
+        let full_turn = sweep >= core::f32::consts::TAU - 0.001;
 
-        if filled {
-            for i in 0..points.len().saturating_sub(1) {
-                self.fill_triangle(center, points[i], points[i + 1], color);
+        let mut first: Option<Point> = None;
+        let mut previous: Option<Point> = None;
+        for_each_arc_sample(center, radius as f32, start, end, |current| {
+            if first.is_none() {
+                first = Some(current);
             }
-        } else {
-            for i in 0..points.len().saturating_sub(1) {
-                self.draw_line_with_width(points[i], points[i + 1], color, 1);
+            if let Some(previous) = previous {
+                if filled {
+                    self.fill_triangle(center, previous, current, color);
+                } else {
+                    self.draw_line_with_width(previous, current, color, 1);
+                }
+            }
+            previous = Some(current);
+        });
+
+        // A whole turn closes on itself. The kernel samples the end angle at `start + 2π`,
+        // which rounds onto the first pixel and is therefore dropped as a degenerate chord;
+        // close the loop explicitly so a full circle has neither a one-chord gap nor a missing
+        // wedge in the fan.
+        if full_turn {
+            if let (Some(first), Some(previous)) = (first, previous) {
+                if first != previous {
+                    if filled {
+                        self.fill_triangle(center, previous, first, color);
+                    } else {
+                        self.draw_line_with_width(previous, first, color, 1);
+                    }
+                }
             }
         }
     }
@@ -1052,6 +1071,41 @@ impl SoftwareSurface {
         color: Color,
         offset_x: i32,
         offset_y: i32,
+    ) -> Result<(), crate::render::CompoundPathError> {
+        self.fill_scanlines(points, contours, color, offset_x, offset_y, FillRule::NonZero)
+    }
+
+    /// Fills a polygon using a scanline algorithm.
+    ///
+    /// A polygon is one contour, so it goes through the same [`Self::fill_scanlines`] kernel
+    /// as `fill_path_non_zero_borrowed`; only the rule differs. `fill_polygon` is the
+    /// even-odd entry point (`draw_path(.., filled: true)`), while compound paths use the
+    /// non-zero rule. Keeping one edge/intersection/span loop means a fix or a speed-up in
+    /// scan conversion lands in both callers instead of having to be made twice.
+    fn fill_polygon(&mut self, points: &[Point], color: Color) {
+        if points.len() < 3 {
+            return;
+        }
+        self.fill_scanlines(points, &[(0, points.len())], color, 0, 0, FillRule::EvenOdd)
+            .expect("a single in-range contour is a valid path");
+    }
+
+    /// Scan-converts `contours` with the chosen [`FillRule`].
+    ///
+    /// Crossings are collected once per scanline into the reused `nonzero_intersections`
+    /// scratch buffer as `(x, winding_delta)`, sorted, and swept. Grouping equal `x` values
+    /// before advancing the winding is what makes a vertex that lands exactly on a scanline
+    /// count once rather than twice: a tangent at a local minimum contributes `+1` and `-1`
+    /// at the same `x`, so the net winding — and the even-odd parity — both stay unchanged and
+    /// no zero-width span is painted.
+    fn fill_scanlines(
+        &mut self,
+        points: &[Point],
+        contours: &[(usize, usize)],
+        color: Color,
+        offset_x: i32,
+        offset_y: i32,
+        rule: FillRule,
     ) -> Result<(), crate::render::CompoundPathError> {
         crate::render::CompoundPath::validate_ranges(points.len(), contours)?;
         let size = self.buffer.size();
@@ -1107,7 +1161,7 @@ impl SoftwareSurface {
             let mut previous_x: Option<f32> = None;
             while index < intersections.len() {
                 let x = intersections[index].0;
-                if winding != 0 {
+                if rule.contains(winding) {
                     if let Some(previous) = previous_x {
                         let x_start = previous.ceil() as i32;
                         let x_end = x.floor() as i32;
@@ -1135,49 +1189,6 @@ impl SoftwareSurface {
             }
         }
         Ok(())
-    }
-    /// Fills a polygon using a scanline algorithm.
-    fn fill_polygon(&mut self, points: &[Point], color: Color) {
-        let size = self.buffer.size();
-        let clip = self.current_clip();
-        let frame = self.buffer.back_mut();
-        let n = points.len();
-        if n < 3 {
-            return;
-        }
-
-        let min_y = points.iter().map(|p| p.y).min().unwrap_or(0).max(0);
-        let max_y = points.iter().map(|p| p.y).max().unwrap_or(0).min(size.height as i32 - 1);
-
-        let mut intersections: Vec<f32> = Vec::with_capacity(n);
-        for y in min_y..=max_y {
-            intersections.clear();
-            let mut j = n - 1;
-            for i in 0..n {
-                let p1 = points[i];
-                let p2 = points[j];
-                if (p1.y <= y && p2.y > y) || (p2.y <= y && p1.y > y) {
-                    let t = (y - p1.y) as f32 / (p2.y - p1.y) as f32;
-                    let x = p1.x as f32 + (p2.x - p1.x) as f32 * t;
-                    intersections.push(x);
-                }
-                j = i;
-            }
-
-            intersections.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-
-            let mut i = 0;
-            while i + 1 < intersections.len() {
-                let x_start = intersections[i].ceil() as i32;
-                let x_end = intersections[i + 1].floor() as i32;
-                let x_start = x_start.max(0);
-                let x_end = x_end.min(size.width as i32 - 1);
-                for x in x_start..=x_end {
-                    set_pixel_clipped!(self.blend_mode, clip, frame, size.width, x, y, color);
-                }
-                i += 2;
-            }
-        }
     }
     /// Fills a quadrilateral with per-pixel coverage taken from its projected edges.
     ///
@@ -2267,5 +2278,131 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A filled polygon is one contour, so `fill_polygon` (even-odd) and
+    /// `fill_path_non_zero_borrowed` (non-zero) share the same scanline kernel. On a single
+    /// simple contour both rules select the same interior pixels; this pins that the two entry
+    /// points cannot drift apart again, including at vertices that land on a scanline.
+    #[test]
+    fn fill_polygon_and_compound_path_share_one_scanline_kernel() {
+        let cases: &[&[Point]] = &[
+            &[Point::new(2, 2), Point::new(28, 2), Point::new(28, 28), Point::new(2, 28)],
+            &[Point::new(2, 28), Point::new(16, 2), Point::new(30, 28)],
+            &[Point::new(2, 2), Point::new(30, 2), Point::new(16, 16)],
+            &[
+                Point::new(2, 2),
+                Point::new(30, 2),
+                Point::new(30, 30),
+                Point::new(16, 16),
+                Point::new(2, 30),
+            ],
+            &[Point::new(16, 2), Point::new(30, 16), Point::new(16, 30), Point::new(2, 16)],
+            &[
+                Point::new(16, 2),
+                Point::new(20, 12),
+                Point::new(30, 12),
+                Point::new(22, 19),
+                Point::new(26, 30),
+                Point::new(16, 23),
+                Point::new(6, 30),
+                Point::new(10, 19),
+                Point::new(2, 12),
+                Point::new(12, 12),
+            ],
+            &[Point::new(3, 4), Point::new(27, 5), Point::new(11, 29)],
+        ];
+        for points in cases {
+            let mut polygon = SoftwareSurface::new(Size::new(32, 32), 1.0);
+            polygon.begin_frame(Color::BLACK);
+            polygon.fill_polygon(points, Color::WHITE);
+            polygon.end_frame();
+            let mut compound = SoftwareSurface::new(Size::new(32, 32), 1.0);
+            compound.begin_frame(Color::BLACK);
+            compound
+                .fill_path_non_zero_borrowed(points, &[(0, points.len())], Color::WHITE, 0, 0)
+                .unwrap();
+            compound.end_frame();
+            assert_eq!(
+                polygon.frame_rgba(),
+                compound.frame_rgba(),
+                "one kernel must mean identical bytes for both fill-rule entry points"
+            );
+        }
+    }
+
+    /// A local-minimum vertex that lands on the first scanline is a tangential contact, not a
+    /// span. The old even-odd pairing treated the two coincident crossings as a pair and inked
+    /// the apex; grouping equal `x` values leaves the zero-width interval unpainted.
+    #[test]
+    fn the_scanline_kernel_drops_the_tangent_pixel_at_a_local_minimum() {
+        let points = [Point::new(2, 28), Point::new(16, 2), Point::new(30, 28)];
+        let mut surface = SoftwareSurface::new(Size::new(32, 32), 1.0);
+        surface.begin_frame(Color::BLACK);
+        surface.fill_polygon(&points, Color::WHITE);
+        surface.end_frame();
+        let rgba = surface.frame_rgba();
+        let pixel = |x: u32, y: u32| rgba[((y * 32 + x) * 4) as usize];
+        assert_eq!(pixel(16, 2), 0, "a tangent vertex is not a filled span");
+        assert_eq!(pixel(16, 20), 255, "the interior below the apex is still filled");
+    }
+
+    /// The parameterisation is the whole point of the unification: one loop, two readings of
+    /// the running winding.
+    #[test]
+    fn the_fill_rule_reads_winding_and_parity() {
+        assert!(FillRule::NonZero.contains(1));
+        assert!(FillRule::NonZero.contains(2));
+        assert!(!FillRule::NonZero.contains(0));
+        assert!(FillRule::EvenOdd.contains(1));
+        assert!(FillRule::EvenOdd.contains(-1));
+        assert!(!FillRule::EvenOdd.contains(2));
+        assert!(!FillRule::EvenOdd.contains(0));
+    }
+
+    fn render_command_arc(radius: u32, start: f32, end: f32, filled: bool) -> Vec<u8> {
+        let mut surface = SoftwareSurface::new(Size::new(64, 64), 1.0);
+        surface.begin_frame(Color::BLACK);
+        surface.draw_arc(Point::new(32, 32), radius, start, end, Color::WHITE, filled);
+        surface.end_frame();
+        surface.frame_rgba().to_vec()
+    }
+
+    /// The command-level arc is the shared kernel, not a second sampler: for angles that are
+    /// already normalised, `draw_arc` and `draw_arc_segments` must ink exactly the same bytes.
+    #[test]
+    fn a_command_arc_and_the_shared_segment_kernel_are_byte_identical() {
+        use crate::render::{draw_arc_segments, PaintBackend, RenderContext, SoftwarePaintBackend};
+        let (start, end) = (0.5f32, 2.5f32);
+        let mut backend = SoftwarePaintBackend::new(Size::new(64, 64), 1.0);
+        backend.begin_frame(Color::BLACK);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            draw_arc_segments(&mut context, Point::new(32, 32), 16.0, start, end, Color::WHITE, 1);
+        }
+        backend.end_frame();
+        assert_eq!(render_command_arc(16, start, end, false).as_slice(), backend.frame_rgba());
+    }
+
+    /// A whole turn used to normalise to `end == start` and collapse to a single line. It is
+    /// one full circle, and the kernel walks every quadrant of it.
+    #[test]
+    fn a_full_turn_command_arc_paints_the_whole_circle() {
+        let rgba = render_command_arc(16, 0.0, core::f32::consts::TAU, false);
+        let pixel = |x: u32, y: u32| rgba[((y * 64 + x) * 4) as usize];
+        for (x, y) in [(32u32, 16u32), (16, 32), (48, 32), (32, 48)] {
+            assert_eq!(pixel(x, y), 255, "a full-circle stroke must reach ({x},{y})");
+        }
+    }
+
+    /// The filled command arc is the triangle fan over the same samples, so a whole turn is a
+    /// disc rather than the line the old fixed-step path left behind.
+    #[test]
+    fn a_filled_full_turn_command_arc_fills_the_disc() {
+        let rgba = render_command_arc(16, 0.0, core::f32::consts::TAU, true);
+        let pixel = |x: u32, y: u32| rgba[((y * 64 + x) * 4) as usize];
+        assert_eq!(pixel(32, 32), 255, "the centre is inside the disc");
+        assert_eq!(pixel(32, 20), 255, "the upper half is inside the disc");
+        assert_eq!(pixel(32, 16), 255, "the rim is painted");
     }
 }

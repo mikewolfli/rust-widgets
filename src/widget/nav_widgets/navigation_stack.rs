@@ -7,6 +7,7 @@
 //! topmost page along with a navigation bar. It supports push, pop, and pop-to-root
 //! operations, similar to SwiftUI NavigationStack or UINavigationController.
 
+use crate::compat::{Cow, Rc, RefCell};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, TextDirection};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -69,10 +70,25 @@ pub struct NavigationStack {
     actions: Vec<String>,
     /// Whether the back affordance is painted and hit-tested at all.
     back_visible: bool,
+    /// Bumped whenever the action list changes, so the box cache can tell.
+    actions_revision: u32,
+    /// The last derived action boxes, shared by painting and hit testing (N-002).
+    ///
+    /// The boxes were rebuilt into a fresh `Vec` on every frame and on every hit test. Like
+    /// `AppBar::action_boxes`, the derivation is now memoised against the bar's rectangle and
+    /// the action-list revision, so a settled frame allocates nothing here.
+    action_boxes_cache: RefCell<Option<ActionBoxesCache>>,
     /// Emitted with the index of a trailing action when it is pressed.
     pub action_index_pressed: Signal1<usize>,
     /// Emitted when the navigation state changes.
     pub navigation_changed: Signal1<NavigationEvent>,
+}
+
+/// The inputs [`NavigationStack::action_boxes`] was last derived from.
+struct ActionBoxesCache {
+    bar: Rect,
+    revision: u32,
+    boxes: Rc<Vec<(usize, Rect)>>,
 }
 
 impl NavigationStack {
@@ -88,6 +104,8 @@ impl NavigationStack {
             page_titles: Vec::new(),
             actions: Vec::new(),
             back_visible: true,
+            actions_revision: 0,
+            action_boxes_cache: RefCell::new(None),
             action_index_pressed: Signal1::new(),
             navigation_changed: Signal1::new(),
         }
@@ -238,6 +256,7 @@ impl NavigationStack {
             return;
         }
         self.actions = actions;
+        self.actions_revision = self.actions_revision.wrapping_add(1);
         self.base.request_redraw();
     }
 
@@ -263,11 +282,23 @@ impl NavigationStack {
     /// The trailing action boxes, ordered from the bar's trailing edge inward.
     ///
     /// Both the paint path and the press arm read this one derivation, so a label cannot be
-    /// painted where it cannot be tapped.
-    fn action_boxes(&self) -> Vec<(usize, Rect)> {
+    /// painted where it cannot be tapped. The result is memoised: an unchanged bar returns the
+    /// same shared vector rather than rebuilding it per frame (N-002).
+    fn action_boxes(&self) -> Rc<Vec<(usize, Rect)>> {
         let bar = self.nav_bar_rect();
+        if let Some(cache) = self.action_boxes_cache.borrow().as_ref() {
+            if cache.bar == bar && cache.revision == self.actions_revision {
+                return Rc::clone(&cache.boxes);
+            }
+        }
         if self.actions.is_empty() || bar.width == 0 {
-            return Vec::new();
+            let empty = Rc::new(Vec::new());
+            *self.action_boxes_cache.borrow_mut() = Some(ActionBoxesCache {
+                bar,
+                revision: self.actions_revision,
+                boxes: Rc::clone(&empty),
+            });
+            return empty;
         }
         let mut right = bar.right() - NAV_ACTION_MARGIN;
         let mut boxes = Vec::with_capacity(self.actions.len());
@@ -280,15 +311,21 @@ impl NavigationStack {
             boxes.push((index, Rect::new(left, bar.y, width, bar.height)));
             right = left - 2;
         }
+        let boxes = Rc::new(boxes);
+        *self.action_boxes_cache.borrow_mut() = Some(ActionBoxesCache {
+            bar,
+            revision: self.actions_revision,
+            boxes: Rc::clone(&boxes),
+        });
         boxes
     }
 
     /// The action index whose box covers `pos`.
     fn action_at(&self, pos: crate::core::Point) -> Option<usize> {
         self.action_boxes()
-            .into_iter()
+            .iter()
             .find(|(_, rect)| rect.contains_point(pos))
-            .map(|(index, _)| index)
+            .map(|(index, _)| *index)
     }
 
     /// Returns the content area rect (below the navigation bar).
@@ -309,21 +346,99 @@ impl NavigationStack {
     }
 
     /// Returns the title to display in the navigation bar.
-    fn display_title(&self) -> String {
+    ///
+    /// A `Cow` rather than a `String`: the two stored cases are borrowed, so a settled frame no
+    /// longer clones the title merely to paint it (N-002). Only the fallback that spells the page
+    /// kind has to allocate.
+    fn display_title(&self) -> Cow<'_, str> {
         if let Some(title) = self
             .current_page_index()
             .and_then(|index| self.page_title(index))
             .filter(|title| !title.is_empty())
         {
-            return title.to_string();
+            return Cow::Borrowed(title);
         }
         if !self.navigation_bar_title.is_empty() {
-            self.navigation_bar_title.clone()
+            Cow::Borrowed(&self.navigation_bar_title)
         } else if let Some(page) = self.current_page() {
-            format!("{:?}", page.kind())
+            Cow::Owned(format!("{:?}", page.kind()))
         } else {
-            "Navigation".to_string()
+            Cow::Borrowed("Navigation")
         }
+    }
+
+    /// The leading-edge strip an interactive back swipe may begin in.
+    ///
+    /// # Why the gesture is gated on a band at all
+    ///
+    /// A drag that starts anywhere in the page belongs to the page (a slider, a horizontal list).
+    /// Only the edge strip is a navigation affordance, which is the same rule the platform
+    /// gesture recognisers use and the arm `RefreshControl` follows for its pull.
+    fn edge_band(&self) -> Rect {
+        let content = self.content_rect();
+        if self.direction.is_right_to_left() {
+            Rect::new(content.right() - 24, content.y, 24.min(content.width), content.height)
+        } else {
+            Rect::new(content.x, content.y, 24.min(content.width), content.height)
+        }
+    }
+
+    /// Arms an interactive pop when `pos` is inside the leading edge band.
+    fn begin_edge_drag(&mut self, pos: Point) -> bool {
+        if !(self.can_pop() && self.back_visible) || !self.edge_band().contains_point(pos) {
+            return false;
+        }
+        // An edge drag always begins at the fully-popped end and follows the pointer toward the
+        // settled end; it never starts from a half-settled transition, which belongs to a
+        // previous gesture.
+        self.edge_drag = Some((pos.x as f32, -1.0));
+        true
+    }
+
+    /// Moves an armed pop gesture with the pointer; `true` while one is in flight.
+    fn follow_edge_drag(&mut self, pos: Point) -> bool {
+        let Some((start, start_slide)) = self.edge_drag else {
+            return false;
+        };
+        let content = self.content_rect();
+        let width = content.width.max(1) as f32;
+        let dx = if self.direction.is_right_to_left() {
+            start - pos.x as f32
+        } else {
+            pos.x as f32 - start
+        };
+        // A leftward (for LTR) drag here would undo a pop, so the follow is clamped to the pop
+        // direction only.
+        let progress = (start_slide + dx / width).clamp(-1.0, 0.0);
+        self.slide.jump_to(progress);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Commits or cancels an armed pop gesture; `true` when one was in flight.
+    ///
+    /// # Corrected semantics (N-001)
+    ///
+    /// `slide` runs from `-1.0` (the page fully offset, a drag's starting point) through `0.0`
+    /// (settled). The commit point is therefore **one third of the travel**, i.e.
+    /// `progress >= -2.0 / 3.0`. The previous test was `progress <= -1.0 / 3.0`, which demanded
+    /// two thirds of the travel and cancelled a gesture that was already 80% home. A cancel
+    /// settles back to `0.0` (the origin) rather than to `-1.0`, so the page does not spring to
+    /// the fully-popped position and stay there.
+    fn end_edge_drag(&mut self) -> bool {
+        if self.edge_drag.take().is_none() {
+            return false;
+        }
+        let progress = self.slide.value();
+        if progress >= -2.0 / 3.0 {
+            let _ = self.pop();
+        }
+        // `pop` re-seeds the slide at -1; re-seed it with the position the finger reached so the
+        // release frame continues from the drag instead of jumping, then settle at the origin.
+        self.slide.jump_to(progress);
+        self.slide.set_target(0.0);
+        self.base.request_redraw();
+        true
     }
 }
 
@@ -589,10 +704,10 @@ impl Draw for NavigationStack {
         //
         // The boxes come from `action_boxes`, the same derivation `action_at` hit-tests, so a
         // button is tappable exactly where it is painted.
-        for (index, box_rect) in self.action_boxes() {
-            let Some(label) = self.actions.get(index) else { continue };
+        for (index, box_rect) in self.action_boxes().iter() {
+            let Some(label) = self.actions.get(*index) else { continue };
             context.draw_text_fitted_cow(
-                context.text_line(box_rect, title_font),
+                context.text_line(*box_rect, title_font),
                 label,
                 title_font,
                 accent,
@@ -675,26 +790,12 @@ impl EventHandler for NavigationStack {
 
                     // An edge drag starts an interactive pop: pressing within the leading
                     // strip of the content region and dragging inward follows the finger.
-                    let content = self.content_rect();
-                    let edge = if self.direction.is_right_to_left() {
-                        Rect::new(
-                            content.right() - 24,
-                            content.y,
-                            24.min(content.width),
-                            content.height,
-                        )
-                    } else {
-                        Rect::new(content.x, content.y, 24.min(content.width), content.height)
-                    };
-                    if self.can_pop() && self.back_visible && edge.contains_point(*pos) {
-                        // An edge drag always begins at the fully-popped end and follows the
-                        // pointer toward the settled end; it never starts from a half-settled
-                        // transition, which belongs to a previous gesture.
-                        self.edge_drag = Some((pos.x as f32, -1.0));
+                    if self.begin_edge_drag(*pos) {
                         return;
                     }
 
                     // Forward to current page
+                    let content = self.content_rect();
                     if content.contains_point(*pos) {
                         if let Some(page) = self.pages.last_mut() {
                             // The page is painted inside the content rect, so it must be
@@ -706,19 +807,7 @@ impl EventHandler for NavigationStack {
                 }
             }
             Event::MouseMove { pos } => {
-                if let Some((start, start_slide)) = self.edge_drag {
-                    let content = self.content_rect();
-                    let width = content.width.max(1) as f32;
-                    let dx = if self.direction.is_right_to_left() {
-                        start - pos.x as f32
-                    } else {
-                        pos.x as f32 - start
-                    };
-                    // A leftward (for LTR) drag here would undo a pop, so the follow is clamped
-                    // to the pop direction only.
-                    let progress = (start_slide + dx / width).clamp(-1.0, 0.0);
-                    self.slide.jump_to(progress);
-                    self.base.request_redraw();
+                if self.follow_edge_drag(*pos) {
                     return;
                 }
                 let content = self.content_rect();
@@ -733,20 +822,49 @@ impl EventHandler for NavigationStack {
                 if *button != 1 {
                     return;
                 }
-                if let Some((_, start_slide)) = self.edge_drag.take() {
-                    let progress = self.slide.value();
-                    // One third of the content width is the iOS commit point, expressed as a
-                    // fraction of the slide so a relayout moves the threshold with the region.
-                    if progress <= -1.0 / 3.0 {
-                        if self.pop().is_some() {
-                            self.slide.jump_to(progress);
-                            self.slide.set_target(0.0);
-                        }
-                    } else {
-                        self.slide.jump_to(progress);
-                        self.slide.set_target(start_slide.clamp(-1.0, 0.0));
+                if self.end_edge_drag() {
+                    return;
+                }
+                let content = self.content_rect();
+                if content.contains_point(*pos) {
+                    if let Some(page) = self.pages.last_mut() {
+                        page.set_geometry(content);
+                        page.handle_event(event);
                     }
-                    self.base.request_redraw();
+                }
+            }
+            // A back swipe is the same gesture whether it arrives as a mouse drag or a touch
+            // drag (tablet/mobile parity). The edge band still gates the arm, so a touch that
+            // starts anywhere else belongs to the page beneath.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                if self.begin_edge_drag(*pos) {
+                    return;
+                }
+                let content = self.content_rect();
+                if content.contains_point(*pos) {
+                    if let Some(page) = self.pages.last_mut() {
+                        page.set_geometry(content);
+                        page.handle_event(event);
+                    }
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchMove { pos, .. } => {
+                if self.follow_edge_drag(*pos) {
+                    return;
+                }
+                let content = self.content_rect();
+                if content.contains_point(*pos) {
+                    if let Some(page) = self.pages.last_mut() {
+                        page.set_geometry(content);
+                        page.handle_event(event);
+                    }
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { pos, .. } => {
+                if self.end_edge_drag() {
                     return;
                 }
                 let content = self.content_rect();
@@ -1158,5 +1276,94 @@ mod tests {
             !svg.contains("Back"),
             "the back affordance is the shared ArrowLeft outline, not a text label"
         );
+    }
+
+    /// A gesture that has not passed the commit point must settle back to the origin, not to
+    /// the fully-offset end it started from.
+    ///
+    /// Regression (N-001): the cancel branch aimed at `start_slide`, which is always `-1.0`, so
+    /// the released page stuck a full width off-screen and only the first frame looked like a
+    /// cancel.
+    #[test]
+    fn a_short_edge_drag_cancels_back_to_the_origin() {
+        let page_color = Color::rgba(90, 90, 90, 255);
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.push(Box::new(TestPage::new(page_color)));
+        stack.handle_event(&Event::MousePress { pos: Point::new(4, 300), button: 1, modifiers: 0 });
+        // 36 px of 400 is 9% of the travel, well short of the one-third commit point.
+        stack.handle_event(&Event::MouseMove { pos: Point::new(40, 300) });
+        stack.handle_event(&Event::MouseRelease { pos: Point::new(40, 300), button: 1 });
+        assert_eq!(stack.page_count(), 2, "a short drag must not pop the page");
+
+        while stack.tick(16) {}
+        let content = Rect::new(0, 44, 400, 556);
+        let fills = recorded_fills(&mut stack);
+        let page =
+            fills.iter().find(|(_, color)| *color == page_color).expect("the top page is painted");
+        assert_eq!(page.0, content, "a cancelled gesture must settle at the origin, not at -1.0");
+    }
+
+    /// One third of the content width is the commit point: the page is dismissed there, not
+    /// only after two thirds.
+    #[test]
+    fn a_third_of_the_travel_commits_the_pop() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.handle_event(&Event::MousePress { pos: Point::new(4, 300), button: 1, modifiers: 0 });
+        // 146 px of 400 is 36.5% of the travel, just past the commit point.
+        stack.handle_event(&Event::MouseMove { pos: Point::new(150, 300) });
+        stack.handle_event(&Event::MouseRelease { pos: Point::new(150, 300), button: 1 });
+        assert_eq!(stack.page_count(), 1, "a third of the travel commits the pop");
+    }
+
+    /// The transition geometry is derived once per change, not once per frame.
+    #[test]
+    fn action_boxes_are_cached_until_the_actions_change() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.set_actions(vec!["Share".to_string()]);
+        let first = stack.action_boxes();
+        let second = stack.action_boxes();
+        assert!(Rc::ptr_eq(&first, &second), "an unchanged bar reuses the boxes");
+
+        stack.set_actions(vec!["Share".to_string(), "Edit".to_string()]);
+        let changed = stack.action_boxes();
+        assert!(!Rc::ptr_eq(&first, &changed), "a new action list rebuilds the boxes");
+    }
+
+    /// The title is borrowed from the model, so painting does not clone it.
+    #[test]
+    fn the_displayed_title_is_borrowed_from_the_model() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.set_navigation_bar_title("Inbox");
+        assert!(matches!(stack.display_title(), Cow::Borrowed("Inbox")));
+    }
+
+    /// The edge band, and only the edge band, arms the touch gesture.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn an_edge_touch_arms_the_pop_gesture() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.handle_event(&Event::TouchBegin { pos: Point::new(4, 300), touch_id: 1 });
+        stack.handle_event(&Event::TouchMove { pos: Point::new(200, 300), touch_id: 1 });
+        stack.handle_event(&Event::TouchEnd { pos: Point::new(200, 300), touch_id: 1 });
+        assert_eq!(stack.page_count(), 1, "a touch drag past the commit point pops");
+    }
+
+    /// A touch that starts in the middle of the page is the page's, not the gesture's.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn a_mid_page_touch_does_not_arm_the_pop_gesture() {
+        let mut stack = NavigationStack::new(Rect::new(0, 0, 400, 600));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.push(Box::new(TestPage::new(Color::BLACK)));
+        stack.handle_event(&Event::TouchBegin { pos: Point::new(200, 300), touch_id: 1 });
+        stack.handle_event(&Event::TouchMove { pos: Point::new(390, 300), touch_id: 1 });
+        stack.handle_event(&Event::TouchEnd { pos: Point::new(390, 300), touch_id: 1 });
+        assert_eq!(stack.page_count(), 2, "no edge band, no back gesture");
     }
 }

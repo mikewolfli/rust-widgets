@@ -242,6 +242,9 @@ pub struct Cascader {
     filter: String,
     /// Emitted when the committed selection changes, with the selected path.
     pub selection_changed: Signal1<Vec<usize>>,
+    /// Emitted with the branch path when the user opens a level whose children are
+    /// loaded on demand (I-121).
+    pub load_requested: Signal1<Vec<usize>>,
     /// The rendered selection text, memoised until the path, the tree or the separator
     /// changes.
     ///
@@ -302,6 +305,7 @@ impl Cascader {
             filterable: false,
             filter: String::new(),
             selection_changed: Signal1::new(),
+            load_requested: Signal1::new(),
             display_cache: RefCell::new(None),
             max_visible: None,
             scroll_offsets: Vec::new(),
@@ -483,6 +487,9 @@ impl Cascader {
         }
         self.expanded_path = self.selected_path.clone();
         self.expanded = true;
+        // The overlay owns the press that dismisses it (I-127).
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::set_popup_grab(self.base.id());
         self.filter.clear();
         self.scroll_offsets.clear();
         self.reveal_progress = 0.0;
@@ -499,6 +506,8 @@ impl Cascader {
             return;
         }
         self.expanded = false;
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::clear_popup_grab_for(self.base.id());
         self.expanded_path.clear();
         self.filter.clear();
         self.invalidate_level_rows();
@@ -892,6 +901,7 @@ impl Cascader {
         if !option.enabled {
             return;
         }
+        let is_loading = option.is_loading();
         let is_leaf = option.is_leaf();
         // Truncate to this level, then push, so choosing from an earlier level
         // discards the deeper path rather than appending to it.
@@ -902,10 +912,14 @@ impl Cascader {
 
         if is_leaf {
             let path = self.expanded_path.clone();
-            self.expanded = false;
-            self.expanded_path.clear();
+            self.collapse();
             self.set_selected_path(path);
         } else {
+            // A branch still marked `Loading` has no children yet; the host is asked to
+            // supply them for exactly this path (I-121).
+            if is_loading {
+                self.load_requested.emit(self.expanded_path.clone());
+            }
             self.base.request_redraw();
         }
     }
@@ -2303,6 +2317,22 @@ mod tests {
         assert!(!c.is_leaf_path(&[0]));
         assert!(!c.set_selected_path(vec![0]), "a pending branch must not commit");
         assert_eq!(c.selected_path(), &[] as &[usize]);
+    }
+
+    #[test]
+    fn opening_a_pending_branch_asks_the_host_for_its_children() {
+        let mut c = Cascader::new(Rect::new(0, 0, 200, 32));
+        c.set_options(pending_tree());
+        let requested = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        c.load_requested.connect({
+            let requested = std::sync::Arc::clone(&requested);
+            move |path: std::sync::Arc<Vec<usize>>| {
+                *requested.lock().expect("request list") = (*path).clone();
+            }
+        });
+        c.expand();
+        assert!(c.choose_at(0, 0));
+        assert_eq!(*requested.lock().expect("request list"), vec![0]);
     }
 
     #[test]

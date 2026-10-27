@@ -61,7 +61,7 @@ pub enum FlowAlignment {
     SpaceAround,
 }
 /// Configuration for a flow layout: direction, alignment, spacing, padding, and wrapping.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlowLayoutConfig {
     /// Axis along which children are arranged.
     pub direction: FlowDirection,
@@ -89,6 +89,22 @@ impl Default for FlowLayoutConfig {
         }
     }
 }
+/// The last nominal layout, paired with every input the solve read (LAY-005).
+///
+/// `child_rect` answers a one-child query from this snapshot instead of re-running the
+/// wrap-and-place solve (G-158). The inputs — the rect, the config, the reading direction
+/// and the child-size revision — are compared on every hit, so a mutation through any
+/// entry point (including the documented manual [`FlowLayout::invalidate_size_cache`] for
+/// a live child's changed hint) forces the same re-solve the trait default performed.
+#[derive(Debug)]
+struct FlowLayoutSnapshot {
+    rect: Rect,
+    config: FlowLayoutConfig,
+    text_direction: TextDirection,
+    size_revision: u64,
+    entries: Vec<(ObjectId, Rect)>,
+}
+
 /// A flow layout that arranges children sequentially in a given direction.
 ///
 /// Supports wrapping when `wrap` is enabled in the config — children
@@ -112,6 +128,9 @@ pub struct FlowLayout {
     /// [`Self::invalidate_size_cache`] is the hook for a live child whose own hint changed
     /// without a structural mutation.
     size_cache: RefCell<Option<(u64, Vec<Size>)>>,
+    /// The last nominal layout and the inputs it was computed from (LAY-005); see
+    /// [`FlowLayoutSnapshot`].
+    last_layout: RefCell<Option<FlowLayoutSnapshot>>,
 }
 impl fmt::Debug for FlowLayout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -131,6 +150,7 @@ impl FlowLayout {
             text_direction: TextDirection::default(),
             size_revision: 0,
             size_cache: RefCell::new(None),
+            last_layout: RefCell::new(None),
         }
     }
     /// Creates an empty layout with the supplied configuration.
@@ -151,6 +171,7 @@ impl FlowLayout {
             text_direction: TextDirection::default(),
             size_revision: 0,
             size_cache: RefCell::new(None),
+            last_layout: RefCell::new(None),
         }
     }
 
@@ -273,6 +294,41 @@ impl FlowLayout {
     /// (LAY-N08).
     fn layout_sized(&self, available_rect: Rect, sizes: &[Size]) -> Vec<Rect> {
         self.layout_sized_with(available_rect, sizes, self.config.spacing, self.config.padding)
+    }
+
+    /// The hint-aware arrangement with the gap and padding as parameters (LAY-003).
+    ///
+    /// [`Layout::arrange`](Layout::arrange) passes the configured values (the nominal path),
+    /// and [`Layout::arrange_with_context`](Layout::arrange_with_context) passes the
+    /// device-scaled ones; the child-size resolution and the solver are shared so the two
+    /// entries cannot disagree about anything but the scale.
+    fn arrange_sized_with(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        spacing: i32,
+        padding: i32,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.child_sizes(|fallback| {
+            let sizes: Vec<Size> = self
+                .children
+                .iter()
+                .enumerate()
+                .map(|(index, child)| {
+                    let hint = fallback.get(index).copied().unwrap_or_else(|| child.size_hint());
+                    ChildInfo::find_at(children, index, child.widget_id)
+                        .map_or(hint, |info| info.resolved_size(hint))
+                })
+                .collect();
+            for (index, child_rect) in
+                self.layout_sized_with(rect, &sizes, spacing, padding).into_iter().enumerate()
+            {
+                if let Some(child) = self.children.get(index) {
+                    out(child.widget_id, child_rect);
+                }
+            }
+        });
     }
     /// The body of [`layout_sized`](Self::layout_sized) with the gap and padding as parameters.
     ///
@@ -479,6 +535,21 @@ impl Layout for FlowLayout {
                 widgets(child.widget_id, *child_rect);
             }
         }
+        // The nominal emissions are captured with the inputs the solve read, so `child_rect`
+        // can answer a one-child query from the snapshot (LAY-005) instead of re-solving.
+        let entries: Vec<(ObjectId, Rect)> = self
+            .children
+            .iter()
+            .zip(positions.iter())
+            .map(|(child, child_rect)| (child.widget_id, *child_rect))
+            .collect();
+        *self.last_layout.borrow_mut() = Some(FlowLayoutSnapshot {
+            rect,
+            config: self.config,
+            text_direction: self.text_direction,
+            size_revision: self.size_revision,
+            entries,
+        });
     }
 
     // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
@@ -489,8 +560,43 @@ impl Layout for FlowLayout {
         context: &LayoutContext,
         out: &mut dyn FnMut(ObjectId, Rect),
     ) {
-        let _ = context;
-        self.arrange(rect, children, out);
+        // LAY-003: the context is consumed, not dropped. Gap and padding follow the
+        // **larger** of the layout scale and the text scale — the same reading
+        // `update_with_context` below applies, because a device whose text is set larger
+        // needs more room between controls even at the same DPI. The context's remaining
+        // field, `min_touch_size`, has no meaningful use on this entry: the hint-aware path
+        // is a geometry query callers pin against exact rects, so growing a child here
+        // would break that contract — the touch floor stays an update-path concern.
+        let scale = context.layout_scale.max(context.font_scale);
+        let spacing = (self.config.spacing as f32 * scale).round() as i32;
+        let padding = (self.config.padding.max(0) as f32 * scale).round() as i32;
+        self.arrange_sized_with(rect, children, spacing, padding, out);
+    }
+
+    /// The one-child query, answered from the cached nominal layout while every input the
+    /// solve read still matches (LAY-005): a hit test must not re-run the wrap-and-place
+    /// solve. Otherwise it falls back to the trait default's update-and-capture, which is
+    /// also what repopulates the snapshot.
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        if !self.has_child(id) {
+            return None;
+        }
+        if let Some(snapshot) = self.last_layout.borrow().as_ref() {
+            if snapshot.rect == rect
+                && snapshot.config == self.config
+                && snapshot.text_direction == self.text_direction
+                && snapshot.size_revision == self.size_revision
+            {
+                return snapshot.entries.iter().find(|(child, _)| *child == id).map(|(_, r)| *r);
+            }
+        }
+        let mut found = None;
+        self.update(rect, &mut |child, child_rect| {
+            if child == id && found.is_none() {
+                found = Some(child_rect);
+            }
+        });
+        found
     }
 
     /// Lays the children out from their own hints (LAY-N01).
@@ -501,23 +607,10 @@ impl Layout for FlowLayout {
     /// unconstrained. A declarative flow (whose children were added by id and therefore have no
     /// widget to ask) keeps its `100x100` default in both paths.
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
-        self.child_sizes(|fallback| {
-            let sizes: Vec<Size> = self
-                .children
-                .iter()
-                .enumerate()
-                .map(|(index, child)| {
-                    let hint = fallback.get(index).copied().unwrap_or_else(|| child.size_hint());
-                    ChildInfo::find_at(children, index, child.widget_id)
-                        .map_or(hint, |info| info.resolved_size(hint))
-                })
-                .collect();
-            for (index, child_rect) in self.layout_sized(rect, &sizes).into_iter().enumerate() {
-                if let Some(child) = self.children.get(index) {
-                    out(child.widget_id, child_rect);
-                }
-            }
-        })
+        // The nominal path keeps the configured gap and padding so every existing caller's
+        // geometry is byte-identical; `LayoutContext::default()` is deliberately not used
+        // here, because it reads the platform's text scale and is not the nominal answer.
+        self.arrange_sized_with(rect, children, self.config.spacing, self.config.padding, out);
     }
 
     /// The device-aware path (BLUE22 §B.6 rule 7 for this layout).
@@ -1304,5 +1397,49 @@ mod tests {
     fn flow_layout_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<FlowLayout>();
+    }
+
+    /// LAY-005: the one-child query answers from the cached nominal layout while every
+    /// input the solve read still matches, and any mutation — including a direct config
+    /// field write, which has no invalidation hook — forces a fresh answer.
+    #[test]
+    fn child_rect_answers_from_the_cached_layout_and_tracks_mutations() {
+        let mut layout = FlowLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.set_child_size(1, Size::new(30, 10));
+        layout.set_child_size(2, Size::new(30, 10));
+        layout.config.spacing = 4;
+        layout.config.padding = 0;
+        let rect = Rect::new(0, 0, 100, 40);
+        // The fallback solve answers even before any update populated the snapshot.
+        assert_eq!(layout.child_rect(2, rect), Some(Rect::new(34, 0, 30, 10)));
+        // A config write is part of the fingerprint: the stale gap is not returned.
+        layout.config.spacing = 0;
+        assert_eq!(layout.child_rect(2, rect), Some(Rect::new(30, 0, 30, 10)));
+        assert_eq!(layout.child_rect(9, rect), None, "a foreign id is not placed");
+    }
+
+    /// LAY-003: `arrange_with_context` consumes the context — a 2x device scale doubles the
+    /// gap on the hint-aware path, while the nominal `arrange` keeps the configured one.
+    #[test]
+    fn arrange_with_context_scales_the_gap() {
+        let mut layout = FlowLayout::new();
+        layout.config.spacing = 10;
+        layout.config.padding = 0;
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.set_child_size(1, Size::new(30, 10));
+        layout.set_child_size(2, Size::new(30, 10));
+        let rect = Rect::new(0, 0, 100, 40);
+        let mut nominal = Vec::new();
+        layout.arrange(rect, &[], &mut |id, r| nominal.push((id, r)));
+        assert_eq!(nominal[1].1, Rect::new(40, 0, 30, 10));
+
+        let context =
+            LayoutContext { layout_scale: 2.0, font_scale: 1.0, min_touch_size: Size::new(0, 0) };
+        let mut scaled = Vec::new();
+        layout.arrange_with_context(rect, &[], &context, &mut |id, r| scaled.push((id, r)));
+        assert_eq!(scaled[1].1, Rect::new(50, 0, 30, 10), "the gap doubled to 20");
     }
 }

@@ -197,6 +197,11 @@ pub struct MaskedEdit {
     /// A committed phrase and a replace-over-selection are **one** edit to the user, so the inner
     /// per-character writes are recorded by the caller instead of the callee (I-24).
     suppress_history: bool,
+    /// Whether the completion signal has already fired for the current filled mask (I-017).
+    ///
+    /// Edge-triggered: the signal means "the last empty cell was just filled", so a further edit
+    /// that still leaves the mask complete must not repeat it.
+    completion_announced: bool,
     /// The caret cell's blink state, advanced by [`MaskedEdit::tick`] (I-26).
     ///
     /// Borrowed from [`crate::style::CursorBlink`] rather than reimplemented, so this field's
@@ -231,6 +236,7 @@ impl MaskedEdit {
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
             suppress_history: false,
+            completion_announced: false,
             cursor_blink: crate::style::CursorBlink::new(),
         }
     }
@@ -768,6 +774,23 @@ impl MaskedEdit {
             "Edit text",
             "masked_edit_text",
         )));
+        self.announce_completion_if_filled();
+    }
+
+    /// Emits `editing_finished` when the last required cell has just been filled (I-017).
+    ///
+    /// Without it a host had to poll `is_valid()` to learn that a code was complete. The signal
+    /// fires on the transition into complete, and re-arms when the value becomes incomplete again.
+    fn announce_completion_if_filled(&mut self) {
+        let filled = self.is_valid();
+        if filled {
+            if !self.completion_announced {
+                self.completion_announced = true;
+                self.editing_finished.emit();
+            }
+        } else {
+            self.completion_announced = false;
+        }
     }
 
     /// Advances the caret's blink by `delta_ms`, reporting whether another frame is due (I-26).
@@ -1531,6 +1554,51 @@ impl EventHandler for MaskedEdit {
 }
 
 // ── Private helpers ──
+
+/// A parsed mask, shared with the single-line field (I-011).
+///
+/// `MaskedEdit` is a dedicated control; `LineEdit` needs the same grammar without the separate
+/// widget, so the engine is exposed as a value type instead of being re-implemented. Parsing and
+/// formatting are the same code the masked control uses, so the two cannot drift.
+#[derive(Debug, Clone)]
+pub(crate) struct MaskEngine {
+    segments: Vec<MaskSegment>,
+    placeholder: char,
+}
+
+impl MaskEngine {
+    /// Parses `mask`, or returns `None` for an empty pattern.
+    pub(crate) fn parse(mask: &str) -> Option<Self> {
+        if mask.is_empty() {
+            return None;
+        }
+        let (segments, placeholder) = parse_mask(mask);
+        (!segments.is_empty()).then_some(Self { segments, placeholder })
+    }
+
+    /// Formats `raw` through the mask, filling unused cells with the placeholder.
+    pub(crate) fn format(&self, raw: &str) -> String {
+        build_display_text(&self.segments, raw, self.placeholder)
+    }
+
+    /// Keeps only the characters the mask can place, in cell order and with case converters applied.
+    pub(crate) fn sanitize(&self, text: &str) -> String {
+        let mut raw = String::new();
+        let mut chars = text.chars();
+        for segment in &self.segments {
+            if let MaskSegment::Input { kind, case } = segment {
+                for ch in chars.by_ref() {
+                    let folded = apply_case(*case, ch);
+                    if mask_char_matches(*kind, folded) {
+                        raw.push(folded);
+                        break;
+                    }
+                }
+            }
+        }
+        raw
+    }
+}
 
 /// Checks whether a character matches a mask character kind.
 fn mask_char_matches(kind: MaskCharKind, ch: char) -> bool {
@@ -2470,5 +2538,26 @@ mod tests {
         });
         let (start, end) = edit.selection_range().expect("a double click must select");
         assert_eq!((start, end), (1, 4), "the literals bound the run");
+    }
+
+    /// Filling the last required cell emits `editing_finished` once (I-017).
+    #[test]
+    fn filling_the_mask_emits_editing_finished() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 200, 30));
+        me.set_mask("0000");
+        me.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        let count = Arc::new(AtomicUsize::new(0));
+        let observed = count.clone();
+        me.editing_finished.connect(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        me.handle_event(&Event::TextInput { text: "12".to_string() });
+        assert_eq!(count.load(Ordering::SeqCst), 0, "a partial code is not complete");
+        me.handle_event(&Event::TextInput { text: "34".to_string() });
+        assert_eq!(count.load(Ordering::SeqCst), 1, "the last cell completes the code");
+        me.handle_event(&Event::TextInput { text: "5".to_string() });
+        assert_eq!(count.load(Ordering::SeqCst), 1, "the signal is edge-triggered");
     }
 }

@@ -609,6 +609,72 @@ pub(crate) fn fitted_origin(bounds: Rect, advance: i32, alignment: HorizontalAli
     }
 }
 
+/// Breaks a polyline into alternating mark/gap stroke segments (G-014).
+///
+/// This is the one dash kernel both consumers share: the
+/// [`RenderCommand::DrawPathDashed`] route in `route_command_to_surface` expands
+/// the returned segments into `DrawLineStroke` commands, and
+/// [`RenderContext::draw_edge_pattern`] walks its border edges through it, so the
+/// two cannot drift apart on where a mark starts or ends.
+///
+/// # Semantics
+///
+/// The pattern restarts at **each vertex** — the same convention
+/// `draw_edge_pattern` has always used per border edge, so the two agree on any
+/// geometry they both see. `mark` runs are emitted first: a run is `[position,
+/// position + mark)` along the edge, truncated at the edge's end, and the
+/// position then skips the `gap`. A zero `mark` contributes no ink and returns
+/// an empty list; a zero `gap` degenerates to the whole polyline in one segment
+/// per run (a caller wanting a solid stroke should use `DrawPath`, but the
+/// degenerate input is handled rather than mis-dashed).
+///
+/// Endpoints are interpolated with integer arithmetic — `from + delta * t /
+/// length` with an integer `length` — matching the walk `draw_edge_pattern` has
+/// always used, so for an axis-aligned edge the kernel emits byte-identical
+/// segments to the loop it replaced. `closed` appends the closing run from the
+/// last point back to the first, matching [`RenderCommand::DrawPath`]'s closing
+/// convention.
+pub(crate) fn dash_line_segments(
+    points: &[Point],
+    closed: bool,
+    dash: crate::render::core::command::DashPattern,
+) -> Vec<(Point, Point)> {
+    let mut segments = Vec::new();
+    if points.len() < 2 || dash.mark == 0 {
+        return segments;
+    }
+    let mut runs: Vec<(Point, Point)> = Vec::with_capacity(points.len());
+    for window in points.windows(2) {
+        runs.push((window[0], window[1]));
+    }
+    if closed && points.len() >= 3 {
+        runs.push((*points.last().expect("len >= 2 checked above"), points[0]));
+    }
+    let mark = i64::from(dash.mark);
+    let gap = i64::from(dash.gap);
+    for (from, to) in runs {
+        let dx = i64::from(to.x - from.x);
+        let dy = i64::from(to.y - from.y);
+        // The edge's length in path pixels. An integer square root keeps the walk
+        // in integers: for an axis-aligned edge `isqrt(dx²) == |dx|` exactly, so
+        // the interpolation below reproduces the historical walk bit for bit.
+        let length = (dx * dx + dy * dy).isqrt();
+        if length <= 0 {
+            continue;
+        }
+        let point_at = |t: i64| {
+            Point::new(from.x + ((dx * t) / length) as i32, from.y + ((dy * t) / length) as i32)
+        };
+        let mut position = 0i64;
+        while position < length {
+            let end = (position + mark).min(length);
+            segments.push((point_at(position), point_at(end)));
+            position = end + gap;
+        }
+    }
+    segments
+}
+
 /// Where a single line of text sits inside the band it is drawn in.
 ///
 /// This is [`crate::core::VerticalAlignment`], re-exported under the path this module has
@@ -1305,6 +1371,36 @@ impl<'a> RenderContext<'a> {
         });
     }
 
+    /// Draws the shadow behind a rounded face (G-016).
+    ///
+    /// The blur source is the rounded rectangle itself — the corner `radii`
+    /// belong to the shadow caster — so a rounded card no longer spills square
+    /// shadow corners past its outline. The offset/spread/blur parameters mean
+    /// exactly what [`Self::draw_box_shadow`]'s mean; `radii` is resolved per CSS
+    /// `border-radius` before use. A face with all-zero radii should call
+    /// [`Self::draw_box_shadow`], which emits the historical command unchanged.
+    pub fn draw_box_shadow_rounded(
+        &mut self,
+        rect: Rect,
+        radii: [u32; 4],
+        color: Color,
+        offset_x: i32,
+        offset_y: i32,
+        blur_radius: u32,
+        spread: i32,
+    ) {
+        let rect = self.offset_rect(rect);
+        self.dispatch_owned(RenderCommand::BoxShadowRounded {
+            rect,
+            radii,
+            color,
+            offset_x,
+            offset_y,
+            blur_radius,
+            spread,
+        });
+    }
+
     /// Fills `rect` with a `gradient`.
     ///
     /// # Why this is a separate call rather than a flag on `fill_rect`
@@ -1463,10 +1559,12 @@ impl<'a> RenderContext<'a> {
     ///
     /// # Why a rounded gradient is still a rectangular ramp
     ///
-    /// A gradient is a paint server with no corner rounding, and the render command set has only a
-    /// rectangular [`RenderContext::push_clip`] — there is no rounded clip to intersect the ramp
-    /// with. So a gradient fill spans the full rectangle and the declared `radius` is honoured by
-    /// the face's **outline** (which the control draws itself), exactly as
+    /// A gradient is a paint server with no corner rounding. The command set does
+    /// now carry a rounded clip (G-015) that could intersect the ramp with, but
+    /// turning it on here changes every gradient face's rendered edge, which is a
+    /// snapshot decision rather than a mechanical one — so the ramp still spans
+    /// the full rectangle and the declared `radius` is honoured by the face's
+    /// **outline** (which the control draws itself), exactly as
     /// [`SurfaceStyle::paint_with_gradient`](crate::render::SurfaceStyle::paint_with_gradient) does
     /// for a button. That keeps one gradient story in the crate rather than two.
     ///
@@ -1518,7 +1616,21 @@ impl<'a> RenderContext<'a> {
         //    on the flat preset emits nothing here.
         if let Some(shadow) = surface.shadow(shadow_tint) {
             // The box-shadow command carries the blur the theme declared; a plain fill dropped it.
-            self.draw_box_shadow(rect, shadow.color, shadow.x, shadow.y, shadow.blur, 0);
+            // A rounded caster carries its radii through (G-016) so the blur source is the rounded
+            // shape, not the bounding box; a square face keeps the historical command.
+            if radii.iter().any(|r| *r > 0) {
+                self.draw_box_shadow_rounded(
+                    rect,
+                    radii,
+                    shadow.color,
+                    shadow.x,
+                    shadow.y,
+                    shadow.blur,
+                    0,
+                );
+            } else {
+                self.draw_box_shadow(rect, shadow.color, shadow.x, shadow.y, shadow.blur, 0);
+            }
         }
         // 2. The fill. Without a gradient this is the solid, radius-clipped face `face` always
         //    drew; with one the ramp spans the full rectangle, matching `paint_with_gradient`.
@@ -1654,6 +1766,13 @@ impl<'a> RenderContext<'a> {
     /// or [`RenderCommand::FillCircle`] dots. `dashes` picks the pattern. The
     /// rect is already offset, so the commands are dispatched directly rather
     /// than through the offset-applying helpers.
+    ///
+    /// The dash walk is [`dash_line_segments`], the same kernel
+    /// [`RenderCommand::DrawPathDashed`] expands through, so the border's dashes
+    /// and a dashed path cannot disagree on where a mark starts (G-014). A unit
+    /// test in this module pins the kernel's output to the historical inline
+    /// walk on identical inputs; the dots branch stays inline because a dot is a
+    /// disc, not a mark/gap pair.
     fn draw_edge_pattern(
         &mut self,
         rect: Rect,
@@ -1669,9 +1788,9 @@ impl<'a> RenderContext<'a> {
         let right = rect.x + rect.width as i32;
         let bottom = rect.y + rect.height as i32;
         let (mark, gap) = if dashes {
-            ((width * 3).max(1) as i64, (width * 2).max(1) as i64)
+            ((width * 3).max(1), (width * 2).max(1))
         } else {
-            (0, ((width / 2).max(1) * 3) as i64)
+            (0, (width / 2).max(1) * 3)
         };
         let edges = [
             ((left + tl as i32, top), (right - tr as i32, top)),
@@ -1680,32 +1799,43 @@ impl<'a> RenderContext<'a> {
             ((left, top + tl as i32), (left, bottom - bl as i32)),
         ];
         for (from, to) in edges {
-            let (dx, dy) = ((to.0 - from.0) as i64, (to.1 - from.1) as i64);
-            let length = dx.abs().max(dy.abs());
-            if length <= 0 {
-                continue;
-            }
-            let point_at = |t: i64| {
-                Point::new(from.0 + (dx * t / length) as i32, from.1 + (dy * t / length) as i32)
-            };
-            let mut position = 0i64;
-            while position < length {
-                if dashes {
-                    let end = (position + mark).min(length);
+            let (from, to) = (Point::new(from.0, from.1), Point::new(to.0, to.1));
+            if dashes {
+                // One straight edge per kernel call: the pattern restarts at the
+                // edge, exactly as the inline loop it replaced did.
+                for (a, b) in dash_line_segments(
+                    &[from, to],
+                    false,
+                    crate::render::core::command::DashPattern { mark, gap },
+                ) {
                     self.dispatch_owned(RenderCommand::DrawLineStroke {
-                        from: point_at(position),
-                        to: point_at(end),
+                        from: a,
+                        to: b,
                         color,
                         width,
                     });
-                    position = end + gap;
-                } else {
+                }
+            } else {
+                let dx = i64::from(to.x - from.x);
+                let dy = i64::from(to.y - from.y);
+                let length = (dx * dx + dy * dy).isqrt();
+                if length <= 0 {
+                    continue;
+                }
+                let point_at = |t: i64| {
+                    Point::new(
+                        from.x + ((dx * t) / length) as i32,
+                        from.y + ((dy * t) / length) as i32,
+                    )
+                };
+                let mut position = 0i64;
+                while position < length {
                     self.dispatch_owned(RenderCommand::FillCircle {
                         center: point_at(position),
                         radius: (width / 2).max(1),
                         color,
                     });
-                    position += gap;
+                    position += i64::from(gap);
                 }
             }
         }
@@ -1737,6 +1867,72 @@ impl<'a> RenderContext<'a> {
         let from = self.offset_point(from);
         let to = self.offset_point(to);
         self.dispatch_owned(RenderCommand::DrawLineStrokeAA { from, to, color, width });
+    }
+    /// Draws a stroked line whose ends and corners follow `cap`/`join` (G-017).
+    ///
+    /// A single segment has no interior corner, so `join` only matters to
+    /// polyline callers ([`crate::render::Bevel::stroke`] applies it at shared
+    /// vertices); on this segment it is accepted for call-site symmetry.
+    ///
+    /// # How each cap is expressed
+    ///
+    /// The command set has no cap parameter on `DrawLineStroke`, so the caps are
+    /// expanded into the primitives that already exist, all in this recording
+    /// layer:
+    ///
+    /// * [`LineCap::Butt`] is the plain stroke — the historical picture, byte for
+    ///   byte, which is also what the `Default` impl produces;
+    /// * [`LineCap::Round`] adds one [`RenderCommand::FillCircle`] of radius
+    ///   `width / 2` centred on each endpoint, so the stroke ends in half-discs;
+    /// * [`LineCap::Square`] extends the segment by `width / 2` past each
+    ///   endpoint along its own direction, so the stroke ends in a square the
+    ///   width of the line.
+    pub fn draw_line_stroke_styled(
+        &mut self,
+        from: Point,
+        to: Point,
+        color: Color,
+        width: u32,
+        cap: crate::render::core::command::LineCap,
+        join: crate::render::core::command::LineJoin,
+    ) {
+        use crate::render::core::command::LineCap;
+        let _ = join; // A join needs a shared vertex; see the doc comment above.
+        if width == 0 {
+            return;
+        }
+        match cap {
+            LineCap::Butt => {
+                self.draw_line_stroke(from, to, color, width);
+            }
+            LineCap::Round => {
+                self.draw_line_stroke(from, to, color, width);
+                let radius = width / 2;
+                self.fill_circle(from, radius, color);
+                self.fill_circle(to, radius, color);
+            }
+            LineCap::Square => {
+                let dx = i64::from(to.x - from.x);
+                let dy = i64::from(to.y - from.y);
+                let length = (dx * dx + dy * dy).isqrt();
+                let extend = i64::from(width / 2);
+                if length <= 0 {
+                    // A degenerate segment cannot define a direction to extend
+                    // along; draw the plain stroke (a dot of the brush) and stop.
+                    self.draw_line_stroke(from, to, color, width);
+                    return;
+                }
+                let extended_from = Point::new(
+                    from.x - ((dx * extend) / length) as i32,
+                    from.y - ((dy * extend) / length) as i32,
+                );
+                let extended_to = Point::new(
+                    to.x + ((dx * extend) / length) as i32,
+                    to.y + ((dy * extend) / length) as i32,
+                );
+                self.draw_line_stroke(extended_from, extended_to, color, width);
+            }
+        }
     }
     /// Fills a circle centred on `center` with `radius` pixels, without
     /// anti-aliasing.
@@ -1782,6 +1978,28 @@ impl<'a> RenderContext<'a> {
         let points: Arc<[Point]> = points.iter().map(|point| self.offset_point(*point)).collect();
         self.dispatch_owned(RenderCommand::DrawPath { points, closed, color, filled, width });
     }
+    /// Strokes a polyline with a repeating dash pattern (G-014).
+    ///
+    /// The stroke is the same width and colour [`Self::draw_path`] would lay
+    /// down, broken into alternating `dash.mark` inked and `dash.gap` open runs
+    /// along each segment; a `closed` path also dashes the closing edge. The
+    /// pattern restarts at each vertex — the convention the border dash uses per
+    /// edge — and both walks share one kernel, so they cannot disagree about
+    /// where a mark lands.
+    ///
+    /// A zero `mark` draws nothing (no ink is possible); a zero `gap` degenerates
+    /// to the solid stroke, for which [`Self::draw_path`] is the cheaper spelling.
+    pub fn draw_path_dashed(
+        &mut self,
+        points: &[Point],
+        closed: bool,
+        color: Color,
+        width: u32,
+        dash: crate::render::core::command::DashPattern,
+    ) {
+        let points: Arc<[Point]> = points.iter().map(|point| self.offset_point(*point)).collect();
+        self.dispatch_owned(RenderCommand::DrawPathDashed { points, closed, color, width, dash });
+    }
     /// Fills packed contours together using the non-zero winding rule.
     ///
     /// Unlike [`RenderContext::draw_path`], this treats the contours as one shape, preserving
@@ -1826,6 +2044,42 @@ impl<'a> RenderContext<'a> {
         } else {
             self.backend.draw_text(origin, text, font, color, alignment);
         }
+    }
+    /// Draws a single line of text with baseline decorations (G-013).
+    ///
+    /// The glyphs go down exactly as [`Self::draw_text`] puts them; `decoration`
+    /// then asks for an underline, a strikethrough and/or a wavy underline in the
+    /// same `color`, drawn by the backend around the shaped run. `TextDecoration::NONE`
+    /// emits the plain [`RenderCommand::DrawText`] command, so the default costs
+    /// nothing and changes nothing.
+    ///
+    /// # Why a separate entry point rather than a flag on `draw_text`
+    ///
+    /// The command variant is additive for the same reason — every existing
+    /// construction and destructure site stays valid — and the recording entry
+    /// point mirrors that: a caller states decoration only when it wants it.
+    pub fn draw_text_decorated(
+        &mut self,
+        origin: Point,
+        text: &str,
+        font: &Font,
+        color: Color,
+        alignment: HorizontalAlignment,
+        decoration: crate::render::core::command::TextDecoration,
+    ) {
+        if decoration.is_empty() {
+            self.draw_text(origin, text, font, color, alignment);
+            return;
+        }
+        let origin = self.offset_point(origin);
+        self.dispatch_owned(RenderCommand::DrawTextDecorated {
+            origin,
+            text: crate::compat::Arc::from(text),
+            font: font.clone(),
+            color,
+            alignment,
+            decoration,
+        });
     }
     /// Returns the measured bounds of `text` in `font` under the backend's DPI
     /// scale.
@@ -1981,6 +2235,30 @@ impl<'a> RenderContext<'a> {
     /// pops would otherwise widen the clip unexpectedly.
     pub fn pop_clip(&mut self) {
         self.dispatch_owned(RenderCommand::PopClip);
+    }
+    /// Pushes a rounded-rectangle clip onto the clip stack (G-015).
+    ///
+    /// Everything drawn until [`Self::pop_clip`] is masked to the rounded
+    /// region: corners outside the radius are cut away exactly as
+    /// [`Self::fill_rounded_rect_corners`] cuts them, because the software
+    /// backend computes the mask's coverage from the same path machinery a
+    /// filled rounded rect uses.
+    ///
+    /// The push is translated by the current offset like [`Self::push_clip`],
+    /// and pops from the same stack, so the two clip forms interleave freely.
+    /// Radii that overrun an edge are resolved per CSS `border-radius` before
+    /// use.
+    pub fn push_clip_rounded_rect(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        radii: [u32; 4],
+    ) {
+        let x = x + self.offset_x;
+        let y = y + self.offset_y;
+        self.dispatch_owned(RenderCommand::PushClipRoundedRect { x, y, width, height, radii });
     }
 
     /// Begins a composed layer inside `bounds`, translated by the current offset.
@@ -3874,5 +4152,272 @@ mod tests {
             middle[0] > 0 && middle[2] > 0,
             "the middle samples both source columns, got {middle:?}"
         );
+    }
+
+    // ── G-014: the shared dash kernel ───────────────────────────────────
+
+    /// The dash kernel reproduces the border walk's output on the inputs the
+    /// border feeds it.
+    ///
+    /// `draw_edge_pattern` used to inline the mark/gap walk. The kernel replaced
+    /// it, and this test is the evidence the replacement changed nothing: on
+    /// every axis-aligned edge (the only kind a rounded rect's straight section
+    /// has) and several mark/gap periods, the kernel's segments equal the
+    /// historical loop's, byte for byte, including the truncating interpolation
+    /// both use.
+    #[test]
+    fn the_dash_kernel_matches_the_historical_border_walk() {
+        fn legacy_walk(
+            from: (i32, i32),
+            to: (i32, i32),
+            mark: i64,
+            gap: i64,
+        ) -> Vec<(Point, Point)> {
+            let (dx, dy) = ((to.0 - from.0) as i64, (to.1 - from.1) as i64);
+            let length = dx.abs().max(dy.abs());
+            if length <= 0 {
+                return Vec::new();
+            }
+            let point_at = |t: i64| {
+                Point::new(from.0 + (dx * t / length) as i32, from.1 + (dy * t / length) as i32)
+            };
+            let mut out = Vec::new();
+            let mut position = 0i64;
+            while position < length {
+                let end = (position + mark).min(length);
+                out.push((point_at(position), point_at(end)));
+                position = end + gap;
+            }
+            out
+        }
+        let edges =
+            [((0, 0), (40, 0)), ((10, 5), (10, 60)), ((30, 30), (30, 31)), ((0, 0), (1, 0))];
+        for &(mark, gap) in &[(3i64, 2i64), (1, 1), (7, 3)] {
+            for &(from, to) in &edges {
+                let kernel = dash_line_segments(
+                    &[Point::new(from.0, from.1), Point::new(to.0, to.1)],
+                    false,
+                    crate::render::core::command::DashPattern {
+                        mark: mark as u32,
+                        gap: gap as u32,
+                    },
+                );
+                let legacy = legacy_walk(from, to, mark, gap);
+                assert_eq!(
+                    kernel, legacy,
+                    "kernel and historical walk disagree on {from:?}->{to:?} mark {mark} gap {gap}"
+                );
+            }
+        }
+    }
+
+    /// A zero mark produces no segments: no ink is possible without a mark.
+    #[test]
+    fn a_zero_mark_dashes_nothing() {
+        let segments = dash_line_segments(
+            &[Point::new(0, 0), Point::new(40, 0)],
+            false,
+            crate::render::core::command::DashPattern { mark: 0, gap: 4 },
+        );
+        assert!(segments.is_empty(), "a zero mark cannot carry ink");
+    }
+
+    /// A dashed path draws strictly less ink than the same path solid.
+    #[test]
+    fn a_dashed_path_draws_less_ink_than_a_solid_one() {
+        let ink = |dashed: bool| {
+            let mut backend = SoftwarePaintBackend::new(Size::new(60, 60), 1.0);
+            backend.begin_frame(Color::WHITE);
+            let points = [Point::new(10, 10), Point::new(50, 10)];
+            if dashed {
+                backend.execute_command(&RenderCommand::DrawPathDashed {
+                    points: points.into(),
+                    closed: false,
+                    color: Color::RED,
+                    width: 2,
+                    dash: crate::render::core::command::DashPattern { mark: 4, gap: 4 },
+                });
+            } else {
+                backend.execute_command(&RenderCommand::DrawPath {
+                    points: points.into(),
+                    closed: false,
+                    color: Color::RED,
+                    filled: false,
+                    width: 2,
+                });
+            }
+            backend.end_frame();
+            let frame = backend.frame_rgba();
+            frame.chunks_exact(4).filter(|px| *px != [255, 255, 255, 255]).count()
+        };
+        assert!(ink(true) < ink(false), "dashes must leave gaps the solid stroke fills");
+        assert!(ink(true) > 0, "dashes must still carry ink");
+    }
+
+    // ── G-013: text decoration ────────────────────────────────────────
+
+    /// Counts non-white pixels, i.e. everything either text or a rule drew.
+    fn opaque_ink(frame: &[u8]) -> usize {
+        frame.chunks_exact(4).filter(|px| *px != [255, 255, 255, 255]).count()
+    }
+
+    /// An underline draws a rule below the baseline that plain text (without
+    /// descenders) leaves blank, and `NONE` draws exactly what `DrawText` does.
+    #[test]
+    fn an_underlined_text_adds_a_rule_below_the_baseline() {
+        let font = Font::default_ui();
+        let metrics = TextMetrics::for_font(&font, 1.0);
+        let origin = Point::new(4, 4);
+        let draw = |decoration: crate::render::core::command::TextDecoration| {
+            let mut backend = SoftwarePaintBackend::new(Size::new(120, 40), 1.0);
+            backend.begin_frame(Color::WHITE);
+            backend.execute_command(&RenderCommand::DrawTextDecorated {
+                origin,
+                text: "HI".into(),
+                font: font.clone(),
+                color: Color::BLACK,
+                alignment: HorizontalAlignment::Left,
+                decoration,
+            });
+            backend.end_frame();
+            backend.frame_rgba().to_vec()
+        };
+        let plain = draw(crate::render::core::command::TextDecoration::NONE);
+        let underlined = draw(crate::render::core::command::TextDecoration::UNDERLINE);
+        assert!(opaque_ink(&underlined) > opaque_ink(&plain), "an underline must add ink");
+        // The rule's own row: baseline plus the underline offset, which plain
+        // "HI" (no descenders) never touches.
+        let at = |frame: &[u8], x: u32, y: u32| {
+            let index = ((y * 120 + x) * 4) as usize;
+            [frame[index], frame[index + 1], frame[index + 2]]
+        };
+        let baseline = origin.y + metrics.ascent as i32;
+        let rule_y = (baseline + (metrics.descent as i32 / 2).max(1)) as u32;
+        let run_ink = (0..80u32).filter(|x| at(&underlined, *x, rule_y)[0] < 255).count();
+        assert!(
+            run_ink >= 8,
+            "the underline must span the run at y={rule_y}, found {run_ink} inked columns"
+        );
+        assert!(
+            (0..80u32).all(|x| at(&plain, x, rule_y) == [255, 255, 255]),
+            "plain text with no descenders must leave the rule's row blank"
+        );
+    }
+
+    /// A wavy underline zigzags below the baseline: ink appears at the trough
+    /// row, which a straight underline never reaches.
+    #[test]
+    fn a_wavy_underline_reaches_below_a_straight_rule() {
+        let font = Font::default_ui();
+        let metrics = TextMetrics::for_font(&font, 1.0);
+        let origin = Point::new(4, 4);
+        let mut backend = SoftwarePaintBackend::new(Size::new(120, 40), 1.0);
+        backend.begin_frame(Color::WHITE);
+        backend.execute_command(&RenderCommand::DrawTextDecorated {
+            origin,
+            text: "HI".into(),
+            font: font.clone(),
+            color: Color::BLACK,
+            alignment: HorizontalAlignment::Left,
+            decoration: crate::render::core::command::TextDecoration::WAVY,
+        });
+        backend.end_frame();
+        let frame = backend.frame_rgba().to_vec();
+        let at = |x: u32, y: u32| {
+            let index = ((y * 120 + x) * 4) as usize;
+            [frame[index], frame[index + 1], frame[index + 2]]
+        };
+        let baseline = origin.y + metrics.ascent as i32;
+        let trough = (baseline + (metrics.descent as i32 / 2).max(1) * 2) as u32;
+        let run_ink = (0..80u32).filter(|x| at(*x, trough)[0] < 255).count();
+        assert!(run_ink > 0, "the wave's troughs must ink y={trough}, found none");
+    }
+
+    // ── G-015: rounded clip ────────────────────────────────────────────
+
+    /// A rounded clip excludes what a rectangle clip includes: the corner pixel
+    /// inside the bounding box but outside the radius stays untouched, while
+    /// the shape's interior and edge midpoints fill normally. A `PopClip`
+    /// releases the mask, and an empty radius list behaves as a rectangle.
+    #[test]
+    fn a_rounded_clip_excludes_the_corners_a_rectangle_keeps() {
+        let fill_command =
+            RenderCommand::FillRect { rect: Rect::new(5, 5, 30, 30), color: Color::RED };
+        let frame_with = |clip: &RenderCommand| {
+            let mut backend = SoftwarePaintBackend::new(Size::new(40, 40), 1.0);
+            backend.begin_frame(Color::WHITE);
+            backend.execute_command(clip);
+            backend.execute_command(&fill_command);
+            backend.execute_command(&RenderCommand::PopClip);
+            backend.end_frame();
+            let frame = backend.frame_rgba().to_vec();
+            move |x: u32, y: u32| {
+                let index = ((y * 40 + x) * 4) as usize;
+                [frame[index], frame[index + 1], frame[index + 2]]
+            }
+        };
+        let rounded = frame_with(&RenderCommand::PushClipRoundedRect {
+            x: 5,
+            y: 5,
+            width: 30,
+            height: 30,
+            radii: [10, 10, 10, 10],
+        });
+        let square = frame_with(&RenderCommand::PushClip { x: 5, y: 5, width: 30, height: 30 });
+        // Inside the bounding box but outside the corner radius (arc centre is
+        // (15,15), distance from (6,6) is ~12.7 > 10).
+        assert_eq!(rounded(6, 6), [255, 255, 255], "the corner must be clipped away");
+        assert_eq!(square(6, 6), [255, 0, 0], "the rectangle clip keeps the same corner");
+        // The interior and a straight-section point on the left edge fill. The
+        // probes sit one pixel inside the outline: x = 5 lies exactly on the
+        // polygon's left edge, and an on-boundary sample has no inside to
+        // belong to, so the coverage rule gives it nothing.
+        assert_eq!(rounded(15, 20), [255, 0, 0], "the interior fills");
+        assert_eq!(rounded(6, 20), [255, 0, 0], "the edge's straight section fills");
+    }
+
+    // ── G-016: rounded box shadow ──────────────────────────────────────
+
+    /// A rounded shadow follows the caster's corners: the pixel inside the
+    /// bounding box but outside the radius stays clean, where the plain command
+    /// paints it. This contrast is the defect G-016 fixes.
+    #[test]
+    fn a_rounded_shadow_leaves_the_corners_a_plain_shadow_fills() {
+        let shadow = Color::rgba(0, 0, 0, 255);
+        let frame_with = |command: &RenderCommand| {
+            let mut backend = SoftwarePaintBackend::new(Size::new(40, 40), 1.0);
+            backend.begin_frame(Color::WHITE);
+            backend.execute_command(command);
+            backend.end_frame();
+            let frame = backend.frame_rgba().to_vec();
+            move |x: u32, y: u32| {
+                let index = ((y * 40 + x) * 4) as usize;
+                [frame[index], frame[index + 1], frame[index + 2]]
+            }
+        };
+        let rounded = frame_with(&RenderCommand::BoxShadowRounded {
+            rect: Rect::new(10, 10, 20, 20),
+            radii: [8, 8, 8, 8],
+            color: shadow,
+            offset_x: 0,
+            offset_y: 0,
+            blur_radius: 0,
+            spread: 0,
+        });
+        let plain = frame_with(&RenderCommand::BoxShadow {
+            rect: Rect::new(10, 10, 20, 20),
+            color: shadow,
+            offset_x: 0,
+            offset_y: 0,
+            blur_radius: 0,
+            spread: 0,
+        });
+        // The top edge's midpoint is shadow in both.
+        assert_eq!(rounded(20, 10), [0, 0, 0], "the edge midpoint is shadow");
+        assert_eq!(plain(20, 10), [0, 0, 0], "the edge midpoint is shadow");
+        // Inside the bounding box, outside the corner radius (arc centre
+        // (18,18), distance from (11,11) is ~9.9 > 8).
+        assert_eq!(rounded(11, 11), [255, 255, 255], "the corner must stay clean");
+        assert_eq!(plain(11, 11), [0, 0, 0], "the plain shadow fills the same corner");
     }
 }

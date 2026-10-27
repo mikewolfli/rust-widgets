@@ -788,7 +788,7 @@ impl Draw for ProgressDialog {
         // between "this dialog is up and the page is inert" and "a panel was drawn on the page".
         // The `modal` flag was recorded and enforced by the modal stack, and nothing painted it.
         if self.modal {
-            super::draw_modal_scrim(context, self.geometry());
+            super::draw_modal_scrim(context, self.id(), self.geometry(), self.base.parent());
         }
         // The **frame**, not the control's rectangle: see `frame_rect`.
         let rect = self.frame_rect();

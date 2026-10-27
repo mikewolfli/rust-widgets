@@ -6,11 +6,11 @@
 //! Displays a scroll-wheel list of options where one item is highlighted in the
 //! center. Supports mouse wheel scrolling and click-to-select interaction.
 
-use crate::compat::{String, Vec};
+use crate::compat::{Rc, RefCell, String, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{key_codes, Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
-use crate::signal::GenericSignal;
+use crate::signal::Signal1;
 use crate::style::{MotionCurve, MotionSlot, PropertyDriver, SpringPreset};
 use crate::widget::capability::coercion::{expect_string_list, expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -43,8 +43,41 @@ pub struct Roller {
     /// A pointer press that may become a drag: the press's y coordinate and the selection
     /// it started from, in row terms.
     drag_origin: Option<(i32, usize)>,
-    /// Signal emitted when selection changes.
-    pub changed_signal: GenericSignal,
+    /// Emitted with the new selected index when the selection changes.
+    pub changed_signal: Signal1<usize>,
+    /// The resolved chrome for one theme revision, reused across frames.
+    ///
+    /// The draw path used to take three theme reads per frame (the control's own style, the
+    /// list-box fallback and the selection's button tone) and recompute the blends. The cache
+    /// compares the shared style handles, so the blends are computed once per theme change.
+    chrome_cache: RefCell<Option<RollerChromeCache>>,
+    /// The drawn row face, reused while the style font and `font_size` are unchanged.
+    wheel_font_cache: RefCell<Option<WheelFontCache>>,
+}
+
+/// The resolved chrome colours for one theme revision.
+#[derive(Clone, Copy)]
+struct RollerChrome {
+    bg_color: Color,
+    selected_bg: Color,
+    selected_text_color: Color,
+    muted_color: Color,
+}
+
+/// The inputs and result of [`RollerChrome`]'s derivation.
+struct RollerChromeCache {
+    style_background: Option<Color>,
+    style_text: Option<Color>,
+    theme_style: Option<Rc<crate::style::WidgetStyle>>,
+    button_style: Option<Rc<crate::style::WidgetStyle>>,
+    colors: RollerChrome,
+}
+
+/// The drawn row face and the two inputs that produce it.
+struct WheelFontCache {
+    style_font: Option<Font>,
+    size_bits: u32,
+    font: Font,
 }
 
 impl Roller {
@@ -71,7 +104,9 @@ impl Roller {
                 MotionCurve::Spring(SpringPreset::Settle),
             ),
             drag_origin: None,
-            changed_signal: GenericSignal::new(),
+            changed_signal: Signal1::new(),
+            chrome_cache: RefCell::new(None),
+            wheel_font_cache: RefCell::new(None),
         }
     }
 
@@ -93,7 +128,7 @@ impl Roller {
         // than animating through options that no longer exist.
         self.scroll.jump_to(self.selected_index as f32);
         self.drag_origin = None;
-        self.changed_signal.emit();
+        self.changed_signal.emit(self.selected_index);
         self.base.request_redraw();
     }
 
@@ -111,7 +146,7 @@ impl Roller {
         let clamped = if self.options.is_empty() { 0 } else { index.min(self.options.len() - 1) };
         if clamped != self.selected_index {
             self.selected_index = clamped;
-            self.changed_signal.emit();
+            self.changed_signal.emit(self.selected_index);
             self.base.request_redraw();
         }
         if self.inertia {
@@ -264,7 +299,64 @@ impl Roller {
     /// face while `draw` painted `font_size` — a `set_font_size(24)` wheel drew 24 pt rows
     /// inside a row height scaled for 16 pt and clipped them.
     fn wheel_font(&self) -> Font {
-        self.base.style().font.clone().unwrap_or_else(|| Font::simple("sans-serif", self.font_size))
+        let style_font = self.base.style().font.clone();
+        let size_bits = self.font_size.to_bits();
+        if let Some(cache) = self.wheel_font_cache.borrow().as_ref() {
+            if cache.style_font == style_font && cache.size_bits == size_bits {
+                return cache.font.clone();
+            }
+        }
+        let font = style_font.clone().unwrap_or_else(|| Font::simple("sans-serif", self.font_size));
+        *self.wheel_font_cache.borrow_mut() =
+            Some(WheelFontCache { style_font, size_bits, font: font.clone() });
+        font
+    }
+
+    /// The resolved chrome colours for this theme, reusing the previous frame's blends.
+    fn chrome(&self) -> RollerChrome {
+        let style = self.base.style();
+        let theme = crate::style::resolved_theme_style_shared("roller")
+            .or_else(|| crate::style::resolved_theme_style_shared("list_box"));
+        let button_style = crate::style::resolved_theme_style_shared("button");
+        let style_background = style.background_color;
+        let style_text = style.text_color;
+        let fresh = self.chrome_cache.borrow().as_ref().is_some_and(|cache| {
+            cache.style_background == style_background
+                && cache.style_text == style_text
+                && cache.theme_style.as_ref().map(Rc::as_ptr) == theme.as_ref().map(Rc::as_ptr)
+                && cache.button_style.as_ref().map(Rc::as_ptr)
+                    == button_style.as_ref().map(Rc::as_ptr)
+        });
+        if fresh {
+            if let Some(cache) = self.chrome_cache.borrow().as_ref() {
+                return cache.colors;
+            }
+        }
+        let resolved = style_background
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::rgb(240, 240, 240));
+        let text_color = style_text
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::rgb(50, 50, 50));
+        let bg_color = resolved.blend(&text_color, 0.08);
+        let selected_bg = button_style
+            .as_ref()
+            .and_then(|button| button.background_color)
+            .unwrap_or_else(|| bg_color.blend(&text_color, 0.6));
+        let colors = RollerChrome {
+            bg_color,
+            selected_bg,
+            selected_text_color: selected_bg.contrast_color(),
+            muted_color: text_color.blend(&bg_color, 0.47),
+        };
+        *self.chrome_cache.borrow_mut() = Some(RollerChromeCache {
+            style_background,
+            style_text,
+            theme_style: theme,
+            button_style,
+            colors,
+        });
+        colors
     }
 
     /// Measures every option once per face, scale and list, so the draw pass does not
@@ -354,7 +446,9 @@ impl Widget for Roller {
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
         use crate::signal::EventSignalRef;
         match name {
-            "changed" => Some(EventSignalRef::unit("changed", &self.changed_signal)),
+            "changed" => Some(EventSignalRef::mapped("changed", &self.changed_signal, |index| {
+                CapabilityValue::UInt(*index as u64)
+            })),
             _ => None,
         }
     }
@@ -532,39 +626,12 @@ impl Draw for Roller {
         // makes an appearance switch visible; previously every colour below was a
         // hardcoded literal, so light and dark rendered identically.
         //
-        // `resolved_theme_style` takes and releases the global manager's lock
-        // internally, so no guard is held across the draw (the mutex is not
-        // re-entrant).
-        let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("roller")
-            .or_else(|| crate::style::resolved_theme_style_shared("list_box"));
-        // `roller` is not a control kind in the role table, so it classifies as
-        // `Surface`, whose background is `theme.colors.background` — byte-identical
-        // to the window behind it. The wheel's own fill is therefore a step toward the
-        // foreground, so it reads as a recessed surface of its own.
-        let resolved = style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-            .unwrap_or(Color::rgb(240, 240, 240));
-        let text_color = style
-            .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
-            .unwrap_or(Color::rgb(50, 50, 50));
-        let bg_color = resolved.blend(&text_color, 0.08);
-        // The centre item is a *selection*, which is chrome rather than data, so it
-        // reads the theme's primary token instead of the previous literal blue.
-        let selected_bg = crate::style::resolved_theme_style_shared("button")
-            .and_then(|button| button.background_color)
-            .unwrap_or_else(|| bg_color.blend(&text_color, 0.6));
-        // Its label must be legible **on the selection band itself**, so it takes whichever
-        // of black/white contrasts with that band. The previous form blended the label 92% of
-        // the way toward the wheel's own surface, which is a light-theme assumption baked into
-        // arithmetic: on the light theme the band resolves to the theme's primary
-        // `rgb(33,150,243)` while the surface is `rgb(221,221,221)`, so the label came out
-        // `rgb(206,215,223)` — 2.14:1 against the band it sits on (below the 3:1 large-text
-        // floor, let alone the 4.5:1 body floor). Same rule as the theme's `Primary` role.
-        let selected_text_color = selected_bg.contrast_color();
-        let muted_color = text_color.blend(&bg_color, 0.47);
+        // `chrome()` folds the three theme reads and their blends into one cached snapshot:
+        // the shared style handles are compared, so a still frame pays no manager lock and no
+        // colour arithmetic. The font comes from the same one-entry cache, so `item_height`,
+        // `size_hint` and the paint all read one face.
+        let RollerChrome { bg_color, selected_bg, selected_text_color, muted_color } =
+            self.chrome();
 
         // One source of truth for the drawn face (`wheel_font`): the inline choice here
         // could drift from the one `item_height` and `size_hint` measure with.
@@ -1111,5 +1178,41 @@ mod tests {
         // An unrelated key is ignored rather than resetting the selection.
         roller.handle_event(&Event::KeyPress { key: crate::event::key_codes::LEFT, modifiers: 0 });
         assert_eq!(roller.selected_index(), Some(0));
+    }
+
+    /// The `changed` signal carries the new row, so a subscriber does not have to read it back.
+    #[test]
+    fn the_changed_signal_carries_the_selected_index() {
+        let mut roller = make_roller();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&seen);
+        roller.changed_signal.connect(move |index| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*index);
+            }
+        });
+
+        roller.set_selected_index(2);
+        assert_eq!(*seen.lock().unwrap(), vec![2]);
+        // A same-value write emits nothing, exactly as before.
+        roller.set_selected_index(2);
+        assert_eq!(*seen.lock().unwrap(), vec![2]);
+    }
+
+    /// The chrome and the row face are cached across frames until the theme or size changes.
+    #[test]
+    fn the_chrome_and_font_are_cached_across_frames() {
+        let roller = make_roller();
+        let _ = roller.wheel_font();
+        assert!(roller.wheel_font_cache.borrow().is_some(), "the row face is constructed once");
+        let before = roller.wheel_font();
+        assert_eq!(roller.wheel_font(), before, "a still wheel reuses the cached face");
+
+        let _ = roller.chrome();
+        assert!(roller.chrome_cache.borrow().is_some(), "the chrome snapshot is cached");
+        let first = roller.chrome();
+        let second = roller.chrome();
+        assert_eq!(first.bg_color, second.bg_color);
+        assert_eq!(first.selected_bg, second.selected_bg);
     }
 }

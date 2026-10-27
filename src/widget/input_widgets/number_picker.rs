@@ -313,6 +313,15 @@ impl NumberPicker {
         self.settling
     }
 
+    /// Drops the sub-row settle remainder, returning the wheel to rest.
+    ///
+    /// This is the single clear path for the inertia buffer: the wheel gesture and the
+    /// settle animation's own finish both use it.
+    fn clear_inertia(&mut self) {
+        self.settle_offset = 0.0;
+        self.settling = false;
+    }
+
     /// Sets the suffix shown after the number. Display only: it is not part of the
     /// value, so a caller parsing the control's text never sees it.
     pub fn set_suffix(&mut self, suffix: impl Into<String>) {
@@ -749,6 +758,10 @@ impl EventHandler for NumberPicker {
                 _ => {}
             },
             Event::Wheel { delta, modifiers } => {
+                // A wheel notch is a discrete step, so it starts from rest. Leaving the
+                // drag settle remainder in place made the wheel and the drag paths end
+                // in two different states (I-110); the same clear path is used here.
+                self.clear_inertia();
                 // One notch is one step. A positive event delta means the content
                 // moves down, revealing lower numbers, so the sign is inverted:
                 // scrolling up increments and scrolling down decrements.
@@ -1031,6 +1044,18 @@ mod tests {
         // that nothing changed rather than fire a redundant signal.
         assert!(!picker.scroll_rows(10), "a scroll at the bound reports no change");
         assert_eq!(picker.value(), 3);
+    }
+
+    #[test]
+    fn a_wheel_notch_clears_the_drag_settle_remainder() {
+        let mut picker = picker();
+        picker.set_range(0, 10);
+        picker.settle_offset = 0.4;
+        picker.settling = true;
+        picker.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(picker.settle_offset, 0.0, "the wheel path must start from rest");
+        assert!(!picker.is_settling());
+        assert_eq!(picker.value(), 1);
     }
 
     #[test]

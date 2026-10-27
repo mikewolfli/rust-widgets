@@ -93,8 +93,9 @@ pub struct Splitter {
     collapsed: Vec<bool>,
     /// Per-pane maximum extent, parallel to the layout's pane list (C-22).
     ///
-    /// `None` is "no limit", which is the historical behaviour; the engine has no maximum, so the
-    /// wrapper enforces it where ratios are written and dragged.
+    /// `None` is "no limit", which is the historical behaviour. The cap is also pushed into the
+    /// engine's solve inputs (C-018), so the wrapper's mirror is what the public getter reports
+    /// rather than the only enforcement point.
     max_pane_sizes: Vec<Option<u32>>,
     /// The ratio each pane had before it was collapsed, restored on expansion.
     pre_collapse_ratios: Vec<f32>,
@@ -288,6 +289,9 @@ impl Splitter {
             return true;
         }
         self.max_pane_sizes[index] = Some(maximum);
+        // C-018: the solve reads the same cap, so the arrangement it produces after this write is
+        // already inside the constraint rather than pulled back by the wrapper afterwards.
+        let _ = self.layout.set_max_size(index, maximum);
         // Converge the current ratios onto the new cap rather than leaving the pane over it
         // until the next drag.
         let ratios = self.layout.ratios().to_vec();
@@ -339,6 +343,7 @@ impl Splitter {
         let ids = self.layout.pane_ids().to_vec();
         let ratios = self.layout.ratios().to_vec();
         let minimums: Vec<u32> = (0..count).map(|index| self.layout.min_size(index)).collect();
+        let maximums: Vec<u32> = (0..count).map(|index| self.layout.max_size(index)).collect();
         let permissions: Vec<bool> =
             (0..count).map(|index| self.layout.collapsible(index)).collect();
         let mut rebuilt = SplitterLayout::new(self.layout.orientation(), spacing);
@@ -348,6 +353,7 @@ impl Splitter {
         let _ = rebuilt.set_ratios(ratios);
         for index in 0..count {
             let _ = rebuilt.set_min_size(index, minimums[index]);
+            let _ = rebuilt.set_max_size(index, maximums[index]);
             let _ = rebuilt.set_collapsible(index, permissions[index]);
         }
         self.layout = rebuilt;

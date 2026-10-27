@@ -208,6 +208,12 @@ pub struct Tab {
     /// *presentation* fact, not a second model — the index a caller already holds still addresses
     /// the same tab. See [`TabWidget::set_tab_visible`].
     visible: bool,
+    /// Whether this tab offers a close button (C-012).
+    ///
+    /// Newly added tabs inherit the control's global `closable` value at insertion time, which is
+    /// the historical behaviour; [`TabWidget::set_tab_closable`] overrides one tab without
+    /// touching its siblings.
+    closable: bool,
     /// Caller-owned payload, carried through moves and lookups untouched.
     ///
     /// A `TabWidget` item has no identity beyond its slot, and a host that keeps its own document
@@ -297,6 +303,7 @@ impl Tab {
             enabled: true,
             widget: None,
             visible: true,
+            closable: false,
             data: None,
         }
     }
@@ -457,6 +464,7 @@ impl TabWidget {
     /// tab's page. `remove_tab` unlinks the same way, so removal is observable from both sides.
     pub fn add_tab(&mut self, title: String, widget: Option<ObjectId>) -> usize {
         let mut tab = Tab::new(title);
+        tab.closable = self.closable;
         tab.widget = widget;
         if let Some(widget_id) = widget {
             self.base.add_child_linked(widget_id);
@@ -477,6 +485,7 @@ impl TabWidget {
         let before = self.current_index;
         let index = index.min(self.tabs.len());
         let mut tab = Tab::new(title);
+        tab.closable = self.closable;
         tab.widget = widget;
         if let Some(widget_id) = widget {
             self.base.add_child_linked(widget_id);
@@ -929,17 +938,48 @@ impl TabWidget {
         self.tab_shape = shape;
         self.base.request_redraw();
     }
-    /// Returns whether tabs are closable.
+    /// Returns whether tabs are closable by default.
     pub fn closable(&self) -> bool {
         self.closable
     }
-    /// Sets closable state.
+    /// Sets the default closable state, applying it to every current tab (C-012).
+    ///
+    /// This keeps the historical all-or-nothing behaviour for a caller that only knows the global
+    /// switch. Per-tab overrides are available through [`Self::set_tab_closable`]; a tab added
+    /// afterwards inherits this value.
     pub fn set_closable(&mut self, closable: bool) {
         if self.closable == closable {
             return;
         }
         self.closable = closable;
+        for tab in &mut self.tabs {
+            tab.closable = closable;
+        }
         self.base.request_redraw();
+    }
+
+    /// Whether tab `index` offers a close button (C-012).
+    ///
+    /// Returns the control's default for an out-of-range index, so a caller that has already lost
+    /// the tab does not see an unrelated tab's override.
+    pub fn tab_closable(&self, index: usize) -> bool {
+        self.tabs.get(index).map_or(self.closable, |tab| tab.closable)
+    }
+
+    /// Sets whether tab `index` offers a close button (C-012).
+    ///
+    /// Returns `false` for an out-of-range index. The per-tab value survives a reorder and is the
+    /// only value the close button's paint and hit test read.
+    pub fn set_tab_closable(&mut self, index: usize, closable: bool) -> bool {
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return false;
+        };
+        if tab.closable == closable {
+            return true;
+        }
+        tab.closable = closable;
+        self.base.request_redraw();
+        true
     }
     /// Returns whether tabs are movable.
     ///
@@ -1337,8 +1377,8 @@ impl TabWidget {
     ///
     /// Returns `None` when the control is not closable, so a caller cannot render or hit-test an
     /// affordance that is not offered.
-    fn close_button_rect(&self, tab_rect: Rect, font: &Font) -> Option<Rect> {
-        if !self.closable {
+    fn close_button_rect(&self, index: usize, tab_rect: Rect, font: &Font) -> Option<Rect> {
+        if !self.tab_closable(index) {
             return None;
         }
         let line_height = crate::widget::metrics::estimate_line_height(font, 1.0) as i32;
@@ -2245,8 +2285,11 @@ impl EventHandler for TabWidget {
                         // origins differed by half a line, which put the glyph's outer rows outside
                         // its own hit area.
                         if let Some(tab_rect) = self.tab_rect(index) {
-                            let close_rect =
-                                self.close_button_rect(tab_rect, effective_font(self.style()));
+                            let close_rect = self.close_button_rect(
+                                index,
+                                tab_rect,
+                                effective_font(self.style()),
+                            );
                             if close_rect.is_some_and(|close_rect| close_rect.contains(*pos)) {
                                 self.tab_close_requested.emit(index);
                                 return;
@@ -2617,7 +2660,10 @@ impl Draw for TabWidget {
                     draw_stacked_tab_title(context, band, &tab.title, font, text_color);
                 } else {
                     let mut title_x = tab_rect.x;
-                    let mut title_width = tab_rect.width.saturating_sub(if self.closable {
+                    // C-012: the caption clears the close affordance only when *this* tab
+                    // offers one; a per-tab override must not leave a gap for a glyph that is
+                    // not painted.
+                    let mut title_width = tab_rect.width.saturating_sub(if tab.closable {
                         (CLOSE_SIZE + CLOSE_LABEL_GAP + CLOSE_TITLE_CLEARANCE) as u32
                     } else {
                         0
@@ -2661,7 +2707,7 @@ impl Draw for TabWidget {
                 // (`close_button_rect`), so what looks clickable is clickable. It used to be
                 // derived here from `tab_line.y` while the hit test used `tab_rect.y` — the two
                 // ruled the same row and disagreed by half a line.
-                if let Some(close_rect) = self.close_button_rect(tab_rect, font) {
+                if let Some(close_rect) = self.close_button_rect(i, tab_rect, font) {
                     let close_x = close_rect.x;
                     let close_y = close_rect.y;
                     context.draw_line(
@@ -3174,7 +3220,7 @@ mod tests {
         tw.set_closable(true);
         let tab_rect = tw.tab_rect(0).expect("the tab is placed");
         let font = Font::default();
-        let close = tw.close_button_rect(tab_rect, &font).expect("the tab is closable");
+        let close = tw.close_button_rect(0, tab_rect, &font).expect("the tab is closable");
 
         assert!(
             close.x >= tab_rect.x
@@ -3198,7 +3244,7 @@ mod tests {
         // affordance from the line box is what makes it track the text it sits beside; deriving it
         // from the tab's own height is what leaves it behind when the text grows.
         let scaled_font = Font::simple("sans-serif", Font::default().size() * 2.0);
-        let scaled_close = tw.close_button_rect(tab_rect, &scaled_font).expect("still closable");
+        let scaled_close = tw.close_button_rect(0, tab_rect, &scaled_font).expect("still closable");
         assert_ne!(
             scaled_close.y, close.y,
             "a larger font moves the line box, so it must move the affordance — a hit rect \
@@ -3219,7 +3265,7 @@ mod tests {
 
         // A control that does not offer the affordance offers no rectangle to either path.
         tw.set_closable(false);
-        assert!(tw.close_button_rect(tab_rect, &font).is_none());
+        assert!(tw.close_button_rect(0, tab_rect, &font).is_none());
     }
 
     #[test]
@@ -4205,5 +4251,28 @@ mod tests {
             modifiers: 0,
         });
         assert!(tabs.overflow_scroll() > 0, "the strip scrolled, the page did not");
+    }
+
+    /// C-012: closable is per tab, and a new tab inherits the global default.
+    #[test]
+    fn tabs_carry_their_own_closable_flag() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("a".to_string(), None);
+        assert!(!tw.tab_closable(0), "the default is the historical off state");
+
+        tw.set_closable(true);
+        tw.add_tab("b".to_string(), None);
+        assert!(tw.tab_closable(0), "the global switch applies to existing tabs");
+        assert!(tw.tab_closable(1), "and a new tab inherits it");
+
+        assert!(tw.set_tab_closable(1, false));
+        assert!(tw.tab_closable(0), "one tab's override leaves its sibling alone");
+        assert!(!tw.tab_closable(1));
+        assert!(!tw.set_tab_closable(9, true), "an out-of-range index is refused");
+
+        let rect = Rect::new(0, 0, 100, 30);
+        let font = crate::widget::metrics::effective_font(tw.style()).clone();
+        assert!(tw.close_button_rect(0, rect, &font).is_some());
+        assert!(tw.close_button_rect(1, rect, &font).is_none(), "the override hides the affordance");
     }
 }

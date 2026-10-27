@@ -20,7 +20,8 @@ use crate::widget::metrics::{
     dimensions, effective_font, estimate_line_height, estimate_text_width, expand_to_hit_area,
     focus_ring_color, ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
 };
-use crate::widget::{BaseWidget, Draw, InteractionFade, Widget, WidgetKind};
+use crate::widget::text_utils::wrap_to_width;
+use crate::widget::{BaseWidget, Draw, IconSource, InteractionFade, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Side of the indicator box, in logical pixels.
@@ -102,6 +103,17 @@ pub struct CheckBox {
     /// a press on empty space beside a checkbox toggle it over and over, so the repeat is armed
     /// only by an activation that actually landed on the box.
     auto_repeat_armed: bool,
+    /// An optional icon painted inside the indicator instead of the built-in mark.
+    ///
+    /// `None` keeps the historical tick/partial geometry byte-for-byte; a caller that needs
+    /// a domain glyph (a star, a folder, a state icon) supplies it through the same typed
+    /// [`IconSource`] surface the button family already publishes.
+    icon_source: Option<IconSource>,
+    /// Whether the label wraps to the control's width instead of eliding on one line.
+    ///
+    /// Off by default so every existing checkbox keeps its single-line picture. When on, the
+    /// label goes through the shared [`wrap_to_width`] greedy splitter.
+    word_wrap: bool,
     /// Emitted with a boolean view of the state on every change: `true` for
     /// [`CheckState::Checked`], `false` for the other two.
     ///
@@ -249,6 +261,8 @@ impl CheckBox {
             fade: InteractionFade::new(),
             auto_repeat: AutoRepeat::new(),
             auto_repeat_armed: false,
+            icon_source: None,
+            word_wrap: false,
             toggled: Signal1::new(),
             state_changed: Signal1::new(),
         }
@@ -395,7 +409,10 @@ impl CheckBox {
             self.state_changed.emit(state);
             // Every effective state change, including the ones involving `PartiallyChecked`, is a
             // latch change as far as a group observer is concerned.
-            button_group::notify_member_event(self.id(), button_group::MemberEvent::Toggled);
+            button_group::notify_member_event(
+                self.id(),
+                button_group::MemberEvent::Toggled(state == CheckState::Checked),
+            );
             // `toggled` is the three-valued state's boolean projection, so it fires exactly when
             // that projection moves: partial↔unchecked is `false`→`false` and stays silent, while
             // partial→checked is `false`→`true` and must fire. Emitting only on the two
@@ -416,6 +433,34 @@ impl CheckBox {
     /// Returns the text label displayed next to the checkbox.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The icon painted inside the indicator, if one was set.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
+    }
+
+    /// Sets the indicator icon, replacing the built-in mark when present.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        if self.icon_source == source {
+            return;
+        }
+        self.icon_source = source;
+        self.base.request_redraw();
+    }
+
+    /// Whether the label wraps to the control's width.
+    pub fn word_wrap(&self) -> bool {
+        self.word_wrap
+    }
+
+    /// Enables or disables label wrapping.
+    pub fn set_word_wrap(&mut self, wrap: bool) {
+        if self.word_wrap == wrap {
+            return;
+        }
+        self.word_wrap = wrap;
+        self.base.request_redraw();
     }
     /// Sets the text label displayed next to the checkbox and requests a redraw.
     pub fn set_text(&mut self, text: impl Into<String>) {
@@ -788,6 +833,14 @@ impl WidgetProperties for CheckBox {
         }
     }
 
+    fn set_resolved_icon_source(
+        &mut self,
+        source: Option<IconSource>,
+    ) -> Result<(), CapabilityAccessError> {
+        self.set_icon_source(source);
+        Ok(())
+    }
+
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
             "text",
@@ -941,7 +994,23 @@ impl Draw for CheckBox {
         let state = self.state();
         let border_color = style.border_color.unwrap_or_else(|| field.contrast_color());
         context.draw_rect(checkbox_rect, border_color);
-        if state != CheckState::Unchecked {
+        let check_color = style.text_color.unwrap_or_else(|| field.contrast_color());
+        if let Some(source) = self.icon_source {
+            // A typed icon is the caller's own glyph, so it replaces the built-in mark rather
+            // than being layered under it. The slot is inset so the icon reads as content on
+            // the box instead of touching its border.
+            let inset = (checkbox_rect.width / 6).max(1) as i32;
+            let slot = Rect::new(
+                checkbox_rect.x + inset,
+                checkbox_rect.y + inset,
+                checkbox_rect.width.saturating_sub(inset as u32 * 2),
+                checkbox_rect.height.saturating_sub(inset as u32 * 2),
+            );
+            if let Err(error) = crate::widget::paint_icon(context, source.into(), slot, check_color)
+            {
+                log::warn!("checkbox indicator icon could not be painted: {error:?}");
+            }
+        } else if state != CheckState::Unchecked {
             // The mark lands on the box's own fill, so its colour is that fill's contrast
             // colour. A literal accent blue here would be unreadable whenever the field is
             // dark, which is every dark appearance.
@@ -958,7 +1027,6 @@ impl Draw for CheckBox {
             // `rgba(0,0,0)` in both appearances). The mark therefore keeps the resolved ink, which
             // the theme's `:checked` rule exists to supply, and the label falls back to the
             // surface's own contrast colour when the resolved ink is clearly not an ink for it.
-            let check_color = style.text_color.unwrap_or_else(|| field.contrast_color());
             match state {
                 CheckState::Checked => {
                     // A compact tick drawn as two strokes, so it scales with the box instead
@@ -1023,20 +1091,39 @@ impl Draw for CheckBox {
             } else {
                 requested.legible_on(page, 4.5).with_alpha(150)
             };
-            context.draw_text_fitted_cow(
-                Rect::new(
-                    checkbox_rect.x + checkbox_rect.width as i32 + gap,
-                    line.y,
-                    rect.width.saturating_sub(
-                        (checkbox_rect.x - rect.x) as u32 + checkbox_rect.width + gap as u32,
-                    ),
-                    line.height,
-                ),
-                &self.text,
-                font,
-                text_color,
-                HorizontalAlignment::Left,
+            let label_x = checkbox_rect.x + checkbox_rect.width as i32 + gap;
+            let label_width = rect.width.saturating_sub(
+                (checkbox_rect.x - rect.x) as u32 + checkbox_rect.width + gap as u32,
             );
+            if self.word_wrap {
+                let ranges = {
+                    let mut measure = |text: &str| context.measure_text(text, font).width;
+                    wrap_to_width(&self.text, label_width, &mut measure)
+                };
+                let bottom = rect.y + rect.height as i32;
+                let mut y = line.y;
+                for range in ranges {
+                    if y + line.height as i32 > bottom {
+                        break;
+                    }
+                    context.draw_text_fitted_cow(
+                        Rect::new(label_x, y, label_width, line.height),
+                        &self.text[range],
+                        font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                    y += line.height as i32;
+                }
+            } else {
+                context.draw_text_fitted_cow(
+                    Rect::new(label_x, line.y, label_width, line.height),
+                    &self.text,
+                    font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
 
         // ── Focus ring ──
@@ -2150,5 +2237,46 @@ mod tests {
         box_.set("auto_exclusive", CapabilityValue::Bool(true)).expect("writable");
         assert!(box_.is_auto_exclusive());
         assert_eq!(box_.get("auto_exclusive"), Ok(CapabilityValue::Bool(true)));
+    }
+
+    // ── Indicator icon and wrapped label (B-005) ───────────────────────
+
+    #[test]
+    fn an_indicator_icon_replaces_the_built_in_mark() {
+        let _guard = crate::style::theme_test_guard();
+        let mut plain = CheckBox::new(Rect::new(0, 0, 120, 32));
+        plain.set_text("Enable".to_string());
+        plain.set_checked(true);
+        let plain_svg = render(&mut plain);
+
+        let mut framed = CheckBox::new(Rect::new(0, 0, 120, 32));
+        framed.set_text("Enable".to_string());
+        framed.set_checked(true);
+        framed.set_icon_source(Some(IconSource::Builtin(crate::widget::IconName::Info)));
+        let icon_svg = render(&mut framed);
+
+        assert_ne!(plain_svg, icon_svg, "the icon must replace the drawn tick");
+        assert_eq!(framed.icon_source(), Some(IconSource::Builtin(crate::widget::IconName::Info)));
+    }
+
+    #[test]
+    fn word_wrap_paints_the_label_on_more_than_one_line() {
+        let _guard = crate::style::theme_test_guard();
+        let text = "This label is much wider than its control";
+
+        let mut single = CheckBox::new(Rect::new(0, 0, 90, 32));
+        single.set_text(text.to_string());
+        let single_svg = render(&mut single);
+
+        let mut wrapped = CheckBox::new(Rect::new(0, 0, 90, 64));
+        wrapped.set_text(text.to_string());
+        wrapped.set_word_wrap(true);
+        let wrapped_svg = render(&mut wrapped);
+
+        assert!(wrapped.word_wrap());
+        assert_ne!(
+            single_svg, wrapped_svg,
+            "wrapping must reshape a caption that does not fit its width"
+        );
     }
 }

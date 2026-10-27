@@ -69,7 +69,7 @@ use crate::core::{Color, HorizontalAlignment, Orientation, Point, Rect, ScrollPh
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -267,6 +267,20 @@ const DOT_RADIUS: u32 = 4;
 const BAR_WIDTH: u32 = 10;
 /// Thickness of a `Bars` mark across the strip.
 const BAR_HEIGHT: u32 = 3;
+/// Duration of the programmatic page slide, in milliseconds (C-010).
+const PAGE_TRANSITION_MS: u32 = 200;
+
+/// A programmatic page change in flight (C-010).
+///
+/// `from` is the page sliding out and `to` the page sliding in; the draw path paints both at the
+/// offset the elapsed time implies, which is the same visual the gesture path produces while a
+/// finger is moving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PageSlide {
+    from: usize,
+    to: usize,
+    elapsed_ms: u32,
+}
 
 /// The indicator's derived geometry for one frame.
 ///
@@ -337,6 +351,13 @@ pub struct Carousel {
     rubber_band: bool,
     /// Remaining spring-back offset after a release that did not page.
     settle_offset: f32,
+    /// The gap between adjacent pages, in logical pixels (C-009). Zero is the default and keeps
+    /// the historical pages edge to edge.
+    page_gap: u32,
+    /// Whether a programmatic page change slides instead of snapping (C-010). On by default.
+    page_transition: bool,
+    /// The programmatic slide in flight, if any.
+    slide: Option<PageSlide>,
     /// Emitted when the current page index changes.
     pub page_changed: Signal1<usize>,
 }
@@ -362,8 +383,46 @@ impl Carousel {
             physics: ScrollPhysics::default(),
             rubber_band: false,
             settle_offset: 0.0,
+            page_gap: 0,
+            page_transition: true,
+            slide: None,
             page_changed: Signal1::new(),
         }
+    }
+
+    /// The gap between adjacent pages, in logical pixels (C-009).
+    pub fn page_gap(&self) -> u32 {
+        self.page_gap
+    }
+
+    /// Sets the gap between adjacent pages (C-009).
+    ///
+    /// `0` is the default and the historical behaviour: pages meet at the content rectangle's
+    /// edges. A non-zero gap insets the page body by half the gap on the page axis, so two
+    /// adjacent pages are exactly `page_gap` pixels apart.
+    pub fn set_page_gap(&mut self, gap: u32) {
+        if self.page_gap == gap {
+            return;
+        }
+        self.page_gap = gap;
+        self.base.request_redraw();
+    }
+
+    /// Whether a programmatic page change animates (C-010).
+    pub fn page_transition(&self) -> bool {
+        self.page_transition
+    }
+
+    /// Turns the programmatic page slide on or off (C-010). On by default.
+    pub fn set_page_transition(&mut self, enabled: bool) {
+        if self.page_transition == enabled {
+            return;
+        }
+        self.page_transition = enabled;
+        if !enabled {
+            self.slide = None;
+        }
+        self.base.request_redraw();
     }
 
     /// Adds a page with the given title and background color.
@@ -457,16 +516,40 @@ impl Carousel {
 
     /// Sets the current page by index. Clamped to valid range.
     /// Emits `page_changed` if the index actually changes.
+    ///
+    /// A programmatic change slides over [`PAGE_TRANSITION_MS`] unless
+    /// [`Self::set_page_transition`] turned the slide off (C-010). The index itself changes
+    /// immediately, so `selected_index` is the destination for the whole animation.
     pub fn set_current(&mut self, index: usize) {
+        self.set_current_with_slide(index, true);
+    }
+
+    /// Sets the current page without starting a slide.
+    ///
+    /// Used by the gesture path: the swipe already moved the page under the finger, so running a
+    /// second slide after the release would animate the same travel twice.
+    fn set_current_snapped(&mut self, index: usize) {
+        self.set_current_with_slide(index, false);
+    }
+
+    /// The one implementation behind both page-change entries.
+    fn set_current_with_slide(&mut self, index: usize, animate: bool) {
         let clamped = index.min(self.pages.len().saturating_sub(1));
-        if self.current_index != clamped {
-            self.current_index = clamped;
-            // A manual move restarts the autoplay dwell, so the user does not get
-            // an immediate extra advance on top of their own navigation.
-            self.autoplay_elapsed_ms = 0;
-            self.page_changed.emit(clamped);
-            self.base.request_redraw();
+        if self.current_index == clamped {
+            return;
         }
+        let previous = self.current_index;
+        self.current_index = clamped;
+        // A manual move restarts the autoplay dwell, so the user does not get
+        // an immediate extra advance on top of their own navigation.
+        self.autoplay_elapsed_ms = 0;
+        self.slide = if animate && self.page_transition && self.pages.len() > 1 {
+            Some(PageSlide { from: previous, to: clamped, elapsed_ms: 0 })
+        } else {
+            None
+        };
+        self.page_changed.emit(clamped);
+        self.base.request_redraw();
     }
 
     /// Returns the selected page index, or `None` when the carousel is empty.
@@ -674,6 +757,41 @@ impl Carousel {
         }
     }
 
+    /// The rectangle a page body occupies, with `page_gap` split across the page axis (C-009).
+    ///
+    /// With a zero gap this is exactly [`Self::content_rect`], so the historical geometry is
+    /// preserved. A non-zero gap insets each side by half the gap, which makes the distance
+    /// between two adjacent page bodies equal to the configured gap.
+    fn page_rect(&self) -> Rect {
+        let rect = self.content_rect();
+        if self.page_gap == 0 {
+            return rect;
+        }
+        let inset = (self.page_gap / 2) as i32;
+        if self.pages_vertical() {
+            Rect::new(
+                rect.x,
+                rect.y.saturating_add(inset),
+                rect.width,
+                rect.height.saturating_sub(self.page_gap),
+            )
+        } else {
+            Rect::new(
+                rect.x.saturating_add(inset),
+                rect.y,
+                rect.width.saturating_sub(self.page_gap),
+                rect.height,
+            )
+        }
+    }
+
+    /// The distance between two adjacent pages: one page body plus the gap (C-009).
+    fn page_stride(&self) -> u32 {
+        let rect = self.page_rect();
+        let extent = if self.pages_vertical() { rect.height } else { rect.width };
+        extent.saturating_add(self.page_gap)
+    }
+
     /// Returns whether the indicator will be painted for the current state.
     fn indicator_drawn(&self) -> bool {
         self.indicator_style.is_visible() && self.pages.len() > 1
@@ -790,7 +908,18 @@ impl Widget for Carousel {
     /// only through `Event::Timer`, whose rate set the interval, so the carousel advanced a page
     /// per host tick instead of per its own configured seconds.
     fn tick(&mut self, delta_ms: u32) -> bool {
-        let mut settling = false;
+        let mut sliding = false;
+        if let Some(mut slide) = self.slide {
+            slide.elapsed_ms = slide.elapsed_ms.saturating_add(delta_ms);
+            if slide.elapsed_ms >= PAGE_TRANSITION_MS {
+                self.slide = None;
+            } else {
+                self.slide = Some(slide);
+                sliding = true;
+            }
+            self.base.request_redraw();
+        }
+        let mut settling = sliding;
         if self.settle_offset.abs() > 0.5 {
             let decay = (delta_ms as f32 / 200.0).clamp(0.0, 1.0);
             self.settle_offset *= 1.0 - decay;
@@ -813,7 +942,7 @@ impl Widget for Carousel {
     /// An autoplay carousel with more than one page owes frames; a paused or single-page one
     /// does not, which is what keeps an idle carousel from repainting forever.
     fn is_animating(&self) -> bool {
-        self.autoplay_should_run() || self.settle_offset.abs() > 0.5
+        self.autoplay_should_run() || self.settle_offset.abs() > 0.5 || self.slide.is_some()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -871,6 +1000,10 @@ impl WidgetProperties for Carousel {
             "indicator_position" => {
                 Ok(CapabilityValue::String(self.indicator_position.as_str().to_string()))
             }
+            // C-009: the gap is served through the same contract as the other page-layout
+            // fields. It is deliberately absent from `property_names` until the schema table
+            // (owned by the capability layer) declares it, so the two lists cannot disagree.
+            "page_gap" => Ok(CapabilityValue::UInt(u64::from(self.page_gap()))),
             _ => base_property_get(self, name),
         }
     }
@@ -913,6 +1046,10 @@ impl WidgetProperties for Carousel {
                     return Err(CapabilityAccessError::TypeMismatch);
                 };
                 self.set_indicator_position(position);
+                Ok(())
+            }
+            "page_gap" => {
+                self.set_page_gap(expect_u32(value)?);
                 Ok(())
             }
             // Derived from the mounted pages.
@@ -1031,7 +1168,47 @@ impl Draw for Carousel {
             return;
         }
 
-        let content_rect = self.content_rect();
+        let content_rect = self.page_rect();
+
+        // C-010: a programmatic page change slides the outgoing and incoming pages. The index
+        // already names the destination, so the indicator and any subscriber are in their final
+        // state while the pixels are still moving.
+        if let Some(slide) = self.slide {
+            let progress = (slide.elapsed_ms as f32 / PAGE_TRANSITION_MS as f32).clamp(0.0, 1.0);
+            let stride = self.page_stride() as f32;
+            let forward = slide.to >= slide.from;
+            let travelled = (progress * stride).round() as i32;
+            let remaining = (stride.round() as i32).saturating_sub(travelled);
+            let (outgoing_offset, incoming_offset) =
+                if forward { (-travelled, remaining) } else { (travelled, -remaining) };
+            context.push_clip(
+                content_rect.x,
+                content_rect.y,
+                content_rect.width,
+                content_rect.height,
+            );
+            self.draw_page(
+                context,
+                slide.from,
+                self.offset_rect(content_rect, outgoing_offset),
+                is_enabled,
+                &theme,
+            );
+            if slide.from != slide.to {
+                self.draw_page(
+                    context,
+                    slide.to,
+                    self.offset_rect(content_rect, incoming_offset),
+                    is_enabled,
+                    &theme,
+                );
+            }
+            context.pop_clip();
+            if self.indicator_drawn() {
+                self.draw_indicator(context, rect, &theme);
+            }
+            return;
+        }
 
         // A drag in progress moves the current page with the pointer and reveals
         // its neighbour, which is what makes a swipe feel like a swipe rather than
@@ -1186,17 +1363,6 @@ impl Carousel {
         Some(candidate as usize)
     }
 
-    /// Returns whether the indicator strip occupies the bottom edge of the page
-    /// rectangle.
-    ///
-    /// Only a bottom indicator sits *inside* the page's rectangle; the other three
-    /// edges reserve their strip outside it (see [`Self::content_rect`]). Naming the
-    /// distinction once keeps the page body and the reserved strip from disagreeing.
-    fn tail_reserved(&self) -> bool {
-        self.indicator_drawn()
-            && matches!(self.indicator_position, CarouselIndicatorPosition::Bottom)
-    }
-
     /// The page revealed by a drag of `offset_x`, if any.
     fn step_for_offset(&self, offset_x: i32) -> Option<usize> {
         let step = if offset_x > 0 { -1 } else { 1 };
@@ -1213,11 +1379,10 @@ impl Carousel {
     }
 
     /// The rectangle the revealed neighbour page occupies for a drag of `offset`.
-    fn neighbour_page_rect(&self, content_rect: Rect, offset: i32) -> Rect {
-        let extent =
-            if self.pages_vertical() { content_rect.height } else { content_rect.width } as i32;
-        let shift = offset + if offset > 0 { -extent } else { extent };
-        self.offset_rect(content_rect, shift)
+    fn neighbour_page_rect(&self, page_rect: Rect, offset: i32) -> Rect {
+        let stride = self.page_stride() as i32;
+        let shift = offset + if offset > 0 { -stride } else { stride };
+        self.offset_rect(page_rect, shift)
     }
 
     /// Derives the indicator strip and its slot list once (C-01).
@@ -1340,13 +1505,10 @@ impl Carousel {
         // is the same reservation `content_rect` and `draw_indicator` make — so the page body
         // and the marks never overlap.
         context.fill_rect(page_rect, panel);
-        let page_body = Rect::new(
-            page_rect.x,
-            page_rect.y,
-            page_rect.width,
-            page_rect.height.saturating_sub(if self.tail_reserved() { INDICATOR_STRIP } else { 0 }),
-        );
-        context.fill_rounded_rect(page_body, 8, bg_color);
+        // C-011: `page_rect` already comes from `content_rect`, which has the bottom indicator
+        // strip removed when one is drawn. Subtracting it again here left a blank band twice as
+        // tall as the indicator. The subtraction happens in exactly one place: the layout.
+        context.fill_rounded_rect(page_rect, 8, bg_color);
 
         if has_content {
             // Lay the child out to the page rectangle before drawing, so a page
@@ -1502,6 +1664,9 @@ impl EventHandler for Carousel {
 
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
+                // A new gesture owns the pixels: a programmatic slide in flight is abandoned
+                // rather than fighting the finger for the page offset.
+                self.slide = None;
                 self.drag = DragState::Pressed { start: self.primary_coordinate(*pos) };
                 self.base.handle_event(event);
             }
@@ -1563,7 +1728,7 @@ impl EventHandler for Carousel {
                         match self.swipe_direction_at(offset, velocity) {
                             Some(step) => {
                                 if let Some(target) = self.wrapped_step(step) {
-                                    self.set_current(target);
+                                    self.set_current_snapped(target);
                                 }
                             }
                             // Below both thresholds on release: the drag was a slip,
@@ -1596,7 +1761,7 @@ impl EventHandler for Carousel {
                 let travel = self.primary_coordinate(*end) - self.primary_coordinate(*start);
                 if let Some(step) = self.swipe_direction(travel) {
                     if let Some(target) = self.wrapped_step(step) {
-                        self.set_current(target);
+                        self.set_current_snapped(target);
                     }
                 }
             }
@@ -1628,14 +1793,13 @@ impl EventHandler for Carousel {
                 self.base.handle_event(event);
             }
             _ => {
-                // Forward everything else to the visible page, so a control mounted
-                // through `set_page_content` receives the events it needs. This is
-                // the behaviour `PagerPageView` had and the reason a carousel with
-                // real content is only usable once both halves live here.
-                self.forward_to_current_page(event);
                 self.base.handle_event(event);
             }
         }
+        // C-002: every event is offered to the mounted page(s). This used to run only in the
+        // fallback arm, so a mounted control never saw a press, a move, a release or a key —
+        // the four events it actually needs.
+        self.forward_visible_page_event(event);
     }
 }
 
@@ -1664,29 +1828,51 @@ impl Carousel {
         }
     }
 
-    /// Delivers `event` to the visible page's mounted control, if it has one.
-    fn forward_to_current_page(&mut self, event: &Event) {
-        let content_rect = self.content_rect();
-        // Pointer-bearing events are delivered only when they land inside the page
-        // area; the rest (key, focus, tick) go through unconditionally, because a
-        // control that owns the keyboard should receive it wherever the pointer is.
-        // The guard is written into the pattern rather than as a nested `if`, so the
-        // "outside the page area → drop" rule and the event set it applies to are one
-        // statement.
-        match event {
+    /// Delivers `event` to the mounted page it belongs to (C-002).
+    ///
+    /// While a drag or a programmatic slide offsets the pages, the page under the pointer may be
+    /// the adjacent one rather than the selected one; both mounted pages are therefore hit-tested
+    /// against the rectangles the draw path used. Key/focus/tick events go to the selected page
+    /// unconditionally, because a focused control owns the keyboard wherever the pointer is.
+    fn forward_visible_page_event(&mut self, event: &Event) {
+        let page_rect = self.page_rect();
+        let (offset, neighbour) = match self.drag {
+            DragState::Swiping { offset, .. } => (offset, self.neighbour_for_offset(offset)),
+            _ if self.settle_offset.abs() > 0.5 => {
+                let offset = self.settle_offset.round() as i32;
+                (offset, self.neighbour_for_offset(offset))
+            }
+            _ => (0, None),
+        };
+        let current_rect = self.offset_rect(page_rect, offset);
+        let target = match event {
             Event::MousePress { pos, .. }
             | Event::MouseRelease { pos, .. }
             | Event::MouseMove { pos }
             | Event::MouseDoubleClick { pos, .. }
-                if !content_rect.contains(*pos) =>
-            {
-                return;
+            | Event::MouseEnter { pos }
+            | Event::MouseLeave { pos } => {
+                if current_rect.contains(*pos) {
+                    Some((self.current_index, current_rect))
+                } else if let Some(index) = neighbour {
+                    let rect = self.neighbour_page_rect(page_rect, offset);
+                    if rect.contains(*pos) {
+                        Some((index, rect))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             }
-            _ => {}
-        }
-        if let Some(page) = self.pages.get_mut(self.current_index) {
+            _ => Some((self.current_index, page_rect)),
+        };
+        let Some((index, rect)) = target else {
+            return;
+        };
+        if let Some(page) = self.pages.get_mut(index) {
             if let Some(content) = page.content_mut() {
-                content.set_geometry(content_rect);
+                content.set_geometry(rect);
                 content.handle_event(event);
             }
         }
@@ -2576,6 +2762,9 @@ mod tests {
         assert!(first > 0, "a numeric indicator must paint the counter text");
 
         c.set_current(2);
+        // C-010: a programmatic page change now slides, so settle the animation before
+        // comparing pixels — the test's subject is the counter, not the transition.
+        c.tick(200);
         let at_page_2 = render_rgba(&mut c, size);
         assert_ne!(
             at_page_0, at_page_2,
@@ -2763,5 +2952,115 @@ mod tests {
         c.tick(200);
         assert_eq!(c.settle_offset(), 0.0, "one 200 ms frame settles the spring");
         assert!(!c.is_animating());
+    }
+
+    /// C-009: the page gap insets the page body by half on each side of the page axis.
+    #[test]
+    fn page_gap_insets_the_page_body_and_keeps_zero_as_before() {
+        let mut c = default_carousel();
+        assert_eq!(c.page_gap(), 0);
+        assert_eq!(c.page_rect(), c.content_rect(), "zero is the historical geometry");
+        c.set_page_gap(20);
+        let rect = c.page_rect();
+        assert_eq!(rect.x, 10);
+        assert_eq!(rect.width, 280);
+        assert_eq!(rect.height, c.content_rect().height);
+        c.set_orientation(Orientation::Vertical);
+        let vertical = c.page_rect();
+        assert_eq!(vertical.y, 10);
+        assert_eq!(vertical.height, c.content_rect().height - 20);
+        assert_eq!(c.get("page_gap").unwrap(), CapabilityValue::UInt(20));
+    }
+
+    /// C-010: a programmatic page change slides, is observable while it runs, and can be turned off.
+    #[test]
+    fn programmatic_page_change_slides_by_default() {
+        let mut c = default_carousel();
+        assert!(c.page_transition());
+        c.set_current(1);
+        assert_eq!(c.selected_index(), Some(1), "the index is final immediately");
+        assert!(c.is_animating(), "the slide owes frames");
+        assert!(c.tick(100), "the slide is still running halfway through");
+        assert!(!c.tick(200), "the slide is done after its duration");
+        assert!(!c.is_animating());
+
+        c.set_page_transition(false);
+        c.set_current(2);
+        assert_eq!(c.selected_index(), Some(2));
+        assert!(!c.is_animating(), "a disabled transition snaps");
+    }
+
+    /// C-002: while a drag reveals the neighbour, that mounted page receives pointer events too.
+    #[test]
+    fn a_dragged_in_neighbour_page_receives_events() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct CountingLabel {
+            label: Label,
+            hits: Arc<AtomicUsize>,
+        }
+        impl crate::widget::Widget for CountingLabel {
+            fn base(&self) -> &BaseWidget {
+                self.label.base()
+            }
+            fn base_mut(&mut self) -> &mut BaseWidget {
+                self.label.base_mut()
+            }
+            fn set_geometry(&mut self, geometry: Rect) {
+                self.label.set_geometry(geometry);
+            }
+            fn size_hint(&self) -> Size {
+                self.label.size_hint()
+            }
+        }
+        impl crate::widget::Draw for CountingLabel {
+            fn draw(&mut self, ctx: &mut RenderContext) {
+                self.label.draw(ctx);
+            }
+        }
+        impl EventHandler for CountingLabel {
+            fn handle_event(&mut self, event: &Event) {
+                if matches!(event, Event::MouseEnter { .. }) {
+                    self.hits.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let mut c = Carousel::new(Rect::new(0, 0, 300, 200));
+        c.add_page("Host", Color::WHITE);
+        c.add_page("Neighbour", Color::WHITE);
+        assert!(c.set_page_content(
+            1,
+            Box::new(CountingLabel {
+                label: Label::new("n".to_string(), Rect::new(0, 0, 300, 200)),
+                hits: Arc::clone(&hits),
+            })
+        ));
+
+        // Drag 100 px to the left: the neighbour enters from the right and its visible band is
+        // the trailing 100 px of the control.
+        c.handle_event(&Event::MousePress { pos: Point::new(200, 100), button: 1, modifiers: 0 });
+        c.handle_event(&Event::MouseMove { pos: Point::new(100, 100) });
+        // `MouseEnter` does not update the drag offset, so the pointer can address the neighbour.
+        c.handle_event(&Event::MouseEnter { pos: Point::new(260, 50) });
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "the revealed neighbour receives the event");
+    }
+
+    /// C-011: the bottom indicator is subtracted once, so the page body reaches the strip.
+    #[test]
+    fn the_indicator_strip_is_subtracted_only_once() {
+        let mut c = Carousel::new(Rect::new(0, 0, 300, 200));
+        c.add_page("Host", Color::rgb(52, 120, 246));
+        c.add_page("Other", Color::rgb(52, 120, 246));
+        let size = Size::new(300, 200);
+        let rect = c.content_rect();
+        let rgba = render_rgba(&mut c, size);
+        // A row just above the reserved strip must still be the page colour; a second
+        // subtraction put a panel-coloured band there.
+        let y = rect.y as u32 + rect.height - 2;
+        let pixel = pixel(&rgba, size.width, 150, y);
+        assert_eq!((pixel.0, pixel.1, pixel.2), (52, 120, 246));
     }
 }

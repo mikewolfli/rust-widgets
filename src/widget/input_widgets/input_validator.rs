@@ -363,12 +363,21 @@ impl Validator for RangeValidator {
 pub struct PatternValidator {
     pattern: String,
     message: &'static str,
+    /// The pattern compiled once, when the rule is built.
+    ///
+    /// `is_match` is consulted for every candidate and on every keystroke; compiling the pattern
+    /// inside it re-parsed the same string each time (I-008). The rule never mutates its pattern,
+    /// so an eagerly compiled value is always the current one and, unlike a `RefCell`, keeps the
+    /// `Send + Sync` bound the `Validator` trait requires.
+    compiled: Option<CompiledPattern>,
 }
 
 impl PatternValidator {
     /// Creates a pattern rule with the message shown when the value does not match.
     pub fn new(pattern: impl Into<String>, message: &'static str) -> Self {
-        Self { pattern: pattern.into(), message }
+        let pattern = pattern.into();
+        let compiled = CompiledPattern::compile(&pattern);
+        Self { pattern, message, compiled }
     }
 
     /// The pattern this rule matches.
@@ -378,7 +387,7 @@ impl PatternValidator {
 
     /// Whether `text` matches the pattern.
     pub fn is_match(&self, text: &str) -> bool {
-        match CompiledPattern::compile(&self.pattern) {
+        match self.compiled.as_ref() {
             Some(compiled) => compiled.is_match(text),
             None => false,
         }
@@ -409,7 +418,7 @@ impl Validator for PatternValidator {
 /// completion filter a host writes silently never matched (I-05). A tree of sequences,
 /// alternations and repetitions is the smallest shape that supports both constructs while the
 /// rest of the grammar (classes, quantifiers, anchors) is unchanged.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Node {
     /// One matcher with its repetition span.
     Atom { kind: AtomKind, min: usize, max: Option<usize> },
@@ -422,7 +431,7 @@ enum Node {
 }
 
 /// What one pattern position accepts.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum AtomKind {
     /// Any character.
     Any,
@@ -450,7 +459,7 @@ impl AtomKind {
 /// Compiling a pattern is the one part of matching that does not depend on the candidate, and the
 /// completion filter used to pay it once per candidate per keystroke (I-P05). A caller that
 /// matches a list against one pattern compiles it once here and reuses it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompiledPattern {
     anchored_start: bool,
     anchored_end: bool,

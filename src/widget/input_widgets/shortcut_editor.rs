@@ -166,6 +166,11 @@ pub struct ShortcutEditor {
     filter_text: String,
     /// Emitted when a shortcut's key binding changes. Emits (id, new_keys).
     pub shortcut_changed: Signal1<(String, Vec<String>)>,
+    /// Emitted when a recording would collide and needs confirmation (I-028).
+    ///
+    /// The payload is the entry id and the proposed sequence. The host answers through
+    /// [`Self::resolve_conflict`]; until then the proposed binding is not written.
+    pub conflict_detected: Signal1<(String, Vec<String>)>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<Vec<ShortcutEntry>>>,
     /// Generation of [`Self::shortcuts`], bumped by every path that can change it.
@@ -188,6 +193,13 @@ pub struct ShortcutEditor {
     scroll_offset: usize,
     /// Whether the filter field owns the pointer's keyboard focus (I-112).
     filter_focused: bool,
+    /// Whether a recording left by focus loss is committed or rolled back (I-028).
+    ///
+    /// `false` is the documented default: a recording the user never confirmed is abandoned when
+    /// the control loses focus. A host that wants the older auto-commit turns it on.
+    blur_commit: bool,
+    /// The recording awaiting conflict confirmation (I-028).
+    pending_conflict: Option<(String, Vec<String>)>,
 }
 
 /// The cached per-row display text and conflict flag, keyed by table generation.
@@ -217,6 +229,7 @@ impl ShortcutEditor {
             shortcuts: Vec::new(),
             filter_text: String::new(),
             shortcut_changed: Signal1::new(),
+            conflict_detected: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(Vec::new())),
             table_generation: 0,
@@ -226,7 +239,39 @@ impl ShortcutEditor {
             row_display_cache: RefCell::new(None),
             scroll_offset: 0,
             filter_focused: false,
+            blur_commit: false,
+            pending_conflict: None,
         }
+    }
+
+    /// Whether losing focus commits an unconfirmed recording (I-028).
+    pub fn blur_commit(&self) -> bool {
+        self.blur_commit
+    }
+
+    /// Configures what a focus loss does to a recording in progress (I-028).
+    pub fn set_blur_commit(&mut self, commit: bool) {
+        self.blur_commit = commit;
+    }
+
+    /// The recording waiting for conflict confirmation, if any (I-028).
+    pub fn pending_conflict(&self) -> Option<&(String, Vec<String>)> {
+        self.pending_conflict.as_ref()
+    }
+
+    /// Answers a [`Self::conflict_detected`] request (I-028).
+    ///
+    /// `true` writes the proposed binding; `false` discards it. Returns whether a binding was
+    /// written. Calling it with no pending conflict is a no-op.
+    pub fn resolve_conflict(&mut self, accept: bool) -> bool {
+        let Some((id, keys)) = self.pending_conflict.take() else {
+            return false;
+        };
+        if !accept {
+            self.base.request_redraw();
+            return false;
+        }
+        self.update_shortcut_keys(&id, keys)
     }
 
     /// Adds a shortcut entry.
@@ -543,7 +588,27 @@ impl ShortcutEditor {
             self.base.request_redraw();
             return false;
         }
+        // A collision is confirmed before it overwrites another binding (I-028): the recording
+        // is held and the host is asked, instead of the conflict being applied silently.
+        if !self.conflicts_with(&id, &keys).is_empty() {
+            self.pending_conflict = Some((id.clone(), keys.clone()));
+            self.conflict_detected.emit((id, keys));
+            self.base.request_redraw();
+            return false;
+        }
         self.update_shortcut_keys(&id, keys)
+    }
+
+    /// The ids other than `id` whose binding is exactly `keys`.
+    fn conflicts_with(&self, id: &str, keys: &[String]) -> Vec<String> {
+        if keys.is_empty() {
+            return Vec::new();
+        }
+        self.shortcuts
+            .iter()
+            .filter(|other| other.id != id && other.keys == keys)
+            .map(|other| other.id.clone())
+            .collect()
     }
 
     /// Clears one entry's binding, leaving the rest of the table alone.
@@ -699,27 +764,6 @@ impl ShortcutEditor {
         self.shortcuts = self.history_target.borrow().clone();
         self.table_generation = self.table_generation.wrapping_add(1);
         self.base.request_redraw();
-    }
-
-    fn update_first_visible_editable_shortcut(&mut self, key_name: String) -> bool {
-        let lower = self.filter_text.to_lowercase();
-        let target_id = self
-            .shortcuts
-            .iter()
-            .find(|entry| {
-                entry.editable
-                    && (lower.is_empty()
-                        || contains_ignore_ascii_case(&entry.name, &lower)
-                        || contains_ignore_ascii_case(&entry.id, &lower)
-                        || contains_ignore_ascii_case(&entry.category, &lower)
-                        || entry.keys.iter().any(|k| contains_ignore_ascii_case(k, &lower)))
-            })
-            .map(|entry| entry.id.clone());
-
-        if let Some(id) = target_id {
-            return self.update_shortcut_keys(&id, vec![key_name]);
-        }
-        false
     }
 }
 
@@ -1141,6 +1185,8 @@ impl EventHandler for ShortcutEditor {
                 }
                 // A recording session owns every key: Escape cancels it, Backspace clears the
                 // captured sequence, Primary+Enter commits it, and anything else is appended.
+                // Losing focus does **not** commit: the default rolls the unconfirmed recording
+                // back, so a binding only changes when the user confirms it (I-028).
                 if self.is_capturing() {
                     if *key == 27 {
                         self.cancel_capture();
@@ -1176,21 +1222,23 @@ impl EventHandler for ShortcutEditor {
                     let _ = self.redo();
                     return;
                 }
-                // Record key events for shortcut editing
-                // Ignore modifier-only presses
+                // A key outside a recording is **not** a binding edit (I-026). It used to rewrite
+                // the first visible row, so typing anywhere in the window silently rebound a
+                // shortcut; the key is passed through to the rest of the chain instead.
                 if *key > 0 && *key < 0xFF {
-                    let key_name = keycode_to_name(*key, *modifiers);
-                    if !key_name.is_empty() {
-                        self.update_first_visible_editable_shortcut(key_name);
-                        self.base.key_down.emit((*key, *modifiers));
-                        return;
-                    }
+                    self.base.key_down.emit((*key, *modifiers));
                 }
                 self.base.handle_event(event);
             }
             Event::FocusLost => {
+                // I-028: focus loss is configurable. The default rolls the unconfirmed recording
+                // back, matching the documented contract; a host can opt into auto-commit.
                 if self.is_capturing() {
-                    self.commit_capture();
+                    if self.blur_commit {
+                        self.commit_capture();
+                    } else {
+                        self.cancel_capture();
+                    }
                 }
                 self.base.handle_event(event);
             }
@@ -1237,12 +1285,26 @@ fn keycode_to_name(key: u32, modifiers: u32) -> String {
         0x28 => "Down",
         0x2D => "Insert",
         0x2E => "Delete",
+        0x3D => "=",
+        0x5B => "[",
+        0x5C => "\\",
+        0x5D => "]",
+        0x3B => ";",
+        0x2C => ",",
+        0x2F => "/",
+        0x60 => "`",
         0x70..=0x7A => {
+            // F1–F11. These codes collide with the lowercase letters `p`–`z` in ASCII; the
+            // legacy key-code table this control reads has always meant the function keys for
+            // that range, so the letters below stop at `o` and the collision keeps its old
+            // meaning rather than silently renaming F1 to "p" (I-027).
             let n = key - 0x70 + 1;
             return format!("{}F{}", modifier_prefix.clone(), n);
         }
         _ => {
-            if (0x30..=0x39).contains(&key) {
+            // Digits, lowercase `a`–`o` and uppercase letters all name themselves. Lowercase
+            // used to return an empty name, so a recorded `a` showed as a blank row (I-027).
+            if (0x30..=0x39).contains(&key) || (0x61..=0x6F).contains(&key) {
                 let c = char::from_u32(key).unwrap_or('?');
                 return format!("{}{}", modifier_prefix.clone(), c);
             }
@@ -1377,8 +1439,13 @@ mod tests {
         let mut se = ShortcutEditor::new(Rect::new(0, 0, 400, 300));
         se.add_shortcut(ShortcutEntry::new("save", "Save", "File"));
 
+        // A key outside a recording is passed through, not written to a binding (I-026).
         se.handle_event(&Event::KeyPress { key: 83, modifiers: 2 });
+        assert!(se.shortcuts()[0].keys.is_empty(), "no capture, no binding edit");
 
+        assert!(se.begin_capture("save"));
+        se.handle_event(&Event::KeyPress { key: 83, modifiers: 2 });
+        assert!(se.commit_capture());
         assert_eq!(se.shortcuts()[0].keys, vec!["Ctrl+S"]);
     }
 
@@ -1389,9 +1456,14 @@ mod tests {
         se.add_shortcut(ShortcutEntry::new("copy", "Copy", "Edit"));
         se.set_filter("copy");
 
+        // The filter no longer redirects stray keys (I-026): only an explicit capture records.
         se.handle_event(&Event::KeyPress { key: 67, modifiers: 2 });
-
         assert!(se.shortcuts()[0].keys.is_empty());
+        assert!(se.shortcuts()[1].keys.is_empty());
+
+        assert!(se.begin_capture("copy"));
+        se.handle_event(&Event::KeyPress { key: 67, modifiers: 2 });
+        assert!(se.commit_capture());
         assert_eq!(se.shortcuts()[1].keys, vec!["Ctrl+C"]);
     }
 
@@ -1656,5 +1728,58 @@ mod tests {
             ShortcutEditor::format_keys(&["Ctrl+Shift+T".to_string(), "Alt+F4".to_string()]),
             "⌃⇧T, ⌥F4"
         );
+    }
+
+    /// A colliding recording is held for confirmation instead of overwriting (I-028).
+    #[test]
+    fn a_conflict_is_confirmed_before_it_overwrites() {
+        use std::sync::{Arc, Mutex};
+        let mut se = ShortcutEditor::new(Rect::new(0, 0, 400, 300));
+        se.add_shortcut(ShortcutEntry::new("save", "Save", "File").with_keys(vec!["Ctrl+S"]));
+        se.add_shortcut(ShortcutEntry::new("copy", "Copy", "Edit"));
+        let seen = Arc::new(Mutex::new(None::<String>));
+        let observed = seen.clone();
+        se.conflict_detected.connect(move |payload| {
+            *observed.lock().unwrap() = Some(payload.0.clone());
+        });
+
+        assert!(se.begin_capture("copy"));
+        se.handle_event(&Event::KeyPress { key: 83, modifiers: 2 });
+        assert!(!se.commit_capture(), "the colliding binding is not written");
+        assert_eq!(se.shortcuts()[1].keys, Vec::<String>::new());
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("copy"));
+        assert!(se.pending_conflict().is_some());
+
+        assert!(se.resolve_conflict(true));
+        assert_eq!(se.shortcuts()[1].keys, vec!["Ctrl+S"]);
+        assert!(se.pending_conflict().is_none());
+    }
+
+    /// Focus loss rolls an unconfirmed recording back unless auto-commit is enabled (I-028).
+    #[test]
+    fn blur_rolls_back_unless_configured_to_commit() {
+        let mut se = ShortcutEditor::new(Rect::new(0, 0, 400, 300));
+        se.add_shortcut(ShortcutEntry::new("save", "Save", "File"));
+        assert!(!se.blur_commit());
+        assert!(se.begin_capture("save"));
+        se.handle_event(&Event::KeyPress { key: 83, modifiers: 2 });
+        se.handle_event(&Event::FocusLost);
+        assert!(se.shortcuts()[0].keys.is_empty(), "the default rolls the recording back");
+
+        se.set_blur_commit(true);
+        assert!(se.begin_capture("save"));
+        se.handle_event(&Event::KeyPress { key: 83, modifiers: 2 });
+        se.handle_event(&Event::FocusLost);
+        assert_eq!(se.shortcuts()[0].keys, vec!["Ctrl+S"], "auto-commit writes it");
+    }
+
+    /// Lower-case letters and symbol keys have names, so a recorded binding is readable (I-027).
+    #[test]
+    fn key_names_cover_lowercase_and_symbols() {
+        assert_eq!(keycode_to_name(0x61, 0), "a");
+        assert_eq!(keycode_to_name(0x6F, 0), "o");
+        assert_eq!(keycode_to_name(0x3B, 0), ";");
+        assert_eq!(keycode_to_name(0x2C, 0), ",");
+        assert_eq!(keycode_to_name(0x5B, 0), "[");
     }
 }

@@ -3,10 +3,12 @@
 
 //! VirtualTable widget backed by incremental table data source.
 
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::core::{Color, HorizontalAlignment, Rect};
+use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler, WheelScroll};
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, Signal1};
@@ -21,6 +23,7 @@ use crate::widget::metrics::effective_font;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+use super::data_grid::SortSpec;
 use super::data_source::IncrementalTableDataSource;
 
 /// Paint hook for a virtual table cell.
@@ -75,6 +78,27 @@ fn expect_wheel_scroll_mode(
 
 /// One cached window row, shared so a vertical scroll can reuse it instead of re-fetching.
 type CachedRow = Arc<Vec<Option<String>>>;
+
+/// The inputs a sorted projection was built from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TableSortKey {
+    revision: u64,
+    generation: u64,
+    rows: usize,
+    specs: Vec<(usize, bool)>,
+}
+
+/// Painted column geometry: a width per source column and its x offset from the cells' left edge.
+///
+/// A hidden column has width `0`, so it keeps its absolute index (scroll positions and the data
+/// window stay absolute) while consuming no space. Built once per width/hidden change rather than
+/// summed per painted cell.
+#[derive(Clone, Debug)]
+struct ColumnLayout {
+    revision: u64,
+    widths: Vec<u32>,
+    offsets: Vec<i32>,
+}
 
 /// Lightweight virtual table with pull-based window fetch.
 pub struct VirtualTable {
@@ -132,6 +156,30 @@ pub struct VirtualTable {
     header_labels: Vec<String>,
     /// How one wheel notch scrolls.
     wheel_scroll_mode: WheelScrollMode,
+    /// Per-column width overrides; absent columns use `column_width`.
+    column_widths: HashMap<usize, u32>,
+    /// Columns excluded from the painted order (V-013).
+    hidden_columns: BTreeSet<usize>,
+    /// Bumped by every width/hidden mutation; keys [`ColumnLayout`].
+    column_layout_revision: u64,
+    /// The cached column geometry.
+    column_layout_cache: RefCell<Option<ColumnLayout>>,
+    /// Sort specs in priority order (V-013). Empty means source order.
+    sort_specs: Vec<SortSpec>,
+    /// Whether a header click may change the sort.
+    sorting_enabled: bool,
+    /// Projected row -> source row when sorting is active; `None` means identity.
+    sort_order: Option<Vec<usize>>,
+    /// The inputs `sort_order` was built from.
+    sort_order_key: Option<TableSortKey>,
+    /// Window cache used while a sorted projection is active (rows are not contiguous).
+    sorted_window_cache: Option<(u64, (usize, usize, usize, usize), Arc<Vec<CachedRow>>)>,
+    /// Whether odd rows receive the alternating wash (V-013). Off by default.
+    alternating_rows: bool,
+    /// Emitted with `(column, descending)` when a header click changes the sort (V-013).
+    pub sort_changed: Signal1<(usize, bool)>,
+    /// Emitted when the context menu is requested at a point (V-013).
+    pub context_menu_requested: Signal1<Point>,
 }
 
 impl VirtualTable {
@@ -162,6 +210,18 @@ impl VirtualTable {
             delegate: None,
             header_labels: Vec::new(),
             wheel_scroll_mode: WheelScrollMode::PerRow,
+            column_widths: HashMap::new(),
+            hidden_columns: BTreeSet::new(),
+            column_layout_revision: 0,
+            column_layout_cache: RefCell::new(None),
+            sort_specs: Vec::new(),
+            sorting_enabled: true,
+            sort_order: None,
+            sort_order_key: None,
+            sorted_window_cache: None,
+            alternating_rows: false,
+            sort_changed: Signal1::new(),
+            context_menu_requested: Signal1::new(),
         }
     }
 
@@ -288,10 +348,195 @@ impl VirtualTable {
             return;
         }
         self.column_width = next;
+        self.bump_column_layout();
         self.window_cache = None;
         self.emit_visible_window();
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// The width painted for `column` (V-013).
+    ///
+    /// A per-column override wins over [`Self::column_width`]; a hidden column answers `0`
+    /// because it occupies no space.
+    pub fn column_width_at(&self, column: usize) -> u32 {
+        if self.hidden_columns.contains(&column) {
+            return 0;
+        }
+        self.with_column_layout(|layout| {
+            layout.widths.get(column).copied().unwrap_or(self.column_width.max(1))
+        })
+    }
+
+    /// Gives `column` its own width (V-013). Returns `false` for a column the source lacks.
+    pub fn set_column_width_at(&mut self, column: usize, width: u32) -> bool {
+        if column >= self.column_count() {
+            return false;
+        }
+        let width = width.max(1);
+        if self.column_widths.get(&column).copied() == Some(width) {
+            return true;
+        }
+        self.column_widths.insert(column, width);
+        self.bump_column_layout();
+        self.window_cache = None;
+        self.emit_visible_window();
+        self.base.request_layout();
+        self.base.request_redraw();
+        true
+    }
+
+    /// Replaces every per-column width; an entry of `0` returns that column to the default.
+    pub fn set_column_widths(&mut self, widths: &[u32]) {
+        self.column_widths.clear();
+        for (column, width) in widths.iter().enumerate() {
+            if *width > 0 {
+                self.column_widths.insert(column, *width);
+            }
+        }
+        self.bump_column_layout();
+        self.window_cache = None;
+        self.emit_visible_window();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Whether `column` is hidden (V-013).
+    pub fn is_column_hidden(&self, column: usize) -> bool {
+        self.hidden_columns.contains(&column)
+    }
+
+    /// The hidden columns, in ascending order (V-013).
+    pub fn hidden_columns(&self) -> Vec<usize> {
+        self.hidden_columns.iter().copied().collect()
+    }
+
+    /// Replaces the hidden-column set (V-013).
+    pub fn set_hidden_columns(&mut self, columns: Vec<usize>) {
+        let available = self.column_count();
+        let next: BTreeSet<usize> =
+            columns.into_iter().filter(|column| *column < available).collect();
+        if next == self.hidden_columns {
+            return;
+        }
+        self.hidden_columns = next;
+        self.bump_column_layout();
+        self.window_cache = None;
+        self.emit_visible_window();
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Hides or shows `column` (V-013). Returns `false` for a column the source lacks.
+    pub fn set_column_hidden(&mut self, column: usize, hidden: bool) -> bool {
+        if column >= self.column_count() {
+            return false;
+        }
+        let changed = if hidden {
+            self.hidden_columns.insert(column)
+        } else {
+            self.hidden_columns.remove(&column)
+        };
+        if changed {
+            self.bump_column_layout();
+            self.window_cache = None;
+            self.emit_visible_window();
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+        true
+    }
+
+    /// Bumps the column-geometry revision so the cached layout is rebuilt.
+    fn bump_column_layout(&mut self) {
+        self.column_layout_revision = self.column_layout_revision.wrapping_add(1);
+    }
+
+    /// Builds the painted column geometry from the width overrides and the hidden set.
+    fn build_column_layout(&self) -> ColumnLayout {
+        let columns = self.column_count();
+        let mut widths = Vec::with_capacity(columns);
+        let mut offsets = Vec::with_capacity(columns);
+        let mut offset = 0i32;
+        for column in 0..columns {
+            let width = if self.hidden_columns.contains(&column) {
+                0
+            } else {
+                self.column_widths.get(&column).copied().unwrap_or(self.column_width).max(1)
+            };
+            widths.push(width);
+            offsets.push(offset);
+            offset = offset.saturating_add(width as i32);
+        }
+        ColumnLayout { revision: self.column_layout_revision, widths, offsets }
+    }
+
+    /// Runs `f` over the column layout, rebuilding it if it is stale.
+    fn with_column_layout<R>(&self, f: impl FnOnce(&ColumnLayout) -> R) -> R {
+        let mut cache = self.column_layout_cache.borrow_mut();
+        let stale = cache.as_ref().is_none_or(|layout| {
+            layout.revision != self.column_layout_revision
+                || layout.widths.len() != self.column_count()
+        });
+        if stale {
+            *cache = Some(self.build_column_layout());
+        }
+        f(cache.as_ref().expect("the column layout was just built"))
+    }
+
+    /// The x offset of `column`'s left edge, measured from the cells' left edge.
+    fn column_offset(&self, column: usize) -> i32 {
+        self.with_column_layout(|layout| {
+            layout
+                .offsets
+                .get(column)
+                .copied()
+                .unwrap_or_else(|| layout.offsets.last().copied().unwrap_or(0))
+        })
+    }
+
+    /// The absolute column painted at viewport-local ordinal `local`.
+    ///
+    /// With no hidden columns this is exactly `scroll_column + local`, the historical identity;
+    /// hiding a column removes its slot without renumbering the source columns.
+    fn absolute_column(&self, local: usize) -> Option<usize> {
+        if self.hidden_columns.is_empty() {
+            let column = self.scroll_column.saturating_add(local);
+            return (column < self.column_count()).then_some(column);
+        }
+        self.with_column_layout(|layout| {
+            layout
+                .widths
+                .iter()
+                .enumerate()
+                .skip(self.scroll_column)
+                .filter(|(_, width)| **width > 0)
+                .nth(local)
+                .map(|(column, _)| column)
+        })
+    }
+
+    /// How many visible columns of `width` fit starting at the scroll position.
+    fn visible_column_capacity(&self, width: u32) -> usize {
+        self.with_column_layout(|layout| {
+            let mut used = 0u32;
+            let mut count = 0usize;
+            for column in self.scroll_column.min(layout.widths.len())..layout.widths.len() {
+                let column_width = layout.widths[column];
+                if column_width == 0 {
+                    continue;
+                }
+                if count > 0 && used.saturating_add(column_width) > width {
+                    break;
+                }
+                used = used.saturating_add(column_width);
+                count += 1;
+                if used >= width {
+                    break;
+                }
+            }
+            count.max(1)
+        })
     }
 
     /// Returns extra fetched rows around viewport.
@@ -328,6 +573,148 @@ impl VirtualTable {
         self.base.request_redraw();
     }
 
+    /// The sort specs, in priority order (V-013). Empty means source order.
+    pub fn sort_specs(&self) -> &[SortSpec] {
+        &self.sort_specs
+    }
+
+    /// Replaces the sort specs. The first spec breaks the tie for the second, and so on.
+    pub fn set_sort_specs(&mut self, sort_specs: Vec<SortSpec>) {
+        if self.sort_specs == sort_specs {
+            return;
+        }
+        self.sort_specs = sort_specs;
+        self.invalidate_sort_order();
+    }
+
+    /// Whether a header click may change the sort (V-013).
+    pub fn sorting_enabled(&self) -> bool {
+        self.sorting_enabled
+    }
+
+    /// Enables or disables header-driven sorting.
+    pub fn set_sorting_enabled(&mut self, sorting_enabled: bool) {
+        if self.sorting_enabled == sorting_enabled {
+            return;
+        }
+        self.sorting_enabled = sorting_enabled;
+        if !sorting_enabled {
+            self.sort_specs.clear();
+        }
+        self.invalidate_sort_order();
+    }
+
+    /// Cycles `column` ascending -> descending -> unsorted (V-013).
+    ///
+    /// Returns the new direction, or `None` for the unsorted state (or a column that cannot be
+    /// sorted). The third state is what restores source order; a two-state toggle cannot reach it.
+    pub fn toggle_sort_column(&mut self, column: usize) -> Option<bool> {
+        if !self.sorting_enabled || column >= self.column_count() {
+            return None;
+        }
+        let existing = self.sort_specs.iter().position(|spec| spec.column == column);
+        let descending = match existing {
+            Some(index) if self.sort_specs[index].descending => {
+                self.sort_specs.remove(index);
+                None
+            }
+            Some(index) => {
+                self.sort_specs[index].descending = true;
+                Some(true)
+            }
+            None => {
+                self.sort_specs.push(SortSpec { column, descending: false });
+                Some(false)
+            }
+        };
+        self.invalidate_sort_order();
+        if let Some(descending) = descending {
+            self.sort_changed.emit((column, descending));
+        }
+        descending
+    }
+
+    /// Whether odd rows receive the alternating wash (V-013). Off by default.
+    pub fn alternating_rows(&self) -> bool {
+        self.alternating_rows
+    }
+
+    /// Enables or disables the alternating row wash.
+    pub fn set_alternating_rows(&mut self, alternating_rows: bool) {
+        if self.alternating_rows == alternating_rows {
+            return;
+        }
+        self.alternating_rows = alternating_rows;
+        self.base.request_redraw();
+    }
+
+    /// Drops the projected order and every window derived from it.
+    fn invalidate_sort_order(&mut self) {
+        self.sort_order = None;
+        self.sort_order_key = None;
+        self.sorted_window_cache = None;
+        self.window_cache = None;
+        self.emit_visible_window();
+        self.base.request_redraw();
+    }
+
+    /// Rebuilds the projected order when its inputs moved.
+    ///
+    /// The key table holds one normalised key per row per spec, computed before the sort; the
+    /// comparator never re-reads the source (the same kernel `DataGrid` uses).
+    fn ensure_sort_order(&mut self) {
+        let revision = self.data_source.as_ref().map(|source| source.revision()).unwrap_or(0);
+        let generation = self.data_generation.load(Ordering::Relaxed);
+        let rows = self.row_count();
+        let columns = self.column_count();
+        let specs: Vec<(usize, bool)> = self
+            .sort_specs
+            .iter()
+            .filter(|spec| spec.column < columns)
+            .map(|spec| (spec.column, spec.descending))
+            .collect();
+        let key = TableSortKey { revision, generation, rows, specs };
+
+        if self.sort_order_key.as_ref() == Some(&key) {
+            return;
+        }
+        if !self.sorting_enabled || key.specs.is_empty() || rows == 0 {
+            self.sort_order = None;
+            self.sort_order_key = Some(key);
+            return;
+        }
+        let Some(source) = self.data_source.clone() else {
+            self.sort_order = None;
+            self.sort_order_key = Some(key);
+            return;
+        };
+
+        let mut keys: Vec<Vec<(String, Option<f64>)>> = Vec::with_capacity(key.specs.len());
+        for &(column, _) in &key.specs {
+            let mut per_row = Vec::with_capacity(rows);
+            for row in 0..rows {
+                let raw = source.data(row, column).unwrap_or_default();
+                per_row.push(super::data_grid::normalise_sort_key(&raw));
+            }
+            keys.push(per_row);
+        }
+
+        let mut order: Vec<usize> = (0..rows).collect();
+        order.sort_by(|&left, &right| {
+            for (index, spec) in key.specs.iter().enumerate() {
+                let ordering =
+                    super::data_grid::compare_sort_keys(&keys[index][left], &keys[index][right]);
+                if ordering != core::cmp::Ordering::Equal {
+                    return if spec.1 { ordering.reverse() } else { ordering };
+                }
+            }
+            // Stable tie-break on the source row, so equal keys do not reorder between passes.
+            left.cmp(&right)
+        });
+        self.sort_order = Some(order);
+        self.sort_order_key = Some(key);
+    }
+
     /// Returns `(row_start,row_len,col_start,col_len)` for visible+overscan window.
     pub fn visible_window(&self) -> (usize, usize, usize, usize) {
         let rows = self.row_count();
@@ -339,7 +726,10 @@ impl VirtualTable {
         let row_start = self.scroll_row.saturating_sub(self.overscan_rows);
         let col_start = self.scroll_column.saturating_sub(self.overscan_columns);
         let visible_rows = (self.base.geometry().height / self.row_height.max(1)) as usize;
-        let visible_cols = (self.base.geometry().width / self.column_width.max(1)) as usize;
+        // The width-aware capacity keeps the window wide enough when a column is narrower than
+        // the default or a hidden column frees its slot (V-013). With the default uniform width
+        // it is exactly the old `width / column_width`.
+        let visible_cols = self.visible_column_capacity(self.base.geometry().width);
         let row_len = visible_rows.saturating_add(self.overscan_rows.saturating_mul(2)).max(1);
         let col_len = visible_cols.saturating_add(self.overscan_columns.saturating_mul(2)).max(1);
         (row_start, row_len, col_start, col_len)
@@ -377,6 +767,33 @@ impl VirtualTable {
         let cache_revision =
             if revision > 0 { revision } else { self.data_generation.load(Ordering::Relaxed) };
         let window = self.visible_window();
+
+        // A sorted projection paints non-contiguous source rows, so the sliding overlap cache
+        // below (which assumes a contiguous row run) cannot serve it. Its own window cache is
+        // keyed by revision and window; per-row fetches happen only on a miss (V-013).
+        self.ensure_sort_order();
+        if self.sort_order.is_some() {
+            let stale = match self.sorted_window_cache.as_ref() {
+                Some((cached_revision, cached_window, _)) => {
+                    *cached_revision != cache_revision || *cached_window != window
+                }
+                None => true,
+            };
+            if !stale {
+                return self.sorted_window_cache.as_ref().map(|(_, _, rows)| rows);
+            }
+            let source = self.data_source.clone()?;
+            let mut rows: Vec<CachedRow> = Vec::with_capacity(window.1);
+            if let Some(order) = self.sort_order.as_ref() {
+                for projected in window.0..window.0.saturating_add(window.1) {
+                    let Some(&source_row) = order.get(projected) else { break };
+                    let mut fetched = source.fetch_window(source_row, 1, window.2, window.3);
+                    rows.push(Arc::new(fetched.pop().unwrap_or_default()));
+                }
+            }
+            self.sorted_window_cache = Some((cache_revision, window, Arc::new(rows)));
+            return self.sorted_window_cache.as_ref().map(|(_, _, rows)| rows);
+        }
 
         // F-P06: a scroll that keeps the column span slides the row cache. The overlapping rows
         // are reused behind their `Arc`, and only the newly exposed side is fetched.
@@ -481,20 +898,27 @@ impl VirtualTable {
     /// `row` and `column` are **viewport-relative** indices: `(0, 0)` is the first cell inside the
     /// visible area, with the leading overscan rows/columns already skipped (D09-VIEW-01). That is
     /// the semantics `cell_at` answers with, so the box a press resolves to is the box that was
-    /// painted.
+    /// painted. The ordinal is mapped through the column layout, so per-column widths and hidden
+    /// columns shift the painted positions without changing this contract (V-013).
     ///
     /// The two insets are `2` rather than `0` so the first row and column do not sit on the
     /// table's own border, and they are shared with the cell's *size* below.
     fn cell_rect(&self, origin: Rect, row: usize, column: usize) -> Rect {
         const INSET: i32 = 2;
-        let stride_x = self.column_width as i32;
+        let absolute = self
+            .absolute_column(column)
+            .unwrap_or_else(|| self.scroll_column.saturating_add(column));
+        // The offset is measured from the first painted column rather than from column `0`, so a
+        // horizontal scroll moves the cells exactly as the old `column * stride` did.
+        let x = self.column_offset(absolute) - self.column_offset(self.scroll_column);
+        let width = self.column_width_at(absolute);
         let stride_y = self.row_height as i32;
         Rect::new(
-            origin.x + INSET + column as i32 * stride_x,
+            origin.x + INSET + x,
             origin.y + INSET + self.header_offset() + row as i32 * stride_y,
             // The cell is 2 px smaller than its stride on each axis, so the grid lines are the
             // surface showing through rather than strokes that would double up where cells meet.
-            self.column_width.saturating_sub(2),
+            width.saturating_sub(2),
             self.row_height.saturating_sub(2),
         )
     }
@@ -723,7 +1147,9 @@ impl VirtualTable {
         const INSET: i32 = 2;
         let usable_w = (rect.width as i32 - INSET * 2).max(0) as u32;
         let usable_h = (rect.height as i32 - INSET * 2 - self.header_offset()).max(0) as u32;
-        let columns = (usable_w / self.column_width.max(1)).max(1) as usize;
+        // Width-aware, so per-column widths and hidden columns decide how many columns fit
+        // (V-013). With the uniform default this is the historical division.
+        let columns = self.visible_column_capacity(usable_w);
         let rows = (usable_h / self.row_height.max(1)).max(1) as usize;
         (rows, columns)
     }
@@ -762,6 +1188,21 @@ impl VirtualTable {
         Some(row)
     }
 
+    /// The **global** column in the header strip under `pos`, when the header is shown.
+    fn header_column_at(&self, pos: Point) -> Option<usize> {
+        if !self.show_header {
+            return None;
+        }
+        let rect = self.geometry();
+        const INSET: i32 = 2;
+        let top = rect.y + INSET;
+        let bottom = top + self.row_height.saturating_sub(2) as i32;
+        if pos.y < top || pos.y >= bottom {
+            return None;
+        }
+        self.column_at(pos.x)
+    }
+
     /// The **global** column at screen x `x`, if `x` is inside a cell rather than a gap.
     pub fn column_at(&self, x: i32) -> Option<usize> {
         const INSET: i32 = 2;
@@ -770,18 +1211,27 @@ impl VirtualTable {
         if x < left {
             return None;
         }
-        let (_, columns) = self.visible_grid(rect);
-        let stride = self.column_width.max(1) as i32;
         let offset = x - left;
-        let local = offset / stride;
-        if local < 0 || local as usize >= columns {
-            return None;
-        }
-        if offset % stride >= stride.saturating_sub(2) {
-            return None;
-        }
-        let column = self.scroll_column + local as usize;
-        Some(column)
+        let scroll_offset = self.column_offset(self.scroll_column);
+        self.with_column_layout(|layout| {
+            let start = self.scroll_column.min(layout.widths.len());
+            for column in start..layout.widths.len() {
+                let width = layout.widths[column];
+                // A hidden column occupies no slot, so the pointer can never land in it.
+                if width == 0 {
+                    continue;
+                }
+                let start_x = layout.offsets[column] - scroll_offset;
+                if offset < start_x {
+                    return None;
+                }
+                if offset < start_x + width as i32 {
+                    // The painted cell is 2 px narrower than its slot; the rest is the gap.
+                    return (offset - start_x < width as i32 - 2).then_some(column);
+                }
+            }
+            None
+        })
     }
 }
 
@@ -1037,7 +1487,18 @@ impl EventHandler for VirtualTable {
         }
 
         match event {
+            // The context menu is a request signal, exactly like the rest of the table family
+            // (V-013). Both the right-button press and the platform's own menu event are
+            // reported, so a host does not have to guess which one its backend delivers.
+            Event::MousePress { pos, button: 3, .. } => self.context_menu_requested.emit(*pos),
+            Event::ContextMenu { pos } => self.context_menu_requested.emit(*pos),
             Event::MousePress { pos, button: 1, modifiers } => {
+                // A press in the column-title strip cycles that column's sort; only a body press
+                // selects a cell (V-013).
+                if let Some(column) = self.header_column_at(*pos) {
+                    let _ = self.toggle_sort_column(column);
+                    return;
+                }
                 if let Some((row, column)) = self.cell_at(*pos) {
                     let modifiers = crate::shortcut::Modifiers::from_event_bits(*modifiers);
                     self.select_cell_with_modifiers(row, column, modifiers);
@@ -1198,17 +1659,22 @@ impl Draw for VirtualTable {
         if self.show_header {
             if let Some(source) = self.data_source.as_ref() {
                 let font = effective_font(self.style());
-                let (rows, columns) = self.visible_grid(rect);
-                let _ = rows;
-                for column in 0..columns {
-                    let global = self.scroll_column + column;
-                    if global >= self.column_count() {
+                let (_, columns) = self.visible_grid(rect);
+                let scroll_offset = self.column_offset(self.scroll_column);
+                let mut painted = 0usize;
+                for global in self.scroll_column..self.column_count() {
+                    // A hidden column keeps its source index but has no slot (V-013).
+                    if self.is_column_hidden(global) {
+                        continue;
+                    }
+                    if painted >= columns {
                         break;
                     }
+                    let width = self.column_width_at(global);
                     let band = Rect::new(
-                        rect.x + 2 + column as i32 * self.column_width as i32,
+                        rect.x + 2 + self.column_offset(global) - scroll_offset,
                         rect.y + 2,
-                        self.column_width.saturating_sub(2),
+                        width.saturating_sub(2),
                         self.row_height.saturating_sub(2),
                     );
                     context.fill_rect(band, surface.blend(&ink, 0.08));
@@ -1228,6 +1694,7 @@ impl Draw for VirtualTable {
                         ink,
                         HorizontalAlignment::Left,
                     );
+                    painted += 1;
                 }
             }
         }
@@ -1252,6 +1719,28 @@ impl Draw for VirtualTable {
         // the same quantity the draw loop's local index must be offset by to reach the viewport.
         let leading_rows = self.scroll_row.saturating_sub(row_origin);
         let leading_cols = self.scroll_column.saturating_sub(col_origin);
+
+        // The alternating wash is a row band under the cells, so it is painted before the cell
+        // strokes. Off by default, which keeps the historical pixels (V-013).
+        if self.alternating_rows {
+            const INSET: i32 = 2;
+            for local_row in 0..visible_rows {
+                if (self.scroll_row + local_row) % 2 == 1 {
+                    context.fill_rect(
+                        Rect::new(
+                            rect.x + INSET,
+                            rect.y
+                                + INSET
+                                + self.header_offset()
+                                + local_row as i32 * self.row_height as i32,
+                            rect.width.saturating_sub(4),
+                            self.row_height.saturating_sub(2),
+                        ),
+                        surface.blend(&accent, 0.05),
+                    );
+                }
+            }
+        }
 
         // The grid's extent and each cell's box come from `visible_grid`/`cell_rect`, the same
         // derivation `cell_at` reads, so the cell a press resolves to is the cell that was
@@ -1289,9 +1778,17 @@ impl Draw for VirtualTable {
         // per visible cell, so a full screen paid hundreds of resolutions per frame.
         let cell_font = effective_font(self.style());
         for (row_index, row) in visible.enumerate() {
+            // `local_column` counts painted slots, so a hidden column leaves no gap and the
+            // ordinal still maps back to the absolute column `cell_at` answers with (V-013).
+            let mut local_column = 0usize;
             for (column_index, cell) in row.enumerate() {
-                let cell_rect = self.cell_rect(rect, row_index, column_index);
-                let absolute = (self.scroll_row + row_index, self.scroll_column + column_index);
+                let absolute_column = self.scroll_column + column_index;
+                if self.is_column_hidden(absolute_column) {
+                    continue;
+                }
+                let cell_rect = self.cell_rect(rect, row_index, local_column);
+                local_column += 1;
+                let absolute = (self.scroll_row + row_index, absolute_column);
                 if self
                     .encode_cell_index(absolute.0, absolute.1)
                     .is_some_and(|index| self.selection.is_selected(index))
@@ -2230,5 +2727,99 @@ mod tests {
         table.handle_event(&Event::KeyPress { key: END, modifiers: 0 });
         assert_eq!(table.selected_cell().map(|(row, _)| row), Some(99));
         assert!(table.scroll_row() > 0, "the viewport followed the cell");
+    }
+
+    /// V-013: per-column widths and hidden columns change the painted geometry, while the
+    /// absolute column indices stay stable.
+    #[test]
+    fn per_column_widths_and_hidden_columns_drive_the_geometry() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 400, 200));
+        table.set_data_source(Arc::new(StaticSource));
+
+        assert!(table.set_column_width_at(1, 40));
+        let rect0 = table.cell_rect(table.geometry(), 0, 0);
+        let rect1 = table.cell_rect(table.geometry(), 0, 1);
+        let rect2 = table.cell_rect(table.geometry(), 0, 2);
+        assert_eq!(rect1.x - rect0.x, 120);
+        assert_eq!(rect2.x - rect0.x, 160, "column 2 starts after column 1's own width");
+
+        assert!(table.set_column_hidden(1, true));
+        assert_eq!(table.column_width_at(1), 0, "a hidden column occupies no width");
+        let hidden_slot = table.cell_rect(table.geometry(), 0, 1);
+        assert_eq!(hidden_slot.x - rect0.x, 120, "column 2 moved into the freed slot");
+        assert_eq!(table.column_at(hidden_slot.x + 1), Some(2));
+        assert_eq!(table.hidden_columns(), vec![1]);
+        assert!(!table.set_column_hidden(99, true), "there is no column 99");
+    }
+
+    /// V-013: header clicks sort the window three-state, and each state paints its own order.
+    #[test]
+    fn sorting_orders_the_window_and_cycles_three_states() {
+        struct SortSource;
+        impl IncrementalTableDataSource for SortSource {
+            fn row_count(&self) -> usize {
+                3
+            }
+            fn column_count(&self) -> usize {
+                1
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                let _ = column;
+                ["c", "a", "b"].get(row).map(|value| (*value).to_string())
+            }
+        }
+
+        let first_cell = |table: &mut VirtualTable| {
+            table.fetch_visible_window().first().and_then(|row| row.first().cloned()).flatten()
+        };
+
+        let mut table = VirtualTable::new(Rect::new(0, 0, 300, 120));
+        table.set_data_source(Arc::new(SortSource));
+        table.set_show_header(true);
+
+        assert_eq!(table.toggle_sort_column(0), Some(false));
+        assert_eq!(first_cell(&mut table).as_deref(), Some("a"));
+        assert_eq!(table.toggle_sort_column(0), Some(true));
+        assert_eq!(first_cell(&mut table).as_deref(), Some("c"));
+        assert_eq!(table.toggle_sort_column(0), None, "the third state is unsorted");
+        assert!(table.sort_specs().is_empty());
+        assert_eq!(first_cell(&mut table).as_deref(), Some("c"), "source order is restored");
+
+        // A header press is the same gesture.
+        let header = Point::new(table.geometry().x + 3, table.geometry().y + 3);
+        table.handle_event(&Event::MousePress { pos: header, button: 1, modifiers: 0 });
+        assert_eq!(table.sort_specs(), &[SortSpec { column: 0, descending: false }]);
+    }
+
+    /// V-013: both the right-button press and the platform context-menu event are reported.
+    #[test]
+    fn the_context_menu_request_is_reported() {
+        use std::sync::atomic::AtomicUsize;
+
+        let mut table = VirtualTable::new(Rect::new(0, 0, 300, 120));
+        table.set_data_source(Arc::new(StaticSource));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&hits);
+        table.context_menu_requested.connect(move |_| {
+            sink.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        let pos = Point::new(10, 10);
+        table.handle_event(&Event::MousePress { pos, button: 3, modifiers: 0 });
+        table.handle_event(&Event::ContextMenu { pos });
+        assert_eq!(hits.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    /// V-013: the alternating wash changes the painted output and is off by default.
+    #[test]
+    fn alternating_rows_change_the_painted_output() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 300, 120));
+        table.set_data_source(Arc::new(StaticSource));
+        assert!(!table.alternating_rows(), "off by default keeps the historical pixels");
+        let plain = render_to_svg(&mut table);
+        table.set_alternating_rows(true);
+        assert!(table.alternating_rows());
+        let striped = render_to_svg(&mut table);
+        assert_ne!(plain, striped, "the odd-row band is actually painted");
     }
 }

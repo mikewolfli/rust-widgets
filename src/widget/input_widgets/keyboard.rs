@@ -535,9 +535,18 @@ impl Keyboard {
                 let mut remaining = self.repeat_elapsed - initial;
                 while remaining >= interval {
                     remaining -= interval;
-                    if let Some(key) = self.keys.get(row).and_then(|keys| keys.get(col)) {
-                        let key_code = key.key_code;
-                        self.emit_key_signals(key_code);
+                    // A repeat is a full activation, not just a key-code signal: the old path
+                    // emitted `key_pressed` but never `text_committed`, so holding a letter typed
+                    // nothing even though the key was visibly repeating (I-018). Layout switches
+                    // and modifiers are excluded — repeating "123" would flip the layout.
+                    let repeatable = self
+                        .keys
+                        .get(row)
+                        .and_then(|keys| keys.get(col))
+                        .map(|key| !matches!(key.label.as_str(), "Shift" | "Caps" | "123" | "ABC"))
+                        .unwrap_or(false);
+                    if repeatable {
+                        self.activate_key((row, col));
                     }
                 }
                 self.repeat_elapsed = initial + remaining;
@@ -1827,5 +1836,23 @@ mod tests {
         // Five rows over 160 px, eight keys over 320 px: the first cell is 40 x 32.
         kbd.handle_event(&Event::MousePress { pos: Point::new(20, 16), button: 1, modifiers: 0 });
         assert_eq!(*committed.lock().unwrap(), "😀");
+    }
+
+    /// Auto-repeat commits text, not only a key code (I-018).
+    #[test]
+    fn a_repeat_commits_the_character() {
+        use std::sync::{Arc, Mutex};
+        let mut kbd = Keyboard::new(Rect::new(0, 0, 320, 160));
+        let committed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let observed = committed.clone();
+        kbd.text_committed.connect(move |text| observed.lock().unwrap().push(text.to_string()));
+        // Row 1, column 0 is `a`.
+        kbd.handle_event(&Event::MousePress { pos: Point::new(17, 60), button: 1, modifiers: 0 });
+        committed.lock().unwrap().clear();
+        assert!(kbd.tick(600));
+        assert!(
+            !committed.lock().unwrap().is_empty(),
+            "a held letter must produce characters, not just key-code signals"
+        );
     }
 }

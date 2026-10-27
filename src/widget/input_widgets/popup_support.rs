@@ -73,6 +73,20 @@ pub(crate) fn expect_strings(value: CapabilityValue) -> Result<Vec<String>, Capa
     items.into_iter().map(|item| expect_string(item).map(|text| text.to_string())).collect()
 }
 
+/// Clamps `rect` into `viewport` on all four sides.
+///
+/// A popup that is larger than the viewport cannot be clamped without shrinking, so it
+/// is pinned to the viewport's origin on the axis it overflows. Both the validation
+/// bubble and the recent-values popup use this, so "stays on screen" is one rule (I-125).
+pub(crate) fn clamp_rect_into(rect: Rect, viewport: Rect) -> Rect {
+    let max_x = viewport.x.saturating_add(viewport.width as i32).saturating_sub(rect.width as i32);
+    let max_y =
+        viewport.y.saturating_add(viewport.height as i32).saturating_sub(rect.height as i32);
+    let x = if max_x < viewport.x { viewport.x } else { rect.x.clamp(viewport.x, max_x) };
+    let y = if max_y < viewport.y { viewport.y } else { rect.y.clamp(viewport.y, max_y) };
+    Rect::new(x, y, rect.width, rect.height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +112,17 @@ mod tests {
     fn rows_round_trip() {
         let rows = vec!["one".to_string(), "two".to_string()];
         assert_eq!(expect_strings(strings_value(&rows)).unwrap(), rows);
+    }
+
+    #[test]
+    fn a_rectangle_is_clamped_on_all_four_sides() {
+        let viewport = Rect::new(0, 0, 100, 100);
+        assert_eq!(clamp_rect_into(Rect::new(-5, -3, 20, 10), viewport), Rect::new(0, 0, 20, 10));
+        assert_eq!(clamp_rect_into(Rect::new(95, 98, 20, 10), viewport), Rect::new(80, 90, 20, 10));
+        // Larger than the viewport: pinned to its origin rather than pushed off it.
+        assert_eq!(
+            clamp_rect_into(Rect::new(10, 10, 200, 200), viewport),
+            Rect::new(0, 0, 200, 200)
+        );
     }
 }

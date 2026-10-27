@@ -14,6 +14,13 @@ pub enum Alignment {
     Top,
     /// Align to bottom edge.
     Bottom,
+    /// Align text baselines (LAY-004).
+    ///
+    /// A cross-axis alignment for row-like containers (`BoxLayout`, `FlexLayout`): every
+    /// `Baseline` item in the row places its text baseline at one shared cross coordinate.
+    /// It is not a horizontal or a vertical edge alignment, so the axis conversions answer
+    /// `None` for it, and a column treats it as the start edge (the flex column's reading).
+    Baseline,
 }
 /// Horizontal alignment options for widget and layout APIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -46,7 +53,9 @@ impl HorizontalAlignment {
             Alignment::Left => Some(Self::Left),
             Alignment::Center => Some(Self::Center),
             Alignment::Right => Some(Self::Right),
-            Alignment::Top | Alignment::Bottom => None,
+            // `Baseline` is a cross-axis alignment for row containers, not an edge on
+            // either named axis.
+            Alignment::Top | Alignment::Bottom | Alignment::Baseline => None,
         }
     }
 }
@@ -57,7 +66,9 @@ impl VerticalAlignment {
             Alignment::Top => Some(Self::Top),
             Alignment::Center => Some(Self::Center),
             Alignment::Bottom => Some(Self::Bottom),
-            Alignment::Left | Alignment::Right => None,
+            // `Baseline` aligns a row's text baselines, which is a vertical *offset*
+            // decision, not one of the three vertical edges.
+            Alignment::Left | Alignment::Right | Alignment::Baseline => None,
         }
     }
 }
@@ -132,6 +143,7 @@ impl Alignment {
             "right" | "r" => Some(Self::Right),
             "top" | "t" => Some(Self::Top),
             "bottom" | "b" => Some(Self::Bottom),
+            "baseline" => Some(Self::Baseline),
             _ => None,
         }
     }
@@ -143,6 +155,7 @@ impl Alignment {
             Self::Right => "right",
             Self::Top => "top",
             Self::Bottom => "bottom",
+            Self::Baseline => "baseline",
         }
     }
     /// Returns true if alignment is horizontal.
@@ -159,7 +172,8 @@ impl Alignment {
             Self::Left => Some(HorizontalAlignment::Left),
             Self::Center => Some(HorizontalAlignment::Center),
             Self::Right => Some(HorizontalAlignment::Right),
-            Self::Top | Self::Bottom => None,
+            // `Baseline` is a cross-axis alignment for row containers, not a horizontal edge.
+            Self::Top | Self::Bottom | Self::Baseline => None,
         }
     }
     /// Converts to VerticalAlignment if possible.
@@ -168,7 +182,8 @@ impl Alignment {
             Self::Top => Some(VerticalAlignment::Top),
             Self::Center => Some(VerticalAlignment::Center),
             Self::Bottom => Some(VerticalAlignment::Bottom),
-            Self::Left | Self::Right => None,
+            // `Baseline` aligns baselines within a row; it is not a vertical edge.
+            Self::Left | Self::Right | Self::Baseline => None,
         }
     }
     /// Returns true if alignment is left.
@@ -207,6 +222,9 @@ impl Alignment {
             Self::Right => Self::Left,
             Self::Top => Self::Bottom,
             Self::Bottom => Self::Top,
+            // Baseline alignment has no opposing edge: it is its own mirror, the way
+            // `Center` is.
+            Self::Baseline => Self::Baseline,
         }
     }
     /// Returns CSS text-align value for horizontal alignments.
@@ -285,5 +303,8 @@ mod tests {
             Some(VerticalAlignment::Bottom)
         );
         assert_eq!(VerticalAlignment::from_alignment(Alignment::Right), None);
+        // LAY-004: `Baseline` is a row-container alignment, not an edge on either axis.
+        assert_eq!(HorizontalAlignment::from_alignment(Alignment::Baseline), None);
+        assert_eq!(VerticalAlignment::from_alignment(Alignment::Baseline), None);
     }
 }

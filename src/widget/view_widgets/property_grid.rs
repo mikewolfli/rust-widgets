@@ -8,6 +8,7 @@
 //! - Value column (right): editable text with alternating row colors
 //!   Supports row selection via click and emits a `selected` signal.
 
+use crate::compat::Rc;
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -320,7 +321,11 @@ pub struct PropertyGrid {
     /// The row whose choice popup is open, if any (V-16).
     choice_popup: Option<usize>,
     /// The display rows (group headers + items), cached until the structure changes (V-17).
-    grouped_cache: std::cell::RefCell<Option<(u64, Vec<PropertyRow>)>>,
+    ///
+    /// The cache holds an `Rc` so a reader shares the row set instead of cloning the whole
+    /// table: five call sites (paint, geometry, hit test) used to deep-copy every row on every
+    /// call (V-012).
+    grouped_cache: std::cell::RefCell<Option<(u64, Rc<Vec<PropertyRow>>)>>,
     /// Bumped by every structural change; keys `grouped_cache`.
     group_revision: u64,
 }
@@ -350,14 +355,15 @@ impl PropertyGrid {
     /// The painted display rows: group headers interleaved with items (V-17).
     ///
     /// Rebuilt only when the structure changes; with no categories it is exactly one `Item` per
-    /// property, so every existing geometry and hit test keeps its historical answer.
-    fn display_rows(&self) -> Vec<PropertyRow> {
+    /// property, so every existing geometry and hit test keeps its historical answer. Returns the
+    /// shared row set, so a read is a refcount bump rather than a table clone (V-012).
+    fn display_rows(&self) -> Rc<Vec<PropertyRow>> {
         let mut cache = self.grouped_cache.borrow_mut();
         let stale = cache.as_ref().is_none_or(|(revision, _)| *revision != self.group_revision);
         if stale {
-            *cache = Some((self.group_revision, self.build_display_rows()));
+            *cache = Some((self.group_revision, Rc::new(self.build_display_rows())));
         }
-        cache.as_ref().expect("the display rows were just built").1.clone()
+        Rc::clone(&cache.as_ref().expect("the display rows were just built").1)
     }
 
     /// Builds the display rows from the property list.
@@ -2017,7 +2023,7 @@ mod tests {
 
         let rows = grid.display_rows();
         assert_eq!(
-            rows,
+            *rows,
             vec![
                 PropertyRow::Category("General".into()),
                 PropertyRow::Item(0),
@@ -2041,5 +2047,25 @@ mod tests {
             modifiers: 0,
         });
         assert_eq!(grid.selected_index(), Some(0));
+    }
+
+    /// V-012: repeated reads share one row set instead of cloning the table.
+    ///
+    /// The pointer comparison is the observable form of the change: a caller must receive the
+    /// cache's own allocation on a cache hit, and a new one only after the structure moves.
+    #[test]
+    fn display_rows_are_shared_between_reads() {
+        let mut grid = PropertyGrid::new(Rect::new(0, 0, 320, 300));
+        grid.add_property("A", "1", true);
+        grid.add_property("B", "2", false);
+
+        let first = grid.display_rows();
+        let second = grid.display_rows();
+        assert!(Rc::ptr_eq(&first, &second), "a cache hit hands out the same row set");
+
+        grid.add_property("C", "3", true);
+        let third = grid.display_rows();
+        assert!(!Rc::ptr_eq(&first, &third), "a structural change rebuilds the row set");
+        assert_eq!(third.len(), 3);
     }
 }

@@ -3,11 +3,11 @@
 
 //! WGPU renderer implementation.
 use super::commands::WgpuDrawCommand;
-use super::raster::{align_to, rasterize_draw_commands_rgba8};
+use super::raster::{align_to, rasterize_draw_commands_into_rgba8, rasterize_draw_commands_rgba8};
 use super::shaders::ShaderModule;
-use super::types::Rgba8;
+use super::types::{PixelRect, Rgba8};
 use crate::render::gpu::{GpuCapability, GpuRenderer};
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -100,6 +100,98 @@ struct DepthTarget {
     view: wgpu::TextureView,
 }
 
+/// Grow-only uniform arena for the SDF circle pipeline (G-219).
+///
+/// Each circle consumes two 16-byte slots at the dynamic-offset stride — the fill colour at
+/// `2 * i` and the radius/centre SDF parameters at `2 * i + 1` — so one buffer and one bind
+/// group serve every circle of a frame. The bind group binds the same buffer at both
+/// entries; the per-draw dynamic offsets select the slots.
+struct CircleUniformArena {
+    buffer: wgpu::Buffer,
+    capacity: u64,
+    bind_group: wgpu::BindGroup,
+}
+
+/// Grow-only CPU frame storage for one render path (G-221).
+///
+/// The rasteriser zero-fills the frame, so a reused allocation is byte-identical to a fresh
+/// one; only the capacity is retained. A separate cell per path lets a caller keep one frame
+/// borrowed (for an upload) without blocking a different path's borrow.
+struct CpuFrame {
+    bytes: RefCell<Vec<u8>>,
+}
+
+impl CpuFrame {
+    fn new() -> Self {
+        Self { bytes: RefCell::new(Vec::new()) }
+    }
+
+    /// Rasterises `commands` into this path's buffer and lends the frame back to the caller.
+    ///
+    /// The buffer grows only. `bytes` is re-borrowed immutably for the returned guard after
+    /// the rasteriser has finished, so the caller cannot observe a half-drawn frame.
+    fn rasterize(
+        &self,
+        width: u32,
+        height: u32,
+        commands: &[WgpuDrawCommand],
+    ) -> Result<Ref<'_, [u8]>, String> {
+        let byte_len = rgba_buffer_len(width, height)?;
+        {
+            let mut bytes = self.bytes.borrow_mut();
+            if bytes.len() < byte_len {
+                bytes.resize(byte_len, 0);
+            }
+            rasterize_draw_commands_into_rgba8(width, height, commands, &mut bytes[..byte_len])?;
+        }
+        Ok(Ref::map(self.bytes.borrow(), |bytes| &bytes[..byte_len]))
+    }
+}
+
+/// One encoded draw of the command-stream pass (G-218).
+///
+/// The dispatcher packs the frame's geometry first and records the draw order here, so the
+/// render pass replays painter order exactly without re-deciding anything while encoding.
+enum DrawStep {
+    /// Full-screen repaint through the clear pipeline; the payload is the colour slot index
+    /// in the shared uniform arena.
+    Clear(usize),
+    /// Instanced quad run over the instance range `[start, end)` of the packed instance
+    /// region.
+    Rects(usize, usize),
+    /// One SDF circle draw over the bounding quad at `quad_index`.
+    Circle(usize),
+}
+
+/// CPU-side packing buffers reused across calls (G-216).
+///
+/// Every entry point used to build a fresh `Vec` for the bytes it uploads: instance records,
+/// per-rect NDC vertices, uniform staging, mesh vertices and indices. The packing itself is
+/// unavoidable — the GPU consumes a byte layout — but the allocation is not: these buffers
+/// are cleared and refilled each call, so the capacity the peak frame required is retained
+/// across frames instead of being freed and re-grown.
+#[derive(Default)]
+struct PackScratch {
+    /// Instanced quad records, `INSTANCE_BYTES` per instance.
+    instances: Vec<u8>,
+    /// Per-rect NDC vertices, 48 bytes (twelve `f32`) per rectangle.
+    vertices: Vec<u8>,
+    /// Colour slots staged for the shared uniform arena, one aligned slot per rectangle.
+    uniform: Vec<u8>,
+    /// SDF circle bounding quads, six 8-byte vertices per circle (G-219).
+    circle_vertices: Vec<u8>,
+    /// SDF circle uniform slots, two aligned slots per circle (G-219).
+    circle_uniforms: Vec<u8>,
+    /// The command-stream dispatcher's draw order (G-218).
+    plan: Vec<DrawStep>,
+    /// Mesh vertices, 32 bytes per vertex (`3d`).
+    #[cfg(feature = "3d")]
+    mesh_vertices: Vec<u8>,
+    /// Mesh indices as little-endian `u32` (`3d`).
+    #[cfg(feature = "3d")]
+    mesh_indices: Vec<u8>,
+}
+
 /// Creates a 64-byte matrix uniform and the bind group that exposes it at group 0, binding 0.
 ///
 /// Both the instanced quad pipeline and the mesh pipeline use one matrix per call rather than a
@@ -160,6 +252,10 @@ struct RenderCache {
     blur: Option<BlurTargets>,
     /// Mvp uniform and bind group for the instanced quad pipeline.
     transformed_uniform: Option<TransformedUniform>,
+    /// Grow-only uniform arena for the SDF circle pipeline (G-219).
+    circle_uniforms: Option<CircleUniformArena>,
+    /// CPU-side packing buffers refilled each call instead of reallocated (G-216).
+    pack: PackScratch,
     /// The `Depth32Float` attachment for mesh draws.
     #[cfg(feature = "3d")]
     depth_target: Option<DepthTarget>,
@@ -360,7 +456,7 @@ impl RenderCache {
         let make_params = |label: &str| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
-                size: 16,
+                size: 32,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             })
@@ -381,7 +477,7 @@ impl RenderCache {
                         resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                             buffer,
                             offset: 0,
-                            size: wgpu::BufferSize::new(16),
+                            size: wgpu::BufferSize::new(32),
                         }),
                     },
                 ],
@@ -473,6 +569,66 @@ impl RenderCache {
         });
         self.mesh_indices = Some(VertexCache { buffer, capacity });
     }
+
+    /// Ensures the circle arena can hold `circles` two-slot records (G-219).
+    ///
+    /// The two bind-group entries point at the same buffer; the per-draw dynamic offsets
+    /// select the colour and parameter slots. The stride is the device's dynamic-offset
+    /// alignment, exactly like the colour arena, so every offset stays legal on any backend.
+    fn ensure_circle_uniforms(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        circles: usize,
+    ) -> Result<(), String> {
+        let stride = Self::uniform_stride(device);
+        let slots = (circles.saturating_mul(2)).max(1) as u64;
+        let needed = stride.checked_mul(slots).ok_or_else(|| {
+            format!("{slots} circle uniform slots overflow the uniform buffer size")
+        })?;
+        let needs_new =
+            self.circle_uniforms.as_ref().map(|arena| arena.capacity < needed).unwrap_or(true);
+        if needs_new {
+            if needed > device.limits().max_buffer_size {
+                return Err(format!("{needed} uniform bytes exceed the device buffer limit"));
+            }
+            let capacity = grown_buffer_capacity(
+                self.circle_uniforms.as_ref().map_or(0, |arena| arena.capacity),
+                needed,
+                device.limits().max_buffer_size,
+            );
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("circle_sdf_ubo"),
+                size: capacity,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("circle_sdf_bind_group"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &buffer,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(16),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &buffer,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(16),
+                        }),
+                    },
+                ],
+            });
+            self.circle_uniforms = Some(CircleUniformArena { buffer, capacity, bind_group });
+        }
+        Ok(())
+    }
 }
 
 /// Byte length of an RGBA8 image of `width × height` pixels.
@@ -501,6 +657,12 @@ fn rgba_buffer_len(width: u32, height: u32) -> Result<usize, String> {
     Ok(bytes)
 }
 
+/// Quantises a unit-interval colour to the 8-bit RGBA the rasteriser consumes.
+fn rgba8_from_unit(color: [f64; 4]) -> Rgba8 {
+    let channel = |value: f64| (value.clamp(0.0, 1.0) * 255.0) as u8;
+    Rgba8 { r: channel(color[0]), g: channel(color[1]), b: channel(color[2]), a: channel(color[3]) }
+}
+
 /// Bytes per row of an RGBA8 image, aligned to WebGPU's copy requirement.
 fn padded_row_bytes(width: u32) -> Result<u32, String> {
     let unpadded = width
@@ -515,38 +677,6 @@ fn readback_frame_bytes(width: u32, height: u32) -> Result<u64, String> {
     (padded as u64)
         .checked_mul(height as u64)
         .ok_or_else(|| format!("readback buffer for {width}x{height} overflows u64"))
-}
-
-/// Composites `tint` over every pixel of a straight-RGBA frame.
-///
-/// `weight` scales the tint's alpha, so a tint colour with `a = 200` at weight `0.5`
-/// contributes half of its own opacity. A non-finite weight is ignored rather than clamped:
-/// `f32::clamp` propagates `NaN`, and a `NaN` here would poison every channel of the frame.
-fn tint_blurred_frame(frame: &mut [u8], tint: Rgba8, weight: f32) {
-    if !weight.is_finite() {
-        return;
-    }
-    let weight = weight.clamp(0.0, 1.0);
-    let tint_alpha = (tint.a as f32 / 255.0) * weight;
-    if tint_alpha <= 0.0 {
-        return;
-    }
-    let tint_rgb = [tint.r as f32 / 255.0, tint.g as f32 / 255.0, tint.b as f32 / 255.0];
-    for pixel in frame.as_chunks_mut::<4>().0 {
-        let dst_alpha = pixel[3] as f32 / 255.0;
-        let out_alpha = tint_alpha + dst_alpha * (1.0 - tint_alpha);
-        if out_alpha <= f32::EPSILON {
-            pixel.fill(0);
-            continue;
-        }
-        for channel in 0..3 {
-            let dst = pixel[channel] as f32 / 255.0;
-            let blended =
-                (tint_rgb[channel] * tint_alpha + dst * dst_alpha * (1.0 - tint_alpha)) / out_alpha;
-            pixel[channel] = (blended * 255.0).round().clamp(0.0, 255.0) as u8;
-        }
-        pixel[3] = (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
-    }
 }
 
 /// Packs a row-major [`crate::render::math3d::Mat4`] as the column-major bytes WGSL expects.
@@ -599,57 +729,126 @@ fn ortho_mvp_bytes(width: u32, height: u32) -> [u8; 64] {
     bytes
 }
 
+/// Bytes of one SDF circle draw's vertex data: six `vec2f` vertices bounding the disc (G-219).
+const CIRCLE_QUAD_BYTES: usize = 48;
+
+/// Clamped bounding quad of a disc, in the pixel-centre frame the SDF expects (G-219).
+///
+/// Returns `(x0, y0, x1, y1)` for a disc whose centre sits at `(cx + 0.5, cy + 0.5)`: a pixel
+/// centre at `(k + 0.5, j + 0.5)` lies within `radius` of that centre exactly when the software
+/// rasteriser paints pixel `(k, j)`, so this quad covers precisely the pixels the disc can
+/// touch. The quad is clamped to the viewport — fragments outside it are clipped anyway, and
+/// clamping keeps visible-pixel positions exact because interpolation is affine in screen
+/// space — and a disc that covers no pixel returns `None`, matching the software path's
+/// off-screen skip. The arithmetic runs in `i64` so extreme centres and radii cannot wrap.
+fn circle_quad(
+    center: (i32, i32),
+    radius: u32,
+    width: u32,
+    height: u32,
+) -> Option<(i64, i64, i64, i64)> {
+    let (cx, cy) = (center.0 as i64, center.1 as i64);
+    let r = radius as i64;
+    let x0 = (cx - r).max(0);
+    let y0 = (cy - r).max(0);
+    let x1 = (cx + r + 1).min(width as i64);
+    let y1 = (cy + r + 1).min(height as i64);
+    if x0 >= x1 || y0 >= y1 {
+        return None;
+    }
+    Some((x0, y0, x1, y1))
+}
+
+/// Writes one circle's bounding quad (six vertices) and its two uniform slots — the fill
+/// colour, then the radius/centre parameters [`super::shaders::CIRCLE_FRAG`] reads — into the
+/// reused packing buffers (G-219).
+///
+/// `uniforms` is indexed at the aligned slot stride: slot `2 * index` is the colour, slot
+/// `2 * index + 1` the `(radius, centre.x, centre.y)` parameter vector. The centre carries the
+/// half-pixel offset so the SDF's pixel-centre coordinates line up with the vertex-frame
+/// positions the vertex stage interpolates.
+fn pack_circle(
+    pack_vertices: &mut Vec<u8>,
+    pack_uniforms: &mut Vec<u8>,
+    stride: usize,
+    index: usize,
+    center: (i32, i32),
+    radius: u32,
+    colour: &[f64; 4],
+    quad: (i64, i64, i64, i64),
+) {
+    let (x0, y0, x1, y1) = quad;
+    let mut vertices = [0u8; CIRCLE_QUAD_BYTES];
+    // Two triangles from the quad: (0, 1, 2) and (0, 2, 3) in corner order
+    // (x0,y0), (x1,y0), (x1,y1), (x0,y1).
+    for (slot, (x, y)) in
+        [(x0, y0), (x1, y0), (x1, y1), (x0, y0), (x1, y1), (x0, y1)].iter().enumerate()
+    {
+        vertices[slot * 8..slot * 8 + 4].copy_from_slice(&(*x as f32).to_le_bytes());
+        vertices[slot * 8 + 4..slot * 8 + 8].copy_from_slice(&(*y as f32).to_le_bytes());
+    }
+    pack_vertices.extend_from_slice(&vertices);
+
+    let mut colour_slot = [0u8; 16];
+    for (channel, value) in colour.iter().enumerate() {
+        colour_slot[channel * 4..channel * 4 + 4]
+            .copy_from_slice(&((*value).clamp(0.0, 1.0) as f32).to_le_bytes());
+    }
+    let mut params_slot = [0u8; 16];
+    params_slot[0..4].copy_from_slice(&(radius as f32).to_le_bytes());
+    params_slot[4..8].copy_from_slice(&((center.0 as f32) + 0.5).to_le_bytes());
+    params_slot[8..12].copy_from_slice(&((center.1 as f32) + 0.5).to_le_bytes());
+    let base = index * 2 * stride;
+    pack_uniforms[base..base + 16].copy_from_slice(&colour_slot);
+    pack_uniforms[base + stride..base + stride + 16].copy_from_slice(&params_slot);
+}
+
+/// Whether a command stream can be drawn entirely by the GPU pipelines (G-218).
+///
+/// Only the classes the existing pipelines cover qualify: whole-frame clears, unclipped filled
+/// rectangles (the instanced quad pipeline) and unclipped filled circles (the SDF circle
+/// pipeline). [`WgpuDrawCommand::SetBlendMode`] is allowed only at `Normal` (mode `0`),
+/// because every pipeline writes with `REPLACE` blending, which is exactly the Normal write;
+/// any other mode needs blending the pipelines do not implement. Clips, text, images, paths,
+/// gradients, shadows and strokes stay on the CPU rasteriser, which remains the fallback.
+fn commands_gpu_dispatchable(commands: &[WgpuDrawCommand]) -> bool {
+    commands.iter().all(|command| match command {
+        WgpuDrawCommand::Clear { .. } => true,
+        WgpuDrawCommand::FillRect { clip: None, .. } => true,
+        WgpuDrawCommand::FillCircle { clip: None, .. } => true,
+        WgpuDrawCommand::SetBlendMode { mode } => *mode == 0,
+        _ => false,
+    })
+}
+
 /// Packs a run of quads into the 48-byte-per-instance layout described on
-/// [`super::shaders::FILL_RECT_VS_TRANSFORMED`].
+/// [`super::shaders::FILL_RECT_VS_TRANSFORMED`], appending to the reused scratch buffer
+/// `out` (G-216).
 ///
 /// Each record is the four corners in perimeter order, then straight RGBA with every channel
 /// clamped to `0.0..=1.0`. Returns an explicit error rather than wrapping if the run is too
-/// large to address, so a hostile count cannot produce a short buffer.
-fn instanced_quad_bytes(quads: &[([crate::core::Point; 4], [f64; 4])]) -> Result<Vec<u8>, String> {
+/// large to address, so a hostile count cannot produce a short buffer. `out` is cleared first;
+/// the capacity a peak frame built up is retained across calls.
+fn pack_instanced_quads(
+    quads: &[([crate::core::Point; 4], [f64; 4])],
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
     let capacity = quads
         .len()
         .checked_mul(INSTANCE_BYTES)
         .ok_or_else(|| format!("{} quads overflow the instance buffer size", quads.len()))?;
-    let mut bytes = Vec::with_capacity(capacity);
+    out.clear();
+    out.reserve(capacity);
     for (corners, colour) in quads {
         for point in corners {
-            bytes.extend_from_slice(&(point.x as f32).to_le_bytes());
-            bytes.extend_from_slice(&(point.y as f32).to_le_bytes());
+            out.extend_from_slice(&(point.x as f32).to_le_bytes());
+            out.extend_from_slice(&(point.y as f32).to_le_bytes());
         }
         for channel in colour {
-            bytes.extend_from_slice(&((*channel).clamp(0.0, 1.0) as f32).to_le_bytes());
+            out.extend_from_slice(&((*channel).clamp(0.0, 1.0) as f32).to_le_bytes());
         }
     }
-    Ok(bytes)
-}
-
-/// Packs a mesh's vertices into the 32-byte interleaved layout [`super::shaders::MESH3D_VS`] reads.
-///
-/// Each record is the position as `(x, y, z, 1)` followed by straight RGBA, all little-endian
-/// `f32`. The stride, the shader's attribute offsets and this writer must agree exactly; a
-/// mismatch is a pipeline validation error rather than a silent misread.
-#[cfg(feature = "3d")]
-fn mesh_vertex_bytes(mesh: &crate::render::mesh3d::Mesh3D) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(mesh.vertices().len() * 32);
-    for vertex in mesh.vertices() {
-        for value in [vertex.position.x, vertex.position.y, vertex.position.z, 1.0] {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        for channel in [vertex.color.r, vertex.color.g, vertex.color.b, vertex.color.a] {
-            bytes.extend_from_slice(&((channel as f32) / 255.0).to_le_bytes());
-        }
-    }
-    bytes
-}
-
-/// Packs a mesh's indices as little-endian `u32`, matching `IndexFormat::Uint32`.
-#[cfg(feature = "3d")]
-fn mesh_index_bytes(mesh: &crate::render::mesh3d::Mesh3D) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(mesh.indices().len() * 4);
-    for index in mesh.indices() {
-        bytes.extend_from_slice(&index.to_le_bytes());
-    }
-    bytes
+    Ok(())
 }
 
 /// Lightweight GPU renderer context backed by `wgpu`.
@@ -664,14 +863,20 @@ pub struct WgpuRenderer {
     /// passes. A 2D effect, so it is compiled in every build rather than behind `3d`.
     blur_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
-    /// Bind group layout of the blur pass: a non-filterable input texture and a 16-byte uniform
-    /// (`direction`, `radius`).
+    /// Bind group layout of the blur pass: a non-filterable input texture and a 32-byte
+    /// uniform (`direction`, `radius`, and the G-220 tint block the vertical pass composites).
     blur_bind_group_layout: wgpu::BindGroupLayout,
     /// Instanced quad pipeline. It renders a whole run of rectangles (and, with `3d`, arbitrary
     /// transformed quads) in `MAX_INSTANCES_PER_DRAW`-sized draws (G-64).
     transformed_pipeline: wgpu::RenderPipeline,
     /// The vertex-stage layout that carries the mvp matrix (group 0 of the instanced pipeline).
     transformed_bind_group_layout: wgpu::BindGroupLayout,
+    /// The SDF circle pipeline: one bounding quad per circle, shaded by a distance field in
+    /// the fragment stage (G-219).
+    circle_pipeline: wgpu::RenderPipeline,
+    /// Bind group layout of the SDF circle pipeline: two dynamic-offset uniforms (the fill
+    /// colour and the radius/centre parameters) at group 0; the mvp matrix rides group 1.
+    circle_bind_group_layout: wgpu::BindGroupLayout,
     /// Depth-tested triangle pipeline for mesh draws (`3d` only).
     #[cfg(feature = "3d")]
     mesh_pipeline: wgpu::RenderPipeline,
@@ -679,6 +884,13 @@ pub struct WgpuRenderer {
     shader_cache: HashMap<String, wgpu::ShaderModule>,
     /// Device resources reused across calls (REND-02).
     cache: RefCell<RenderCache>,
+    /// Reusable CPU frame for whole-frame clears (G-221).
+    clear_frame: CpuFrame,
+    /// Reusable CPU frame for command streams (G-221).
+    commands_frame: CpuFrame,
+    /// Reusable CPU frame for the dispatcher's inner fallback, which runs while `cache` is
+    /// already borrowed, so it cannot share `commands_frame` (G-221).
+    fallback_frame: CpuFrame,
     /// What `wgpu` reported for the selected adapter, kept so [`GpuRenderer::vendor_info`] can
     /// answer with the real device name instead of a constant (G-232).
     adapter_info: wgpu::AdapterInfo,
@@ -795,6 +1007,14 @@ impl WgpuRenderer {
         let blur_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("blur_fs"),
             source: wgpu::ShaderSource::Wgsl(super::shaders::BLUR_FS.into()),
+        });
+        let circle_vs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("circle_vs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::CIRCLE_VS.into()),
+        });
+        let circle_fs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("circle_fs"),
+            source: wgpu::ShaderSource::Wgsl(super::shaders::CIRCLE_FRAG.into()),
         });
 
         // Create bind group layout for uniform color (shared between clear and rect pipelines)
@@ -957,7 +1177,8 @@ impl WgpuRenderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: Some(wgpu::BufferSize::new(16).unwrap()),
+                            // One `BlurParams`: direction, radius and the G-220 tint block.
+                            min_binding_size: Some(wgpu::BufferSize::new(32).unwrap()),
                         },
                         count: None,
                     },
@@ -979,6 +1200,99 @@ impl WgpuRenderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &blur_fs_module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // ── Create the SDF circle pipeline (G-219) ──
+        //
+        // One draw covers one circle: the vertex stage transforms the six vertices of the
+        // circle's bounding quad from pixel space, and the fragment stage evaluates a distance
+        // field against per-circle uniforms, replacing the per-column one-pixel strips. Group 0
+        // carries two dynamic-offset uniforms per draw — the fill colour and the radius/centre
+        // parameters — both pointing into one shared arena, so a frame of N circles is one
+        // uniform upload and two offset bindings per circle. Group 1 is the shared mvp matrix
+        // layout, the same one the instanced quad pipeline uses. Culling is disabled: the quad
+        // is expanded by hand and its winding is not a mirror signal.
+        let circle_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("circle_sdf_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: true,
+                            min_binding_size: Some(wgpu::BufferSize::new(16).unwrap()),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: true,
+                            min_binding_size: Some(wgpu::BufferSize::new(16).unwrap()),
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let circle_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("circle_sdf_pipeline_layout"),
+                bind_group_layouts: &[
+                    Some(&circle_bind_group_layout),
+                    Some(&transformed_bind_group_layout),
+                ],
+                immediate_size: 0,
+            });
+        // One `vec2f` pixel-space position per vertex, six vertices per circle.
+        let circle_vertex_buffer_layout = wgpu::VertexBufferLayout {
+            array_stride: 8,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: 0,
+                shader_location: 0,
+            }],
+        };
+        let circle_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("circle_sdf_pipeline"),
+            layout: Some(&circle_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &circle_vs_module,
+                entry_point: Some("vs_main"),
+                buffers: &[Some(circle_vertex_buffer_layout)],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &circle_fs_module,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8Unorm,
@@ -1168,6 +1482,8 @@ impl WgpuRenderer {
         shader_cache.insert("blur_fs".to_string(), blur_fs_module);
         shader_cache.insert("rect_vs_transformed".to_string(), transformed_vs_module);
         shader_cache.insert("rect_fs_instanced".to_string(), instanced_fs_module);
+        shader_cache.insert("circle_vs".to_string(), circle_vs_module);
+        shader_cache.insert("circle_fs".to_string(), circle_fs_module);
         #[cfg(feature = "3d")]
         shader_cache.insert("mesh3d_vs".to_string(), mesh_vs_module);
         #[cfg(feature = "3d")]
@@ -1179,6 +1495,8 @@ impl WgpuRenderer {
             clear_pipeline,
             rect_pipeline,
             blur_pipeline,
+            circle_pipeline,
+            circle_bind_group_layout,
             bind_group_layout,
             blur_bind_group_layout,
             transformed_pipeline,
@@ -1187,6 +1505,9 @@ impl WgpuRenderer {
             mesh_pipeline,
             shader_cache,
             cache: RefCell::new(RenderCache::default()),
+            clear_frame: CpuFrame::new(),
+            commands_frame: CpuFrame::new(),
+            fallback_frame: CpuFrame::new(),
             adapter_info,
         })
     }
@@ -1194,7 +1515,9 @@ impl WgpuRenderer {
     ///
     /// A solid clear needs no GPU work, so this fills the buffer on the CPU and returns it
     /// directly. The previous implementation routed the same fill through a texture upload and a
-    /// blocking readback, which could only reproduce the bytes it was given (G-66).
+    /// blocking readback, which could only reproduce the bytes it was given (G-66). A caller
+    /// that only uploads or reads the frame can use [`Self::render_clear_cached_rgba8`] instead
+    /// of taking this owned copy.
     pub fn render_clear_rgba8(
         &self,
         width: u32,
@@ -1204,16 +1527,25 @@ impl WgpuRenderer {
         rasterize_draw_commands_rgba8(
             width,
             height,
-            &[WgpuDrawCommand::Clear {
-                color: Rgba8 {
-                    r: (color[0].clamp(0.0, 1.0) * 255.0) as u8,
-                    g: (color[1].clamp(0.0, 1.0) * 255.0) as u8,
-                    b: (color[2].clamp(0.0, 1.0) * 255.0) as u8,
-                    a: (color[3].clamp(0.0, 1.0) * 255.0) as u8,
-                },
-            }],
+            &[WgpuDrawCommand::Clear { color: rgba8_from_unit(color) }],
         )
     }
+
+    /// Rasterises a clear frame into the renderer's reusable buffer and lends it back (G-221).
+    ///
+    /// The zero-copy counterpart of [`Self::render_clear_rgba8`]: a caller that uploads or
+    /// inspects the frame can use the borrow instead of taking an owned copy each frame. The
+    /// buffer grows only and the rasteriser clears it, so every call sees a fresh frame.
+    pub fn render_clear_cached_rgba8(
+        &self,
+        width: u32,
+        height: u32,
+        color: [f64; 4],
+    ) -> Result<Ref<'_, [u8]>, String> {
+        let clear = [WgpuDrawCommand::Clear { color: rgba8_from_unit(color) }];
+        self.clear_frame.rasterize(width, height, &clear)
+    }
+
     /// Render a clear frame using the GPU pipeline with a WGSL shader.
     /// Uses a full-screen triangle and a uniform buffer for the clear color.
     pub fn render_clear_gpu(
@@ -1288,7 +1620,7 @@ impl WgpuRenderer {
         );
 
         self.queue.submit(Some(encoder.finish()));
-        self.read_back(&readback.buffer, width, height, expected_len)
+        self.read_back_owned(&readback.buffer, width, height, expected_len)
     }
     /// Render filled rectangles using the GPU pipeline with vertex buffer shaders.
     ///
@@ -1337,56 +1669,58 @@ impl WgpuRenderer {
         let w = width as f32;
         let h = height as f32;
 
-        // Generate transformed vertex positions in NDC and one clamped colour per rect.
-        // Both are built directly as bytes: the previous `Vec<f32>` + `flat_map().collect()`
-        // pair allocated twice per call for data that is written once (REND-02).
-        let mut vertex_bytes: Vec<u8> = Vec::with_capacity(rects.len() * 48);
-        let mut colours: Vec<[f32; 4]> = Vec::with_capacity(rects.len());
-
-        for &(x, y, rw, rh, color) in rects {
-            // Convert pixel coordinates to NDC: [-1, 1]
-            // WebGPU/wgpu NDC: y = +1 maps to top of viewport, y = -1 to bottom
-            // (OpenGL convention, not Vulkan).
-            let x0 = (x as f32 / w) * 2.0 - 1.0;
-            let y0 = 1.0 - (y as f32 / h) * 2.0;
-            let x1 = ((x.saturating_add(rw as i32)) as f32 / w) * 2.0 - 1.0;
-            let y1 = 1.0 - ((y.saturating_add(rh as i32)) as f32 / h) * 2.0;
-
-            // Two triangles: bottom-left, bottom-right, top-left, then bottom-right, top-right, top-left
-            for value in [x0, y0, x1, y0, x0, y1, x1, y0, x1, y1, x0, y1] {
-                vertex_bytes.extend_from_slice(&value.to_le_bytes());
-            }
-
-            colours.push([
-                color[0].clamp(0.0, 1.0) as f32,
-                color[1].clamp(0.0, 1.0) as f32,
-                color[2].clamp(0.0, 1.0) as f32,
-                color[3].clamp(0.0, 1.0) as f32,
-            ]);
-        }
-
         // Cached resources for the whole call: one colour arena, one bind group, one vertex
         // buffer and one target (REND-02).
         let mut cache = self.cache.borrow_mut();
-        cache.ensure_uniform(&self.device, &self.bind_group_layout, colours.len())?;
+        cache.ensure_uniform(&self.device, &self.bind_group_layout, rects.len())?;
         cache.ensure_target(&self.device, width, height);
-        cache.ensure_vertices(&self.device, vertex_bytes.len() as u64);
-        let uniform = cache.uniform.as_ref().expect("the arena was just ensured");
-        let target = cache.target.as_ref().expect("the target was just ensured");
-        let vertices = cache.vertices.as_ref().expect("the vertices were just ensured");
-        let stride = uniform.stride as usize;
+        let stride = cache.uniform.as_ref().expect("the arena was just ensured").stride as usize;
 
-        // One upload for every colour, laid out at the dynamic-offset stride.
-        let mut uniform_bytes = vec![0u8; stride * colours.len()];
-        for (slot, colour) in colours.iter().enumerate() {
-            let start = slot * stride;
-            for (channel, value) in colour.iter().enumerate() {
-                uniform_bytes[start + channel * 4..start + channel * 4 + 4]
-                    .copy_from_slice(&value.to_le_bytes());
+        // Generate transformed vertex positions in NDC and one clamped colour slot per rect,
+        // directly into the reused packing buffers: the previous locals allocated the vertex
+        // bytes, the colour list and the uniform staging on every call (G-216). Only the 16
+        // colour bytes of each slot are written, so the alignment padding `resize` fills with
+        // zero stays zero.
+        let vertex_len = {
+            let pack = &mut cache.pack;
+            pack.vertices.clear();
+            pack.uniform.resize(stride * rects.len(), 0);
+            for (index, &(x, y, rw, rh, color)) in rects.iter().enumerate() {
+                // Convert pixel coordinates to NDC: [-1, 1]
+                // WebGPU/wgpu NDC: y = +1 maps to top of viewport, y = -1 to bottom
+                // (OpenGL convention, not Vulkan).
+                let x0 = (x as f32 / w) * 2.0 - 1.0;
+                let y0 = 1.0 - (y as f32 / h) * 2.0;
+                let x1 = ((x.saturating_add(rw as i32)) as f32 / w) * 2.0 - 1.0;
+                let y1 = 1.0 - ((y.saturating_add(rh as i32)) as f32 / h) * 2.0;
+
+                // Two triangles: bottom-left, bottom-right, top-left, then bottom-right, top-right, top-left
+                for value in [x0, y0, x1, y0, x0, y1, x1, y0, x1, y1, x0, y1] {
+                    pack.vertices.extend_from_slice(&value.to_le_bytes());
+                }
+
+                let slot = index * stride;
+                for (channel, value) in color.iter().enumerate() {
+                    pack.uniform[slot + channel * 4..slot + channel * 4 + 4]
+                        .copy_from_slice(&((*value).clamp(0.0, 1.0) as f32).to_le_bytes());
+                }
             }
+            pack.vertices.len()
+        };
+        cache.ensure_vertices(&self.device, vertex_len as u64);
+        let RenderCache { uniform, target, vertices, pack, .. } = &mut *cache;
+        let uniform = uniform.as_ref().expect("the arena was just ensured");
+        let target = target.as_ref().expect("the target was just ensured");
+        let vertices = vertices.as_ref().expect("the vertices were just ensured");
+
+        // One upload for the whole colour arena and one for every vertex, instead of one of
+        // each per rectangle (REND-02).
+        if !pack.uniform.is_empty() {
+            self.queue.write_buffer(&uniform.buffer, 0, &pack.uniform);
         }
-        self.queue.write_buffer(&uniform.buffer, 0, &uniform_bytes);
-        self.queue.write_buffer(&vertices.buffer, 0, &vertex_bytes);
+        if !pack.vertices.is_empty() {
+            self.queue.write_buffer(&vertices.buffer, 0, &pack.vertices);
+        }
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gpu_rect_encoder"),
@@ -1409,9 +1743,9 @@ impl WgpuRenderer {
                 multiview_mask: None,
             });
             rp.set_pipeline(&self.rect_pipeline);
-            rp.set_vertex_buffer(0, vertices.buffer.slice(..vertex_bytes.len() as u64));
+            rp.set_vertex_buffer(0, vertices.buffer.slice(..vertex_len as u64));
 
-            for index in 0..colours.len() {
+            for index in 0..rects.len() {
                 let offset = (index * stride) as u32;
                 rp.set_bind_group(0, &uniform.bind_group, &[offset]);
                 let start = (index * 6) as u32;
@@ -1472,21 +1806,26 @@ impl WgpuRenderer {
         mvp_bytes: &[u8; 64],
         quads: &[([crate::core::Point; 4], [f64; 4])],
     ) -> Result<(), String> {
-        let instance_bytes = instanced_quad_bytes(quads)?;
-
         // Cached resources for the whole call: one grow-only instance buffer, one target and
-        // one mvp uniform (REND-02).
+        // one mvp uniform (REND-02). The records are packed into the reused scratch buffer so
+        // the frame allocates nothing on the CPU side (G-216).
         let mut cache = self.cache.borrow_mut();
+        let instance_len = {
+            let pack = &mut cache.pack;
+            pack_instanced_quads(quads, &mut pack.instances)?;
+            pack.instances.len()
+        };
         cache.ensure_target(&self.device, width, height);
-        cache.ensure_vertices(&self.device, instance_bytes.len() as u64);
+        cache.ensure_vertices(&self.device, instance_len as u64);
         cache.ensure_transformed_uniform(&self.device, &self.transformed_bind_group_layout);
-        let target = cache.target.as_ref().expect("the target was just ensured");
-        let instances = cache.vertices.as_ref().expect("the instance buffer was just ensured");
-        let transformed = cache.transformed_uniform.as_ref().expect("the mvp was just ensured");
+        let RenderCache { target, vertices, transformed_uniform, pack, .. } = &mut *cache;
+        let target = target.as_ref().expect("the target was just ensured");
+        let instances = vertices.as_ref().expect("the instance buffer was just ensured");
+        let transformed = transformed_uniform.as_ref().expect("the mvp was just ensured");
 
         self.queue.write_buffer(&transformed.buffer, 0, mvp_bytes);
-        if !instance_bytes.is_empty() {
-            self.queue.write_buffer(&instances.buffer, 0, &instance_bytes);
+        if !pack.instances.is_empty() {
+            self.queue.write_buffer(&instances.buffer, 0, &pack.instances);
         }
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1620,7 +1959,7 @@ impl WgpuRenderer {
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         self.queue.submit(Some(encoder.finish()));
-        self.read_back(&readback.buffer, width, height, expected_len)
+        self.read_back_owned(&readback.buffer, width, height, expected_len)
     }
 
     /// Renders arbitrary quadrilaterals through the instanced `3d` matrix pipeline.
@@ -1679,7 +2018,7 @@ impl WgpuRenderer {
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         self.queue.submit(Some(encoder.finish()));
-        self.read_back(&readback.buffer, width, height, expected_len)
+        self.read_back_owned(&readback.buffer, width, height, expected_len)
     }
 
     /// Renders an indexed triangle mesh through the depth-tested `3d` pipeline.
@@ -1720,32 +2059,54 @@ impl WgpuRenderer {
             ),
         );
         let mvp_bytes = mvp_column_major_bytes(&mvp);
-        let vertex_bytes = mesh_vertex_bytes(mesh);
-        let index_bytes = mesh_index_bytes(mesh);
         let index_count = mesh.indices().len() as u32;
         if index_count == 0 {
             return Ok(vec![0u8; expected_len]);
         }
 
         let mut cache = self.cache.borrow_mut();
+        // Pack straight into the reused scratch buffers so a mesh frame allocates nothing on
+        // the CPU side (G-216). The strides, the shader's attribute offsets and these writers
+        // must agree exactly; a mismatch is a pipeline validation error rather than a silent
+        // misread.
+        let (vertex_len, index_len) = {
+            let pack = &mut cache.pack;
+            pack.mesh_vertices.clear();
+            pack.mesh_indices.clear();
+            for vertex in mesh.vertices() {
+                for value in [vertex.position.x, vertex.position.y, vertex.position.z, 1.0] {
+                    pack.mesh_vertices.extend_from_slice(&value.to_le_bytes());
+                }
+                for channel in [vertex.color.r, vertex.color.g, vertex.color.b, vertex.color.a] {
+                    pack.mesh_vertices.extend_from_slice(&((channel as f32) / 255.0).to_le_bytes());
+                }
+            }
+            for index in mesh.indices() {
+                pack.mesh_indices.extend_from_slice(&index.to_le_bytes());
+            }
+            (pack.mesh_vertices.len(), pack.mesh_indices.len())
+        };
         cache.ensure_target(&self.device, width, height);
         cache.ensure_depth_target(&self.device, width, height);
-        cache.ensure_vertices(&self.device, vertex_bytes.len() as u64);
-        cache.ensure_mesh_indices(&self.device, index_bytes.len() as u64);
+        cache.ensure_vertices(&self.device, vertex_len as u64);
+        cache.ensure_mesh_indices(&self.device, index_len as u64);
         cache.ensure_mesh_uniform(&self.device, &self.transformed_bind_group_layout);
-        let target = cache.target.as_ref().ok_or_else(|| "render target missing".to_string())?;
-        let depth =
-            cache.depth_target.as_ref().ok_or_else(|| "depth target missing".to_string())?;
-        let vertices =
-            cache.vertices.as_ref().ok_or_else(|| "vertex buffer missing".to_string())?;
-        let indices =
-            cache.mesh_indices.as_ref().ok_or_else(|| "index buffer missing".to_string())?;
-        let uniform =
-            cache.mesh_uniform.as_ref().ok_or_else(|| "mvp uniform missing".to_string())?;
+        let RenderCache {
+            target, depth_target, vertices, mesh_indices, mesh_uniform, pack, ..
+        } = &mut *cache;
+        let target = target.as_ref().ok_or_else(|| "render target missing".to_string())?;
+        let depth = depth_target.as_ref().ok_or_else(|| "depth target missing".to_string())?;
+        let vertices = vertices.as_ref().ok_or_else(|| "vertex buffer missing".to_string())?;
+        let indices = mesh_indices.as_ref().ok_or_else(|| "index buffer missing".to_string())?;
+        let uniform = mesh_uniform.as_ref().ok_or_else(|| "mvp uniform missing".to_string())?;
 
         self.queue.write_buffer(&uniform.buffer, 0, &mvp_bytes);
-        self.queue.write_buffer(&vertices.buffer, 0, &vertex_bytes);
-        self.queue.write_buffer(&indices.buffer, 0, &index_bytes);
+        if !pack.mesh_vertices.is_empty() {
+            self.queue.write_buffer(&vertices.buffer, 0, &pack.mesh_vertices);
+        }
+        if !pack.mesh_indices.is_empty() {
+            self.queue.write_buffer(&indices.buffer, 0, &pack.mesh_indices);
+        }
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("gpu_mesh_encoder"),
@@ -1776,9 +2137,9 @@ impl WgpuRenderer {
             });
             rp.set_pipeline(&self.mesh_pipeline);
             rp.set_bind_group(0, &uniform.bind_group, &[]);
-            rp.set_vertex_buffer(0, vertices.buffer.slice(..vertex_bytes.len() as u64));
+            rp.set_vertex_buffer(0, vertices.buffer.slice(..vertex_len as u64));
             rp.set_index_buffer(
-                indices.buffer.slice(..index_bytes.len() as u64),
+                indices.buffer.slice(..index_len as u64),
                 wgpu::IndexFormat::Uint32,
             );
             rp.draw_indexed(0..index_count, 0, 0..1);
@@ -1829,10 +2190,17 @@ impl WgpuRenderer {
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         self.queue.submit(Some(encoder.finish()));
-        self.read_back(&readback.buffer, width, height, expected_len)
+        self.read_back_owned(&readback.buffer, width, height, expected_len)
     }
 
-    /// Maps a readback buffer, copies its rows into a tight RGBA8 image and unmaps it.
+    /// Maps a readback buffer, copies its rows into a caller-provided RGBA8 image and unmaps it.
+    ///
+    /// The output goes through `out` rather than being allocated here (G-217): a caller that
+    /// renders repeatedly can carry the vector across calls and only ever pay for growth, not
+    /// a fresh allocation per frame. The entry points that must hand an owned frame back pass
+    /// a fresh vector — the mapping, polling and row-copying work is identical either way.
+    /// `out` is grown to `expected_len` and every row is overwritten, so no stale byte from a
+    /// previous frame can leak through.
     ///
     /// The buffer belongs to [`RenderCache`], so it must be unmapped before it can be reused:
     /// leaving it mapped made the next `map_async` fail silently, which is why this is one
@@ -1841,13 +2209,14 @@ impl WgpuRenderer {
     /// The wait is bounded by [`GPU_READBACK_TIMEOUT`]; on expiry the pending mapping is
     /// cancelled with `unmap` and an error is returned, so a lost device reports a failure
     /// instead of hanging the process (G-63).
-    fn read_back(
+    fn read_back_into(
         &self,
         buffer: &wgpu::Buffer,
         width: u32,
         height: u32,
         expected_len: usize,
-    ) -> Result<Vec<u8>, String> {
+        out: &mut Vec<u8>,
+    ) -> Result<(), String> {
         let unpadded = width
             .checked_mul(4)
             .ok_or_else(|| format!("row byte width for {width} pixels overflows u32"))?
@@ -1893,16 +2262,33 @@ impl WgpuRenderer {
         };
 
         // Copy row by row, stripping padding.
-        let mut pixels = vec![0u8; expected_len];
+        out.resize(expected_len, 0);
         for row in 0..height as usize {
             let src_start = row * padded;
             let dst_start = row * unpadded;
-            pixels[dst_start..dst_start + unpadded]
+            out[dst_start..dst_start + unpadded]
                 .copy_from_slice(&mapped[src_start..src_start + unpadded]);
         }
         drop(mapped);
         buffer.unmap();
-        Ok(pixels)
+        Ok(())
+    }
+
+    /// Reads the cached readback buffer into a freshly owned RGBA8 frame.
+    ///
+    /// Every public entry point returns the frame to its caller, so the output vector cannot
+    /// be carried across calls; this is the thin adapter from [`Self::read_back_into`] to
+    /// that contract (G-217).
+    fn read_back_owned(
+        &self,
+        buffer: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        expected_len: usize,
+    ) -> Result<Vec<u8>, String> {
+        let mut frame = Vec::new();
+        self.read_back_into(buffer, width, height, expected_len, &mut frame)?;
+        Ok(frame)
     }
     /// Render stroked (outlined) rectangles using the GPU pipeline.
     /// Each stroke rect is decomposed into 4 thin filled rectangles
@@ -1987,9 +2373,19 @@ impl WgpuRenderer {
         self.render_fill_rect_gpu(width, height, &fill_rects)
     }
 
-    /// Render filled circles using the GPU pipeline.
-    /// Each circle is approximated as vertical strips (thin rectangles).
-    /// The more strips, the smoother the circle.
+    /// Render filled circles using the SDF circle pipeline (G-219).
+    ///
+    /// Each circle is **one draw**: a bounding quad is transformed by the shared pixel-to-clip
+    /// matrix and [`super::shaders::CIRCLE_FRAG`] shades it with a distance-field test, so the
+    /// silhouette is evaluated per fragment instead of being approximated by per-column
+    /// one-pixel strips. Where the strips needed `2r + 1` rectangles per circle, this path
+    /// needs one 48-byte quad, two uniform slots and one draw call, and the SDF edge is
+    /// anti-aliased rather than stair-stepped.
+    ///
+    /// Behaviour notes: a zero-radius circle draws nothing, matching the software rasteriser's
+    /// skip, and a circle that covers no pixel is skipped exactly like the software path. The
+    /// anti-aliased edge means boundary pixels take partial alpha where the strip approximation
+    /// painted hard steps — that difference is the point of the item.
     #[allow(clippy::type_complexity)]
     pub fn render_fill_circle_gpu(
         &self,
@@ -1999,48 +2395,456 @@ impl WgpuRenderer {
     ) -> Result<Vec<u8>, String> {
         // Validate dimensions before any allocation (N-S-66).
         let expected_len = rgba_buffer_len(width, height)?;
-        if circles.is_empty() {
+        // A zero-radius circle draws nothing on the software path either, so a frame of only
+        // zero-radius circles is a transparent frame with no GPU work, exactly as before.
+        if circles.iter().all(|((_, _, radius), _)| *radius == 0) {
             return Ok(vec![0u8; expected_len]);
         }
 
-        let mut fill_rects: Vec<(i32, i32, u32, u32, [f64; 4])> = Vec::new();
+        // Cached resources for the whole call: one two-slot-per-circle uniform arena, one
+        // vertex buffer, one mvp uniform and one target (REND-02, G-216).
+        let mut cache = self.cache.borrow_mut();
+        cache.ensure_circle_uniforms(
+            &self.device,
+            &self.circle_bind_group_layout,
+            circles.len(),
+        )?;
+        cache.ensure_target(&self.device, width, height);
+        cache.ensure_transformed_uniform(&self.device, &self.transformed_bind_group_layout);
+        let stride = RenderCache::uniform_stride(&self.device) as usize;
 
-        for &((cx, cy, radius), color) in circles {
-            let r = radius as i32;
-            // Use vertical strips to approximate the circle
-            // Each strip is 1 pixel wide
-            for dx in -r..=r {
-                let half_height = ((r * r - dx * dx) as f64).sqrt() as i32;
-                let x = cx + dx;
-                let y1 = cy - half_height;
-                let strip_height = (half_height * 2) as u32;
-                if strip_height > 0 {
-                    fill_rects.push((x, y1, 1, strip_height, color));
+        // Pack every drawable circle into the reused scratch buffers: one vertex upload and
+        // one uniform upload for the whole frame (G-216). `packed` stays dense: a circle
+        // skipped as fully off-screen occupies no vertex bytes and no uniform slots, so the
+        // draw loop's indices line up with the packed data exactly.
+        let (vertex_len, uniform_len, packed) = {
+            let pack = &mut cache.pack;
+            pack.circle_vertices.clear();
+            pack.circle_uniforms.resize(stride * 2 * circles.len(), 0);
+            let mut packed = 0usize;
+            for &((cx, cy, radius), colour) in circles {
+                if radius == 0 {
+                    continue;
                 }
+                let Some(quad) = circle_quad((cx, cy), radius, width, height) else {
+                    continue;
+                };
+                pack_circle(
+                    &mut pack.circle_vertices,
+                    &mut pack.circle_uniforms,
+                    stride,
+                    packed,
+                    (cx, cy),
+                    radius,
+                    &colour,
+                    quad,
+                );
+                packed += 1;
+            }
+            (pack.circle_vertices.len(), pack.circle_uniforms.len(), packed)
+        };
+        cache.ensure_vertices(&self.device, vertex_len as u64);
+        cache.ensure_readback(&self.device, readback_frame_bytes(width, height)?);
+        let RenderCache {
+            target,
+            vertices,
+            transformed_uniform,
+            circle_uniforms,
+            readback,
+            pack,
+            ..
+        } = &mut *cache;
+        let target = target.as_ref().expect("the target was just ensured");
+        let vertices = vertices.as_ref().expect("the vertex buffer was just ensured");
+        let transformed = transformed_uniform.as_ref().expect("the mvp was just ensured");
+        let circle_arena = circle_uniforms.as_ref().expect("the circle arena was just ensured");
+        let readback = readback.as_ref().expect("the readback was just ensured");
+
+        self.queue.write_buffer(&transformed.buffer, 0, &ortho_mvp_bytes(width, height));
+        if vertex_len > 0 {
+            self.queue.write_buffer(&vertices.buffer, 0, &pack.circle_vertices);
+        }
+        if uniform_len > 0 {
+            self.queue.write_buffer(&circle_arena.buffer, 0, &pack.circle_uniforms);
+        }
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gpu_circle_encoder"),
+        });
+        {
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("gpu_circle_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            rp.set_pipeline(&self.circle_pipeline);
+            // The mvp matrix is group 1 for every draw; group 0's dynamic offsets select each
+            // circle's colour and parameter slots. One draw per circle (G-219).
+            rp.set_bind_group(1, &transformed.bind_group, &[]);
+            for index in 0..packed {
+                let quad_start = (index * CIRCLE_QUAD_BYTES) as u64;
+                let quad_end = quad_start + CIRCLE_QUAD_BYTES as u64;
+                let colour_offset = (index * 2 * stride) as u32;
+                let params_offset = ((index * 2 + 1) * stride) as u32;
+                rp.set_bind_group(0, &circle_arena.bind_group, &[colour_offset, params_offset]);
+                rp.set_vertex_buffer(0, vertices.buffer.slice(quad_start..quad_end));
+                rp.draw(0..6, 0..1);
             }
         }
 
-        // Convert to the format expected by render_fill_rect_gpu
-        let rects: Vec<(i32, i32, u32, u32, [f64; 4])> = fill_rects;
-        self.render_fill_rect_gpu(width, height, &rects)
+        let padded_bytes_per_row = padded_row_bytes(width)?;
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(Some(encoder.finish()));
+        self.read_back_owned(&readback.buffer, width, height, expected_len)
     }
 
     /// Render command list with deterministic ordering and clipping.
     ///
-    /// # Cost (G-63)
+    /// # GPU dispatch (G-218)
     ///
-    /// The command list is rasterised on the CPU and the finished frame is then uploaded to a
-    /// texture and read back, so the GPU only performs a copy. The round trip makes this slower
-    /// than returning [`rasterize_draw_commands_rgba8`] directly; it is kept because it is the
-    /// placeholder for the planned on-GPU rasterisation (see the module documentation).
+    /// A stream the existing pipelines can cover — whole-frame clears, unclipped filled
+    /// rectangles and unclipped filled circles, with blending left at `Normal` — is drawn
+    /// entirely on the GPU in one render pass: clears repaint through the full-screen clear
+    /// pipeline, rectangle runs go through the instanced quad pipeline, and each circle is
+    /// one SDF circle draw. Painter order is replayed exactly, so mid-stream clears and
+    /// overlaps behave as on the CPU. The circles' SDF edge is anti-aliased, which is the
+    /// mandated difference from the CPU rasteriser's hard-edged disc.
+    ///
+    /// Every other stream falls back to [`rasterize_draw_commands_rgba8`], **returned
+    /// directly**: the old upload-and-readback round trip reproduced those exact bytes
+    /// (`upload_round_trips_the_given_pixels` pins the identity), so skipping it also skips
+    /// the texture upload, the copy and the blocking readback for frames that never needed
+    /// the GPU (G-217). A caller that only uploads or reads the frame can use
+    /// [`Self::render_draw_commands_cached_rgba8`] to reuse the renderer's buffer instead.
     pub fn render_draw_commands_rgba8(
         &self,
         width: u32,
         height: u32,
         commands: &[WgpuDrawCommand],
     ) -> Result<Vec<u8>, String> {
-        let pixels = rasterize_draw_commands_rgba8(width, height, commands)?;
-        self.upload_and_readback_rgba8(width, height, &pixels)
+        let expected_len = rgba_buffer_len(width, height)?;
+        if commands_gpu_dispatchable(commands) {
+            return self.encode_draw_commands_gpu(width, height, expected_len, commands);
+        }
+        rasterize_draw_commands_rgba8(width, height, commands)
+    }
+
+    /// Rasterises `commands` into the renderer's reusable CPU frame and lends it back (G-221).
+    ///
+    /// The zero-copy counterpart of [`Self::render_draw_commands_rgba8`] for a caller that
+    /// uploads or reads the frame without needing ownership. It always uses the CPU rasteriser,
+    /// including for streams [`Self::render_draw_commands_rgba8`] would dispatch to the GPU, so
+    /// the frame is the software picture (hard-edged circles) rather than the GPU one. The
+    /// buffer grows only, and the rasteriser clears it, so every call sees a fresh frame.
+    pub fn render_draw_commands_cached_rgba8(
+        &self,
+        width: u32,
+        height: u32,
+        commands: &[WgpuDrawCommand],
+    ) -> Result<Ref<'_, [u8]>, String> {
+        self.commands_frame.rasterize(width, height, commands)
+    }
+
+    /// Draws a dispatchable command stream entirely on the GPU (G-218).
+    ///
+    /// One render pass covers the frame. The pass loads transparent — the software
+    /// rasteriser's zeroed start — and every [`WgpuDrawCommand::Clear`] repaints the whole
+    /// target through the clear pipeline, so position in the list decides the result exactly
+    /// as the command documentation promises. Geometry is packed once into the reused scratch
+    /// buffers (one instance upload, one circle-quad upload, one uniform upload) and the draw
+    /// order is recorded in `DrawStep`s, which the pass replays in list order.
+    fn encode_draw_commands_gpu(
+        &self,
+        width: u32,
+        height: u32,
+        expected_len: usize,
+        commands: &[WgpuDrawCommand],
+    ) -> Result<Vec<u8>, String> {
+        let framebuffer = PixelRect { x: 0, y: 0, width, height };
+        let clear_count = commands
+            .iter()
+            .filter(|command| matches!(command, WgpuDrawCommand::Clear { .. }))
+            .count();
+        let circle_count = commands
+            .iter()
+            .filter(|command| {
+                matches!(command, WgpuDrawCommand::FillCircle { radius, clip: None, .. } if *radius > 0)
+            })
+            .count();
+
+        // Cached resources for the whole call (REND-02). The clear pipeline's colour slots
+        // and the circles' two-slot records share the dynamic-offset stride.
+        let mut cache = self.cache.borrow_mut();
+        cache.ensure_uniform(&self.device, &self.bind_group_layout, clear_count)?;
+        cache.ensure_circle_uniforms(&self.device, &self.circle_bind_group_layout, circle_count)?;
+        cache.ensure_target(&self.device, width, height);
+        cache.ensure_transformed_uniform(&self.device, &self.transformed_bind_group_layout);
+        let stride = RenderCache::uniform_stride(&self.device) as usize;
+
+        // Pack the frame: instance records for rectangles, bounding quads and two uniform
+        // slots per circle, one colour slot per clear, and the draw order (G-216).
+        let (instance_len, circle_vertex_len, uniform_len, circle_uniform_len, plan_len) = {
+            let pack = &mut cache.pack;
+            pack.instances.clear();
+            pack.circle_vertices.clear();
+            pack.uniform.resize(stride * clear_count, 0);
+            pack.circle_uniforms.resize(stride * 2 * circle_count, 0);
+            pack.plan.clear();
+            let mut clear_slot = 0usize;
+            let mut circle_index = 0usize;
+            let mut run_start = 0usize;
+            for command in commands {
+                match command {
+                    WgpuDrawCommand::Clear { color } => {
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        let slot = clear_slot;
+                        clear_slot += 1;
+                        let base = slot * stride;
+                        for (channel, value) in
+                            [color.r, color.g, color.b, color.a].iter().enumerate()
+                        {
+                            pack.uniform[base + channel * 4..base + channel * 4 + 4]
+                                .copy_from_slice(&((*value as f32 / 255.0).to_le_bytes()));
+                        }
+                        pack.plan.push(DrawStep::Clear(slot));
+                    }
+                    WgpuDrawCommand::FillRect { rect, color, .. } => {
+                        // The CPU rasteriser clips every fill to the framebuffer first; the
+                        // same clip here keeps the instance coordinates in range.
+                        let Some(draw_rect) = rect.intersect(framebuffer) else {
+                            continue;
+                        };
+                        if draw_rect.width == 0 || draw_rect.height == 0 {
+                            continue;
+                        }
+                        let (x, y) = (draw_rect.x, draw_rect.y);
+                        let (x1, y1) = (draw_rect.right(), draw_rect.bottom());
+                        let mut record = [0u8; INSTANCE_BYTES];
+                        for (corner, (px, py)) in
+                            [(x, y), (x1, y), (x1, y1), (x, y1)].iter().enumerate()
+                        {
+                            record[corner * 8..corner * 8 + 4]
+                                .copy_from_slice(&(*px as f32).to_le_bytes());
+                            record[corner * 8 + 4..corner * 8 + 8]
+                                .copy_from_slice(&(*py as f32).to_le_bytes());
+                        }
+                        for (channel, value) in
+                            [color.r, color.g, color.b, color.a].iter().enumerate()
+                        {
+                            record[32 + channel * 4..32 + channel * 4 + 4]
+                                .copy_from_slice(&((*value as f64 / 255.0) as f32).to_le_bytes());
+                        }
+                        pack.instances.extend_from_slice(&record);
+                    }
+                    WgpuDrawCommand::FillCircle { center, radius, color, .. } => {
+                        if *radius == 0 {
+                            continue;
+                        }
+                        let Some(quad) = circle_quad(*center, *radius, width, height) else {
+                            continue;
+                        };
+                        if run_start < pack.instances.len() / INSTANCE_BYTES {
+                            pack.plan.push(DrawStep::Rects(
+                                run_start,
+                                pack.instances.len() / INSTANCE_BYTES,
+                            ));
+                            run_start = pack.instances.len() / INSTANCE_BYTES;
+                        }
+                        pack_circle(
+                            &mut pack.circle_vertices,
+                            &mut pack.circle_uniforms,
+                            stride,
+                            circle_index,
+                            *center,
+                            *radius,
+                            &[
+                                color.r as f64 / 255.0,
+                                color.g as f64 / 255.0,
+                                color.b as f64 / 255.0,
+                                color.a as f64 / 255.0,
+                            ],
+                            quad,
+                        );
+                        pack.plan.push(DrawStep::Circle(circle_index));
+                        circle_index += 1;
+                    }
+                    // Normal blending is the pipelines' `REPLACE` write; anything else was
+                    // filtered out before this pass was chosen.
+                    WgpuDrawCommand::SetBlendMode { mode: 0 } => {}
+                    // `commands_gpu_dispatchable` filters the stream, so no other command can
+                    // reach this match; if one ever does, the CPU rasteriser still produces
+                    // the correct frame, in the fallback frame that `cache`'s borrow cannot
+                    // reach (G-221).
+                    _ => {
+                        return Ok(self
+                            .fallback_frame
+                            .rasterize(width, height, commands)?
+                            .to_vec());
+                    }
+                }
+            }
+            if run_start < pack.instances.len() / INSTANCE_BYTES {
+                pack.plan.push(DrawStep::Rects(run_start, pack.instances.len() / INSTANCE_BYTES));
+            }
+            (
+                pack.instances.len(),
+                pack.circle_vertices.len(),
+                pack.uniform.len(),
+                pack.circle_uniforms.len(),
+                pack.plan.len(),
+            )
+        };
+
+        // One grow-only vertex buffer serves both the instance records and the circle quads:
+        // instances at `[0, instance_len)`, circle quads appended after.
+        let circle_vertex_offset = instance_len as u64;
+        cache.ensure_vertices(&self.device, (instance_len + circle_vertex_len) as u64);
+        cache.ensure_readback(&self.device, readback_frame_bytes(width, height)?);
+        let RenderCache {
+            uniform,
+            target,
+            vertices,
+            transformed_uniform,
+            circle_uniforms,
+            readback,
+            pack,
+            ..
+        } = &mut *cache;
+        let uniform = uniform.as_ref().expect("the colour arena was just ensured");
+        let target = target.as_ref().expect("the target was just ensured");
+        let vertices = vertices.as_ref().expect("the vertex buffer was just ensured");
+        let transformed = transformed_uniform.as_ref().expect("the mvp was just ensured");
+        let circle_arena = circle_uniforms.as_ref().expect("the circle arena was just ensured");
+        let readback = readback.as_ref().expect("the readback was just ensured");
+
+        self.queue.write_buffer(&transformed.buffer, 0, &ortho_mvp_bytes(width, height));
+        if uniform_len > 0 {
+            self.queue.write_buffer(&uniform.buffer, 0, &pack.uniform);
+        }
+        if circle_uniform_len > 0 {
+            self.queue.write_buffer(&circle_arena.buffer, 0, &pack.circle_uniforms);
+        }
+        if instance_len > 0 {
+            self.queue.write_buffer(&vertices.buffer, 0, &pack.instances);
+        }
+        if circle_vertex_len > 0 {
+            self.queue.write_buffer(&vertices.buffer, circle_vertex_offset, &pack.circle_vertices);
+        }
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gpu_draw_commands_encoder"),
+        });
+        {
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("gpu_draw_commands_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        // The software rasteriser starts from zeroed pixels; mid-stream
+                        // clears repaint through the clear pipeline instead (G-218).
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            for step in &pack.plan[..plan_len] {
+                match step {
+                    DrawStep::Clear(slot) => {
+                        rp.set_pipeline(&self.clear_pipeline);
+                        rp.set_bind_group(0, &uniform.bind_group, &[(*slot * stride) as u32]);
+                        rp.draw(0..3, 0..1);
+                    }
+                    DrawStep::Rects(start, end) => {
+                        rp.set_pipeline(&self.transformed_pipeline);
+                        rp.set_bind_group(0, &transformed.bind_group, &[]);
+                        let mut cursor = *start;
+                        while cursor < *end {
+                            let chunk_end = (cursor + MAX_INSTANCES_PER_DRAW).min(*end);
+                            let byte_start = (cursor * INSTANCE_BYTES) as u64;
+                            let byte_end = (chunk_end * INSTANCE_BYTES) as u64;
+                            rp.set_vertex_buffer(0, vertices.buffer.slice(byte_start..byte_end));
+                            rp.draw(0..6, 0..(chunk_end - cursor) as u32);
+                            cursor = chunk_end;
+                        }
+                    }
+                    DrawStep::Circle(index) => {
+                        rp.set_pipeline(&self.circle_pipeline);
+                        let colour_offset = (*index * 2 * stride) as u32;
+                        let params_offset = ((*index * 2 + 1) * stride) as u32;
+                        rp.set_bind_group(
+                            0,
+                            &circle_arena.bind_group,
+                            &[colour_offset, params_offset],
+                        );
+                        rp.set_bind_group(1, &transformed.bind_group, &[]);
+                        let quad_start = circle_vertex_offset + (*index * CIRCLE_QUAD_BYTES) as u64;
+                        let quad_end = quad_start + CIRCLE_QUAD_BYTES as u64;
+                        rp.set_vertex_buffer(0, vertices.buffer.slice(quad_start..quad_end));
+                        rp.draw(0..6, 0..1);
+                    }
+                }
+            }
+        }
+
+        let padded_bytes_per_row = padded_row_bytes(width)?;
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(Some(encoder.finish()));
+        self.read_back_owned(&readback.buffer, width, height, expected_len)
     }
     /// Applies a separable Gaussian blur to an RGBA8 image on the GPU.
     ///
@@ -2075,11 +2879,37 @@ impl WgpuRenderer {
         if radius == 0 {
             return Ok(rgba8.to_vec());
         }
+        self.encode_blur(width, height, rgba8, radius, None)?;
+        let readback = self.cache.borrow();
+        let readback =
+            readback.readback.as_ref().ok_or_else(|| "readback buffer missing".to_string())?;
+        self.read_back_owned(&readback.buffer, width, height, expected_len)
+    }
+
+    /// Encodes the two-pass separable blur — and, when `tint` is present, the tint composite
+    /// folded into the vertical pass — into the cached blur targets, queues the copy of the
+    /// result into the readback buffer and submits (G-220).
+    ///
+    /// Split from [`Self::render_blur_rgba8`] so the backdrop entry point can ride the same
+    /// two passes with the tint on board: the composite happens in the fragment shader
+    /// ([`super::shaders::BLUR_FS`]) instead of a read-back-to-CPU shading step, so the frame
+    /// never leaves the GPU between the convolution and the tint.
+    ///
+    /// The tint carries the exact semantics the former CPU tint step implemented: a non-finite
+    /// weight is ignored (rather than clamped, since `f32::clamp` propagates `NaN`), the weight
+    /// clamps to `0.0..=1.0`, and a non-positive resulting alpha leaves the frame untouched.
+    fn encode_blur(
+        &self,
+        width: u32,
+        height: u32,
+        rgba8: &[u8],
+        radius: u32,
+        tint: Option<(Rgba8, f32)>,
+    ) -> Result<(), String> {
         let padded_bytes_per_row = padded_row_bytes(width)?;
-        let output_buffer_size = readback_frame_bytes(width, height)?;
         let mut cache = self.cache.borrow_mut();
         cache.ensure_blur_targets(&self.device, &self.blur_bind_group_layout, width, height);
-        cache.ensure_readback(&self.device, output_buffer_size);
+        cache.ensure_readback(&self.device, readback_frame_bytes(width, height)?);
         let targets = cache.blur.as_ref().expect("the blur targets were just ensured");
         let readback = cache.readback.as_ref().expect("the readback was just ensured");
 
@@ -2098,15 +2928,37 @@ impl WgpuRenderer {
             },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
-        let write_params = |buffer: &wgpu::Buffer, direction: [f32; 2]| {
-            let mut bytes = [0u8; 16];
+        let tint_state = tint.and_then(|(tint, weight)| {
+            if !weight.is_finite() {
+                return None;
+            }
+            let weight = weight.clamp(0.0, 1.0);
+            let alpha = (tint.a as f32 / 255.0) * weight;
+            (alpha > 0.0).then_some((
+                [tint.r as f32 / 255.0, tint.g as f32 / 255.0, tint.b as f32 / 255.0],
+                alpha,
+            ))
+        });
+        let write_params = |buffer: &wgpu::Buffer, direction: [f32; 2], apply_tint: bool| {
+            // `BlurParams` is 32 bytes: `direction: vec2f`, `radius: f32`, `apply_tint: f32`,
+            // then (16-byte aligned) `tint_color: vec3f` and `tint_alpha: f32`. Only the
+            // vertical pass composites the tint.
+            let mut bytes = [0u8; 32];
             bytes[0..4].copy_from_slice(&direction[0].to_ne_bytes());
             bytes[4..8].copy_from_slice(&direction[1].to_ne_bytes());
             bytes[8..12].copy_from_slice(&(radius as f32).to_ne_bytes());
+            if let Some((colour, alpha)) = tint_state.filter(|_| apply_tint) {
+                bytes[12..16].copy_from_slice(&1.0f32.to_ne_bytes());
+                for (channel, value) in colour.iter().enumerate() {
+                    bytes[16 + channel * 4..16 + channel * 4 + 4]
+                        .copy_from_slice(&value.to_ne_bytes());
+                }
+                bytes[28..32].copy_from_slice(&alpha.to_ne_bytes());
+            }
             self.queue.write_buffer(buffer, 0, &bytes);
         };
-        write_params(&targets.horizontal_params, [1.0, 0.0]);
-        write_params(&targets.vertical_params, [0.0, 1.0]);
+        write_params(&targets.horizontal_params, [1.0, 0.0], false);
+        write_params(&targets.vertical_params, [0.0, 1.0], true);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("wgpu_blur_encoder"),
@@ -2153,31 +3005,28 @@ impl WgpuRenderer {
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         self.queue.submit(Some(encoder.finish()));
-        self.read_back(&readback.buffer, width, height, expected_len)
+        Ok(())
     }
 
     /// Applies one backdrop-blur pass to a frame that has already been composed.
     ///
-    /// # Where the pass runs
+    /// # Where the passes run
     ///
-    /// The existing offscreen target is the pass's storage: the frame is uploaded into it
-    /// and read back before the blur, so the caller hands over the pixels the GPU actually
-    /// produced rather than a CPU-side copy of what it meant to draw. This renderer's
-    /// pipeline set has no blur shader (only the fill, image, text, rounded-rect and circle
-    /// programs ship), so the convolution itself runs through the existing software blur —
-    /// the same three-box Gaussian approximation every other blur in the crate uses. Adding a
-    /// WGSL program for one effect would be a new pipeline to keep in step with this one for
-    /// no picture difference, so the offscreen round trip is the GPU half and the kernel is
-    /// shared.
+    /// The convolution and the tint both run on the GPU: the frame is uploaded straight into
+    /// the blur source texture, the two [`super::shaders::BLUR_FS`] passes ping-pong between
+    /// the cached targets, and the tint — when present — is composited in the second pass's
+    /// fragment shader, so the frame never comes back to the CPU between the blur and the
+    /// tint (G-220). The tint semantics are the former CPU composite's: the weight scales the
+    /// tint's alpha, a non-finite weight is ignored, and a non-positive effective alpha leaves
+    /// the frame untouched.
     ///
-    /// `radius` is the Gaussian's 2-sigma point, matching [`crate::render::RenderCommand::Blur`]. The
-    /// tint, when present, is applied afterwards so it sits on the blurred backdrop, as it does in
-    /// the software layer composition.
+    /// `radius` is the Gaussian's 2-sigma point, matching [`crate::render::RenderCommand::Blur`].
     ///
-    /// The frame is uploaded straight into the blur source texture and only the final result is
-    /// read back. An earlier form uploaded and read the backdrop first and then uploaded it again
-    /// for the blur, paying two round trips for one result (G-65). A zero radius is an identity
-    /// and returns the validated input bytes with no GPU work at all.
+    /// Only the final result is read back. An earlier form uploaded and read the backdrop first
+    /// and then uploaded it again for the blur, paying two round trips for one result (G-65).
+    /// A zero radius keeps the tint: the shader's `radius <= 0` branch is a passthrough of the
+    /// input plus the tint composite, matching the software layer composition where the tint
+    /// sits on the unblurred backdrop.
     pub fn render_backdrop_blur_rgba8(
         &self,
         width: u32,
@@ -2186,11 +3035,18 @@ impl WgpuRenderer {
         radius: u32,
         tint: Option<(Rgba8, f32)>,
     ) -> Result<Vec<u8>, String> {
-        let mut frame = self.render_blur_rgba8(width, height, backdrop, radius)?;
-        if let Some((tint, weight)) = tint {
-            tint_blurred_frame(&mut frame, tint, weight);
+        let expected_len = rgba_buffer_len(width, height)?;
+        if backdrop.len() != expected_len {
+            return Err(format!(
+                "rgba8 input is {} bytes but a {width}x{height} image needs {expected_len} bytes",
+                backdrop.len(),
+            ));
         }
-        Ok(frame)
+        self.encode_blur(width, height, backdrop, radius.min(100), tint)?;
+        let readback = self.cache.borrow();
+        let readback =
+            readback.readback.as_ref().ok_or_else(|| "readback buffer missing".to_string())?;
+        self.read_back_owned(&readback.buffer, width, height, expected_len)
     }
 
     /// Upload a full RGBA8 frame to GPU texture and read it back deterministically.
@@ -2263,17 +3119,8 @@ impl WgpuRenderer {
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         self.queue.submit(Some(encoder.finish()));
-        self.read_back(&readback.buffer, width, height, expected_len)
+        self.read_back_owned(&readback.buffer, width, height, expected_len)
     }
-    fn upload_and_readback_rgba8(
-        &self,
-        width: u32,
-        height: u32,
-        rgba8: &[u8],
-    ) -> Result<Vec<u8>, String> {
-        self.upload_rgba8_and_readback(width, height, rgba8)
-    }
-
     /// Get the shader module enum for integration (BLUE11 R5.2).
     pub fn shader_modules(&self) -> Vec<ShaderModule> {
         vec![
@@ -2374,6 +3221,8 @@ mod tests {
             "blur_fs",
             "rect_vs_transformed",
             "rect_fs_instanced",
+            "circle_vs",
+            "circle_fs",
         ];
         #[cfg(feature = "3d")]
         expected.extend(["mesh3d_vs", "mesh3d_fs"]);
@@ -2487,6 +3336,55 @@ mod tests {
         assert_eq!(output, input);
         // A second call reuses the cached upload texture and readback buffer.
         assert_eq!(renderer.upload_rgba8_and_readback(4, 4, &input).expect("second upload"), input);
+    }
+
+    /// The reusable CPU frame must match the owned raster byte for byte, keep its allocation
+    /// across calls, and be uploadable without an owned copy (G-221).
+    #[test]
+    fn reusable_cpu_frame_matches_the_owned_raster_and_is_reused() {
+        let Some(renderer) = renderer() else { return };
+        let commands = vec![
+            WgpuDrawCommand::Clear { color: opaque(10, 20, 30) },
+            WgpuDrawCommand::FillRect {
+                rect: PixelRect { x: 2, y: 2, width: 6, height: 6 },
+                color: opaque(255, 0, 0),
+                clip: None,
+            },
+        ];
+        let owned = rasterize_draw_commands_rgba8(16, 16, &commands).expect("owned raster");
+        let first =
+            renderer.render_draw_commands_cached_rgba8(16, 16, &commands).expect("cached raster");
+        assert_eq!(&*first, &owned[..], "the reusable frame must be byte-identical");
+        // The upload runs while the frame is still borrowed: the two caches are independent.
+        let uploaded =
+            renderer.upload_rgba8_and_readback(16, 16, &first).expect("upload the borrowed frame");
+        assert_eq!(uploaded, owned, "upload must see the reusable frame's bytes");
+        let address = first.as_ptr();
+        drop(first);
+        let second =
+            renderer.render_draw_commands_cached_rgba8(16, 16, &commands).expect("cached again");
+        assert_eq!(second.as_ptr(), address, "the frame allocation must be reused");
+        drop(second);
+        // A smaller frame must not inherit the previous frame's bytes.
+        let small = vec![WgpuDrawCommand::FillRect {
+            rect: PixelRect { x: 0, y: 0, width: 1, height: 1 },
+            color: opaque(0, 255, 0),
+            clip: None,
+        }];
+        let smaller =
+            renderer.render_draw_commands_cached_rgba8(8, 8, &small).expect("smaller frame");
+        assert_eq!(pixel(&smaller, 8, 7, 7), [0, 0, 0, 0], "the reused prefix must be cleared");
+        assert_eq!(pixel(&smaller, 8, 0, 0), [0, 255, 0, 255]);
+    }
+
+    /// A clear through the reusable path must match the owned clear exactly.
+    #[test]
+    fn reusable_clear_frame_matches_the_owned_clear() {
+        let Some(renderer) = renderer() else { return };
+        let owned = renderer.render_clear_rgba8(4, 3, [0.25, 0.5, 0.75, 1.0]).expect("owned clear");
+        let cached =
+            renderer.render_clear_cached_rgba8(4, 3, [0.25, 0.5, 0.75, 1.0]).expect("cached clear");
+        assert_eq!(&*cached, &owned[..]);
     }
 
     #[cfg(feature = "3d")]
@@ -2837,5 +3735,374 @@ mod tests {
         assert_eq!(pixels.len(), 64 * 64 * 4);
         let painted = pixels.chunks_exact(4).filter(|pixel| pixel[3] > 0).count();
         assert!(painted > 100, "the cube must cover part of the target, got {painted} pixels");
+    }
+
+    // ── G-219: SDF circle pipeline ──
+
+    /// The SDF circle must paint the disc's interior opaquely and take partial alpha on the
+    /// edge — including a pixel the old per-column strip approximation left untouched
+    /// (G-219's mandated difference).
+    #[test]
+    fn sdf_circle_paints_an_anti_aliased_edge_the_strips_did_not() {
+        let Some(renderer) = renderer() else { return };
+        let pixels = renderer
+            .render_fill_circle_gpu(32, 32, &[((16, 16, 8), [1.0, 0.0, 0.0, 1.0])])
+            .expect("the SDF circle must render");
+        // Centre: fully covered on both paths.
+        assert_eq!(pixel(&pixels, 32, 16, 16), [255, 0, 0, 255]);
+        // An interior pixel the strip path also painted at full colour.
+        assert_eq!(pixel(&pixels, 32, 16, 12), [255, 0, 0, 255]);
+        // (22, 10): distance 0.485 beyond the radius, so the SDF shades partial alpha. The
+        // strip approximation painted nothing here (its column at x = 22 spans y 11..21).
+        let edge = pixel(&pixels, 32, 22, 10);
+        assert_eq!(&edge[..3], &[255, 0, 0], "the SDF edge keeps the fill colour: {edge:?}");
+        assert!(
+            edge[3] > 0 && edge[3] < 255,
+            "the SDF edge must be anti-aliased (partial alpha), got {edge:?}"
+        );
+        // A corner of the bounding quad outside the disc stays transparent.
+        assert_eq!(pixel(&pixels, 32, 8, 8), [0, 0, 0, 0]);
+        assert_eq!(pixel(&pixels, 32, 31, 31), [0, 0, 0, 0]);
+    }
+
+    /// A zero-radius circle draws nothing, matching the software rasteriser's skip — and a
+    /// frame of only zero-radius circles is a transparent frame.
+    #[test]
+    fn a_zero_radius_circle_draws_nothing() {
+        let Some(renderer) = renderer() else { return };
+        let pixels = renderer
+            .render_fill_circle_gpu(8, 8, &[((4, 4, 0), [1.0, 0.0, 0.0, 1.0])])
+            .expect("a zero-radius circle must not error");
+        assert!(pixels.iter().all(|&byte| byte == 0));
+    }
+
+    /// The circle quad must clamp to the viewport in `i64`, so extreme centres and radii
+    /// neither wrap nor panic; a disc covering no pixel reports `None`.
+    #[test]
+    fn circle_quad_clamps_to_the_viewport() {
+        assert_eq!(circle_quad((16, 16), 8, 32, 32), Some((8, 8, 25, 25)));
+        assert_eq!(circle_quad((0, 0), 2, 32, 32), Some((0, 0, 3, 3)));
+        assert_eq!(circle_quad((-100, -100), 4, 32, 32), None);
+        assert_eq!(circle_quad((40, 16), 8, 32, 32), None);
+        // Extreme coordinates must not wrap: the arithmetic runs in `i64`.
+        assert_eq!(circle_quad((i32::MAX, 0), 1, 32, 32), None);
+        assert_eq!(circle_quad((i32::MIN, 0), u32::MAX, 32, 32), Some((0, 0, 32, 32)));
+    }
+
+    /// The instance packer must write the documented 48-byte layout: corners as little-endian
+    /// `f32`, then the clamped colour, appending to whatever the scratch buffer already holds.
+    #[test]
+    fn pack_instanced_quads_writes_the_documented_layout() {
+        let quads = [
+            (
+                [
+                    crate::core::Point::new(1, 2),
+                    crate::core::Point::new(3, 2),
+                    crate::core::Point::new(3, 4),
+                    crate::core::Point::new(1, 4),
+                ],
+                [0.25, 0.5, 0.75, 1.0],
+            ),
+            (
+                [
+                    crate::core::Point::new(5, 6),
+                    crate::core::Point::new(7, 6),
+                    crate::core::Point::new(7, 8),
+                    crate::core::Point::new(5, 8),
+                ],
+                [1.0, 0.0, 0.0, 0.5],
+            ),
+        ];
+        let mut packed = Vec::new();
+        pack_instanced_quads(&quads, &mut packed).expect("packs");
+        assert_eq!(packed.len(), 2 * INSTANCE_BYTES);
+        let f32_at = |record: usize, offset: usize| {
+            f32::from_le_bytes(
+                packed[record * INSTANCE_BYTES + offset..record * INSTANCE_BYTES + offset + 4]
+                    .try_into()
+                    .expect("four bytes"),
+            )
+        };
+        assert_eq!(f32_at(0, 0), 1.0);
+        assert_eq!(f32_at(0, 4), 2.0);
+        assert_eq!(f32_at(0, 24), 1.0);
+        assert_eq!(f32_at(0, 28), 4.0);
+        assert_eq!(f32_at(0, 32), 0.25);
+        assert_eq!(f32_at(0, 44), 1.0);
+        assert_eq!(f32_at(1, 0), 5.0);
+        assert_eq!(f32_at(1, 44), 0.5);
+        // Packing again into the same buffer clears rather than appends.
+        pack_instanced_quads(&quads[..1], &mut packed).expect("repacks");
+        assert_eq!(packed.len(), INSTANCE_BYTES);
+    }
+
+    // ── G-220: tint rides the vertical blur pass ──
+
+    /// A full-weight opaque tint composites straight-alpha over the blurred field, entirely on
+    /// the GPU: a uniform field must come out at the tint colour (G-220).
+    #[test]
+    fn a_full_weight_tint_reaches_the_gpu_vertical_pass() {
+        let Some(renderer) = renderer() else { return };
+        let input: Vec<u8> = (0..8 * 8).flat_map(|_| [100u8, 150, 200, 255]).collect();
+        let output = renderer
+            .render_backdrop_blur_rgba8(
+                8,
+                8,
+                &input,
+                2,
+                Some((Rgba8 { r: 255, g: 0, b: 0, a: 255 }, 1.0)),
+            )
+            .expect("the tinted blur runs");
+        for y in 0..8 {
+            for x in 0..8 {
+                let seen = pixel(&output, 8, x, y);
+                assert!(
+                    seen[0].abs_diff(255) <= 2
+                        && seen[1].abs_diff(0) <= 2
+                        && seen[2].abs_diff(0) <= 2
+                        && seen[3].abs_diff(255) <= 2,
+                    "a full-weight opaque tint must dominate at ({x},{y}), got {seen:?}"
+                );
+            }
+        }
+    }
+
+    /// A half-weight tint must blend halfway between the blurred field and the tint. The
+    /// tolerance covers the GPU float pipeline's rounding, which differs from the CPU
+    /// composite by at most a couple of counts.
+    #[test]
+    fn a_half_weight_tint_blends_halfway() {
+        let Some(renderer) = renderer() else { return };
+        let input: Vec<u8> = (0..8 * 8).flat_map(|_| [100u8, 150, 200, 255]).collect();
+        let output = renderer
+            .render_backdrop_blur_rgba8(
+                8,
+                8,
+                &input,
+                2,
+                Some((Rgba8 { r: 255, g: 0, b: 0, a: 255 }, 0.5)),
+            )
+            .expect("the tinted blur runs");
+        for y in 0..8 {
+            for x in 0..8 {
+                let seen = pixel(&output, 8, x, y);
+                assert!(
+                    seen[0].abs_diff(178) <= 2
+                        && seen[1].abs_diff(75) <= 2
+                        && seen[2].abs_diff(100) <= 2
+                        && seen[3].abs_diff(255) <= 2,
+                    "a half-weight tint must blend halfway at ({x},{y}), got {seen:?}"
+                );
+            }
+        }
+    }
+
+    /// A zero-weight tint must leave the blur byte-identical to the untinted path, and a
+    /// non-finite weight must be ignored rather than poisoning the frame.
+    #[test]
+    fn a_zero_or_non_finite_weight_tint_leaves_the_blur_untouched() {
+        let Some(renderer) = renderer() else { return };
+        let input: Vec<u8> = (0..8 * 8).flat_map(|_| [100u8, 150, 200, 255]).collect();
+        let plain = renderer.render_blur_rgba8(8, 8, &input, 3).expect("plain blur");
+        let zero = renderer
+            .render_backdrop_blur_rgba8(
+                8,
+                8,
+                &input,
+                3,
+                Some((Rgba8 { r: 255, g: 0, b: 0, a: 255 }, 0.0)),
+            )
+            .expect("zero-weight blur");
+        assert_eq!(zero, plain, "a zero-weight tint must not change the blur");
+        let nan = renderer
+            .render_backdrop_blur_rgba8(
+                8,
+                8,
+                &input,
+                3,
+                Some((Rgba8 { r: 255, g: 0, b: 0, a: 255 }, f32::NAN)),
+            )
+            .expect("nan-weight blur");
+        assert_eq!(nan, plain, "a non-finite weight must be ignored");
+    }
+
+    /// A zero-radius backdrop blur must still apply the tint: the shader's `radius <= 0`
+    /// branch is a passthrough of the input plus the tint composite, matching the software
+    /// layer composition where the tint sits on the unblurred backdrop.
+    #[test]
+    fn a_zero_radius_backdrop_blur_still_applies_the_tint() {
+        let Some(renderer) = renderer() else { return };
+        let input: Vec<u8> = (0..4 * 4).flat_map(|_| [100u8, 150, 200, 255]).collect();
+        let output = renderer
+            .render_backdrop_blur_rgba8(
+                4,
+                4,
+                &input,
+                0,
+                Some((Rgba8 { r: 0, g: 255, b: 0, a: 255 }, 1.0)),
+            )
+            .expect("the passthrough blur runs");
+        for y in 0..4 {
+            for x in 0..4 {
+                let seen = pixel(&output, 4, x, y);
+                assert!(
+                    seen[0].abs_diff(0) <= 2
+                        && seen[1].abs_diff(255) <= 2
+                        && seen[2].abs_diff(0) <= 2
+                        && seen[3].abs_diff(255) <= 2,
+                    "the tint must composite over the unblurred backdrop at ({x},{y}), got {seen:?}"
+                );
+            }
+        }
+    }
+
+    // ── G-218: command-list GPU dispatch ──
+
+    fn opaque(r: u8, g: u8, b: u8) -> Rgba8 {
+        Rgba8 { r, g, b, a: 255 }
+    }
+
+    /// A stream the pipelines cover must render on the GPU and agree with the software
+    /// rasteriser at interior samples. Edge pixels are deliberately avoided: the SDF circle's
+    /// anti-aliased edge is the mandated difference from the CPU's hard-edged disc.
+    #[test]
+    fn a_dispatchable_stream_matches_the_software_raster() {
+        let commands = vec![
+            WgpuDrawCommand::Clear { color: opaque(10, 20, 30) },
+            WgpuDrawCommand::FillRect {
+                rect: PixelRect { x: 0, y: 0, width: 10, height: 10 },
+                color: opaque(255, 0, 0),
+                clip: None,
+            },
+            WgpuDrawCommand::FillRect {
+                rect: PixelRect { x: 10, y: 0, width: 10, height: 10 },
+                color: opaque(0, 255, 0),
+                clip: None,
+            },
+            WgpuDrawCommand::SetBlendMode { mode: 0 },
+            WgpuDrawCommand::FillCircle {
+                center: (15, 20),
+                radius: 6,
+                color: opaque(0, 0, 255),
+                clip: None,
+            },
+        ];
+        let Some(renderer) = renderer() else { return };
+        let gpu = renderer
+            .render_draw_commands_rgba8(32, 32, &commands)
+            .expect("the dispatchable stream must render on the GPU");
+        // Interior samples only: rect interiors, the circle centre and one more interior
+        // circle pixel, plus two pixels that must show the clear colour.
+        assert_eq!(pixel(&gpu, 32, 5, 5), [255, 0, 0, 255]);
+        assert_eq!(pixel(&gpu, 32, 15, 5), [0, 255, 0, 255]);
+        assert_eq!(pixel(&gpu, 32, 15, 20), [0, 0, 255, 255]);
+        assert_eq!(pixel(&gpu, 32, 15, 17), [0, 0, 255, 255]);
+        assert_eq!(pixel(&gpu, 32, 5, 31), [10, 20, 30, 255]);
+        assert_eq!(pixel(&gpu, 32, 31, 31), [10, 20, 30, 255]);
+    }
+
+    /// A stream containing a command class no pipeline covers must fall back to the software
+    /// rasteriser — returned directly, so the result is byte-identical to the CPU picture and
+    /// no upload/readback round trip happens in between (G-217).
+    #[test]
+    fn a_non_dispatchable_stream_falls_back_to_the_software_raster() {
+        let commands = vec![
+            WgpuDrawCommand::PushClip { rect: PixelRect { x: 0, y: 0, width: 5, height: 10 } },
+            WgpuDrawCommand::FillRect {
+                rect: PixelRect { x: 0, y: 0, width: 10, height: 10 },
+                color: opaque(255, 0, 0),
+                clip: None,
+            },
+            WgpuDrawCommand::PopClip,
+        ];
+        let Some(renderer) = renderer() else { return };
+        let gpu = renderer
+            .render_draw_commands_rgba8(16, 16, &commands)
+            .expect("the fallback must render");
+        let software = rasterize_draw_commands_rgba8(16, 16, &commands).expect("rasterises");
+        assert_eq!(gpu, software, "the fallback returns the software picture directly");
+    }
+
+    /// A blend mode other than `Normal` is not dispatchable: the pipelines' `REPLACE` write
+    /// cannot reproduce it, so the stream must fall back to the CPU rasteriser.
+    #[test]
+    fn a_non_normal_blend_mode_falls_back() {
+        let commands = vec![
+            WgpuDrawCommand::Clear { color: opaque(10, 20, 30) },
+            WgpuDrawCommand::SetBlendMode { mode: 1 },
+            WgpuDrawCommand::FillRect {
+                rect: PixelRect { x: 0, y: 0, width: 4, height: 4 },
+                color: opaque(128, 128, 128),
+                clip: None,
+            },
+        ];
+        let Some(renderer) = renderer() else { return };
+        let gpu =
+            renderer.render_draw_commands_rgba8(8, 8, &commands).expect("the fallback must render");
+        let software = rasterize_draw_commands_rgba8(8, 8, &commands).expect("rasterises");
+        assert_eq!(gpu, software, "a non-Normal blend mode must fall back to the CPU picture");
+    }
+
+    /// A mid-stream `Clear` must erase everything before it, exactly as the command's
+    /// documentation promises, with later draws landing on the new background.
+    #[test]
+    fn a_mid_stream_clear_repaints_the_frame() {
+        let commands = vec![
+            WgpuDrawCommand::FillRect {
+                rect: PixelRect { x: 0, y: 0, width: 20, height: 20 },
+                color: opaque(255, 0, 0),
+                clip: None,
+            },
+            WgpuDrawCommand::Clear { color: opaque(0, 0, 255) },
+            WgpuDrawCommand::FillRect {
+                rect: PixelRect { x: 0, y: 0, width: 4, height: 4 },
+                color: opaque(0, 255, 0),
+                clip: None,
+            },
+        ];
+        let Some(renderer) = renderer() else { return };
+        let gpu =
+            renderer.render_draw_commands_rgba8(24, 24, &commands).expect("the stream must render");
+        assert_eq!(pixel(&gpu, 24, 10, 10), [0, 0, 255, 255], "the clear erases the first fill");
+        assert_eq!(
+            pixel(&gpu, 24, 2, 2),
+            [0, 255, 0, 255],
+            "later draws sit on the new background"
+        );
+        assert_eq!(pixel(&gpu, 24, 23, 23), [0, 0, 255, 255]);
+    }
+
+    /// An over-cap run of rectangles through the dispatcher must stream across chunks without
+    /// reordering, the same contract the instanced quad pipeline promises (G-218).
+    #[test]
+    fn an_over_cap_dispatch_run_streams_every_chunk_in_order() {
+        let Some(renderer) = renderer() else { return };
+        let per_row = 1024u32;
+        let total = MAX_INSTANCES_PER_DRAW + 1;
+        let width = per_row * 2;
+        let height = total.div_ceil(per_row as usize) as u32;
+        let mut commands = Vec::with_capacity(total);
+        for index in 0..total {
+            let x = ((index as u32 % per_row) * 2) as i32;
+            let y = (index as u32 / per_row) as i32;
+            let color = if index + 1 == total { opaque(0, 0, 255) } else { opaque(255, 0, 0) };
+            commands.push(WgpuDrawCommand::FillRect {
+                rect: PixelRect { x, y, width: 2, height: 1 },
+                color,
+                clip: None,
+            });
+        }
+        let pixels = renderer
+            .render_draw_commands_rgba8(width, height, &commands)
+            .expect("an over-cap dispatch run must render");
+        let sample = |index: usize| -> [u8; 4] {
+            let x = (index as u32 % per_row) * 2;
+            let y = index as u32 / per_row;
+            pixel(&pixels, width, x, y)
+        };
+        let last = total - 1;
+        assert_eq!(sample(last), [0, 0, 255, 255], "the second chunk must draw its own rect");
+        assert_eq!(sample(last - 1), [255, 0, 0, 255], "the first chunk's last rect must draw");
+        assert_eq!(sample(0), [255, 0, 0, 255], "the first chunk's first rect must draw");
     }
 }

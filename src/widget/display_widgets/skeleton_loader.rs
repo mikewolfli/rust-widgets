@@ -12,7 +12,7 @@
 //! - `Circle(r)` — circular avatar/image placeholder
 //! - `TextLine(w)` — three stacked text line placeholders
 
-use crate::compat::{vec, RefCell, Vec};
+use crate::compat::{vec, Arc, RefCell, Vec};
 use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
@@ -124,12 +124,37 @@ pub struct SkeletonLoader {
     shimmer_geometry: RefCell<Option<ShimmerGeometryCache>>,
 }
 
+/// Translates every outline to the frame's context offset, producing one shared point set
+/// per region.
+fn translate_regions(regions: &[(Rect, Vec<Point>)], offset: (i32, i32)) -> Vec<Arc<[Point]>> {
+    let (dx, dy) = offset;
+    regions
+        .iter()
+        .map(|(_, outline)| {
+            outline
+                .iter()
+                .map(|point| Point::new(point.x + dx, point.y + dy))
+                .collect::<Vec<Point>>()
+                .into()
+        })
+        .collect()
+}
+
 /// Cached shimmer geometry for one `(shape, rectangle, rows)` triple.
 struct ShimmerGeometryCache {
     shape: SkeletonShape,
     rect: Rect,
     text_line_rows: u32,
     regions: Vec<(Rect, Vec<Point>)>,
+    /// The context offset the clip point sets below were translated for.
+    offset: (i32, i32),
+    /// One translated point set per region, shared with the render command.
+    ///
+    /// The outline is sampled once (a topology change), but the context offset was applied
+    /// per frame and produced a fresh `Vec` for every region. These buffers are rebuilt only
+    /// when the offset actually moves, and the command takes a refcount bump instead of a
+    /// copy.
+    translated: Vec<Arc<[Point]>>,
 }
 
 impl SkeletonLoader {
@@ -526,13 +551,15 @@ impl SkeletonLoader {
         .add_stop(0.5, Color::rgba(255, 255, 255, SHIMMER_PEAK_ALPHA.round() as u8))
         .add_stop(1.0, Color::rgba(255, 255, 255, 0));
 
-        for (fill, outline) in self.ensure_shimmer_regions(rect).iter() {
+        let cache = self.ensure_shimmer_cache(rect, (dx, dy));
+        for (index, (fill, _outline)) in cache.regions.iter().enumerate() {
             if fill.x >= rect.x + rect.width as i32 || fill.x + fill.width as i32 <= rect.x {
                 continue;
             }
-            let points: Vec<Point> =
-                outline.iter().map(|point| Point::new(point.x + dx, point.y + dy)).collect();
-            context.execute_command(RenderCommand::ClipPath { points: points.into() });
+            let Some(points) = cache.translated.get(index).cloned() else {
+                continue;
+            };
+            context.execute_command(RenderCommand::ClipPath { points });
             context.fill_gradient(*fill, &gradient);
             context.pop_clip();
         }
@@ -543,23 +570,51 @@ impl SkeletonLoader {
     /// The outline point lists are the expensive part (a rounded corner is sampled in eight
     /// steps per corner, a circle in thirty-two), and they do not depend on the pulse phase. The
     /// cache therefore turns a per-frame re-sampling into a reference count bump.
+    /// Returns the shimmer geometry, rebuilding it only when the shape or rectangle changed.
+    #[cfg(test)]
     fn ensure_shimmer_regions(&self, rect: Rect) -> core::cell::Ref<'_, [(Rect, Vec<Point>)]> {
-        let fresh = self.shimmer_geometry.borrow().as_ref().is_some_and(|cache| {
+        core::cell::Ref::map(self.ensure_shimmer_cache(rect, (0, 0)), |cache| {
+            cache.regions.as_slice()
+        })
+    }
+
+    /// Returns the shimmer geometry with its clip outlines translated for `offset`.
+    ///
+    /// The per-region translated point buffers are reused across frames: they are rewritten
+    /// in place when the context offset moves, and rebuilt only when the shape or the
+    /// rectangle changes (the same condition that rebuilds the outlines themselves).
+    fn ensure_shimmer_cache(
+        &self,
+        rect: Rect,
+        offset: (i32, i32),
+    ) -> core::cell::Ref<'_, ShimmerGeometryCache> {
+        let topology_changed = !self.shimmer_geometry.borrow().as_ref().is_some_and(|cache| {
             cache.shape == self.shape
                 && cache.rect == rect
                 && cache.text_line_rows == self.text_line_rows
         });
-        if !fresh {
+        if topology_changed {
             let regions = self.build_shimmer_regions(rect);
+            let translated = translate_regions(&regions, offset);
             *self.shimmer_geometry.borrow_mut() = Some(ShimmerGeometryCache {
                 shape: self.shape,
                 rect,
                 text_line_rows: self.text_line_rows,
                 regions,
+                offset,
+                translated,
             });
+        } else {
+            let mut geometry = self.shimmer_geometry.borrow_mut();
+            if let Some(cache) = geometry.as_mut() {
+                if cache.offset != offset {
+                    cache.translated = translate_regions(&cache.regions, offset);
+                    cache.offset = offset;
+                }
+            }
         }
         core::cell::Ref::map(self.shimmer_geometry.borrow(), |cache| {
-            cache.as_ref().map(|cache| cache.regions.as_slice()).unwrap_or(&[])
+            cache.as_ref().expect("the shimmer geometry was just built")
         })
     }
 
@@ -837,6 +892,33 @@ mod tests {
         sl.set_text_line_rows(2);
         let regions = sl.ensure_shimmer_regions(sl.geometry());
         assert_eq!(regions.len(), 2, "changing the row count invalidates the cache");
+    }
+
+    /// The translated clip point sets are reused; a still frame only bumps a refcount.
+    #[test]
+    fn shimmer_clip_points_are_cached_between_frames() {
+        let sl = SkeletonLoader::new(Rect::new(0, 0, 200, 100));
+        sl.set_shape(SkeletonShape::Circle(20));
+
+        let first = {
+            let cache = sl.ensure_shimmer_cache(sl.geometry(), (0, 0));
+            let region = cache.regions.as_ptr();
+            let points = cache.translated[0].as_ptr();
+            (region, points)
+        };
+        let second = {
+            let cache = sl.ensure_shimmer_cache(sl.geometry(), (0, 0));
+            (cache.regions.as_ptr(), cache.translated[0].as_ptr())
+        };
+        assert_eq!(first, second, "a still frame reuses both the outline and its point set");
+
+        // A translated frame reuses the sampled outline and rewrites only the translated set.
+        let moved = {
+            let cache = sl.ensure_shimmer_cache(sl.geometry(), (4, 3));
+            (cache.regions.as_ptr(), cache.translated[0].as_ptr())
+        };
+        assert_eq!(moved.0, first.0, "moving the context does not resample the outline");
+        assert_ne!(moved.1, first.1, "the translated buffer carries the new offset");
     }
 
     /// A `TextLine` skeleton is a fixed stack of rows, not a fraction of the control.

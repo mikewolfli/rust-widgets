@@ -3,7 +3,7 @@
 
 //! Splitter layout manager — distributes space by pane ratios.
 use super::{ChildInfo, Layout, LayoutContext, Orientation};
-use crate::compat::{Any, Vec};
+use crate::compat::{Any, Cell, Rc, RefCell, Vec};
 use crate::core::{ObjectId, Rect};
 
 /// Splitter-like layout distributing space by pane ratios.
@@ -14,11 +14,38 @@ pub struct SplitterLayout {
     ratios: Vec<f32>,
     /// Minimum extent each pane may be reduced to.
     min_sizes: Vec<u32>,
+    /// Maximum extent each pane may grow to (C-018); `u32::MAX` means unbounded.
+    max_sizes: Vec<u32>,
     /// Whether each pane may collapse to zero when its ratio reaches zero.
     collapsible: Vec<bool>,
+    /// The last nominal layout, keyed by the rect it was computed from (LAY-005).
+    ///
+    /// `child_rect` answers a one-child query from this cache instead of re-running the
+    /// pane allocation (G-158). Only [`Layout::update`] — the nominal path — populates it,
+    /// so a cached answer is byte-identical to the trait default's update-and-capture; a
+    /// rect mismatch falls back to that same capture. Every mutator clears it.
+    last_layout: RefCell<Option<(Rect, Rc<Vec<(ObjectId, Rect)>>)>>,
+    /// The version of every input the solve reads (C-017).
+    ///
+    /// Bumped by every mutator through [`Self::invalidate_last_layout`], so a cache entry is a
+    /// hit only when both the configuration and the rectangle match.
+    config_version: Cell<u64>,
+    /// The full arrangement keyed by `(config_version, rect)` (C-017).
+    ///
+    /// A drag emits several queries per pointer sample — `place_panes`, the divider geometry and
+    /// the maximum-convergence check — all asking for the same arrangement. The first one solves
+    /// and the rest replay this vector instead of re-running the allocation.
+    layout_cache: RefCell<Option<(u64, Rect, Rc<Vec<(ObjectId, Rect)>>)>>,
 }
 
 impl SplitterLayout {
+    /// Drops the cached nominal layout; every mutator calls it (LAY-005, C-017).
+    fn invalidate_last_layout(&mut self) {
+        self.last_layout.borrow_mut().take();
+        self.layout_cache.borrow_mut().take();
+        self.config_version.set(self.config_version.get().wrapping_add(1));
+    }
+
     /// Creates a splitter layout with orientation and pane spacing.
     pub fn new(orientation: Orientation, spacing: u32) -> Self {
         Self {
@@ -27,7 +54,11 @@ impl SplitterLayout {
             panes: Vec::new(),
             ratios: Vec::new(),
             min_sizes: Vec::new(),
+            max_sizes: Vec::new(),
             collapsible: Vec::new(),
+            last_layout: RefCell::new(None),
+            config_version: Cell::new(0),
+            layout_cache: RefCell::new(None),
         }
     }
 
@@ -38,6 +69,7 @@ impl SplitterLayout {
 
     /// Sets layout orientation.
     pub fn set_orientation(&mut self, orientation: Orientation) {
+        self.invalidate_last_layout();
         self.orientation = orientation;
     }
 
@@ -76,9 +108,11 @@ impl SplitterLayout {
     /// normalised by [`Self::normalize_ratios`], not here, so that adding a pane does not
     /// rescale the panes already present during an in-flight drag.
     pub fn add_pane(&mut self, pane_id: ObjectId, stretch: u32) -> usize {
+        self.invalidate_last_layout();
         self.panes.push(pane_id);
         self.ratios.push((stretch.max(1) as f32).max(0.01));
         self.min_sizes.push(0);
+        self.max_sizes.push(u32::MAX);
         self.collapsible.push(true);
         self.panes.len().saturating_sub(1)
     }
@@ -88,9 +122,11 @@ impl SplitterLayout {
         let Some(index) = self.panes.iter().position(|id| *id == pane_id) else {
             return false;
         };
+        self.invalidate_last_layout();
         self.panes.remove(index);
         self.ratios.remove(index);
         self.min_sizes.remove(index);
+        self.max_sizes.remove(index);
         self.collapsible.remove(index);
         true
     }
@@ -101,6 +137,7 @@ impl SplitterLayout {
     /// distribution: when every minimum cannot be paid, the panes are scaled down
     /// proportionally rather than one pane absorbing the whole shortfall.
     pub fn set_min_size(&mut self, index: usize, minimum: u32) -> bool {
+        self.invalidate_last_layout();
         match self.min_sizes.get_mut(index) {
             Some(slot) => {
                 *slot = minimum;
@@ -115,11 +152,34 @@ impl SplitterLayout {
         self.min_sizes.get(index).copied().unwrap_or(0)
     }
 
+    /// Sets the maximum extent of pane `index` (C-018).
+    ///
+    /// The cap is part of the solve's inputs, so the arrangement never produces a pane larger
+    /// than this and then relies on a wrapper to pull it back. `u32::MAX` removes the cap.
+    /// Returns `false` when the index is out of range.
+    pub fn set_max_size(&mut self, index: usize, maximum: u32) -> bool {
+        let Some(current) = self.max_sizes.get(index).copied() else {
+            return false;
+        };
+        if current == maximum {
+            return true;
+        }
+        self.invalidate_last_layout();
+        self.max_sizes[index] = maximum;
+        true
+    }
+
+    /// The maximum extent of pane `index`, or `u32::MAX` when unbounded.
+    pub fn max_size(&self, index: usize) -> u32 {
+        self.max_sizes.get(index).copied().unwrap_or(u32::MAX)
+    }
+
     /// Sets whether pane `index` may collapse to zero width/height.
     ///
     /// A non-collapsible pane is floored at its minimum extent even when its ratio is
     /// zero. Returns `false` when the index is out of range.
     pub fn set_collapsible(&mut self, index: usize, collapsible: bool) -> bool {
+        self.invalidate_last_layout();
         match self.collapsible.get_mut(index) {
             Some(slot) => {
                 *slot = collapsible;
@@ -192,6 +252,7 @@ impl SplitterLayout {
         self.ratios = ratios;
         self.min_sizes = minimums;
         self.collapsible = collapsible;
+        self.invalidate_last_layout();
         true
     }
 
@@ -200,6 +261,7 @@ impl SplitterLayout {
         if index >= self.ratios.len() {
             return false;
         }
+        self.invalidate_last_layout();
         self.ratios[index] = if ratio.is_finite() { ratio.max(0.0) } else { 0.0 };
         true
     }
@@ -209,6 +271,7 @@ impl SplitterLayout {
         if ratios.len() != self.ratios.len() {
             return false;
         }
+        self.invalidate_last_layout();
         self.ratios =
             ratios.into_iter().map(|r| if r.is_finite() { r.max(0.0) } else { 0.0 }).collect();
         true
@@ -228,49 +291,16 @@ impl SplitterLayout {
         let sum: f64 =
             self.ratios.iter().filter(|value| value.is_finite()).map(|r| *r as f64).sum();
         if sum > 0.0 {
+            self.invalidate_last_layout();
             for ratio in &mut self.ratios {
                 *ratio = if ratio.is_finite() { (*ratio as f64 / sum) as f32 } else { 0.0 };
             }
         }
     }
-}
 
-impl Layout for SplitterLayout {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
-        // One body, one meaning: the trait method and `add_pane` must not be able to drift
-        // apart. The module's own regression test pins that they agree, and the cheapest way
-        // to keep that true forever is to have only one of them push the panes.
-        self.add_pane(widget_id, stretch);
-    }
-
-    fn remove_widget(&mut self, widget_id: ObjectId) {
-        self.remove_pane(widget_id);
-    }
-
-    fn child_ids(&self) -> Vec<ObjectId> {
-        self.panes.clone()
-    }
-
-    fn has_child(&self, id: ObjectId) -> bool {
-        self.panes.contains(&id)
-    }
-
-    fn clear(&mut self) {
-        self.panes.clear();
-        self.ratios.clear();
-        self.min_sizes.clear();
-        self.collapsible.clear();
-    }
-
-    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+    /// The nominal pane solve, shared by [`Layout::update`] (which caches its emissions for
+    /// `child_rect`) — the allocation arithmetic lives here and nowhere else.
+    fn solve(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         if self.panes.is_empty() {
             return;
         }
@@ -345,6 +375,57 @@ impl Layout for SplitterLayout {
             }
         }
 
+        // C-018: the maximum is a solve input, not a post-hoc clamp. A pane computed above its
+        // cap gives the surplus back to the panes that still have headroom, in proportion to
+        // their weights, so the row still fills the budget where the caps permit it.
+        let caps: Vec<u32> = (0..count)
+            .map(|index| {
+                let floor = floors.get(index).copied().unwrap_or(0);
+                self.max_sizes.get(index).copied().unwrap_or(u32::MAX).max(floor)
+            })
+            .collect();
+        for (index, size) in major.iter_mut().enumerate() {
+            *size = (*size).min(caps[index]);
+        }
+        let mut surplus = pane_budget.saturating_sub(major.iter().copied().sum());
+        for _ in 0..=count {
+            if surplus == 0 {
+                break;
+            }
+            let headroom: u64 = (0..count)
+                .filter(|index| major[*index] < caps[*index])
+                .map(|index| {
+                    let weight = self.ratios.get(index).copied().unwrap_or(0.0);
+                    if weight.is_finite() {
+                        weight.max(0.0) as u64
+                    } else {
+                        0
+                    }
+                })
+                .sum();
+            let headroom = headroom.max(1);
+            let mut distributed = 0u32;
+            for index in 0..count {
+                let room = caps[index].saturating_sub(major[index]);
+                if room == 0 {
+                    continue;
+                }
+                let weight = self.ratios.get(index).copied().unwrap_or(0.0);
+                let weight = if weight.is_finite() { weight.max(0.0) } else { 0.0 };
+                let share = ((surplus as f64 * weight as f64) / headroom as f64).floor() as u32;
+                let give = share.max(1).min(room).min(surplus - distributed);
+                major[index] += give;
+                distributed += give;
+                if distributed >= surplus {
+                    break;
+                }
+            }
+            if distributed == 0 {
+                break;
+            }
+            surplus -= distributed;
+        }
+
         let mut cursor_x = rect.x;
         let mut cursor_y = rect.y;
 
@@ -362,6 +443,68 @@ impl Layout for SplitterLayout {
                 Orientation::Vertical => cursor_y += (major + effective_spacing) as i32,
             }
         }
+    }
+}
+
+impl Layout for SplitterLayout {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
+        // One body, one meaning: the trait method and `add_pane` must not be able to drift
+        // apart. The module's own regression test pins that they agree, and the cheapest way
+        // to keep that true forever is to have only one of them push the panes.
+        self.add_pane(widget_id, stretch);
+    }
+
+    fn remove_widget(&mut self, widget_id: ObjectId) {
+        self.remove_pane(widget_id);
+    }
+
+    fn child_ids(&self) -> Vec<ObjectId> {
+        self.panes.clone()
+    }
+
+    fn has_child(&self, id: ObjectId) -> bool {
+        self.panes.contains(&id)
+    }
+
+    fn clear(&mut self) {
+        self.invalidate_last_layout();
+        self.panes.clear();
+        self.ratios.clear();
+        self.min_sizes.clear();
+        self.max_sizes.clear();
+        self.collapsible.clear();
+    }
+
+    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        // C-017: replay a cached arrangement when neither the configuration nor the rectangle
+        // changed. A drag asks for the same arrangement several times per pointer sample.
+        let version = self.config_version.get();
+        if let Some((cached_version, cached_rect, entries)) = self.layout_cache.borrow().as_ref() {
+            if *cached_version == version && *cached_rect == rect {
+                for (id, child_rect) in entries.iter() {
+                    widgets(*id, *child_rect);
+                }
+                return;
+            }
+        }
+        // The nominal emissions are captured so `child_rect` can answer a one-child query
+        // from the cache (LAY-005) instead of re-running the pane allocation.
+        let mut entries: Vec<(ObjectId, Rect)> = Vec::new();
+        self.solve(rect, &mut |id, r| {
+            entries.push((id, r));
+            widgets(id, r);
+        });
+        let entries = Rc::new(entries);
+        *self.last_layout.borrow_mut() = Some((rect, Rc::clone(&entries)));
+        *self.layout_cache.borrow_mut() = Some((version, rect, entries));
     }
 
     // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
@@ -389,6 +532,28 @@ impl Layout for SplitterLayout {
     ) {
         let _ = context;
         self.arrange(rect, children, widgets);
+    }
+
+    /// The one-child query, answered from the cached nominal layout when it matches
+    /// (LAY-005): a hit test must not re-run the pane allocation. A rect mismatch (or a
+    /// first query before any `update`) falls back to the trait default's
+    /// update-and-capture, which is also what repopulates the cache.
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        if !self.has_child(id) {
+            return None;
+        }
+        if let Some((cached_rect, entries)) = self.last_layout.borrow().as_ref() {
+            if *cached_rect == rect {
+                return entries.iter().find(|(child, _)| *child == id).map(|(_, r)| *r);
+            }
+        }
+        let mut found = None;
+        self.update(rect, &mut |child, child_rect| {
+            if child == id && found.is_none() {
+                found = Some(child_rect);
+            }
+        });
+        found
     }
 }
 
@@ -512,5 +677,66 @@ mod tests {
             Some(67),
             "floors that do not fit are scaled proportionally, never past the parent"
         );
+    }
+
+    /// LAY-005: the one-child query answers from the cached nominal layout — equal to the
+    /// full update pass — and a mutation refreshes it, so the answer never goes stale.
+    #[test]
+    fn child_rect_answers_from_the_cached_layout_and_tracks_mutations() {
+        let mut layout = SplitterLayout::new(Orientation::Horizontal, 0);
+        layout.add_pane(1, 1);
+        layout.add_pane(2, 1);
+        let rect = Rect::new(0, 0, 200, 50);
+        // The fallback solve answers even before any update populated the cache.
+        assert_eq!(layout.child_rect(1, rect), Some(Rect::new(0, 0, 100, 50)));
+        assert_eq!(layout.child_rect(9, rect), None, "a foreign id is not placed");
+        // A mutation invalidates the cache: the panes follow the new ratio.
+        layout.set_ratio(0, 3.0);
+        assert_eq!(layout.child_rect(1, rect), Some(Rect::new(0, 0, 150, 50)));
+        assert_eq!(layout.child_rect(2, rect), Some(Rect::new(150, 0, 50, 50)));
+    }
+
+    /// C-018: the maximum is a solve input, so the emitted rectangles never exceed it and the
+    /// surplus is given to the panes that still have headroom.
+    #[test]
+    fn a_maximum_is_honoured_by_the_solve() {
+        let mut layout = SplitterLayout::new(Orientation::Horizontal, 0);
+        layout.add_pane(1, 1);
+        layout.add_pane(2, 1);
+        assert_eq!(layout.max_size(0), u32::MAX, "unbounded by default");
+        assert!(layout.set_max_size(0, 30));
+        assert!(!layout.set_max_size(9, 30), "an unknown pane is refused");
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 200, 40), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        assert_eq!(rects.get(&1).map(|r| r.width), Some(30), "the cap bounds the pane");
+        assert_eq!(rects.get(&2).map(|r| r.width), Some(170), "the surplus moves to the sibling");
+
+        layout.set_max_size(0, u32::MAX);
+        assert_eq!(layout.child_rect(1, Rect::new(0, 0, 200, 40)).map(|r| r.width), Some(100));
+    }
+
+    /// C-017: replaying an unchanged configuration returns the identical arrangement, and a
+    /// configuration change invalidates it.
+    #[test]
+    fn the_arrangement_is_cached_by_config_and_rect() {
+        let mut layout = SplitterLayout::new(Orientation::Horizontal, 2);
+        layout.add_pane(1, 1);
+        layout.add_pane(2, 1);
+        let rect = Rect::new(0, 0, 200, 40);
+        let mut first = HashMap::new();
+        layout.update(rect, &mut |id, child| {
+            first.insert(id, child);
+        });
+        let mut second = HashMap::new();
+        layout.update(rect, &mut |id, child| {
+            second.insert(id, child);
+        });
+        assert_eq!(first, second, "an unchanged arrangement is byte-identical");
+        layout.set_ratio(0, 3.0);
+        let changed = layout.child_rect(1, rect).map(|r| r.width).unwrap_or(0);
+        assert!(changed > 100, "a ratio write invalidates the cached arrangement: {changed}");
     }
 }

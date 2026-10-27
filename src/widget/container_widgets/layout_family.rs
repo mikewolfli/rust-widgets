@@ -47,8 +47,10 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 // ── Shared content model ────────────────────────────────────────────────────
 
@@ -149,6 +151,54 @@ impl Content {
 impl Default for Content {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Event forwarding for a wrapper's mounted content (C-003).
+///
+/// Each wrapper positions a single control in its content box and links it as a tree child. The
+/// tree painter draws that child, but an event reaches the *wrapper* because the wrapper is the
+/// widget the runtime hit-tested; without a forwarding table the mounted control never sees a
+/// pointer or key event. This is the same child-forwarding table `SafeArea` uses, kept in one
+/// place because the eight wrappers share the identical rule: pointer events only inside the
+/// content rectangle, everything else unconditionally (a focused control owns the keyboard
+/// wherever the pointer is).
+#[derive(Default)]
+pub(crate) struct ContentForwarding {
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
+}
+
+impl ContentForwarding {
+    /// Binds the shared forwarding table.
+    pub(crate) fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub(crate) fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
+    }
+
+    /// Delivers `event` to `child` when the wrapper's rule says it belongs there.
+    pub(crate) fn forward(&self, child: Option<ObjectId>, content_rect: Rect, event: &Event) {
+        let (Some(child), Some(registry)) = (child, self.registry.as_ref()) else {
+            return;
+        };
+        match event {
+            Event::MousePress { pos, .. }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseMove { pos }
+            | Event::MouseDoubleClick { pos, .. }
+            | Event::MouseEnter { pos }
+            | Event::MouseLeave { pos } => {
+                if content_rect.contains(*pos) {
+                    let _ = registry.borrow_mut().forward_event(child, event);
+                }
+            }
+            _ => {
+                let _ = registry.borrow_mut().forward_event(child, event);
+            }
+        }
     }
 }
 
@@ -596,6 +646,7 @@ pub struct Center {
     content: Content,
     width_factor: f32,
     height_factor: f32,
+    forwarding: ContentForwarding,
 }
 
 impl Center {
@@ -606,7 +657,18 @@ impl Center {
             content: Content::new(),
             width_factor: 1.0,
             height_factor: 1.0,
+            forwarding: ContentForwarding::default(),
         }
+    }
+
+    /// Binds the shared forwarding table used to deliver events to the content control (C-003).
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.forwarding.set_registry(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.forwarding.registry()
     }
 
     /// The content this control positions.
@@ -777,6 +839,7 @@ impl Draw for Center {
 impl EventHandler for Center {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        self.forwarding.forward(self.content.child, self.content_rect(), event);
     }
 }
 
@@ -892,6 +955,7 @@ pub struct Align {
     base: BaseWidget,
     content: Content,
     alignment: AlignPosition,
+    forwarding: ContentForwarding,
 }
 
 impl Align {
@@ -901,7 +965,18 @@ impl Align {
             base: BaseWidget::new(WidgetKind::Align, geometry, "Align"),
             content: Content::new(),
             alignment: AlignPosition::default(),
+            forwarding: ContentForwarding::default(),
         }
+    }
+
+    /// Binds the shared forwarding table used to deliver events to the content control (C-003).
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.forwarding.set_registry(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.forwarding.registry()
     }
 
     /// The content this control positions.
@@ -1054,6 +1129,7 @@ impl Draw for Align {
 impl EventHandler for Align {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        self.forwarding.forward(self.content.child, self.content_rect(), event);
     }
 }
 
@@ -1069,6 +1145,7 @@ pub struct SizedBox {
     base: BaseWidget,
     content: Content,
     fixed: Size,
+    forwarding: ContentForwarding,
 }
 
 impl SizedBox {
@@ -1078,7 +1155,18 @@ impl SizedBox {
             base: BaseWidget::new(WidgetKind::SizedBox, geometry, "SizedBox"),
             content: Content::new(),
             fixed: Size::new(geometry.width, geometry.height),
+            forwarding: ContentForwarding::default(),
         }
+    }
+
+    /// Binds the shared forwarding table used to deliver events to the content control (C-003).
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.forwarding.set_registry(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.forwarding.registry()
     }
 
     /// The content this control positions.
@@ -1237,6 +1325,7 @@ impl Draw for SizedBox {
 impl EventHandler for SizedBox {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        self.forwarding.forward(self.content.child, self.content_rect(), event);
     }
 }
 
@@ -1255,6 +1344,7 @@ pub struct Padding {
     right: u32,
     bottom: u32,
     left: u32,
+    forwarding: ContentForwarding,
 }
 
 impl Padding {
@@ -1267,7 +1357,18 @@ impl Padding {
             right: 0,
             bottom: 0,
             left: 0,
+            forwarding: ContentForwarding::default(),
         }
+    }
+
+    /// Binds the shared forwarding table used to deliver events to the content control (C-003).
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.forwarding.set_registry(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.forwarding.registry()
     }
 
     /// The content this control positions.
@@ -1445,6 +1546,7 @@ impl Draw for Padding {
 impl EventHandler for Padding {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        self.forwarding.forward(self.content.child, self.content_rect(), event);
     }
 }
 
@@ -1463,6 +1565,7 @@ pub struct Expanded {
     base: BaseWidget,
     content: Content,
     flex: u32,
+    forwarding: ContentForwarding,
 }
 
 impl Expanded {
@@ -1472,7 +1575,18 @@ impl Expanded {
             base: BaseWidget::new(WidgetKind::Expanded, geometry, "Expanded"),
             content: Content::new(),
             flex: 1,
+            forwarding: ContentForwarding::default(),
         }
+    }
+
+    /// Binds the shared forwarding table used to deliver events to the content control (C-003).
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.forwarding.set_registry(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.forwarding.registry()
     }
 
     /// The content this control positions.
@@ -1623,6 +1737,7 @@ impl Draw for Expanded {
 impl EventHandler for Expanded {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        self.forwarding.forward(self.content.child, self.content_rect(), event);
     }
 }
 
@@ -1670,6 +1785,7 @@ pub struct Flexible {
     content: Content,
     flex: u32,
     fit: FlexFit,
+    forwarding: ContentForwarding,
 }
 
 impl Flexible {
@@ -1680,7 +1796,18 @@ impl Flexible {
             content: Content::new(),
             flex: 1,
             fit: FlexFit::default(),
+            forwarding: ContentForwarding::default(),
         }
+    }
+
+    /// Binds the shared forwarding table used to deliver events to the content control (C-003).
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.forwarding.set_registry(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.forwarding.registry()
     }
 
     /// The content this control positions.
@@ -1863,6 +1990,7 @@ impl Draw for Flexible {
 impl EventHandler for Flexible {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        self.forwarding.forward(self.content.child, self.content_rect(), event);
     }
 }
 
@@ -1877,6 +2005,7 @@ impl EventHandler for Flexible {
 pub struct IntrinsicWidth {
     base: BaseWidget,
     content: Content,
+    forwarding: ContentForwarding,
 }
 
 impl IntrinsicWidth {
@@ -1885,7 +2014,18 @@ impl IntrinsicWidth {
         Self {
             base: BaseWidget::new(WidgetKind::IntrinsicWidth, geometry, "IntrinsicWidth"),
             content: Content::new(),
+            forwarding: ContentForwarding::default(),
         }
+    }
+
+    /// Binds the shared forwarding table used to deliver events to the content control (C-003).
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.forwarding.set_registry(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.forwarding.registry()
     }
 
     /// The content this control positions.
@@ -2010,6 +2150,7 @@ impl Draw for IntrinsicWidth {
 impl EventHandler for IntrinsicWidth {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        self.forwarding.forward(self.content.child, self.content_rect(), event);
     }
 }
 
@@ -2029,6 +2170,7 @@ pub struct AspectRatio {
     content: Content,
     ratio: f32,
     respect_parent: bool,
+    forwarding: ContentForwarding,
 }
 
 impl AspectRatio {
@@ -2039,7 +2181,18 @@ impl AspectRatio {
             content: Content::new(),
             ratio: DEFAULT_ASPECT_RATIO,
             respect_parent: true,
+            forwarding: ContentForwarding::default(),
         }
+    }
+
+    /// Binds the shared forwarding table used to deliver events to the content control (C-003).
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.forwarding.set_registry(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.forwarding.registry()
     }
 
     /// The content this control positions.
@@ -2365,6 +2518,7 @@ impl Draw for AspectRatio {
 impl EventHandler for AspectRatio {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        self.forwarding.forward(self.content.child, self.content_rect(), event);
     }
 }
 
@@ -2729,5 +2883,54 @@ mod tests {
         assert_requests_layout!(Expanded::new(Rect::new(0, 0, 200, 200)), "Expanded");
         assert_requests_layout!(Flexible::new(Rect::new(0, 0, 200, 200)), "Flexible");
         assert_requests_layout!(AspectRatio::new(Rect::new(0, 0, 200, 200)), "AspectRatio");
+    }
+
+    /// C-003: a mounted content control receives the wrapper's events. Pointer events are gated by
+    /// the content rectangle; key events reach it wherever the pointer is.
+    #[test]
+    fn center_forwards_events_to_its_content_control() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let registry = Rc::new(RefCell::new(SimpleRegistry::new()));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        registry.borrow_mut().register(
+            7,
+            |_| {},
+            move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+
+        let mut center = Center::new(Rect::new(0, 0, 100, 100));
+        center.set_content_size(Size::new(100, 100));
+        center.set_widget(Some(7));
+        center.set_registry(Rc::clone(&registry));
+
+        center.handle_event(&Event::KeyPress { key: 65, modifiers: 0 });
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "a key event is forwarded unconditionally");
+
+        center.handle_event(&Event::MousePress {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "a pointer press inside the content is forwarded"
+        );
+
+        center.handle_event(&Event::MousePress {
+            pos: Point::new(500, 500),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "a pointer press outside the content is dropped"
+        );
     }
 }

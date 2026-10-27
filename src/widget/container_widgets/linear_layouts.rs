@@ -46,7 +46,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::container_widgets::layout_family::{paint_item_box, resolve_palette};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// One item of a distribution layout: a label, the size it asks for, and its weight.
@@ -176,6 +176,10 @@ pub struct Flex {
     /// Bumped by every input that changes the arrangement.
     rect_version: u64,
     rect_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<Rect>>)>>,
+    /// Shared forwarding table for the controls mounted in items (C-004).
+    registry: Option<std::rc::Rc<std::cell::RefCell<SimpleRegistry>>>,
+    /// The item that last received a pointer press, so keyboard/focus events reach it.
+    active_item: Option<usize>,
     /// Emitted with the item index when an item is clicked.
     pub item_clicked: Signal1<usize>,
 }
@@ -193,8 +197,30 @@ impl Flex {
             gap: 0,
             rect_version: 1,
             rect_cache: std::cell::RefCell::new(None),
+            registry: None,
+            active_item: None,
             item_clicked: Signal1::new(),
         }
+    }
+
+    /// Binds the shared forwarding table used to deliver events to item controls (C-004).
+    pub fn set_registry(&mut self, registry: std::rc::Rc<std::cell::RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub fn registry(&self) -> Option<&std::rc::Rc<std::cell::RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
+    }
+
+    /// Delivers `event` to the control mounted in item `index`, if one is mounted.
+    fn forward_item_event(&self, index: usize, event: &Event) {
+        let (Some(registry), Some(widget_id)) =
+            (self.registry.as_ref(), self.items.get(index).and_then(|item| item.widget_id()))
+        else {
+            return;
+        };
+        let _ = registry.borrow_mut().forward_event(widget_id, event);
     }
 
     /// The items this control distributes.
@@ -590,6 +616,24 @@ impl EventHandler for Flex {
             // cannot reach (`check_enabled_is_honoured.sh`).
             return;
         }
+        // C-004: an item that hosts a real control forwards the event to it. Pointer events are
+        // routed to the item under the pointer; key/focus events go to the item that was last
+        // pressed, because a focused control owns the keyboard wherever the pointer is.
+        let pointer_target = match event {
+            Event::MousePress { pos, .. }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseMove { pos }
+            | Event::MouseDoubleClick { pos, .. }
+            | Event::MouseEnter { pos }
+            | Event::MouseLeave { pos } => self.item_at(*pos),
+            _ => self.active_item,
+        };
+        if let Some(index) = pointer_target {
+            if matches!(event, Event::MousePress { .. }) {
+                self.active_item = Some(index);
+            }
+            self.forward_item_event(index, event);
+        }
         if let Event::MousePress { pos, button: 1, .. } = event {
             if let Some(index) = self.item_at(*pos) {
                 self.item_clicked.emit(index);
@@ -618,6 +662,10 @@ pub struct FlowLayout {
     /// Bumped by every input that changes the arrangement.
     rect_version: u64,
     rect_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<Rect>>)>>,
+    /// Shared forwarding table for the controls mounted in items (C-004).
+    registry: Option<std::rc::Rc<std::cell::RefCell<SimpleRegistry>>>,
+    /// The item that last received a pointer press, so keyboard/focus events reach it.
+    active_item: Option<usize>,
     /// Emitted with the item index when an item is clicked.
     pub item_clicked: Signal1<usize>,
 }
@@ -640,7 +688,38 @@ impl FlowLayout {
             text_direction: TextDirection::default(),
             rect_version: 1,
             rect_cache: std::cell::RefCell::new(None),
+            registry: None,
+            active_item: None,
             item_clicked: Signal1::new(),
+        }
+    }
+
+    /// Binds the shared forwarding table used to deliver events to item controls (C-004).
+    pub fn set_registry(&mut self, registry: std::rc::Rc<std::cell::RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub fn registry(&self) -> Option<&std::rc::Rc<std::cell::RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
+    }
+
+    /// Delivers `event` to the control mounted in item `index`, if one is mounted.
+    fn forward_item_event(&self, index: usize, event: &Event) {
+        let (Some(registry), Some(widget_id)) =
+            (self.registry.as_ref(), self.items.get(index).and_then(|item| item.widget_id()))
+        else {
+            return;
+        };
+        let _ = registry.borrow_mut().forward_event(widget_id, event);
+    }
+
+    /// Writes each mounted item control's rectangle into it.
+    fn place_item_widgets(&self) {
+        for (item, rect) in self.items.iter().zip(self.cached_item_rects().iter()) {
+            if let Some(widget_id) = item.widget_id() {
+                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+            }
         }
     }
 
@@ -667,6 +746,10 @@ impl FlowLayout {
 
     /// Appends an item and requests a redraw.
     pub fn add_item(&mut self, item: FlexItemSpec) {
+        if let Some(widget_id) = item.widget_id() {
+            self.base.add_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, true);
+        }
         self.items.push(item);
         self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
@@ -678,7 +761,12 @@ impl FlowLayout {
         if self.items.is_empty() {
             return;
         }
-        self.items.clear();
+        for item in self.items.drain(..) {
+            if let Some(widget_id) = item.widget_id() {
+                self.base.remove_child_linked(widget_id);
+                crate::set_widget_visible(widget_id, false);
+            }
+        }
         self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
@@ -692,7 +780,11 @@ impl FlowLayout {
         if index >= self.items.len() {
             return false;
         }
-        self.items.remove(index);
+        let removed = self.items.remove(index);
+        if let Some(widget_id) = removed.widget_id() {
+            self.base.remove_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, false);
+        }
         self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
@@ -841,6 +933,7 @@ impl Widget for FlowLayout {
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
         self.rect_version = self.rect_version.wrapping_add(1);
+        self.place_item_widgets();
     }
 
     fn size_hint(&self) -> Size {
@@ -951,6 +1044,7 @@ impl Draw for FlowLayout {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
         let rects = self.cached_item_rects();
+        self.place_item_widgets();
         paint_items(ctx, &self.base, "flow_layout", outer, &rects, &self.items);
     }
 }
@@ -958,6 +1052,21 @@ impl Draw for FlowLayout {
 impl EventHandler for FlowLayout {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        let pointer_target = match event {
+            Event::MousePress { pos, .. }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseMove { pos }
+            | Event::MouseDoubleClick { pos, .. }
+            | Event::MouseEnter { pos }
+            | Event::MouseLeave { pos } => self.item_at(*pos),
+            _ => self.active_item,
+        };
+        if let Some(index) = pointer_target {
+            if matches!(event, Event::MousePress { .. }) {
+                self.active_item = Some(index);
+            }
+            self.forward_item_event(index, event);
+        }
         if let Event::MousePress { pos, button: 1, .. } = event {
             if let Some(index) = self.item_at(*pos) {
                 self.item_clicked.emit(index);
@@ -989,6 +1098,10 @@ pub struct WrapLayout {
     /// Bumped by every input that changes the arrangement.
     rect_version: u64,
     rect_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<Rect>>)>>,
+    /// Shared forwarding table for the controls mounted in items (C-004).
+    registry: Option<std::rc::Rc<std::cell::RefCell<SimpleRegistry>>>,
+    /// The item that last received a pointer press, so keyboard/focus events reach it.
+    active_item: Option<usize>,
     /// Emitted with the item index when an item is clicked.
     pub item_clicked: Signal1<usize>,
 }
@@ -1008,7 +1121,38 @@ impl WrapLayout {
             text_direction: TextDirection::default(),
             rect_version: 1,
             rect_cache: std::cell::RefCell::new(None),
+            registry: None,
+            active_item: None,
             item_clicked: Signal1::new(),
+        }
+    }
+
+    /// Binds the shared forwarding table used to deliver events to item controls (C-004).
+    pub fn set_registry(&mut self, registry: std::rc::Rc<std::cell::RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub fn registry(&self) -> Option<&std::rc::Rc<std::cell::RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
+    }
+
+    /// Delivers `event` to the control mounted in item `index`, if one is mounted.
+    fn forward_item_event(&self, index: usize, event: &Event) {
+        let (Some(registry), Some(widget_id)) =
+            (self.registry.as_ref(), self.items.get(index).and_then(|item| item.widget_id()))
+        else {
+            return;
+        };
+        let _ = registry.borrow_mut().forward_event(widget_id, event);
+    }
+
+    /// Writes each mounted item control's rectangle into it.
+    fn place_item_widgets(&self) {
+        for (item, rect) in self.items.iter().zip(self.cached_item_rects().iter()) {
+            if let Some(widget_id) = item.widget_id() {
+                crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
+            }
         }
     }
 
@@ -1019,6 +1163,10 @@ impl WrapLayout {
 
     /// Appends an item and requests a redraw.
     pub fn add_item(&mut self, item: FlexItemSpec) {
+        if let Some(widget_id) = item.widget_id() {
+            self.base.add_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, true);
+        }
         self.items.push(item);
         self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
@@ -1044,7 +1192,11 @@ impl WrapLayout {
         if index >= self.items.len() {
             return false;
         }
-        self.items.remove(index);
+        let removed = self.items.remove(index);
+        if let Some(widget_id) = removed.widget_id() {
+            self.base.remove_child_linked(widget_id);
+            crate::set_widget_visible(widget_id, false);
+        }
         self.rect_version = self.rect_version.wrapping_add(1);
         self.base.request_layout();
         self.base.request_redraw();
@@ -1210,6 +1362,7 @@ impl Widget for WrapLayout {
     fn set_geometry(&mut self, geometry: Rect) {
         self.base.set_geometry(geometry);
         self.rect_version = self.rect_version.wrapping_add(1);
+        self.place_item_widgets();
     }
 
     fn size_hint(&self) -> Size {
@@ -1329,6 +1482,7 @@ impl Draw for WrapLayout {
     fn draw(&mut self, ctx: &mut RenderContext) {
         let outer = self.geometry();
         let rects = self.cached_item_rects();
+        self.place_item_widgets();
         paint_items(ctx, &self.base, "wrap_layout", outer, &rects, &self.items);
     }
 }
@@ -1336,6 +1490,21 @@ impl Draw for WrapLayout {
 impl EventHandler for WrapLayout {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        let pointer_target = match event {
+            Event::MousePress { pos, .. }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseMove { pos }
+            | Event::MouseDoubleClick { pos, .. }
+            | Event::MouseEnter { pos }
+            | Event::MouseLeave { pos } => self.item_at(*pos),
+            _ => self.active_item,
+        };
+        if let Some(index) = pointer_target {
+            if matches!(event, Event::MousePress { .. }) {
+                self.active_item = Some(index);
+            }
+            self.forward_item_event(index, event);
+        }
         if let Event::MousePress { pos, button: 1, .. } = event {
             if let Some(index) = self.item_at(*pos) {
                 self.item_clicked.emit(index);
@@ -1755,5 +1924,44 @@ mod tests {
         wrap.set_text_direction(TextDirection::RightToLeft);
         assert!(wrap.text_direction().is_right_to_left());
         assert_eq!(wrap.item_rects()[0].x, 70, "the wrap run mirrors too");
+    }
+
+    /// C-004: a mounted item control receives pointer and key events from the layout.
+    #[test]
+    fn item_controls_receive_forwarded_events() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let registry = std::rc::Rc::new(std::cell::RefCell::new(SimpleRegistry::new()));
+        let hits = Arc::new(AtomicUsize::new(0));
+        for id in [11u64, 12, 13] {
+            let counter = Arc::clone(&hits);
+            registry.borrow_mut().register(
+                id,
+                |_| {},
+                move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                },
+            );
+        }
+
+        let mut flex = Flex::new(Rect::new(0, 0, 300, 100));
+        flex.add_item(FlexItemSpec::new("a", Size::new(100, 40)).with_widget(11u64));
+        flex.set_registry(std::rc::Rc::clone(&registry));
+        flex.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        flex.handle_event(&Event::KeyPress { key: 65, modifiers: 0 });
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "flex forwards both pointer and key events");
+
+        let mut flow = FlowLayout::new(Rect::new(0, 0, 300, 100));
+        flow.add_item(FlexItemSpec::new("a", Size::new(100, 40)).with_widget(12u64));
+        flow.set_registry(std::rc::Rc::clone(&registry));
+        flow.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        assert_eq!(hits.load(Ordering::SeqCst), 3, "flow forwards to the pressed item");
+
+        let mut wrap = WrapLayout::new(Rect::new(0, 0, 300, 100));
+        wrap.add_item(FlexItemSpec::new("a", Size::new(100, 40)).with_widget(13u64));
+        wrap.set_registry(std::rc::Rc::clone(&registry));
+        wrap.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        assert_eq!(hits.load(Ordering::SeqCst), 4, "wrap forwards to the pressed item");
     }
 }

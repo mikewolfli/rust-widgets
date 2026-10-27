@@ -106,7 +106,13 @@ pub struct ProgressCircle {
 /// is the same one `arc` uses: the driving value, the template, the resolved face and the device
 /// scale.
 struct CenterTextCache {
-    value_bits: u32,
+    /// The value quantised to the hundredth the reading can show.
+    ///
+    /// The template renders `{percent}` as a rounded integer percentage and `{value}` with
+    /// two decimals, so both spellings are a function of `round(value * 100)`. Keying on the
+    /// exact `f32` bit pattern made every frame of a value tween a cache miss even though the
+    /// printed reading had not moved.
+    value_percent: u32,
     format: String,
     font: Font,
     dpi_scale_bits: u32,
@@ -439,11 +445,15 @@ impl ProgressCircle {
     /// Rebuilds [`Self::center_text_cache`] only when the reading or its presentation changed.
     fn ensure_center_text(&mut self, context: &RenderContext) {
         let value = self.value_animation.value();
-        let value_bits = value.to_bits();
+        // Both published placeholders are derived from hundredths: `{percent}` rounds
+        // `value * 100` to an integer and `{value}` prints the same product to two decimals.
+        // A tween therefore reuses the cached string and metrics until the visible hundredth
+        // changes, instead of missing on every binary fraction.
+        let value_percent = (value.max(0.0) * 100.0).round() as u32;
         let dpi_scale_bits = context.dpi_scale().to_bits();
         let font = effective_font(self.base.style()).clone();
         let fresh = self.center_text_cache.as_ref().is_some_and(|cache| {
-            cache.value_bits == value_bits
+            cache.value_percent == value_percent
                 && cache.format == self.center_text_format
                 && cache.font == font
                 && cache.dpi_scale_bits == dpi_scale_bits
@@ -457,7 +467,7 @@ impl ProgressCircle {
         self.write_center_text(&mut text);
         let metrics = context.measure_text(&text, &font);
         self.center_text_cache = Some(CenterTextCache {
-            value_bits,
+            value_percent,
             format: self.center_text_format.clone(),
             font,
             dpi_scale_bits,
@@ -1169,5 +1179,36 @@ mod tests {
         pc.set_center_text_format("{value}");
         pc.ensure_center_text(&context);
         assert_eq!(pc.center_text_cache.as_ref().unwrap().text, "0.50");
+    }
+
+    /// A tween that has not moved the printed hundredth reuses the cached reading.
+    ///
+    /// The key used to be the raw `f32` bit pattern, so every fractional frame of a tween was
+    /// a miss even though the printed reading was identical.
+    #[test]
+    fn a_value_tween_reuses_the_reading_until_the_hundredth_moves() {
+        let mut pc = ProgressCircle::new(Rect::new(0, 0, 80, 80));
+        pc.set_show_center_text(true);
+        let mut backend = crate::render::SoftwarePaintBackend::new(Size::new(80, 80), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let context = RenderContext::new(&mut backend);
+
+        pc.value_animation.jump_to(0.5);
+        pc.ensure_center_text(&context);
+        let ptr = pc.center_text_cache.as_ref().unwrap().text.as_ptr();
+
+        // Two values in the same hundredth: the rendered reading is unchanged.
+        pc.value_animation.jump_to(0.500_1);
+        pc.ensure_center_text(&context);
+        assert_eq!(
+            pc.center_text_cache.as_ref().unwrap().text.as_ptr(),
+            ptr,
+            "a sub-hundredth step must hit the cache"
+        );
+
+        // The next hundredth prints a different percentage and rebuilds once.
+        pc.value_animation.jump_to(0.51);
+        pc.ensure_center_text(&context);
+        assert_eq!(pc.center_text_cache.as_ref().unwrap().text, "51%");
     }
 }

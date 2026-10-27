@@ -240,6 +240,10 @@ pub struct TextEdit {
     /// text plus the interior width, wrap flag and font — the exact inputs `rows_for` reads — so a
     /// change to any of them re-wraps and nothing else can leave a stale row behind (WDGT-01).
     row_cache: RefCell<Option<RowCache>>,
+    /// Per-line wrap results, reused when a paragraph is unchanged (I-006).
+    wrapped_lines: RefCell<Vec<TextLineWrapCache>>,
+    /// Whether the pointer is dragging the scrollbar thumb (I-015).
+    scrollbar_drag: bool,
     /// Styled runs painted over the value, in caller order.
     ///
     /// Empty by default, which keeps the paint path on its original single-run drawing.
@@ -269,6 +273,24 @@ struct RowCache {
     line_wrap: bool,
     font: Font,
     rows: Rc<Vec<RowSpan>>,
+}
+
+/// One logical line's wrapped rows, relative to the line start, keyed by its content (I-006).
+struct TextLineWrapCache {
+    hash: u64,
+    width: u32,
+    font: Font,
+    rows: Vec<(usize, usize)>,
+}
+
+/// FNV-1a over one line's bytes, for the wrap-cache key.
+fn text_line_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in text.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// One contiguous run of a single [`CharFormat`] over the document.
@@ -306,6 +328,8 @@ impl TextEdit {
             caret_cursor_announced: 0,
             caret_selection_announced: None,
             row_cache: RefCell::new(None),
+            wrapped_lines: RefCell::new(Vec::new()),
+            scrollbar_drag: false,
             spans: Vec::new(),
             revision: 0,
             spans_revision: 0,
@@ -975,50 +999,84 @@ impl TextEdit {
     where
         F: FnMut(char) -> u32,
     {
-        let _ = font;
         let mut rows = Vec::new();
-        let mut row_start = 0usize;
-        let mut row_width = 0.0f32;
-        // The byte offset just past the most recent place a word may be split, or `None` when
-        // this row has no space or hyphen to break at.
-        let mut last_break: Option<usize> = None;
-        for (offset, ch) in self.text.char_indices() {
-            if ch == '\n' {
-                // The newline ends the row and belongs to it, so the next row starts after it. Its
-                // own advance is not counted: it paints nothing.
-                rows.push(RowSpan { start: row_start, end: offset + 1 });
-                row_start = offset + 1;
-                row_width = 0.0;
-                last_break = None;
+        // A paragraph's breaks depend only on its own text, the width and the font, so an
+        // unchanged paragraph reuses its last rows instead of being measured again (I-006). With
+        // wrapping off no measurement is needed at all: one row per line.
+        let mut cache = self.wrapped_lines.borrow_mut();
+        let line_count = self.text.bytes().filter(|byte| *byte == b'\n').count() + 1;
+        cache.resize_with(line_count, || TextLineWrapCache {
+            hash: 0,
+            width: 0,
+            font: Font::default(),
+            rows: Vec::new(),
+        });
+        let mut line_start = 0usize;
+        let mut line_index = 0usize;
+        for line in self.text.split('\n') {
+            let line_end = line_start + line.len();
+            let row_end = if line_end < self.text.len() { line_end + 1 } else { line_end };
+            if !self.line_wrap || interior_width == 0 {
+                rows.push(RowSpan { start: line_start, end: row_end });
+                line_start = line_end + 1;
+                line_index += 1;
                 continue;
             }
-            let advance = advance_of(ch) as f32;
-            if self.line_wrap && row_width + advance > interior_width as f32 && offset > row_start {
-                // Break at the last word boundary rather than at an arbitrary character, which is
-                // what keeps a word from being split across two rows. A row with no boundary (a
-                // single long token) falls back to the old character break so it still fits.
-                let break_at = last_break
-                    .filter(|boundary| *boundary > row_start && *boundary <= offset)
-                    .unwrap_or(offset);
-                rows.push(RowSpan { start: row_start, end: break_at });
-                row_start = break_at;
-                // The characters between the break and the overflow are re-measured so they
-                // start the new row at the correct width. Only a handful of glyphs are involved
-                // and only on the frame a row actually wraps.
-                row_width = 0.0;
-                for (_, carried) in self.text[row_start..offset].char_indices() {
-                    row_width += advance_of(carried) as f32;
+            let hash = text_line_hash(line);
+            let reusable = {
+                let entry = &cache[line_index];
+                entry.hash == hash && entry.width == interior_width && entry.font == *font
+            };
+            if reusable {
+                for &(relative_start, relative_end) in &cache[line_index].rows {
+                    rows.push(RowSpan {
+                        start: line_start + relative_start,
+                        end: line_start + relative_end,
+                    });
                 }
-                last_break = None;
+                line_start = line_end + 1;
+                line_index += 1;
+                continue;
             }
-            if ch.is_whitespace() || ch == '-' {
-                last_break = Some(offset + ch.len_utf8());
+            let mut line_rows = Vec::new();
+            let mut row_start = 0usize;
+            let mut row_width = 0.0f32;
+            let mut last_break: Option<usize> = None;
+            for (offset, ch) in line.char_indices() {
+                let advance = advance_of(ch) as f32;
+                if row_width + advance > interior_width as f32 && offset > row_start {
+                    let break_at = last_break
+                        .filter(|boundary| *boundary > row_start && *boundary <= offset)
+                        .unwrap_or(offset);
+                    line_rows.push((row_start, break_at));
+                    row_start = break_at;
+                    row_width = 0.0;
+                    for (_, carried) in line[row_start..offset].char_indices() {
+                        row_width += advance_of(carried) as f32;
+                    }
+                    last_break = None;
+                }
+                if ch.is_whitespace() || ch == '-' {
+                    last_break = Some(offset + ch.len_utf8());
+                }
+                row_width += advance;
             }
-            row_width += advance;
+            line_rows.push((row_start, row_end - line_start));
+            for &(relative_start, relative_end) in &line_rows {
+                rows.push(RowSpan {
+                    start: line_start + relative_start,
+                    end: line_start + relative_end,
+                });
+            }
+            let entry = &mut cache[line_index];
+            entry.hash = hash;
+            entry.width = interior_width;
+            entry.font = font.clone();
+            entry.rows = line_rows;
+            line_start = line_end + 1;
+            line_index += 1;
         }
-        // The trailing remainder is a row even when empty, so a value ending in a newline still has a
-        // row for the empty line after it — where a caret can sit.
-        rows.push(RowSpan { start: row_start, end: self.text.len() });
+        cache.truncate(line_count);
         rows
     }
 
@@ -1058,6 +1116,74 @@ impl TextEdit {
         // At least one, so a control shorter than a single row still shows a row rather than
         // dividing by zero or scrolling past everything.
         ((usable / line_height).max(1)) as usize
+    }
+
+    /// The scrollbar's track rectangle, or `None` when the value fits the viewport (I-015).
+    ///
+    /// Same geometry and colours as the text area's scrollbar, so the two multi-line editors
+    /// present scrolling the same way rather than one of them being reachable only by the wheel.
+    fn scrollbar_track(&self) -> Option<(Rect, usize, usize)> {
+        let total = self.layout_rows().len();
+        let visible = self.visible_row_count();
+        if total <= visible {
+            return None;
+        }
+        let rect = self.geometry();
+        let width = 4u32;
+        let track = Rect::new(
+            rect.x + rect.width.saturating_sub(width + 2) as i32,
+            rect.y.saturating_add(2),
+            width,
+            rect.height.saturating_sub(4),
+        );
+        Some((track, total, visible))
+    }
+
+    /// The thumb rectangle within `track`, proportional to the visible fraction.
+    fn scrollbar_thumb(&self, track: Rect, total: usize, visible: usize) -> Rect {
+        let height = ((visible as f32 / total as f32) * track.height as f32)
+            .max(8.0)
+            .min(track.height as f32) as u32;
+        let max_first = total.saturating_sub(visible);
+        let fraction = if max_first == 0 {
+            0.0
+        } else {
+            self.first_visible_row.min(max_first) as f32 / max_first as f32
+        };
+        let y = track.y + (((track.height - height) as f32) * fraction) as i32;
+        Rect::new(track.x, y, track.width, height)
+    }
+
+    /// Whether `pos` is on the scrollbar track (and therefore grabs the thumb).
+    fn scrollbar_contains(&self, pos: crate::core::Point) -> bool {
+        self.scrollbar_track().map(|(track, _, _)| track.contains_point(pos)).unwrap_or(false)
+    }
+
+    /// Scrolls so the row under the dragged thumb is the first visible one.
+    fn scrollbar_scroll_to(&mut self, y: i32) {
+        let Some((track, total, visible)) = self.scrollbar_track() else {
+            return;
+        };
+        let thumb = self.scrollbar_thumb(track, total, visible);
+        let travel = (track.height.saturating_sub(thumb.height)).max(1) as f32;
+        let offset = (y - track.y - thumb.height as i32 / 2) as f32;
+        let max_first = total.saturating_sub(visible);
+        let fraction = (offset / travel).clamp(0.0, 1.0);
+        let next = (fraction * max_first as f32).round() as usize;
+        if next != self.first_visible_row {
+            self.first_visible_row = next;
+        }
+    }
+
+    /// Paints the right-edge scrollbar when the value is taller than the viewport (I-015).
+    fn draw_scrollbar(&self, context: &mut RenderContext) {
+        let Some((track, total, visible)) = self.scrollbar_track() else {
+            return;
+        };
+        let paper = self.style().background_color.unwrap_or(Color::WHITE);
+        let ink = self.style().text_color.unwrap_or(Color::BLACK);
+        context.fill_rect(track, ink.blend(&paper, 0.18));
+        context.fill_rect(self.scrollbar_thumb(track, total, visible), ink.blend(&paper, 0.45));
     }
 
     /// Scrolls the viewport the minimum amount that brings the caret's row into view.
@@ -1673,13 +1799,23 @@ impl EventHandler for TextEdit {
             // A press places the caret and starts a selection. It used to do nothing at all, so the
             // only way to put the caret anywhere was to delete to that point.
             Event::MousePress { pos, button, modifiers, .. } if *button == 1 => {
+                // A press on the scrollbar grabs its thumb instead of placing the caret (I-015).
+                if self.scrollbar_contains(*pos) {
+                    self.scrollbar_drag = true;
+                    self.scrollbar_scroll_to(pos.y);
+                    self.base.request_redraw();
+                    return;
+                }
                 // A press focuses the control, which is how the user reaches it with the pointer.
                 self.focused = true;
                 let offset = self.offset_at_point(*pos);
                 self.press_at(offset, crate::shortcut::Modifiers::from_event_bits(*modifiers));
             }
             Event::MouseMove { pos } => {
-                if self.dragging_selection {
+                if self.scrollbar_drag {
+                    self.scrollbar_scroll_to(pos.y);
+                    self.base.request_redraw();
+                } else if self.dragging_selection {
                     let offset = self.offset_at_point(*pos);
                     self.drag_to(offset);
                 }
@@ -1698,6 +1834,7 @@ impl EventHandler for TextEdit {
             // A release anywhere ends the gesture: the anchor stays where the press put it, so the
             // selection the user made is kept.
             Event::MouseRelease { button, .. } if *button == 1 => {
+                self.scrollbar_drag = false;
                 self.end_drag();
             }
             // Platform-committed text (D09-INPUT-01), routed into the same `insert_str` the
@@ -2110,6 +2247,8 @@ impl Draw for TextEdit {
                 }
             });
         }
+        // I-015: the scrollbar is painted last so it sits above the text it scrolls.
+        self.draw_scrollbar(context);
     }
 }
 
@@ -3417,5 +3556,20 @@ mod tests {
         assert_eq!(query.caret_byte, Some(5));
         assert!(query.caret_rect.y >= te.geometry().y, "the query stays inside the field");
         assert!(query.caret_rect.x >= te.geometry().x);
+    }
+
+    /// A document taller than the viewport publishes and paints a scrollbar (I-015).
+    #[test]
+    fn a_long_document_has_a_scrollbar() {
+        let mut te = TextEdit::new(Rect::new(0, 0, 240, 60));
+        let many = (0..40).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        te.set_text(many);
+        let track = te.scrollbar_track().expect("a 40-line document does not fit 60 px");
+        assert_eq!(track.1, te.layout_rows().len());
+        assert!(track.2 >= 1, "at least one row is visible");
+        // Dragging to the bottom of the track reaches the last viewport.
+        let bottom = track.0.y + track.0.height as i32;
+        te.scrollbar_scroll_to(bottom);
+        assert!(te.first_visible_row() > 0, "the drag scrolled the viewport");
     }
 }

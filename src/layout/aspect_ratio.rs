@@ -229,6 +229,16 @@ impl Layout for AspectRatioLayout {
         let _ = context;
         self.arrange(rect, children, widgets);
     }
+
+    /// The single child's fitted rectangle, from the same [`Self::compute_child_rect`] the
+    /// update paths use (LAY-005): the layout's model answers a one-child query directly
+    /// instead of the trait default's full solve-and-capture pass.
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        if self.child != Some(id) {
+            return None;
+        }
+        Some(self.compute_child_rect(rect))
+    }
 }
 
 #[cfg(test)]
@@ -379,6 +389,19 @@ mod tests {
             layout.set_aspect_ratio(f32::INFINITY)
         }))
         .is_err());
+    }
+
+    /// LAY-005: the one-child query runs the same `compute_child_rect` the update paths
+    /// use, so the layout's model answers directly instead of a full solve-and-capture.
+    #[test]
+    fn child_rect_answers_from_the_model() {
+        let layout = AspectRatioLayout::new_with_child(42, 1.0, true);
+        let rect = Rect::new(0, 0, 200, 50);
+        let mut emitted = None;
+        layout.update(rect, &mut |_, r| emitted = Some(r));
+        assert_eq!(layout.child_rect(42, rect), emitted);
+        assert_eq!(layout.child_rect(42, rect), Some(Rect::new(75, 0, 50, 50)));
+        assert_eq!(layout.child_rect(9, rect), None, "a foreign id is not placed");
     }
 }
 

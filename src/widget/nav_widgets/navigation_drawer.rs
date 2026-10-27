@@ -96,6 +96,25 @@ pub struct NavigationDrawer {
     /// the panel that offered it has done its job. Set it to `false` for a persistent drawer
     /// that should stay open beside the content.
     auto_close_on_select: bool,
+    /// Whether the panel is modal.
+    ///
+    /// # Adjudication (N-004)
+    ///
+    /// The draw and event paths disagreed about what a non-modal drawer is: `draw` painted the
+    /// scrim for *every* open drawer, while the event path already only dismissed on an outside
+    /// press when the drawer was a modal one. The no-scrim-in-non-modal behaviour is the correct
+    /// one, and it is what this property selects: a modal drawer dims the page behind it and an
+    /// outside press dismisses it; a persistent drawer has neither. Defaults to `true`, so an
+    /// existing caller keeps the modal drawer it always had.
+    modal: bool,
+    /// Scroll offset of the item list from its first row, in pixels.
+    ///
+    /// The rows are data rather than mounted children, so the scroll container is the same
+    /// offset-and-clamp shape `TabView` uses for its strip: a declarative wheel step, a clamp
+    /// against the rows' total height, and a paint/hit test that both apply the offset.
+    list_scroll: i32,
+    /// The flat row index the pointer is currently over, when it is over the list.
+    hovered_row: Option<usize>,
     /// The press that began the current gesture, when it began on the modal scrim.
     ///
     /// A release on the scrim only dismisses when the *press* also landed there; otherwise a
@@ -151,6 +170,9 @@ impl NavigationDrawer {
             panel_width: 280,
             side: DrawerSide::Start,
             auto_close_on_select: true,
+            modal: true,
+            list_scroll: 0,
+            hovered_row: None,
             press_on_overlay: false,
             drag: None,
             drag_moved: false,
@@ -411,6 +433,164 @@ impl NavigationDrawer {
         self.auto_close_on_select = auto_close;
     }
 
+    /// Whether the drawer is modal: it dims the page behind it and an outside press dismisses
+    /// it. A persistent drawer (`false`) paints no scrim and ignores outside presses.
+    pub fn is_modal(&self) -> bool {
+        self.modal
+    }
+
+    /// Selects the modal or persistent form. Defaults to modal, which is the historic shape.
+    ///
+    /// # Scope note (capability schema)
+    ///
+    /// The accessor is the control's own contract, but `modal` is deliberately **not** added to
+    /// `property_names`: the schema table that must declare it lives in
+    /// `src/widget/capability/`, outside this fix's allowed files. Publishing a name the schema
+    /// omits would make `schema_and_contract_publish_the_same_names` fail, so the schema/designer
+    /// half is recorded as not implemented rather than silently drifting.
+    pub fn set_modal(&mut self, modal: bool) {
+        if self.modal == modal {
+            return;
+        }
+        self.modal = modal;
+        self.base.request_redraw();
+    }
+
+    /// Whether the modal scrim is painted right now.
+    ///
+    /// One derivation for the draw path and for tests; the two cannot disagree about whether a
+    /// persistent drawer dims the page.
+    fn paints_scrim(&self) -> bool {
+        self.modal && self.slide.value() > 0.0
+    }
+
+    /// The visible item-list band inside `panel`: below the header and above the footer.
+    fn list_area(&self, panel: Rect) -> Rect {
+        let top = panel.y + DRAWER_HEADER_HEIGHT as i32;
+        let bottom = panel.y + panel.height as i32 - self.footer_height() as i32;
+        Rect::new(panel.x, top, panel.width, (bottom - top).max(0) as u32)
+    }
+
+    /// The total height of every painted row.
+    fn list_content_height(&self) -> i32 {
+        self.rows
+            .iter()
+            .map(|row| match row {
+                DrawerRow::Item(_) => 48,
+                DrawerRow::Section(_) => DRAWER_SECTION_HEIGHT as i32,
+            })
+            .sum()
+    }
+
+    /// The largest legal list scroll offset for `panel`.
+    fn max_list_scroll(&self, panel: Rect) -> i32 {
+        (self.list_content_height() - self.list_area(panel).height as i32).max(0)
+    }
+
+    /// Scrolls the list by `delta` pixels, clamped to the content.
+    fn scroll_list_by(&mut self, delta: i32) {
+        if delta == 0 || self.rows.is_empty() {
+            return;
+        }
+        let panel = self.panel_rect();
+        let max = self.max_list_scroll(panel);
+        let next = (self.list_scroll + delta).clamp(0, max);
+        if next != self.list_scroll {
+            self.list_scroll = next;
+            self.base.request_redraw();
+        }
+    }
+
+    /// The row under `pos`, as `(row index, item index when the row is an item)`.
+    fn row_at(&self, pos: Point, panel: Rect) -> Option<(usize, Option<usize>)> {
+        let list = self.list_area(panel);
+        if !list.contains_point(pos) {
+            return None;
+        }
+        // The paint path clamps the offset against the content; the hit test must use the same
+        // clamp or a shrunken list could leave rows unreachable.
+        let scroll = self.list_scroll.clamp(0, self.max_list_scroll(panel));
+        let mut top = list.y - scroll;
+        for (row_index, row) in self.rows.iter().enumerate() {
+            let height = match row {
+                DrawerRow::Item(_) => 48,
+                DrawerRow::Section(_) => DRAWER_SECTION_HEIGHT as i32,
+            };
+            if pos.y >= top && pos.y < top + height {
+                let item = match row {
+                    DrawerRow::Item(index) => Some(*index),
+                    DrawerRow::Section(_) => None,
+                };
+                return Some((row_index, item));
+            }
+            top += height;
+        }
+        None
+    }
+
+    /// The row top for item `index`, in list content coordinates.
+    fn item_row_top(&self, index: usize) -> Option<i32> {
+        let mut top = 0;
+        for row in &self.rows {
+            let height = match row {
+                DrawerRow::Item(_) => 48,
+                DrawerRow::Section(_) => DRAWER_SECTION_HEIGHT as i32,
+            };
+            if matches!(row, DrawerRow::Item(item) if *item == index) {
+                return Some(top);
+            }
+            top += height;
+        }
+        None
+    }
+
+    /// Scrolls the list just enough to make the selected item fully visible.
+    fn reveal_selected(&mut self) {
+        let Some(top) = self.item_row_top(self.selected_index) else {
+            return;
+        };
+        let panel = self.panel_rect();
+        let height = self.list_area(panel).height as i32;
+        let next = if top < self.list_scroll {
+            top
+        } else if top + 48 > self.list_scroll + height {
+            top + 48 - height
+        } else {
+            return;
+        };
+        let next = next.clamp(0, self.max_list_scroll(panel));
+        if next != self.list_scroll {
+            self.list_scroll = next;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Moves the selection by one item, wrapping at the ends, and reveals it.
+    fn step_selection(&mut self, forward: bool) {
+        let len = self.items.len();
+        if len == 0 {
+            return;
+        }
+        let next = if forward {
+            (self.selected_index + 1) % len
+        } else {
+            (self.selected_index + len - 1) % len
+        };
+        self.set_selected_index(next);
+        self.reveal_selected();
+    }
+
+    /// Activates the selected destination as the pointer's release would.
+    fn activate_selected(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.item_selected.emit(self.selected_index);
+        if self.auto_close_on_select && self.modal {
+            self.close();
+        }
+    }
+
     /// Begins an edge drag from `x`, adopting the current drawn progress as its origin.
     fn begin_drag(&mut self, x: f32) {
         self.drag = Some((x, self.slide.value()));
@@ -531,6 +711,7 @@ impl WidgetProperties for NavigationDrawer {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "open" => Ok(CapabilityValue::Bool(self.is_open())),
+            "modal" => Ok(CapabilityValue::Bool(self.is_modal())),
             "width" => Ok(CapabilityValue::Float(f64::from(self.panel_width()))),
             "section_separator_visible" => {
                 Ok(CapabilityValue::Bool(self.section_separator_visible()))
@@ -547,6 +728,10 @@ impl WidgetProperties for NavigationDrawer {
                 } else {
                     self.close();
                 }
+                Ok(())
+            }
+            "modal" => {
+                self.set_modal(expect_bool(value)?);
                 Ok(())
             }
             "width" => {
@@ -662,9 +847,12 @@ impl Draw for NavigationDrawer {
         //
         // A partially-open drawer dims partially, so the scrim's alpha scales with the slide — one
         // form that works whether the theme authored a black veil or a translucent white wash.
+        // A **persistent** drawer (`modal == false`) is the same panel without the veil: see the
+        // field's adjudication note, the draw and event paths now agree that persistent means
+        // "beside the page", not "over it".
         let scrim = crate::style::layer_color(crate::style::LayerColor::Scrim)
             .unwrap_or_else(|| ink.with_alpha(82));
-        if slide > 0.0 {
+        if self.paints_scrim() {
             let scrim = scrim.with_alpha((scrim.a as f32 * slide) as u8);
             // The scrim is a veil over the control's whole rectangle, not a surface with a
             // rounded face: rounding it left four corner notches where the veil stopped short.
@@ -736,23 +924,33 @@ impl Draw for NavigationDrawer {
 
         // Draw items vertically. Rows include section headings, which are painted with the
         // drawer's own small face and divider tone and participate in neither selection nor hit
-        // testing (N-06).
+        // testing (N-06). The list scrolls: the offset is clamped against the rows' own height
+        // and the visible band, and the paint applies the same offset `row_at` hit-tests.
         let item_height: u32 = 48;
         let item_font = role_font(style, 14.0);
         let icon_font = role_font(style, 16.0);
         let item_metrics =
             crate::widget::base_widgets::measure_cache::measure_text(context, "A", &item_font);
-        let start_y = rect.y + header_height as i32;
-        let items_bottom = rect.y + rect.height as i32 - self.footer_height() as i32;
-        let mut y_offset = start_y;
+        let list = self.list_area(rect);
+        let max_scroll = self.max_list_scroll(rect);
+        self.list_scroll = self.list_scroll.clamp(0, max_scroll);
+        let list_scroll = self.list_scroll;
+        let mut y_offset = list.y - list_scroll;
+        // Rows are clipped to the list band so a partially scrolled row cannot paint under the
+        // fixed header or over the footer.
+        context.push_clip(list.x, list.y, list.width, list.height);
         for (row_index, row) in self.rows.iter_mut().enumerate() {
             let row_height = match row {
                 DrawerRow::Item(_) => item_height,
                 DrawerRow::Section(_) => DRAWER_SECTION_HEIGHT,
             };
-            // Rows beginning below the items area are skipped outright: the footer must not be
-            // covered by a row that happens to be next in the list.
-            if y_offset + row_height as i32 > items_bottom {
+            // Rows entirely above or below the visible band are skipped outright; a partially
+            // visible row still paints and is clipped by the band.
+            if y_offset + row_height as i32 <= list.y {
+                y_offset += row_height as i32;
+                continue;
+            }
+            if y_offset >= list.y + list.height as i32 {
                 break;
             }
             let row_rect = Rect::new(rect.x, y_offset, panel_width, row_height);
@@ -775,9 +973,12 @@ impl Draw for NavigationDrawer {
                 continue;
             };
 
-            // Highlight selected item
+            // Highlight selected item; a hovered row takes a lighter step so the pointer's
+            // target is visible before it is committed.
             if *item_index == self.selected_index {
                 context.fill_rect(row_rect, highlight_color);
+            } else if self.hovered_row == Some(row_index) {
+                context.fill_rect(row_rect, panel.blend(&ink, 0.04));
             } else {
                 // Resting rows keep the panel's own surface, so the selected row is the only
                 // one that reads as raised in either appearance.
@@ -874,6 +1075,7 @@ impl Draw for NavigationDrawer {
 
             y_offset += row_height as i32;
         }
+        context.pop_clip();
 
         // Footer band: a host-supplied widget pinned to the panel's foot, so an account row or
         // a settings action no longer has to be faked as one more item.
@@ -907,12 +1109,49 @@ impl EventHandler for NavigationDrawer {
         let panel_band = self.panel_rect();
 
         // Escape closes an open modal drawer, matching the splash screen and pagination
-        // conventions (N-11). A persistent drawer (`auto_close_on_select == false`) keeps its
-        // position, which is the same switch that governs item-selection dismissal.
+        // conventions (N-11). A persistent drawer (`modal == false`) keeps its position, which
+        // is the same switch that governs item-selection dismissal.
         if let Event::KeyPress { key, .. } = event {
-            if *key == key_codes::ESCAPE && self.open && self.auto_close_on_select {
+            if *key == key_codes::ESCAPE && self.open && self.modal && self.auto_close_on_select {
                 self.close();
                 return;
+            }
+        }
+
+        // Keyboard navigation follows focus, the same gate `TabView` uses: an open drawer's
+        // arrows move the selection and reveal it, Home/End jump to the ends, and Enter/Space
+        // activates the destination. Without this an open drawer was only usable with a pointer.
+        if self.open && self.base.focus_reason().is_some() {
+            if let Event::KeyPress { key, .. } = event {
+                match *key {
+                    key_codes::DOWN => {
+                        self.step_selection(true);
+                        return;
+                    }
+                    key_codes::UP => {
+                        self.step_selection(false);
+                        return;
+                    }
+                    key_codes::HOME => {
+                        if !self.items.is_empty() {
+                            self.set_selected_index(0);
+                            self.reveal_selected();
+                        }
+                        return;
+                    }
+                    key_codes::END => {
+                        if let Some(last) = self.items.len().checked_sub(1) {
+                            self.set_selected_index(last);
+                            self.reveal_selected();
+                        }
+                        return;
+                    }
+                    key_codes::ENTER | key_codes::SPACE => {
+                        self.activate_selected();
+                        return;
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -989,13 +1228,43 @@ impl EventHandler for NavigationDrawer {
                 }
                 // Record where the gesture began: only a gesture that starts on the scrim may
                 // dismiss on release. A drag from the panel that happens to end outside it is
-                // not a dismissal.
+                // not a dismissal, and a persistent drawer has no scrim to press at all.
                 self.press_on_overlay =
-                    !panel_band.contains_point(*pos) && rect.contains_point(*pos);
+                    self.modal && !panel_band.contains_point(*pos) && rect.contains_point(*pos);
                 self.begin_drag(pos.x as f32);
             }
             Event::MouseMove { pos } => {
                 self.drag_to(pos.x as f32);
+                let hovered = self.row_at(*pos, panel_band).map(|(row, _)| row);
+                if hovered != self.hovered_row {
+                    self.hovered_row = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseEnter { pos } => {
+                let hovered = self.row_at(*pos, panel_band).map(|(row, _)| row);
+                if hovered != self.hovered_row {
+                    self.hovered_row = hovered;
+                    self.base.request_redraw();
+                }
+                self.base.handle_event(event);
+            }
+            Event::MouseLeave { pos: _ } => {
+                if self.hovered_row.take().is_some() {
+                    self.base.request_redraw();
+                }
+                self.base.handle_event(event);
+            }
+            Event::Wheel { delta, .. } => {
+                // A vertical wheel is the common case, so it falls back to `delta.x` rather
+                // than ignoring a bar with no vertical axis. One notch is 24 px, the same
+                // step `TabView` uses for its strip.
+                let step = if delta.y != 0 { delta.y } else { delta.x };
+                if step != 0 {
+                    self.scroll_list_by(-step * 24);
+                    return;
+                }
+                self.base.handle_event(event);
             }
             Event::MouseRelease { pos, button } => {
                 if *button != 1 {
@@ -1023,7 +1292,7 @@ impl EventHandler for NavigationDrawer {
                 if self.drag.is_some() {
                     self.drag_to(pos.x as f32);
                     let dragged = self.drag_moved;
-                    if self.press_on_overlay && !dragged {
+                    if self.modal && self.press_on_overlay && !dragged {
                         // A tap on the scrim is a dismissal, not a commit to the nearer end —
                         // the panel is fully open, so "nearer" would leave it open forever.
                         self.drag = None;
@@ -1040,47 +1309,20 @@ impl EventHandler for NavigationDrawer {
                 }
 
                 // Item selection uses the panel's own band, so a right-side drawer selects at
-                // the coordinates it paints at rather than at the left edge. The rows include
-                // section headings, which have their own height and own no selection (N-06).
-                let header_height = DRAWER_HEADER_HEIGHT;
-                let item_height: u32 = 48;
-                let start_y = panel_band.y + header_height as i32;
-                let items_bottom =
-                    panel_band.y + panel_band.height as i32 - self.footer_height() as i32;
+                // the coordinates it paints at rather than at the left edge. `row_at` applies
+                // the same scroll offset the paint path applies, so a scrolled row selects
+                // where it is drawn.
                 if panel_band.contains_point(*pos) {
-                    let relative_y = pos.y - start_y;
-                    if relative_y < 0 {
+                    if pos.y < panel_band.y + DRAWER_HEADER_HEIGHT as i32 {
                         // The header band is its own affordance: a host can put a whole widget
                         // there, and this signal is how a plain header reports a tap.
                         self.header_clicked.emit();
                     }
-                    if relative_y >= 0 && pos.y < items_bottom {
-                        let mut row_top = start_y;
-                        let mut hit: Option<usize> = None;
-                        for row in &self.rows {
-                            let row_height = match row {
-                                DrawerRow::Item(_) => item_height,
-                                DrawerRow::Section(_) => DRAWER_SECTION_HEIGHT,
-                            };
-                            if row_top + row_height as i32 > items_bottom {
-                                break;
-                            }
-                            if pos.y >= row_top && pos.y < row_top + row_height as i32 {
-                                if let DrawerRow::Item(item_index) = row {
-                                    hit = Some(*item_index);
-                                }
-                                break;
-                            }
-                            row_top += row_height as i32;
-                        }
-                        // The row walk borrows the rows, so the selection is applied after it
-                        // ends.
-                        if let Some(item_index) = hit {
-                            if item_index < self.items.len() {
-                                self.set_selected_index(item_index);
-                                if self.auto_close_on_select {
-                                    self.close();
-                                }
+                    if let Some((_, Some(item_index))) = self.row_at(*pos, panel_band) {
+                        if item_index < self.items.len() {
+                            self.set_selected_index(item_index);
+                            if self.auto_close_on_select && self.modal {
+                                self.close();
                             }
                         }
                     }
@@ -1534,5 +1776,87 @@ mod tests {
         drawer.handle_event(&Event::MouseRelease { pos: Point::new(20, 116), button: 1 });
         assert_eq!(drawer.selected_index(), Some(0));
         assert!(!drawer.is_open(), "the item below the section is still reachable");
+    }
+
+    /// A persistent drawer is the panel without the veil: no scrim and no outside dismissal.
+    ///
+    /// Regression (N-004): the draw path painted a scrim on every open drawer while the event
+    /// path already treated only a modal drawer as dismissible — the same widget answered
+    /// differently depending on which half of it was asked.
+    #[test]
+    fn a_persistent_drawer_paints_no_scrim_and_ignores_outside_presses() {
+        let mut drawer = make_drawer();
+        assert!(drawer.is_modal(), "the historic shape is modal");
+        drawer.set_modal(false);
+        assert!(!drawer.is_modal());
+        drawer.open();
+        while drawer.tick(16) {}
+        assert!(!drawer.paints_scrim(), "a persistent drawer does not dim the page");
+
+        drawer.handle_event(&Event::MousePress {
+            pos: Point::new(350, 300),
+            button: 1,
+            modifiers: 0,
+        });
+        drawer.handle_event(&Event::MouseRelease { pos: Point::new(350, 300), button: 1 });
+        assert!(drawer.is_open(), "a persistent drawer has no scrim to dismiss it");
+    }
+
+    /// The item list scrolls when it is taller than the band between header and footer.
+    ///
+    /// Regression (N-005): rows past the fold were skipped outright, so the last destinations
+    /// of a long drawer were unreachable.
+    #[test]
+    fn the_item_list_scrolls_and_clamps() {
+        let mut drawer = NavigationDrawer::new(Rect::new(0, 0, 400, 600));
+        for index in 0..20 {
+            drawer.add_item("•", "Destination");
+            let _ = index;
+        }
+        drawer.open();
+        while drawer.tick(16) {}
+        assert_eq!(drawer.list_scroll, 0);
+
+        drawer.handle_event(&Event::Wheel { delta: Point::new(0, -3), modifiers: 0 });
+        assert_eq!(drawer.list_scroll, 72, "one wheel notch is 24 px, direction inverted");
+
+        // A large scroll clamps at the content's own end rather than running past it.
+        drawer.handle_event(&Event::Wheel { delta: Point::new(0, -100), modifiers: 0 });
+        let panel = drawer.panel_rect();
+        assert_eq!(drawer.list_scroll, drawer.max_list_scroll(panel));
+    }
+
+    /// Moving over a row lights it; leaving clears the highlight.
+    #[test]
+    fn hovering_a_row_sets_and_clears_the_highlight() {
+        let mut drawer = make_drawer();
+        drawer.open();
+        while drawer.tick(16) {}
+        drawer.handle_event(&Event::MouseMove { pos: Point::new(20, 84) });
+        assert_eq!(drawer.hovered_row, Some(0), "the first item row is hovered");
+        drawer.handle_event(&Event::MouseLeave { pos: Point::new(400, 600) });
+        assert_eq!(drawer.hovered_row, None);
+    }
+
+    /// Arrow keys move the selection while the drawer has focus, and End reveals the last row.
+    #[test]
+    fn keyboard_navigation_moves_and_reveals_the_selection() {
+        let mut drawer = NavigationDrawer::new(Rect::new(0, 0, 400, 600));
+        for _ in 0..20 {
+            drawer.add_item("•", "Destination");
+        }
+        drawer.open();
+        while drawer.tick(16) {}
+        drawer
+            .handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
+
+        drawer.handle_event(&Event::KeyPress { key: key_codes::DOWN, modifiers: 0 });
+        assert_eq!(drawer.selected_index(), Some(1));
+        drawer.handle_event(&Event::KeyPress { key: key_codes::UP, modifiers: 0 });
+        assert_eq!(drawer.selected_index(), Some(0));
+
+        drawer.handle_event(&Event::KeyPress { key: key_codes::END, modifiers: 0 });
+        assert_eq!(drawer.selected_index(), Some(19));
+        assert!(drawer.list_scroll > 0, "the last row is scrolled into view");
     }
 }

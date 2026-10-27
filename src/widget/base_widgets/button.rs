@@ -154,6 +154,16 @@ pub struct Button {
     /// The open menu's active row, for keyboard activation.
     #[cfg(full_widgets)]
     active_menu_index: Option<usize>,
+    /// How long a press must be held before the attached menu opens.
+    ///
+    /// The delayed-popup path `ToggleButton` already carried: holding a menu button opens
+    /// its menu after this delay, while a quick click keeps the historical release
+    /// behaviour. The timer only runs for a button that actually has a menu.
+    #[cfg(full_widgets)]
+    popup_delay_ms: u32,
+    /// Elapsed milliseconds of the current held press, when a delayed popup is timing.
+    #[cfg(full_widgets)]
+    press_elapsed: Option<u32>,
     /// Whether a press on this button can start a cross-control drag.
     drag_enabled: bool,
     /// Whether this button accepts a dropped payload.
@@ -256,6 +266,10 @@ impl Button {
             menu_anchor: None,
             #[cfg(full_widgets)]
             active_menu_index: None,
+            #[cfg(full_widgets)]
+            popup_delay_ms: 300,
+            #[cfg(full_widgets)]
+            press_elapsed: None,
             drag_enabled: false,
             accepts_drops: false,
             drop_hovered: false,
@@ -626,8 +640,20 @@ impl Button {
         for _ in 0..repeats {
             self.emit_auto_repeat();
         }
-        let animating = self.interaction_progress.tick(delta_ms);
-        animating || held
+        #[cfg_attr(not(full_widgets), allow(unused_mut))]
+        let mut animating = self.interaction_progress.tick(delta_ms) || held;
+        // A delayed popup is a held press, not an animation, but it still owes the bus a frame:
+        // without that the timer would only fire when some other control happened to tick.
+        #[cfg(full_widgets)]
+        if let Some(elapsed) = self.press_elapsed.as_mut() {
+            *elapsed = elapsed.saturating_add(delta_ms);
+            if *elapsed >= self.popup_delay_ms {
+                self.press_elapsed = None;
+                self.open_menu();
+            }
+            animating = true;
+        }
+        animating
     }
 
     /// Whether this button is held and configured to repeat.
@@ -711,12 +737,22 @@ impl Button {
         // A new gesture starts its auto-repeat delay from zero, even if the previous gesture's
         // clock never got a tick that observed it as released.
         self.auto_repeat.reset();
+        // A press on a menu button also starts the delayed-popup timer. A button with no menu
+        // keeps the historical path exactly: the timer is never armed.
+        #[cfg(full_widgets)]
+        if !self.menu_items.is_empty() {
+            self.press_elapsed = Some(0);
+        }
         self.base.set_grabbed(true);
         self.set_pressed(true);
     }
     /// Ends a gesture: drops the grab and clears the pressed flag.
     pub fn release(&mut self) {
         self.auto_repeat.reset();
+        #[cfg(full_widgets)]
+        {
+            self.press_elapsed = None;
+        }
         self.base.set_grabbed(false);
         self.set_pressed(false);
     }
@@ -731,6 +767,10 @@ impl Button {
             return;
         }
         self.auto_repeat.reset();
+        #[cfg(full_widgets)]
+        {
+            self.press_elapsed = None;
+        }
         self.base.set_grabbed(false);
         self.set_pressed(false);
         self.canceled.emit();
@@ -1205,6 +1245,21 @@ impl Button {
         }
     }
 
+    /// How long a press must be held before the attached menu opens.
+    #[cfg(full_widgets)]
+    pub fn popup_delay_ms(&self) -> u32 {
+        self.popup_delay_ms
+    }
+
+    /// Sets the delayed-popup hold time.
+    ///
+    /// Only a button with an attached menu arms the timer, so this has no observable effect
+    /// until [`Self::set_menu`] has been given rows.
+    #[cfg(full_widgets)]
+    pub fn set_popup_delay_ms(&mut self, delay_ms: u32) {
+        self.popup_delay_ms = delay_ms;
+    }
+
     /// The enabled menu row at `pos`, if any.
     #[cfg(full_widgets)]
     fn hit_test_menu_item(&self, pos: Point) -> Option<usize> {
@@ -1236,28 +1291,46 @@ impl Button {
     }
 
     /// Moves the keyboard highlight through the menu's enabled rows.
+    ///
+    /// Index-based rather than collecting the enabled rows into a fresh `Vec` on every key:
+    /// the menu's own vector is the entry list, so a held arrow key costs one walk and no
+    /// allocation. The walk wraps and skips disabled rows, which is the behaviour the
+    /// collected version had.
     #[cfg(full_widgets)]
     fn move_menu_highlight(&mut self, forward: bool) {
-        let enabled: Vec<usize> = self
-            .menu_items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| item.enabled)
-            .map(|(i, _)| i)
-            .collect();
-        if enabled.is_empty() {
-            return;
-        }
-        let position = self
-            .active_menu_index
-            .and_then(|active| enabled.iter().position(|index| *index == active));
-        let next = match position {
-            Some(position) if forward => (position + 1) % enabled.len(),
-            Some(position) => (position + enabled.len() - 1) % enabled.len(),
-            None => 0,
+        let next = match self.active_menu_index {
+            Some(active) if self.menu_items.get(active).is_some_and(|item| item.enabled) => {
+                self.step_enabled_index(active, forward)
+            }
+            _ => self.first_enabled_index(),
         };
-        self.active_menu_index = Some(enabled[next]);
-        self.base.request_redraw();
+        if let Some(index) = next {
+            self.active_menu_index = Some(index);
+            self.base.request_redraw();
+        }
+    }
+
+    /// The first enabled row, or `None` when every row is disabled.
+    #[cfg(full_widgets)]
+    fn first_enabled_index(&self) -> Option<usize> {
+        self.menu_items.iter().position(|item| item.enabled)
+    }
+
+    /// The next enabled row from `from`, wrapping and skipping disabled rows.
+    #[cfg(full_widgets)]
+    fn step_enabled_index(&self, from: usize, forward: bool) -> Option<usize> {
+        let len = self.menu_items.len();
+        if len == 0 {
+            return None;
+        }
+        let mut index = from;
+        for _ in 0..len {
+            index = if forward { (index + 1) % len } else { (index + len - 1) % len };
+            if self.menu_items[index].enabled {
+                return Some(index);
+            }
+        }
+        None
     }
 
     /// Programmatically clicks the button (press, release, emit clicked signal).
@@ -1550,6 +1623,10 @@ impl Widget for Button {
         // answer `false` for a button that had just been hovered, so the bus would never
         // start its frames. A held auto-repeating button owes frames for the same reason, and
         // for the same reason it is asked of the configuration rather than of the timer.
+        #[cfg(full_widgets)]
+        if self.press_elapsed.is_some() {
+            return true;
+        }
         self.interaction_progress.value() != self.interaction_target_progress()
             || self.auto_repeat_held()
     }
@@ -2345,6 +2422,35 @@ impl Draw for Button {
                     mode,
                 ),
             }
+        }
+
+        // ── Shortcut hint ──
+        //
+        // A declared shortcut is drawn as a small label in the bottom-right corner, which is
+        // where every desktop toolkit places it and where it cannot be confused with the
+        // button's own centred caption. `None` paints nothing, so the historical picture is
+        // unchanged.
+        if let Some(shortcut) = self.shortcut.as_ref() {
+            let hint = shortcut.format_shortcut();
+            let base_font = effective_font(style);
+            let hint_font = base_font.with_size((base_font.size() * 0.75).max(6.0));
+            let pad = dimensions::BUTTON_PADDING_H as i32 / 2;
+            let line = context.text_line(rect, &hint_font);
+            let band = Rect::new(
+                rect.x + pad,
+                rect.y + rect.height as i32 - line.height as i32 - pad,
+                rect.width.saturating_sub((pad as u32).saturating_mul(2)),
+                line.height,
+            );
+            let hint_line = context.text_line(band, &hint_font);
+            let ink = style.text_color.unwrap_or_else(|| bg.contrast_color()).with_alpha(170);
+            context.draw_text(
+                Point::new(band.x + band.width as i32, hint_line.y),
+                &hint,
+                &hint_font,
+                ink,
+                HorizontalAlignment::Right,
+            );
         }
 
         // ── Default-button emphasis ──
@@ -4422,5 +4528,86 @@ mod tests {
             "text is copied, not consumed"
         );
         assert_eq!(button.text(), "Dropped");
+    }
+
+    // ── Delayed press-and-hold popup (B-001) ───────────────────────────
+
+    #[cfg(full_widgets)]
+    #[test]
+    fn holding_a_menu_button_opens_its_menu_after_the_delay() {
+        use crate::widget::menu_toolbar::menu_button::MenuItem;
+
+        let mut button = Button::new("File".into(), Rect::new(0, 0, 100, 30));
+        button.set_menu(vec![MenuItem::new(1, "Open")]);
+        button.set_popup_delay_ms(200);
+
+        button.handle_event(&Event::MousePress {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(!button.is_menu_open(), "the menu waits for the hold delay");
+        assert!(Button::tick(&mut button, 100), "a timing hold owes the animation bus a frame");
+        assert!(!button.is_menu_open());
+        Button::tick(&mut button, 100);
+        assert!(button.is_menu_open(), "the delayed popup opens while the button is held");
+    }
+
+    #[test]
+    fn a_button_without_a_menu_never_arms_the_popup_timer() {
+        let mut button = make_button();
+        button.press();
+        Button::tick(&mut button, 10_000);
+        assert!(!button.is_menu_open(), "a button with no menu has nothing to open");
+        button.release();
+    }
+
+    // ── Menu keyboard navigation (B-002) ───────────────────────────────
+
+    #[cfg(full_widgets)]
+    #[test]
+    fn menu_navigation_walks_indices_and_skips_disabled_rows() {
+        use crate::widget::menu_toolbar::menu_button::MenuItem;
+
+        let first = MenuItem::new(1, "One");
+        let mut skipped = MenuItem::new(2, "Two");
+        skipped.enabled = false;
+        let last = MenuItem::new(3, "Three");
+        let mut button = Button::new("File".into(), Rect::new(0, 0, 100, 30));
+        button.set_menu(vec![first, skipped, last]);
+        button.open_menu();
+
+        button.move_menu_highlight(true);
+        assert_eq!(button.active_menu_index, Some(2), "a disabled row is skipped");
+        button.move_menu_highlight(true);
+        assert_eq!(button.active_menu_index, Some(0), "the walk wraps");
+        button.move_menu_highlight(false);
+        assert_eq!(button.active_menu_index, Some(2), "the reverse walk wraps too");
+    }
+
+    // ── Shortcut hint (B-011) ──────────────────────────────────────────
+
+    #[test]
+    fn a_declared_shortcut_is_painted_as_a_bottom_right_hint() {
+        use crate::shortcut::{Key, Shortcut};
+
+        let _guard = crate::style::theme_test_guard();
+        let mut plain = make_button();
+        let plain_svg = crate::widget::svg::render_to_svg(&mut plain);
+        let plain_boxes = crate::widget::svg::text_ink_boxes(&plain_svg);
+        let (_, _, plain_right, _) = *plain_boxes.first().expect("the caption paints ink");
+
+        let mut hinted = make_button();
+        hinted.set_shortcut(Some(Shortcut::ctrl(Key::S)));
+        let hinted_svg = crate::widget::svg::render_to_svg(&mut hinted);
+        let hinted_boxes = crate::widget::svg::text_ink_boxes(&hinted_svg);
+        assert_eq!(hinted_boxes.len(), 2, "the caption and the hint are two text runs");
+        let (_, _, hint_right, _) = *hinted_boxes.last().expect("the hint adds ink");
+
+        assert_ne!(plain_svg, hinted_svg, "a declared shortcut must be drawn");
+        assert!(
+            hint_right > plain_right,
+            "the hint sits at the trailing edge, so the ink box grows right ({hint_right} vs {plain_right})"
+        );
     }
 }

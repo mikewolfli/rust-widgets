@@ -209,6 +209,26 @@ impl Layout for StackLayout {
         let _ = context;
         self.arrange(rect, children, widgets);
     }
+
+    /// The page's rectangle, indexed straight from the stack's own model (LAY-005): the
+    /// stack is a single shared rect, so the query never needs the trait default's
+    /// solve-and-capture pass.
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        if !self.items.contains(&id) {
+            return None;
+        }
+        match self.mode {
+            // Hidden pages are not laid out, exactly as `update` does not emit them.
+            StackMode::Single => {
+                if self.items.get(self.current) == Some(&id) {
+                    Some(rect)
+                } else {
+                    None
+                }
+            }
+            StackMode::All => Some(rect),
+        }
+    }
     fn child_ids(&self) -> Vec<ObjectId> {
         self.items.clone()
     }
@@ -339,5 +359,23 @@ mod tests {
         });
         assert_eq!(slide[0], (2, Rect::new(-50, 0, 100, 40)), "the outgoing page moves left");
         assert_eq!(slide[1], (3, Rect::new(50, 0, 100, 40)), "the incoming page enters");
+    }
+
+    /// LAY-005: the page query indexes the stack's own model — the visible page in
+    /// `Single` mode, every page in `All` mode — instead of a full solve-and-capture.
+    #[test]
+    fn child_rect_indexes_the_stack_model() {
+        let mut layout = StackLayout::new();
+        for id in 1..=3 {
+            layout.add_widget(id, 0);
+        }
+        let rect = Rect::new(0, 0, 100, 40);
+        assert_eq!(layout.child_rect(1, rect), Some(rect), "the current page fills the rect");
+        assert_eq!(layout.child_rect(2, rect), None, "hidden pages are not laid out");
+        layout.set_mode(StackMode::All);
+        for id in 1..=3 {
+            assert_eq!(layout.child_rect(id, rect), Some(rect));
+        }
+        assert_eq!(layout.child_rect(9, rect), None, "a foreign id is not placed");
     }
 }

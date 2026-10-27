@@ -33,7 +33,7 @@
 use crate::core::{Rect, Size};
 use crate::render::math3d::Mat4;
 use crate::render::mesh3d::{project_mesh, Camera, Mesh3D, ProjectedTriangle, ProjectedVertex};
-use crate::render::pipeline::pixel_ops::{pixel_visible, write_pixel_with_mode};
+use crate::render::pipeline::pixel_ops::write_pixel_with_mode;
 use crate::render::pipeline::u32_to_i32_saturating;
 use crate::render::{BlendMode, SoftwareSurface};
 
@@ -127,6 +127,14 @@ fn rasterize_triangle(
             clip.map(|(x, _, w, _)| x.saturating_add(u32_to_i32_saturating(w)))
                 .unwrap_or(i32::MAX)
                 .saturating_sub(1),
+        )
+        // `pixel_visible` compares against `clip_x + clip_width as i32` — a *wrapping* cast the
+        // saturating conversion above does not reproduce. Folding that exact bound in keeps the
+        // span below identical to the per-pixel check this file no longer pays for (G-010); for
+        // every clip width that fits `i32` the two bounds agree and this is a no-op.
+        .min(
+            clip.map(|(x, _, w, _)| x.saturating_add(w as i32).saturating_sub(1))
+                .unwrap_or(i32::MAX),
         );
     let max_y = (a.y.max(b.y).max(c.y).ceil() as i32)
         .min(height as i32 - 1)
@@ -135,17 +143,22 @@ fn rasterize_triangle(
             clip.map(|(_, y, _, h)| y.saturating_add(u32_to_i32_saturating(h)))
                 .unwrap_or(i32::MAX)
                 .saturating_sub(1),
+        )
+        // The wrapping-cast bound, as for `max_x` above.
+        .min(
+            clip.map(|(_, y, _, h)| y.saturating_add(h as i32).saturating_sub(1))
+                .unwrap_or(i32::MAX),
         );
     if max_x < min_x || max_y < min_y {
         return;
     }
 
+    // The bounds above close the triangle's bbox under the viewport and the clip — the clip∩bbox
+    // span G-010 asks the inner loop to scan — so every pixel inside them passes `pixel_visible`
+    // and the loop no longer pays that test per pixel.
     for y in min_y..=max_y {
         let sample_y = y as f32 + 0.5;
         for x in min_x..=max_x {
-            if !pixel_visible(clip, x, y) {
-                continue;
-            }
             let sample_x = x as f32 + 0.5;
             let weight_a = edge(b, c, sample_x, sample_y) / area;
             let weight_b = edge(c, a, sample_x, sample_y) / area;

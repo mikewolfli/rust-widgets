@@ -13,24 +13,29 @@ pub struct Action {
     pub id: String,
     /// Human-readable action label.
     pub text: String,
+    /// Whether the action is shown by hosts that honour visibility.
+    visible: bool,
     enabled: bool,
     checkable: bool,
     checked: bool,
     triggered: GenericSignal,
     toggled: crate::signal::Signal1<bool>,
     enabled_changed: crate::signal::Signal1<bool>,
+    visible_changed: crate::signal::Signal1<bool>,
 }
 impl fmt::Debug for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Action")
             .field("id", &self.id)
             .field("text", &self.text)
+            .field("visible", &self.visible)
             .field("enabled", &self.enabled)
             .field("checkable", &self.checkable)
             .field("checked", &self.checked)
             .field("triggered", &self.triggered.slot_count())
             .field("toggled", &self.toggled.slot_count())
             .field("enabled_changed", &self.enabled_changed.slot_count())
+            .field("visible_changed", &self.visible_changed.slot_count())
             .finish()
     }
 }
@@ -40,13 +45,36 @@ impl Action {
         Self {
             id: id.into(),
             text: text.into(),
+            // Visibility is additive: an action that never asks stays visible, so
+            // every existing caller observes the same state as before (M-018).
+            visible: true,
             enabled: true,
             checkable: false,
             checked: false,
             triggered: GenericSignal::new(),
             toggled: crate::signal::Signal1::new(),
             enabled_changed: crate::signal::Signal1::new(),
+            visible_changed: crate::signal::Signal1::new(),
         }
+    }
+    /// Returns whether hosts should present this action.
+    ///
+    /// This is presentation-only metadata: a hidden action still exists, can be
+    /// bound to a shortcut and can be triggered programmatically. Hiding it does
+    /// not disable it.
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+    /// Updates whether hosts should present this action.
+    ///
+    /// Emits [`connect_visible_changed`](Self::connect_visible_changed) only on
+    /// an actual transition, so a host can repaint without polling.
+    pub fn set_visible(&mut self, visible: bool) {
+        if self.visible == visible {
+            return;
+        }
+        self.visible = visible;
+        self.visible_changed.emit(visible);
     }
     /// Returns whether this action can currently be triggered.
     pub fn is_enabled(&self) -> bool {
@@ -130,6 +158,22 @@ impl Action {
         F: FnMut(&bool) + Send + Sync + 'static,
     {
         self.enabled_changed.connect_ref(slot)
+    }
+    /// Connects a callback for visibility changes.
+    pub fn connect_visible_changed<F>(&self, slot: F) -> ConnectionHandle
+    where
+        F: FnMut(Arc<bool>) + Send + Sync + 'static,
+    {
+        self.visible_changed.connect(slot)
+    }
+    /// Connects a read-only callback for visibility changes.
+    ///
+    /// See [`connect_toggled_ref`](Self::connect_toggled_ref) for the payload's lifetime.
+    pub fn connect_visible_changed_ref<F>(&self, slot: F) -> ConnectionHandle
+    where
+        F: FnMut(&bool) + Send + Sync + 'static,
+    {
+        self.visible_changed.connect_ref(slot)
     }
     /// Triggers the action when enabled and returns whether it fired.
     pub fn trigger(&mut self) -> bool {

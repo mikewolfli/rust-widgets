@@ -954,7 +954,23 @@ impl Widget for ToolBox {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 250)
+        // C-019: the current page's control plus the strip it shares the main axis with. The
+        // historical 200x250 is the floor when no page is mounted.
+        let Some(content) = self.current_widget().and_then(|widget| {
+            crate::widget::runtime::with_widget(widget, |widget| widget.size_hint())
+        }) else {
+            return crate::core::Size::new(200, 250);
+        };
+        match self.orientation {
+            Orientation::Horizontal => crate::core::Size::new(
+                content.width.saturating_add(ITEM_WIDTH),
+                content.height.max(ITEM_HEIGHT),
+            ),
+            Orientation::Vertical => crate::core::Size::new(
+                content.width.max(ITEM_WIDTH),
+                content.height.saturating_add(ITEM_HEIGHT),
+            ),
+        }
     }
 
     /// Moves the tool box and re-places the visible pages.
@@ -2190,5 +2206,30 @@ mod tests {
         assert!(popup.y >= content.y, "the layer stays inside the content box");
         assert_ne!(popup, content, "it is a presentation of its own, not the page band");
         assert_eq!(tb.page_rects(content), vec![(0, popup)]);
+    }
+
+    /// C-019: the hint is the current page plus the tab strip on the main axis.
+    #[test]
+    fn the_size_hint_follows_the_current_page() {
+        use crate::widget::base_widgets::label::Label;
+
+        let label = Label::new("page".to_string(), Rect::new(0, 0, 120, 80));
+        let expected = label.size_hint();
+        let id =
+            crate::widget::runtime::register(Box::new(label)).expect("the test control mounts");
+        let mut tool_box = ToolBox::new(Rect::new(0, 0, 200, 250));
+        tool_box.add_item("page".to_string(), Some(id));
+        let hint = tool_box.size_hint();
+        match tool_box.orientation() {
+            Orientation::Horizontal => {
+                assert_eq!(hint.width, expected.width + ITEM_WIDTH);
+                assert_eq!(hint.height, expected.height.max(ITEM_HEIGHT));
+            }
+            Orientation::Vertical => {
+                assert_eq!(hint.width, expected.width.max(ITEM_WIDTH));
+                assert_eq!(hint.height, expected.height + ITEM_HEIGHT);
+            }
+        }
+        let _ = crate::widget::runtime::unregister(id);
     }
 }

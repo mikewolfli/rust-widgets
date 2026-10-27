@@ -318,7 +318,13 @@ impl Widget for StackedWidget {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(300, 200)
+        // C-019: the visible page is the content this control shows, so its hint is the stack's
+        // wish. The historical 300x200 is the floor when no page is mounted.
+        self.current_widget()
+            .and_then(|widget| {
+                crate::widget::runtime::with_widget(widget, |widget| widget.size_hint())
+            })
+            .unwrap_or(Size::new(300, 200))
     }
 
     /// Moves the stack and re-places the visible page.
@@ -1269,5 +1275,20 @@ mod tests {
         assert_eq!(sw.count(), 2);
         assert_eq!(sw.index_of(1002), None);
         assert_eq!(sw.selected_index(), Some(1), "the selection follows the removal");
+    }
+
+    /// C-019: the hint follows the visible page rather than a constant.
+    #[test]
+    fn the_size_hint_follows_the_current_page() {
+        use crate::widget::base_widgets::label::Label;
+
+        let label = Label::new("page".to_string(), Rect::new(0, 0, 160, 70));
+        let expected = label.size_hint();
+        let id = crate::widget::runtime::register(Box::new(label))
+            .expect("the test control mounts");
+        let mut stack = StackedWidget::new(Rect::new(0, 0, 300, 200));
+        stack.add_widget(id);
+        assert_eq!(stack.size_hint(), expected);
+        let _ = crate::widget::runtime::unregister(id);
     }
 }

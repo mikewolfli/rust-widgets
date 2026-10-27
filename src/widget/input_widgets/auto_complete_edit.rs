@@ -112,6 +112,22 @@ fn close_policy_from_token(token: &str) -> Option<CompletionClosePolicy> {
     }
 }
 
+/// What accepting a candidate appends in a multi-value field (I-019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompletionSeparator {
+    /// The separator inserted after the accepted value.
+    pub separator: char,
+    /// Whether a space follows the separator.
+    pub trailing_space: bool,
+}
+
+impl CompletionSeparator {
+    /// A comma-separated list entry, the common tag/token form.
+    pub fn comma() -> Self {
+        Self { separator: ',', trailing_space: true }
+    }
+}
+
 /// A text field that filters a suggestion list as the user types.
 pub struct AutoCompleteEdit {
     base: BaseWidget,
@@ -133,6 +149,8 @@ pub struct AutoCompleteEdit {
     inline_completion: bool,
     /// What accepting a suggestion does to the list.
     close_policy: CompletionClosePolicy,
+    /// The separator appended after an accepted candidate, or `None` for the bare value (I-019).
+    completion_separator: Option<CompletionSeparator>,
     /// The suffix an inline completion would add, derived from the selection and the text.
     inline_suffix: String,
     /// How the field's text is aligned within its own box.
@@ -157,12 +175,13 @@ pub struct AutoCompleteEdit {
     /// Bumped whenever the value's bytes change, so the memoised measurement below is keyed on
     /// something that cannot go stale (I-P03).
     text_revision: u64,
-    /// `(revision, font, advance, characters)` for the current value.
+    /// `(revision, font, cumulative advances)` for the current value.
     ///
     /// The pointer hit test used to construct a zero-sized paint backend and shape the whole
-    /// value on every press (I-P03). It only needs the total advance and the character count —
-    /// pure functions of the text and the font — so they are measured once per revision here.
-    measure_cache: RefCell<(u64, Option<Font>, i32, usize)>,
+    /// value on every press (I-P03), then locate the caret by a uniform-advance ratio (I-004).
+    /// The table holds a measured advance at every character boundary, so a press is a binary
+    /// search over real numbers rather than a proportional guess.
+    measure_cache: RefCell<(u64, Option<Font>, Vec<(usize, i32)>)>,
 }
 
 impl AutoCompleteEdit {
@@ -182,6 +201,7 @@ impl AutoCompleteEdit {
             case_sensitive: false,
             inline_completion: false,
             close_policy: CompletionClosePolicy::Always,
+            completion_separator: None,
             inline_suffix: String::new(),
             alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
@@ -191,7 +211,7 @@ impl AutoCompleteEdit {
             restoring_history: false,
             placeholder: String::new(),
             text_revision: 0,
-            measure_cache: RefCell::new((0, None, 0, 0)),
+            measure_cache: RefCell::new((0, None, Vec::new())),
         }
     }
 
@@ -537,11 +557,17 @@ impl AutoCompleteEdit {
             }
             _ => None,
         };
-        self.filtered_suggestions.clear();
-        for suggestion in &self.suggestions {
+        // Reuse the result buffer in place: a matching run keeps its previous `String`s (and their
+        // capacity) and only rewrites the ones that changed, so a keystroke that narrows the list
+        // allocates nothing at all (I-010). The unused tail is truncated rather than cleared.
+        let case_sensitive = self.case_sensitive;
+        let match_mode = self.match_mode;
+        let Self { suggestions, filtered_suggestions, .. } = self;
+        let mut kept = 0usize;
+        for suggestion in suggestions.iter() {
             let candidate: &str = suggestion;
-            let matched = if self.case_sensitive {
-                match self.match_mode {
+            let matched = if case_sensitive {
+                match match_mode {
                     CompletionMatchMode::Contains => candidate.contains(prefix),
                     CompletionMatchMode::StartsWith => candidate.starts_with(prefix),
                     CompletionMatchMode::EndsWith => candidate.ends_with(prefix),
@@ -555,7 +581,7 @@ impl AutoCompleteEdit {
                 }
             } else {
                 use crate::widget::input_widgets::text_match as fold;
-                match self.match_mode {
+                match match_mode {
                     CompletionMatchMode::Contains => fold::contains(candidate, &needle),
                     CompletionMatchMode::StartsWith => fold::starts_with(candidate, &needle),
                     CompletionMatchMode::EndsWith => fold::ends_with(candidate, &needle),
@@ -566,9 +592,18 @@ impl AutoCompleteEdit {
                 }
             };
             if matched {
-                self.filtered_suggestions.push(suggestion.clone());
+                if let Some(slot) = filtered_suggestions.get_mut(kept) {
+                    if slot.as_str() != candidate {
+                        slot.clear();
+                        slot.push_str(candidate);
+                    }
+                } else {
+                    filtered_suggestions.push(suggestion.clone());
+                }
+                kept += 1;
             }
         }
+        filtered_suggestions.truncate(kept);
         if let (true, Some(first)) = (self.inline_completion, self.filtered_suggestions.first()) {
             // The inline hint is only the part the user has not typed, and only when the
             // suggestion actually extends the prefix at the caret.
@@ -604,41 +639,49 @@ impl AutoCompleteEdit {
 
     /// The byte offset a horizontal pixel points at.
     ///
-    /// Reads the memoised advance and character count for the current value instead of building
-    /// a zero-sized paint backend and shaping the whole string on every press (I-P03).
+    /// Reads the memoised advance table for the current value instead of building a zero-sized
+    /// paint backend and shaping the whole string on every press (I-P03), and picks the nearest
+    /// **measured** boundary rather than a uniform-advance ratio (I-004).
     fn byte_index_at_x(&self, x: i32) -> usize {
         if self.text.is_empty() {
             return 0;
         }
         let rect = self.geometry();
-        let font = effective_font(self.style());
-        let (advance, chars) = self.measured_value(font);
+        let font = effective_font(self.style()).clone();
         let origin = rect.x + 6;
-        let dx = (x - origin).clamp(0, advance.max(1));
-        let chars = chars.max(1) as f32;
-        let boundary =
-            ((dx as f32 * chars / advance.max(1) as f32).round() as usize).min(chars as usize);
-        self.text.char_indices().nth(boundary).map(|(index, _)| index).unwrap_or(self.text.len())
-    }
-
-    /// The value's total advance and character count, memoised per revision and font.
-    fn measured_value(&self, font: &Font) -> (i32, usize) {
-        if let Ok(mut cache) = self.measure_cache.try_borrow_mut() {
-            if cache.0 == self.text_revision && cache.1.as_ref() == Some(font) {
-                return (cache.2, cache.3);
+        let dx = x - origin;
+        let mut cache = self.measure_cache.borrow_mut();
+        if cache.0 != self.text_revision || cache.1.as_ref() != Some(&font) {
+            let mut cuts = Vec::with_capacity(self.text.len() + 1);
+            cuts.push((0usize, 0i32));
+            let mut advance = 0i32;
+            for (start, ch) in self.text.char_indices() {
+                let end = start + ch.len_utf8();
+                advance = advance.saturating_add(crate::widget::metrics::estimate_text_width(
+                    &self.text[start..end],
+                    &font,
+                    1.0,
+                ) as i32);
+                cuts.push((end, advance));
             }
-            let advance = crate::widget::metrics::estimate_text_width(&self.text, font, 1.0) as i32;
-            let chars = self.text.chars().count();
             cache.0 = self.text_revision;
-            cache.1 = Some(font.clone());
-            cache.2 = advance;
-            cache.3 = chars;
-            return (advance, chars);
+            cache.1 = Some(font);
+            cache.2 = cuts;
         }
-        (
-            crate::widget::metrics::estimate_text_width(&self.text, font, 1.0) as i32,
-            self.text.chars().count(),
-        )
+        let cuts = &cache.2;
+        let total = cuts.last().map(|(_, advance)| *advance).unwrap_or(0);
+        let dx = dx.clamp(0, total);
+        let index = cuts.partition_point(|(_, advance)| *advance < dx);
+        let index = if index == 0 {
+            0
+        } else if index >= cuts.len() {
+            cuts.len() - 1
+        } else if (dx - cuts[index - 1].1).abs() <= (cuts[index].1 - dx).abs() {
+            index - 1
+        } else {
+            index
+        };
+        cuts.get(index).map(|(offset, _)| *offset).unwrap_or(self.text.len())
     }
 
     /// Moves the caret by `delta` characters, extending the selection when asked.
@@ -665,11 +708,30 @@ impl AutoCompleteEdit {
         self.base.request_redraw();
     }
 
+    /// What accepting a candidate appends, or `None` for the bare value (I-019).
+    pub fn completion_separator(&self) -> Option<CompletionSeparator> {
+        self.completion_separator
+    }
+
+    /// Configures a separator appended after an accepted candidate (I-019).
+    ///
+    /// Unset is the original behaviour: the field becomes exactly the candidate. Set it for a
+    /// multi-value field, where the next token must start on a fresh entry.
+    pub fn set_completion_separator(&mut self, separator: Option<CompletionSeparator>) {
+        self.completion_separator = separator;
+    }
+
     /// Selects the highlighted suggestion and commits it as the current text.
     fn select_highlighted(&mut self) {
         if let Some(idx) = self.selected_suggestion {
             if let Some(suggestion) = self.filtered_suggestions.get(idx) {
-                let selected = suggestion.clone();
+                let mut selected = suggestion.clone();
+                if let Some(separator) = self.completion_separator {
+                    selected.push(separator.separator);
+                    if separator.trailing_space {
+                        selected.push(' ');
+                    }
+                }
                 self.set_text(selected.clone());
                 self.suggestion_selected.emit(selected);
                 if self.close_policy != CompletionClosePolicy::Never {
@@ -1587,5 +1649,17 @@ mod tests {
             Err(CapabilityAccessError::ReadOnlyProperty),
             "the prefix follows the value"
         );
+    }
+
+    /// The configured separator follows an accepted candidate, and unset is the bare value (I-019).
+    #[test]
+    fn a_completion_separator_is_optional() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 30));
+        assert_eq!(edit.completion_separator(), None);
+        edit.set_completion_separator(Some(CompletionSeparator::comma()));
+        edit.add_suggestion("alpine".to_string());
+        edit.set_text("al".to_string());
+        assert!(edit.accept_highlighted());
+        assert_eq!(edit.text(), "alpine, ");
     }
 }

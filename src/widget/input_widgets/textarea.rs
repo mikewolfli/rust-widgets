@@ -11,15 +11,13 @@ use crate::event::FocusReason;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
+use crate::undo::UndoStack;
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{
-    active_profile, dimensions, effective_font, estimate_text_width, profile_metrics,
-};
-use crate::widget::text_utils::floor_char_boundary;
+use crate::widget::metrics::{active_profile, dimensions, effective_font, profile_metrics};
+use crate::widget::text_utils::{byte_index_of_char, floor_char_boundary};
 use crate::widget::widget_trait::InputMethodQuery;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -30,105 +28,12 @@ type LineSpan = (usize, usize, usize);
 /// A line table shared between readers.
 type LineSpanTable = Rc<Vec<LineSpan>>;
 
-/// A text edit recorded as a splice rather than a whole-document snapshot.
+/// The splice record the text family shares (I-001).
 ///
-/// # Why this exists
-///
-/// Every edit used to push two full copies of the document (the before and the after text), so a
-/// keystroke in a megabyte file cost a megabyte of undo memory and an O(document) copy. A splice
-/// records only the changed run — a single character for ordinary typing — which makes both the
-/// snapshot and the replay proportional to the edit rather than to the file.
-struct TextDeltaCommand {
-    id: CommandId,
-    target: Rc<RefCell<String>>,
-    offset: usize,
-    removed: String,
-    inserted: String,
-}
-
-impl TextDeltaCommand {
-    /// Builds a command for a mutation that has already been applied.
-    fn new(target: Rc<RefCell<String>>, before: &str, after: &str) -> Self {
-        // The common prefix and suffix are found on character boundaries, so the recorded middle
-        // is always a whole number of characters.
-        let mut prefix = 0usize;
-        for (old, new) in before.chars().zip(after.chars()) {
-            if old != new {
-                break;
-            }
-            prefix += old.len_utf8();
-        }
-        let mut suffix = 0usize;
-        for ((_, old), (_, new)) in
-            before[prefix..].char_indices().rev().zip(after[prefix..].char_indices().rev())
-        {
-            if old != new {
-                break;
-            }
-            suffix += old.len_utf8();
-        }
-        Self {
-            id: CommandId(NEXT_TEXT_COMMAND_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)),
-            target,
-            offset: prefix,
-            removed: before[prefix..before.len() - suffix].to_string(),
-            inserted: after[prefix..after.len() - suffix].to_string(),
-        }
-    }
-
-    /// A command for a mutation whose splice is already known (I-P60).
-    fn from_splice(
-        target: Rc<RefCell<String>>,
-        offset: usize,
-        removed: String,
-        inserted: String,
-    ) -> Self {
-        Self {
-            id: CommandId(NEXT_TEXT_COMMAND_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)),
-            target,
-            offset,
-            removed,
-            inserted,
-        }
-    }
-
-    /// Replaces the recorded range with `insert`.
-    fn splice(&self, remove_len: usize, insert: &str) {
-        let mut text = self.target.borrow_mut();
-        let start = self.offset.min(text.len());
-        let end = (start + remove_len).min(text.len());
-        if start <= end {
-            text.replace_range(start..end, insert);
-        }
-    }
-}
-
-/// Counter for [`TextDeltaCommand`] ids.
-static NEXT_TEXT_COMMAND_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-
-impl UndoCommand for TextDeltaCommand {
-    fn id(&self) -> CommandId {
-        self.id
-    }
-
-    fn description(&self) -> CommandDescription {
-        CommandDescription {
-            text: "Edit text".to_string(),
-            timestamp_ms: 0,
-            command_type: "text_area_text",
-        }
-    }
-
-    fn execute(&mut self) -> Result<(), String> {
-        self.splice(self.removed.len(), &self.inserted.clone());
-        Ok(())
-    }
-
-    fn undo(&mut self) -> Result<(), String> {
-        self.splice(self.inserted.len(), &self.removed.clone());
-        Ok(())
-    }
-}
+/// `TextArea` used to carry this record privately; it now lives in the undo module so `LineEdit`,
+/// the combo-box editor, the search fields and the inline editor file the same shape. The alias
+/// keeps the in-file call sites and tests reading naturally.
+type TextDeltaCommand = crate::undo::TextSpliceCommand;
 
 /// Multi-line text input widget.
 ///
@@ -242,6 +147,8 @@ pub struct TextArea {
     revision: u64,
     /// Memoised display rows: the soft-wrapped rows the paint, caret and hit test share.
     display_rows_cache: RefCell<Option<DisplayRowCache>>,
+    /// Per-logical-line wrap results, reused when a line's content and width are unchanged (I-006).
+    wrapped_lines: RefCell<Vec<WrappedLineCache>>,
     /// Measured advances for the selection band's two edges, keyed by the revision.
     ///
     /// The band used to re-shape its line prefix and its selected run on every frame, which is two
@@ -280,6 +187,29 @@ struct DisplayRowCache {
     /// previous face (I-07).
     font: Font,
     rows: Rc<Vec<DisplayRow>>,
+}
+
+/// One logical line's wrapped rows, relative to the line start, keyed by its own content (I-006).
+///
+/// A soft-wrap pass used to re-measure every glyph of the document on any edit. The line's own
+/// text and width are the only inputs that decide its breaks, so an unchanged line can hand back
+/// its previous rows and only the edited paragraph is measured again.
+struct WrappedLineCache {
+    hash: u64,
+    width: u32,
+    font: Font,
+    /// `(relative start, relative end)` pairs inside the line's content.
+    rows: Vec<(usize, usize)>,
+}
+
+/// A cheap content hash for one line's wrap-cache key.
+fn line_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in text.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// Memoised selection-band advances, keyed by the document revision and the full font.
@@ -333,6 +263,7 @@ impl TextArea {
             scroll_x: 0,
             revision: 0,
             display_rows_cache: RefCell::new(None),
+            wrapped_lines: RefCell::new(Vec::new()),
             band_width_cache: RefCell::new(None),
             cursor_blink: crate::style::CursorBlink::new(),
             scrollbar_drag: false,
@@ -568,6 +499,8 @@ impl TextArea {
             self.history_target.clone(),
             &before,
             &self.text,
+            "Edit text",
+            "text_area_text",
         )));
         // Every edit funnels through here, so this is the one place the viewport has to follow the
         // caret. Keeping it at the call sites would let the next edit path added forget it, and the
@@ -609,6 +542,8 @@ impl TextArea {
                     self.history_target.clone(),
                     &before,
                     &self.text,
+                    "Edit text",
+                    "text_area_text",
                 )));
             }
             None => {
@@ -625,6 +560,8 @@ impl TextArea {
                     offset,
                     removed,
                     inserted,
+                    "Edit text",
+                    "text_area_text",
                 )));
             }
         }
@@ -647,9 +584,8 @@ impl TextArea {
             return;
         }
         let max = self.max_length;
-        let next = if max > 0 && text.len() > max {
-            // Use floor_char_boundary to avoid splitting a multi-byte UTF-8 char
-            let boundary = floor_char_boundary(&text, max);
+        let next = if max > 0 && text.chars().count() > max {
+            let boundary = byte_index_of_char(&text, max);
             text[..boundary].to_string()
         } else {
             text
@@ -666,6 +602,8 @@ impl TextArea {
                 self.history_target.clone(),
                 &before,
                 &self.text,
+                "Edit text",
+                "text_area_text",
             )));
         }
         self.cursor_pos = self.text.len();
@@ -683,9 +621,11 @@ impl TextArea {
         if text.is_empty() {
             return;
         }
-        let mut next = self.text.clone();
-        next.push_str(text);
-        self.set_text(next);
+        // One copy into the buffer: the old path cloned the whole document into a candidate, then
+        // `set_text` cloned again when it adopted it (I-007).
+        self.cursor_pos = self.text.len();
+        self.selection_anchor = None;
+        self.insert_text_in_place(text);
     }
 
     /// Inserts a single character at the current cursor position.
@@ -696,7 +636,7 @@ impl TextArea {
     /// The cursor is snapped to a UTF-8 char boundary before inserting (via
     /// `floor_char_boundary`), so a misplaced caret cannot split a character.
     pub fn insert_char(&mut self, ch: char) {
-        if self.max_length > 0 && self.text.len() >= self.max_length {
+        if self.max_length > 0 && self.text.chars().count() >= self.max_length {
             return;
         }
         // The glyph's own UTF-8 bytes, so typing allocates no intermediate `String` (I-P60).
@@ -726,8 +666,8 @@ impl TextArea {
             self.text.replace_range(start..start + removed.len(), "");
         }
         self.text.insert_str(start, text);
-        if self.max_length > 0 && self.text.len() > self.max_length {
-            let boundary = floor_char_boundary(&self.text, self.max_length);
+        if self.max_length > 0 && self.text.chars().count() > self.max_length {
+            let boundary = byte_index_of_char(&self.text, self.max_length);
             self.text.truncate(boundary);
         }
         self.cursor_pos = floor_char_boundary(&self.text, start + text.len());
@@ -1057,15 +997,35 @@ impl TextArea {
             context.measure_text(ch.encode_utf8(&mut glyph), &font).width as f32
         };
         let mut rows = Vec::new();
-        for &(start, content_end, _) in spans.iter() {
+        let mut cache = self.wrapped_lines.borrow_mut();
+        cache.resize_with(spans.len(), || WrappedLineCache {
+            hash: 0,
+            width: 0,
+            font: Font::default(),
+            rows: Vec::new(),
+        });
+        for (line_index, &(start, content_end, _)) in spans.iter().enumerate() {
             if !self.soft_wrap || width == 0 || content_end <= start {
                 rows.push(DisplayRow { start, end: content_end });
                 continue;
             }
+            let content = &self.text[start..content_end];
+            let hash = line_hash(content);
+            let reusable = {
+                let entry = &cache[line_index];
+                entry.hash == hash && entry.width == width && entry.font == font
+            };
+            if reusable {
+                for &(rel_start, rel_end) in &cache[line_index].rows {
+                    rows.push(DisplayRow { start: start + rel_start, end: start + rel_end });
+                }
+                continue;
+            }
+            let mut line_rows = Vec::new();
             let mut row_start = start;
             let mut row_width = 0.0f32;
             let mut last_break: Option<usize> = None;
-            for (offset, ch) in self.text[start..content_end].char_indices() {
+            for (offset, ch) in content.char_indices() {
                 let absolute = start + offset;
                 let advance = advance_of(ch);
                 if row_width + advance > width as f32 && absolute > row_start {
@@ -1073,6 +1033,7 @@ impl TextArea {
                         .filter(|boundary| *boundary > row_start && *boundary <= absolute)
                         .unwrap_or(absolute);
                     rows.push(DisplayRow { start: row_start, end: break_at });
+                    line_rows.push((row_start - start, break_at - start));
                     row_start = break_at;
                     row_width = 0.0;
                     for (_, carried) in self.text[row_start..absolute].char_indices() {
@@ -1086,7 +1047,14 @@ impl TextArea {
                 row_width += advance;
             }
             rows.push(DisplayRow { start: row_start, end: content_end });
+            line_rows.push((row_start - start, content_end - start));
+            let entry = &mut cache[line_index];
+            entry.hash = hash;
+            entry.width = width;
+            entry.font = font.clone();
+            entry.rows = line_rows;
         }
+        cache.truncate(spans.len());
         if rows.is_empty() {
             rows.push(DisplayRow { start: 0, end: 0 });
         }
@@ -1227,26 +1195,25 @@ impl TextArea {
             .unwrap_or(line_end)
     }
 
-    /// Returns the maximum text length in bytes, where `0` means unlimited.
+    /// Returns the maximum text length in **characters**, where `0` means unlimited.
     pub fn max_length(&self) -> usize {
         self.max_length
     }
 
-    /// Sets the maximum text length, truncating the value if it exceeds the new limit.
+    /// Sets the maximum text length **in characters**, truncating the value if needed.
     ///
-    /// # The limit is a **byte** budget, and the truncation must respect that
+    /// # One frame for the whole text family (I-014)
     ///
-    /// Unlike `LineEdit`, whose limit counts characters, this control counts bytes — the value is
-    /// a multi-line document and the limit is a buffer bound. The truncation therefore has to
-    /// floor to a character boundary: `String::truncate` panics outright when the index falls
-    /// inside a character, so `set_max_length` on `"你好"` (six bytes) with a limit of four took
-    /// the process down. `set_text` already guarded its own truncation with
-    /// [`floor_char_boundary`]; this path did not.
+    /// This control used to count **bytes** while `LineEdit` counted characters, so the same
+    /// limit value meant different things in two fields of one form. The limit is what the user
+    /// sees and what a counter reports, so it is a character budget here too. Truncation goes
+    /// through [`byte_index_of_char`], which keeps the cut on a character boundary — the panic the
+    /// old byte-based `String::truncate` could cause is impossible by construction now.
     pub fn set_max_length(&mut self, max: usize) {
         let previous = self.max_length;
         self.max_length = max;
-        if max > 0 && self.text.len() > max {
-            let boundary = floor_char_boundary(&self.text, max);
+        if max > 0 && self.text.chars().count() > max {
+            let boundary = byte_index_of_char(&self.text, max);
             self.text.truncate(boundary);
             self.line_spans_cache.borrow_mut().take();
             self.display_rows_cache.borrow_mut().take();
@@ -2442,11 +2409,9 @@ impl TextArea {
         // logical line, and with it, at the wrapped segment the caret sits on.
         let rows = self.display_rows();
         let row_start = rows.iter().rfind(|row| row.start <= caret).map_or(0, |row| row.start);
-        let prefix = &self.text[row_start..caret];
-        if prefix.is_empty() {
-            return 0;
-        }
-        self.text_advance(prefix)
+        // One cached measurement source for the caret: the same revision-keyed table the selection
+        // band reads, rather than a fresh shape of the same prefix every frame (I-005).
+        self.band_advance(row_start, caret)
     }
 
     /// The advance of `text` under the renderer's own metrics.
@@ -2515,20 +2480,18 @@ impl TextArea {
     /// # Why the horizontal position is measured without a paint pass
     ///
     /// The IME query is answered on a `&self` borrow between frames, when no `RenderContext` is
-    /// available to the caller. [`estimate_text_width`] is the crate's context-free model of the
-    /// renderer's ruler, so the reported x is the advance of the text before the caret on its own
-    /// line — the same fact [`Self::cursor_screen_x`] derives during a paint. The vertical position
-    /// is the caret's visible row, so a scrolled area reports the row it actually draws the marker
-    /// on rather than the caret's document position.
+    /// available to the caller. The x is the **cached** advance of the text before the caret on
+    /// its own line — the same measurement source [`Self::cursor_screen_x`] reads during a paint
+    /// (I-005) — so the anchor and the ink cannot disagree. The vertical position is the caret's
+    /// visible row, so a scrolled area reports the row it actually draws the marker on rather
+    /// than the caret's document position.
     fn caret_query(&self) -> InputMethodQuery {
         let rect = self.geometry();
         let font = self.text_font();
         let origin_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
         let caret = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
-        let row_start =
-            self.display_rows().iter().rfind(|row| row.start <= caret).map_or(0, |row| row.start);
-        let caret_x = origin_x + self.content_margin - self.scroll_x
-            + estimate_text_width(&self.text[row_start..caret], font, 1.0) as i32;
+        let caret_x =
+            origin_x + self.content_margin - self.scroll_x + self.advance_of_caret_prefix(caret);
 
         // The first line's band is the same one `draw` lays the glyphs out in: one line tall, one
         // inset below the top edge. Measuring it through the renderer keeps the anchor on the
@@ -2833,19 +2796,22 @@ mod tests {
         assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
     }
 
-    /// `set_max_length` must not truncate inside a multi-byte character.
-    ///
-    /// The limit is a byte budget on this control (a document's buffer bound), but
-    /// `String::truncate` **panics** when the byte index is not a character boundary — so
-    /// `set_max_length(4)` on `"你好"` (six bytes) took the process down instead of trimming it.
+    /// The limit counts characters and truncation lands on a character boundary (I-014).
     #[test]
     fn max_length_truncation_respects_character_boundaries() {
         let mut ta = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
         ta.set_text("你好");
-        ta.set_max_length(4);
+        ta.set_max_length(1);
         assert!(ta.text().is_char_boundary(ta.text().len()));
-        assert_eq!(ta.text(), "你", "truncated to the last boundary at or before 4 bytes");
+        assert_eq!(ta.text(), "你", "one character is one cell of the limit");
         assert!(ta.text().is_char_boundary(ta.cursor_pos()));
+
+        // A limit of four characters leaves a two-character value alone, which is what the
+        // counter says it should do; the old byte budget cut it to one.
+        let mut wide = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
+        wide.set_text("你好");
+        wide.set_max_length(4);
+        assert_eq!(wide.text(), "你好");
     }
 
     /// A caret set to a mid-character byte is snapped, so the draw cannot slice through one.
@@ -3922,7 +3888,8 @@ mod tests {
     #[test]
     fn an_edit_is_recorded_as_a_delta() {
         let target = Rc::new(RefCell::new(String::new()));
-        let command = TextDeltaCommand::new(target, "hello", "hello!");
+        let command =
+            TextDeltaCommand::new(target, "hello", "hello!", "Edit text", "text_area_text");
         assert_eq!(command.offset, 5, "the common prefix is not part of the delta");
         assert_eq!(command.removed, "");
         assert_eq!(command.inserted, "!");

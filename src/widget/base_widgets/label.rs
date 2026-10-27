@@ -3,7 +3,7 @@
 
 //! Label widget implementation.
 use crate::compat::{format, Cow, RefCell, String, ToString, Vec};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderContext, TEXT_FIT_MARGIN};
 use crate::signal::Signal1;
@@ -645,6 +645,14 @@ pub struct Label {
     open_external_links: bool,
     /// The link the pointer is currently over, as an index into [`Label::links`].
     hovered_link: Option<usize>,
+    /// The control a mnemonic focuses, when the caller bound one.
+    ///
+    /// A label is not focusable itself; a `buddy` is the field or button whose focus a
+    /// `&`-style mnemonic request should move to. `None` keeps the historical label with no
+    /// keyboard binding at all.
+    buddy: Option<ObjectId>,
+    /// The character whose keystroke focuses [`Label::buddy`] and whose glyph is underlined.
+    mnemonic: Option<char>,
     /// A monotonic revision of the text and its interpretation.
     ///
     /// Both caches (the wrapped-line table and the rich runs) are keyed by it, so changing the
@@ -691,6 +699,8 @@ impl Label {
             rich_runs: Vec::new(),
             open_external_links: false,
             hovered_link: None,
+            buddy: None,
+            mnemonic: None,
             text_revision: 0,
             wrap_cache: None,
             rich_displayed: String::new(),
@@ -702,6 +712,42 @@ impl Label {
     /// Returns label text.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The control this label's mnemonic focuses, if one is bound.
+    pub fn buddy(&self) -> Option<ObjectId> {
+        self.buddy
+    }
+
+    /// Binds a buddy control: `Alt` + [`Self::mnemonic`] focuses it.
+    ///
+    /// This is the reference toolkit's `setBuddy`. The label stays unfocusable itself; the
+    /// binding only gives it a keyboard route to another control.
+    pub fn set_buddy(&mut self, buddy: Option<ObjectId>) {
+        if self.buddy == buddy {
+            return;
+        }
+        self.buddy = buddy;
+        self.base.request_redraw();
+    }
+
+    /// The mnemonic character, if one is declared.
+    pub fn mnemonic(&self) -> Option<char> {
+        self.mnemonic
+    }
+
+    /// Declares the mnemonic character.
+    ///
+    /// The first case-insensitive occurrence of the character in the caption is underlined,
+    /// and `Alt` + that key focuses [`Self::buddy`]. A character the caption does not contain
+    /// is still recorded (so a caller can set the binding before the text), but there is then
+    /// nothing to underline.
+    pub fn set_mnemonic(&mut self, mnemonic: Option<char>) {
+        if self.mnemonic == mnemonic {
+            return;
+        }
+        self.mnemonic = mnemonic;
+        self.base.request_redraw();
     }
     /// Sets label text.
     ///
@@ -1115,6 +1161,45 @@ impl Label {
             return color;
         }
         color.blend(&color.contrast_color(), LABEL_INTERACTION_TINT * intensity)
+    }
+
+    /// Draws the mnemonic underline under the first matching character of the caption.
+    ///
+    /// The underline's horizontal origin is derived from the same alignment and the same
+    /// measured advances the text path uses, so it sits under the glyph it names instead of
+    /// at a guessed offset. A mnemonic the caption does not contain draws nothing.
+    fn draw_mnemonic_underline(
+        &self,
+        context: &mut RenderContext,
+        content: Rect,
+        line: Rect,
+        font: &Font,
+        color: Color,
+    ) {
+        let Some(mnemonic) = self.mnemonic else {
+            return;
+        };
+        let Some((start, character)) =
+            self.text.char_indices().find(|(_, c)| c.eq_ignore_ascii_case(&mnemonic))
+        else {
+            return;
+        };
+        let end = start + character.len_utf8();
+        let prefix = context.measure_text(&self.text[..start], font).width as i32;
+        let glyph = context.measure_text(&self.text[start..end], font).width as i32;
+        let total = context.measure_text(&self.text, font).width as i32;
+        let origin = match self.alignment {
+            crate::core::Alignment::Center => content.x + (content.width as i32 - total).max(0) / 2,
+            crate::core::Alignment::Right => content.x + content.width as i32 - total,
+            _ => content.x,
+        };
+        let y = line.y + line.height as i32 - 1;
+        context.draw_line_stroke(
+            Point::new(origin + prefix, y),
+            Point::new(origin + prefix + glyph, y),
+            color,
+            1,
+        );
     }
 
     /// Paints the wrapped-line table, re-measuring it only when its key changes.
@@ -1560,6 +1645,20 @@ impl EventHandler for Label {
                     self.activate_link(index);
                 }
             }
+            // A mnemonic is the label's only keyboard route: Alt + its character focuses the
+            // buddy through the same focus API a Tab or an application request uses, so the
+            // target's own focus handling (ring, IME, signals) runs unchanged.
+            Event::KeyPress { key, modifiers } if modifiers & 0b0100 != 0 => {
+                if let (Some(mnemonic), Some(buddy)) = (self.mnemonic, self.buddy) {
+                    let pressed = char::from_u32(*key);
+                    if pressed.is_some_and(|pressed| pressed.eq_ignore_ascii_case(&mnemonic)) {
+                        let _ = crate::widget::runtime::focus_widget_with_reason(
+                            buddy,
+                            crate::event::FocusReason::Shortcut,
+                        );
+                    }
+                }
+            }
             _ => { /* Other events carry no link target */ }
         }
     }
@@ -1582,22 +1681,21 @@ impl Draw for Label {
         }
         // The two role colours this control needs, read **out** of the theme before drawing.
         //
-        // `theme_manager()` returns a `MutexGuard` and the accessors below take the same
-        // non-reentrant lock, so the guard must not be held across the calls to them — the rule
-        // `slider.rs` documents ("not held across the draw"). Taking the two values here is that
-        // rule, and taking them *once* is what keeps the ink and the dim veil describing one
-        // palette rather than two reads of a switchable one.
-        let (theme_ink, theme_disabled, theme_surface, theme_accent) = {
-            let manager = crate::style::theme_manager();
-            match manager.current_theme() {
-                Some(active) => (
-                    Some(active.colors.foreground),
-                    Some(active.colors.disabled),
-                    Some(active.colors.background),
-                    Some(active.colors.accent),
-                ),
-                None => (None, None, None, None),
-            }
+        // `theme_manager()` returned a `MutexGuard` and the accessors below took the same
+        // non-reentrant lock, so the guard could not be held across them — and taking four
+        // fields one at a time meant four lock acquisitions on every paint. `palette_shared()`
+        // is the theme manager's cached snapshot, invalidated when the active theme changes, so
+        // the draw path takes no lock at all and still describes one palette in one frame.
+        // This is the same read `CheckBox::page_surface` uses (G-A01).
+        let palette = crate::style::palette_shared();
+        let (theme_ink, theme_disabled, theme_surface, theme_accent) = match palette.as_ref() {
+            Some(colors) => (
+                Some(colors.foreground),
+                Some(colors.disabled),
+                Some(colors.background),
+                Some(colors.accent),
+            ),
+            None => (None, None, None, None),
         };
         // Draw pixmap content
         //
@@ -1733,6 +1831,7 @@ impl Draw for Label {
                         self.elide_mode,
                     );
                 }
+                self.draw_mnemonic_underline(context, content, line, &font, text_color);
             }
         }
         // Draw border if specified
@@ -2765,5 +2864,71 @@ mod tests {
         for name in label.property_names() {
             assert!(label.get(name).is_ok(), "{name:?} is published but not readable");
         }
+    }
+
+    /// A buddy binding plus a mnemonic gives the label the keyboard route it lacked.
+    #[test]
+    fn a_mnemonic_focuses_the_buddy() {
+        use crate::widget::runtime;
+
+        let buddy = runtime::register(crate::compat::Box::new(crate::widget::CheckBox::new(
+            Rect::new(0, 0, 80, 20),
+        )))
+        .expect("the buddy must mount for focus to move");
+
+        let mut label = Label::new("Name:".to_string(), Rect::new(0, 0, 80, 20));
+        label.set_buddy(Some(buddy));
+        label.set_mnemonic(Some('n'));
+
+        assert_eq!(label.buddy(), Some(buddy));
+        assert_eq!(label.mnemonic(), Some('n'));
+
+        // Alt + the mnemonic moves focus; the plain key does not.
+        label.handle_event(&Event::KeyPress { key: 78, modifiers: 0 });
+        assert_ne!(runtime::focused_widget(), Some(buddy));
+        label.handle_event(&Event::KeyPress { key: 78, modifiers: 0b0100 });
+        assert_eq!(runtime::focused_widget(), Some(buddy));
+
+        runtime::clear_focus();
+        runtime::unregister(buddy);
+    }
+
+    /// The mnemonic's first case-insensitive occurrence is the glyph that is underlined, and a
+    /// caption without it paints no underline.
+    #[test]
+    fn the_mnemonic_underline_follows_the_caption() {
+        let _guard = crate::style::theme_test_guard();
+        let mut plain = Label::new("Name:".to_string(), Rect::new(0, 0, 80, 20));
+        let without = crate::widget::svg::render_to_svg(&mut plain);
+
+        let mut marked = Label::new("Name:".to_string(), Rect::new(0, 0, 80, 20));
+        marked.set_mnemonic(Some('n'));
+        let with = crate::widget::svg::render_to_svg(&mut marked);
+        assert_ne!(without, with, "a mnemonic must paint its underline");
+
+        let mut missing = Label::new("Name:".to_string(), Rect::new(0, 0, 80, 20));
+        missing.set_mnemonic(Some('z'));
+        let missing_svg = crate::widget::svg::render_to_svg(&mut missing);
+        assert_eq!(without, missing_svg, "a character the caption lacks draws nothing");
+    }
+
+    /// The draw path takes its role colours from the cached palette snapshot (B-003).
+    #[test]
+    #[cfg(device_profile)]
+    fn the_palette_snapshot_supplies_the_ink() {
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(AppearanceMode::Light);
+
+        // No theme is applied to the control, so its style has no `text_color` and the draw
+        // path must fall back to the palette snapshot.
+        let mut label = Label::new("Sample".to_string(), Rect::new(0, 0, 120, 30));
+        let palette = crate::style::palette_shared().expect("a preset is active");
+        let svg = crate::widget::svg::render_widget_to_svg_on(
+            &mut label,
+            Rect::new(0, 0, 120, 30),
+            palette.background,
+        );
+        assert_eq!(ink_path_fill(&svg), palette.foreground);
     }
 }

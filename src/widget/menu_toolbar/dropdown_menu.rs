@@ -245,6 +245,12 @@ struct ListPaint<'a> {
     icon_sources: &'a HashMap<String, IconSource>,
     selected_value: Option<&'a str>,
     highlight_selection: bool,
+    /// The keyboard-active row of this list, if any.
+    ///
+    /// The navigation key handlers have always moved `active_index` / `panel.active`;
+    /// the painter now consumes it, so a key movement is visible instead of silent
+    /// (M-010). Selection still takes precedence in the same fill branch.
+    active: Option<usize>,
     /// Whether a row with children paints its disclosure arrow.
     ///
     /// Only the level that is allowed to open a deeper panel says `true`; the deepest
@@ -288,7 +294,8 @@ fn draw_item_list(
 
         let is_selected = paint.highlight_selection
             && paint.selected_value.is_some_and(|value| item.value.as_str() == value);
-        if is_selected {
+        let is_active = paint.active == Some(index);
+        if is_selected || is_active {
             context.fill_rounded_rect(row, 2, palette.highlight);
         }
 
@@ -542,8 +549,23 @@ impl DropdownMenu {
 
     /// Sets the selected item by value. If the value does not match any
     /// item, the selection is cleared.
+    ///
+    /// The match walks the whole subtree, not just the top level: a value that
+    /// lives in a branch's child panel is reachable, and its enabled flag is
+    /// read where the value actually is (M-011).
     pub fn select(&mut self, value: &str) {
-        if self.items.iter().any(|item| item.value == value && item.enabled) {
+        fn is_enabled(items: &[DropdownItem], value: &str) -> Option<bool> {
+            for item in items {
+                if item.value == value {
+                    return Some(item.enabled);
+                }
+                if let Some(enabled) = is_enabled(&item.children, value) {
+                    return Some(enabled);
+                }
+            }
+            None
+        }
+        if is_enabled(&self.items, value) == Some(true) {
             self.selected_value = Some(value.to_string());
             self.base.request_redraw();
         }
@@ -815,9 +837,18 @@ impl DropdownMenu {
 
     /// Returns the display label for the currently selected value.
     pub fn selected_label(&self) -> Option<String> {
-        self.selected_value.as_ref().and_then(|val| {
-            self.items.iter().find(|item| item.value == *val).map(|item| item.label.clone())
-        })
+        fn label_of(items: &[DropdownItem], value: &str) -> Option<String> {
+            for item in items {
+                if item.value == value {
+                    return Some(item.label.clone());
+                }
+                if let Some(label) = label_of(&item.children, value) {
+                    return Some(label);
+                }
+            }
+            None
+        }
+        self.selected_value.as_deref().and_then(|value| label_of(&self.items, value))
     }
 
     /// Returns the index of the selected item, or `None` when nothing is selected.
@@ -1062,9 +1093,58 @@ impl DropdownMenu {
     }
 
     /// The child panel's rectangle for `item_count` rows anchored to `anchor_row`.
+    ///
+    /// The panel hangs to the right of its parent, but is flipped to the parent's leading
+    /// edge or clamped inside the surface when that would run off-screen. This is the
+    /// same rule `Menu`'s cascade follows (M-006), so the two controls cannot disagree
+    /// about what a cascading panel does at an edge (M-012).
     fn child_panel_rect(parent: Rect, anchor_row: Rect, item_count: usize) -> Rect {
+        Self::child_panel_rect_in(parent, anchor_row, item_count, Self::surface_viewport())
+    }
+
+    /// The placement arithmetic, separated so the clamp can be tested without a display.
+    fn child_panel_rect_in(
+        parent: Rect,
+        anchor_row: Rect,
+        item_count: usize,
+        viewport: Option<Rect>,
+    ) -> Rect {
+        let width = parent.width;
         let height = (item_count as u32 * ITEM_HEIGHT as u32).max(1);
-        Rect::new(parent.x + parent.width as i32, anchor_row.y, parent.width, height)
+        let mut x = parent.x + parent.width as i32;
+        let mut y = anchor_row.y;
+        if let Some(viewport) = viewport {
+            let right = viewport.x + viewport.width as i32;
+            let bottom = viewport.y + viewport.height as i32;
+            if x + width as i32 > right {
+                let flipped = parent.x - width as i32;
+                x = if flipped >= viewport.x {
+                    flipped
+                } else {
+                    (right - width as i32).max(viewport.x)
+                };
+            }
+            x = x.max(viewport.x);
+            if y + height as i32 > bottom {
+                y = (bottom - height as i32).max(viewport.y);
+            }
+            y = y.max(viewport.y);
+        }
+        Rect::new(x, y, width, height)
+    }
+
+    /// The surface a popup may occupy, when the backend reports a display.
+    ///
+    /// `None` is the honest absence on a host build; the panel then keeps the
+    /// historical right-hanging placement instead of a fabricated bound.
+    fn surface_viewport() -> Option<Rect> {
+        let displays = crate::platform::platform_facts().displays();
+        displays
+            .iter()
+            .find(|display| display.is_primary)
+            .or_else(|| displays.first())
+            .map(|display| display.work_area)
+            .filter(|area| area.width > 0 && area.height > 0)
     }
 
     /// Row `index` inside a child panel.
@@ -1623,6 +1703,7 @@ impl Draw for DropdownMenu {
                     icon_sources: &icon_index,
                     selected_value: self.selected_value.as_deref(),
                     highlight_selection: true,
+                    active: self.active_index,
                     branches_open: true,
                 },
                 style,
@@ -1681,6 +1762,7 @@ impl Draw for DropdownMenu {
                     icon_sources: &icon_index,
                     selected_value: None,
                     highlight_selection: false,
+                    active: panel.active,
                     // `offset + 1` is the level these rows sit on; the deepest panel
                     // cannot open another, so it paints no arrow.
                     branches_open: offset + 1 < MAX_SUBMENU_DEPTH,
@@ -2357,5 +2439,58 @@ mod tests {
         assert!(!dm.set_item_checked("plain", true), "a non-checkable row refuses a check");
         assert_eq!(dm.item_checked("plain"), Some(false));
         assert_eq!(dm.item_checked("missing"), None);
+    }
+
+    /// M-010: the keyboard-active row reaches the painter.
+    #[test]
+    fn the_keyboard_active_row_is_painted() {
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        dm.add_item(DropdownItem::new("a", "Alpha"));
+        dm.add_item(DropdownItem::new("b", "Beta"));
+        dm.expand();
+        dm.reveal.jump_to(true);
+        let before = render_to_svg(&mut dm);
+
+        dm.handle_event(&Event::key_press(crate::event::key_codes::DOWN, 0));
+        assert_eq!(dm.active_index, Some(0));
+        let after = render_to_svg(&mut dm);
+        assert_ne!(before, after, "moving the highlight must change the frame");
+    }
+
+    /// M-011: selection and its label address rows at any nesting depth.
+    #[test]
+    fn selecting_a_nested_value_reaches_its_label() {
+        let mut dm = DropdownMenu::new(Rect::new(0, 0, 200, 30));
+        dm.add_item(
+            DropdownItem::new("parent", "Parent")
+                .with_children(vec![DropdownItem::new("child", "Child")]),
+        );
+        dm.select("child");
+        assert_eq!(dm.selected_value(), Some("child".to_string()));
+        assert_eq!(dm.selected_label(), Some("Child".to_string()));
+
+        dm.select("missing");
+        assert_eq!(dm.selected_value(), Some("child".to_string()), "a miss leaves the selection");
+    }
+
+    /// M-012: a child panel flips or clamps instead of running off the surface.
+    #[test]
+    fn a_child_panel_is_clamped_and_flipped() {
+        let parent = Rect::new(320, 10, 180, 60);
+        let row = Rect::new(320, 10, 180, ITEM_HEIGHT as u32);
+        let flipped =
+            DropdownMenu::child_panel_rect_in(parent, row, 2, Some(Rect::new(0, 0, 500, 400)));
+        assert!(flipped.x < parent.x, "the panel flips to the parent's leading edge: {flipped:?}");
+
+        let clamped = DropdownMenu::child_panel_rect_in(
+            parent,
+            Rect::new(320, 380, 180, ITEM_HEIGHT as u32),
+            3,
+            Some(Rect::new(0, 0, 500, 400)),
+        );
+        assert!(
+            clamped.y + clamped.height as i32 <= 400,
+            "a panel near the bottom is shifted up: {clamped:?}"
+        );
     }
 }

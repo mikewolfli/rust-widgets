@@ -19,6 +19,9 @@ struct BoxLayoutItem {
     /// layout has always done and what a CSS/参考工具包 box does by default. A value shrinks the
     /// item to the cross size it *asks for* (from [`ChildInfo::hints`]) and places it
     /// within the cross extent — the same split Flutter's `crossAxisAlignment` makes.
+    /// cross_size: None,
+    /// }
+    /// ```
     align: Option<Alignment>,
     /// The cross-axis size used when `align` is set and the hint-aware path has no child info.
     ///
@@ -27,6 +30,14 @@ struct BoxLayoutItem {
     /// answered differently through its two entry points. This is the explicit cross size the
     /// caller can supply for that entry point; `arrange` prefers it over the hint so both agree.
     cross_size: Option<u32>,
+    /// Distance from the item's top edge to its text baseline, for [`Alignment::Baseline`]
+    /// (LAY-004).
+    ///
+    /// `None` means "baseline at the item's bottom edge", the same default the flex row
+    /// applies: a row of items with no baseline information aligns their bottoms. This is a
+    /// real measurement supplied by the caller (a text control knows its ascent), not a
+    /// stand-in for the start edge.
+    baseline: Option<u32>,
 }
 /// Linear layout that arranges items in one direction.
 #[derive(Debug)]
@@ -105,6 +116,7 @@ impl BoxLayout {
                 policy: SizePolicy::Expanding,
                 align: None,
                 cross_size: None,
+                baseline: None,
             },
         );
         true
@@ -126,6 +138,7 @@ impl BoxLayout {
                 policy: SizePolicy::Expanding,
                 align: None,
                 cross_size: None,
+                baseline: None,
             },
         );
         true
@@ -179,6 +192,30 @@ impl BoxLayout {
         }
     }
 
+    /// The baseline measurement of `widget_id`, or `None` when it aligns at its bottom edge.
+    pub fn item_baseline(&self, widget_id: ObjectId) -> Option<u32> {
+        self.items
+            .iter()
+            .find(|item| item.widget_id == Some(widget_id))
+            .and_then(|item| item.baseline)
+    }
+
+    /// Sets (or clears, with `None`) the baseline measurement of an item (LAY-004).
+    ///
+    /// Returns `false` when `widget_id` is not an item of this layout. The value is the
+    /// distance from the item's top edge to its text baseline — a text control knows its
+    /// ascent. `None` (the default) means "baseline at the item's bottom edge", so a row of
+    /// items with no measurements aligns their bottoms, exactly as the flex row does.
+    pub fn set_item_baseline(&mut self, widget_id: ObjectId, baseline: Option<u32>) -> bool {
+        match self.items.iter_mut().find(|item| item.widget_id == Some(widget_id)) {
+            Some(item) => {
+                item.baseline = baseline;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Updates inter-item spacing.
     pub fn set_spacing(&mut self, spacing: u32) {
         self.spacing = spacing;
@@ -204,6 +241,7 @@ impl BoxLayout {
             policy: SizePolicy::Expanding,
             align: None,
             cross_size: None,
+            baseline: None,
         });
     }
 
@@ -225,6 +263,7 @@ impl BoxLayout {
             policy: SizePolicy::Fixed,
             align: None,
             cross_size: None,
+            baseline: None,
         });
     }
     /// Sets size constraints for an existing widget item.
@@ -313,12 +352,16 @@ impl BoxLayout {
                 SizePolicy::Ignored => {
                     (primary as u64 * item.stretch as u64 / total_stretch) as u32
                 }
-                SizePolicy::Minimum
-                | SizePolicy::Preferred
-                | SizePolicy::Expanding
-                | SizePolicy::MinimumExpanding => {
+                SizePolicy::Minimum | SizePolicy::Expanding | SizePolicy::MinimumExpanding => {
                     (primary as u64 * item.stretch as u64 / total_stretch) as u32
                 }
+                // LAY-002: `Preferred` is no longer synonymous with `Expanding`. It strictly
+                // hugs the size its constraints state — the adapter's `min` is both the floor
+                // and the preferred value (see `LayoutConstraints::to_axis_hints`) — so it
+                // starts there and never joins the leftover-space distribution below. Only
+                // the strategies that ask for room (`Expanding`, `MinimumExpanding`, and the
+                // unweighted `Minimum`/`Ignored`) take a stretch-weighted share.
+                SizePolicy::Preferred => item.constraints.min,
             };
             major = major.max(item.constraints.min);
             if let Some(max) = item.constraints.max {
@@ -330,10 +373,15 @@ impl BoxLayout {
         // A `Fixed` item's size is decided by its constraints alone, so the grow pass must
         // not stretch it toward the container. Treating a missing `max` as `u32::MAX` did
         // exactly that: a single `Fixed` item with `min = 20` and no `max` in a 100px parent
-        // was filled to 100. A `Fixed` item may still be *scaled down* in the shortfall pass
-        // below, which is why only this pass skips it.
-        let is_fixed = |index: usize| {
-            matches!(self.items[index].policy, SizePolicy::Fixed | SizePolicy::Maximum)
+        // was filled to 100. A `Maximum` item is capped the same way, and — since LAY-002 —
+        // a `Preferred` item hugs the size its constraints state, so the leftover space is
+        // distributed only among the items that ask for it. Any of these may still be
+        // *scaled down* in the shortfall pass below, which is why only this pass skips them.
+        let skips_grow = |index: usize| {
+            matches!(
+                self.items[index].policy,
+                SizePolicy::Fixed | SizePolicy::Maximum | SizePolicy::Preferred
+            )
         };
 
         // `min` is a hard floor only while the parent can pay for every floor. When the
@@ -378,7 +426,7 @@ impl BoxLayout {
         // container (the previous per-pixel loop skipped the same items).
         let mut grow_room: u64 = 0;
         for (index, item) in self.items.iter().enumerate() {
-            if is_fixed(index) {
+            if skips_grow(index) {
                 continue;
             }
             let max_allowed = item.constraints.max.unwrap_or(u32::MAX).max(item.constraints.min);
@@ -393,7 +441,7 @@ impl BoxLayout {
                     if remainder == 0 {
                         break;
                     }
-                    if is_fixed(index) {
+                    if skips_grow(index) {
                         continue;
                     }
                     let max_allowed =
@@ -416,7 +464,7 @@ impl BoxLayout {
                         if remainder == 0 {
                             break;
                         }
-                        if is_fixed(index) {
+                        if skips_grow(index) {
                             continue;
                         }
                         let max_allowed =
@@ -485,6 +533,136 @@ impl BoxLayout {
             }
         }
         assigned
+    }
+
+    /// The hint-aware arrangement at an explicit scale (LAY-003).
+    ///
+    /// The spacing between items and the margins around them follow the device context the
+    /// way [`Layout::update_with_context`](Self::update_with_context) already does; the
+    /// scaled values shrink the primary budget before the allocator runs, so a scaled gap
+    /// costs the children room exactly as a nominal gap does.
+    fn arrange_with_scale(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        scale: f32,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        if self.items.is_empty() {
+            return;
+        }
+        let scaled_spacing = (self.spacing as f32 * scale).round() as u32;
+        let (left, top, right, bottom) = self.scaled_insets(scale);
+        let gaps = (self.items.len().saturating_sub(1)) as u32;
+        let primary = match self.orientation {
+            Orientation::Horizontal => rect.width.saturating_sub(left).saturating_sub(right),
+            Orientation::Vertical => rect.height.saturating_sub(top).saturating_sub(bottom),
+        }
+        .saturating_sub(gaps * scaled_spacing);
+        let cross_extent = match self.orientation {
+            Orientation::Horizontal => rect.height.saturating_sub(top).saturating_sub(bottom),
+            Orientation::Vertical => rect.width.saturating_sub(left).saturating_sub(right),
+        };
+        let majors = self.allocate_major_lengths(primary);
+        // LAY-004: the shared baseline is decided before placement, from every
+        // `Baseline`-aligned item's placed cross extent (the explicit size, else the hint's
+        // preferred extent, clamped to the band).
+        let shared_baseline = self.shared_baseline(|index| {
+            let item = &self.items[index];
+            let info = item.widget_id.and_then(|id| ChildInfo::find_at(children, index, id));
+            item.cross_size
+                .or_else(|| info.map(|info| crate::layout::hints::axis(&info.hints, true).pref))
+                .map(|requested| requested.min(cross_extent))
+        });
+        let mut cursor_x = rect.x + left as i32;
+        let mut cursor_y = rect.y + top as i32;
+        for (index, item) in self.items.iter().enumerate() {
+            let cross_virtual = self.orientation == Orientation::Horizontal;
+            let info = item.widget_id.and_then(|id| ChildInfo::find_at(children, index, id));
+            let mut major = majors.get(index).copied().unwrap_or(0);
+            // N03: the hint's main-axis bounds are the converged form of
+            // `LayoutConstraints`/`SizePolicy`. Applying them here means the hint-aware path
+            // has one source for "how much room does this child want", not two that can
+            // disagree; the struct fields stay as the adapter used when no hint is supplied.
+            if let Some(info) = info {
+                let main = crate::layout::hints::axis(&info.hints, !cross_virtual);
+                major = major.max(main.min);
+                if main.max > 0 {
+                    major = major.min(main.max.max(main.min));
+                }
+            }
+            let mut cross = cross_extent;
+            let mut cross_offset = 0;
+            if let Some(align) = item.align {
+                // An explicit cross size wins over the hint: the caller stated the size both
+                // entry points should use, and the hint is the fallback for the one that can
+                // read it.
+                let requested = item.cross_size.or_else(|| {
+                    info.map(|info| crate::layout::hints::axis(&info.hints, cross_virtual).pref)
+                });
+                if let Some(requested) = requested {
+                    // A hint larger than the box is clamped: the box cannot give what it
+                    // does not have, and overflowing the cross axis would paint outside
+                    // the parent.
+                    cross = requested.min(cross_extent);
+                    cross_offset = match align {
+                        Alignment::Center => (cross_extent - cross) / 2,
+                        Alignment::Right | Alignment::Bottom => cross_extent - cross,
+                        // LAY-004: baselines align at one shared cross coordinate — the
+                        // tallest baseline decides the origin, so a shorter item is pushed
+                        // down by exactly the difference. With no baseline information the
+                        // offset is 0, the start alignment an unspecified arm always had.
+                        Alignment::Baseline => {
+                            let own = item.baseline.unwrap_or(cross);
+                            shared_baseline.map_or(0, |shared| shared.saturating_sub(own))
+                        }
+                        // Left/Top are the start of either cross axis; so is any
+                        // unspecified alignment.
+                        _ => 0,
+                    };
+                }
+            }
+            let child_rect = match self.orientation {
+                Orientation::Horizontal => {
+                    Rect::new(cursor_x, cursor_y.saturating_add(cross_offset as i32), major, cross)
+                }
+                Orientation::Vertical => {
+                    Rect::new(cursor_x.saturating_add(cross_offset as i32), cursor_y, cross, major)
+                }
+            };
+            if let Some(widget_id) = item.widget_id {
+                out(widget_id, child_rect);
+            }
+            match self.orientation {
+                Orientation::Horizontal => cursor_x += (major + scaled_spacing) as i32,
+                Orientation::Vertical => cursor_y += (major + scaled_spacing) as i32,
+            }
+        }
+    }
+
+    /// The shared baseline of the [`Alignment::Baseline`]-aligned items (LAY-004), or `None`
+    /// when the row has no usable baseline.
+    ///
+    /// The tallest baseline decides the row's cross origin, exactly as the flex row does: an
+    /// item's baseline is the distance from its top edge to its text baseline, defaulting to
+    /// the item's *placed* cross extent (its bottom edge) when the caller supplied no
+    /// measurement. `placed_cross` yields each item's placed cross extent — `None` for an
+    /// item whose cross size the calling entry cannot know, which then cannot state a
+    /// bottom-edge baseline and is skipped. A vertical box (whose cross axis is horizontal)
+    /// has no baselines across it, so it always answers `None` and every `Baseline` item
+    /// keeps start alignment — the flex column's reading.
+    fn shared_baseline(&self, placed_cross: impl Fn(usize) -> Option<u32>) -> Option<u32> {
+        if self.orientation != Orientation::Horizontal {
+            return None;
+        }
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.align == Some(Alignment::Baseline))
+            .filter_map(|(index, item)| {
+                placed_cross(index).map(|cross| item.baseline.unwrap_or(cross))
+            })
+            .max()
     }
 }
 impl Layout for BoxLayout {
@@ -567,6 +745,10 @@ impl Layout for BoxLayout {
             Orientation::Vertical => rect.width.saturating_sub(left).saturating_sub(right),
         };
         let majors = self.allocate_major_lengths(primary);
+        // LAY-004: the shared baseline among the `Baseline`-aligned items, from their explicit
+        // cross sizes (this entry has no `ChildInfo` to fall back to).
+        let shared_baseline =
+            self.shared_baseline(|index| self.items[index].cross_size.map(|size| size.min(cross)));
         let mut cursor_x = rect.x + left as i32;
         let mut cursor_y = rect.y + top as i32;
         for (index, item) in self.items.iter().enumerate() {
@@ -584,6 +766,13 @@ impl Layout for BoxLayout {
                     cross_offset = match align {
                         Alignment::Center => (band - cross) / 2,
                         Alignment::Right | Alignment::Bottom => band - cross,
+                        // LAY-004: baselines align at one shared cross coordinate; with no
+                        // baseline information the offset is 0, the start alignment an
+                        // unspecified arm always had.
+                        Alignment::Baseline => {
+                            let own = item.baseline.unwrap_or(cross);
+                            shared_baseline.map_or(0, |shared| shared.saturating_sub(own))
+                        }
                         _ => 0,
                     };
                 }
@@ -624,77 +813,11 @@ impl Layout for BoxLayout {
     /// `children` would have had to be told each child's size in advance, which is the
     /// workaround `FlexLayout::set_child_sizes` exists for.
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
-        if self.items.is_empty() {
-            return;
-        }
-        let (left, top, right, bottom) = self.scaled_insets(1.0);
-        let gaps = (self.items.len().saturating_sub(1)) as u32;
-        let primary = match self.orientation {
-            Orientation::Horizontal => rect.width.saturating_sub(left).saturating_sub(right),
-            Orientation::Vertical => rect.height.saturating_sub(top).saturating_sub(bottom),
-        }
-        .saturating_sub(gaps * self.spacing);
-        let cross_extent = match self.orientation {
-            Orientation::Horizontal => rect.height.saturating_sub(top).saturating_sub(bottom),
-            Orientation::Vertical => rect.width.saturating_sub(left).saturating_sub(right),
-        };
-        let majors = self.allocate_major_lengths(primary);
-        let mut cursor_x = rect.x + left as i32;
-        let mut cursor_y = rect.y + top as i32;
-        for (index, item) in self.items.iter().enumerate() {
-            let cross_virtual = self.orientation == Orientation::Horizontal;
-            let info = item.widget_id.and_then(|id| ChildInfo::find_at(children, index, id));
-            let mut major = majors.get(index).copied().unwrap_or(0);
-            // N03: the hint's main-axis bounds are the converged form of
-            // `LayoutConstraints`/`SizePolicy`. Applying them here means the hint-aware path
-            // has one source for "how much room does this child want", not two that can
-            // disagree; the struct fields stay as the adapter used when no hint is supplied.
-            if let Some(info) = info {
-                let main = crate::layout::hints::axis(&info.hints, !cross_virtual);
-                major = major.max(main.min);
-                if main.max > 0 {
-                    major = major.min(main.max.max(main.min));
-                }
-            }
-            let mut cross = cross_extent;
-            let mut cross_offset = 0;
-            if let Some(align) = item.align {
-                // An explicit cross size wins over the hint: the caller stated the size both
-                // entry points should use, and the hint is the fallback for the one that can
-                // read it.
-                let requested = item.cross_size.or_else(|| {
-                    info.map(|info| crate::layout::hints::axis(&info.hints, cross_virtual).pref)
-                });
-                if let Some(requested) = requested {
-                    // A hint larger than the box is clamped: the box cannot give what it
-                    // does not have, and overflowing the cross axis would paint outside
-                    // the parent.
-                    cross = requested.min(cross_extent);
-                    cross_offset = match align {
-                        Alignment::Center => (cross_extent - cross) / 2,
-                        Alignment::Right | Alignment::Bottom => cross_extent - cross,
-                        // Left/Top are the start of either cross axis; so is any
-                        // unspecified alignment.
-                        _ => 0,
-                    };
-                }
-            }
-            let child_rect = match self.orientation {
-                Orientation::Horizontal => {
-                    Rect::new(cursor_x, cursor_y.saturating_add(cross_offset as i32), major, cross)
-                }
-                Orientation::Vertical => {
-                    Rect::new(cursor_x.saturating_add(cross_offset as i32), cursor_y, cross, major)
-                }
-            };
-            if let Some(widget_id) = item.widget_id {
-                out(widget_id, child_rect);
-            }
-            match self.orientation {
-                Orientation::Horizontal => cursor_x += (major + self.spacing) as i32,
-                Orientation::Vertical => cursor_y += (major + self.spacing) as i32,
-            }
-        }
+        // The nominal path stays at scale 1.0 so every existing caller's geometry is
+        // byte-identical. `LayoutContext::default()` is deliberately not used here: it reads
+        // the platform's text scale, so it is not the nominal answer (the same distinction
+        // `FlexLayout::arrange` draws).
+        self.arrange_with_scale(rect, children, 1.0, out);
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -744,6 +867,7 @@ impl Layout for BoxLayout {
             policy: SizePolicy::Expanding,
             align: None,
             cross_size: None,
+            baseline: None,
         });
     }
     fn remove_widget(&mut self, widget_id: ObjectId) {
@@ -765,6 +889,10 @@ impl Layout for BoxLayout {
             Orientation::Vertical => rect.width.saturating_sub(left).saturating_sub(right),
         };
         let majors = self.allocate_major_lengths(primary);
+        // LAY-004: the shared baseline among the `Baseline`-aligned items, from their explicit
+        // cross sizes (this entry has no `ChildInfo` either).
+        let shared_baseline =
+            self.shared_baseline(|index| self.items[index].cross_size.map(|size| size.min(cross)));
         let mut cursor_x = rect.x + left as i32;
         let mut cursor_y = rect.y + top as i32;
         for (index, item) in self.items.iter().enumerate() {
@@ -780,6 +908,13 @@ impl Layout for BoxLayout {
                     cross_offset = match align {
                         Alignment::Center => (band - cross) / 2,
                         Alignment::Right | Alignment::Bottom => band - cross,
+                        // LAY-004: baselines align at one shared cross coordinate; with no
+                        // baseline information the offset is 0, the start alignment an
+                        // unspecified arm always had.
+                        Alignment::Baseline => {
+                            let own = item.baseline.unwrap_or(cross);
+                            shared_baseline.map_or(0, |shared| shared.saturating_sub(own))
+                        }
                         _ => 0,
                     };
                 }
@@ -809,8 +944,15 @@ impl Layout for BoxLayout {
         context: &LayoutContext,
         out: &mut dyn FnMut(ObjectId, Rect),
     ) {
-        let _ = context;
-        self.arrange(rect, children, out);
+        // LAY-003: the context is consumed, not dropped. Spacing and margins follow the
+        // **larger** of the layout scale and the text scale — the same conservative reading
+        // `update_with_context` applies, because a device whose text is set larger needs more
+        // room between controls even at the same DPI. The context's remaining field,
+        // `min_touch_size`, has no meaningful use on this entry: the hint-aware path is a
+        // geometry query callers pin against exact rects, so growing a child here would break
+        // that contract — the touch floor stays an update-path concern.
+        let scale = context.layout_scale.max(context.font_scale);
+        self.arrange_with_scale(rect, children, scale, out);
     }
 }
 
@@ -1192,5 +1334,174 @@ mod tests {
         let placed = placed(&layout, Rect::new(0, 0, 100, 20));
         assert_eq!(rect_of(&placed, 1).width, 10);
         assert_eq!(rect_of(&placed, 2).width, 90);
+    }
+
+    // ── LAY-002: `Preferred` hugs its constraints, `Expanding` distributes the leftover ──
+
+    /// A `Preferred` item keeps exactly the extent its constraints state while an
+    /// `Expanding` sibling absorbs the whole leftover. Before the divergence both policies
+    /// took the same stretch-weighted share, so the two strategies were synonyms.
+    #[test]
+    fn a_preferred_item_hugs_its_constraint_while_an_expanding_sibling_takes_the_leftover() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        layout.set_size_policy(1, SizePolicy::Preferred);
+        layout.set_constraints(1, LayoutConstraints::new(40, None));
+        let placed = placed(&layout, Rect::new(0, 0, 300, 50));
+        assert_eq!(rect_of(&placed, 1), Rect::new(0, 0, 40, 50), "Preferred hugs its hint");
+        assert_eq!(rect_of(&placed, 2), Rect::new(40, 0, 260, 50), "Expanding takes the leftover");
+    }
+
+    /// A lone `Preferred` item must not be stretched toward the container even when there
+    /// is nothing else to take the room — the same rule a `Fixed` item already followed.
+    #[test]
+    fn a_preferred_item_hugs_even_when_it_is_the_only_item() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.set_size_policy(1, SizePolicy::Preferred);
+        layout.set_constraints(1, LayoutConstraints::new(40, None));
+        let placed = placed(&layout, Rect::new(0, 0, 300, 50));
+        assert_eq!(rect_of(&placed, 1), Rect::new(0, 0, 40, 50));
+    }
+
+    /// Hugging is not immunity to the shortfall pass: when the minima together exceed the
+    /// parent, a `Preferred` item scales down proportionally like any other.
+    #[test]
+    fn a_preferred_item_is_scaled_down_when_the_parent_cannot_pay_the_floors() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        layout.set_size_policy(1, SizePolicy::Preferred);
+        layout.set_size_policy(2, SizePolicy::Preferred);
+        layout.set_constraints(1, LayoutConstraints::new(100, None));
+        layout.set_constraints(2, LayoutConstraints::new(100, None));
+        let placed = placed(&layout, Rect::new(0, 0, 150, 50));
+        assert_eq!(rect_of(&placed, 1).width, 75);
+        assert_eq!(rect_of(&placed, 2).width, 75);
+    }
+
+    /// The pre-existing default (`Expanding` on every insertion path) must produce exactly
+    /// the geometry it always did — this pins the byte-identical default path required by
+    /// the LAY-002 divergence.
+    #[test]
+    fn the_default_policy_path_output_is_unchanged() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 10, 5);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 2);
+        layout.add_widget(3, 1);
+        // 300 - 2*5 margins - 2*10 gaps = 270 to split by stretch 1:2:1 → 67/135/67,
+        // and the one-pixel rounding remainder goes to the first item with room, exactly
+        // as the allocator always handed it out.
+        let placed = placed(&layout, Rect::new(0, 0, 300, 40));
+        assert_eq!(rect_of(&placed, 1), Rect::new(5, 5, 68, 30));
+        assert_eq!(rect_of(&placed, 2), Rect::new(83, 5, 135, 30));
+        assert_eq!(rect_of(&placed, 3), Rect::new(228, 5, 67, 30));
+    }
+
+    /// LAY-003: `arrange_with_context` consumes the context — a 2x device scale doubles the
+    /// gaps and the margins on the hint-aware path, while the nominal `arrange` stays put.
+    #[test]
+    fn arrange_with_context_scales_the_gaps_and_margins() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 10, 5);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        let children = [
+            ChildInfo::new(1, crate::layout::Hints::fixed(50, 20)),
+            ChildInfo::new(2, crate::layout::Hints::fixed(50, 20)),
+        ];
+        let rect = Rect::new(0, 0, 200, 100);
+        let mut nominal = Vec::new();
+        layout.arrange(rect, &children, &mut |id, r| nominal.push((id, r)));
+        assert_eq!(rect_of(&nominal, 1), Rect::new(5, 5, 50, 90));
+        assert_eq!(rect_of(&nominal, 2), Rect::new(65, 5, 50, 90));
+
+        let context =
+            LayoutContext { layout_scale: 2.0, font_scale: 1.0, min_touch_size: Size::new(0, 0) };
+        let mut scaled = Vec::new();
+        layout.arrange_with_context(rect, &children, &context, &mut |id, r| scaled.push((id, r)));
+        assert_eq!(rect_of(&scaled, 1), Rect::new(10, 10, 50, 80));
+        assert_eq!(rect_of(&scaled, 2), Rect::new(80, 10, 50, 80), "the gap doubled to 20");
+    }
+
+    // ── LAY-004: baseline alignment ──
+
+    /// Baselines align at one shared cross coordinate — the tallest baseline decides the
+    /// origin, so the shorter item is pushed down by exactly the difference and the two
+    /// supplied baselines coincide. Both entry points agree.
+    #[test]
+    fn baseline_alignment_aligns_the_supplied_baselines() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        assert!(layout.set_item_alignment(1, Some(Alignment::Baseline)));
+        assert!(layout.set_item_alignment(2, Some(Alignment::Baseline)));
+        assert!(layout.set_item_cross_size(1, Some(40)));
+        assert!(layout.set_item_cross_size(2, Some(70)));
+        assert!(layout.set_item_baseline(1, Some(10)));
+        assert!(layout.set_item_baseline(2, Some(30)));
+        assert_eq!(layout.item_baseline(1), Some(10));
+
+        let rect = Rect::new(0, 0, 200, 100);
+        let mut placed = Vec::new();
+        layout.update(rect, &mut |id, r| placed.push((id, r)));
+        assert_eq!(rect_of(&placed, 1), Rect::new(0, 20, 100, 40));
+        assert_eq!(rect_of(&placed, 2), Rect::new(100, 0, 100, 70));
+        let a = rect_of(&placed, 1);
+        let b = rect_of(&placed, 2);
+        assert_eq!(a.y + 10, b.y + 30, "the two supplied baselines coincide");
+
+        // The hint-aware path agrees when the caller supplies the same sizes as hints.
+        let children = [
+            ChildInfo::new(1, crate::layout::Hints::fixed(50, 40)),
+            ChildInfo::new(2, crate::layout::Hints::fixed(50, 70)),
+        ];
+        let mut arranged = Vec::new();
+        layout.arrange(rect, &children, &mut |id, r| arranged.push((id, r)));
+        let a = rect_of(&arranged, 1);
+        let b = rect_of(&arranged, 2);
+        assert_eq!(a.y + 10, b.y + 30, "the hint-aware path aligns the same baselines");
+    }
+
+    /// With no baseline measurements, a `Baseline` row aligns bottoms — the same default the
+    /// flex row applies to items with no ascent information.
+    #[test]
+    fn baseline_without_measurements_aligns_bottoms() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        assert!(layout.set_item_alignment(1, Some(Alignment::Baseline)));
+        assert!(layout.set_item_alignment(2, Some(Alignment::Baseline)));
+        assert!(layout.set_item_cross_size(1, Some(40)));
+        assert!(layout.set_item_cross_size(2, Some(70)));
+        let placed = placed(&layout, Rect::new(0, 0, 200, 100));
+        assert_eq!(rect_of(&placed, 1), Rect::new(0, 30, 100, 40));
+        assert_eq!(rect_of(&placed, 2), Rect::new(100, 0, 100, 70));
+        let a = rect_of(&placed, 1);
+        let b = rect_of(&placed, 2);
+        assert_eq!(a.y + a.height as i32, b.y + b.height as i32, "bottoms coincide");
+    }
+
+    /// A vertical box has no baselines across its horizontal cross axis, so `Baseline` keeps
+    /// the start alignment — the flex column's reading.
+    #[test]
+    fn a_vertical_box_treats_baseline_as_the_start() {
+        let mut layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+        layout.add_widget(1, 1);
+        assert!(layout.set_item_alignment(1, Some(Alignment::Baseline)));
+        assert!(layout.set_item_cross_size(1, Some(40)));
+        let placed = placed(&layout, Rect::new(0, 0, 100, 200));
+        assert_eq!(rect_of(&placed, 1), Rect::new(0, 0, 40, 200));
+    }
+
+    /// A `Baseline` item the entry cannot size (no explicit cross size on the update paths)
+    /// keeps the band and the start alignment — the documented fallback, not a guess.
+    #[test]
+    fn a_baseline_item_without_a_cross_size_keeps_the_band() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        assert!(layout.set_item_alignment(1, Some(Alignment::Baseline)));
+        let placed = placed(&layout, Rect::new(0, 0, 200, 100));
+        assert_eq!(rect_of(&placed, 1), Rect::new(0, 0, 200, 100));
     }
 }

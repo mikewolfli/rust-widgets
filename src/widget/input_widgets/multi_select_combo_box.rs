@@ -133,6 +133,8 @@ pub struct MultiSelectComboBox {
     summary_revision: u64,
     /// Memoised summary text, keyed by `summary_revision` (I-P68).
     summary_cache: RefCell<Option<(u64, String)>>,
+    /// How many labels the summary spells out before switching to `N selected` (I-134).
+    summary_limit: usize,
 }
 
 impl MultiSelectComboBox {
@@ -168,6 +170,7 @@ impl MultiSelectComboBox {
             placeholder: String::new(),
             summary_revision: 0,
             summary_cache: RefCell::new(None),
+            summary_limit: 2,
         }
     }
 
@@ -226,7 +229,7 @@ impl MultiSelectComboBox {
     pub fn clear_items(&mut self) {
         self.items.clear();
         self.selected.clear();
-        self.expanded = false;
+        self.set_expanded(false);
         self.bump_summary();
         self.base.request_redraw();
     }
@@ -349,7 +352,7 @@ impl MultiSelectComboBox {
     /// Sets the expanded/collapsed state of the dropdown.
     pub fn set_expanded(&mut self, expanded: bool) {
         if self.expanded != expanded {
-            self.toggle_expand();
+            self.apply_expanded(expanded);
         }
     }
 
@@ -365,25 +368,84 @@ impl MultiSelectComboBox {
                 return;
             }
             out.push_str("Nothing selected");
-        } else if selected_count <= 2 {
+        } else if selected_count <= self.summary_limit {
             // Borrowed in place: `selected_texts` cloned every selected label into a fresh
-            // `Vec<String>` just to join it. At most two labels here, sorted borrowed and
-            // joined with the same order the owned version sorts by.
+            // `Vec<String>` just to join it. The separator is chosen so that it cannot
+            // occur in any selected label, which keeps the summary unambiguous (I-134).
             let mut texts: Vec<&str> = self
                 .selected
                 .iter()
                 .filter_map(|&idx| self.items.get(idx).map(|item| item.text.as_str()))
                 .collect();
             texts.sort_unstable();
+            let separator = Self::summary_separator(&texts);
             for (i, text) in texts.iter().enumerate() {
                 if i > 0 {
-                    out.push_str(", ");
+                    out.push_str(separator);
                 }
                 out.push_str(text);
             }
         } else {
             let _ = write!(out, "{selected_count} selected");
         }
+    }
+
+    /// How many labels the summary spells out before summarising the count.
+    pub fn summary_limit(&self) -> usize {
+        self.summary_limit
+    }
+
+    /// Sets how many labels the summary spells out (I-134).
+    pub fn set_summary_limit(&mut self, limit: usize) {
+        let limit = limit.max(1);
+        if self.summary_limit == limit {
+            return;
+        }
+        self.summary_limit = limit;
+        self.bump_summary();
+        self.base.request_redraw();
+    }
+
+    /// A separator none of `texts` contains, so joining cannot be mistaken for a value.
+    fn summary_separator(texts: &[&str]) -> &'static str {
+        const CANDIDATES: [&str; 4] = [", ", " | ", " · ", " / "];
+        CANDIDATES
+            .into_iter()
+            .find(|separator| {
+                let needle = separator.trim();
+                texts.iter().all(|text| !text.contains(needle))
+            })
+            .unwrap_or(", ")
+    }
+
+    /// The selected labels as one unambiguous string.
+    ///
+    /// A comma inside a value is escaped as `\,` and a backslash as `\\`, so the comma
+    /// separator is decodable and two different selections cannot produce one string
+    /// (I-134).
+    pub fn selected_items_text(&self) -> String {
+        let mut texts: Vec<&str> = self
+            .selected
+            .iter()
+            .filter_map(|&idx| self.items.get(idx).map(|item| item.text.as_str()))
+            .collect();
+        texts.sort_unstable();
+        let mut out = String::new();
+        for (index, text) in texts.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            for ch in text.chars() {
+                match ch {
+                    '\\' | ',' => {
+                        out.push('\\');
+                        out.push(ch);
+                    }
+                    _ => out.push(ch),
+                }
+            }
+        }
+        out
     }
 
     /// The summary text; see [`Self::write_summary_text`]. Kept for `size_hint`, which
@@ -411,8 +473,24 @@ impl MultiSelectComboBox {
 
     /// Toggles the expanded/collapsed state.
     fn toggle_expand(&mut self) {
-        self.expanded = !self.expanded;
-        if self.expanded {
+        self.apply_expanded(!self.expanded);
+    }
+
+    /// Opens or closes the list, keeping the popup grab in step (I-127).
+    fn apply_expanded(&mut self, expanded: bool) {
+        if self.expanded == expanded {
+            return;
+        }
+        self.expanded = expanded;
+        #[cfg(not(alloc_frugal))]
+        {
+            if expanded {
+                crate::widget::runtime::set_popup_grab(self.base.id());
+            } else {
+                crate::widget::runtime::clear_popup_grab_for(self.base.id());
+            }
+        }
+        if expanded {
             self.active_index = self.active_index.min(self.items.len().saturating_sub(1));
             self.ensure_active_visible();
         }
@@ -613,7 +691,7 @@ impl WidgetProperties for MultiSelectComboBox {
             "selected_count" => Ok(CapabilityValue::UInt(self.selected_count() as u64)),
             // I-104: the selected values are readable as a comma-joined string (the same
             // list-as-string spelling `tag_input` publishes).
-            "selected_items" => Ok(CapabilityValue::String(self.selected_texts().join(","))),
+            "selected_items" => Ok(CapabilityValue::String(self.selected_items_text())),
             "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
             "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
             "alignment" => Ok(CapabilityValue::String(
@@ -915,8 +993,7 @@ impl EventHandler for MultiSelectComboBox {
                         }
                     } else {
                         // I-103: a press outside both the field and the open list dismisses it.
-                        self.expanded = false;
-                        self.base.request_redraw();
+                        self.set_expanded(false);
                     }
                 }
             }
@@ -925,9 +1002,7 @@ impl EventHandler for MultiSelectComboBox {
                 // it, Page keys move a screenful, and Primary+A selects every enabled row.
                 if !self.expanded {
                     if matches!(*key, 13 | 32 | 38 | 40) && !self.items.is_empty() {
-                        self.expanded = true;
-                        self.ensure_active_visible();
-                        self.base.request_redraw();
+                        self.set_expanded(true);
                     }
                     return;
                 }
@@ -949,8 +1024,7 @@ impl EventHandler for MultiSelectComboBox {
                 let page = self.page_size();
                 match *key {
                     27 => {
-                        self.expanded = false;
-                        self.base.request_redraw();
+                        self.set_expanded(false);
                     }
                     38 => self.set_active_index(self.active_index.saturating_sub(1)),
                     40 => {
@@ -969,8 +1043,7 @@ impl EventHandler for MultiSelectComboBox {
                     32 => self.toggle(self.active_index),
                     13 => {
                         self.toggle(self.active_index);
-                        self.expanded = false;
-                        self.base.request_redraw();
+                        self.set_expanded(false);
                     }
                     _ => {}
                 }
@@ -1226,5 +1299,19 @@ mod tests {
             modifiers: primary_modifier_event_bits() | 0b0001,
         });
         assert_eq!(combo.selected_count(), 0, "the chord must empty the selection");
+    }
+
+    #[test]
+    fn the_summary_limit_is_configurable_and_the_separator_is_unambiguous() {
+        let mut combo = MultiSelectComboBox::new(Rect::new(0, 0, 200, 40));
+        combo.add_item(MultiSelectItem::new(1, "A, B".to_string()));
+        combo.add_item(MultiSelectItem::new(2, "C".to_string()));
+        combo.select(0);
+        combo.select(1);
+        assert_eq!(combo.summary_text(), "A, B | C", "a comma in a value changes the separator");
+        assert_eq!(combo.selected_items_text(), "A\\, B,C", "the property form escapes the comma");
+
+        combo.set_summary_limit(1);
+        assert_eq!(combo.summary_text(), "2 selected");
     }
 }

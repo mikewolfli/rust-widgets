@@ -286,7 +286,7 @@ impl EditableComboBox {
 
     /// Sets the first painted row, clamped to the rows that exist.
     pub fn set_scroll_offset(&mut self, offset: usize) {
-        let rows = self.filtered_items().len();
+        let rows = self.filtered_indices().len();
         let page = self.page_size(rows);
         let next = offset.min(rows.saturating_sub(page.min(rows)));
         if self.scroll_offset == next {
@@ -307,15 +307,11 @@ impl EditableComboBox {
     /// collection. Matching is case-insensitive and prefix-anchored: a substring match would
     /// make typing `ap` list every item whose label merely contains it.
     pub fn filtered_items(&self) -> Vec<String> {
-        if self.text.trim().is_empty() {
-            return self.items.clone();
-        }
-        // One fold per call, then a byte-wise prefix test per row (I-P05).
-        let prefix = crate::widget::input_widgets::text_match::fold(self.text.trim());
-        self.items
-            .iter()
-            .filter(|item| crate::widget::input_widgets::text_match::starts_with(item, &prefix))
-            .cloned()
+        // Derived from the one filter path below, so the clone-returning and
+        // index-returning views cannot disagree (I-103).
+        self.filtered_indices()
+            .into_iter()
+            .filter_map(|index| self.items.get(index).cloned())
             .collect()
     }
 
@@ -464,7 +460,7 @@ impl EditableComboBox {
     pub fn clear_items(&mut self) {
         self.items.clear();
         self.selected_index = None;
-        self.expanded = false;
+        self.collapse();
         self.base.request_redraw();
     }
 
@@ -487,6 +483,10 @@ impl EditableComboBox {
     pub fn expand(&mut self) {
         if !self.expanded {
             self.expanded = true;
+            // The open list owns the press that dismisses it, matching the combo box's
+            // popup-grab contract (I-127).
+            #[cfg(not(alloc_frugal))]
+            crate::widget::runtime::set_popup_grab(self.base.id());
             self.base.request_redraw();
         }
     }
@@ -495,14 +495,19 @@ impl EditableComboBox {
     pub fn collapse(&mut self) {
         if self.expanded {
             self.expanded = false;
+            #[cfg(not(alloc_frugal))]
+            crate::widget::runtime::clear_popup_grab_for(self.base.id());
             self.base.request_redraw();
         }
     }
 
     /// Toggles the dropdown between expanded and collapsed.
     pub fn toggle(&mut self) {
-        self.expanded = !self.expanded;
-        self.base.request_redraw();
+        if self.expanded {
+            self.collapse();
+        } else {
+            self.expand();
+        }
     }
 
     /// Returns the currently selected item index, if any.
@@ -1014,7 +1019,7 @@ impl EventHandler for EditableComboBox {
                                 self.select_index(idx);
                             }
                         }
-                        self.expanded = false;
+                        self.collapse();
                         self.return_pressed.emit();
                         self.editing_finished.emit();
                         self.base.request_redraw();
@@ -1022,8 +1027,7 @@ impl EventHandler for EditableComboBox {
                     }
                     27 => {
                         // Escape
-                        self.expanded = false;
-                        self.base.request_redraw();
+                        self.collapse();
                         return;
                     }
                     38 => {
@@ -1048,7 +1052,7 @@ impl EventHandler for EditableComboBox {
                     40 => {
                         // ArrowDown: open and move through the filtered rows.
                         if !self.expanded {
-                            self.expanded = true;
+                            self.expand();
                         }
                         let indices = self.filtered_indices();
                         let current = self
@@ -1090,8 +1094,7 @@ impl EventHandler for EditableComboBox {
                 // collapses so a focus change cannot leave a popup pinned open.
                 self.base.handle_event(event);
                 if self.expanded {
-                    self.expanded = false;
-                    self.base.request_redraw();
+                    self.collapse();
                 }
                 self.editing_finished.emit();
             }

@@ -32,7 +32,7 @@
 //! region, or inside a nested layout that owns that policy.
 
 use super::{ChildInfo, Layout, LayoutContext};
-use crate::compat::{Any, Vec};
+use crate::compat::{Any, RefCell, Vec};
 use crate::core::{ObjectId, Rect};
 
 /// A named area of a [`BorderLayout`].
@@ -111,9 +111,21 @@ pub struct BorderLayout {
     west: Vec<BorderItem>,
     east: Vec<BorderItem>,
     center: Vec<BorderItem>,
+    /// The last nominal layout, keyed by the rect it was computed from (LAY-005).
+    ///
+    /// `child_rect` answers a one-child query from this cache instead of re-running the
+    /// track allocation (G-158). Only [`Layout::update`] — the nominal path — populates it,
+    /// so a cached answer is byte-identical to the trait default's update-and-capture; a
+    /// rect mismatch falls back to that same capture. Every mutator clears it.
+    last_layout: RefCell<Option<(Rect, Vec<(ObjectId, Rect)>)>>,
 }
 
 impl BorderLayout {
+    /// Drops the cached nominal layout; every mutator calls it (LAY-005).
+    fn invalidate_last_layout(&mut self) {
+        self.last_layout.borrow_mut().take();
+    }
+
     /// Creates an empty border layout.
     ///
     /// `spacing` separates tracks inside one region; `margin` insets the whole layout.
@@ -128,6 +140,7 @@ impl BorderLayout {
 
     /// Updates the inter-track spacing.
     pub fn set_spacing(&mut self, spacing: u32) {
+        self.invalidate_last_layout();
         self.spacing = spacing;
     }
 
@@ -138,11 +151,13 @@ impl BorderLayout {
 
     /// Updates the outer margin.
     pub fn set_margin(&mut self, margin: u32) {
+        self.invalidate_last_layout();
         self.margin = margin;
     }
 
     /// Sets four-way margins, overriding the uniform [`Self::margin`].
     pub fn set_margins(&mut self, margins: crate::style::EdgeOffsets) {
+        self.invalidate_last_layout();
         self.margins = Some(margins);
     }
 
@@ -207,6 +222,7 @@ impl BorderLayout {
     ///
     /// Returns `false` when the child is not in this layout.
     pub fn set_extent(&mut self, widget_id: ObjectId, extent: u32) -> bool {
+        self.invalidate_last_layout();
         for item in self
             .north
             .iter_mut()
@@ -290,6 +306,10 @@ impl BorderLayout {
     }
 
     fn take(&mut self, widget_id: ObjectId) -> Option<BorderItem> {
+        // Every region mutation funnels through here (`add_with_stretch`, `set_region`,
+        // `remove_widget`), so this is the one cache-clear point they all share. Clearing
+        // before the lookup is harmless when the child is absent — the cache is a memo.
+        self.invalidate_last_layout();
         for region in [
             BorderRegion::North,
             BorderRegion::South,
@@ -320,6 +340,24 @@ impl BorderLayout {
     /// passed to [`Self::arrange_tracks`], so the allocation reads `&self.north` and friends
     /// exactly as the other entry points do (G-154).
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+        // The nominal path stays at scale 1.0 so every existing caller's geometry is
+        // byte-identical; `LayoutContext::default()` is deliberately not used here, because
+        // it reads the platform's text scale and is not the nominal answer.
+        self.arrange_with_scale(rect, children, 1.0, out);
+    }
+
+    /// The hint-aware arrangement at an explicit scale (LAY-003).
+    ///
+    /// The track spacing, the margins and the auto (hint-derived) extents all follow the
+    /// device context: [`allocate_tracks`] runs every extent through `scale_extent`, so the
+    /// scaled value sizes the auto extents exactly as it sizes the recorded ones.
+    fn arrange_with_scale(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        scale: f32,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
         let wanted = |region: BorderRegion, horizontal: bool| -> u32 {
             self.region(region)
                 .iter()
@@ -345,7 +383,8 @@ impl BorderLayout {
             wanted(BorderRegion::East, true),
             0,
         ];
-        self.arrange_tracks(rect, self.spacing, self.insets(1.0), 1.0, Some(auto), out);
+        let scaled_spacing = (self.spacing as f32 * scale).round() as u32;
+        self.arrange_tracks(rect, scaled_spacing, self.insets(scale), scale, Some(auto), out);
     }
 
     fn arrange_tracks(
@@ -563,6 +602,7 @@ impl Layout for BorderLayout {
     }
 
     fn clear(&mut self) {
+        self.invalidate_last_layout();
         self.north.clear();
         self.south.clear();
         self.west.clear();
@@ -571,7 +611,14 @@ impl Layout for BorderLayout {
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
-        self.arrange_tracks(rect, self.spacing, self.insets(1.0), 1.0, None, widgets);
+        // The nominal emissions are captured so `child_rect` can answer a one-child query
+        // from the cache (LAY-005) instead of re-running the track allocation.
+        let mut entries: Vec<(ObjectId, Rect)> = Vec::new();
+        self.arrange_tracks(rect, self.spacing, self.insets(1.0), 1.0, None, &mut |id, r| {
+            entries.push((id, r));
+            widgets(id, r);
+        });
+        *self.last_layout.borrow_mut() = Some((rect, entries));
     }
 
     // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
@@ -582,8 +629,36 @@ impl Layout for BorderLayout {
         context: &LayoutContext,
         out: &mut dyn FnMut(ObjectId, Rect),
     ) {
-        let _ = context;
-        self.arrange(rect, children, out);
+        // LAY-003: the context is consumed, not dropped. Track spacing, margins and the
+        // auto (hint-derived) extents follow the **larger** of the layout scale and the text
+        // scale — the same reading `update_with_context` applies. The context's remaining
+        // field, `min_touch_size`, has no meaningful use on this entry: the hint-aware path
+        // is a geometry query callers pin against exact rects, so growing a track here would
+        // break that contract — the touch floor stays an update-path concern.
+        let scale = context.layout_scale.max(context.font_scale);
+        self.arrange_with_scale(rect, children, scale, out);
+    }
+
+    /// The one-child query, answered from the cached nominal layout when it matches
+    /// (LAY-005): a hit test must not re-run the track allocation for every region. A rect
+    /// mismatch (or a first query before any `update`) falls back to the trait default's
+    /// update-and-capture, which is also what repopulates the cache.
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        if !self.has_child(id) {
+            return None;
+        }
+        if let Some((cached_rect, entries)) = self.last_layout.borrow().as_ref() {
+            if *cached_rect == rect {
+                return entries.iter().find(|(child, _)| *child == id).map(|(_, r)| *r);
+            }
+        }
+        let mut found = None;
+        self.update(rect, &mut |child, child_rect| {
+            if child == id && found.is_none() {
+                found = Some(child_rect);
+            }
+        });
+        found
     }
 
     /// The hint-aware path: an edge whose recorded extent is `0` takes the largest
@@ -611,6 +686,7 @@ impl Layout for BorderLayout {
 mod tests {
     use super::*;
     use crate::compat::HashMap;
+    use crate::core::Size;
 
     fn rects(layout: &BorderLayout, rect: Rect) -> HashMap<ObjectId, Rect> {
         let mut out = HashMap::new();
@@ -742,5 +818,54 @@ mod tests {
         layout.remove_widget(9);
         assert!(!layout.has_child(9));
         assert!(rects(&layout, Rect::new(0, 0, 10, 10)).is_empty());
+    }
+
+    /// LAY-005: the one-child query answers from the cached nominal layout — equal to the
+    /// full update pass — and a mutation refreshes it, so the answer never goes stale.
+    #[test]
+    fn child_rect_answers_from_the_cached_layout_and_tracks_mutations() {
+        let mut layout = BorderLayout::new(0, 0);
+        layout.add(BorderRegion::North, 1, 20);
+        layout.add(BorderRegion::Center, 2, 0);
+        let rect = Rect::new(0, 0, 100, 100);
+        // The fallback solve answers even before any update populated the cache.
+        assert_eq!(layout.child_rect(1, rect), Some(Rect::new(0, 0, 100, 20)));
+        let mapped = rects(&layout, rect);
+        for (id, r) in &mapped {
+            assert_eq!(layout.child_rect(*id, rect), Some(*r));
+        }
+        assert_eq!(layout.child_rect(9, rect), None, "a foreign id is not placed");
+        // A mutation invalidates the cache: the north band's extent is the new one and the
+        // center starts below it.
+        layout.set_extent(1, 40);
+        let fresh = rects(&layout, rect);
+        assert_eq!(fresh.get(&1), Some(&Rect::new(0, 0, 100, 40)));
+        for (id, r) in &fresh {
+            assert_eq!(layout.child_rect(*id, rect), Some(*r));
+        }
+    }
+
+    /// LAY-003: `arrange_with_context` consumes the context — a 2x device scale doubles the
+    /// margin and the recorded extents on the hint-aware path, while the nominal `arrange`
+    /// keeps both unscaled.
+    #[test]
+    fn arrange_with_context_scales_the_margins_and_extents() {
+        let mut layout = BorderLayout::new(0, 5);
+        layout.add(BorderRegion::North, 1, 20);
+        layout.add(BorderRegion::Center, 2, 0);
+        let rect = Rect::new(0, 0, 100, 100);
+        let mut nominal = HashMap::new();
+        layout.arrange(rect, &[], &mut |id, r| {
+            nominal.insert(id, r);
+        });
+        assert_eq!(nominal.get(&1), Some(&Rect::new(5, 5, 90, 20)));
+
+        let context =
+            LayoutContext { layout_scale: 2.0, font_scale: 1.0, min_touch_size: Size::new(0, 0) };
+        let mut scaled = HashMap::new();
+        layout.arrange_with_context(rect, &[], &context, &mut |id, r| {
+            scaled.insert(id, r);
+        });
+        assert_eq!(scaled.get(&1), Some(&Rect::new(10, 10, 80, 40)), "margin and extent doubled");
     }
 }

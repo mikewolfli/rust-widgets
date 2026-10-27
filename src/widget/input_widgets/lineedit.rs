@@ -10,7 +10,7 @@ use crate::event::FocusReason;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::undo::{UndoStack, ValueCommand};
+use crate::undo::{TextSpliceCommand, UndoStack};
 
 use crate::widget::capability::coercion::{
     expect_bool, expect_horizontal_alignment, expect_string, expect_usize,
@@ -22,6 +22,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::decorations::{
     DecorationLayout, DecorationMetrics, DecorationSlots, DECORATION_GAP,
 };
+use crate::widget::input_widgets::masked_edit::MaskEngine;
 use crate::widget::metrics::{
     active_profile, dimensions, effective_font, estimate_text_width, profile_metrics,
     ControlMetrics,
@@ -44,6 +45,25 @@ use crate::widget::text_utils::{byte_index_of_char, floor_char_boundary};
 use crate::widget::widget_trait::InputMethodQuery;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// One host action a [`LineEdit`] publishes for its context menu (I-011).
+///
+/// The field does not own a menu; it carries the descriptors a host builds one from, which is the
+/// same division the `context_menu_requested` signal already uses for cut/copy/paste.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineEditAction {
+    /// Stable identifier the host uses to route a chosen item.
+    pub id: String,
+    /// Text the menu shows.
+    pub label: String,
+}
+
+impl LineEditAction {
+    /// Creates an action descriptor.
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self { id: id.into(), label: label.into() }
+    }
+}
 
 /// Single-line text edit widget.
 pub struct LineEdit {
@@ -102,6 +122,14 @@ pub struct LineEdit {
     /// Only an error the validator set is cleared by it: a caller's own refusal message must
     /// not disappear because the text happened to become valid for the field's grammar.
     validation_error_active: bool,
+    /// The text revision the validator last ran against (I-008).
+    ///
+    /// The rule is a function of the **whole** value — an anchored pattern or an `@`-check
+    /// cannot be decided from the changed interval alone — so it cannot be validated
+    /// incrementally in general. It can be memoised per value, which is what this records: a
+    /// second `revalidate` for an unchanged revision (a theme or decoration write) reuses the
+    /// result instead of re-running the rule.
+    validation_revision: Option<u64>,
     /// The uncommitted input-method composition, or `None` when no IME session is active.
     /// # Why the preedit is a field of the *field*, and not an overlay widget
     ///
@@ -162,6 +190,8 @@ pub struct LineEdit {
     /// paste, cut, drop or undo apart from a field refresh. Programmatic writes must not make a
     /// form look edited, which is exactly what the undifferentiated signal could not express.
     pub text_edited: Signal1<String>,
+    /// Emitted with the action id when a host activates one of [`Self::actions`] (I-011).
+    pub action_triggered: Signal1<String>,
     /// Emitted with the new value whenever undo availability changes.
     pub undo_available: Signal1<bool>,
     /// Emitted with the new value whenever redo availability changes.
@@ -219,6 +249,11 @@ pub struct LineEdit {
     /// advances are pure functions of the text, the font, the echo mode and the DPI scale, so the
     /// cache reuses them until one of those inputs changes.
     text_advances: RefCell<TextAdvanceCache>,
+    /// Memoised password mask, keyed by the value's **character count**.
+    ///
+    /// The mask is one `*` per character, so it changes only when the value's length does — but
+    /// the paint path rebuilt the `String` every frame. A hit reuses the previous string (I-003).
+    mask_cache: RefCell<(usize, String)>,
     /// Cumulative advances at every character boundary of the field's value.
     ///
     /// The **hit test** and the **scroll bounds** read this table, which is measured with the same
@@ -240,6 +275,13 @@ pub struct LineEdit {
     /// ([`LineEdit::sync_to_binding`]) because the setter path runs inside the widget borrow, so
     /// writing to the model there would re-enter the runtime.
     binding: Option<crate::data_binding::Binding<CapabilityValue>>,
+    /// The opt-in input mask, parsed by the masked-edit engine (I-011).
+    input_mask_text: Option<String>,
+    mask_engine: Option<MaskEngine>,
+    /// Candidates the completer slot offers (I-011); empty means no completer.
+    completion_source: Vec<String>,
+    /// Action descriptors a host may surface in the field's context menu (I-011).
+    actions: Vec<LineEditAction>,
 }
 
 /// Which of the field's two strings an advance is measured from.
@@ -308,9 +350,30 @@ impl PrefixAdvances {
         }
     }
 
-    /// How many characters the value has.
-    fn count(&self) -> usize {
-        self.cuts.len().saturating_sub(1)
+    /// The boundary index whose cumulative advance is nearest `x` (I-004).
+    ///
+    /// The hit test used to place the caret at `x * chars / total`, which assumes every character
+    /// has the same advance. On a proportional face or a CJK run that put the caret a character
+    /// or more away from the glyph under the pointer. The table already holds a measured advance
+    /// per boundary, so the nearest one is a binary search over those real numbers.
+    fn boundary_at_advance(&self, x: i32) -> usize {
+        if self.cuts.is_empty() {
+            return 0;
+        }
+        let index = self.cuts.partition_point(|(_, advance)| *advance < x);
+        if index == 0 {
+            return 0;
+        }
+        if index >= self.cuts.len() {
+            return self.cuts.len() - 1;
+        }
+        let before = self.cuts[index - 1].1;
+        let after = self.cuts[index].1;
+        if (x - before).abs() <= (after - x).abs() {
+            index - 1
+        } else {
+            index
+        }
     }
 
     /// The byte offset of the boundary that follows `count` characters.
@@ -410,6 +473,7 @@ impl LineEdit {
             validation_message: "",
             validation_message_detail: None,
             validation_error_active: false,
+            validation_revision: None,
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             focused: false,
@@ -425,6 +489,7 @@ impl LineEdit {
             selection_changed: GenericSignal::new(),
             cursor_position_changed: Signal1::new(),
             text_edited: Signal1::new(),
+            action_triggered: Signal1::new(),
             undo_available: Signal1::new(),
             redo_available: Signal1::new(),
             copy_available: Signal1::new(),
@@ -440,11 +505,16 @@ impl LineEdit {
             press_streak: 0,
             text_revision: 0,
             text_advances: RefCell::new(TextAdvanceCache::default()),
+            mask_cache: RefCell::new((0, String::new())),
             prefix_advances: RefCell::new(PrefixAdvances::default()),
             layout_cache: RefCell::new(None),
             value_readings: RefCell::new(ValueReadings::default()),
             last_press_ms: 0,
             binding: None,
+            input_mask_text: None,
+            mask_engine: None,
+            completion_source: Vec::new(),
+            actions: Vec::new(),
         }
     }
 
@@ -510,6 +580,8 @@ impl LineEdit {
             return;
         }
         self.validator = validator;
+        // The rule changed, so a memoised answer for the current revision no longer applies.
+        self.validation_revision = None;
         self.revalidate();
         self.base.request_redraw();
     }
@@ -525,6 +597,7 @@ impl LineEdit {
             _ => {}
         }
         self.validator = validator.map(|rule| Box::new(rule) as Box<dyn Validator>);
+        self.validation_revision = None;
         self.revalidate();
         self.base.request_redraw();
     }
@@ -589,6 +662,12 @@ impl LineEdit {
     /// Only a message the validator wrote is cleared here: a caller's own refusal text must
     /// survive a value that happens to satisfy the grammar.
     fn revalidate(&mut self) {
+        // One rule evaluation per value: re-entrant calls for the same revision reuse the answer
+        // (I-008). A validator swap clears the marker so the new rule runs immediately.
+        if self.validation_revision == Some(self.text_revision) {
+            return;
+        }
+        self.validation_revision = Some(self.text_revision);
         // The rule is consulted in two short borrows and its answers copied out, so the
         // decoration writes below never overlap the borrow of `self.validator`.
         let state = match self.validator.as_deref() {
@@ -704,6 +783,12 @@ impl LineEdit {
 
     /// Filters, clamps and commits `text`, attributing the change to `origin`.
     fn apply_text(&mut self, text: String, origin: EditOrigin) -> bool {
+        // A masked field keeps the value in its formatted form, including a programmatic write
+        // (I-011): the alternative is a "masked" field that can be given an unmasked value.
+        let text = match self.mask_engine.as_ref() {
+            Some(engine) => engine.format(&engine.sanitize(&text)),
+            None => text,
+        };
         // The grammar is a property of the field, not of the typing path: a value it cannot
         // represent must not enter the model from a programmatic write either. Surrounding
         // whitespace is trimmed here (not on a keystroke, where a space is a separator the
@@ -773,25 +858,85 @@ impl LineEdit {
         self.finish_text_change(before, origin)
     }
 
+    /// Whether an edit path has to keep a full before-image for its undo record.
+    ///
+    /// The validator and the character limit can rewrite a value beyond the interval the user
+    /// changed (a filter may drop characters anywhere, the limit truncates the tail), so those
+    /// two configurations still need the pre-edit string. Without them the ordinary typing path
+    /// records only the splice and copies nothing proportional to the document (I-001).
+    fn needs_full_before_image(&self) -> bool {
+        self.validator.is_some() || self.max_length.is_some()
+    }
+
+    /// Publishes an in-place splice performed on `self.text` as one undo step.
+    ///
+    /// `offset` and `removed` describe the value *before* the mutation, `inserted` what replaced
+    /// it. When `before` is `Some`, the grammar/limit still run and may rewrite the value; the
+    /// record then falls back to the snapshot diff, which is still splice-shaped (only the
+    /// changed interval is stored).
+    fn commit_splice(
+        &mut self,
+        offset: usize,
+        removed: &str,
+        inserted: &str,
+        before: Option<String>,
+        origin: EditOrigin,
+    ) -> bool {
+        if let Some(before) = before {
+            return self.commit_in_place(before, origin);
+        }
+        if removed.is_empty() && inserted.is_empty() {
+            return false;
+        }
+        // The painted string changed, so every advance/readings cache keyed by the revision is
+        // stale. The snapshot path does this inside `finish_text_change`; the splice path has to
+        // do it here because it skips that function (I-001).
+        self.invalidate_text_advances();
+        self.revalidate();
+        match origin {
+            EditOrigin::User => {
+                // Advance the undo mirror with the same splice instead of replacing it with a
+                // whole-document clone, then file the matching record (I-001).
+                {
+                    let mut target = self.history_target.borrow_mut();
+                    let start = offset.min(target.len());
+                    let end = (start + removed.len()).min(target.len());
+                    target.replace_range(start..end, inserted);
+                }
+                self.undo_stack.push(Box::new(TextSpliceCommand::from_splice(
+                    self.history_target.clone(),
+                    offset,
+                    removed.to_string(),
+                    inserted.to_string(),
+                    "Edit text",
+                    "line_edit_text",
+                )));
+            }
+            EditOrigin::Programmatic => {
+                *self.history_target.borrow_mut() = self.text.clone();
+                self.undo_stack.clear();
+            }
+        }
+        self.finish_text_change_common(origin)
+    }
+
     /// Publishes the consequences of a value that has already been written to `self.text`.
     ///
     /// `before` is the previous value, moved in from the caller so the undo record does not need
     /// a third copy of the string.
     fn finish_text_change(&mut self, before: String, origin: EditOrigin) -> bool {
-        let before_cursor = self.cursor_position;
-        let before_selection = self.selection_start;
         self.invalidate_text_advances();
         self.revalidate();
         match origin {
             EditOrigin::User => {
-                // One copy for the undo command and one for the shared history target: the two
-                // are separate stores, and both must hold the *post*-edit value.
-                let after = self.text.clone();
-                *self.history_target.borrow_mut() = after.clone();
-                self.undo_stack.push(Box::new(ValueCommand::new(
+                // One copy for the shared history target; the record itself stores only the
+                // changed interval, so a validator/limit field no longer pays two full copies
+                // per keystroke (I-001).
+                *self.history_target.borrow_mut() = self.text.clone();
+                self.undo_stack.push(Box::new(TextSpliceCommand::new(
                     self.history_target.clone(),
-                    before,
-                    after,
+                    &before,
+                    &self.text,
                     "Edit text",
                     "line_edit_text",
                 )));
@@ -803,6 +948,16 @@ impl LineEdit {
                 self.undo_stack.clear();
             }
         }
+        self.finish_text_change_common(origin)
+    }
+
+    /// The caret, signal and repaint half of a value mutation.
+    ///
+    /// Split from [`Self::finish_text_change`] so the splice path can publish a record that was
+    /// already built without repeating this sequence (I-001).
+    fn finish_text_change_common(&mut self, origin: EditOrigin) -> bool {
+        let before_cursor = self.cursor_position;
+        let before_selection = self.selection_start;
         self.cursor_position = self.text.len();
         self.selection_start = None;
         if origin == EditOrigin::Programmatic {
@@ -1250,11 +1405,26 @@ impl LineEdit {
         self.scroll_x = self.scroll_x.clamp(0, self.max_scroll_x());
     }
 
+    /// The class a character belongs to for word navigation and double-click selection.
+    ///
+    /// Three classes, not two: whitespace, word characters, and punctuation/symbols. The old
+    /// predicate only asked `is_whitespace`, so `Ctrl+Right` on `foo,bar` treated the comma as
+    /// part of the word and never stopped at it (I-012).
+    fn char_class(ch: char) -> u8 {
+        if ch.is_whitespace() {
+            0
+        } else if ch.is_alphanumeric() || ch == '_' {
+            1
+        } else {
+            2
+        }
+    }
+
     /// The byte range of the word around `index`, for a double-click selection.
     ///
-    /// A word is a run of characters that are not whitespace; a press on whitespace selects the
-    /// run itself (which is what makes a double-click on a gap select the gap rather than
-    /// silently doing nothing).
+    /// A word is a run of characters of one class (see [`Self::char_class`]); a press on
+    /// whitespace or punctuation selects that run itself, which is what keeps a double-click on a
+    /// gap or a separator from silently doing nothing.
     fn word_range_at(&self, index: usize) -> (usize, usize) {
         let index = floor_char_boundary(&self.text, index.min(self.text.len()));
         // The character the press landed on; at the end of the value the class is taken from the
@@ -1264,7 +1434,8 @@ impl LineEdit {
             .next()
             .or_else(|| self.text[..index].chars().next_back())
             .unwrap_or(' ');
-        let same_class = |ch: char| ch.is_whitespace() == sampled.is_whitespace();
+        let class = Self::char_class(sampled);
+        let same_class = |ch: char| Self::char_class(ch) == class;
         let mut start = index;
         for (i, ch) in self.text[..index].char_indices().rev() {
             if !same_class(ch) {
@@ -1289,18 +1460,25 @@ impl LineEdit {
     }
 
     /// The byte offset of the start of the word before `from`.
+    ///
+    /// Skips separators, then walks back through one class of word characters, so punctuation
+    /// and symbols are their own boundaries (I-012).
     fn previous_word_boundary(&self, from: usize) -> usize {
         let mut offset = floor_char_boundary(&self.text, from.min(self.text.len()));
         while offset > 0 {
             let (index, ch) = self.text[..offset].char_indices().next_back().unwrap_or((0, ' '));
-            if !ch.is_whitespace() {
+            if Self::char_class(ch) != 0 {
                 break;
             }
             offset = index;
         }
+        if offset == 0 {
+            return 0;
+        }
+        let class = Self::char_class(self.text[..offset].chars().next_back().unwrap_or(' '));
         while offset > 0 {
             let (index, ch) = self.text[..offset].char_indices().next_back().unwrap_or((0, ' '));
-            if ch.is_whitespace() {
+            if Self::char_class(ch) != class {
                 break;
             }
             offset = index;
@@ -1313,14 +1491,18 @@ impl LineEdit {
         let mut offset = floor_char_boundary(&self.text, from.min(self.text.len()));
         while offset < self.text.len() {
             let ch = self.text[offset..].chars().next().unwrap_or(' ');
-            if !ch.is_whitespace() {
+            if Self::char_class(ch) != 0 {
                 break;
             }
             offset += ch.len_utf8();
         }
+        if offset >= self.text.len() {
+            return self.text.len();
+        }
+        let class = Self::char_class(self.text[offset..].chars().next().unwrap_or(' '));
         while offset < self.text.len() {
             let ch = self.text[offset..].chars().next().unwrap_or(' ');
-            if ch.is_whitespace() {
+            if Self::char_class(ch) != class {
                 break;
             }
             offset += ch.len_utf8();
@@ -1635,14 +1817,10 @@ impl LineEdit {
         // end" rather than as a negative index.
         let dx = (x - left + self.scroll_x).clamp(0, width);
         self.with_prefix_advances(font, |advances| {
-            // The pointer's offset is turned into a character count by the value's own advance,
-            // exactly as the previous shaping-based implementation did, and then stepped back one
-            // boundary because the caret sits *before* the character it is nearest. Both numbers
-            // come from the cached table, so a press measures nothing and allocates nothing.
-            let total = advances.total().max(1) as f32;
-            let chars = advances.count().max(1);
-            let boundary = ((dx as f32 * chars as f32 / total).round() as usize).min(chars);
-            let boundary = boundary.saturating_sub(1);
+            // The pointer's offset is turned into the nearest **measured** boundary. The table
+            // holds a real advance per character, so a proportional face cannot put the caret on
+            // the wrong glyph (I-004).
+            let boundary = advances.boundary_at_advance(dx);
             advances.byte_at(boundary)
         })
     }
@@ -1675,6 +1853,18 @@ impl LineEdit {
         if text.is_empty() {
             return;
         }
+        // A masked field routes input through the mask engine: the value stays formatted and a
+        // keystroke fills the next cell (I-011). Unset, the free-form path below is unchanged.
+        if self.mask_engine.is_some() {
+            let raw = match self.mask_engine.as_ref() {
+                Some(engine) => engine.sanitize(&self.text),
+                None => return,
+            };
+            let mut raw = raw;
+            raw.extend(text.chars().filter(|ch| !ch.is_control()));
+            self.rewrite_masked(raw);
+            return;
+        }
         // Check max length and truncate if needed
         // The slice is taken through `byte_index_of_char` because the budget is in characters and
         // the slice is in bytes, so cutting at the budget's byte offset could split a character.
@@ -1704,25 +1894,28 @@ impl LineEdit {
             None => effective_text,
         };
         // Handle selection, **in place**: the value is edited where it lives instead of being
-        // cloned into a scratch buffer for every key (I-P01). The pre-edit value is captured once
-        // because the undo record needs it — nothing else copies the string.
+        // cloned into a scratch buffer for every key (I-P01). Only a validator/limit field keeps
+        // a full before-image; the common path records the splice alone (I-001).
         if effective_text.is_empty() && self.selection_start.is_none() {
             return;
         }
-        let before = self.text.clone();
-        if let Some(start) = self.selection_start {
+        let before = self.needs_full_before_image().then(|| self.text.clone());
+        let (start, removed) = if let Some(start) = self.selection_start {
             let start = floor_char_boundary(&self.text, start.min(self.text.len()));
             let end = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
             let (start, end) = if start < end { (start, end) } else { (end, start) };
+            let removed = self.text[start..end].to_string();
             self.text.replace_range(start..end, effective_text);
             self.cursor_position = start + effective_text.len();
+            (start, removed)
         } else {
             let at = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
             self.text.insert_str(at, effective_text);
             self.cursor_position = at + effective_text.len();
-        }
+            (at, String::new())
+        };
         self.selection_start = None;
-        self.commit_in_place(before, EditOrigin::User);
+        self.commit_splice(start, &removed, effective_text, before, EditOrigin::User);
         self.modified = true;
         // `set_text` may have clamped the value to `max_length`, which can move the caret it
         // recomputed; snap it back onto a boundary inside whatever the field now holds.
@@ -1818,6 +2011,17 @@ impl LineEdit {
     /// character and `String::remove` requires a boundary. Stepping back to the previous character's
     /// start deletes the whole thing, which is what a user means by “backspace”.
     pub fn backspace(&mut self) {
+        // In a masked field Backspace removes the last placed character and re-formats, so the
+        // separator literals cannot be deleted independently of the value (I-011).
+        if self.mask_engine.is_some() {
+            let mut raw = match self.mask_engine.as_ref() {
+                Some(engine) => engine.sanitize(&self.text),
+                None => return,
+            };
+            raw.pop();
+            self.rewrite_masked(raw);
+            return;
+        }
         if let Some(start) = self.selection_start {
             // Delete selection
             let start = floor_char_boundary(&self.text, start.min(self.text.len()));
@@ -1829,26 +2033,37 @@ impl LineEdit {
                 self.backspace();
                 return;
             }
-            let before = self.text.clone();
+            let before = self.needs_full_before_image().then(|| self.text.clone());
+            let removed = self.text[start..end].to_string();
             self.text.replace_range(start..end, "");
             self.cursor_position = start;
             self.selection_start = None;
-            self.commit_in_place(before, EditOrigin::User);
+            self.commit_splice(start, &removed, "", before, EditOrigin::User);
             self.modified = true;
         } else if self.cursor_position > 0 {
             // Delete the character before the caret, from its own start to the caret.
             let caret = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
             let previous =
                 self.text[..caret].char_indices().next_back().map(|(index, _)| index).unwrap_or(0);
-            let before = self.text.clone();
+            let before = self.needs_full_before_image().then(|| self.text.clone());
+            let removed = self.text[previous..caret].to_string();
             self.text.replace_range(previous..caret, "");
             self.cursor_position = previous;
-            self.commit_in_place(before, EditOrigin::User);
+            self.commit_splice(previous, &removed, "", before, EditOrigin::User);
             self.modified = true;
         }
     }
     /// Deletes selected text or the character after the caret.
     pub fn delete(&mut self) {
+        if self.mask_engine.is_some() {
+            let mut raw = match self.mask_engine.as_ref() {
+                Some(engine) => engine.sanitize(&self.text),
+                None => return,
+            };
+            raw.pop();
+            self.rewrite_masked(raw);
+            return;
+        }
         if let Some(_start) = self.selection_start {
             // Delete selection
             self.backspace(); // Same logic
@@ -1860,9 +2075,10 @@ impl LineEdit {
                 .nth(1)
                 .map(|(index, _)| caret + index)
                 .unwrap_or(self.text.len());
-            let before = self.text.clone();
+            let before = self.needs_full_before_image().then(|| self.text.clone());
+            let removed = self.text[caret..next].to_string();
             self.text.replace_range(caret..next, "");
-            self.commit_in_place(before, EditOrigin::User);
+            self.commit_splice(caret, &removed, "", before, EditOrigin::User);
             self.modified = true;
         }
     }
@@ -1888,6 +2104,142 @@ impl LineEdit {
     /// Clears all text.
     pub fn clear(&mut self) {
         self.set_text(String::new());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Input mask, completer and action slots (I-011)
+    // ---------------------------------------------------------------------------
+
+    /// The input mask pattern, or `None` for a free-form field.
+    pub fn input_mask(&self) -> Option<&str> {
+        self.input_mask_text.as_deref()
+    }
+
+    /// Installs or removes an input mask.
+    ///
+    /// The mask is parsed by [`crate::widget::input_widgets::masked_edit`]'s engine, so the
+    /// single-line field accepts exactly the grammar the dedicated masked control does. With a
+    /// mask installed the value is kept in its formatted form and typing fills the next cell;
+    /// removing it leaves the current text untouched. `None` (the default) is the previous
+    /// free-form behaviour.
+    pub fn set_input_mask(&mut self, mask: Option<&str>) {
+        let engine = mask.and_then(MaskEngine::parse);
+        let text = match engine.as_ref() {
+            Some(engine) => engine.format(&engine.sanitize(&self.text)),
+            None => self.text.clone(),
+        };
+        self.input_mask_text = mask.map(|value| value.to_string());
+        self.mask_engine = engine;
+        if text != self.text {
+            let before = core::mem::replace(&mut self.text, text);
+            self.cursor_position = self.text.len();
+            self.selection_start = None;
+            self.finish_text_change(before, EditOrigin::Programmatic);
+        }
+    }
+
+    /// The host actions this field publishes for its context menu.
+    pub fn actions(&self) -> &[LineEditAction] {
+        &self.actions
+    }
+
+    /// Adds an action descriptor to the field's context-menu surface.
+    pub fn add_action(&mut self, action: LineEditAction) {
+        if self.actions.iter().any(|existing| existing.id == action.id) {
+            if let Some(existing) =
+                self.actions.iter_mut().find(|existing| existing.id == action.id)
+            {
+                *existing = action;
+            }
+            return;
+        }
+        self.actions.push(action);
+    }
+
+    /// Removes an action by id.
+    pub fn remove_action(&mut self, id: &str) -> bool {
+        let before = self.actions.len();
+        self.actions.retain(|action| action.id != id);
+        self.actions.len() != before
+    }
+
+    /// Reports that the host activated `id`, emitting [`Self::action_triggered`].
+    pub fn activate_action(&self, id: &str) -> bool {
+        if !self.actions.iter().any(|action| action.id == id) {
+            return false;
+        }
+        self.action_triggered.emit(id.to_string());
+        true
+    }
+
+    /// The candidates the completer slot offers, or an empty slice when unset.
+    pub fn completer(&self) -> &[String] {
+        &self.completion_source
+    }
+
+    /// Installs the completer's candidate list. An empty list removes the completer.
+    pub fn set_completer(&mut self, candidates: Vec<String>) {
+        self.completion_source = candidates;
+    }
+
+    /// The candidates matching the word at the caret, in source order.
+    ///
+    /// The match is a case-insensitive prefix test against the text after the last whitespace —
+    /// the completion unit every editable control in this family uses. An empty completer, or an
+    /// empty word with no candidates starting empty, yields an empty list.
+    pub fn completion_candidates(&self) -> Vec<String> {
+        if self.completion_source.is_empty() {
+            return Vec::new();
+        }
+        let word = self.text.rsplit(|ch: char| ch.is_whitespace()).next().unwrap_or("");
+        if word.is_empty() {
+            return Vec::new();
+        }
+        self.completion_source
+            .iter()
+            .filter(|candidate| {
+                crate::widget::input_widgets::text_match::starts_with(candidate, word)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Replaces the word at the caret with `candidate`, as one undoable edit.
+    pub fn accept_completion(&mut self, candidate: &str) -> bool {
+        if self.read_only || candidate.is_empty() {
+            return false;
+        }
+        let word = self.text.rsplit(|ch: char| ch.is_whitespace()).next().unwrap_or("");
+        let start = self.text.len().saturating_sub(word.len());
+        if word == candidate {
+            return false;
+        }
+        let before = self.needs_full_before_image().then(|| self.text.clone());
+        let removed = self.text[start..].to_string();
+        self.text.replace_range(start.., candidate);
+        self.cursor_position = self.text.len();
+        self.selection_start = None;
+        self.commit_splice(start, &removed, candidate, before, EditOrigin::User);
+        self.modified = true;
+        true
+    }
+
+    /// Rewrites the value through the installed mask from `raw` (I-011).
+    fn rewrite_masked(&mut self, raw: String) -> bool {
+        let Some(engine) = self.mask_engine.as_ref() else {
+            return false;
+        };
+        let formatted = engine.format(&engine.sanitize(&raw));
+        if formatted == self.text {
+            return false;
+        }
+        let before = self.text.clone();
+        self.text = formatted;
+        self.cursor_position = self.text.len();
+        self.selection_start = None;
+        self.commit_in_place(before, EditOrigin::User);
+        self.modified = true;
+        true
     }
 
     /// Whether the selected text may be dragged out of the field.
@@ -1928,6 +2280,20 @@ impl LineEdit {
         "*".repeat(text.chars().count())
     }
 
+    /// The mask for the current value, rebuilt only when the character count changes (I-003).
+    fn mask_text_cached(&self) -> core::cell::Ref<'_, String> {
+        let count = self.text.chars().count();
+        {
+            let mut cache = self.mask_cache.borrow_mut();
+            if cache.0 != count {
+                cache.1.clear();
+                cache.1.extend(core::iter::repeat('*').take(count));
+                cache.0 = count;
+            }
+        }
+        core::cell::Ref::map(self.mask_cache.borrow(), |(_, text)| text)
+    }
+
     /// The text a copy or cut gesture may place on the platform clipboard, or `None`
     /// when the echo mode forbids copying the value at all.
     ///
@@ -1963,7 +2329,6 @@ impl LineEdit {
             crate::set_clipboard_text(&text);
         }
     }
-    /// The text a copy or cut gesture may place on the platform clipboard, or `None`
     /// The field the control actually paints.
     ///
     /// # Why the field is not the control's rectangle
@@ -2185,7 +2550,7 @@ impl LineEdit {
         // The text the field paints, which is what the value's advance is measured from. The
         // caret's prefix is measured from `text` itself, exactly as `draw` does, so a masked
         // field still reports the position of the caret in its own value.
-        let masked: String;
+        let masked: core::cell::Ref<'_, String>;
         let display_text: &str = if self.text.is_empty() && !self.placeholder_text.is_empty() {
             &self.placeholder_text
         } else {
@@ -2193,8 +2558,8 @@ impl LineEdit {
                 EchoMode::Normal => &self.text,
                 EchoMode::NoEcho => "",
                 EchoMode::Password => {
-                    masked = Self::mask_text(&self.text);
-                    &masked
+                    masked = self.mask_text_cached();
+                    masked.as_str()
                 }
             }
         };
@@ -2395,8 +2760,8 @@ impl Widget for LineEdit {
 /// `counter` is published read-only: it is derived from the value's own length and `max_length`, so a
 /// caller that could write it would be able to make the count disagree with the text it counts.
 ///
-/// `echo_mode` is intentionally absent: the centralised layer never exposed it,
-/// so publishing it here would add a property rather than preserve one.
+/// `echo_mode` is published as one of the tokens `normal`, `password` or `no_echo`, which is
+/// the same spelling the platform layer reads back, so a form binding can round-trip it.
 impl WidgetProperties for LineEdit {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
@@ -2733,13 +3098,6 @@ impl LineEdit {
                 // unmapped **non-printable** key be: both used to be typed as their bare
                 // character, so `Ctrl+B` inserted `b` and `Ctrl+Z` inserted `z`.
                 //
-                // The two chords this field swaps the meaning of are the right ones for the
-                // host: undo/redo are `Primary+Z`/`Primary+Y` (handled above), and the
-                // accelerator convention is `from_event_bits_primary_is_ctrl`.
-                // Character input. A control chord must not be swallowed as text, nor may an
-                // unmapped **non-printable** key be: both used to be typed as their bare
-                // character, so `Ctrl+B` inserted `b` and `Ctrl+Z` inserted `z`.
-                //
                 // # Why the three modifiers are tested one at a time
                 //
                 // Combining them with `|` and asking `contains` is not the predicate it reads
@@ -2811,10 +3169,14 @@ impl EventHandler for LineEdit {
             return;
         }
         if self.read_only {
-            // Read-only fields still allow copying the current selection.
+            // Read-only fields still allow copying the current selection. The chord is the same
+            // primary convention the editable path uses, so Command+C works on macOS too; the
+            // bare `2` this used to test was the Control bit only (I-013).
             #[cfg(not(alloc_frugal))]
-            if let Event::KeyPress { key: 67, modifiers: 2 } = event {
-                self.copy_selection_to_clipboard();
+            if let Event::KeyPress { key: 67, modifiers } = event {
+                if crate::shortcut::event_carries_primary(*modifiers) {
+                    self.copy_selection_to_clipboard();
+                }
             }
             return;
         }
@@ -3070,7 +3432,7 @@ impl Draw for LineEdit {
         // `String`, so the ordinary case — normal echo, painting the field's own text — cloned the
         // whole value once per frame on the crate's highest-traffic control. Only the password mask
         // genuinely derives a string, and it is held in `masked` so the borrow can outlive the match.
-        let masked: String;
+        let masked: core::cell::Ref<'_, String>;
         let revealed = self.reveals_value();
         let display_text: &str = if self.text.is_empty() && !self.placeholder_text.is_empty() {
             &self.placeholder_text
@@ -3080,8 +3442,8 @@ impl Draw for LineEdit {
                 EchoMode::NoEcho => "",
                 EchoMode::Password if revealed => &self.text,
                 EchoMode::Password => {
-                    masked = Self::mask_text(&self.text);
-                    &masked
+                    masked = self.mask_text_cached();
+                    masked.as_str()
                 }
             }
         };
@@ -4030,16 +4392,16 @@ mod tests {
         le.handle_event(&Event::mouse_press(field.x + field.width as i32 - 2, mid, 1));
         assert_eq!(
             le.cursor_position(),
-            1,
-            "a press past the two-character value clamps to its own box, i.e. onto the last one"
+            2,
+            "a press past the value lands at its end, where the next character would go"
         );
-        assert_eq!(le.selection_start(), Some(1), "and that clamped character is the anchor");
+        assert_eq!(le.selection_start(), Some(2), "and that position is the anchor");
 
         // Dragging back over the value selects it, which is the gesture this enables.
         let origin = value_origin(&mut le);
         le.handle_event(&Event::mouse_move(origin, mid));
         assert_eq!(le.cursor_position(), 0, "the drag reaches the value's leading edge");
-        assert_eq!(le.selected_text(), "a", "so the range is anchor(1)-to-caret(0)");
+        assert_eq!(le.selected_text(), "ab", "so the range is anchor(2)-to-caret(0)");
     }
 
     /// The click-to-index map and the painted value agree about where character zero is.
@@ -5617,5 +5979,76 @@ mod composition_tests {
         field.select_all();
         assert!(!carets.lock().unwrap().is_empty(), "the caret moved to the end");
         assert_eq!(*selections.lock().unwrap(), 1);
+    }
+
+    /// The input mask reuses the masked-edit grammar and keeps the value formatted (I-011).
+    #[test]
+    fn an_input_mask_formats_the_value() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 240, 24));
+        field.set_input_mask(Some("000-000"));
+        assert_eq!(field.input_mask(), Some("000-000"));
+        field.insert_str("1234567");
+        assert_eq!(field.text(), "123-456", "the mask keeps six digits and inserts the separator");
+        // The formatted value is what an unmasked programmatic write is sanitised into.
+        field.set_text("7654321");
+        assert_eq!(field.text(), "765-432");
+
+        field.set_input_mask(None);
+        assert_eq!(field.input_mask(), None, "removing the mask restores free-form editing");
+        assert_eq!(field.text(), "765-432", "the current value is left alone");
+    }
+
+    /// The completer slot offers the matching words and accepting one is undoable (I-011).
+    #[test]
+    fn the_completer_offers_and_accepts_candidates() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 240, 24));
+        field.set_completer(vec!["hello".to_string(), "help".to_string(), "world".to_string()]);
+        field.insert_str("hel");
+        let matches = field.completion_candidates();
+        assert_eq!(matches, vec!["hello".to_string(), "help".to_string()]);
+        assert!(field.accept_completion("hello"));
+        assert_eq!(field.text(), "hello");
+        assert!(field.undo());
+        assert_eq!(field.text(), "hel", "accepting a completion is one undoable edit");
+    }
+
+    /// The action slot carries descriptors and reports activation by id (I-011).
+    #[test]
+    fn the_action_slot_reports_activation() {
+        use std::sync::{Arc, Mutex};
+        let mut field = LineEdit::new(Rect::new(0, 0, 240, 24));
+        field.add_action(LineEditAction::new("clear", "Clear"));
+        assert_eq!(field.actions().len(), 1);
+        let seen = Arc::new(Mutex::new(None));
+        let seen_clone = seen.clone();
+        field.action_triggered.connect(move |id| {
+            *seen_clone.lock().unwrap() = Some(id.to_string());
+        });
+        assert!(field.activate_action("clear"));
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("clear"));
+        assert!(!field.activate_action("missing"), "an unknown action is refused");
+    }
+
+    /// `Ctrl+Right` stops at punctuation, not only at whitespace (I-012).
+    #[test]
+    fn word_navigation_stops_at_punctuation() {
+        let field = LineEdit::new(Rect::new(0, 0, 240, 24));
+        let mut field = field;
+        field.set_text("foo,bar");
+        assert_eq!(field.next_word_boundary(0), 3, "the comma ends the first word");
+        assert_eq!(field.previous_word_boundary(7), 4, "the second word starts after the comma");
+    }
+
+    /// The password mask is rebuilt only when the character count changes (I-003).
+    #[test]
+    fn the_password_mask_is_cached_by_length() {
+        let mut field = LineEdit::new(Rect::new(0, 0, 240, 24));
+        field.set_text("abcd");
+        field.set_echo_mode(EchoMode::Password);
+        let _ = render(&mut field, Rect::new(0, 0, 240, 24));
+        let first = field.mask_cache.borrow().clone();
+        let _ = render(&mut field, Rect::new(0, 0, 240, 24));
+        assert_eq!(field.mask_cache.borrow().0, 4, "the cache is keyed by the character count");
+        assert_eq!(first.1, "****");
     }
 }

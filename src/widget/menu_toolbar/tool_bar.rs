@@ -24,6 +24,9 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::companions::TooltipManager;
 use crate::widget::menu_toolbar::action::Action;
+use crate::widget::menu_toolbar::menu_button::{
+    draw_menu_panel_range, menu_item_rect, menu_panel_rect, MenuItem,
+};
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconSource, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -34,6 +37,28 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// activating the item underneath, so it has to be wide enough to acquire on a touch screen
 /// while still leaving nearly the whole strip for actions.
 const TOOLBAR_DRAG_GRIP_WIDTH: u32 = 12;
+
+/// How far the pointer must travel before an editable item press becomes a reorder.
+const REORDER_THRESHOLD_PX: i32 = 4;
+
+/// The open overflow popup: the source indices it lists and the box it occupies.
+///
+/// The indices point back into `ToolBar::items`, so activating a popup row runs
+/// the same item path a press on the strip runs. Line breaks are filtered out here
+/// and cannot become rows.
+struct OverflowPopup {
+    indices: Vec<usize>,
+    rect: Rect,
+    hovered: Option<usize>,
+}
+
+/// One editable-mode item drag: the row being moved and whether it has traveled far
+/// enough to be a reorder rather than a click.
+struct ReorderState {
+    source: usize,
+    press: Point,
+    moved: bool,
+}
 
 /// Orientation of a toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -549,6 +574,16 @@ pub struct ToolBar {
     button_style: ToolBarButtonStyle,
     /// The first item the strip paints when the items overflow its width.
     overflow_offset: usize,
+    /// The open overflow popup, or `None` when the chevron is closed.
+    overflow_popup: Option<OverflowPopup>,
+    /// The editable-mode item drag in flight, if any.
+    reorder_state: Option<ReorderState>,
+    /// Whether the strip is collapsed to its chrome.
+    ///
+    /// A double-click on the drag grip toggles this. Collapsed means the item row is
+    /// not painted or hit-tested; the grip and the customize handle stay reachable so
+    /// the gesture that collapsed it can undo it (M-016).
+    collapsed: bool,
     /// Whether the customize affordance is painted at the trailing edge.
     editable: bool,
     /// Emitted when the customize affordance is pressed.
@@ -621,6 +656,9 @@ impl ToolBar {
             allowed_areas: ALL_TOOL_BAR_AREAS.to_vec(),
             button_style: ToolBarButtonStyle::TextOnly,
             overflow_offset: 0,
+            overflow_popup: None,
+            reorder_state: None,
+            collapsed: false,
             editable: false,
             customize_requested: GenericSignal::new(),
             top_level: false,
@@ -1331,7 +1369,28 @@ impl ToolBar {
 
     /// Whether some items are outside the strip's width.
     pub fn is_overflowing(&self) -> bool {
-        self.visible_capacity_with(0) < self.items.len()
+        !self.collapsed && self.visible_capacity_with(0) < self.items.len()
+    }
+
+    /// Whether the strip is collapsed to its chrome.
+    pub fn is_collapsed(&self) -> bool {
+        self.collapsed
+    }
+
+    /// Collapses or expands the item row.
+    ///
+    /// A double-click on the drag grip calls this; a host may also drive it. The
+    /// default is expanded, so a toolbar that never asks paints and hit-tests
+    /// exactly as it did before (M-016).
+    pub fn set_collapsed(&mut self, collapsed: bool) {
+        if self.collapsed == collapsed {
+            return;
+        }
+        self.collapsed = collapsed;
+        self.close_overflow_popup();
+        self.reorder_state = None;
+        self.hovered_index = None;
+        self.base.request_redraw();
     }
 
     /// Whether the customize affordance is painted.
@@ -1400,8 +1459,8 @@ impl ToolBar {
     }
 
     /// The overflow button's box, or `None` when everything fits.
-    pub fn overflow_button_rect(&self) -> Option<Rect> {
-        if !self.is_overflowing() {
+    fn overflow_button_rect(&self) -> Option<Rect> {
+        if self.collapsed || !self.is_overflowing() {
             return None;
         }
         let band = self.band_rect();
@@ -1419,9 +1478,123 @@ impl ToolBar {
         }
     }
 
+    /// The item indices the chevron popup lists: every row the strip is not showing.
+    ///
+    /// This is the complement of the wheel's window, so an item hidden on either
+    /// side of a scrolled strip is reachable from the popup rather than being
+    /// stranded (M-015).
+    fn overflow_menu_indices(&self) -> Vec<usize> {
+        let len = self.items.len();
+        if len == 0 {
+            return Vec::new();
+        }
+        let capacity = self.effective_capacity();
+        let start = self.overflow_offset.min(len);
+        let end = start.saturating_add(capacity).min(len);
+        (0..len)
+            .filter(|index| {
+                (*index < start || *index >= end) && !self.items[*index].is_line_break()
+            })
+            .collect()
+    }
+
+    /// Builds the menu rows and typed icon index for the overflow popup.
+    ///
+    /// Reusing [`MenuItem`] and [`draw_menu_panel`] means the popup is the same
+    /// menu chain the other controls paint, not a fourth row painter (M-015).
+    fn overflow_menu_rows(&self, indices: &[usize]) -> (Vec<MenuItem>, Vec<(u64, IconSource)>) {
+        let mut rows = Vec::with_capacity(indices.len());
+        let mut icons = Vec::new();
+        for &index in indices {
+            let Some(item) = self.items.get(index) else { continue };
+            let id = index as u64;
+            let mut row = MenuItem::new(id, item.text());
+            row.enabled = item.is_enabled();
+            row.checked = item.is_checked();
+            row.separator = item.is_separator();
+            if let Some(icon) = item.icon() {
+                row.icon = Some(String::from(icon));
+            }
+            if let Some(source) = item.icon_source() {
+                icons.push((id, source));
+            }
+            row.action_id = Some(String::from(item.id()));
+            rows.push(row);
+        }
+        (rows, icons)
+    }
+
+    /// The box an overflow popup would occupy, clamped to the strip and the display.
+    fn overflow_popup_rect(&self, count: usize) -> Option<Rect> {
+        let anchor = self.overflow_button_rect()?;
+        let mut rect = menu_panel_rect(anchor, count);
+        let band = self.band_rect();
+        let right = band.x + band.width as i32;
+        if rect.x + rect.width as i32 > right {
+            rect.x = (right - rect.width as i32).max(band.x);
+        }
+        // The panel drops below the strip. A display-aware bound keeps it on screen
+        // when the source work area is taller than the old hardcoded limits; a host
+        // with no display keeps the unbounded placement.
+        if let Some(area) = Self::surface_work_area() {
+            let bottom = area.y + area.height as i32;
+            if rect.y + rect.height as i32 > bottom {
+                rect.y = (bottom - rect.height as i32).max(area.y);
+            }
+        }
+        Some(rect)
+    }
+
+    /// The primary display's work area, or `None` on a host that reports no display.
+    fn surface_work_area() -> Option<Rect> {
+        let displays = crate::platform::platform_facts().displays();
+        displays
+            .iter()
+            .find(|display| display.is_primary)
+            .or_else(|| displays.first())
+            .map(|display| display.work_area)
+            .filter(|area| area.width > 0 && area.height > 0)
+    }
+
+    /// Opens the overflow popup, replacing any popup already open.
+    fn open_overflow_popup(&mut self) {
+        let indices = self.overflow_menu_indices();
+        let Some(rect) = self.overflow_popup_rect(indices.len()) else {
+            return;
+        };
+        if indices.is_empty() {
+            return;
+        }
+        self.overflow_popup = Some(OverflowPopup { indices, rect, hovered: None });
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::set_popup_grab(self.id());
+        self.base.request_redraw();
+    }
+
+    /// Closes the overflow popup, if one is open.
+    fn close_overflow_popup(&mut self) -> bool {
+        let open = self.overflow_popup.take().is_some();
+        if open {
+            #[cfg(not(alloc_frugal))]
+            crate::widget::runtime::clear_popup_grab_for(self.id());
+            self.base.request_redraw();
+        }
+        open
+    }
+
+    /// The source item index under `pos` in the open popup, if any.
+    fn overflow_popup_item_at(&self, pos: Point) -> Option<usize> {
+        let popup = self.overflow_popup.as_ref()?;
+        if !popup.rect.contains_point(pos) {
+            return None;
+        }
+        let row = ((pos.y - popup.rect.y) / menu_item_rect(popup.rect, 0).height as i32) as usize;
+        popup.indices.get(row).copied()
+    }
+
     /// The customize button's box, or `None` when the strip is not editable.
-    pub fn customize_button_rect(&self) -> Option<Rect> {
-        if !self.editable {
+    fn customize_button_rect(&self) -> Option<Rect> {
+        if !self.editable || self.collapsed {
             return None;
         }
         let band = self.band_rect();
@@ -1534,6 +1707,7 @@ impl ToolBar {
             ^ (self.orientation as u8 as u64)
             ^ (self.icon_size.to_bits() as u64).rotate_left(16)
             ^ (self.overflow_offset as u64).rotate_left(32)
+            ^ (self.collapsed as u64).rotate_left(56)
             ^ (self.items.len() as u64 > 0) as u64;
         for item in &self.items {
             let step = item.icon_size().unwrap_or(0) as u64;
@@ -1550,6 +1724,11 @@ impl ToolBar {
         let band = self.band_rect();
         if self.items.is_empty() {
             return Vec::new();
+        }
+        if self.collapsed {
+            // A collapsed strip keeps the list's indices but offers no box, which is
+            // the same representation a scrolled-out item uses.
+            return core::iter::repeat(Rect::new(0, 0, 0, 0)).take(self.items.len()).collect();
         }
         let horizontal = self.orientation == ToolBarOrientation::Horizontal;
         let inset = dimensions::TOOLBAR_ITEM_INSET as i32;
@@ -1611,7 +1790,72 @@ impl ToolBar {
     pub fn line_count(&self) -> usize {
         1 + self.items.iter().filter(|item| item.is_line_break()).count()
     }
+    /// Activates the item at `index`, returning whether anything fired.
+    ///
+    /// The strip press and an overflow-popup row both come through here, so a
+    /// hidden item behaves exactly like the visible copy (M-015).
+    fn activate_item(&mut self, index: usize) -> bool {
+        let mut triggered_id = None;
+        {
+            let item = self.items.get_mut(index);
+            let link = self.action_links.get_mut(index).and_then(Option::as_mut);
+            if let Some(item) = item {
+                if item.is_enabled() && !item.is_separator() && !item.is_line_break() {
+                    match link {
+                        Some(link) => {
+                            // The linked command is the authority for a checkable item;
+                            // triggering it also notifies every listener of the source
+                            // action, because a clone shares the signal handles.
+                            if link.command.trigger() {
+                                link.triggered.emit(link.command.is_checked());
+                            }
+                            item.set_checked(link.command.is_checked());
+                        }
+                        None => {
+                            if item.is_checkable() {
+                                item.set_checked(!item.is_checked());
+                            }
+                        }
+                    }
+                    triggered_id = Some(item.id().to_string());
+                }
+            }
+        }
+        if let Some(id) = triggered_id {
+            self.action_triggered.emit(id);
+            self.base.request_redraw();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Moves the item being dragged to `target`, keeping the action links index-aligned.
+    fn reorder_to(&mut self, target: usize) {
+        let Some(source) = self.reorder_state.as_ref().map(|state| state.source) else {
+            return;
+        };
+        if target >= self.items.len() || target == source {
+            return;
+        }
+        let item = self.items.remove(source);
+        let link = self.action_links.remove(source);
+        let destination = if target > source { target - 1 } else { target };
+        self.items.insert(destination, item);
+        self.action_links.insert(destination, link);
+        if let Some(state) = self.reorder_state.as_mut() {
+            state.source = destination;
+            state.moved = true;
+        }
+        self.hovered_index = Some(destination);
+        self.clamp_overflow();
+        self.base.request_redraw();
+    }
+
     fn hit_item(&self, pos: Point) -> Option<usize> {
+        if self.collapsed {
+            return None;
+        }
         // `Rect::contains_point`, not a hand-written comparison: the crate's
         // convention is an inclusive origin with an **exclusive** far edge (see
         // `geometry.rs`), and `draw` paints these rects left to right so a later
@@ -1637,6 +1881,20 @@ impl Widget for ToolBar {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, dimensions::TOOLBAR_HEIGHT)
+    }
+
+    /// The strip and its open overflow popup accept the pointer.
+    ///
+    /// The popup hangs below the band, outside the control's rectangle; without
+    /// this override the runtime would reject every press on a hidden item before
+    /// `overflow_popup_item_at` could see it (M-015).
+    fn contains_point(&self, point: Point) -> bool {
+        self.base().contains_point_with_touch_expansion(point)
+            || self.overflow_popup.as_ref().is_some_and(|popup| popup.rect.contains_point(point))
+    }
+
+    fn has_open_popup(&self) -> bool {
+        self.overflow_popup.is_some()
     }
 
     /// Advances the tooltip delay/duration clocks.
@@ -1840,6 +2098,47 @@ impl EventHandler for ToolBar {
                 self.hovered_index = if over_grip { None } else { self.hit_item(*pos) };
                 self.tooltips.note_pointer(*pos);
                 self.sync_hover_tooltip();
+                // An editable strip reorders the item under a held press. The move is
+                // applied to the item list immediately, so the row visibly travels
+                // instead of waiting for a release (M-016).
+                let reorder_gesture =
+                    self.reorder_state.as_ref().map(|state| (state.moved, state.press));
+                if let Some((moved, press)) = reorder_gesture {
+                    if moved
+                        || (pos.x - press.x).abs() >= REORDER_THRESHOLD_PX
+                        || (pos.y - press.y).abs() >= REORDER_THRESHOLD_PX
+                    {
+                        if let Some(state) = self.reorder_state.as_mut() {
+                            state.moved = true;
+                        }
+                        if let Some(target) = self.hit_item(*pos) {
+                            self.reorder_to(target);
+                        }
+                    }
+                    return;
+                }
+                // Keep the popup's hover row in step so the row under the pointer reads
+                // as active in the same paint the strip uses.
+                let popup_rect = self.overflow_popup.as_ref().map(|popup| popup.rect);
+                if let Some(rect) = popup_rect {
+                    let hovered = self.overflow_popup.as_ref().and_then(|popup| {
+                        popup.indices.iter().enumerate().find_map(|(row, index)| {
+                            let row_rect = menu_item_rect(rect, row);
+                            (row_rect.contains_point(*pos)
+                                && self
+                                    .items
+                                    .get(*index)
+                                    .is_some_and(|item| item.is_enabled() && !item.is_separator()))
+                            .then_some(row)
+                        })
+                    });
+                    if let Some(popup) = self.overflow_popup.as_mut() {
+                        if popup.hovered != hovered {
+                            popup.hovered = hovered;
+                            self.base.request_redraw();
+                        }
+                    }
+                }
                 if !self.movable {
                     return;
                 }
@@ -1869,55 +2168,66 @@ impl EventHandler for ToolBar {
                     return;
                 }
                 if self.customize_button_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.close_overflow_popup();
                     self.customize_requested.emit();
                     return;
                 }
                 if self.overflow_button_rect().is_some_and(|rect| rect.contains_point(*pos)) {
-                    let max = self.items.len().saturating_sub(self.effective_capacity());
-                    self.overflow_offset =
-                        if self.overflow_offset >= max { 0 } else { self.overflow_offset + 1 };
-                    self.base.request_redraw();
+                    // The chevron collapses the hidden rows into a popup menu. The wheel
+                    // below still walks the window, so scrolling stays optional (M-015).
+                    if self.overflow_popup.is_some() {
+                        self.close_overflow_popup();
+                    } else {
+                        self.open_overflow_popup();
+                    }
                     return;
                 }
+                // A press on the open overflow popup activates the hidden item through the
+                // same path a visible press uses; a press elsewhere inside the popup does
+                // nothing and a press outside it closes it (M-015).
+                if self.overflow_popup.is_some() {
+                    if let Some(index) = self.overflow_popup_item_at(*pos) {
+                        self.close_overflow_popup();
+                        self.activate_item(index);
+                        return;
+                    }
+                    if self.overflow_popup.as_ref().is_some_and(|p| p.rect.contains_point(*pos)) {
+                        return;
+                    }
+                    self.close_overflow_popup();
+                }
                 if let Some(idx) = self.hit_item(*pos) {
-                    let mut triggered_id = None;
-                    {
-                        let item = self.items.get_mut(idx);
-                        let link = self.action_links.get_mut(idx).and_then(Option::as_mut);
-                        if let Some(item) = item {
-                            if item.is_enabled() && !item.is_separator() && !item.is_line_break() {
-                                match link {
-                                    Some(link) => {
-                                        // The linked command is the authority for a checkable
-                                        // item; triggering it also notifies every listener of the
-                                        // source action, because a clone shares the signal handles.
-                                        if link.command.trigger() {
-                                            link.triggered.emit(link.command.is_checked());
-                                        }
-                                        item.set_checked(link.command.is_checked());
-                                    }
-                                    None => {
-                                        if item.is_checkable() {
-                                            item.set_checked(!item.is_checked());
-                                        }
-                                    }
-                                }
-                                triggered_id = Some(item.id().to_string());
-                            }
-                        }
+                    if self.editable {
+                        // Customization mode: a press starts a drag, and a release without
+                        // travel falls back to the ordinary activation below (M-016).
+                        self.reorder_state =
+                            Some(ReorderState { source: idx, press: *pos, moved: false });
+                        return;
                     }
-                    if let Some(id) = triggered_id {
-                        self.action_triggered.emit(id);
-                        self.base.request_redraw();
-                    }
+                    self.activate_item(idx);
+                }
+            }
+            Event::MouseDoubleClick { pos, .. } => {
+                // A double-click on the drag grip collapses the item row; the same
+                // gesture expands it again (M-016).
+                if self.movable && self.drag_band().contains_point(*pos) {
+                    self.set_collapsed(!self.collapsed);
                 }
             }
             Event::MouseRelease { pos, button: 1 } => {
+                if let Some(state) = self.reorder_state.take() {
+                    if !state.moved {
+                        // A press that never traveled is still a click.
+                        self.activate_item(state.source);
+                    }
+                    return;
+                }
                 self.finish_drag(*pos);
             }
             Event::MouseLeave { .. } => {
                 self.hovered_index = None;
                 self.tooltip_source = None;
+                self.reorder_state = None;
                 self.tooltips.note_leave();
                 self.base.request_redraw();
             }
@@ -2226,6 +2536,25 @@ impl Draw for ToolBar {
             }
         }
 
+        // The overflow popup is painted after the strip's own ink, so it reads as a
+        // layer above the band. Its rows are the hidden items through the shared menu
+        // painter, which is what keeps a collapsed row identical to a visible one.
+        if let Some(popup) = self.overflow_popup.as_ref() {
+            let (rows, icons) = self.overflow_menu_rows(&popup.indices);
+            draw_menu_panel_range(
+                context,
+                popup.rect,
+                &rows,
+                0,
+                rows.len(),
+                &icons,
+                style,
+                accent,
+                true,
+                popup.hovered,
+            );
+        }
+
         // The tooltip pipeline owns the bubble; keeping it in the same control means a host does
         // not need a second mounted widget to get hover hints from a toolbar.
         let geometry = self.geometry();
@@ -2480,21 +2809,81 @@ mod tests {
         assert_eq!(after[1].x, after[0].x + after[0].width as i32);
     }
 
-    /// Overflowing items get a chevron; each press advances the window.
+    /// Overflowing items get a chevron that opens the hidden rows as a popup menu.
     #[test]
-    fn the_overflow_chevron_walks_the_hidden_items() {
+    fn the_overflow_chevron_opens_a_popup_with_the_hidden_items() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
         let mut bar = ToolBar::new(Rect::new(0, 0, 70, 36));
         for index in 0..8 {
             bar.add_action(format!("id{index}"), format!("T{index}"));
         }
         assert!(bar.is_overflowing());
         let chevron = bar.overflow_button_rect().expect("overflow has an affordance");
-        assert_eq!(bar.visible_range().start, 0);
 
         bar.handle_event(&Event::mouse_press(chevron.x + 2, chevron.y + 2, 1));
-        assert_eq!(bar.visible_range().start, 1, "a press advances the visible window");
-        bar.handle_event(&Event::mouse_press(chevron.x + 2, chevron.y + 2, 1));
-        assert_eq!(bar.visible_range().start, 2);
+        let popup = bar.overflow_popup.as_ref().expect("the chevron opens the popup");
+        let first = bar.effective_capacity();
+        assert_eq!(popup.indices.first(), Some(&first), "the popup lists the hidden rows");
+        let visible = bar.visible_range();
+        assert!(
+            popup.indices.iter().all(|index| !visible.contains(index)),
+            "the popup is the complement of the strip's visible window"
+        );
+        assert!(popup.rect.height > 0);
+
+        let fired = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&fired);
+        let expected = format!("id{first}");
+        bar.action_triggered.connect(move |id| {
+            if id.as_str() == expected.as_str() {
+                sink.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let row = menu_item_rect(popup.rect, 0);
+        bar.handle_event(&Event::mouse_press(row.x + 2, row.y + 2, 1));
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "the hidden item is reachable");
+        assert!(bar.overflow_popup.is_none(), "choosing a row closes the popup");
+
+        // Scrolling remains available as an opt-in pointer path.
+        bar.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(bar.overflow_offset(), 1);
+    }
+
+    /// M-016: an editable strip reorders items by dragging them.
+    #[test]
+    fn an_editable_strip_reorders_items_by_dragging() {
+        let mut bar = ToolBar::new(Rect::new(0, 0, 300, 36));
+        bar.set_editable(true);
+        bar.add_action("a", "A");
+        bar.add_action("b", "B");
+        bar.add_action("c", "C");
+        let bands = bar.item_bands();
+
+        bar.handle_event(&Event::mouse_press(bands[0].x + 2, bands[0].y + 2, 1));
+        bar.handle_event(&Event::mouse_move(bands[2].x + 2, bands[2].y + 2));
+        bar.handle_event(&Event::mouse_release(bands[2].x + 2, bands[2].y + 2, 1));
+
+        let order: Vec<&str> = bar.items().iter().map(ToolBarItem::text).collect();
+        assert_eq!(order, ["B", "A", "C"], "the dragged item lands at the target row");
+        assert!(bar.reorder_state.is_none(), "the gesture ends on release");
+    }
+
+    /// M-016: double-clicking the grip collapses and expands the item row.
+    #[test]
+    fn double_clicking_the_grip_toggles_the_collapsed_row() {
+        let mut bar = ToolBar::new(Rect::new(0, 0, 240, 36));
+        bar.add_action("a", "A");
+        let grip = bar.drag_band();
+
+        bar.handle_event(&Event::mouse_double_click(grip.x + 2, grip.y + 2, 1));
+        assert!(bar.is_collapsed());
+        assert_eq!(bar.item_bands()[0], Rect::new(0, 0, 0, 0), "no item box while collapsed");
+        assert!(bar.hit_item(Point::new(10, 10)).is_none());
+
+        bar.handle_event(&Event::mouse_double_click(grip.x + 2, grip.y + 2, 1));
+        assert!(!bar.is_collapsed(), "the same gesture expands it again");
     }
 
     /// The customize affordance is opt-in and reports its press.

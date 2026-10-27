@@ -460,6 +460,25 @@ impl AppBar {
         }
         None
     }
+
+    /// The band the armed affordance occupies, for the press overlay.
+    ///
+    /// The press only *arms* the bar; this is the visual half of that state. It is derived from
+    /// the same zones and boxes the hit test uses, so the feedback cannot appear somewhere the
+    /// tap would not commit.
+    fn pressed_zone(&self) -> Option<Rect> {
+        match self.pressed? {
+            TapTarget::Back | TapTarget::Leading => Some(self.leading_zone()),
+            TapTarget::Action => Some(self.trailing_zone()),
+            TapTarget::ActionAt(index) => self
+                .action_boxes()
+                .boxes
+                .iter()
+                .find(|(candidate, _)| *candidate == index)
+                .map(|(_, rect)| *rect),
+            TapTarget::Overflow => self.action_boxes().overflow,
+        }
+    }
 }
 
 impl Widget for AppBar {
@@ -611,6 +630,23 @@ impl Draw for AppBar {
             border_color,
             1,
         );
+
+        // ── Press feedback ──
+        //
+        // The bar has always tracked which affordance a press armed (`self.pressed`) so the
+        // release can commit exactly once, but nothing painted that state: a tap looked inert
+        // until the signal fired. The armed band now takes the theme's `pressed` fill when a
+        // theme declares one, and otherwise steps 12% toward the ink — the same derivation the
+        // preset uses for its pressed buttons, so the feedback follows the appearance.
+        if let Some(zone) = self.pressed_zone() {
+            let pressed_fill = crate::style::resolved_theme_style_for_state_shared(
+                "app_bar",
+                crate::style::WidgetState::Pressed,
+            )
+            .and_then(|state_style| state_style.background_color)
+            .unwrap_or_else(|| background.blend(&text_color, 0.12));
+            context.fill_rect(zone, pressed_fill);
+        }
 
         // Determine font sizes based on bar height, **scaled by the device's text-size preference**.
         //
@@ -878,6 +914,9 @@ impl EventHandler for AppBar {
                 let target = self.tap_target_at(*pos);
                 if self.pressed != target {
                     self.pressed = target;
+                    // Publish the same fact to the base, so `widget_state()` reports `Pressed`
+                    // while an affordance is armed and the theme's state key is reachable.
+                    self.base.set_pressed(target.is_some());
                     self.base.request_redraw();
                 }
             }
@@ -888,6 +927,7 @@ impl EventHandler for AppBar {
                 let Some(armed) = self.pressed.take() else {
                     return;
                 };
+                self.base.set_pressed(false);
                 self.base.request_redraw();
 
                 // The zones come from the same accessors the drawing uses, so a mirrored bar's arrow
@@ -1416,5 +1456,30 @@ mod tests {
         bar.handle_event(&Event::MousePress { pos: Point::new(370, 28), button: 1, modifiers: 0 });
         bar.handle_event(&Event::MouseRelease { pos: Point::new(370, 28), button: 1 });
         assert_eq!(fired.load(Ordering::SeqCst), 0);
+    }
+
+    /// A press paints the armed affordance and reports `Pressed` until the release.
+    ///
+    /// Regression (N-009): the bar tracked `pressed` so the click committed once, but the draw
+    /// path had no branch for it. A tap on a bar is indistinguishable from a still picture until
+    /// the signal fires, which is the feedback `Button` has always had.
+    #[test]
+    fn an_armed_press_paints_feedback_until_the_release() {
+        use crate::style::WidgetState;
+        let _guard = crate::style::theme_test_guard();
+        let mut bar = make_app_bar();
+        bar.set_action_text("Share");
+        let pos = Point::new(330, 28);
+
+        let resting = crate::widget::svg::render_to_svg(&mut bar);
+        bar.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(bar.widget_state(), WidgetState::Pressed);
+        assert!(bar.pressed_zone().is_some(), "the armed band has a painted extent");
+        let pressed = crate::widget::svg::render_to_svg(&mut bar);
+        assert_ne!(resting, pressed, "a press must change the pixels, not only the state");
+
+        bar.handle_event(&Event::MouseRelease { pos, button: 1 });
+        assert_eq!(bar.widget_state(), WidgetState::Normal);
+        assert!(bar.pressed_zone().is_none(), "the release clears the feedback");
     }
 }

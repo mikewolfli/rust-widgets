@@ -7,14 +7,18 @@ use super::types::{PixelRect, Rgba8};
 use std::cell::RefCell;
 
 thread_local! {
-    /// Reusable shadow layer buffer. Shadows are drawn per command, so allocating a full layer for
-    /// each one made every shadowed control pay a large zeroed allocation twice (G-11). The layer
-    /// is fully rewritten on each use, so a same-sized buffer needs no clear (G-67).
+    /// Reusable shadow layer buffer. Shadows are drawn per command, so a per-command zeroed
+    /// layer allocation made every shadowed control pay twice (G-11). Fully rewritten on each
+    /// use, so a same-sized buffer needs no clear (G-67).
     static SHADOW_LAYER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-    /// Reusable horizontal-pass buffer for [`box_blur_layer_rgba8`]. Kept separate from the layer
-    /// so a nested shadow (a layer inside a layer) still has its own scratch, and reused at the
-    /// same size without a zero fill because the pass overwrites every pixel (G-67).
+    /// Reusable horizontal-pass buffer for [`box_blur_layer_rgba8`]. Separate from the layer so
+    /// a nested shadow still has its own scratch; reused at the same size without a zero fill
+    /// because the pass overwrites every pixel (G-67).
     static SHADOW_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    /// Reusable glyph coverage scratch for [`draw_text_cpu_rgba8`], retained across text
+    /// commands instead of a per-command allocation (G-222). It is re-zeroed per command, so a
+    /// reused buffer starts exactly where the fresh `vec![0u8; n]` it replaced did.
+    static TEXT_COVERAGE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 // The blend-mode enum is defined once in the render layer and reused here rather than
 // mirrored, so the two backends cannot disagree about the set of modes (principle #54).
@@ -22,19 +26,12 @@ use crate::render::BlendMode;
 pub fn align_to(value: u32, alignment: u32) -> u32 {
     value.div_ceil(alignment) * alignment
 }
-pub fn rasterize_draw_commands_rgba8(
-    width: u32,
-    height: u32,
-    commands: &[WgpuDrawCommand],
-) -> Result<Vec<u8>, String> {
+/// Byte length of a `width × height` RGBA8 frame, with the overflow and 4 GiB bound checks shared
+/// by both entry points (N-S-66).
+fn framebuffer_byte_len(width: u32, height: u32) -> Result<usize, String> {
     if width == 0 || height == 0 {
         return Err("width/height must be > 0".to_string());
     }
-    // Compute the buffer size in `usize` with checked arithmetic and bound it to
-    // the largest size a single framebuffer may occupy. In `u32` the product
-    // wraps (65536×16384 = 2^32); even in `usize` a 4 GiB framebuffer is not a
-    // real render target, so it is refused with an explicit error rather than
-    // attempted (N-S-66).
     let pixel_count = (width as usize)
         .checked_mul(height as usize)
         .ok_or_else(|| format!("framebuffer {width}x{height} pixel count overflows usize"))?;
@@ -48,30 +45,47 @@ pub fn rasterize_draw_commands_rgba8(
             u32::MAX
         ));
     }
-    let framebuffer = PixelRect { x: 0, y: 0, width, height };
-    let mut pixels = vec![0u8; byte_len];
+    Ok(byte_len)
+}
 
-    // The stateful half of the command stream. `WgpuDrawCommand` carries a
-    // *per-command* `clip` field, so this is what `PushClip` accumulates into; each
-    // command's own field is then intersected against it below. Keeping it here
-    // rather than in every arm is what makes nested clipping work.
-    //
-    // There is no translation state to track: unlike `BatchCommand`, the GPU command
-    // stream has no `Translate` variant, and geometry arrives already positioned.
+/// Rasterises `commands` into a caller-owned frame of exactly `width × height × 4` bytes.
+///
+/// The frame is zero-filled first: the picture starts from transparent black, and a reused
+/// caller buffer cannot be assumed cleared (G-221). Rendering into caller storage is what lets
+/// a renderer carry one framebuffer across frames; [`rasterize_draw_commands_rgba8`] is the
+/// owning wrapper for callers that need the bytes back.
+pub fn rasterize_draw_commands_into_rgba8(
+    width: u32,
+    height: u32,
+    commands: &[WgpuDrawCommand],
+    pixels: &mut [u8],
+) -> Result<(), String> {
+    let byte_len = framebuffer_byte_len(width, height)?;
+    if pixels.len() != byte_len {
+        return Err(format!(
+            "frame buffer is {} bytes but a {width}x{height} frame needs {byte_len}",
+            pixels.len()
+        ));
+    }
+    pixels.fill(0);
+    let framebuffer = PixelRect { x: 0, y: 0, width, height };
+
+    // The stateful half of the command stream. `WgpuDrawCommand` carries a *per-command*
+    // `clip` field, so this is what `PushClip` accumulates into and what each command's own
+    // field is intersected against below — keeping it here is what makes nested clipping
+    // work. There is no translation state: the GPU stream has no `Translate` variant.
     let mut clip_stack: Vec<PixelRect> = Vec::new();
     let mut current_clip: Option<PixelRect> = None;
-    // Sticky blend mode, set by `SetBlendMode` and applied by every later command.
-    // Starts `Normal`, which is a plain source-over write — the behaviour every
-    // command had before the mode was honoured, so existing streams are unchanged.
+    // Sticky blend mode, set by `SetBlendMode` and applied by every later command. Starts
+    // `Normal` — a plain source-over write, so existing streams are unchanged.
     let mut blend = BlendMode::Normal;
 
     for (index, command) in commands.iter().enumerate() {
         match command {
             WgpuDrawCommand::PushClip { rect } => {
-                // Intersect rather than replace: a nested clip can only ever shrink
-                // the visible area. When the new rect does not overlap the current
-                // clip the result is an empty region, which suppresses drawing
-                // entirely rather than silently ignoring the inner clip.
+                // Intersect rather than replace: a nested clip can only shrink the visible
+                // area, and a non-overlapping rect becomes an empty region that suppresses
+                // drawing rather than silently ignoring the inner clip.
                 let next = match current_clip {
                     Some(existing) => existing.intersect(*rect).unwrap_or(PixelRect {
                         x: 0,
@@ -86,10 +100,9 @@ pub fn rasterize_draw_commands_rgba8(
                 continue;
             }
             WgpuDrawCommand::PopClip => {
-                // An unbalanced pop is a caller bug, not a reason to abort the frame:
-                // report it and leave the clip as-is so the remaining commands still
-                // render. Silently underflowing would be worse, because every later
-                // command would draw unclipped.
+                // An unbalanced pop is a caller bug, not a reason to abort the frame: report
+                // it and leave the clip as-is, because silently underflowing would draw
+                // every later command unclipped.
                 match clip_stack.pop() {
                     Some(restored) => {
                         current_clip = if restored == framebuffer { None } else { Some(restored) };
@@ -104,11 +117,10 @@ pub fn rasterize_draw_commands_rgba8(
             _ => {}
         }
 
-        // Every drawing arm below intersects its own `clip` field with the running
-        // clip, so `effective_clip` takes both.
+        // Every drawing arm intersects its own `clip` field with the running clip.
         match command {
             WgpuDrawCommand::Clear { color } => {
-                clear_cpu_rgba8(&mut pixels, *color);
+                clear_cpu_rgba8(&mut *pixels, *color);
             }
             WgpuDrawCommand::FillRect { rect, color, clip } => {
                 let mut draw_rect = match rect.intersect(framebuffer) {
@@ -119,7 +131,7 @@ pub fn rasterize_draw_commands_rgba8(
                     Some(value) => draw_rect = value,
                     None => continue,
                 }
-                fill_rect_cpu_rgba8_blended(&mut pixels, width, draw_rect, *color, blend);
+                fill_rect_cpu_rgba8_blended(&mut *pixels, width, draw_rect, *color, blend);
             }
             WgpuDrawCommand::StrokeRect { rect, color, thickness, clip } => {
                 if *thickness == 0 {
@@ -134,7 +146,7 @@ pub fn rasterize_draw_commands_rgba8(
                         Some(value) => draw_rect = value,
                         None => continue,
                     }
-                    fill_rect_cpu_rgba8_blended(&mut pixels, width, draw_rect, *color, blend);
+                    fill_rect_cpu_rgba8_blended(&mut *pixels, width, draw_rect, *color, blend);
                 }
             }
             WgpuDrawCommand::DrawText { rect, text, color, clip } => {
@@ -142,7 +154,7 @@ pub fn rasterize_draw_commands_rgba8(
                     continue;
                 }
                 let clip_rect = effective_clip(framebuffer, *rect, combine(clip, current_clip));
-                draw_text_cpu_rgba8(&mut pixels, width, *rect, text, *color, clip_rect, blend);
+                draw_text_cpu_rgba8(&mut *pixels, width, *rect, text, *color, clip_rect, blend);
             }
             WgpuDrawCommand::DrawImage { rect, rgba8, image_width, image_height, clip } => {
                 if rect.width == 0 || rect.height == 0 || *image_width == 0 || *image_height == 0 {
@@ -157,7 +169,7 @@ pub fn rasterize_draw_commands_rgba8(
                 }
                 let clip_rect = effective_clip(framebuffer, *rect, combine(clip, current_clip));
                 draw_image_scaled_cpu_rgba8(
-                    &mut pixels,
+                    &mut *pixels,
                     width,
                     *rect,
                     rgba8,
@@ -173,7 +185,7 @@ pub fn rasterize_draw_commands_rgba8(
                 }
                 let clip_rect = effective_clip(framebuffer, *rect, combine(clip, current_clip));
                 fill_rounded_rect_cpu_rgba8(
-                    &mut pixels,
+                    &mut *pixels,
                     width,
                     *rect,
                     *radius,
@@ -188,7 +200,7 @@ pub fn rasterize_draw_commands_rgba8(
                 }
                 let clip_rect = effective_clip(framebuffer, *rect, combine(clip, current_clip));
                 stroke_rounded_rect_cpu_rgba8(
-                    &mut pixels,
+                    &mut *pixels,
                     width,
                     *rect,
                     *radius,
@@ -216,7 +228,7 @@ pub fn rasterize_draw_commands_rgba8(
                     continue;
                 };
                 draw_line_cpu_rgba8(
-                    &mut pixels,
+                    &mut *pixels,
                     width,
                     clipped_from,
                     clipped_to,
@@ -233,7 +245,7 @@ pub fn rasterize_draw_commands_rgba8(
                 let circle_bounds = bbox_for_circle(*center, *r, 0);
                 let clip_rect =
                     effective_clip(framebuffer, circle_bounds, combine(clip, current_clip));
-                fill_circle_cpu_rgba8(&mut pixels, width, *center, *r, *color, clip_rect, blend);
+                fill_circle_cpu_rgba8(&mut *pixels, width, *center, *r, *color, clip_rect, blend);
             }
             WgpuDrawCommand::DrawCircle { center, radius: r, color, width: circle_width, clip } => {
                 if *r == 0 || *circle_width == 0 {
@@ -243,7 +255,7 @@ pub fn rasterize_draw_commands_rgba8(
                 let clip_rect =
                     effective_clip(framebuffer, circle_bounds, combine(clip, current_clip));
                 draw_circle_cpu_rgba8(
-                    &mut pixels,
+                    &mut *pixels,
                     width,
                     *center,
                     *r,
@@ -269,7 +281,7 @@ pub fn rasterize_draw_commands_rgba8(
                 let clip_rect =
                     effective_clip(framebuffer, arc_bounds, combine(clip, current_clip));
                 draw_arc_cpu_rgba8(
-                    &mut pixels,
+                    &mut *pixels,
                     width,
                     &ArcParams {
                         center: *center,
@@ -298,7 +310,7 @@ pub fn rasterize_draw_commands_rgba8(
                 let clip_rect =
                     effective_clip(framebuffer, path_bounds, combine(clip, current_clip));
                 draw_path_cpu_rgba8(
-                    &mut pixels,
+                    &mut *pixels,
                     width,
                     CpuPathDraw {
                         points,
@@ -330,7 +342,7 @@ pub fn rasterize_draw_commands_rgba8(
                 let clip_rect =
                     effective_clip(framebuffer, path_bounds, combine(clip, current_clip));
                 draw_path_non_zero_cpu_rgba8(
-                    &mut pixels,
+                    &mut *pixels,
                     width,
                     points,
                     contours,
@@ -345,7 +357,7 @@ pub fn rasterize_draw_commands_rgba8(
                 }
                 let clip_rect = effective_clip(framebuffer, *rect, combine(clip, current_clip));
                 draw_gradient_cpu_rgba8(
-                    &mut pixels,
+                    &mut *pixels,
                     width,
                     *rect,
                     gradient_data,
@@ -363,7 +375,7 @@ pub fn rasterize_draw_commands_rgba8(
                 // angle, so horizontal is the only direction it can mean; a caller
                 // wanting a vertical ramp uses `DrawGradient`.
                 draw_gradient_cpu_rgba8(
-                    &mut pixels,
+                    &mut *pixels,
                     width,
                     *rect,
                     gradient_data,
@@ -382,7 +394,7 @@ pub fn rasterize_draw_commands_rgba8(
                 // radius reaching the nearest edge. That is the only reading the payload
                 // supports (see the note on the variant).
                 draw_radial_gradient_cpu_rgba8(
-                    &mut pixels,
+                    &mut *pixels,
                     width,
                     *rect,
                     gradient_data,
@@ -409,10 +421,9 @@ pub fn rasterize_draw_commands_rgba8(
                     width: rect.width,
                     height: rect.height,
                 };
-                // The body is drawn where it is visible, but the blur may reach
-                // beyond it. The *paint* region is what the caller clipped to (or
-                // the whole framebuffer when no clip is set): blurring must never
-                // paint outside it (N-S-63).
+                // The blur may reach beyond the body; the *paint* region is what the caller
+                // clipped to (or the whole framebuffer), and blurring must never paint
+                // outside it (N-S-63).
                 let Some(visible) =
                     effective_clip(framebuffer, shadow, combine(clip, current_clip))
                 else {
@@ -425,13 +436,11 @@ pub fn rasterize_draw_commands_rgba8(
                     },
                     None => framebuffer,
                 };
-                // Render the shadow into an *independent* layer and composite that
-                // layer back, instead of blitting into the framebuffer and then
-                // blurring in place. Blurring in place read the existing scene
-                // pixels as source, so it smeared the background under the shadow
-                // rather than blurring the shadow itself (N-S-63).
+                // The shadow is rendered into an independent layer and composited back;
+                // blurring in place read the scene as source and smeared the background
+                // under the shadow (N-S-63).
                 box_shadow_cpu_rgba8(
-                    &mut pixels,
+                    &mut *pixels,
                     width,
                     height,
                     visible,
@@ -443,6 +452,17 @@ pub fn rasterize_draw_commands_rgba8(
             }
         }
     }
+    Ok(())
+}
+
+/// Owning wrapper around [`rasterize_draw_commands_into_rgba8`].
+pub fn rasterize_draw_commands_rgba8(
+    width: u32,
+    height: u32,
+    commands: &[WgpuDrawCommand],
+) -> Result<Vec<u8>, String> {
+    let mut pixels = vec![0u8; framebuffer_byte_len(width, height)?];
+    rasterize_draw_commands_into_rgba8(width, height, commands, &mut pixels)?;
     Ok(pixels)
 }
 fn effective_clip(
@@ -457,16 +477,9 @@ fn effective_clip(
     Some(clipped)
 }
 
-/// Intersects a command's own `clip` field with the enclosing `PushClip` region.
-///
-/// Both may be present, in which case the effective clip is their intersection —
-/// that is what nesting means. Returns `None` when neither is set, which callers
-/// read as "only the framebuffer bounds".
-///
-/// A non-overlapping pair yields a zero-area rectangle rather than `None`, so the
-/// caller's `intersect` fails and the command is skipped. Mapping it to `None`
-/// instead would mean the same thing to `effective_clip`, but making emptiness
-/// explicit keeps `None` meaning exactly "no clip requested".
+/// Intersects a command's own `clip` field with the enclosing `PushClip` region. `None` means
+/// "no clip requested"; a non-overlapping pair becomes a zero-area rect so the draw is skipped
+/// rather than silently unclipped.
 fn combine(own: &Option<PixelRect>, enclosing: Option<PixelRect>) -> Option<PixelRect> {
     match (own, enclosing) {
         (Some(own), Some(enclosing)) => {
@@ -540,9 +553,13 @@ fn draw_text_cpu_rgba8(
     let rows = (rect.height as i32 / glyph_h).max(1);
     let cell = crate::render::text::Cell::new(glyph_w as u32, glyph_h as u32);
     // One scratch for the whole string, reused per glyph: a glyph is rasterised, blended, and
-    // overwritten. That is what keeps this path free of per-glyph allocation and of any glyph
-    // cache — the same contract the software rasteriser honours (BLUE23 §0A.4, constraint 3).
-    let mut coverage = vec![0u8; cell.area()];
+    // overwritten. That keeps this path free of per-glyph allocation and of any glyph cache —
+    // the same contract the software rasteriser honours (BLUE23 §0A.4, constraint 3). The
+    // scratch itself is retained across commands (G-222); re-zeroing below gives a reused
+    // buffer exactly the fresh `vec![0u8; n]` start state.
+    let mut coverage = TEXT_COVERAGE.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    coverage.clear();
+    coverage.resize(cell.area(), 0);
     for (char_index, scalar) in text.chars().enumerate() {
         let grid_index = char_index as i32;
         if grid_index >= columns * rows {
@@ -553,16 +570,13 @@ fn draw_text_cpu_rgba8(
         let origin_x = rect.x + col * glyph_w;
         let origin_y = rect.y + row * glyph_h;
         // The glyph's ink comes from the **font stack**, through the same `paint` the software
-        // rasteriser blends. This path used to walk the 8x8 table itself, which meant a face added
-        // by a feature (a CJK face, a vector face) was invisible to it, and that it fell back to
-        // `'?'` for an uncovered character while the other two fell back to the box glyph — the GPU
-        // path's idea of "unsupported" being a third answer nobody chose.
+        // rasteriser blends. This path used to walk the 8x8 table itself, so feature faces (CJK,
+        // vector) were invisible to it and it answered "unsupported" a third way.
         let Some(painted) = crate::render::text::paint_active(scalar, cell, &mut coverage) else {
             continue;
         };
-        // The scratch is glyph-sized, so every pixel of it is inside the cell. Coverage arrives as
-        // a value per pixel rather than as rectangles, so a face with antialiased ink would be drawn
-        // correctly here without a line of new code.
+        // The scratch is glyph-sized, so every pixel of it is inside the cell, and coverage
+        // arrives per pixel, so antialiased ink would draw correctly without new code.
         let _ = painted;
         for py in 0..glyph_h {
             let screen_y = origin_y + py;
@@ -594,6 +608,8 @@ fn draw_text_cpu_rgba8(
             }
         }
     }
+    // Hand the scratch (and its capacity) back for the next text command (G-222).
+    TEXT_COVERAGE.with(|cell| *cell.borrow_mut() = std::mem::take(&mut coverage));
 }
 fn draw_image_scaled_cpu_rgba8(
     pixels: &mut [u8],
@@ -634,22 +650,13 @@ fn draw_image_scaled_cpu_rgba8(
         }
     }
 }
-/// Bounding box of a line segment, *inclusive* of both endpoints and the stroke.
+/// Bounding box of a line segment, inclusive of both endpoints and the stroke: the pixel-centre
+/// rule makes the extent `max - min + 1`, widened by half the line width per side and at least
+/// 1px per axis (N-S-65).
 ///
-/// A pixel is covered when its centre lies in `[x, x+w)` / `[y, y+h)`, so the
-/// inclusive extent from `min` to `max` is `max - min + 1`, not `max - min`. The
-/// old half-open form left the last row/column of an axis-aligned line out — and
-/// a horizontal or vertical line collapsed to a `0`-extent box that intersected
-/// nothing, so the whole line vanished (N-S-65). The result is additionally
-/// widened by half the line width on each side, and is always at least 1px in
-/// each axis so a single point is still drawable.
-/// Clamp a segment to `rect` (Liang–Barsky), returning the trimmed endpoints.
-///
-/// `draw_line_cpu_rgba8` walks from one endpoint to the other, so an endpoint far outside
-/// the framebuffer makes it step through billions of invisible pixels first. Trimming the
-/// segment to the clip bounds the walk to the visible region. Endpoints fully inside `rect`
-/// are returned unchanged (t₀=0, t₁=1), so in-bounds rendering is pixel-identical. Returns
-/// `None` when the segment misses the rect entirely.
+/// Clamp a segment to `rect` (Liang–Barsky), returning the trimmed endpoints. An endpoint far
+/// outside the framebuffer would walk billions of invisible pixels, so this bounds the walk;
+/// inside endpoints are unchanged (t₀=0, t₁=1) and a miss is `None`.
 fn clip_segment_to_rect(
     from: (i32, i32),
     to: (i32, i32),
@@ -703,12 +710,10 @@ fn rect_for_line(from: (i32, i32), to: (i32, i32), line_width: u32) -> PixelRect
         height: h.clamp(1, u32::MAX as i64) as u32,
     }
 }
-/// Bounding box of a circle *including* its stroke width.
-///
-/// `DrawCircle` strokes `width` pixels outside the given radius, so the box must
-/// grow by `width` on every side; using only `2r` (the old behaviour) clipped the
-/// outer half of the ring away. The box is also grown by one pixel so the
-/// inclusive far edge (`center + r + width`) is actually covered (N-S-65).
+/// Bounding box of a circle *including* its stroke width: `DrawCircle` strokes `width`
+/// pixels outside the radius, so the box must grow by `width` per side (the old `2r` clipped
+/// the outer half of the ring away), plus one pixel so the inclusive far edge
+/// (`center + r + width`) is covered (N-S-65).
 fn bbox_for_circle(center: (i32, i32), radius: u32, stroke_width: u32) -> PixelRect {
     // Widened to i64 so a large radius/stroke cannot overflow before clamping.
     let reach = radius as i64 + stroke_width as i64 + 1;
@@ -720,13 +725,9 @@ fn bbox_for_circle(center: (i32, i32), radius: u32, stroke_width: u32) -> PixelR
         height: (r as i64 * 2).clamp(1, u32::MAX as i64) as u32,
     }
 }
-/// Bounding box of a polyline, inclusive of both endpoints and the stroke.
-///
-/// The inclusive extent is `max - min + 1` (so a horizontal or vertical path does
-/// not collapse to zero height/width). When `stroke_width > 0` the box is widened
-/// by half the stroke on each side, matching how the path is drawn; a degenerate
-/// single-point box is forced to at least 1px in each axis so it remains
-/// drawable (N-S-65).
+/// Bounding box of a polyline, inclusive of both endpoints and the stroke: the extent is
+/// `max - min + 1`, widened by half the stroke per side, and at least 1px per axis so a single
+/// point stays drawable (N-S-65).
 fn bbox_for_path(points: &[(i32, i32)], stroke_width: u32) -> PixelRect {
     let mut min_x = i32::MAX;
     let mut min_y = i32::MAX;
@@ -781,11 +782,8 @@ fn fill_rounded_rect_cpu_rgba8(
     }
 }
 
-/// Whether pixel `(x, y)` is inside `rect` rounded with corner radius `r`.
-///
-/// One predicate shared by the fill and the outline. The outline is "the outer shape minus the
-/// same shape inset by its width", so the two must agree about what *inside* means — otherwise the
-/// ring's straight sections and its corner arcs land on different pixels and the outline has gaps.
+/// Whether pixel `(x, y)` is inside `rect` rounded with corner radius `r`. One predicate shared
+/// by the fill and the outline, so the ring's straight sections and corner arcs cannot disagree.
 fn inside_rounded_rect(rect: PixelRect, r: i32, x: i32, y: i32) -> bool {
     // Bounds first: the corner branches below also assume the point is inside, so `true` from the
     // middle branch would otherwise mean "inside" for a point above or left of the rectangle —
@@ -819,14 +817,10 @@ fn inside_rounded_rect(rect: PixelRect, r: i32, x: i32, y: i32) -> bool {
         true
     }
 }
-/// Paints `rect`'s outline with rounded corners.
-///
-/// The outline is the **inside** band — `rect` minus `rect` inset by `thickness` — which is the
-/// same band the software backend (`pipeline::primitives`) and the SVG backend paint. It used to
-/// be built from four straight sections and four corner rings, with the straight sections placed
-/// `radius` pixels in from the edge; a corner arc and the line it should meet then sat `radius`
-/// apart, which is why every rounded outline had four open corners. Deriving the ring from one
-/// predicate removes that class of mistake: there is no second placement to disagree with.
+/// Paints `rect`'s outline as the **inside** band — `rect` minus `rect` inset by `thickness` —
+/// the same shape the software and SVG backends paint. Deriving it from one predicate keeps the
+/// straight sections and corner arcs on the same pixels, so a rounded outline has no open
+/// corners.
 #[allow(clippy::nonminimal_bool)]
 fn stroke_rounded_rect_cpu_rgba8(
     pixels: &mut [u8],
@@ -929,10 +923,8 @@ fn draw_line_cpu_rgba8(
 }
 /// Largest integer whose square is at most `value` (integer square root).
 ///
-/// The scanline circle paths need it once per row to turn the implicit
-/// `dx * dx + dy * dy <= r * r` test into an inclusive x interval. `f64::sqrt` supplies the
-/// seed and the two correction loops make the answer exact even when the square root lands a
-/// hair below an integer.
+/// The scanline circle paths need it once per row to turn `dx² + dy² <= r²` into an inclusive x
+/// interval; `f64::sqrt` seeds it and correction loops make the answer exact.
 fn isqrt_i128(value: i128) -> i128 {
     if value <= 0 {
         return 0;
@@ -1087,42 +1079,39 @@ fn draw_arc_cpu_rgba8(
         None => return,
     };
     let mut sink = PixelSink { pixels, width: fb_width, mode: blend };
-    let r = arc.radius as i64;
+    // The same scanline kernel as `fill_circle_cpu_rgba8`/`draw_circle_cpu_rgba8` (G-68):
+    // one square root per row yields the inside-circle run, so the angle test runs only on
+    // candidate pixels instead of every bounding-box pixel (G-223). Circle math stays in
+    // `i128` so `(r + 1) * (r + 1)` cannot overflow near the top of `u32`.
+    let r = arc.radius as i128;
     let r2 = r * r;
-    // Loop invariants hoisted out of the per-pixel loop.
     let outer_r2 = (r + 1) * (r + 1);
     let inner_r2 = (r - 1).max(0) * (r - 1).max(0);
-    let cx = arc.center.0 as i64;
-    let cy = arc.center.1 as i64;
-    let x_start = clip_rect.x.max((cx - r).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
-    let y_start = clip_rect.y.max((cy - r).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
-    let x_end = clip_rect.right().min((cx + r + 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
-    let y_end = clip_rect.bottom().min((cy + r + 1).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+    let cx = arc.center.0 as i128;
+    let cy = arc.center.1 as i128;
+    let bound = |v: i128| v.clamp(i32::MIN as i128, i32::MAX as i128) as i32;
+    let x_start = clip_rect.x.max(bound(cx - r)) as i128;
+    let y_start = clip_rect.y.max(bound(cy - r)) as i128;
+    let x_end = clip_rect.right().min(bound(cx + r + 1)) as i128;
+    let y_end = clip_rect.bottom().min(bound(cy + r + 1)) as i128;
     let (sa, ea) = if (arc.start_angle - arc.end_angle).abs() < 0.001 {
-        // Full circle
-        (0.0, std::f32::consts::TAU)
+        (0.0, std::f32::consts::TAU) // full circle: the angle test is skipped entirely
     } else {
         let sa = arc.start_angle.rem_euclid(std::f32::consts::TAU);
         let mut ea = arc.end_angle.rem_euclid(std::f32::consts::TAU);
-        // Normalise to a [sa, sa+TAU) range so ea > sa
         if ea <= sa {
-            ea += std::f32::consts::TAU;
+            ea += std::f32::consts::TAU; // normalise to [sa, sa + TAU) so ea > sa
         }
         (sa, ea)
     };
     let is_full_circle = (ea - sa) >= std::f32::consts::TAU - 0.001;
-    for y in y_start..y_end {
-        for x in x_start..x_end {
-            let dx = x as i64 - cx;
-            let dy = y as i64 - cy;
-            let d2 = dx * dx + dy * dy;
-            let inside_circle =
-                if arc.filled { d2 <= r2 } else { d2 <= outer_r2 && d2 >= inner_r2 };
-            if !inside_circle {
-                continue;
-            }
+    // Paints one row span, skipping pixels outside the arc's angular window. The test is
+    // exactly the per-pixel arithmetic it replaces, so the painted set is unchanged; it now
+    // runs only on pixels already inside the circle.
+    let mut paint_span = |x0: i128, x1: i128, y: i128| {
+        for x in x0..=x1 {
             if !is_full_circle {
-                let angle = (dy as f64).atan2(dx as f64) as f32;
+                let angle = ((y - cy) as f64).atan2((x - cx) as f64) as f32;
                 let angle = angle.rem_euclid(std::f32::consts::TAU);
                 let angle = if angle < sa { angle + std::f32::consts::TAU } else { angle };
                 if angle < sa || angle > ea {
@@ -1130,6 +1119,31 @@ fn draw_arc_cpu_rgba8(
                 }
             }
             sink.set(x as u32, y as u32, arc.color);
+        }
+    };
+    for y in y_start..y_end {
+        let dy2 = (y - cy) * (y - cy);
+        // Row candidates: the filled disc's run `|dx| <= isqrt(r2 - dy2)`, or for a stroke
+        // the outer circle's run `|dx| <= isqrt(outer_r2 - dy2)`.
+        let remaining = (if arc.filled { r2 } else { outer_r2 }) - dy2;
+        if remaining < 0 {
+            continue;
+        }
+        let half = isqrt_i128(remaining);
+        let row_x0 = (cx - half).max(x_start);
+        let row_x1 = (cx + half).min(x_end - 1);
+        if row_x0 > row_x1 {
+            continue;
+        }
+        // A stroke excludes its hole `dx * dx < inner_r2 - dy2`; the row paints the two run
+        // segments flanking it (its largest excluded dx is `isqrt(remaining_inner - 1)`, G-68).
+        let remaining_inner = if arc.filled { 0 } else { inner_r2 - dy2 };
+        if remaining_inner > 0 {
+            let inner_excl = isqrt_i128(remaining_inner - 1);
+            paint_span(row_x0, (cx - inner_excl - 1).min(row_x1), y);
+            paint_span((cx + inner_excl + 1).max(row_x0), row_x1, y);
+        } else {
+            paint_span(row_x0, row_x1, y);
         }
     }
 }
@@ -1360,14 +1374,9 @@ enum GradientAxis {
     Horizontal,
 }
 
-/// Fills `rect` with a radial ramp of `gradient_data` stop colours.
-///
-/// The variant carries no centre or radius, so the geometry is derived from `rect`:
-/// the ramp is centred in the rectangle and its outer radius reaches the nearest
-/// edge, which keeps the whole ellipse inside the requested area. Pixels beyond the
-/// outer radius take the **last** stop colour rather than being clipped away, so a
-/// radial fill always covers `rect` completely — a partially painted fill would look
-/// like a rendering bug at the call site.
+/// Fills `rect` with a radial ramp of `gradient_data` stop colours. The variant carries no
+/// centre or radius, so the ramp is centred in `rect` and reaches the nearest edge; pixels
+/// beyond it take the **last** stop so the fill always covers `rect` completely.
 fn draw_radial_gradient_cpu_rgba8(
     pixels: &mut [u8],
     fb_width: u32,
@@ -1455,12 +1464,10 @@ fn blend_pixel_cpu_rgba8(
     pixels[offset + 3] = blended.a;
 }
 
-/// Maps the numeric blend-mode tag carried by the command stream to its enum.
-///
-/// The tag is the enum's own `as u8` discriminant, but the stream is plain bytes so
-/// a value with no corresponding variant is possible. An unknown tag falls back to
-/// [`BlendMode::Normal`] and is logged: substituting a blend mode silently would
-/// change pixels the caller asked for, so it is reported rather than guessed.
+/// Maps the numeric blend-mode tag carried by the command stream to its enum. The tag is the
+/// enum's own `as u8` discriminant, but the stream is plain bytes so an unknown value is
+/// possible: it falls back to [`BlendMode::Normal`] and is logged, because substituting a
+/// blend mode silently would change pixels the caller asked for.
 fn blend_mode_from_id(mode: u8) -> BlendMode {
     const ALL: [BlendMode; 16] = [
         BlendMode::Normal,
@@ -1486,11 +1493,9 @@ fn blend_mode_from_id(mode: u8) -> BlendMode {
     })
 }
 
-/// Applies the blend formula to one source/destination pair.
-///
-/// The separable modes are evaluated per channel over the 0..=1 range. The four
-/// non-separable ones (`Hue`, `Saturation`, `Color`, `Luminosity`) cannot be: they
-/// are defined in terms of the triple's luminance, so they are handled together in
+/// Applies the blend formula to one source/destination pair. The separable modes are
+/// evaluated per channel over 0..=1; the four non-separable ones (`Hue`, `Saturation`,
+/// `Color`, `Luminosity`) are defined on the triple's luminance and are handled together in
 /// the `Luminosity`-family branch below rather than inside the channel closure.
 fn blend_channels(source: Rgba8, dest: Rgba8, mode: BlendMode) -> Rgba8 {
     /// Per-channel separable blend functions, on the 0..=1 scale.
@@ -1691,21 +1696,10 @@ fn fill_rect_cpu_rgba8_blended(
     }
 }
 
-/// Draws a drop shadow as an independent, blurred layer and composites it back.
-///
-/// The shadow is rendered into a private RGBA layer the size of the expanded,
-/// framebuffer-clamped blur area, blurred there, and only then written into the
-/// framebuffer. Two regions matter (N-S-63):
-///
-/// * `body` — where the shadow's solid rectangle sits (already clipped to the
-///   active clip).
-/// * `paint_region` — how far the blurred layer is allowed to paint; it is the
-///   caller's clip (or the framebuffer when none), so the blur can feather
-///   *outside* the body but never outside what the caller clipped to.
-///
-/// Blurring the layer rather than the framebuffer also means the blur source is
-/// only the shadow, not the scene behind it — a shadow over a textured
-/// background must not smear that background.
+/// Draws a drop shadow into a private layer the size of the clamped blur area, blurs it there,
+/// then composites it back (N-S-63). `body` is the solid rectangle and `paint_region` bounds the
+/// feathered paint, so the blur can spread outside the body but never outside the caller's clip;
+/// blurring the layer keeps the scene behind the shadow out of the source.
 fn box_shadow_cpu_rgba8(
     pixels: &mut [u8],
     width: u32,
@@ -1777,14 +1771,22 @@ fn box_shadow_cpu_rgba8(
         let Some(dst) = paint_region.intersect(PixelRect { x: 0, y: 0, width, height }) else {
             return;
         };
+        // Each row paints at most one contiguous span — the destination row clipped to the
+        // layer — so the per-pixel layer bounds checks collapse into two span endpoints
+        // (G-225). Rows outside the layer are skipped whole; the blend logic is unchanged.
         for y in dst.y..dst.bottom() {
-            for x in dst.x..dst.right() {
-                let lxo = x as i64 - lx0 as i64;
-                let lyo = y as i64 - ly0 as i64;
-                if lxo < 0 || lyo < 0 || lxo >= lw as i64 || lyo >= lh as i64 {
-                    continue;
-                }
-                let o = (lyo as usize * lw + lxo as usize) * 4;
+            let lyo = y as i64 - ly0 as i64;
+            if lyo < 0 || lyo >= lh as i64 {
+                continue;
+            }
+            let x_lo = (dst.x as i64).max(lx0 as i64);
+            let x_hi = (dst.right() as i64).min(lx0 as i64 + lw as i64);
+            if x_lo >= x_hi {
+                continue;
+            }
+            let row = lyo as usize * lw;
+            for x in x_lo..x_hi {
+                let o = (row + (x - lx0 as i64) as usize) * 4;
                 let alpha = layer[o + 3];
                 if alpha == 0 {
                     continue;
@@ -1801,12 +1803,9 @@ fn box_shadow_cpu_rgba8(
     });
 }
 
-/// Box-blurs an RGBA buffer in place using a separable moving average.
-///
-/// A squared kernel rather than a true Gaussian: it matches the software
-/// backend, and being separable (two 1-D passes) keeps it O(1) per pixel instead of
-/// O(radius) (G-67). The buffer is a self-contained layer, so the blur never reads the
-/// framebuffer (N-S-63).
+/// Box-blurs an RGBA buffer in place using a separable moving average. The squared kernel
+/// matches the software backend, and separability keeps it O(1) per pixel instead of O(radius)
+/// (G-67); the buffer is a self-contained layer, so the framebuffer is never read (N-S-63).
 fn box_blur_layer_rgba8(layer: &mut [u8], width: usize, height: usize, radius: usize) {
     if radius == 0 || width == 0 || height == 0 {
         return;
@@ -1895,14 +1894,12 @@ fn box_blur_layer_rgba8(layer: &mut [u8], width: usize, height: usize, radius: u
     });
 }
 
-/// Writes pixels into the framebuffer through the rasteriser's active blend
-/// mode.
+/// Writes pixels into the framebuffer through the rasteriser's active blend mode.
 ///
-/// `SetBlendMode` is sticky and promised to affect *every* following draw, but
-/// only rects and gradients honoured it: text, images, rounded rects, lines,
-/// circles, arcs and paths all called `set_pixel_cpu_rgba8` directly and thus
-/// always wrote source-over. Threading this sink through the helpers gives every
-/// variant the same blend behaviour without duplicating the dispatch (N-S-64).
+/// `SetBlendMode` is sticky and promised to affect *every* following draw, but only rects
+/// and gradients honoured it — text, images, rounded rects, lines, circles, arcs and paths
+/// all called `set_pixel_cpu_rgba8` directly and always wrote source-over. Threading this
+/// sink through the helpers gives every variant the same blend behaviour (N-S-64).
 struct PixelSink<'a> {
     pixels: &'a mut [u8],
     width: u32,
@@ -1910,10 +1907,8 @@ struct PixelSink<'a> {
 }
 
 impl PixelSink<'_> {
-    /// Writes `color` at `(x, y)`, compositing with the active blend mode.
-    ///
-    /// `Normal` takes the fast direct-write path, so an unaware caller's output
-    /// is byte-for-byte unchanged.
+    /// Writes `color` at `(x, y)`, compositing with the active blend mode. `Normal` takes
+    /// the fast direct-write path, so an unaware caller's output is byte-for-byte unchanged.
     #[inline]
     fn set(&mut self, x: u32, y: u32, color: Rgba8) {
         blend_pixel_cpu_rgba8(self.pixels, self.width, x, y, color, self.mode);
@@ -1943,14 +1938,11 @@ fn blend_cpu_rgba8(pixels: &mut [u8], width: u32, x: u32, y: u32, color: Rgba8, 
     blend_cpu_rgba8_with_mode(pixels, width, x, y, color, coverage, BlendMode::Normal)
 }
 
-/// As [`blend_cpu_rgba8`], but first composites `color` with the destination
-/// through `mode`.
-///
-/// The coverage path is used for anti-aliased glyph edges; without the mode it
-/// would bypass `SetBlendMode` entirely (the opaque glyph interiors honour it,
-/// but their antialiased edges did not), so a Multiply text draw came out
-/// half-applied (N-S-64). The blended colour is computed against the current
-/// destination and then source-over composited by `coverage`.
+/// As [`blend_cpu_rgba8`], but first composites `color` with the destination through
+/// `mode`. The coverage path serves anti-aliased glyph edges; without the mode it would
+/// bypass `SetBlendMode` entirely (opaque glyph interiors honoured it, their edges did
+/// not), so a Multiply text draw came out half-applied (N-S-64). The blended colour is
+/// computed against the current destination, then source-over composited by `coverage`.
 fn blend_cpu_rgba8_with_mode(
     pixels: &mut [u8],
     width: u32,
@@ -2012,6 +2004,59 @@ mod tests {
 
     fn rect(x: i32, y: i32, width: u32, height: u32) -> PixelRect {
         PixelRect { x, y, width, height }
+    }
+
+    /// Rendering into a caller buffer must produce exactly the owned wrapper's bytes, even
+    /// when the buffer starts with a previous frame's contents (G-221).
+    #[test]
+    fn caller_buffer_rasterization_matches_the_owned_frame() {
+        let commands = vec![
+            WgpuDrawCommand::Clear { color: Rgba8 { r: 10, g: 20, b: 30, a: 255 } },
+            WgpuDrawCommand::PushClip { rect: rect(0, 0, 16, 20) },
+            WgpuDrawCommand::FillRect {
+                rect: rect(0, 0, 20, 10),
+                color: RED,
+                clip: Some(rect(2, 2, 12, 12)),
+            },
+            WgpuDrawCommand::StrokeRect {
+                rect: rect(4, 4, 12, 12),
+                color: Rgba8 { r: 0, g: 255, b: 0, a: 255 },
+                thickness: 2,
+                clip: None,
+            },
+            WgpuDrawCommand::FillRoundedRect {
+                rect: rect(6, 6, 8, 8),
+                radius: 3,
+                color: Rgba8 { r: 0, g: 0, b: 255, a: 200 },
+                clip: None,
+            },
+            WgpuDrawCommand::DrawText {
+                rect: rect(0, 0, 16, 16),
+                text: "AB".into(),
+                color: Rgba8 { r: 255, g: 255, b: 0, a: 255 },
+                clip: None,
+            },
+            WgpuDrawCommand::FillCircle {
+                center: (12, 12),
+                radius: 5,
+                color: Rgba8 { r: 255, g: 0, b: 255, a: 180 },
+                clip: None,
+            },
+            WgpuDrawCommand::SetBlendMode { mode: 1 },
+            WgpuDrawCommand::FillRect {
+                rect: rect(8, 8, 8, 8),
+                color: Rgba8 { r: 128, g: 128, b: 128, a: 255 },
+                clip: None,
+            },
+            WgpuDrawCommand::PopClip,
+        ];
+        let owned = rasterize_draw_commands_rgba8(20, 20, &commands).expect("owned frame");
+        // A non-zero fill proves the into-variant clears a reused buffer rather than drawing
+        // over whatever the previous frame left behind.
+        let mut reused = vec![0xA5u8; owned.len()];
+        rasterize_draw_commands_into_rgba8(20, 20, &commands, &mut reused).expect("into frame");
+        assert_eq!(reused, owned, "caller-buffer output must match the owned frame");
+        assert!(rasterize_draw_commands_into_rgba8(20, 20, &commands, &mut reused[1..]).is_err());
     }
 
     #[test]
@@ -2801,5 +2846,208 @@ mod tests {
             pixels.iter().all(|&b| b == 0),
             "offscreen / unreachable circles must not paint anything"
         );
+    }
+
+    // --- G-222/G-223/G-225 regression pins: the scratch-reuse and scanline reworks must
+    // be byte-identical to the per-allocation / per-pixel forms they replaced. ---
+
+    /// The glyph coverage scratch is retained across text commands (G-222); a reused buffer
+    /// must render exactly what a fresh one did, with no ink from an earlier glyph leaking.
+    #[test]
+    fn text_coverage_reuse_renders_each_glyph_fresh() {
+        let frame = |text: &str| {
+            rasterize_draw_commands_rgba8(
+                8,
+                8,
+                &[
+                    WgpuDrawCommand::Clear { color: Rgba8 { r: 0, g: 0, b: 0, a: 0 } },
+                    WgpuDrawCommand::DrawText {
+                        rect: rect(0, 0, 8, 8),
+                        text: text.into(),
+                        color: RED,
+                        clip: Some(rect(0, 0, 8, 8)),
+                    },
+                ],
+            )
+            .expect("rasterizes")
+        };
+        let a_first = frame("A");
+        let b = frame("B");
+        let a_again = frame("A");
+        assert_ne!(a_first, b, "different glyphs must paint differently");
+        assert_eq!(a_first, a_again, "re-rendering after other text must be identical");
+
+        // The same pin within one command: two cells sharing the retained scratch.
+        let both = rasterize_draw_commands_rgba8(
+            16,
+            8,
+            &[
+                WgpuDrawCommand::Clear { color: Rgba8 { r: 0, g: 0, b: 0, a: 0 } },
+                WgpuDrawCommand::DrawText {
+                    rect: rect(0, 0, 16, 8),
+                    text: "AB".into(),
+                    color: RED,
+                    clip: Some(rect(0, 0, 16, 8)),
+                },
+            ],
+        )
+        .expect("rasterizes");
+        for y in 0..8u32 {
+            for x in 0..8u32 {
+                assert_eq!(
+                    pixel(&both, 16, x, y),
+                    pixel(&a_first, 8, x, y),
+                    "'A' cell at ({x},{y})"
+                );
+                assert_eq!(
+                    pixel(&both, 16, x + 8, y),
+                    pixel(&b, 8, x, y),
+                    "'B' cell at ({},{})",
+                    x + 8,
+                    y
+                );
+            }
+        }
+    }
+
+    /// The scanline arc kernel (G-223) must paint exactly the set the old per-pixel
+    /// definition defines: pixels passing the distance test whose angle is inside the
+    /// window. This reference is that definition, written independently of the kernel.
+    #[test]
+    fn arc_matches_its_per_pixel_reference() {
+        fn reference_arc(
+            width: u32,
+            height: u32,
+            center: (i32, i32),
+            radius: u32,
+            start_angle: f32,
+            end_angle: f32,
+            filled: bool,
+        ) -> Vec<u8> {
+            let r = radius as i64;
+            let r2 = r * r;
+            let outer_r2 = (r + 1) * (r + 1);
+            let inner_r2 = (r - 1).max(0) * (r - 1).max(0);
+            let (sa, ea) = if (start_angle - end_angle).abs() < 0.001 {
+                (0.0, std::f32::consts::TAU)
+            } else {
+                let sa = start_angle.rem_euclid(std::f32::consts::TAU);
+                let mut ea = end_angle.rem_euclid(std::f32::consts::TAU);
+                if ea <= sa {
+                    ea += std::f32::consts::TAU;
+                }
+                (sa, ea)
+            };
+            let is_full_circle = (ea - sa) >= std::f32::consts::TAU - 0.001;
+            let mut pixels = vec![0u8; width as usize * height as usize * 4];
+            for y in 0..height as i64 {
+                for x in 0..width as i64 {
+                    let dx = x - center.0 as i64;
+                    let dy = y - center.1 as i64;
+                    let d2 = dx * dx + dy * dy;
+                    // The old per-pixel loop iterated `x ∈ [max(clip.x, cx - r),
+                    // min(clip.right(), cx + r + 1))` (and the same for `y`), so ring pixels
+                    // at |dx| or |dy| of exactly r+1 were never reachable; with the arc fully
+                    // inside the framebuffer the clip adds no further bound.
+                    if dx.abs() > r || dy.abs() > r {
+                        continue;
+                    }
+                    let inside = if filled { d2 <= r2 } else { d2 <= outer_r2 && d2 >= inner_r2 };
+                    if !inside {
+                        continue;
+                    }
+                    if !is_full_circle {
+                        let angle = (dy as f64).atan2(dx as f64) as f32;
+                        let angle = angle.rem_euclid(std::f32::consts::TAU);
+                        let angle = if angle < sa { angle + std::f32::consts::TAU } else { angle };
+                        if angle < sa || angle > ea {
+                            continue;
+                        }
+                    }
+                    let o = (y as usize * width as usize + x as usize) * 4;
+                    pixels[o..o + 4].copy_from_slice(&[RED.r, RED.g, RED.b, RED.a]);
+                }
+            }
+            pixels
+        }
+
+        let tau = std::f32::consts::TAU;
+        let cases = [
+            (0.0f32, std::f32::consts::FRAC_PI_2), // quarter: the down-right octant boundary
+            (0.0, std::f32::consts::PI),           // half circle
+            (std::f32::consts::PI, std::f32::consts::FRAC_PI_2), // ea < sa: wraps through 0
+            (-1.0, 1.0),                           // negative start normalises
+            (tau - 0.5, tau + 0.5),                // window straddling the 2π wrap
+            (0.0, 0.0),                            // full circle: angle test skipped
+        ];
+        for filled in [true, false] {
+            for radius in [1u32, 3, 9] {
+                for (start_angle, end_angle) in cases {
+                    let drawn = rasterize_draw_commands_rgba8(
+                        24,
+                        24,
+                        &[
+                            WgpuDrawCommand::Clear { color: Rgba8 { r: 0, g: 0, b: 0, a: 0 } },
+                            WgpuDrawCommand::DrawArc {
+                                center: (12, 12),
+                                radius,
+                                start_angle,
+                                end_angle,
+                                color: RED,
+                                filled,
+                                clip: None,
+                            },
+                        ],
+                    )
+                    .expect("rasterizes");
+                    let expected =
+                        reference_arc(24, 24, (12, 12), radius, start_angle, end_angle, filled);
+                    assert_eq!(
+                        drawn, expected,
+                        "arc r={radius} filled={filled} angles {start_angle}..{end_angle}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Shadow compositing (G-225) must only touch the caller's paint region, and a clipped
+    /// render must equal the unclipped one inside it — the row-span batching may not shift
+    /// a single blended pixel even where the layer extends past the clip.
+    #[test]
+    fn box_shadow_respects_the_paint_region_and_matches_the_unclipped_render() {
+        let shadow = WgpuDrawCommand::BoxShadow {
+            rect: rect(8, 8, 4, 4),
+            color: RED,
+            offset_x: 0,
+            offset_y: 0,
+            blur_radius: 2,
+            clip: None,
+        };
+        let full = rasterize_draw_commands_rgba8(20, 20, &[shadow.clone()]).expect("rasterizes");
+        // The clip contains the body (so the blurred source is identical in both renders)
+        // but cuts the ramp: the layer reaches x/y 14, the paint region stops at 12.
+        let clip = rect(0, 0, 12, 12);
+        let clipped = rasterize_draw_commands_rgba8(
+            20,
+            20,
+            &[WgpuDrawCommand::PushClip { rect: clip }, shadow, WgpuDrawCommand::PopClip],
+        )
+        .expect("rasterizes");
+        let mut painted_inside = 0;
+        for y in 0..20u32 {
+            for x in 0..20u32 {
+                let (a, b) = (pixel(&full, 20, x, y), pixel(&clipped, 20, x, y));
+                if x < clip.right() as u32 && y < clip.bottom() as u32 {
+                    assert_eq!(a, b, "the clip must not change the shadow at ({x},{y})");
+                    if b != [0, 0, 0, 0] {
+                        painted_inside += 1;
+                    }
+                } else {
+                    assert_eq!(b, [0, 0, 0, 0], "clipped shadow must not paint at ({x},{y})");
+                }
+            }
+        }
+        assert!(painted_inside > 0, "the clipped render must paint something");
     }
 }

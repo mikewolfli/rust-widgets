@@ -45,8 +45,6 @@ struct MeasureEntry {
     /// The device scale the measurement was taken at.
     dpi_bits: u64,
     metrics: TextMetrics,
-    /// Monotonic use counter, for least-recently-used eviction.
-    stamp: u64,
 }
 
 /// One cached width estimate.
@@ -54,17 +52,139 @@ struct EstimateEntry {
     font: Font,
     text: String,
     width: u32,
-    stamp: u64,
+}
+
+/// A hash map plus an intrusive least-recently-used list over its keys.
+///
+/// The previous eviction scan read every entry on each insert to find the smallest
+/// stamp, which made a steady state of distinct captions O(n) per miss. The list makes
+/// both "mark this key as just used" and "drop the oldest key" constant-time: each entry
+/// stores the key before and after it, and the cache stores the head (oldest) and tail
+/// (newest).
+struct Lru<V> {
+    entries: HashMap<u64, LruEntry<V>>,
+    /// Least recently used key.
+    head: Option<u64>,
+    /// Most recently used key.
+    tail: Option<u64>,
+}
+
+/// One entry of [`Lru`], with the links that make the recency order intrusive.
+struct LruEntry<V> {
+    value: V,
+    prev: Option<u64>,
+    next: Option<u64>,
+}
+
+impl<V> Lru<V> {
+    fn new() -> Self {
+        Self { entries: HashMap::new(), head: None, tail: None }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Looks `key` up and marks it as the most recently used entry.
+    fn get_mut(&mut self, key: u64) -> Option<&mut V> {
+        if !self.entries.contains_key(&key) {
+            return None;
+        }
+        self.touch(key);
+        self.entries.get_mut(&key).map(|entry| &mut entry.value)
+    }
+
+    /// Inserts or replaces `key`, always marking it as the most recently used entry.
+    fn insert(&mut self, key: u64, value: V) {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.value = value;
+            self.touch(key);
+            return;
+        }
+        let prev = self.tail;
+        self.entries.insert(key, LruEntry { value, prev, next: None });
+        if let Some(prev) = prev {
+            if let Some(entry) = self.entries.get_mut(&prev) {
+                entry.next = Some(key);
+            }
+        } else {
+            self.head = Some(key);
+        }
+        self.tail = Some(key);
+    }
+
+    /// Removes the least recently used entry, if any.
+    fn evict(&mut self) -> Option<u64> {
+        let victim = self.head?;
+        self.remove(victim);
+        Some(victim)
+    }
+
+    fn remove(&mut self, key: u64) -> Option<V> {
+        let entry = self.entries.remove(&key)?;
+        match entry.prev {
+            Some(prev) => {
+                if let Some(previous) = self.entries.get_mut(&prev) {
+                    previous.next = entry.next;
+                }
+            }
+            None => self.head = entry.next,
+        }
+        match entry.next {
+            Some(next) => {
+                if let Some(following) = self.entries.get_mut(&next) {
+                    following.prev = entry.prev;
+                }
+            }
+            None => self.tail = entry.prev,
+        }
+        Some(entry.value)
+    }
+
+    /// Moves `key` to the tail, where the next eviction cannot reach it.
+    fn touch(&mut self, key: u64) {
+        if self.tail == Some(key) {
+            return;
+        }
+        let (prev, next) = match self.entries.get(&key) {
+            Some(entry) => (entry.prev, entry.next),
+            None => return,
+        };
+        match prev {
+            Some(prev) => {
+                if let Some(entry) = self.entries.get_mut(&prev) {
+                    entry.next = next;
+                }
+            }
+            None => self.head = next,
+        }
+        if let Some(next) = next {
+            if let Some(entry) = self.entries.get_mut(&next) {
+                entry.prev = prev;
+            }
+        } else {
+            self.tail = prev;
+        }
+        let old_tail = self.tail;
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.prev = old_tail;
+            entry.next = None;
+        }
+        match old_tail {
+            Some(tail) => {
+                if let Some(entry) = self.entries.get_mut(&tail) {
+                    entry.next = Some(key);
+                }
+            }
+            None => self.head = Some(key),
+        }
+        self.tail = Some(key);
+    }
 }
 
 thread_local! {
-    // `HashMap::new` is const only under alloc_frugal (BTreeMap); the std profile cannot be const.
-    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
-    static MEASUREMENTS: RefCell<(HashMap<u64, MeasureEntry>, u64)> =
-        RefCell::new((HashMap::new(), 0));
-    #[cfg_attr(alloc_frugal, allow(clippy::missing_const_for_thread_local))]
-    static ESTIMATES: RefCell<(HashMap<u64, EstimateEntry>, u64)> =
-        RefCell::new((HashMap::new(), 0));
+    static MEASUREMENTS: RefCell<Lru<MeasureEntry>> = RefCell::new(Lru::new());
+    static ESTIMATES: RefCell<Lru<EstimateEntry>> = RefCell::new(Lru::new());
 }
 
 /// Hashes the complete font identity and the text into one key.
@@ -105,15 +225,12 @@ pub(crate) fn measure_text(context: &RenderContext, text: &str, font: &Font) -> 
     let dpi_bits = u64::from(context.dpi_scale().to_bits());
     let hit = MEASUREMENTS.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let (entries, stamp) = &mut *cache;
-        let entry = entries.get_mut(&key)?;
+        let entry = cache.get_mut(key)?;
         if entry.font != *font || entry.text != text || entry.dpi_bits != dpi_bits {
             // A hash collision: the slot belongs to a different measurement. Treat it as
             // a miss rather than answering with the wrong width.
             return None;
         }
-        *stamp = stamp.wrapping_add(1);
-        entry.stamp = *stamp;
         Some(entry.metrics)
     });
     if let Some(metrics) = hit {
@@ -123,20 +240,12 @@ pub(crate) fn measure_text(context: &RenderContext, text: &str, font: &Font) -> 
     let metrics = context.measure_text(text, font);
     MEASUREMENTS.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let (entries, stamp) = &mut *cache;
-        if entries.len() >= CACHE_LIMIT {
-            evict_measure(entries);
+        if cache.len() >= CACHE_LIMIT {
+            cache.evict();
         }
-        *stamp = stamp.wrapping_add(1);
-        entries.insert(
+        cache.insert(
             key,
-            MeasureEntry {
-                font: font.clone(),
-                text: text.to_string(),
-                dpi_bits,
-                metrics,
-                stamp: *stamp,
-            },
+            MeasureEntry { font: font.clone(), text: text.to_string(), dpi_bits, metrics },
         );
     });
     metrics
@@ -151,13 +260,10 @@ pub(crate) fn estimate_text_width(text: &str, font: &Font) -> u32 {
     let key = fingerprint(text, font, 2, 0);
     let hit = ESTIMATES.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let (entries, stamp) = &mut *cache;
-        let entry = entries.get_mut(&key)?;
+        let entry = cache.get_mut(key)?;
         if entry.font != *font || entry.text != text {
             return None;
         }
-        *stamp = stamp.wrapping_add(1);
-        entry.stamp = *stamp;
         Some(entry.width)
     });
     if let Some(width) = hit {
@@ -167,31 +273,44 @@ pub(crate) fn estimate_text_width(text: &str, font: &Font) -> u32 {
     let width = crate::widget::metrics::estimate_text_width(text, font, 1.0);
     ESTIMATES.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let (entries, stamp) = &mut *cache;
-        if entries.len() >= CACHE_LIMIT {
-            evict_estimate(entries);
+        if cache.len() >= CACHE_LIMIT {
+            cache.evict();
         }
-        *stamp = stamp.wrapping_add(1);
-        entries.insert(
-            key,
-            EstimateEntry { font: font.clone(), text: text.to_string(), width, stamp: *stamp },
-        );
+        cache.insert(key, EstimateEntry { font: font.clone(), text: text.to_string(), width });
     });
     width
 }
 
-/// Removes the least recently used measurement.
-fn evict_measure(entries: &mut HashMap<u64, MeasureEntry>) {
-    let victim = entries.iter().min_by_key(|(_, entry)| entry.stamp).map(|(key, _)| *key);
-    if let Some(victim) = victim {
-        entries.remove(&victim);
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::Lru;
 
-/// Removes the least recently used estimate.
-fn evict_estimate(entries: &mut HashMap<u64, EstimateEntry>) {
-    let victim = entries.iter().min_by_key(|(_, entry)| entry.stamp).map(|(key, _)| *key);
-    if let Some(victim) = victim {
-        entries.remove(&victim);
+    #[test]
+    fn eviction_drops_the_least_recently_touched_entry() {
+        let mut cache: Lru<u32> = Lru::new();
+        cache.insert(1, 10);
+        cache.insert(2, 20);
+        cache.insert(3, 30);
+
+        // A hit reorders the list; the evicted key must be the one not touched since.
+        assert_eq!(cache.get_mut(1).copied(), Some(10));
+        assert_eq!(cache.evict(), Some(2));
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get_mut(1).copied(), Some(10));
+        assert_eq!(cache.get_mut(3).copied(), Some(30));
+    }
+
+    #[test]
+    fn removing_the_head_and_tail_keeps_the_links_consistent() {
+        let mut cache: Lru<u32> = Lru::new();
+        cache.insert(1, 10);
+        cache.insert(2, 20);
+        cache.insert(3, 30);
+
+        assert_eq!(cache.remove(1), Some(10));
+        assert_eq!(cache.evict(), Some(2));
+        assert_eq!(cache.evict(), Some(3));
+        assert_eq!(cache.evict(), None);
     }
 }

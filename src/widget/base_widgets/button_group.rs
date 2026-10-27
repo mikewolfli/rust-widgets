@@ -132,8 +132,12 @@ pub(crate) enum MemberEvent {
     Released,
     /// A member was activated.
     Clicked,
-    /// A member's latched state changed.
-    Toggled,
+    /// A member's latched state changed, to the carried value.
+    ///
+    /// The bool is part of the event rather than something a subscriber has to read back:
+    /// the group is the only witness of the change for an unmounted member, so reporting
+    /// just the id left every listener querying state it had already been told about.
+    Toggled(bool),
 }
 
 /// A group's group-level signals.
@@ -146,7 +150,8 @@ struct GroupSignals {
     pressed: Signal1<u64>,
     released: Signal1<u64>,
     clicked: Signal1<u64>,
-    toggled: Signal1<u64>,
+    /// The member's id and its new checked state.
+    toggled: Signal1<(u64, bool)>,
 }
 
 impl GroupSignals {
@@ -155,7 +160,7 @@ impl GroupSignals {
             MemberEvent::Pressed => self.pressed.emit(id),
             MemberEvent::Released => self.released.emit(id),
             MemberEvent::Clicked => self.clicked.emit(id),
-            MemberEvent::Toggled => self.toggled.emit(id),
+            MemberEvent::Toggled(checked) => self.toggled.emit((id, checked)),
         }
     }
 }
@@ -523,8 +528,10 @@ fn member_facts(_id: ObjectId) -> Option<(Rect, bool, bool)> {
 /// # Signals
 ///
 /// The four group-level signals carry the member's widget id as their payload, which is the only
-/// handle this layer has on a control. They are emitted **in addition to** the member's own
-/// signals, never instead of them, so an existing per-control subscription keeps working.
+/// handle this layer has on a control. `button_toggled` additionally carries the member's new
+/// checked state, so a subscriber does not have to query the member back. They are emitted **in
+/// addition to** the member's own signals, never instead of them, so an existing per-control
+/// subscription keeps working.
 ///
 /// # Cost
 ///
@@ -735,8 +742,9 @@ impl ButtonGroup {
         &self.signals.clicked
     }
 
-    /// Emitted when a member's latched state changes, with the member's widget id.
-    pub fn button_toggled(&self) -> &Signal1<u64> {
+    /// Emitted when a member's latched state changes, with the member's widget id and its
+    /// new checked state.
+    pub fn button_toggled(&self) -> &Signal1<(u64, bool)> {
         &self.signals.toggled
     }
 }
@@ -818,5 +826,28 @@ mod tests {
         assert_eq!(next_enabled_member(&key("g"), 1, false), Some(3));
         assert!(contains_member(&key("g"), 2));
         assert!(!contains_member(&key("g"), 9));
+    }
+
+    /// B-010: the group's `button_toggled` signal reports the new checked state alongside the
+    /// member id, so a subscriber does not have to query the member back.
+    #[test]
+    fn button_toggled_carries_the_checked_state() {
+        use crate::compat::Arc;
+        use crate::compat::Mutex;
+
+        clear();
+        let mut group = ButtonGroup::with_id("payload");
+        group.add_button(7);
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        group.button_toggled().connect(move |value| {
+            sink.lock().unwrap().push(*value);
+        });
+
+        notify_member_event(7, MemberEvent::Toggled(true));
+        notify_member_event(7, MemberEvent::Toggled(false));
+
+        assert_eq!(*seen.lock().unwrap(), vec![(7, true), (7, false)]);
     }
 }

@@ -233,6 +233,12 @@ pub struct MessageBox {
     hovered: Option<usize>,
     /// The action button currently held down, for pressed feedback.
     pressed: Option<usize>,
+    /// The button the box finished with, if it has been answered (DLG-005).
+    ///
+    /// `None` until a button is activated, and cleared when the box is shown again, so a second
+    /// prompt cannot answer with the first prompt's choice. [`Self::button_clicked`] still fires
+    /// per activation; this is the one-value spelling a caller that only needs the answer reads.
+    result: Option<StandardButton>,
     modal: bool,
     /// How far the box has revealed, `0.0` hidden and `1.0` fully shown.
     ///
@@ -257,6 +263,13 @@ pub struct MessageBox {
     /// [`Self::accepted`] or [`Self::rejected`]. Carries the button that was
     /// activated.
     pub button_clicked: Signal1<StandardButton>,
+    /// Emitted once per activation, after [`Self::button_clicked`] and the
+    /// accept/reject signal, carrying the button the box finished with (DLG-005).
+    ///
+    /// This is the single-subscription counterpart of [`Self::button_clicked`]: a host that
+    /// only wants "the box was answered, with this" connects one slot instead of one per
+    /// button. The click signals are unchanged, so existing wiring keeps working.
+    pub finished: Signal1<StandardButton>,
     /// Emitted when the box was answered affirmatively, i.e. with OK, Yes, Save
     /// or Apply. Carries no payload; read the button from
     /// [`Self::button_clicked`] if the distinction matters.
@@ -295,12 +308,14 @@ impl MessageBox {
             escape_button: None,
             hovered: None,
             pressed: None,
+            result: None,
             modal: true,
             // At rest at the hidden end: a freshly built box is not shown, so it must not animate
             // itself away on its first frame.
             reveal: PropertyDriver::at(0.0, MotionSlot::Normal),
             new_visible: false,
             button_clicked: Signal1::new(),
+            finished: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
             details_toggled: Signal1::new(),
@@ -575,7 +590,7 @@ impl MessageBox {
     }
 
     /// Simulates the user activating `btn`: emits [`Self::button_clicked`], then
-    /// either [`Self::accepted`] or [`Self::rejected`].
+    /// either [`Self::accepted`] or [`Self::rejected`], then [`Self::finished`].
     ///
     /// The accept/reject split is by button identity, not by context: OK, Yes,
     /// Save and Apply accept, and *every* other button rejects — including YesAll,
@@ -583,6 +598,7 @@ impl MessageBox {
     /// [`Self::buttons`]; no validation is performed. The dialog is not dismissed
     /// and no redraw is requested.
     pub fn click_button(&mut self, btn: StandardButton) {
+        self.result = Some(btn);
         self.button_clicked.emit(btn);
         match btn {
             StandardButton::Ok
@@ -595,6 +611,15 @@ impl MessageBox {
                 self.rejected.emit();
             }
         }
+        self.finished.emit(btn);
+    }
+
+    /// The button the box finished with, or `None` while it has not been answered (DLG-005).
+    ///
+    /// Cleared when the box is shown again, so this is always the answer to the prompt the
+    /// user is looking at rather than the previous one.
+    pub fn result(&self) -> Option<StandardButton> {
+        self.result
     }
     /// The icon drawn for the current severity: `Info` for information, `Help` for a
     /// question, `Warning` for a warning, `Error` for critical, and `None` for
@@ -678,6 +703,11 @@ impl Widget for MessageBox {
         let visible = self.base.is_visible();
         if visible != self.new_visible {
             self.new_visible = visible;
+            // A prompt that comes up is a new question: the previous answer must not be
+            // readable through `result()` until this round is answered.
+            if visible {
+                self.result = None;
+            }
             self.reveal.set_target(if visible { 1.0 } else { 0.0 });
         }
         self.reveal.tick(delta_ms)
@@ -1193,7 +1223,13 @@ impl Draw for MessageBox {
         // recorded and the *appearance* of it was not. The scrim fades in with the reveal, and
         // both are driven by the one value, so they cannot get out of step.
         if self.modal {
-            super::draw_modal_scrim_scaled(context, self.geometry(), reveal);
+            super::draw_modal_scrim_scaled(
+                context,
+                self.id(),
+                self.geometry(),
+                self.base.parent(),
+                reveal,
+            );
         }
 
         // The **frame**, not the control's rectangle: see `frame_rect`.
@@ -1256,7 +1292,7 @@ impl Draw for MessageBox {
         // action colour — so the one affirmative action in the box was painted the same colour as
         // the frame behind it and the census sample showed no primary button at all. `primary` is
         // the token every other dialog's accept button uses.
-        let button_fill = surface.blend(&ink, 0.12);
+        let button_fill = action_button_fill(surface, ink);
         let primary = {
             let manager = crate::style::theme_manager();
             manager
@@ -1602,6 +1638,22 @@ pub(crate) fn pixmap_pixels(
     Some(pixels)
 }
 
+/// The fill of an ordinary action button, resolved through the theme's layer roles (DLG-006).
+///
+/// # Why the role leads
+///
+/// The row used to be `surface.blend(&ink, 0.12)` — a literal step derived from the frame. It
+/// therefore ignored every theme token, and a theme switch that recoloured the dialog left the
+/// button row looking like a slightly different dialog. `SurfaceContainerHigh` is the theme's
+/// own statement of "a raised surface one step above the container", which is what an action
+/// button is; the blend survives only as the fallback for a palette whose raised layer resolves
+/// to the frame itself (an unthemed build, or a degenerate preset).
+pub(crate) fn action_button_fill(surface: Color, ink: Color) -> Color {
+    crate::style::layer_color(crate::style::LayerColor::SurfaceContainerHigh)
+        .filter(|resolved| *resolved != surface)
+        .unwrap_or_else(|| surface.blend(&ink, 0.12))
+}
+
 /// The action-button row a dialog paints, computed once and used by both the ink and the
 /// hit test.
 /// # Why a type rather than three loose numbers
@@ -1919,6 +1971,55 @@ mod tests {
         }
         // A point in the leftover room the row did not take belongs to no button.
         assert_eq!(row.hit(Point::new(band.x + 1, band.y + band.height as i32 / 2)), None);
+    }
+
+    #[test]
+    fn the_box_reports_the_button_it_finished_with() {
+        let mut mb = MessageBox::question(Rect::new(0, 0, 350, 150), "Q", "Continue?");
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<StandardButton>::new()));
+        let sink = Arc::clone(&seen);
+        mb.finished.connect(move |button: std::sync::Arc<StandardButton>| {
+            sink.lock().expect("lock").push(*button);
+        });
+
+        assert_eq!(mb.result(), None, "an unanswered box has no result");
+        mb.click_button(StandardButton::No);
+        assert_eq!(mb.result(), Some(StandardButton::No));
+        mb.click_button(StandardButton::Yes);
+        assert_eq!(mb.result(), Some(StandardButton::Yes));
+        assert_eq!(
+            *seen.lock().expect("lock"),
+            vec![StandardButton::No, StandardButton::Yes],
+            "`finished` fires once per activation, in order"
+        );
+
+        // A second showing is a new question: the previous answer is not readable.
+        mb.base.hide();
+        mb.tick(16);
+        mb.base.show();
+        mb.tick(16);
+        assert_eq!(mb.result(), None, "showing the box again clears the previous answer");
+    }
+
+    /// The action row's ordinary buttons take their fill from a theme layer role (DLG-006).
+    #[test]
+    fn the_action_row_takes_its_fill_from_the_theme_layer_role() {
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        let role = crate::style::layer_color(crate::style::LayerColor::SurfaceContainerHigh)
+            .expect("a preset defines the raised surface layer");
+        let frame = role.contrast_color();
+        assert_ne!(frame, role, "the fixture needs the frame to differ from the row");
+        assert_eq!(
+            action_button_fill(frame, Color::BLACK),
+            role,
+            "the row is painted in the theme's raised-surface role, not a literal blend"
+        );
+
+        // A palette whose raised layer collides with the frame still paints a visible step.
+        let fallback = action_button_fill(role, role.contrast_color());
+        assert_ne!(fallback, role, "the fallback must still separate the row from the frame");
     }
 
     #[test]

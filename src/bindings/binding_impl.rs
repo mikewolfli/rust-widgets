@@ -931,8 +931,11 @@ pub extern "C" fn rw_set_theme(name: *const c_char) -> CBool {
         {
             let activated = crate::theme::global_theme_manager().set_theme(&requested);
             if activated {
-                // Re-resolve every live control's style against the new theme, the same
-                // way the window-creation funnel does.
+                // The switch emitted `theme_changed`, which every mounted control's registration
+                // subscription recorded (G-404). This drain re-resolves each notified control's
+                // style against the new theme synchronously — the switch's completion step — so
+                // a host that reads styles or renders before its next frame still sees the new
+                // palette. Paths that do not complete here are covered by the frame step.
                 crate::reapply_active_theme();
             }
             activated
@@ -1037,6 +1040,9 @@ pub extern "C" fn rw_set_high_contrast(mode: c_int) {
         };
         #[cfg(device_profile)]
         {
+            // The override emits `theme_changed`, which every mounted control's registration
+            // subscription recorded (G-404); the drain re-resolves each notified control here so
+            // the change takes effect without a rebuild, exactly as the switch paths do.
             crate::theme::set_global_high_contrast(mode);
             crate::reapply_active_theme();
         }

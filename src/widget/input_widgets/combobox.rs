@@ -1410,6 +1410,35 @@ impl ComboBox {
         true
     }
 
+    /// Repaints only the rows `rows` name, through the damage-tracking face.
+    ///
+    /// A hover move touches two rows. When the host has not opted into damage tracking
+    /// this falls back to the whole-control request, which is the historical behaviour
+    /// (I-132).
+    fn request_rows_repaint(&self, rows: &[Option<usize>]) {
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                if crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full
+                {
+                    let mut requested = false;
+                    for row in rows.iter().flatten() {
+                        if let Some(rect) = self.item_rect(*row) {
+                            crate::widget::runtime::request_repaint_rect(id, rect);
+                            requested = true;
+                        }
+                    }
+                    if requested {
+                        self.base.redraw_requested.emit();
+                        return;
+                    }
+                }
+            }
+        }
+        self.base.request_redraw();
+    }
+
     /// Moves the highlight by `delta` rows, clamped to the items that exist.
     ///
     /// Returns whether the highlight moved, so a caller can repaint only when something changed.
@@ -1912,9 +1941,10 @@ impl EventHandler for ComboBox {
             // row it crossed.
             Event::MouseMove { pos } => {
                 if self.open {
+                    let previous = self.hovered_item;
                     let hovered = self.item_at_point(*pos);
                     if self.set_hovered(hovered) {
-                        self.base.request_redraw();
+                        self.request_rows_repaint(&[previous, hovered]);
                     }
                 }
             }
@@ -3352,5 +3382,30 @@ mod tests {
         assert!(cb.tick(16));
         cb.tick(500);
         assert!(!cb.is_animating());
+    }
+
+    #[test]
+    fn a_hover_move_requests_one_repaint_for_the_row_change() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items(vec!["Alpha".to_string(), "Beta".to_string()]);
+        cb.set_open(true);
+        let row = cb.item_rect(0).expect("the first row is painted");
+        let repaints = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        cb.base.redraw_requested.connect({
+            let repaints = std::sync::Arc::clone(&repaints);
+            move || {
+                repaints.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        let pos = Point::new(row.x + 1, row.y + 1);
+        cb.handle_event(&Event::MouseMove { pos });
+        let after_first = repaints.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(after_first >= 1);
+        cb.handle_event(&Event::MouseMove { pos });
+        assert_eq!(
+            repaints.load(std::sync::atomic::Ordering::SeqCst),
+            after_first,
+            "hovering the same row is not a change"
+        );
     }
 }

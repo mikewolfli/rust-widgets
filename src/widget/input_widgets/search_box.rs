@@ -13,13 +13,15 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::Signal1;
-use crate::undo::{UndoStack, ValueCommand};
+use crate::undo::{TextSpliceCommand, UndoStack};
 use crate::widget::capability::coercion::{
     expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::input_widgets::search_bar::find_in;
+pub use crate::widget::input_widgets::search_bar::SearchOptions;
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
 use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -92,6 +94,10 @@ pub struct SearchBox {
     cursor_blink: crate::style::CursorBlink,
     /// Whether a pointer drag is extending a selection (I-110).
     dragging_selection: bool,
+    /// The uncommitted IME composition, painted inline after the value (I-024).
+    preedit: String,
+    /// Lookup switches for a host that searches a document from this query (I-025).
+    search_options: SearchOptions,
 }
 
 impl SearchBox {
@@ -113,7 +119,29 @@ impl SearchBox {
             selection_anchor: None,
             cursor_blink: crate::style::CursorBlink::new(),
             dragging_selection: false,
+            preedit: String::new(),
+            search_options: SearchOptions::default(),
         }
+    }
+
+    /// The lookup switches this box reports to a host (I-025).
+    pub fn search_options(&self) -> SearchOptions {
+        self.search_options
+    }
+
+    /// Replaces the lookup switches (I-025).
+    pub fn set_search_options(&mut self, options: SearchOptions) {
+        self.search_options = options;
+    }
+
+    /// Finds the current query in `haystack` from `from` (I-025).
+    pub fn find_in(&self, haystack: &str, from: usize) -> Option<(usize, usize)> {
+        find_in(haystack, &self.text, from, self.search_options)
+    }
+
+    /// The uncommitted IME composition this field is showing (I-024).
+    pub fn preedit(&self) -> &str {
+        &self.preedit
     }
 
     /// Returns the current text content.
@@ -153,10 +181,10 @@ impl SearchBox {
             self.text = text.clone();
             if !self.restoring_history {
                 *self.history_target.borrow_mut() = self.text.clone();
-                self.undo_stack.push(Box::new(ValueCommand::new(
+                self.undo_stack.push(Box::new(TextSpliceCommand::new(
                     self.history_target.clone(),
-                    before,
-                    self.text.clone(),
+                    &before,
+                    &self.text,
                     "Edit text",
                     "search_box_text",
                 )));
@@ -316,12 +344,13 @@ impl SearchBox {
         if start == end {
             return;
         }
+        let removed = self.text[start..end].to_string();
         self.text.replace_range(start..end, "");
         self.cursor = start;
         self.selection_anchor = None;
-        *self.history_target.borrow_mut() = self.text.clone();
-        self.text_changed.emit(self.text.clone());
-        self.base.request_redraw();
+        // Through the undo stack like every other edit (I-022). A bare buffer write left
+        // `Ctrl+Z` skipping the backspace and undoing an older edit instead.
+        self.record_splice(start, &removed, "");
     }
 
     /// Removes the selection, or the character after the caret when there is none.
@@ -333,12 +362,11 @@ impl SearchBox {
         if start == end {
             return;
         }
+        let removed = self.text[start..end].to_string();
         self.text.replace_range(start..end, "");
         self.cursor = start;
         self.selection_anchor = None;
-        *self.history_target.borrow_mut() = self.text.clone();
-        self.text_changed.emit(self.text.clone());
-        self.base.request_redraw();
+        self.record_splice(start, &removed, "");
     }
 
     /// Clears the text content. Emits `text_changed` if the text was non-empty.
@@ -385,6 +413,13 @@ impl SearchBox {
         self.restoring_history = true;
         self.text = self.history_target.borrow().clone();
         self.restoring_history = false;
+        // Clamp the caret to the restored value; undo used to leave it past the new length, which
+        // made the next edit slice out of bounds (I-023).
+        self.cursor = crate::widget::text_utils::floor_char_boundary(
+            &self.text,
+            self.cursor.min(self.text.len()),
+        );
+        self.selection_anchor = None;
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
     }
@@ -404,13 +439,36 @@ impl SearchBox {
         // Insert at the caret, replacing any selected range. Insertion used to be
         // end-anchored, so there was no way to correct a typo in the middle of a query.
         let (start, end) = self.selection_range().unwrap_or((self.cursor, self.cursor));
-        let before = self.text.clone();
+        let removed = self.text[start..end].to_string();
         self.text.replace_range(start..end, &filtered);
         self.cursor = start + filtered.len();
         self.selection_anchor = None;
         // I-110: this entry point now pushes the same undo step `set_text` does, so a query typed
         // through `TextInput` can be undone like one typed through the programmatic route.
-        self.record_edit(before);
+        self.record_splice(start, &removed, &filtered);
+        self.base.request_redraw();
+    }
+
+    /// Records one in-place splice as the undo step and emits `text_changed` (I-001/I-022).
+    fn record_splice(&mut self, offset: usize, removed: &str, inserted: &str) {
+        if self.restoring_history {
+            return;
+        }
+        {
+            let mut target = self.history_target.borrow_mut();
+            let start = offset.min(target.len());
+            let end = (start + removed.len()).min(target.len());
+            target.replace_range(start..end, inserted);
+        }
+        self.undo_stack.push(Box::new(TextSpliceCommand::from_splice(
+            self.history_target.clone(),
+            offset,
+            removed.to_string(),
+            inserted.to_string(),
+            "Edit text",
+            "search_box_text",
+        )));
+        self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
     }
 
@@ -420,10 +478,10 @@ impl SearchBox {
             return;
         }
         *self.history_target.borrow_mut() = self.text.clone();
-        self.undo_stack.push(Box::new(ValueCommand::new(
+        self.undo_stack.push(Box::new(TextSpliceCommand::new(
             self.history_target.clone(),
-            before,
-            self.text.clone(),
+            &before,
+            &self.text,
             "Edit text",
             "search_box_text",
         )));
@@ -790,6 +848,16 @@ impl Draw for SearchBox {
             ink.blend(&Color::WHITE, 0.55)
         };
         let display_text = if self.text.is_empty() { &self.placeholder } else { &self.text };
+        // I-024: the uncommitted composition is painted after the value, at the caret's side. It
+        // is an owned string only while a session is active, so the ordinary frame pays nothing.
+        let mut composed = String::new();
+        let display_text: &str = if self.preedit.is_empty() {
+            display_text
+        } else {
+            composed.push_str(display_text);
+            composed.push_str(&self.preedit);
+            &composed
+        };
         let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
         // The origin the value is laid out from. Both the selection band and the caret use it,
         // so a centred or right-aligned query keeps its decorations on the glyphs instead of at
@@ -1012,7 +1080,16 @@ impl EventHandler for SearchBox {
             // matching the key path above.
             Event::TextInput { text } | Event::ImeCommit { text } => {
                 if self.focused {
+                    self.preedit.clear();
                     self.append_committed_text(text);
+                }
+            }
+            Event::ImePreedit { text, .. } => {
+                // I-024: the composition is shown inline and never enters the value, so a host's
+                // search runs on committed text only (the same contract as `SearchBar`).
+                if self.focused {
+                    self.preedit = text.clone();
+                    self.base.request_redraw();
                 }
             }
             _ => {
@@ -1486,5 +1563,46 @@ mod tests {
         assert_eq!(sb.selected_text(), "alpha!");
         sb.clear_selection();
         assert_eq!(sb.selection_range(), None);
+    }
+
+    /// Backspace and forward delete go through the undo stack (I-022).
+    #[test]
+    fn deletions_are_undoable() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 240, 30));
+        sb.set_text("abc");
+        sb.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        sb.handle_event(&Event::KeyPress { key: 8, modifiers: 0 });
+        assert_eq!(sb.text(), "ab");
+        assert!(sb.undo(), "the backspace is on the stack");
+        assert_eq!(sb.text(), "abc");
+        assert!(sb.undo(), "the programmatic write is the earlier step");
+        assert_eq!(sb.text(), "");
+    }
+
+    /// The caret is clamped to the restored value, so a later edit cannot slice past the end (I-023).
+    #[test]
+    fn undo_clamps_the_caret() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 240, 30));
+        sb.set_text("abcd");
+        sb.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        assert!(sb.undo());
+        assert_eq!(sb.text(), "");
+        assert_eq!(sb.cursor_position(), 0, "the caret follows the shorter value");
+        // Typing after the undo must not panic or land out of bounds.
+        sb.handle_event(&Event::KeyPress { key: 97, modifiers: 0 });
+        assert_eq!(sb.text(), "a");
+    }
+
+    /// A preedit is accepted and shown without entering the value (I-024).
+    #[test]
+    fn ime_preedit_stays_out_of_the_value() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 240, 30));
+        sb.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Tab });
+        sb.handle_event(&Event::ImePreedit { text: "に".to_string(), cursor: 1 });
+        assert_eq!(sb.preedit(), "に");
+        assert_eq!(sb.text(), "", "an uncommitted composition is not the query");
+        sb.handle_event(&Event::ImeCommit { text: "に".to_string() });
+        assert_eq!(sb.preedit(), "", "the commit clears the composition");
+        assert_eq!(sb.text(), "に");
     }
 }

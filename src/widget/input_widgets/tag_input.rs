@@ -19,8 +19,9 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::input_widgets::input_validator::{ValidationState, Validator};
 use crate::widget::input_widgets::shortcut_editor::primary_shortcut_pressed;
-use crate::widget::metrics::{dimensions, effective_font, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -38,6 +39,10 @@ const TAG_CLOSE_RADIUS: i32 = 7;
 const TAG_CHIP_RADIUS: u32 = 12;
 /// Minimum input area width.
 const MIN_INPUT_WIDTH: i32 = 60;
+/// Height of one suggestion row.
+const SUGGESTION_ROW_HEIGHT: i32 = 20;
+/// How many suggestion rows the layer paints at once.
+const SUGGESTION_MAX_VISIBLE: usize = 6;
 
 /// The undo payload: the tag list plus the in-progress input buffer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,10 +115,19 @@ pub struct TagInput {
     suggestion_highlight: usize,
     /// Whether the suggestion layer is open (I-113).
     suggestions_open: bool,
+    /// The host's available area, used to flip the suggestion layer above the field
+    /// when there is no room below it (I-124).
+    viewport: Option<Rect>,
     /// The IME pre-edit string rendered inline before it is committed (I-115).
     preedit: String,
     /// Emitted when the tags list changes, providing the full list of tags.
     pub tags_changed: Signal1<Vec<String>>,
+    /// Emitted with the text a commit could not add because `max_tags` was reached (I-123).
+    pub tag_overflow: Signal1<String>,
+    /// Emitted with the text a tag validator refused (I-123).
+    pub tag_rejected: Signal1<String>,
+    /// Optional rule a tag must satisfy before it is added (I-123).
+    tag_validator: Option<Box<dyn Validator>>,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<TagInputState>>,
 }
@@ -141,8 +155,12 @@ impl TagInput {
             drag_indicator: None,
             suggestion_highlight: 0,
             suggestions_open: false,
+            viewport: None,
             preedit: String::new(),
             tags_changed: Signal1::new(),
+            tag_overflow: Signal1::new(),
+            tag_rejected: Signal1::new(),
+            tag_validator: None,
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(TagInputState {
                 tags: Vec::new(),
@@ -159,10 +177,16 @@ impl TagInput {
             return;
         }
         if self.max_tags.is_some_and(|limit| self.tags.len() >= limit) {
+            // A refused tag is reported rather than silently dropped (I-123).
+            self.tag_overflow.emit(trimmed.to_string());
             return;
         }
         // Avoid duplicate tags
         if self.tags.iter().any(|t| t == trimmed) {
+            return;
+        }
+        if !self.tag_passes_validator(trimmed) {
+            self.tag_rejected.emit(trimmed.to_string());
             return;
         }
         let before = self.snapshot_state();
@@ -205,6 +229,31 @@ impl TagInput {
             return;
         }
         self.max_tags = max_tags;
+    }
+
+    /// Installs the rule every committed tag must satisfy, or clears it.
+    ///
+    /// The rule is the same [`Validator`] vocabulary the text fields use, so a host with a
+    /// domain grammar has one place to declare it (I-123). A refused tag is left in the
+    /// input buffer rather than dropped.
+    pub fn set_tag_validator(&mut self, validator: Option<Box<dyn Validator>>) {
+        self.tag_validator = validator;
+        self.base.request_redraw();
+    }
+
+    /// The installed tag rule, if any.
+    pub fn tag_validator(&self) -> Option<&dyn Validator> {
+        self.tag_validator.as_deref()
+    }
+
+    /// The validation state of `tag`, or `Acceptable` when no rule is installed.
+    pub fn tag_validation_state(&self, tag: &str) -> ValidationState {
+        self.tag_validator.as_deref().map_or(ValidationState::Acceptable, |rule| rule.state(tag))
+    }
+
+    /// Whether `tag` may be committed.
+    fn tag_passes_validator(&self, tag: &str) -> bool {
+        self.tag_validation_state(tag).is_acceptable()
     }
 
     /// The input buffer's caret, in bytes.
@@ -478,10 +527,18 @@ impl TagInput {
         let before = self.snapshot_state();
         let old_tags = self.tags.clone();
         let text = self.input_buffer.trim().to_string();
-        if !text.is_empty()
-            && !self.tags.iter().any(|tag| tag == &text)
-            && !self.max_tags.is_some_and(|limit| self.tags.len() >= limit)
-        {
+        if !text.is_empty() && self.max_tags.is_some_and(|limit| self.tags.len() >= limit) {
+            // The buffer stays so the input is not lost; the host hears the refusal (I-123).
+            self.tag_overflow.emit(text);
+            self.base.request_redraw();
+            return;
+        }
+        if !text.is_empty() && !self.tag_passes_validator(&text) {
+            self.tag_rejected.emit(text);
+            self.base.request_redraw();
+            return;
+        }
+        if !text.is_empty() && !self.tags.iter().any(|tag| tag == &text) {
             self.tags.push(text);
         }
         self.input_buffer.clear();
@@ -696,8 +753,10 @@ impl TagInput {
             .map(|chip| (chip.x + chip.width + TAG_GAP, chip.y))
             .unwrap_or((self.field_rect().x + TAG_PADDING, self.chip_row_y()));
         let label = format!("+{}", layout.hidden);
+        let font = effective_font(self.style());
         let width =
-            estimate_text_width(&label, effective_font(self.style()), 1.0) as i32 + TAG_PADDING * 2;
+            Self::with_measurement(|context| context.measure_text(&label, &font).width as i32)
+                + TAG_PADDING * 2;
         Some((Rect::new(x, y, width as u32, TAG_HEIGHT as u32), layout.hidden))
     }
 
@@ -814,7 +873,11 @@ impl TagInput {
     /// characters (`"日本"` is 6 bytes and 2 glyphs). The same ruler the painter uses keeps the
     /// chip and its label in agreement.
     fn compute_chip_width(&self, tag: &str) -> i32 {
-        let text_width = estimate_text_width(tag, effective_font(self.style()), 1.0) as i32;
+        // The same renderer measurement `chip_layout` uses, so the row count and the
+        // painted/hit-tested layout cannot disagree about a chip's width (I-105).
+        let font = effective_font(self.style());
+        let text_width =
+            Self::with_measurement(|context| context.measure_text(tag, &font).width as i32);
         text_width + TAG_PADDING * 2 + TAG_CLOSE_RADIUS * 2 + 4
     }
 
@@ -864,6 +927,66 @@ impl TagInput {
         } else if self.suggestion_highlight >= count {
             self.suggestion_highlight = count - 1;
         }
+    }
+
+    /// Supplies the host's available area, which makes the suggestion layer's flip
+    /// measurable (I-124).
+    pub fn set_viewport(&mut self, viewport: Option<Rect>) {
+        if self.viewport == viewport {
+            return;
+        }
+        self.viewport = viewport;
+        self.base.request_redraw();
+    }
+
+    /// The host's available area, if one was supplied.
+    pub fn viewport(&self) -> Option<Rect> {
+        self.viewport
+    }
+
+    /// The suggestion layer's rectangle and the first painted row, when it is open.
+    ///
+    /// The paint and the hit test read this one derivation, so a click lands on the row
+    /// that was drawn — including after the layer flips above the field (I-124).
+    fn suggestion_layer(&self) -> Option<(Rect, usize, usize)> {
+        if !self.focused || !self.suggestions_open {
+            return None;
+        }
+        let matches = self.visible_suggestions();
+        if matches.is_empty() {
+            return None;
+        }
+        let visible = matches.len().min(SUGGESTION_MAX_VISIBLE);
+        let highlight = self.suggestion_highlight.min(matches.len() - 1);
+        let start = (highlight + visible).saturating_sub(SUGGESTION_MAX_VISIBLE).min(highlight);
+        let height = (visible as i32 * SUGGESTION_ROW_HEIGHT) as u32;
+        let field = self.field_rect();
+        let below = field.y + field.height as i32 + 2;
+        let fits_below = self
+            .viewport
+            .is_none_or(|viewport| below + height as i32 <= viewport.y + viewport.height as i32);
+        let y = if fits_below { below } else { field.y - height as i32 - 2 };
+        let layer = Rect::new(field.x, y, field.width, height);
+        let layer = match self.viewport {
+            Some(viewport) => {
+                crate::widget::input_widgets::popup_support::clamp_rect_into(layer, viewport)
+            }
+            None => layer,
+        };
+        Some((layer, start, visible))
+    }
+
+    /// The suggestion row under `pos`, when the layer is open and the point is on one.
+    fn suggestion_row_at(&self, pos: Point) -> Option<usize> {
+        let (layer, start, visible) = self.suggestion_layer()?;
+        if !layer.contains_point(pos) {
+            return None;
+        }
+        let row = ((pos.y - layer.y) / SUGGESTION_ROW_HEIGHT) as usize;
+        if row >= visible {
+            return None;
+        }
+        Some(start + row)
     }
 }
 
@@ -1286,44 +1409,32 @@ impl Draw for TagInput {
         }
 
         // ── Suggestion layer (I-113) ──
-        if self.focused && self.suggestions_open {
+        if let Some((layer, start, visible)) = self.suggestion_layer() {
             let matches = self.visible_suggestions();
-            if !matches.is_empty() {
-                let row_height = 20i32;
-                let max_visible = 6usize;
-                let highlight = self.suggestion_highlight.min(matches.len() - 1);
-                let start = highlight.saturating_sub(max_visible - 1);
-                let visible = matches.len().min(max_visible);
-                let layer = Rect::new(
-                    rect.x,
-                    rect.y + rect.height as i32 + 2,
-                    rect.width,
-                    (visible as i32 * row_height) as u32,
-                );
-                context.fill_rect(layer, base_bg);
-                context.draw_rect(layer, accent.unwrap_or(Color::rgb(180, 180, 180)));
-                for (row, index) in matches.iter().skip(start).take(max_visible).enumerate() {
-                    let y = layer.y + row as i32 * row_height;
-                    let selected = start + row == highlight;
-                    if selected {
-                        context.fill_rect(
-                            Rect::new(
-                                layer.x + 1,
-                                y,
-                                layer.width.saturating_sub(2),
-                                row_height as u32,
-                            ),
-                            input_bg.blend(&accent.unwrap_or(Color::rgb(60, 140, 255)), 0.25),
-                        );
-                    }
-                    context.draw_text(
-                        Point::new(layer.x + 6, y + 2),
-                        &self.suggestions[*index],
-                        font,
-                        base_ink,
-                        HorizontalAlignment::Left,
+            let highlight = self.suggestion_highlight.min(matches.len().saturating_sub(1));
+            context.fill_rect(layer, base_bg);
+            context.draw_rect(layer, accent.unwrap_or(Color::rgb(180, 180, 180)));
+            for (row, index) in matches.iter().skip(start).take(visible).enumerate() {
+                let y = layer.y + row as i32 * SUGGESTION_ROW_HEIGHT;
+                let selected = start + row == highlight;
+                if selected {
+                    context.fill_rect(
+                        Rect::new(
+                            layer.x + 1,
+                            y,
+                            layer.width.saturating_sub(2),
+                            SUGGESTION_ROW_HEIGHT as u32,
+                        ),
+                        input_bg.blend(&accent.unwrap_or(Color::rgb(60, 140, 255)), 0.25),
                     );
                 }
+                context.draw_text(
+                    Point::new(layer.x + 6, y + 2),
+                    &self.suggestions[*index],
+                    font,
+                    base_ink,
+                    HorizontalAlignment::Left,
+                );
             }
         }
     }
@@ -1336,6 +1447,15 @@ impl EventHandler for TagInput {
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
+                // The suggestion layer is painted over the field, so its rows are hit first
+                // (I-124). A click takes the row the same way Enter does.
+                if let Some(row) = self.suggestion_row_at(*pos) {
+                    self.suggestion_highlight = row;
+                    if self.accept_highlighted() {
+                        self.commit_input();
+                    }
+                    return;
+                }
                 // I-114: the "+N" summary expands the field into its multi-row layout.
                 if let Some((overflow, _)) = self.overflow_rect() {
                     if overflow.contains_point(*pos) {
@@ -2102,5 +2222,78 @@ mod tests {
         assert_eq!(ti.input_buffer, "x");
         ti.handle_event(&Event::KeyPress { key: 67, modifiers: primary_modifier_event_bits() });
         assert_eq!(crate::get_clipboard_text(), "x");
+    }
+
+    #[derive(Debug)]
+    struct NoZebra;
+
+    impl Validator for NoZebra {
+        fn state(&self, text: &str) -> ValidationState {
+            if text.contains("zebra") {
+                ValidationState::Invalid
+            } else {
+                ValidationState::Acceptable
+            }
+        }
+
+        fn message(&self) -> &'static str {
+            "zebras are not tags"
+        }
+    }
+
+    #[test]
+    fn a_tag_validator_refuses_the_commit_without_losing_the_input() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.set_tag_validator(Some(Box::new(NoZebra)));
+        ti.input_buffer = "zebra".to_string();
+        ti.commit_input();
+        assert!(ti.tags().is_empty());
+        assert_eq!(ti.input_buffer, "zebra", "a refused tag stays editable");
+        assert_eq!(ti.tag_validation_state("zebra"), ValidationState::Invalid);
+    }
+
+    #[test]
+    fn exceeding_the_limit_reports_overflow_instead_of_dropping_the_input() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.set_max_tags(Some(1));
+        ti.add_tag("one");
+        let overflow = Arc::new(Mutex::new(None));
+        ti.tag_overflow.connect({
+            let overflow = Arc::clone(&overflow);
+            move |text: Arc<String>| {
+                *overflow.lock().expect("overflow") = Some((*text).clone());
+            }
+        });
+        ti.input_buffer = "two".to_string();
+        ti.commit_input();
+        assert_eq!(ti.tags(), &["one"]);
+        assert_eq!(ti.input_buffer, "two", "the refused input is not thrown away");
+        assert_eq!(overflow.lock().expect("overflow").as_deref(), Some("two"));
+    }
+
+    #[test]
+    fn the_row_count_and_the_chip_layout_use_one_measurement() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.add_tag("日本語");
+        ti.set_multiline(true);
+        let layout = ti.chip_layout();
+        assert_eq!(layout.chips.len(), 1);
+        assert_eq!(layout.chips[0].width, ti.compute_chip_width("日本語"));
+    }
+
+    #[test]
+    fn a_suggestion_row_is_a_mouse_target() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        ti.set_focused(true);
+        ti.set_suggestions(vec!["alpha".to_string(), "alpine".to_string()]);
+        ti.input_buffer = "al".to_string();
+        ti.refresh_suggestions();
+        let (layer, _, _) = ti.suggestion_layer().expect("the layer is open");
+        ti.handle_event(&Event::MousePress {
+            pos: Point::new(layer.x + 4, layer.y + 4),
+            button: 1,
+            modifiers: 0,
+        });
+        assert_eq!(ti.tags(), &["alpha"]);
     }
 }

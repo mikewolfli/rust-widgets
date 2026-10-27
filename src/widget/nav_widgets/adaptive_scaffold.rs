@@ -772,6 +772,177 @@ impl AdaptiveScaffold {
         ))
     }
 
+    /// The mutable twin of [`Self::active_body`], for event forwarding.
+    fn active_body_mut(&mut self) -> Option<&mut dyn Widget> {
+        let selected =
+            self.nav_bodies.get_mut(self.selected_nav_index).and_then(|page| page.as_deref_mut());
+        match selected {
+            Some(page) => Some(page),
+            None => self.body_widget.as_deref_mut(),
+        }
+    }
+
+    /// The position an event carries, when it has one.
+    ///
+    /// One derivation for every pointer, pointer-device and touch variant, so the routing table
+    /// does not have to spell the same hit test per event kind.
+    fn event_position(event: &Event) -> Option<Point> {
+        match event {
+            Event::MouseDown((pos, _))
+            | Event::MouseUp((pos, _))
+            | Event::MouseMoveLegacy((pos, _))
+            | Event::MouseMove { pos }
+            | Event::MousePress { pos, .. }
+            | Event::MouseDoubleClick { pos, .. }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseEnter { pos }
+            | Event::MouseLeave { pos }
+            | Event::ContextMenu { pos }
+            | Event::PointerPress { pos, .. }
+            | Event::PointerMove { pos, .. }
+            | Event::PointerRelease { pos, .. } => Some(*pos),
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. }
+            | Event::TouchEnd { pos, .. }
+            | Event::TouchMove { pos, .. }
+            | Event::Tap { pos }
+            | Event::DoubleTap { pos }
+            | Event::LongPress { pos }
+            | Event::TwoFingerTap { pos }
+            | Event::Drag { pos, .. }
+            | Event::Fling { pos, .. } => Some(*pos),
+            #[cfg(feature = "touch")]
+            Event::Swipe { end, .. } => Some(*end),
+            #[cfg(feature = "touch")]
+            Event::Pinch { center, .. } => Some(*center),
+            #[cfg(feature = "touch")]
+            Event::TwoFingerSwipe { centroid_end, .. }
+            | Event::MultiFingerSwipe { centroid_end, .. } => Some(*centroid_end),
+            #[cfg(feature = "holographic")]
+            Event::HolographicTouch { pos, .. } => Some(*pos),
+            _ => None,
+        }
+    }
+
+    /// Routes a positional event to the topmost surface that owns `pos`.
+    ///
+    /// The overlay slots are visited in reverse paint order, then the app bar, the bottom band
+    /// (only when it is the delegated Material3 bar), and finally the active body. `true` means
+    /// some surface took it; the caller decides what the base should still observe.
+    fn forward_to_pointer_target(&mut self, event: &Event, pos: Point) -> bool {
+        let rect = self.geometry();
+        if let Some(band) = self.fab_rect() {
+            if band.contains_point(pos) {
+                if let Some(fab) = self.fab.as_deref_mut() {
+                    fab.set_geometry(band);
+                    fab.handle_event(event);
+                }
+                return true;
+            }
+        }
+        if self.snackbar.is_some() {
+            let band = self.snackbar_rect();
+            if band.contains_point(pos) {
+                if let Some(snackbar) = self.snackbar.as_deref_mut() {
+                    snackbar.set_geometry(band);
+                    snackbar.handle_event(event);
+                }
+                return true;
+            }
+        }
+        if self.bottom_sheet.is_some() {
+            let band = self.bottom_sheet_rect();
+            if band.contains_point(pos) {
+                if let Some(sheet) = self.bottom_sheet.as_deref_mut() {
+                    sheet.set_geometry(band);
+                    sheet.handle_event(event);
+                }
+                return true;
+            }
+        }
+        if self.end_drawer_open {
+            let band = self.end_drawer_rect();
+            if band.contains_point(pos) {
+                if let Some(panel) = self.end_drawer.as_deref_mut() {
+                    panel.set_geometry(band);
+                    panel.handle_event(event);
+                }
+                return true;
+            }
+        }
+        if self.drawer_open {
+            let band = self.drawer_rect();
+            if band.contains_point(pos) {
+                if let Some(panel) = self.drawer.as_deref_mut() {
+                    panel.set_geometry(band);
+                    panel.handle_event(event);
+                }
+                return true;
+            }
+        }
+
+        let app_bar_band = Rect::new(rect.x, rect.y, rect.width, self.app_bar_height());
+        if app_bar_band.contains_point(pos) {
+            self.app_bar.handle_event(event);
+            return true;
+        }
+
+        if let Some(nav_band) = self.bottom_nav_rect() {
+            if nav_band.contains_point(pos) {
+                // Only the delegated bar has state to update here; the Classic strip's selection
+                // is the scaffold's own and is committed by the press/release arm.
+                if let Some(bar) = self.m3_bar.as_mut() {
+                    bar.set_geometry(nav_band);
+                    bar.handle_event(event);
+                }
+                return true;
+            }
+        }
+
+        let content_rect = self.content_rect();
+        if content_rect.contains_point(pos) {
+            if let Some(body) = self.active_body_mut() {
+                body.set_geometry(content_rect);
+                body.handle_event(event);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Passes an event to the surfaces a focused interaction belongs to: the active page first,
+    /// then the app bar (for its own shortcuts), matching the order the draw path stacks them.
+    fn forward_to_focused_surfaces(&mut self, event: &Event) {
+        let content_rect = self.content_rect();
+        if let Some(body) = self.active_body_mut() {
+            body.set_geometry(content_rect);
+            body.handle_event(event);
+        }
+        self.app_bar.handle_event(event);
+    }
+
+    /// Routes a wheel without a position: an open drawer scrolls its own list; otherwise the
+    /// focused surface receives it (a scrollable page is the common case).
+    fn forward_wheel(&mut self, event: &Event) {
+        if self.drawer_open {
+            let band = self.drawer_rect();
+            if let Some(panel) = self.drawer.as_deref_mut() {
+                panel.set_geometry(band);
+                panel.handle_event(event);
+                return;
+            }
+        }
+        if self.end_drawer_open {
+            let band = self.end_drawer_rect();
+            if let Some(panel) = self.end_drawer.as_deref_mut() {
+                panel.set_geometry(band);
+                panel.handle_event(event);
+                return;
+            }
+        }
+        self.forward_to_focused_surfaces(event);
+    }
+
     /// Returns the floating action button's slot rectangle.
     fn fab_rect(&self) -> Option<Rect> {
         self.fab.as_ref()?;
@@ -1197,12 +1368,22 @@ impl AdaptiveScaffold {
             let label_color = icon_color;
 
             let typed_source = self.nav_item_icon_sources.get(i).copied().flatten();
-            let mut icon_metrics = context
-                .measure_text(if typed_source.is_some() { "M" } else { &item.icon }, &icon_font);
+            // The shared measure cache, the same accessor `BottomNavigationBar` uses for its
+            // own strip. Direct `context.measure_text` bypassed it, so the Classic bar
+            // re-shaped every caption and badge on every frame (N-007).
+            let mut icon_metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                context,
+                if typed_source.is_some() { "M" } else { &item.icon },
+                &icon_font,
+            );
             if typed_source.is_some() {
                 icon_metrics.width = icon_metrics.height.max(1);
             }
-            let label_metrics = context.measure_text(&item.label, &label_font);
+            let label_metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                context,
+                &item.label,
+                &label_font,
+            );
 
             let total_content_height = icon_metrics.height + label_metrics.height + 4;
             let content_y = tab_rect.y + (tab_rect.height as i32 - total_content_height as i32) / 2;
@@ -1268,7 +1449,11 @@ impl AdaptiveScaffold {
                             context.fill_rounded_rect(dot, side / 2, badge_fill);
                         }
                         ScaffoldBadgeStyle::Text => {
-                            let metrics = context.measure_text(badge, &label_font);
+                            let metrics = crate::widget::base_widgets::measure_cache::measure_text(
+                                context,
+                                badge,
+                                &label_font,
+                            );
                             let height = label_font.size().max(10.0) as u32 + 4;
                             let width = (metrics.width + 8).max(height);
                             let badge_rect = Rect::new(
@@ -1460,7 +1645,86 @@ impl EventHandler for AdaptiveScaffold {
                     self.close_end_drawer();
                 }
             }
+            // A pointer move is routed to whichever surface owns it, so overlays and the app
+            // bar receive hover at the same coordinates the draw path paints them at. The
+            // previous default dropped these entirely, which is why only the scaffold's own
+            // base ever saw a hover.
+            Event::MouseMove { pos } => {
+                self.forward_to_pointer_target(event, *pos);
+                self.base.handle_event(event);
+            }
+            Event::MouseEnter { pos } | Event::MouseLeave { pos } => {
+                self.forward_to_pointer_target(event, *pos);
+                self.base.handle_event(event);
+            }
+            Event::MouseDoubleClick { pos, .. } | Event::ContextMenu { pos } => {
+                self.forward_to_pointer_target(event, *pos);
+                self.base.handle_event(event);
+            }
+            Event::Wheel { .. } => {
+                self.forward_wheel(event);
+                self.base.handle_event(event);
+            }
+            // Legacy pointer and stylus events carry a position too, so they follow the same
+            // routing as the modern pointer variants.
+            Event::MouseDown(_)
+            | Event::MouseUp(_)
+            | Event::MouseMoveLegacy(_)
+            | Event::PointerPress { .. }
+            | Event::PointerMove { .. }
+            | Event::PointerRelease { .. } => {
+                if let Some(pos) = Self::event_position(event) {
+                    self.forward_to_pointer_target(event, pos);
+                }
+                self.base.handle_event(event);
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { .. }
+            | Event::TouchEnd { .. }
+            | Event::TouchMove { .. }
+            | Event::Tap { .. }
+            | Event::DoubleTap { .. }
+            | Event::LongPress { .. }
+            | Event::Swipe { .. }
+            | Event::Pinch { .. }
+            | Event::Rotate { .. }
+            | Event::Drag { .. }
+            | Event::TwoFingerTap { .. }
+            | Event::TwoFingerSwipe { .. }
+            | Event::MultiFingerSwipe { .. }
+            | Event::Fling { .. } => {
+                if let Some(pos) = Self::event_position(event) {
+                    self.forward_to_pointer_target(event, pos);
+                } else {
+                    self.forward_to_focused_surfaces(event);
+                }
+                self.base.handle_event(event);
+            }
+            #[cfg(feature = "holographic")]
+            Event::HolographicTouch { .. } => {
+                if let Some(pos) = Self::event_position(event) {
+                    self.forward_to_pointer_target(event, pos);
+                }
+                self.base.handle_event(event);
+            }
+            // Keyboard, text and IME traffic belongs to the focused surface. The app bar sees
+            // it as well because its own affordances may publish shortcuts.
+            Event::KeyPress { .. }
+            | Event::KeyRelease { .. }
+            | Event::KeyDown(_)
+            | Event::KeyUp(_)
+            | Event::TextInput { .. }
+            | Event::ImePreedit { .. }
+            | Event::ImeCommit { .. } => {
+                self.forward_to_focused_surfaces(event);
+                self.base.handle_event(event);
+            }
+            // Everything else is passed through rather than swallowed: the active page and the
+            // app bar still observe it, and only then does the base. This replaces the old
+            // default that sent the event to `base` alone, which made the scaffold a hole in
+            // the event surface for every kind it did not name.
             _ => {
+                self.forward_to_focused_surfaces(event);
                 self.base.handle_event(event);
             }
         }
@@ -1471,6 +1735,10 @@ impl EventHandler for AdaptiveScaffold {
 mod tests {
     use super::*;
     use crate::core::Point;
+    use crate::render::{
+        PaintBackend, RenderCommand, ShapedText, SoftwarePaintBackend, SoftwareRenderConfig,
+        TextMetrics,
+    };
     use crate::widget::svg::render_to_svg;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -1829,5 +2097,149 @@ mod tests {
         });
         assert!(!scaffold.is_drawer_open(), "the modal scrim dismisses on press");
         scaffold.handle_event(&Event::MouseRelease { pos: Point::new(360, 400), button: 1 });
+    }
+
+    /// A body that reports every event it is given.
+    struct EventSink {
+        base: BaseWidget,
+        count: Arc<AtomicUsize>,
+    }
+
+    impl EventSink {
+        fn new(count: Arc<AtomicUsize>) -> Self {
+            Self {
+                base: BaseWidget::new(WidgetKind::Label, Rect::new(0, 0, 1, 1), "EventSink"),
+                count,
+            }
+        }
+    }
+
+    impl Widget for EventSink {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        impl_draw_bridge!();
+    }
+
+    impl Draw for EventSink {
+        fn draw(&mut self, context: &mut RenderContext) {
+            context.fill_rect(self.geometry(), Color::BLACK);
+        }
+    }
+
+    impl EventHandler for EventSink {
+        fn handle_event(&mut self, _event: &Event) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Pointer events are routed to the surface that owns the position, not swallowed.
+    #[test]
+    fn a_hover_reaches_the_app_bar_band() {
+        let mut scaffold = make_scaffold();
+        assert!(!scaffold.app_bar.base().is_hovered());
+        scaffold.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
+        assert!(
+            scaffold.app_bar.base().is_hovered(),
+            "the app bar owns the top band and must see the enter"
+        );
+    }
+
+    /// Events the scaffold has no arm for still reach the active page.
+    #[test]
+    fn unhandled_events_pass_through_to_the_active_page() {
+        let mut scaffold = make_scaffold();
+        let count = Arc::new(AtomicUsize::new(0));
+        scaffold.set_body_widget(Some(Box::new(EventSink::new(Arc::clone(&count)))));
+        scaffold.handle_event(&Event::Timer { id: 7 });
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "the old default sent the event to the base alone"
+        );
+    }
+
+    /// A backend that counts how many times text is measured.
+    struct CountingBackend {
+        inner: SoftwarePaintBackend,
+        measure_calls: Arc<AtomicUsize>,
+    }
+
+    impl PaintBackend for CountingBackend {
+        fn begin_frame(&mut self, clear: Color) {
+            self.inner.begin_frame(clear);
+        }
+        fn end_frame(&mut self) {
+            self.inner.end_frame();
+        }
+        fn execute_command(&mut self, command: &RenderCommand) {
+            self.inner.execute_command(command);
+        }
+        fn size(&self) -> crate::core::Size {
+            self.inner.size()
+        }
+        fn set_size(&mut self, size: crate::core::Size) {
+            self.inner.set_size(size);
+        }
+        fn dpi_scale(&self) -> f32 {
+            self.inner.dpi_scale()
+        }
+        fn set_dpi_scale(&mut self, scale: f32) {
+            self.inner.set_dpi_scale(scale);
+        }
+        fn measure_text(&self, text: &str, font: &crate::core::Font) -> TextMetrics {
+            self.measure_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.measure_text(text, font)
+        }
+        fn shape_text(
+            &self,
+            text: &str,
+            font: &crate::core::Font,
+        ) -> crate::compat::Rc<ShapedText> {
+            self.inner.shape_text(text, font)
+        }
+        fn frame_rgba(&self) -> &[u8] {
+            self.inner.frame_rgba()
+        }
+        fn apply_render_config(&mut self, config: SoftwareRenderConfig) {
+            self.inner.apply_render_config(config);
+        }
+    }
+
+    /// The Classic strip measures through the shared cache instead of the backend.
+    ///
+    /// Regression (N-007): it called `context.measure_text` directly for the icon, the label
+    /// and the badge, so every frame re-shaped the same fixed captions.
+    #[test]
+    fn the_classic_bar_uses_the_shared_measure_cache() {
+        let _guard = crate::style::theme_test_guard();
+        let scaffold = make_scaffold();
+        let style = crate::style::WidgetStyle::default();
+        let nav_rect = scaffold.bottom_nav_rect().expect("the bar is shown");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut backend = CountingBackend {
+            inner: SoftwarePaintBackend::new(crate::core::Size::new(375, 812), 1.0),
+            measure_calls: Arc::clone(&calls),
+        };
+        // Warm the cache on the bar's own paint path, then measure a settled frame's work.
+        // The scaffold's AppBar is deliberately excluded: its fitted title asks the backend
+        // for a fit check, which is a different concern from the strip's per-item layout.
+        {
+            let mut context = RenderContext::new(&mut backend);
+            scaffold.draw_bottom_nav(&mut context, nav_rect, &style, None);
+        }
+        calls.store(0, Ordering::SeqCst);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            scaffold.draw_bottom_nav(&mut context, nav_rect, &style, None);
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a settled Classic bar must not reach the backend to measure text"
+        );
     }
 }

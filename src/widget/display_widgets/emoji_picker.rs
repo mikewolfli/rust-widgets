@@ -218,8 +218,9 @@ const MAX_RECENT: usize = 20;
 /// stable facts about `(glyph, scale)`.
 struct GlyphMetricsCache {
     dpi_scale_bits: u32,
-    /// `(glyph index, width, height)`, in first-seen order.
-    entries: Vec<(usize, u32, u32)>,
+    /// `glyph index -> (width, height)`. A hash lookup replaces the per-cell linear scan the
+    /// draw path performed for every visible glyph every frame.
+    entries: HashMap<usize, (u32, u32)>,
 }
 
 /// EmojiPicker — a searchable grid of caller-supplied glyphs.
@@ -250,6 +251,13 @@ pub struct EmojiPicker {
     glyph_metrics: RefCell<GlyphMetricsCache>,
     /// The grid index the keyboard cursor is on, if any.
     cursor: Option<usize>,
+    /// The grid cell a press armed, committed only by a release over the same cell.
+    ///
+    /// The picker used to choose on the press, so a gesture that started on a glyph and was
+    /// dragged off still committed. The arm records which cell the press began on; the
+    /// release commits only if the pointer is still there, which is the same press/release
+    /// contract the switch and the empty state's action use.
+    pressed_cell: Option<usize>,
     /// The grid index the pointer is over, if any.
     hovered: Option<usize>,
     /// Scratch index buffer for the visible glyph projection.
@@ -303,9 +311,10 @@ impl EmojiPicker {
             visible_count_cache: Cell::new(0),
             glyph_metrics: RefCell::new(GlyphMetricsCache {
                 dpi_scale_bits: 0,
-                entries: Vec::new(),
+                entries: HashMap::new(),
             }),
             cursor: None,
+            pressed_cell: None,
             hovered: None,
             visible_indices: Vec::new(),
             glyph_chosen: Signal1::new(),
@@ -1281,23 +1290,13 @@ impl EmojiPicker {
             }
             let glyph_index = *self.visible_indices.get(index).unwrap_or(&usize::MAX);
             let (glyph_width, glyph_height) = {
-                let cached = self
-                    .glyph_metrics
-                    .borrow()
-                    .entries
-                    .iter()
-                    .find(|(cached_index, _, _)| *cached_index == glyph_index)
-                    .map(|(_, width, height)| (*width, *height));
+                let cached = self.glyph_metrics.borrow().entries.get(&glyph_index).copied();
                 match cached {
                     Some(extent) => extent,
                     None => {
                         let measured = context.measure_text(&glyph.symbol, glyph_font);
                         let extent = (measured.width, measured.height);
-                        self.glyph_metrics.borrow_mut().entries.push((
-                            glyph_index,
-                            extent.0,
-                            extent.1,
-                        ));
+                        self.glyph_metrics.borrow_mut().entries.insert(glyph_index, extent);
                         extent
                     }
                 }
@@ -1327,6 +1326,10 @@ impl EventHandler for EmojiPicker {
         }
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
+                // A press arms rather than commits: the release decides. Clearing the arm on
+                // every other target keeps a search or tab press from committing a grid cell
+                // it merely passed over.
+                self.pressed_cell = None;
                 if self.search_rect().contains_point(*pos) {
                     // Clicking the search box focuses it, which is what makes typing
                     // go there without a separate focus control.
@@ -1339,6 +1342,17 @@ impl EventHandler for EmojiPicker {
                 }
                 if let Some(index) = self.cell_at(*pos) {
                     self.cursor = Some(index);
+                    self.pressed_cell = Some(index);
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseRelease { pos, button } if *button == 1 => {
+                let Some(index) = self.pressed_cell.take() else {
+                    return;
+                };
+                // A release outside the armed cell cancels the gesture, so a press that was
+                // dragged away commits nothing.
+                if self.cell_at(*pos) == Some(index) {
                     if let Some(glyph) = self.glyph_at_index(index) {
                         let id = glyph.id.clone();
                         self.choose(&id);
@@ -1366,6 +1380,9 @@ impl EventHandler for EmojiPicker {
                 }
             }
             Event::MouseLeave { .. } => {
+                // A release outside the control never reaches this widget, so a departed
+                // pointer must abandon the armed cell rather than leave it armed.
+                self.pressed_cell = None;
                 if self.hovered.take().is_some() {
                     self.glyph_hover_changed.emit(String::new());
                     self.base.request_redraw();
@@ -1677,13 +1694,27 @@ mod tests {
     // ── Interaction ─────────────────────────────────────────────────────────
 
     #[test]
-    fn emoji_picker_click_on_a_cell_chooses_it() {
+    fn emoji_picker_click_on_a_cell_chooses_it_on_release() {
         let mut p = picker();
         // The first cell is the first face.
         let cell = p.cell_rect(0).expect("cell 0");
         p.handle_event(&Event::mouse_press(cell.x + 10, cell.y + 10, 1));
+        assert!(p.recent().is_empty(), "a press only arms the cell");
+        p.handle_event(&Event::mouse_release(cell.x + 10, cell.y + 10, 1));
         assert_eq!(p.recent().first().map(String::as_str), Some("smile"));
         assert_eq!(p.cursor(), Some(0));
+    }
+
+    /// A press that is dragged off its cell commits nothing.
+    #[test]
+    fn emoji_picker_release_outside_the_armed_cell_cancels() {
+        let mut p = picker();
+        let cell = p.cell_rect(0).expect("cell 0");
+        p.handle_event(&Event::mouse_press(cell.x + 10, cell.y + 10, 1));
+        // A release in the search box is outside the armed cell.
+        let rect = p.geometry();
+        p.handle_event(&Event::mouse_release(rect.x + 5, rect.y + 5, 1));
+        assert!(p.recent().is_empty(), "the cancelled press must not choose a glyph");
     }
 
     #[test]

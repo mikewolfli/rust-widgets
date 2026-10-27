@@ -173,6 +173,12 @@ pub struct MiniChart {
     show_axis_labels: bool,
     /// The data index the pointer is nearest to, when the pointer is over the plot.
     hovered_index: Option<usize>,
+    /// Whether pointing at the plot tracks a point.
+    ///
+    /// Defaults to `true`, which is the historical behaviour. A chart embedded as a static
+    /// sparkline can turn it off so pointer motion neither highlights a point nor emits
+    /// `point_hover_changed`.
+    hover_enabled: bool,
     /// Emitted with the hovered index, or `None` when the pointer leaves.
     pub point_hover_changed: Signal1<Option<usize>>,
     /// Whether a new series grows from the baseline instead of appearing at full height.
@@ -215,6 +221,7 @@ impl MiniChart {
             max_value: 100,
             show_axis_labels: false,
             hovered_index: None,
+            hover_enabled: true,
             point_hover_changed: Signal1::new(),
             animate_data: false,
             // At rest at the settled end: with the option off the series is never scaled, and
@@ -331,6 +338,26 @@ impl MiniChart {
     /// The value at [`MiniChart::hovered_index`], if that index still names a point.
     pub fn hovered_value(&self) -> Option<u32> {
         self.data.get(self.hovered_index?).map(|point| point.value)
+    }
+
+    /// Whether pointer hover tracks a point. Defaults to `true`.
+    pub fn hover_enabled(&self) -> bool {
+        self.hover_enabled
+    }
+
+    /// Enables or disables hover tracking.
+    ///
+    /// Turning it off clears any current hover, so a marker does not stay painted over a
+    /// chart that no longer tracks the pointer.
+    pub fn set_hover_enabled(&mut self, enabled: bool) {
+        if self.hover_enabled == enabled {
+            return;
+        }
+        self.hover_enabled = enabled;
+        if !enabled {
+            self.set_hovered_index(None);
+        }
+        self.base.request_redraw();
     }
 
     /// The chart's label face, constructed once.
@@ -472,7 +499,7 @@ impl MiniChart {
 
     /// Updates the hover from a pointer position, clearing it when the pointer is off the plot.
     fn update_hover(&mut self, pos: Point) {
-        if !self.base.is_enabled() || !self.geometry().contains_point(pos) {
+        if !self.hover_enabled || !self.base.is_enabled() || !self.geometry().contains_point(pos) {
             self.set_hovered_index(None);
             return;
         }
@@ -570,6 +597,7 @@ impl WidgetProperties for MiniChart {
                 };
                 Ok(CapabilityValue::String(s.to_string()))
             }
+            "hover_enabled" => Ok(CapabilityValue::Bool(self.hover_enabled())),
             _ => base_property_get(self, name),
         }
     }
@@ -586,6 +614,13 @@ impl WidgetProperties for MiniChart {
                 self.set_chart_type(ct);
                 Ok(())
             }
+            "hover_enabled" => match value {
+                CapabilityValue::Bool(enabled) => {
+                    self.set_hover_enabled(enabled);
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
             // Writing one bound must not invert the range, so the value is combined with the
             // *other* live bound rather than stored blind — the same rule the timeline viewport
             // follows.
@@ -635,7 +670,14 @@ impl WidgetProperties for MiniChart {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["data", "min_value", "max_value", "chart_type", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "data",
+            "min_value",
+            "max_value",
+            "chart_type",
+            "hover_enabled",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `mini_chart` publishes.
@@ -928,41 +970,45 @@ impl Draw for MiniChart {
             }
         }
 
-        // Hover marker and value caption, drawn last so they sit over the series.
-        if let Some(index) = self.hovered_index {
-            if let Some(point) = self.data.get(index) {
-                let x = self.point_center_x(index, plot);
-                let value = point.value;
-                let label = point.label.clone();
-                context.draw_line_stroke(
-                    Point::new(x, chart_origin_y),
-                    Point::new(x, chart_origin_y + chart_area_h as i32),
-                    axis_color,
-                    1,
-                );
-                // The caption is written only when the point — or its label — changes; a pointer
-                // resting on one point reuses the buffer instead of building the same string per
-                // frame. A non-empty `DataPoint.label` is appended so the caller's vocabulary
-                // reaches the hover readout.
-                let key = (index, value);
-                if self.hover_caption_key != Some(key) || self.hover_caption_label != label {
-                    self.hover_caption.clear();
-                    if label.is_empty() {
-                        let _ = write!(self.hover_caption, "{}", value);
-                    } else {
-                        let _ = write!(self.hover_caption, "{}: {}", label, value);
+        // Hover marker and value caption, drawn last so they sit over the series. The
+        // interaction switch gates the paint as well as the event path, so a host that turns
+        // hover off cannot keep a marker from an older frame on screen.
+        if self.hover_enabled {
+            if let Some(index) = self.hovered_index {
+                if let Some(point) = self.data.get(index) {
+                    let x = self.point_center_x(index, plot);
+                    let value = point.value;
+                    let label = point.label.clone();
+                    context.draw_line_stroke(
+                        Point::new(x, chart_origin_y),
+                        Point::new(x, chart_origin_y + chart_area_h as i32),
+                        axis_color,
+                        1,
+                    );
+                    // The caption is written only when the point — or its label — changes; a pointer
+                    // resting on one point reuses the buffer instead of building the same string per
+                    // frame. A non-empty `DataPoint.label` is appended so the caller's vocabulary
+                    // reaches the hover readout.
+                    let key = (index, value);
+                    if self.hover_caption_key != Some(key) || self.hover_caption_label != label {
+                        self.hover_caption.clear();
+                        if label.is_empty() {
+                            let _ = write!(self.hover_caption, "{}", value);
+                        } else {
+                            let _ = write!(self.hover_caption, "{}: {}", label, value);
+                        }
+                        self.hover_caption_key = Some(key);
+                        self.hover_caption_label = label;
                     }
-                    self.hover_caption_key = Some(key);
-                    self.hover_caption_label = label;
+                    let font = self.label_font();
+                    context.draw_text(
+                        Point::new(x + 4, chart_origin_y + 12),
+                        self.hover_caption.as_str(),
+                        &font,
+                        line_color,
+                        HorizontalAlignment::Left,
+                    );
                 }
-                let font = self.label_font();
-                context.draw_text(
-                    Point::new(x + 4, chart_origin_y + 12),
-                    self.hover_caption.as_str(),
-                    &font,
-                    line_color,
-                    HorizontalAlignment::Left,
-                );
             }
         }
     }
@@ -1288,5 +1334,26 @@ mod tests {
         chart.set_hovered_index(Some(1));
         let _ = render_pixels(&mut chart);
         assert_eq!(chart.hover_caption, "Bee: 50");
+    }
+
+    /// The hover switch gates both the event path and the paint.
+    #[test]
+    fn the_hover_switch_gates_tracking_and_emission() {
+        let mut chart = MiniChart::new(Rect::new(0, 0, 200, 150));
+        chart.set_data(vec![DataPoint::new("A", 10), DataPoint::new("B", 50)]);
+        assert!(chart.hover_enabled(), "hover tracks by default");
+
+        chart.handle_event(&Event::MouseMove { pos: Point::new(115, 50) });
+        assert_eq!(chart.hovered_index(), Some(1));
+
+        chart.set_hover_enabled(false);
+        assert_eq!(chart.hovered_index(), None, "turning it off clears the marker");
+        chart.handle_event(&Event::MouseMove { pos: Point::new(115, 50) });
+        assert_eq!(chart.hovered_index(), None, "a disabled switch tracks nothing");
+
+        chart.set_hover_enabled(true);
+        chart.handle_event(&Event::MouseMove { pos: Point::new(115, 50) });
+        assert_eq!(chart.hovered_index(), Some(1));
+        assert_eq!(chart.get("hover_enabled"), Ok(CapabilityValue::Bool(true)));
     }
 }

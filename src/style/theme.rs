@@ -113,6 +113,26 @@ pub fn resolved_theme_style_for(
     None
 }
 
+/// The shared form of [`resolved_theme_style_for`]; see [`resolved_theme_style_shared`] for
+/// why a repeated ask wants it. The JSON layout walk resolves the same `(kind, class)` pair
+/// once per node, so it is the caller the cache exists for (G-401).
+#[cfg(device_profile)]
+pub fn resolved_theme_style_for_shared(
+    kind_name: &str,
+    class_name: Option<&str>,
+) -> Option<crate::compat::Rc<WidgetStyle>> {
+    crate::theme::resolved_theme_style_for_shared(kind_name, class_name)
+}
+
+/// No theme module in this profile; see [`resolved_theme_style_for`].
+#[cfg(not(device_profile))]
+pub fn resolved_theme_style_for_shared(
+    _kind_name: &str,
+    _class_name: Option<&str>,
+) -> Option<crate::compat::Rc<WidgetStyle>> {
+    None
+}
+
 /// The resolved style for a control in a **specific state**, or `None` when no theme is active,
 /// the build has no theme module, or the theme declares no override for that state.
 ///

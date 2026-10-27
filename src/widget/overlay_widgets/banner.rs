@@ -164,6 +164,19 @@ impl BannerSeverity {
     }
 }
 
+/// The control a press on the banner armed (OV-001).
+///
+/// The press records *which* affordance it landed on and commits only when the
+/// matching release lands on the same one. Without this, dragging off an action
+/// still fired it, because the old handler acted on `MousePress` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BannerPressTarget {
+    /// The dismiss affordance.
+    Dismiss,
+    /// The action at this index.
+    Action(usize),
+}
+
 /// A persistent full-width notice with a severity, a message, an optional
 /// dismiss control, and optional actions.
 pub struct Banner {
@@ -196,6 +209,15 @@ pub struct Banner {
     /// reveal over the existing draw is what makes an acknowledged banner leave rather than
     /// disappear between two frames.
     reveal: PropertyDriver,
+    /// The number of text lines a long message may occupy before the last one is elided
+    /// (OV-002).
+    ///
+    /// Two by default: the previous single-line fit shrank the font instead of wrapping, which
+    /// made a long notice genuinely hard to read. The cap is settable, and a value below one is
+    /// clamped rather than accepted as a division by zero.
+    max_text_lines: u32,
+    /// The affordance the current press armed, `None` when no press is in flight (OV-001).
+    pressed_target: Option<BannerPressTarget>,
 }
 
 impl Banner {
@@ -213,6 +235,8 @@ impl Banner {
             action_clicked: Signal1::new(),
             dismissed: GenericSignal::new(),
             reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
+            max_text_lines: 2,
+            pressed_target: None,
         }
     }
 
@@ -323,6 +347,26 @@ impl Banner {
         self.base.request_redraw();
     }
 
+    /// Returns how many lines a long message may occupy (OV-002).
+    pub fn max_text_lines(&self) -> u32 {
+        self.max_text_lines
+    }
+
+    /// Sets how many lines a long message may occupy (OV-002).
+    ///
+    /// The value is clamped to `1..=4`: zero would leave no line to draw, and an unbounded
+    /// number would let a notice consume the layout it is meant to sit in. A non-finite value
+    /// cannot reach this setter because the parameter is an integer, so the nearest legal value
+    /// is simply the clamp's edge and is readable through [`Self::max_text_lines`].
+    pub fn set_max_text_lines(&mut self, lines: u32) {
+        let lines = lines.clamp(1, 4);
+        if self.max_text_lines == lines {
+            return;
+        }
+        self.max_text_lines = lines;
+        self.base.request_redraw();
+    }
+
     /// Returns the action labels.
     pub fn actions(&self) -> &[String] {
         &self.actions
@@ -331,6 +375,11 @@ impl Banner {
     /// Sets the action labels. Any previously hovered index is dropped because
     /// it may no longer name the same action.
     pub fn set_actions(&mut self, actions: Vec<String>) {
+        // Replacing the list with an identical one is not a change; the hovered index would still
+        // be dropped, so the guard has to compare first and leave the state alone.
+        if self.actions == actions {
+            return;
+        }
         self.actions = actions;
         self.hovered_action = None;
         self.base.request_redraw();
@@ -596,12 +645,34 @@ impl EventHandler for Banner {
 
         match event {
             Event::MousePress { pos, button: 1, .. } => {
-                if self.hits_dismiss(*pos) {
-                    let _ = self.dismiss();
-                    return;
+                // A press only *arms* the affordance under it (OV-001). The commit is the
+                // release, so dragging away cancels the gesture the way every button does.
+                let target = if self.hits_dismiss(*pos) {
+                    Some(BannerPressTarget::Dismiss)
+                } else {
+                    self.action_index_at(*pos).map(BannerPressTarget::Action)
+                };
+                self.pressed_target = target;
+                self.base.set_pressed(target.is_some());
+                if target.is_some() {
+                    self.base.request_redraw();
                 }
-                if let Some(index) = self.action_index_at(*pos) {
-                    let _ = self.activate_action(index);
+            }
+            Event::MouseRelease { pos, button: 1 } => {
+                let target = self.pressed_target.take();
+                self.base.set_pressed(false);
+                self.base.request_redraw();
+                match target {
+                    Some(BannerPressTarget::Dismiss) if self.hits_dismiss(*pos) => {
+                        let _ = self.dismiss();
+                    }
+                    Some(BannerPressTarget::Action(index))
+                        if self.action_index_at(*pos) == Some(index) =>
+                    {
+                        let _ = self.activate_action(index);
+                    }
+                    // A release anywhere else is a cancelled gesture: no signal, no dismissal.
+                    _ => {}
                 }
             }
             Event::MouseMove { pos } => {
@@ -612,11 +683,32 @@ impl EventHandler for Banner {
                     // writing the field alone only showed the tint if something else redrew (G-A07).
                     self.base.request_redraw();
                 }
+                // Dragging off the armed affordance stops painting pressed, and dragging back onto
+                // the *same* affordance restores it, which is the continuous `pressed` contract the
+                // base records for every control. The armed target survives until the release or a
+                // `MouseLeave`, so a release elsewhere still cancels.
+                if let Some(target) = self.pressed_target {
+                    let still_armed = match target {
+                        BannerPressTarget::Dismiss => self.hits_dismiss(*pos),
+                        BannerPressTarget::Action(index) => {
+                            self.action_index_at(*pos) == Some(index)
+                        }
+                    };
+                    if self.base.is_pressed() != still_armed {
+                        self.base.set_pressed(still_armed);
+                        self.base.request_redraw();
+                    }
+                }
             }
             // The pointer is no longer over any action, so nothing should stay
-            // highlighted.
+            // highlighted. A press in flight is cancelled too (OV-001).
             Event::MouseLeave { .. } => {
-                if self.hovered_action.take().is_some() {
+                let had_hover = self.hovered_action.take().is_some();
+                let had_press = self.pressed_target.take().is_some();
+                if had_press {
+                    self.base.set_pressed(false);
+                }
+                if had_hover || had_press {
                     self.base.request_redraw();
                 }
             }
@@ -663,14 +755,27 @@ impl Draw for Banner {
 
         let style = self.base.style();
         // One role-style read for the whole frame (G-A01); the severity palette helpers take it
-        // rather than each taking the manager lock again.
-        let theme = crate::style::resolved_theme_style_shared("banner");
+        // rather than each taking the manager lock again. The state resolution is what makes a
+        // theme's `banner:hover`/`banner:pressed`/`banner:focus` entries reachable (OV-003); the
+        // normal state resolves to exactly the resting style the control painted before.
+        let state = self.widget_state();
+        let theme = crate::style::resolved_theme_style_for_state_shared("banner", state);
         let caller_background = if style.theme_derived { None } else { style.background_color };
         let background =
             caller_background.unwrap_or_else(|| self.severity.background_in(theme.as_deref()));
         let text_color =
             style.text_color.unwrap_or_else(|| self.severity.default_text_in(theme.as_deref()));
         let border_color = style.border_color.unwrap_or_else(|| self.severity.border());
+        // A hover or press is a visible answer to the pointer even when the active theme declares
+        // no state override for this control. The resting picture is untouched: the overlay is
+        // exactly zero at `WidgetState::Normal` (OV-003).
+        let interaction = match state {
+            crate::style::WidgetState::Hover => 0.06,
+            crate::style::WidgetState::Pressed => 0.12,
+            _ => 0.0,
+        };
+        let background =
+            if interaction > 0.0 { background.blend(&text_color, interaction) } else { background };
 
         context.face_with_gradient_corners(
             rect,
@@ -719,18 +824,52 @@ impl Draw for Banner {
             // The message face is the **effective font** at its role size — 0.3 of the banner height,
             // so the theme family and the user's text scale reach it (D09-STYLE-01).
             let font = role_font(style, (rect.height as f32 * 0.3).clamp(10.0, 16.0));
-            // Centred through the shared primitive. The old origin was the banner's middle
-            // line, and since the origin is the glyph box's top edge the message sat half a
-            // line low — visible in `banner.svg`, where a 16 px line began at the middle of a
-            // 120 px band instead of at 52.
+            // The message wraps at word boundaries through the shared measurement primitive, and
+            // the last permitted line is elided rather than shrunk to fit (OV-002). Building the
+            // line strings first releases the immutable measurement borrow before the draw calls
+            // need the context mutably.
+            let fitted_lines = {
+                let mut lines: Vec<crate::compat::Cow<'_, str>> = Vec::new();
+                let mut measure = |text: &str| context.measure_text(text, &font).width;
+                let ranges =
+                    crate::widget::text_utils::wrap_to_width(&self.text, text_width, &mut measure);
+                let limit = self.max_text_lines.max(1) as usize;
+                for (index, range) in ranges.iter().take(limit).enumerate() {
+                    if index + 1 == limit && ranges.len() > limit {
+                        // The tail of the message does not fit: elide the remaining text on the
+                        // last permitted line, keeping the head of what would have been there.
+                        let tail = self.text[range.start..].split('\n').next().unwrap_or("");
+                        lines.push(crate::widget::text_utils::elide_to_width(
+                            tail,
+                            text_width,
+                            &mut measure,
+                        ));
+                    } else {
+                        lines.push(crate::compat::Cow::Borrowed(&self.text[range.clone()]));
+                    }
+                }
+                lines
+            };
+            // Centred through the shared primitive. A wrapped message is centred as a block, so
+            // the first line is not pinned to the banner's middle line.
             let line = context.text_line(rect, &font);
-            context.draw_text_fitted_cow(
-                Rect { x: text_left, y: line.y, width: text_width, height: line.height },
-                &self.text,
-                &font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
+            let line_height = line.height.max(1);
+            let block_height = line_height.saturating_mul(fitted_lines.len() as u32);
+            let block_top = rect.y + (rect.height.saturating_sub(block_height) / 2) as i32;
+            for (index, text) in fitted_lines.iter().enumerate() {
+                context.draw_text_fitted_cow(
+                    Rect {
+                        x: text_left,
+                        y: block_top + line_height as i32 * index as i32,
+                        width: text_width,
+                        height: line_height,
+                    },
+                    text,
+                    &font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
 
         for (index, label) in self.actions.iter().enumerate() {
@@ -779,6 +918,24 @@ impl Draw for Banner {
             border_color,
             1,
         );
+
+        // Keyboard focus is drawn with the shared inset ring, gated on the *reason* focus arrived
+        // (a pointer press must not paint it). This is the same derivation every other control
+        // uses, so `banner:focus` and the ring cannot disagree (OV-003).
+        if self.base.draws_focus_ring() {
+            let ring = crate::widget::metrics::FocusRing::for_control(
+                rect,
+                self.style().border_radius.unwrap_or(0),
+            );
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    crate::widget::metrics::focus_ring_color(text_color),
+                    crate::widget::metrics::FOCUS_RING_WIDTH,
+                );
+            }
+        }
     }
 
     fn uses_custom_drawing(&self) -> bool {
@@ -806,6 +963,7 @@ impl Banner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
 
     fn banner() -> Banner {
@@ -923,7 +1081,76 @@ mod tests {
             banner.dismiss_action_rect().expect("a dismissible banner offers a dismiss area");
 
         banner.handle_event(&Event::mouse_press(rect.x + 2, rect.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(rect.x + 2, rect.y + 2, 1));
         assert!(banner.is_dismissed());
+    }
+
+    /// A press that is released away from the affordance is a cancelled gesture (OV-001).
+    #[test]
+    fn a_press_released_outside_cancels_instead_of_committing() {
+        let mut banner = banner();
+        banner.set_actions(vec!["Retry".to_string()]);
+        let seen = action_sink(&mut banner);
+        let count = dismiss_sink(&mut banner);
+        let action = banner.action_rect(0).expect("action 0 has a rect");
+        let dismiss = banner.dismiss_action_rect().expect("a dismiss area exists");
+
+        banner.handle_event(&Event::mouse_press(action.x + 2, action.y + 2, 1));
+        assert!(banner.base.is_pressed(), "the press arms the affordance");
+        banner.handle_event(&Event::mouse_release(dismiss.x + 2, dismiss.y + 2, 1));
+        assert!(
+            seen.lock().expect("signal sink poisoned").is_empty(),
+            "a release over a different control must not fire the pressed action"
+        );
+        assert!(!banner.is_dismissed(), "and must not dismiss");
+        assert_eq!(*count.lock().expect("signal sink poisoned"), 0);
+
+        // A press released over the same action is still the commit path.
+        banner.handle_event(&Event::mouse_press(action.x + 2, action.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(action.x + 2, action.y + 2, 1));
+        assert_eq!(seen.lock().expect("signal sink poisoned").as_slice(), ["Retry".to_string()]);
+    }
+
+    /// The two-line cap is settable, and invalid values land on the nearest legal edge (OV-002).
+    #[test]
+    fn the_message_line_cap_is_bounded_and_queryable() {
+        let mut banner = banner();
+        assert_eq!(banner.max_text_lines(), 2, "two lines is the readable default");
+        banner.set_max_text_lines(1);
+        assert_eq!(banner.max_text_lines(), 1);
+        banner.set_max_text_lines(0);
+        assert_eq!(banner.max_text_lines(), 1, "zero lines would draw nothing");
+        banner.set_max_text_lines(99);
+        assert_eq!(banner.max_text_lines(), 4, "the cap cannot grow without bound");
+    }
+
+    /// A long message is wrapped and elided on its last permitted line (OV-002).
+    #[test]
+    fn a_long_message_is_elided_at_the_line_cap() {
+        use crate::widget::svg::text_ink_boxes;
+
+        let mut banner = banner();
+        banner.set_text(
+            "A very long notice that cannot possibly fit on one line of this banner, and \
+             continues for long enough to need more than two lines as well",
+        );
+        banner.set_max_text_lines(1);
+        let one = text_ink_boxes(&render_to_svg(&mut banner)).len();
+        banner.set_max_text_lines(2);
+        let two = text_ink_boxes(&render_to_svg(&mut banner)).len();
+        assert_eq!(one, 1, "the one-line cap paints exactly one text run");
+        assert_eq!(two, 2, "the two-line cap adds the wrapped continuation");
+    }
+
+    /// A hovered or pressed banner answers the pointer even without a theme override (OV-003).
+    #[test]
+    fn a_hovered_banner_paints_differently_from_a_resting_one() {
+        let mut banner = banner();
+        banner.set_text("Update available");
+        let resting = render_to_svg(&mut banner);
+        banner.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
+        let hovered = render_to_svg(&mut banner);
+        assert_ne!(resting, hovered, "the bar must answer the pointer");
     }
 
     /// Clicking an action must emit that action's label, which is the whole
@@ -936,6 +1163,7 @@ mod tests {
 
         let rect = banner.action_rect(0).expect("action 0 has a rect");
         banner.handle_event(&Event::mouse_press(rect.x + 2, rect.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(rect.x + 2, rect.y + 2, 1));
 
         let got = seen.lock().expect("signal sink poisoned").clone();
         assert_eq!(got, vec!["Retry".to_string()]);
@@ -955,6 +1183,7 @@ mod tests {
         assert_ne!(rect, second, "two actions must not share a hit area");
 
         banner.handle_event(&Event::mouse_press(second.x + 2, second.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(second.x + 2, second.y + 2, 1));
         let got = seen.lock().expect("signal sink poisoned").clone();
         assert_eq!(got, vec!["Second".to_string()]);
         assert_eq!(banner.action_rect(3), None, "there is no fourth action");
@@ -975,7 +1204,9 @@ mod tests {
         banner.dismiss();
 
         banner.handle_event(&Event::mouse_press(action.x + 2, action.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(action.x + 2, action.y + 2, 1));
         banner.handle_event(&Event::mouse_press(dismiss.x + 2, dismiss.y + 2, 1));
+        banner.handle_event(&Event::mouse_release(dismiss.x + 2, dismiss.y + 2, 1));
 
         assert!(banner.is_dismissed());
         assert!(
@@ -1012,6 +1243,7 @@ mod tests {
         let count = dismiss_sink(&mut banner);
 
         banner.handle_event(&Event::mouse_press(4, 24, 1));
+        banner.handle_event(&Event::mouse_release(4, 24, 1));
 
         assert!(!banner.is_dismissed(), "clicking the message is not a dismissal");
         assert!(seen.lock().expect("signal sink poisoned").is_empty());
@@ -1026,6 +1258,7 @@ mod tests {
         let rect = banner.dismiss_action_rect().expect("a dismiss area exists");
 
         banner.handle_event(&Event::mouse_press(rect.x + 2, rect.y + 2, 3));
+        banner.handle_event(&Event::mouse_release(rect.x + 2, rect.y + 2, 3));
         assert!(!banner.is_dismissed());
     }
 

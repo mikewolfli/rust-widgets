@@ -7,7 +7,7 @@ use super::batch::BatchState;
 #[cfg(test)]
 use crate::compat::vec;
 use crate::compat::{Arc, Rc, Vec};
-use crate::core::{Color, Font, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::pipeline::{
     fill_conic_ramp, ramp_lut_for_stops, sat_add_i32, sat_mul_i32, sat_neg_i32,
     u32_to_i32_saturating, ConicWrite,
@@ -480,6 +480,7 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
     if surface.buffer.suppress_depth > 0 {
         match command {
             RenderCommand::PushClip { .. }
+            | RenderCommand::PushClipRoundedRect { .. }
             | RenderCommand::PushLayer { .. }
             | RenderCommand::PushLayerGroup { .. }
             | RenderCommand::PushMatte { .. } => {
@@ -576,11 +577,33 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
         RenderCommand::DrawText { origin, text, font, color, alignment } => {
             surface.draw_text(*origin, text, font, *color, *alignment)
         }
+        RenderCommand::DrawTextDecorated { origin, text, font, color, alignment, decoration } => {
+            draw_text_decorated_on_surface(
+                surface,
+                *origin,
+                text,
+                font,
+                *color,
+                *alignment,
+                *decoration,
+            );
+        }
         RenderCommand::DrawImage { x, y, width, height, data } => {
             surface.draw_image(*x, *y, *width, *height, data)
         }
         RenderCommand::PushClip { x, y, width, height } => {
             surface.push_clip(*x, *y, *width, *height)
+        }
+        RenderCommand::PushClipRoundedRect { x, y, width, height, radii } => {
+            // The rounded clip reuses the exact path machinery a `ClipPath` push
+            // uses: the polygon below approximates the rounded outline, and
+            // `push_path_clip` turns it into a bounding clip plus a coverage mask
+            // (G-015). The sample count trades polygon vertices for mask bytes;
+            // six segments per corner keeps the quarter arc within half a pixel
+            // of the true circle at any radius a UI uses.
+            let rect = crate::core::Rect::new(*x, *y, *width, *height);
+            let outline = rounded_rect_outline_points(rect, *radii);
+            surface.push_path_clip(&outline);
         }
         RenderCommand::PopClip => surface.pop_clip(),
         RenderCommand::PushLayer { bounds, effect } => push_layer(surface, *bounds, *effect),
@@ -599,6 +622,16 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
         }
         RenderCommand::DrawPath { points, closed, color, filled, width } => {
             surface.draw_path(points, *closed, *color, *filled, *width);
+        }
+        RenderCommand::DrawPathDashed { points, closed, color, width, dash } => {
+            // One dash kernel, shared with the border's dashed edges (G-014): the
+            // polyline is expanded here, on the immediate path, into the same
+            // `DrawLineStroke` primitives a solid stroke uses.
+            for (from, to) in
+                crate::render::backend::surface::dash_line_segments(points, *closed, *dash)
+            {
+                surface.draw_line_with_width(from, to, *color, *width);
+            }
         }
         RenderCommand::FillPathNonZero { path, color } => {
             surface.fill_path_non_zero(path, *color);
@@ -620,42 +653,39 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
             surface.fill_rect(spread_rect, shadow_color);
             // Apply box blur to the shadow region if blur_radius > 0
             if *blur_radius > 0 {
-                let size = surface.size();
-                let w = size.width as usize;
-                let h = size.height as usize;
-                if w > 0 && h > 0 {
-                    let radius = (*blur_radius).min(100) as usize;
-                    let region = surface.current_clip().unwrap_or((0, 0, w as u32, h as u32));
-                    let blur_x0 = spread_rect.x.max(region.0).max(0) as usize;
-                    let blur_y0 = spread_rect.y.max(region.1).max(0) as usize;
-                    let clip_right = region.0 as i64 + i64::from(region.2);
-                    let clip_bottom = region.1 as i64 + i64::from(region.3);
-                    let blur_right = (spread_rect.x as i64 + i64::from(spread_rect.width))
-                        .min(clip_right)
-                        .min(w as i64)
-                        .max(0);
-                    let blur_bottom = (spread_rect.y as i64 + i64::from(spread_rect.height))
-                        .min(clip_bottom)
-                        .min(h as i64)
-                        .max(0);
-                    let blur_w = (blur_right - blur_x0 as i64).max(0) as usize;
-                    let blur_h = (blur_bottom - blur_y0 as i64).max(0) as usize;
-                    if blur_w > 0 && blur_h > 0 {
-                        let mut scratch = surface.take_blur_scratch();
-                        {
-                            let back = surface.buffer.back_mut();
-                            box_blur_region(
-                                back,
-                                w,
-                                h,
-                                (blur_x0, blur_y0, blur_w, blur_h),
-                                radius,
-                                &mut scratch,
-                            );
-                        }
-                        surface.return_blur_scratch(scratch);
-                    }
-                }
+                blur_rect_on_surface(surface, spread_rect, *blur_radius);
+            }
+        }
+        RenderCommand::BoxShadowRounded {
+            rect,
+            radii,
+            color,
+            offset_x,
+            offset_y,
+            blur_radius,
+            spread,
+        } => {
+            // The rounded twin of the `BoxShadow` arm above: the same offset/spread
+            // arithmetic, but the blur source is the rounded rectangle (G-016), so
+            // the shadow's corners follow the caster's instead of staying square.
+            // The radii are resolved per CSS `border-radius` first, matching the
+            // filled rounded rect the caster itself paints through.
+            let spread_rect = crate::core::Rect::new(
+                sat_add_i32(sat_add_i32(rect.x, *offset_x), sat_neg_i32(*spread)),
+                sat_add_i32(sat_add_i32(rect.y, *offset_y), sat_neg_i32(*spread)),
+                sat_mul_i32(*spread, 2).saturating_add(u32_to_i32_saturating(rect.width)).max(0)
+                    as u32,
+                sat_mul_i32(*spread, 2).saturating_add(u32_to_i32_saturating(rect.height)).max(0)
+                    as u32,
+            );
+            let shadow_color = *color;
+            surface.fill_rounded_rect_radii(
+                spread_rect,
+                crate::render::pipeline::rounded_rect_effective_radii(spread_rect, *radii),
+                shadow_color,
+            );
+            if *blur_radius > 0 {
+                blur_rect_on_surface(surface, spread_rect, *blur_radius);
             }
         }
         RenderCommand::Blur { radius } => {
@@ -745,6 +775,187 @@ pub(super) fn route_command_to_surface(surface: &mut SoftwareSurface, command: &
                 &lut,
                 ConicWrite::Replace,
             );
+        }
+    }
+}
+
+/// How many straight chords approximate one quarter arc of a rounded clip (G-015).
+///
+/// Six chords keep the sampled polygon within half a pixel of the true quarter
+/// circle for any radius a UI clip uses, while costing only 24 extra vertices
+/// per clip; the coverage mask those vertices produce is what actually clips.
+const ROUNDED_CLIP_CORNER_SEGMENTS: usize = 6;
+
+/// Runs the box blur the shadow commands share over `region` (G-03/G-016).
+///
+/// Extracted from the `BoxShadow` arm so [`RenderCommand::BoxShadow`] and
+/// [`RenderCommand::BoxShadowRounded`] cannot drift on how the blur region is
+/// clipped: both fill their own source shape and then hand it to this one
+/// routine, which intersects the region with the active clip and the surface
+/// bounds exactly as the inline block always did.
+fn blur_rect_on_surface(surface: &mut SoftwareSurface, region: Rect, blur_radius: u32) {
+    let size = surface.size();
+    let w = size.width as usize;
+    let h = size.height as usize;
+    if w == 0 || h == 0 {
+        return;
+    }
+    let radius = blur_radius.min(100) as usize;
+    let clip = surface.current_clip().unwrap_or((0, 0, w as u32, h as u32));
+    let blur_x0 = region.x.max(clip.0).max(0) as usize;
+    let blur_y0 = region.y.max(clip.1).max(0) as usize;
+    let clip_right = clip.0 as i64 + i64::from(clip.2);
+    let clip_bottom = clip.1 as i64 + i64::from(clip.3);
+    let blur_right =
+        (region.x as i64 + i64::from(region.width)).min(clip_right).min(w as i64).max(0);
+    let blur_bottom =
+        (region.y as i64 + i64::from(region.height)).min(clip_bottom).min(h as i64).max(0);
+    let blur_w = (blur_right - blur_x0 as i64).max(0) as usize;
+    let blur_h = (blur_bottom - blur_y0 as i64).max(0) as usize;
+    if blur_w > 0 && blur_h > 0 {
+        let mut scratch = surface.take_blur_scratch();
+        {
+            let back = surface.buffer.back_mut();
+            box_blur_region(back, w, h, (blur_x0, blur_y0, blur_w, blur_h), radius, &mut scratch);
+        }
+        surface.return_blur_scratch(scratch);
+    }
+}
+
+/// The closed outline of a rounded rectangle as a polygon of sample points.
+///
+/// Each corner is walked with [`ROUNDED_CLIP_CORNER_SEGMENTS`] straight chords,
+/// starting and ending on the tangent points where the arc meets the edges.
+/// Feeding this to [`SoftwareSurface::push_path_clip`] gives the clip the same
+/// coverage machinery a `ClipPath` command gets (G-015); the chords cut inside
+/// the true arc by at most half a pixel at the sample count chosen, which is
+/// the accuracy a UI clip needs.
+///
+/// The radii are resolved per CSS `border-radius` first, so an edge-overrun
+/// cannot produce a self-intersecting polygon — the same guarantee a filled
+/// rounded rect's coverage path has.
+fn rounded_rect_outline_points(rect: Rect, radii: [u32; 4]) -> Vec<crate::core::Point> {
+    use crate::core::Point;
+    use crate::render::pipeline::rounded_rect_effective_radii;
+    let [tl, tr, br, bl] = rounded_rect_effective_radii(rect, radii);
+    let left = rect.x;
+    let top = rect.y;
+    let right = rect.x + rect.width as i32;
+    let bottom = rect.y + rect.height as i32;
+    let segments = ROUNDED_CLIP_CORNER_SEGMENTS;
+    let mut points = Vec::with_capacity(4 * segments + 4);
+    // Perimeter order (top-left → top-right → bottom-right → bottom-left), the
+    // order every other outline the command set carries uses.
+    let arc = |points: &mut Vec<Point>, cx: i32, cy: i32, radius: u32, start: f32| {
+        if radius == 0 {
+            points.push(Point::new(cx, cy));
+            return;
+        }
+        let radius = radius as f32;
+        for step in 0..=segments {
+            let angle = start + core::f32::consts::FRAC_PI_2 * (step as f32 / segments as f32);
+            points.push(Point::new(
+                cx + (radius * angle.cos()).round() as i32,
+                cy + (radius * angle.sin()).round() as i32,
+            ));
+        }
+    };
+    // Top edge runs left to right, so the top-left arc sweeps from 180° to 270°.
+    arc(&mut points, left + tl as i32, top + tl as i32, tl, core::f32::consts::PI);
+    // The top-right arc starts where the top edge ends: 270° (its tangent
+    // point) through 360°.
+    arc(&mut points, right - tr as i32, top + tr as i32, tr, -core::f32::consts::FRAC_PI_2);
+    // Bottom-right: 0° through 90°.
+    arc(&mut points, right - br as i32, bottom - br as i32, br, 0.0);
+    // Bottom-left: 90° through 180°.
+    arc(&mut points, left + bl as i32, bottom - bl as i32, bl, core::f32::consts::FRAC_PI_2);
+    points
+}
+
+/// Draws `text` and then the decorations `decoration` asks for (G-013).
+///
+/// The glyphs go down through the same [`SoftwareSurface::draw_text`] the plain
+/// command routes to, so the ink is identical; the decoration rules are then
+/// laid out around the shaped run with these concrete formulas, documented here
+/// because they are new rendering geometry:
+///
+/// * the baseline sits `metrics.ascent` below `origin.y`, where `metrics` is the
+///   shared [`TextMetrics::for_font`] line box at the surface's DPI scale — the
+///   same numbers [`SoftwareSurface::draw_text`] rasterises against;
+/// * the underline runs `underline_offset = max(1, descent / 2)` below the
+///   baseline, centring the rule in the space between baseline and line-box
+///   bottom;
+/// * the strikethrough runs at `origin.y + ascent / 2`, the middle of the
+///   ascender region where cap height and x-height both cross;
+/// * the wavy underline shares the underline's offset and zigzags between
+///   one and two offsets below it, with a two-pixel half period;
+/// * every rule's thickness is `max(1, round(em / 12))` device pixels (em =
+///   `font.size() * scale`), so it grows with the font instead of vanishing at
+///   display sizes;
+/// * every rule spans the run's own width, adjusted for `alignment` exactly as
+///   the glyphs were.
+fn draw_text_decorated_on_surface(
+    surface: &mut SoftwareSurface,
+    origin: Point,
+    text: &str,
+    font: &Font,
+    color: Color,
+    alignment: HorizontalAlignment,
+    decoration: crate::render::core::command::TextDecoration,
+) {
+    use crate::render::core::command::TextDecoration;
+    surface.draw_text(origin, text, font, color, alignment);
+    if decoration.is_empty() {
+        return;
+    }
+    let scale = surface.dpi_scale();
+    let metrics = TextMetrics::for_font(font, scale);
+    let advance = surface.shape_text(text, font).advance().round().max(0.0) as u32;
+    if advance == 0 {
+        return;
+    }
+    let start_x = match alignment {
+        HorizontalAlignment::Left => origin.x,
+        HorizontalAlignment::Center => origin.x - (advance / 2) as i32,
+        HorizontalAlignment::Right => origin.x - advance as i32,
+    };
+    let end_x = start_x + advance as i32;
+    let baseline = origin.y + metrics.ascent as i32;
+    let thickness = ((font.size() * scale) / 12.0).round().max(1.0) as u32;
+    let underline_offset = (metrics.descent as i32 / 2).max(1);
+    let rule = |surface: &mut SoftwareSurface, y: i32| {
+        surface.draw_line_with_width(
+            Point::new(start_x, y),
+            Point::new(end_x, y),
+            color,
+            thickness,
+        );
+    };
+    if decoration.contains(TextDecoration::UNDERLINE.0) {
+        rule(surface, baseline + underline_offset);
+    }
+    if decoration.contains(TextDecoration::STRIKETHROUGH.0) {
+        rule(surface, origin.y + (metrics.ascent / 2) as i32);
+    }
+    if decoration.contains(TextDecoration::WAVY.0) {
+        // A triangle wave: half period 2 px, amplitude from one to two offsets
+        // below the baseline, so the crest never climbs onto the descenders.
+        let crest = baseline + underline_offset;
+        let trough = baseline + underline_offset * 2;
+        let mut x = start_x;
+        let mut low = false;
+        while x < end_x {
+            let next = (x + 2).min(end_x);
+            let from_y = if low { trough } else { crest };
+            let to_y = if low { crest } else { trough };
+            surface.draw_line_with_width(
+                Point::new(x, from_y),
+                Point::new(next, to_y),
+                color,
+                thickness,
+            );
+            x = next;
+            low = !low;
         }
     }
 }

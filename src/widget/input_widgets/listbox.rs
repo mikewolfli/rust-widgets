@@ -163,17 +163,20 @@ struct IconAdvanceCache {
 /// an icon, an optional check state, a disabled flag and a caller-owned data token. Every field
 /// is optional or defaults to the plain state, so a list that never touches the type paints
 /// exactly as it did.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ListBoxItem {
     icon: Option<String>,
     checked: Option<bool>,
     enabled: bool,
     data: Option<String>,
+    tooltip: Option<String>,
+    /// A per-row font, or `None` to use the list's own row font.
+    font: Option<Font>,
 }
 
 impl Default for ListBoxItem {
     fn default() -> Self {
-        Self { icon: None, checked: None, enabled: true, data: None }
+        Self { icon: None, checked: None, enabled: true, data: None, tooltip: None, font: None }
     }
 }
 
@@ -207,6 +210,21 @@ impl ListBoxItem {
         self
     }
 
+    /// Sets the tooltip shown while the pointer is over this row.
+    ///
+    /// The list publishes the hovered row's text through the control's own tooltip, so
+    /// existing tooltip plumbing keeps working without a second popup implementation.
+    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// Sets the font this row is painted with; `None` keeps the list's row font.
+    pub fn with_font(mut self, font: Font) -> Self {
+        self.font = Some(font);
+        self
+    }
+
     /// The row's icon text, if it has one.
     pub fn icon(&self) -> Option<&str> {
         self.icon.as_deref()
@@ -225,6 +243,16 @@ impl ListBoxItem {
     /// The caller-owned data token, if one was attached.
     pub fn data(&self) -> Option<&str> {
         self.data.as_deref()
+    }
+
+    /// The row's tooltip, if it has one.
+    pub fn tooltip(&self) -> Option<&str> {
+        self.tooltip.as_deref()
+    }
+
+    /// The row's own font, if it has one.
+    pub fn font(&self) -> Option<&Font> {
+        self.font.as_ref()
     }
 }
 
@@ -720,12 +748,14 @@ impl ListBox {
         if self.selection_mode == SelectionMode::None {
             return;
         }
+        // Disabled rows are not selectable individually, so a select-all that swept
+        // them in produced a selection the user could not reproduce by hand (I-113).
+        let selectable: Vec<usize> =
+            (0..self.items.len()).filter(|&i| self.is_item_enabled(i)).collect();
         self.selected_indices.clear();
-        for i in 0..self.items.len() {
-            self.selected_indices.push(i);
-        }
-        if !self.items.is_empty() {
-            self.current_row = Some(0);
+        self.selected_indices.extend(selectable);
+        if let Some(first) = self.selected_indices.first().copied() {
+            self.current_row = Some(first);
         }
         self.selection_changed.emit();
     }
@@ -863,6 +893,49 @@ impl ListBox {
     /// Whether a row can be selected. An out-of-range row is not selectable.
     pub fn is_item_enabled(&self, index: usize) -> bool {
         self.item_meta.get(index).is_none_or(|meta| meta.enabled)
+    }
+
+    /// Publishes the hovered row's tooltip through the control's tooltip slot.
+    fn sync_hover_tooltip(&mut self) {
+        let text = self
+            .hovered_row
+            .and_then(|row| self.item_meta.get(row))
+            .and_then(|meta| meta.tooltip.as_deref())
+            .unwrap_or_default();
+        if self.base.tooltip() == text {
+            return;
+        }
+        self.base.set_tooltip(crate::compat::into_mini(text));
+    }
+
+    /// Repaints only the rows `rows` name, through the damage-tracking face.
+    ///
+    /// A hover moves between two rows, so both the row being left and the row being
+    /// entered are reported. When the host has not opted into damage tracking the
+    /// helper falls back to the whole-control request, which is the historical
+    /// behaviour (I-132).
+    fn request_rows_repaint(&self, rows: &[Option<usize>]) {
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(id) = crate::widget::runtime::registry_id_of(self.id()) {
+                if crate::widget::runtime::repaint_mode(id)
+                    != crate::widget::runtime::RepaintMode::Full
+                {
+                    let mut requested = false;
+                    for row in rows.iter().flatten() {
+                        if let Some(rect) = self.row_rect(*row) {
+                            crate::widget::runtime::request_repaint_rect(id, rect);
+                            requested = true;
+                        }
+                    }
+                    if requested {
+                        self.base.redraw_requested.emit();
+                        return;
+                    }
+                }
+            }
+        }
+        self.base.request_redraw();
     }
 
     /// The indices whose check boxes are checked, in row order.
@@ -1559,13 +1632,17 @@ impl EventHandler for ListBox {
                 // requested only on an actual change.
                 let hovered = self.item_index_at_y(*pos);
                 if hovered != self.hovered_row {
+                    let previous = self.hovered_row;
                     self.hovered_row = hovered;
-                    self.base.request_redraw();
+                    self.sync_hover_tooltip();
+                    self.request_rows_repaint(&[previous, hovered]);
                 }
             }
             Event::MouseLeave { .. } => {
-                if self.hovered_row.take().is_some() {
-                    self.base.request_redraw();
+                let previous = self.hovered_row.take();
+                if previous.is_some() {
+                    self.sync_hover_tooltip();
+                    self.request_rows_repaint(&[previous]);
                 }
             }
             Event::MouseDoubleClick { pos, button } if *button == 1 => {
@@ -1605,6 +1682,12 @@ impl EventHandler for ListBox {
                         list.select(index);
                     }
                 };
+                // Ctrl+A selects every selectable row. The modifier was previously
+                // ignored on this path, so the chord fell through to type-ahead (I-112).
+                if mods.contains(crate::shortcut::Modifiers::CTRL) && (*key == 65 || *key == 97) {
+                    self.select_all();
+                    return;
+                }
                 match *key {
                     38 => {
                         // Up arrow: move toward earlier selectable rows.
@@ -1623,19 +1706,32 @@ impl EventHandler for ListBox {
                         }
                     }
                     36 => {
-                        // Home; Primary+Home is the conventional "first row" chord as well.
+                        // Home; Ctrl+Home is a jump that replaces the selection rather
+                        // than toggling the first row the way Ctrl+click would.
                         if let Some(target) =
                             (0..self.items.len()).find(|&i| self.is_item_enabled(i))
                         {
-                            select_target(self, target);
+                            if mods.contains(crate::shortcut::Modifiers::CTRL)
+                                && !mods.contains(crate::shortcut::Modifiers::SHIFT)
+                            {
+                                self.select(target);
+                            } else {
+                                select_target(self, target);
+                            }
                         }
                     }
                     35 => {
-                        // End.
+                        // End; Ctrl+End is the matching jump.
                         if let Some(target) =
                             (0..self.items.len()).rev().find(|&i| self.is_item_enabled(i))
                         {
-                            select_target(self, target);
+                            if mods.contains(crate::shortcut::Modifiers::CTRL)
+                                && !mods.contains(crate::shortcut::Modifiers::SHIFT)
+                            {
+                                self.select(target);
+                            } else {
+                                select_target(self, target);
+                            }
                         }
                     }
                     33 => {
@@ -1680,6 +1776,10 @@ impl EventHandler for ListBox {
                     // first matching row from the current one. Without it a long list could
                     // only be traversed with the arrows or the pointer.
                     32..=126 => {
+                        // A modifier-held letter is a command chord, not type-ahead.
+                        if mods.contains(crate::shortcut::Modifiers::CTRL) {
+                            return;
+                        }
                         if let Some(ch) = char::from_u32(*key) {
                             // A prefix older than the shared timeout is dropped before this key
                             // extends it, so a stale search cannot keep intercepting the first
@@ -1818,9 +1918,12 @@ impl Draw for ListBox {
                     let meta = self.item_meta.get(i);
                     let enabled = meta.is_none_or(|meta| meta.enabled);
                     let label_ink = if enabled { label_ink } else { label_ink.with_alpha(110) };
+                    // A row's own font, when it has one, decides its line box, its icon
+                    // advance and its label: one source for all three (I-114).
+                    let row_font = meta.and_then(|meta| meta.font.as_ref()).unwrap_or(&font);
                     // The line box is measured from the same font the ink is drawn with and centred
                     // in the row, so the glyph box's top edge lands where the text renders.
-                    let line = context.text_line(row, &font);
+                    let line = context.text_line(row, row_font);
                     let label_align =
                         self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
                     let mut left = row.x + text_inset;
@@ -1852,11 +1955,11 @@ impl Draw for ListBox {
                     // The row's icon, when present, occupies the slot before the label.
                     if let Some(icon) = meta.and_then(|meta| meta.icon()) {
                         if !icon.is_empty() {
-                            let icon_width = self.icon_advance(context, i, icon, &font);
+                            let icon_width = self.icon_advance(context, i, icon, row_font);
                             context.draw_text(
                                 Point::new(left, line.y),
                                 icon,
-                                &font,
+                                row_font,
                                 label_ink,
                                 HorizontalAlignment::Left,
                             );
@@ -1881,7 +1984,7 @@ impl Draw for ListBox {
                             context.draw_text_fitted_cow(
                                 Rect::new(cell_x, line.y, width, line.height),
                                 part,
-                                &font,
+                                row_font,
                                 label_ink,
                                 HorizontalAlignment::Left,
                             );
@@ -1890,7 +1993,7 @@ impl Draw for ListBox {
                         context.draw_text_fitted_cow(
                             Rect::new(left, line.y, inner_width, line.height),
                             text,
-                            &font,
+                            row_font,
                             label_ink,
                             label_align,
                         );
@@ -2761,5 +2864,54 @@ mod tests {
             Err(CapabilityAccessError::TypeMismatch)
         );
         assert_eq!(list.items().len(), 3, "a refused write changes nothing");
+    }
+
+    #[test]
+    fn select_all_skips_disabled_rows() {
+        let mut list = ListBox::new(Rect::new(0, 0, 200, 200));
+        list.set_selection_mode(SelectionMode::Multi);
+        list.add_items(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+        list.set_item_meta(1, ListBoxItem::new().with_enabled(false));
+        list.select_all();
+        assert_eq!(list.selected_indices(), &[0, 2]);
+        assert_eq!(list.current_row(), Some(0));
+    }
+
+    #[test]
+    fn ctrl_home_end_and_select_all_are_reachable_from_the_keyboard() {
+        let mut list = listbox_with(4);
+        list.set_selection_mode(SelectionMode::Extended);
+        list.select(2);
+
+        list.handle_event(&Event::KeyPress { key: 36, modifiers: 2 });
+        assert_eq!(list.selected_indices(), &[0], "Ctrl+Home replaces the selection");
+        list.handle_event(&Event::KeyPress { key: 35, modifiers: 2 });
+        assert_eq!(list.selected_indices(), &[3], "Ctrl+End jumps to the last row");
+
+        list.handle_event(&Event::KeyPress { key: 65, modifiers: 2 });
+        assert_eq!(list.selected_indices(), &[0, 1, 2, 3], "Ctrl+A selects all");
+    }
+
+    #[test]
+    fn a_hovered_row_publishes_its_tooltip() {
+        let mut list = ListBox::new(Rect::new(0, 0, 200, 200));
+        list.add_items(vec!["A".to_string(), "B".to_string()]);
+        list.set_item_meta(1, ListBoxItem::new().with_tooltip("second row"));
+        let row = list.row_rect(1).unwrap();
+        list.handle_event(&Event::MouseMove { pos: Point::new(row.x + 1, row.y + 1) });
+        assert_eq!(list.base.tooltip(), "second row");
+        list.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert!(list.base.tooltip().is_empty());
+    }
+
+    #[test]
+    fn a_row_carries_its_own_font_and_no_font_is_the_default() {
+        let plain = ListBoxItem::new();
+        assert!(plain.font().is_none());
+        assert!(plain.tooltip().is_none());
+        let font = crate::core::Font::simple("Sans", 18.0);
+        let row = ListBoxItem::new().with_font(font.clone()).with_tooltip("hint");
+        assert_eq!(row.font(), Some(&font));
+        assert_eq!(row.tooltip(), Some("hint"));
     }
 }

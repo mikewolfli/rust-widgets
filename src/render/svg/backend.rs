@@ -14,13 +14,24 @@ use crate::compat::Arc;
 use crate::compat::Rc;
 use crate::compat::{format, MiniToString, String, Vec};
 use crate::core::{Color, Font, Point, Rect, Size};
-use crate::render::core::command::{BlendMode, RenderCommand};
+use crate::render::core::command::{BlendMode, RenderCommand, TextDecoration};
 use crate::render::core::types::{ShapedText, TextMetrics};
 use crate::render::pipeline::{rounded_rect_effective_radii, uniform_radii};
 use crate::render::pipeline::{sat_add_i32, sat_mul_i32, sat_neg_i32, u32_to_i32_saturating};
 use crate::render::text::{is_combining_mark, is_variation_selector};
 use crate::render::{PaintBackend, SoftwareRenderConfig};
 use crate::style::gradient::GradientType;
+
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
+thread_local! {
+    /// Reusable clip vertex buffers for [`SvgPaintBackend::append_outline`], in the same
+    /// thread-local form the WGPU backend's `SHADOW_LAYER` uses: one allocation per thread
+    /// instead of two per glyph, so a batch text export no longer amplifies the allocation
+    /// count (G-022). Both are cleared before every use — one per contour, the other by the
+    /// clip helpers that overwrite it — so no vertex of a previous glyph is ever read.
+    static GLYPH_CLIP_BUFFERS: core::cell::RefCell<(Vec<(f32, f32)>, Vec<(f32, f32)>)> =
+        const { core::cell::RefCell::new((Vec::new(), Vec::new())) };
+}
 
 /// PaintBackend implementation that generates SVG markup from render commands.
 ///
@@ -413,48 +424,56 @@ impl SvgPaintBackend {
         let before = path.len();
         // Two vertex buffers, ping-ponged: one holds the contour before an edge pass, the other after.
         // Sized for the worst case, where clipping an edge can add one vertex per existing edge.
+        // They are retained thread-locally (G-022): cleared here so `reserve` sizes from an empty
+        // vector, and `scratch_a` is cleared again per contour below. The clip helpers overwrite
+        // their output wholesale, so stale vertices never reach the emitted path.
         let capacity = crate::render::text::OUTLINE_MAX_POINTS * 2;
-        let mut scratch_a: Vec<(f32, f32)> = Vec::with_capacity(capacity);
-        let mut scratch_b: Vec<(f32, f32)> = Vec::with_capacity(capacity);
-        for (start, end) in contours.iter().take(count) {
-            let Some(contour) = points.get(*start..*end) else {
-                continue;
-            };
+        GLYPH_CLIP_BUFFERS.with(|buffers| {
+            let (scratch_a, scratch_b) = &mut *buffers.borrow_mut();
             scratch_a.clear();
-            scratch_a.extend(contour.iter().map(|p| (pen_x + p.x, origin_y as f32 + p.y)));
-            // Four edge passes, each closing the polygon at one side of the cell. Kept as four calls
-            // rather than a table of predicates because each one captures a different bound, and a
-            // `fn` pointer cannot capture — the table form would push the bounds into a struct for no
-            // gain in clarity.
-            clip_against_x(&scratch_a, &mut scratch_b, clip_left, true);
-            core::mem::swap(&mut scratch_a, &mut scratch_b);
-            if !scratch_a.is_empty() {
-                clip_against_x(&scratch_a, &mut scratch_b, clip_right, false);
-                core::mem::swap(&mut scratch_a, &mut scratch_b);
+            scratch_b.clear();
+            scratch_a.reserve(capacity);
+            scratch_b.reserve(capacity);
+            for (start, end) in contours.iter().take(count) {
+                let Some(contour) = points.get(*start..*end) else {
+                    continue;
+                };
+                scratch_a.clear();
+                scratch_a.extend(contour.iter().map(|p| (pen_x + p.x, origin_y as f32 + p.y)));
+                // Four edge passes, each closing the polygon at one side of the cell. Kept as four calls
+                // rather than a table of predicates because each one captures a different bound, and a
+                // `fn` pointer cannot capture — the table form would push the bounds into a struct for no
+                // gain in clarity.
+                clip_against_x(scratch_a, scratch_b, clip_left, true);
+                core::mem::swap(scratch_a, scratch_b);
+                if !scratch_a.is_empty() {
+                    clip_against_x(scratch_a, scratch_b, clip_right, false);
+                    core::mem::swap(scratch_a, scratch_b);
+                }
+                if !scratch_a.is_empty() {
+                    clip_against_y(scratch_a, scratch_b, clip_top, true);
+                    core::mem::swap(scratch_a, scratch_b);
+                }
+                if !scratch_a.is_empty() {
+                    clip_against_y(scratch_a, scratch_b, clip_bottom, false);
+                    core::mem::swap(scratch_a, scratch_b);
+                }
+                if scratch_a.len() < 3 {
+                    // A degenerate result (a touch on an edge, or a contour that was entirely outside).
+                    // Emitting it would be an empty subpath, which the snapshot gate reads as a defect.
+                    continue;
+                }
+                // Polygon subpaths are `M` then `L`s then `Z`. Coordinates are rounded to two decimals
+                // rather than to integers: an antialiased outline's whole advantage is its sub-pixel
+                // precision, and rounding to whole pixels would turn every curve back into the blocks
+                // the 1-bit path already draws.
+                path.push_str(&format!("M{:.2} {:.2}", scratch_a[0].0, scratch_a[0].1));
+                for point in scratch_a.iter().skip(1) {
+                    path.push_str(&format!("L{:.2} {:.2}", point.0, point.1));
+                }
+                path.push('Z');
             }
-            if !scratch_a.is_empty() {
-                clip_against_y(&scratch_a, &mut scratch_b, clip_top, true);
-                core::mem::swap(&mut scratch_a, &mut scratch_b);
-            }
-            if !scratch_a.is_empty() {
-                clip_against_y(&scratch_a, &mut scratch_b, clip_bottom, false);
-                core::mem::swap(&mut scratch_a, &mut scratch_b);
-            }
-            if scratch_a.len() < 3 {
-                // A degenerate result (a touch on an edge, or a contour that was entirely outside).
-                // Emitting it would be an empty subpath, which the snapshot gate reads as a defect.
-                continue;
-            }
-            // Polygon subpaths are `M` then `L`s then `Z`. Coordinates are rounded to two decimals
-            // rather than to integers: an antialiased outline's whole advantage is its sub-pixel
-            // precision, and rounding to whole pixels would turn every curve back into the blocks
-            // the 1-bit path already draws.
-            path.push_str(&format!("M{:.2} {:.2}", scratch_a[0].0, scratch_a[0].1));
-            for point in scratch_a.iter().skip(1) {
-                path.push_str(&format!("L{:.2} {:.2}", point.0, point.1));
-            }
-            path.push('Z');
-        }
+        });
         // A face can report a contour whose points all coincide, which produces an empty subpath.
         // Treating that as "no geometry" sends the glyph to the bitmap path rather than emitting a
         // degenerate `Mx yZ` that draws nothing.
@@ -1208,6 +1227,71 @@ impl PaintBackend for SvgPaintBackend {
             RenderCommand::DrawText { origin, text, font, color, alignment } => {
                 self.emit_text(*origin, text, font, color, *alignment);
             }
+            RenderCommand::DrawTextDecorated {
+                origin,
+                text,
+                font,
+                color,
+                alignment,
+                decoration,
+            } => {
+                // The glyphs first, through the same emitter the plain command
+                // uses; the decoration rules then follow the formulas the
+                // software backend documents in `draw_text_decorated_on_surface`
+                // (G-013), so both backends place the rules at the same height.
+                self.emit_text(*origin, text, font, color, *alignment);
+                if decoration.is_empty() {
+                    return;
+                }
+                let shaped = self.shape_text(text, font);
+                let advance = shaped.advance();
+                if advance <= 0.0 {
+                    return;
+                }
+                let metrics = TextMetrics::for_font(font, self.dpi_scale);
+                let start_x = match alignment {
+                    crate::core::HorizontalAlignment::Left => origin.x as f32,
+                    crate::core::HorizontalAlignment::Center => origin.x as f32 - advance / 2.0,
+                    crate::core::HorizontalAlignment::Right => origin.x as f32 - advance,
+                };
+                let end_x = start_x + advance;
+                let baseline = origin.y + metrics.ascent as i32;
+                let thickness = ((font.size() * self.dpi_scale) / 12.0).round().max(1.0) as u32;
+                let underline_offset = (metrics.descent as i32 / 2).max(1);
+                let rule_attrs =
+                    format!(r#" stroke="{}" stroke-width="{thickness}""#, color_to_rgba(color));
+                if decoration.contains(TextDecoration::UNDERLINE.0) {
+                    let y = baseline + underline_offset;
+                    self.push_element(format!(
+                        r#"<line x1="{start_x}" y1="{y}" x2="{end_x}" y2="{y}"{rule_attrs} />"#
+                    ));
+                }
+                if decoration.contains(TextDecoration::STRIKETHROUGH.0) {
+                    let y = origin.y + (metrics.ascent / 2) as i32;
+                    self.push_element(format!(
+                        r#"<line x1="{start_x}" y1="{y}" x2="{end_x}" y2="{y}"{rule_attrs} />"#
+                    ));
+                }
+                if decoration.contains(TextDecoration::WAVY.0) {
+                    // The same triangle wave the software path draws: half
+                    // period 2 px, crest at one offset below the baseline,
+                    // trough at two.
+                    let crest = baseline + underline_offset;
+                    let trough = baseline + underline_offset * 2;
+                    let mut path = format!(r#"<path d="M {start_x} {crest}"#,);
+                    let mut x = start_x;
+                    let mut low = false;
+                    while x < end_x {
+                        let next = (x + 2.0).min(end_x);
+                        let to_y = if low { crest } else { trough };
+                        path.push_str(&format!(" L {next} {to_y}"));
+                        x = next;
+                        low = !low;
+                    }
+                    path.push_str(&format!(r#"" fill="none"{rule_attrs} />"#));
+                    self.push_element(path);
+                }
+            }
 
             #[cfg(feature = "3d")]
             RenderCommand::StrokeQuad { corners, color, width } => {
@@ -1283,6 +1367,32 @@ impl PaintBackend for SvgPaintBackend {
                     r#"<clipPath id="{clip_id}"><rect x="{x}" y="{y}" width="{width}" height="{height}" /></clipPath>"#
                 );
                 self.push_element(clip_def);
+                self.push_element(format!(r#"<g clip-path="url(#{clip_id})">"#));
+                self.clip_depth += 1;
+            }
+
+            RenderCommand::PushClipRoundedRect { x, y, width, height, radii } => {
+                // The rounded twin of the arm above (G-015): the same clipPath
+                // group, with the clip region drawn as a path whose corners are
+                // real arcs, resolved per CSS `border-radius` first — the same
+                // effective radii the software backend's coverage mask clamps
+                // to. PopClip closes the group unchanged, so the two clip forms
+                // share one stack here as in the software backend.
+                let rect = Rect::new(*x, *y, *width, *height);
+                let effective = rounded_rect_effective_radii(rect, *radii);
+                let d = rounded_rect_path(
+                    &rect,
+                    [
+                        effective[0] as f64,
+                        effective[1] as f64,
+                        effective[2] as f64,
+                        effective[3] as f64,
+                    ],
+                );
+                let clip_id = format!("clip_{}", self.clip_depth);
+                self.push_element(format!(
+                    r#"<clipPath id="{clip_id}"><path d="{d}" /></clipPath>"#
+                ));
                 self.push_element(format!(r#"<g clip-path="url(#{clip_id})">"#));
                 self.clip_depth += 1;
             }
@@ -1463,7 +1573,30 @@ impl PaintBackend for SvgPaintBackend {
                 let fill = if *filled { color_to_rgba(color) } else { "none".to_string() };
                 let stroke = if *filled { "none".to_string() } else { color_to_rgba(color) };
                 self.push_element(format!(
-                    r##"<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="{width}" />"##
+                    r#"<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="{width}" />"#
+                ));
+            }
+            RenderCommand::DrawPathDashed { points, closed, color, width, dash } => {
+                // The stroked form of the arm above with a repeating dash
+                // pattern (G-014). SVG expresses the pattern natively with
+                // `stroke-dasharray`, in the same mark/gap convention the
+                // software backend's kernel walks; a zero mark contributes no
+                // ink, matching the kernel's empty expansion.
+                if points.is_empty() || dash.mark == 0 {
+                    return;
+                }
+                let mut d = format!("M {} {}", points[0].x, points[0].y);
+                for pt in &points[1..] {
+                    d.push_str(&format!(" L {} {}", pt.x, pt.y));
+                }
+                if *closed {
+                    d.push_str(" Z");
+                }
+                self.push_element(format!(
+                    r#"<path d="{d}" fill="none" stroke="{}" stroke-width="{width}" stroke-dasharray="{} {}" />"#,
+                    color_to_rgba(color),
+                    dash.mark,
+                    dash.gap
                 ));
             }
             RenderCommand::FillPathNonZero { path, color } => {
@@ -1522,6 +1655,58 @@ impl PaintBackend for SvgPaintBackend {
                     y,
                     spread_w,
                     spread_h,
+                    color_to_rgba(&shadow),
+                    filter_attr
+                ));
+            }
+            RenderCommand::BoxShadowRounded {
+                rect,
+                radii,
+                color,
+                offset_x,
+                offset_y,
+                blur_radius,
+                spread,
+            } => {
+                // The rounded twin of the arm above (G-016): the same offset,
+                // spread and `stdDeviation = radius / 2` mapping, but the blurred
+                // element is a path with real corner arcs — resolved per CSS
+                // `border-radius` exactly as the software backend's fill is — so
+                // a rounded card's shadow no longer ends in square corners. The
+                // radii ride on the spread rect unchanged, matching the software
+                // fill.
+                let spread_w = sat_mul_i32(*spread, 2)
+                    .saturating_add(u32_to_i32_saturating(rect.width))
+                    .max(0) as u32;
+                let spread_h = sat_mul_i32(*spread, 2)
+                    .saturating_add(u32_to_i32_saturating(rect.height))
+                    .max(0) as u32;
+                let x = sat_add_i32(sat_add_i32(rect.x, *offset_x), sat_neg_i32(*spread));
+                let y = sat_add_i32(sat_add_i32(rect.y, *offset_y), sat_neg_i32(*spread));
+                let spread_rect = Rect::new(x, y, spread_w, spread_h);
+                let effective = rounded_rect_effective_radii(spread_rect, *radii);
+                let d = rounded_rect_path(
+                    &spread_rect,
+                    [
+                        effective[0] as f64,
+                        effective[1] as f64,
+                        effective[2] as f64,
+                        effective[3] as f64,
+                    ],
+                );
+                let shadow = *color;
+                let filter_attr = if *blur_radius > 0 {
+                    let filter_id = format!("shadow_blur_{blur_radius}");
+                    self.push_element(format!(
+                        r##"<filter id="{filter_id}"><feGaussianBlur stdDeviation="{}" /></filter>"##,
+                        *blur_radius as f32 / 2.0
+                    ));
+                    format!(r##" filter="url(#{filter_id})""##)
+                } else {
+                    String::new()
+                };
+                self.push_element(format!(
+                    r##"<path d="{d}" fill="{}"{} />"##,
                     color_to_rgba(&shadow),
                     filter_attr
                 ));
@@ -2283,8 +2468,10 @@ mod tests {
                 RenderCommand::DrawCircle { .. } => "DrawCircle",
                 RenderCommand::DrawCircleStroke { .. } => "DrawCircleStroke",
                 RenderCommand::DrawText { .. } => "DrawText",
+                RenderCommand::DrawTextDecorated { .. } => "DrawTextDecorated",
                 RenderCommand::DrawImage { .. } => "DrawImage",
                 RenderCommand::PushClip { .. } => "PushClip",
+                RenderCommand::PushClipRoundedRect { .. } => "PushClipRoundedRect",
                 RenderCommand::PopClip => "PopClip",
                 RenderCommand::PushLayer { .. } => "PushLayer",
                 RenderCommand::PushLayerGroup { .. } => "PushLayerGroup",
@@ -2292,8 +2479,10 @@ mod tests {
                 RenderCommand::DrawGradient { .. } => "DrawGradient",
                 RenderCommand::DrawArc { .. } => "DrawArc",
                 RenderCommand::DrawPath { .. } => "DrawPath",
+                RenderCommand::DrawPathDashed { .. } => "DrawPathDashed",
                 RenderCommand::FillPathNonZero { .. } => "FillPathNonZero",
                 RenderCommand::BoxShadow { .. } => "BoxShadow",
+                RenderCommand::BoxShadowRounded { .. } => "BoxShadowRounded",
                 RenderCommand::Blur { .. } => "Blur",
                 RenderCommand::ClipPath { .. } => "ClipPath",
                 RenderCommand::SetBlendMode { .. } => "SetBlendMode",
@@ -2479,6 +2668,39 @@ mod tests {
                 blur_radius: 4,
                 spread: 1,
             },
+            RenderCommand::BoxShadowRounded {
+                rect,
+                radii: [6, 6, 6, 6],
+                color: Color::rgba(0, 0, 0, 128),
+                offset_x: 2,
+                offset_y: 2,
+                blur_radius: 4,
+                spread: 1,
+            },
+            RenderCommand::DrawTextDecorated {
+                origin: point,
+                text: Arc::from("Hi"),
+                font: Font::default_ui(),
+                color: Color::BLACK,
+                alignment: HorizontalAlignment::Left,
+                decoration: crate::render::core::command::TextDecoration::UNDERLINE
+                    | crate::render::core::command::TextDecoration::WAVY,
+            },
+            RenderCommand::PushClipRoundedRect {
+                x: 10,
+                y: 10,
+                width: 50,
+                height: 50,
+                radii: [6, 6, 6, 6],
+            },
+            RenderCommand::PopClip,
+            RenderCommand::DrawPathDashed {
+                points: vec![Point::new(10, 10), Point::new(60, 20), Point::new(40, 70)].into(),
+                closed: false,
+                color: Color::GREEN,
+                width: 2,
+                dash: crate::render::core::command::DashPattern { mark: 6, gap: 4 },
+            },
             RenderCommand::Blur { radius: 3 },
             RenderCommand::ClipPath {
                 points: vec![Point::new(5, 5), Point::new(95, 5), Point::new(95, 95)].into(),
@@ -2629,8 +2851,10 @@ mod tests {
             "DrawCircle",
             "DrawCircleStroke",
             "DrawText",
+            "DrawTextDecorated",
             "DrawImage",
             "PushClip",
+            "PushClipRoundedRect",
             "PopClip",
             "PushLayer",
             "PushLayerGroup",
@@ -2638,8 +2862,10 @@ mod tests {
             "DrawGradient",
             "DrawArc",
             "DrawPath",
+            "DrawPathDashed",
             "FillPathNonZero",
             "BoxShadow",
+            "BoxShadowRounded",
             "Blur",
             "ClipPath",
             "SetBlendMode",

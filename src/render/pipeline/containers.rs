@@ -12,9 +12,8 @@ use crate::compat::{HashMap, Rc, RefCell, Vec, VecDeque};
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::render::backend::surface::PathClip;
 use crate::render::default_software_render_config;
-use crate::render::pipeline::pixel_ops::{
-    fill_pixels, pixel_visible, set_pixel, write_pixel_with_mode,
-};
+use crate::render::pipeline::pixel_ops::{fill_pixels, set_pixel, write_pixel_with_mode};
+use crate::render::scratch::ScratchI32;
 use crate::render::{
     BackBuffer, BlendMode, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
 };
@@ -662,6 +661,19 @@ impl SoftwareSurface {
             return;
         }
 
+        // The linear/radial loops below used to test `pixel_visible` per pixel; intersecting the
+        // bounds with the clip once admits exactly the same pixels, because `intersect_axis`'s end
+        // is the saturating sum that check compares against (G-010, same form as the conic branch
+        // above). The gradient arithmetic stays anchored to the un-intersected `x0`/`y0` so every
+        // remaining pixel samples the same position, bit for bit.
+        let ((x_lo, x_hi), (y_lo, y_hi)) = match clip {
+            Some((clip_x, clip_y, clip_w, clip_h)) => (
+                intersect_axis(x0, x1, clip_x, clip_x.saturating_add(clip_w as i32)),
+                intersect_axis(y0, y1, clip_y, clip_y.saturating_add(clip_h as i32)),
+            ),
+            None => ((x0, x1), (y0, y1)),
+        };
+
         let frame = self.buffer.back_mut();
 
         // Resolve the ramp through the shared per-content cache. Every pixel previously ran
@@ -688,7 +700,7 @@ impl SoftwareSurface {
         // stated fallback when a bit-exact rewrite is not provable (G-12).
         let radial_cx = gradient.center.x as f32;
 
-        for y in y0..y1 {
+        for y in y_lo..y_hi {
             let row_start = if linear_dot == 0.0 {
                 0.0
             } else {
@@ -702,7 +714,7 @@ impl SoftwareSurface {
             } else {
                 0.0
             };
-            for x in x0..x1 {
+            for x in x_lo..x_hi {
                 let pos = match gradient.gradient_type {
                     GradientType::Linear => {
                         if linear_dot == 0.0 {
@@ -726,11 +738,9 @@ impl SoftwareSurface {
                     GradientType::Conic => return,
                 };
                 let color = lut[lut_index(pos)];
-                if pixel_visible(clip, x as i32, y as i32) {
-                    // Through the blend-aware write, so a gradient drawn under a `SetBlendMode`
-                    // composites the same way an opaque fill does.
-                    write_pixel_with_mode(self.blend_mode, frame, size.width, x, y, color, 1.0);
-                }
+                // Through the blend-aware write, so a gradient drawn under a `SetBlendMode`
+                // composites the same way an opaque fill does.
+                write_pixel_with_mode(self.blend_mode, frame, size.width, x, y, color, 1.0);
             }
         }
     }
@@ -804,7 +814,7 @@ impl SoftwareSurface {
 
 /// Narrows the half-open range `start..end` to `clip_start..clip_end`.
 ///
-/// `clip_end` is the saturating sum [`pixel_visible`] compares against, so turning the clip into a
+/// `clip_end` is the saturating sum `pixel_visible` compares against, so turning the clip into a
 /// loop bound keeps the exact pixel set the per-pixel check admitted.
 fn intersect_axis(start: u32, end: u32, clip_start: i32, clip_end: i32) -> (u32, u32) {
     let clip_start = clip_start.max(0) as u32;
@@ -868,19 +878,34 @@ const PATH_CLIP_SUBSAMPLES: usize = 4;
 /// analytic, not sampled), which is the same order of antialiasing the geometry rasteriser uses
 /// for a polygon edge.
 fn path_coverage(points: &[Point], rect: (i32, i32, u32, u32)) -> Vec<u8> {
-    let (_, y0, width, height) = rect;
+    let (x0, y0, width, height) = rect;
     let pixel_count = width as usize * height as usize;
     let mut coverage = vec![0u8; pixel_count];
     if points.len() < 3 || width == 0 || height == 0 {
         return coverage;
     }
-    let mut accumulated = vec![0f32; pixel_count];
-    let mut crossings: Vec<(f32, i32)> = Vec::new();
+    // Coordinate contract: mask byte `(row, column)` is the coverage of the absolute pixel
+    // `(x0 + column, y0 + row)` — the same mapping `apply_path_clip` uses when it composites
+    // the mask back onto the frame. y already honors it because `sample_y` is absolute while
+    // rows are counted from `y0`; x honors it because every crossing is shifted into
+    // rect-relative space below. `x0` is a surface coordinate, far below 2^24, so the
+    // `i32 → f32` conversion is exact and the shift is lossless.
+    // The two scratch buffers live in the shared word pool instead of being allocated per call
+    // (G-011). `accumulated` stores the f32 sums as their bit patterns: every access round-trips
+    // through `to_bits`/`from_bits` (the `i32`↔`u32` `as` casts re-interpret the same 32 bits
+    // losslessly), so the accumulation is the same IEEE arithmetic in the same order and the
+    // coverage bytes are unchanged. The pool zero-fills on acquire, and word 0 is `+0.0`, which
+    // is exactly what the old `vec![0f32; …]` started from. The returned `coverage` itself
+    // cannot be pooled: it escapes into the clip stack and lives as long as the clip does.
+    let mut accumulated = ScratchI32::new(pixel_count);
+    // Crossing list as interleaved `(x_bits, winding)` word pairs, one pair per edge crossing
+    // the sample line; at most one crossing per edge, so `points.len()` pairs always suffice.
+    let mut crossings = ScratchI32::new(points.len() * 2);
     for row in 0..height as usize {
         for sub in 0..PATH_CLIP_SUBSAMPLES {
             let sample_y =
                 y0 as f32 + row as f32 + (sub as f32 + 0.5) / PATH_CLIP_SUBSAMPLES as f32;
-            crossings.clear();
+            let mut count = 0usize;
             for index in 0..points.len() {
                 let first = points[index];
                 let second = points[(index + 1) % points.len()];
@@ -894,25 +919,30 @@ fn path_coverage(points: &[Point], rect: (i32, i32, u32, u32)) -> Vec<u8> {
                     continue;
                 };
                 let t = (sample_y - first_y) / (second_y - first_y);
-                let x = first.x as f32 + (second.x - first.x) as f32 * t;
-                crossings.push((x, winding));
+                let x = first.x as f32 + (second.x - first.x) as f32 * t - x0 as f32;
+                crossings[2 * count] = x.to_bits() as i32;
+                crossings[2 * count + 1] = winding;
+                count += 1;
             }
-            crossings.sort_by(|left, right| {
-                left.0.partial_cmp(&right.0).unwrap_or(core::cmp::Ordering::Equal)
+            let (pairs, _) = crossings[..2 * count].as_chunks_mut::<2>();
+            pairs.sort_by(|left, right| {
+                f32::from_bits(left[0] as u32)
+                    .partial_cmp(&f32::from_bits(right[0] as u32))
+                    .unwrap_or(core::cmp::Ordering::Equal)
             });
             let mut index = 0;
             let mut winding = 0;
             let mut span_start: Option<f32> = None;
-            while index < crossings.len() {
-                let x = crossings[index].0;
+            while index < count {
+                let x = f32::from_bits(pairs[index][0] as u32);
                 if winding != 0 {
                     if let Some(start) = span_start {
                         add_span(&mut accumulated, width, row, start, x);
                     }
                 }
                 let mut delta = 0;
-                while index < crossings.len() && crossings[index].0 == x {
-                    delta += crossings[index].1;
+                while index < count && f32::from_bits(pairs[index][0] as u32) == x {
+                    delta += pairs[index][1];
                     index += 1;
                 }
                 winding += delta;
@@ -922,13 +952,18 @@ fn path_coverage(points: &[Point], rect: (i32, i32, u32, u32)) -> Vec<u8> {
     }
     let scale = 255.0 / PATH_CLIP_SUBSAMPLES as f32;
     for (slot, value) in coverage.iter_mut().zip(accumulated.iter()) {
-        *slot = (value * scale).round().clamp(0.0, 255.0) as u8;
+        *slot = (f32::from_bits(*value as u32) * scale).round().clamp(0.0, 255.0) as u8;
     }
     coverage
 }
 
 /// Adds the horizontal overlap of the span `start..end` with each pixel of `row`.
-fn add_span(accumulated: &mut [f32], width: u32, row: usize, start: f32, end: f32) {
+///
+/// `accumulated` holds the per-pixel f32 sums as bit patterns so the buffer can live in the
+/// shared [`ScratchI32`] pool (G-011). The read-modify-write round-trips through `from_bits`/
+/// `to_bits` (the `i32`↔`u32` `as` casts re-interpret the same 32 bits losslessly), so each
+/// update is the same f32 add a direct `Vec<f32>` performed.
+fn add_span(accumulated: &mut [i32], width: u32, row: usize, start: f32, end: f32) {
     if !(start.is_finite() && end.is_finite()) || end <= start {
         return;
     }
@@ -945,7 +980,9 @@ fn add_span(accumulated: &mut [f32], width: u32, row: usize, start: f32, end: f3
         let left = (column as f32).max(start);
         let right = (column as f32 + 1.0).min(end);
         if right > left {
-            accumulated[row_start + column] += right - left;
+            let index = row_start + column;
+            accumulated[index] =
+                (f32::from_bits(accumulated[index] as u32) + (right - left)).to_bits() as i32;
         }
     }
 }
@@ -1207,5 +1244,277 @@ mod tests {
                 .all(|pixel| *pixel == [255, 255, 255, 255]),
             "an unclosed path encloses no area and must clip everything away"
         );
+    }
+
+    /// The gradient fill's clip∩rect hoisting (G-010) must move no ink: a fill drawn under a
+    /// rectangle clip must agree, pixel for pixel, with the same fill drawn unclipped everywhere
+    /// the clip admits, and must leave every clipped-out pixel as the untouched backdrop. The
+    /// rect and the gradient geometry cross the clip on all four sides, so a hoist that shifted
+    /// the sampling anchor or the admitted spans shows up as a mismatch. Conic is excluded: it
+    /// returns through the kernel branch before the hoisted loops and was already intersecting.
+    #[test]
+    fn a_clipped_gradient_fill_agrees_with_the_unclipped_fill_inside_the_clip() {
+        const SIZE: u32 = 16;
+        let rect = Rect::new(2, 3, 11, 9);
+        let mut blank = SoftwareSurface::new(Size::new(SIZE, SIZE), 1.0);
+        blank.begin_frame(Color::WHITE);
+        blank.end_frame();
+        for (name, gradient) in [
+            (
+                "linear",
+                Gradient::linear(Point::new(1, 2), Point::new(14, 10))
+                    .add_stop(0.0, Color::RED)
+                    .add_stop(1.0, Color::BLUE),
+            ),
+            (
+                "radial",
+                Gradient::radial(Point::new(6, 5), 7.0)
+                    .add_stop(0.0, Color::GREEN)
+                    .add_stop(1.0, Color::WHITE),
+            ),
+        ] {
+            let mut whole = SoftwareSurface::new(Size::new(SIZE, SIZE), 1.0);
+            whole.begin_frame(Color::WHITE);
+            whole.fill_rect_gradient(rect, &gradient);
+            whole.end_frame();
+            // Clip ⊂ rect on both axes (every side cut), a containing clip (no cut), and a
+            // disjoint clip (nothing may be drawn anywhere).
+            for (clip_name, (cx, cy, cw, ch)) in [
+                ("all four sides cut", (4, 5, 5, 4)),
+                ("clip contains the rect", (0, 0, SIZE, SIZE)),
+                ("clip misses the rect", (14, 0, 2, SIZE)),
+            ] {
+                let mut clipped = SoftwareSurface::new(Size::new(SIZE, SIZE), 1.0);
+                clipped.begin_frame(Color::WHITE);
+                clipped.push_clip(cx, cy, cw, ch);
+                clipped.fill_rect_gradient(rect, &gradient);
+                clipped.pop_clip();
+                clipped.end_frame();
+                let admitted = |x: u32, y: u32| {
+                    x >= cx.max(0) as u32
+                        && x < cx.saturating_add(cw as i32).max(0) as u32
+                        && y >= cy.max(0) as u32
+                        && y < cy.saturating_add(ch as i32).max(0) as u32
+                };
+                let frame = clipped.frame_rgba();
+                let expected = whole.frame_rgba();
+                let backdrop = blank.frame_rgba();
+                for y in 0..SIZE {
+                    for x in 0..SIZE {
+                        let i = ((y * SIZE + x) * 4) as usize;
+                        let want =
+                            if admitted(x, y) { &expected[i..i + 4] } else { &backdrop[i..i + 4] };
+                        assert_eq!(
+                            &frame[i..i + 4],
+                            want,
+                            "{name} gradient, clip {clip_name} at ({x}, {y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The direct-buffer form of `path_coverage`: the per-call `Vec` scratch the pool replaced,
+    /// kept verbatim as the reference the pooled kernel must match byte for byte (G-011).
+    fn reference_path_coverage(points: &[Point], rect: (i32, i32, u32, u32)) -> Vec<u8> {
+        let (x0, y0, width, height) = rect;
+        let pixel_count = width as usize * height as usize;
+        let mut coverage = vec![0u8; pixel_count];
+        if points.len() < 3 || width == 0 || height == 0 {
+            return coverage;
+        }
+        let mut accumulated = vec![0f32; pixel_count];
+        let mut crossings: Vec<(f32, i32)> = Vec::new();
+        for row in 0..height as usize {
+            for sub in 0..PATH_CLIP_SUBSAMPLES {
+                let sample_y =
+                    y0 as f32 + row as f32 + (sub as f32 + 0.5) / PATH_CLIP_SUBSAMPLES as f32;
+                crossings.clear();
+                for index in 0..points.len() {
+                    let first = points[index];
+                    let second = points[(index + 1) % points.len()];
+                    let first_y = first.y as f32;
+                    let second_y = second.y as f32;
+                    let winding = if first_y <= sample_y && second_y > sample_y {
+                        1
+                    } else if second_y <= sample_y && first_y > sample_y {
+                        -1
+                    } else {
+                        continue;
+                    };
+                    let t = (sample_y - first_y) / (second_y - first_y);
+                    let x = first.x as f32 + (second.x - first.x) as f32 * t - x0 as f32;
+                    crossings.push((x, winding));
+                }
+                crossings.sort_by(|left, right| {
+                    left.0.partial_cmp(&right.0).unwrap_or(core::cmp::Ordering::Equal)
+                });
+                let mut index = 0;
+                let mut winding = 0;
+                let mut span_start: Option<f32> = None;
+                while index < crossings.len() {
+                    let x = crossings[index].0;
+                    if winding != 0 {
+                        if let Some(start) = span_start {
+                            reference_add_span(&mut accumulated, width, row, start, x);
+                        }
+                    }
+                    let mut delta = 0;
+                    while index < crossings.len() && crossings[index].0 == x {
+                        delta += crossings[index].1;
+                        index += 1;
+                    }
+                    winding += delta;
+                    span_start = Some(x);
+                }
+            }
+        }
+        let scale = 255.0 / PATH_CLIP_SUBSAMPLES as f32;
+        for (slot, value) in coverage.iter_mut().zip(accumulated.iter()) {
+            *slot = (value * scale).round().clamp(0.0, 255.0) as u8;
+        }
+        coverage
+    }
+
+    /// The reference twin of `add_span`, in the direct `Vec<f32>` form.
+    fn reference_add_span(accumulated: &mut [f32], width: u32, row: usize, start: f32, end: f32) {
+        if !(start.is_finite() && end.is_finite()) || end <= start {
+            return;
+        }
+        let width_f = width as f32;
+        let start = start.max(0.0);
+        let end = end.min(width_f);
+        if end <= start {
+            return;
+        }
+        let first = start.floor() as usize;
+        let last = (end.ceil() as usize).min(width as usize);
+        let row_start = row * width as usize;
+        for column in first..last {
+            let left = (column as f32).max(start);
+            let right = (column as f32 + 1.0).min(end);
+            if right > left {
+                accumulated[row_start + column] += right - left;
+            }
+        }
+    }
+
+    /// Moving `path_coverage`'s scratch buffers into the shared word pool (G-011) must not move
+    /// one coverage byte: every polygon below — full cover, disjoint, edge-exact, concave,
+    /// self-intersecting, rect-clipped, degenerate — is compared against the direct-buffer
+    /// reference, and the absolute anchors pin the reference itself. The suite runs twice over
+    /// differently sized rects so a stale pooled block would surface as a mismatch.
+    #[test]
+    fn path_coverage_matches_the_direct_buffer_reference() {
+        let cases: Vec<(Vec<Point>, (i32, i32, u32, u32))> = vec![
+            // Exactly covers the rect: every byte must be full coverage.
+            (
+                vec![Point::new(2, 3), Point::new(11, 3), Point::new(11, 10), Point::new(2, 10)],
+                (2, 3, 9, 7),
+            ),
+            // Entirely outside the rect: every byte must stay empty.
+            (
+                vec![
+                    Point::new(20, 20),
+                    Point::new(25, 20),
+                    Point::new(25, 25),
+                    Point::new(20, 25),
+                ],
+                (2, 3, 9, 7),
+            ),
+            // Shares the rect's left edge exactly.
+            (
+                vec![Point::new(2, 3), Point::new(7, 3), Point::new(7, 10), Point::new(2, 10)],
+                (2, 3, 9, 7),
+            ),
+            // The lower-left triangle the surface-level path-clip tests use.
+            (vec![Point::new(0, 0), Point::new(0, 4), Point::new(4, 4)], (0, 0, 4, 4)),
+            // A concave L-shape with a reflex vertex inside the rect.
+            (
+                vec![
+                    Point::new(0, 0),
+                    Point::new(6, 0),
+                    Point::new(6, 2),
+                    Point::new(2, 2),
+                    Point::new(2, 6),
+                    Point::new(0, 6),
+                ],
+                (0, 0, 6, 6),
+            ),
+            // A self-intersecting bowtie: the non-zero winding of the two lobes must match.
+            (
+                vec![Point::new(0, 0), Point::new(4, 4), Point::new(4, 0), Point::new(0, 4)],
+                (0, 0, 4, 4),
+            ),
+            // Larger than the rect on every side: the coverage is clipped to the rect.
+            (
+                vec![
+                    Point::new(-4, -4),
+                    Point::new(12, -4),
+                    Point::new(12, 12),
+                    Point::new(-4, 12),
+                ],
+                (0, 0, 5, 5),
+            ),
+            // Degenerate: fewer than three points returns the empty mask.
+            (vec![Point::new(0, 0), Point::new(3, 3)], (0, 0, 4, 4)),
+        ];
+        for round in 0..2 {
+            for (points, rect) in &cases {
+                let rect = if round == 0 {
+                    *rect
+                } else {
+                    // A second pass with a different rect size, so the pooled blocks are
+                    // reacquired at a different capacity and any stale content would show.
+                    (rect.0, rect.1, rect.2 + 3, rect.3 + 2)
+                };
+                let produced = path_coverage(points, rect);
+                let expected = reference_path_coverage(points, rect);
+                assert_eq!(
+                    produced, expected,
+                    "round {round}: pooled coverage diverged from the direct-buffer reference"
+                );
+            }
+        }
+        // Absolute anchors for the reference itself, on a rect at the origin (where a mask
+        // column equals its path-space x, as `add_span` consumes the crossings directly): the
+        // exact-cover case saturates every byte and the disjoint case empties every byte.
+        let full = path_coverage(
+            &[Point::new(0, 0), Point::new(9, 0), Point::new(9, 7), Point::new(0, 7)],
+            (0, 0, 9, 7),
+        );
+        assert!(full.iter().all(|&byte| byte == 255), "exact cover saturates coverage");
+        let empty = path_coverage(
+            &[Point::new(20, 20), Point::new(25, 20), Point::new(25, 25), Point::new(20, 25)],
+            (0, 0, 9, 7),
+        );
+        assert!(empty.iter().all(|&byte| byte == 0), "disjoint path leaves no coverage");
+    }
+
+    /// A coverage rect whose origin is not the world origin must still line the mask up with
+    /// the absolute pixels it stands for: `apply_path_clip` composites mask column `c` onto
+    /// absolute `rect.0 + c`, so the crossings have to be consumed relative to `rect.0`. The
+    /// pre-fix kernel consumed them as path-space columns, which shifted (or dropped) every
+    /// mask whose rect sat right of the origin.
+    #[test]
+    fn a_coverage_rect_off_the_origin_aligns_the_mask_with_the_absolute_pixels() {
+        // Path occupies absolute x 20..26, y 10..16; the rect starts at (12, 6), so the
+        // interior lands on mask columns 8..14 / rows 4..10.
+        let points =
+            &[Point::new(20, 10), Point::new(26, 10), Point::new(26, 16), Point::new(20, 16)];
+        let coverage = path_coverage(points, (12, 6, 20, 16));
+        assert_eq!(coverage.len(), 20 * 16);
+        for row in 0..16usize {
+            for column in 0..20usize {
+                let inside = (4..10).contains(&row) && (8..14).contains(&column);
+                let byte = coverage[row * 20 + column];
+                if inside {
+                    assert_eq!(byte, 255, "interior pixel ({column},{row}) must be fully covered");
+                } else {
+                    assert_eq!(byte, 0, "exterior pixel ({column},{row}) must stay empty");
+                }
+            }
+        }
     }
 }

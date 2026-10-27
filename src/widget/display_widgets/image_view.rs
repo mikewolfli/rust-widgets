@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 //! ImageView widget — displays an Image as a widget (BLUE13 R2.12).
-use crate::compat::String;
+use crate::compat::{String, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::image::decoder::{decode_async, ImageDecodeJob};
 use crate::image::{Image, ImageFormat};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -100,6 +101,101 @@ fn orient_pixels(
     (out, oriented_width, oriented_height)
 }
 
+/// The largest side of the pyramid level used while a zoom or pan gesture is in flight.
+///
+/// Interaction resamples at every pointer step; a source larger than this is first reduced to
+/// a preview once, and the moving view samples that instead. The rest frame always samples the
+/// full-resolution buffer, so the settled picture is not softened by the preview.
+const PREVIEW_MAX_SIDE: u32 = 512;
+
+/// How long after a wheel notch the preview level stays in use, in milliseconds.
+///
+/// A notch has no release event, so it is treated as a gesture that settles on its own. The
+/// draw pass keeps submitting frames while this window is open, which is what lets the final
+/// full-resolution frame be painted without a second input event.
+const WHEEL_PREVIEW_HOLD_MS: u64 = 150;
+
+/// How far one wheel notch changes the zoom. The same factors `ZoomPanController` publishes.
+const WHEEL_ZOOM_IN: f32 = 1.25;
+const WHEEL_ZOOM_OUT: f32 = 0.8;
+
+/// The transformed, full-resolution pixel grid of one source.
+struct OrientedCache {
+    source_len: usize,
+    rotation: ImageRotation,
+    flip_horizontal: bool,
+    flip_vertical: bool,
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+/// The reduced pyramid level used while a gesture is in flight.
+struct PreviewCache {
+    source_len: usize,
+    rotation: ImageRotation,
+    flip_horizontal: bool,
+    flip_vertical: bool,
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+/// Builds the full-resolution transformed grid for one source and transform.
+fn build_oriented(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    rotation: ImageRotation,
+    flip_horizontal: bool,
+    flip_vertical: bool,
+) -> OrientedCache {
+    let identity = rotation == ImageRotation::None && !flip_horizontal && !flip_vertical;
+    let (pixels, oriented_width, oriented_height) = if identity {
+        (data.to_vec(), width, height)
+    } else {
+        orient_pixels(data, width, height, rotation, flip_horizontal, flip_vertical)
+    };
+    OrientedCache {
+        source_len: data.len(),
+        rotation,
+        flip_horizontal,
+        flip_vertical,
+        width: oriented_width,
+        height: oriented_height,
+        pixels,
+    }
+}
+
+/// Builds the reduced pyramid level from the oriented grid, or reuses it when it is current.
+fn build_preview(oriented: Option<&OrientedCache>) -> Option<PreviewCache> {
+    let oriented = oriented?;
+    let longest = oriented.width.max(oriented.height);
+    let (width, height) = if longest > PREVIEW_MAX_SIDE {
+        let scale = PREVIEW_MAX_SIDE as f32 / longest as f32;
+        (
+            ((oriented.width as f32 * scale).round() as u32).max(1),
+            ((oriented.height as f32 * scale).round() as u32).max(1),
+        )
+    } else {
+        (oriented.width, oriented.height)
+    };
+    let pixels = if width == oriented.width && height == oriented.height {
+        oriented.pixels.clone()
+    } else {
+        resample_bilinear(&oriented.pixels, oriented.width, oriented.height, width, height)
+    };
+    Some(PreviewCache {
+        source_len: oriented.source_len,
+        rotation: oriented.rotation,
+        flip_horizontal: oriented.flip_horizontal,
+        flip_vertical: oriented.flip_vertical,
+        width,
+        height,
+        pixels,
+    })
+}
+
 /// A transformed and resampled copy of the image for one destination size.
 ///
 /// The cache key includes the source length, the three transform flags and the destination
@@ -109,6 +205,8 @@ struct ScaledImageCache {
     rotation: ImageRotation,
     flip_horizontal: bool,
     flip_vertical: bool,
+    /// Whether the buffer was sampled from the preview level rather than the full image.
+    preview: bool,
     width: u32,
     height: u32,
     pixels: crate::compat::Vec<u8>,
@@ -203,6 +301,8 @@ pub enum ImageAspect {
     /// Scale the image uniformly until it covers the box, cropping the
     /// overflow. The crop is centred on the source image.
     Fill,
+    /// Repeat the image at its natural size across the box.
+    Tile,
 }
 
 impl ImageAspect {
@@ -212,6 +312,7 @@ impl ImageAspect {
             Self::Stretch => "stretch",
             Self::Fit => "fit",
             Self::Fill => "fill",
+            Self::Tile => "tile",
         }
     }
 
@@ -222,6 +323,7 @@ impl ImageAspect {
             "stretch" => Some(Self::Stretch),
             "fit" => Some(Self::Fit),
             "fill" => Some(Self::Fill),
+            "tile" => Some(Self::Tile),
             _ => None,
         }
     }
@@ -325,6 +427,19 @@ pub struct ImageView {
     /// party that knows both sizes, so it produces a buffer of exactly the destination size. The
     /// cache is keyed by `(source pixels, destination size)` so a still control resamples once.
     scaled_image: Option<ScaledImageCache>,
+    /// The full-resolution transformed grid, rebuilt only when the transform or source changes.
+    ///
+    /// `orient_pixels` walks every source pixel, and the previous code ran it again for every
+    /// destination size — a zoom gesture therefore re-oriented the whole image per step.
+    oriented_cache: Option<OrientedCache>,
+    /// The reduced pyramid level used while a gesture is in flight.
+    preview_cache: Option<PreviewCache>,
+    /// The last pointer position of an ongoing pan, if any.
+    drag_last: Option<Point>,
+    /// When a wheel gesture's preview window closes; see [`WHEEL_PREVIEW_HOLD_MS`].
+    interaction_until: Option<crate::compat::Instant>,
+    /// A decode started by [`ImageView::load_path_async`], polled by `Widget::tick`.
+    pending_decode: Option<ImageDecodeJob>,
     /// The image's quarter-turn rotation. Defaults to none.
     rotation: ImageRotation,
     /// Whether the image is mirrored horizontally (after rotation).
@@ -360,6 +475,11 @@ impl ImageView {
             margin: 0,
             background: None,
             scaled_image: None,
+            oriented_cache: None,
+            preview_cache: None,
+            drag_last: None,
+            interaction_until: None,
+            pending_decode: None,
             rotation: ImageRotation::None,
             flip_horizontal: false,
             flip_vertical: false,
@@ -378,6 +498,8 @@ impl ImageView {
         // The cached resample belongs to the previous image. Keying it by the source *size* is
         // not enough: two images of the same size have different pixels.
         self.scaled_image = None;
+        self.oriented_cache = None;
+        self.preview_cache = None;
         self.base.request_redraw();
         if !self.base.is_enabled() {
             // The image is stored either way; a disabled view simply does not announce it.
@@ -532,6 +654,218 @@ impl ImageView {
         &self.image
     }
 
+    /// Loads an image from a file path through the crate's decoder.
+    ///
+    /// This is the path counterpart of [`Self::set_image_from_bytes`]: a decode failure is
+    /// emitted through [`Self::load_failed`] *and* returned, so both a connected host and a
+    /// caller see it. The read and decode happen on the calling thread; use
+    /// [`Self::load_path_async`] to keep a large decode off the frame that requested it.
+    pub fn load_path(&mut self, path: &str) -> Result<(), String> {
+        match Image::from_file(path) {
+            Ok(image) => {
+                self.set_image(image);
+                Ok(())
+            }
+            Err(error) => {
+                if self.base.is_enabled() {
+                    self.load_failed.emit(error.clone());
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Starts a background decode of `path` and returns immediately.
+    ///
+    /// The file is read here (that is the cheap half), then the decode runs on the image
+    /// decoder's worker thread. [`Widget::tick`] polls the job once per frame; a finished image
+    /// is installed through [`Self::set_image`], which emits [`Self::image_changed`], so a host
+    /// that connected that signal gets the callback on the frame the picture arrives. A decode
+    /// failure is emitted through [`Self::load_failed`].
+    pub fn load_path_async(&mut self, path: &str) -> Result<(), String> {
+        let bytes = std::fs::read(path).map_err(|error| {
+            crate::compat::format!(
+                "image file '{path}' could not be read: {error} (check that the path exists \
+                 and is readable)"
+            )
+        })?;
+        self.pending_decode = Some(decode_async(bytes));
+        self.base.request_redraw();
+        Ok(())
+    }
+
+    /// Whether a background decode is still waiting for its result.
+    pub fn is_loading(&self) -> bool {
+        self.pending_decode.is_some()
+    }
+
+    /// Takes a finished background decode, if one is ready.
+    fn poll_decode(&mut self) -> bool {
+        let Some(job) = self.pending_decode.take() else {
+            return false;
+        };
+        match job.try_take() {
+            None => {
+                // Still decoding: put the job back and ask for another frame.
+                self.pending_decode = Some(job);
+                self.base.request_redraw();
+                false
+            }
+            Some(Ok(decoded)) => {
+                self.set_image(Image::from_decoded(decoded));
+                true
+            }
+            Some(Err(error)) => {
+                if self.base.is_enabled() {
+                    self.load_failed.emit(error);
+                }
+                true
+            }
+        }
+    }
+
+    /// Whether a gesture is currently using the reduced preview level.
+    fn preview_active(&self) -> bool {
+        if self.drag_last.is_some() {
+            return true;
+        }
+        self.interaction_until.is_some_and(|until| crate::compat::Instant::now() < until)
+    }
+
+    /// Paints the decoded image into `dest`, resampling from the appropriate pyramid level.
+    fn paint_pixels(&mut self, context: &mut RenderContext, dest: Rect) {
+        let Some(data) = self.image.rgba8_data().filter(|data| !data.is_empty()) else {
+            return;
+        };
+        let source_width = self.image.width();
+        let source_height = self.image.height();
+        let identity =
+            self.rotation == ImageRotation::None && !self.flip_horizontal && !self.flip_vertical;
+        if identity && dest.width == source_width && dest.height == source_height {
+            // An untransformed, same-size paint borrows the decoded pixels.
+            context.draw_image(dest.x, dest.y, dest.width, dest.height, data);
+            return;
+        }
+
+        let fresh_oriented = self.oriented_cache.as_ref().is_some_and(|cache| {
+            cache.source_len == data.len()
+                && cache.rotation == self.rotation
+                && cache.flip_horizontal == self.flip_horizontal
+                && cache.flip_vertical == self.flip_vertical
+        });
+        if !fresh_oriented {
+            self.oriented_cache = Some(build_oriented(
+                data,
+                source_width,
+                source_height,
+                self.rotation,
+                self.flip_horizontal,
+                self.flip_vertical,
+            ));
+            self.preview_cache = None;
+            self.scaled_image = None;
+        }
+
+        let interactive = self.preview_active();
+        if interactive {
+            let preview_fresh = self.preview_cache.as_ref().is_some_and(|cache| {
+                self.oriented_cache.as_ref().is_some_and(|oriented| {
+                    cache.source_len == oriented.source_len
+                        && cache.rotation == oriented.rotation
+                        && cache.flip_horizontal == oriented.flip_horizontal
+                        && cache.flip_vertical == oriented.flip_vertical
+                })
+            });
+            if !preview_fresh {
+                self.preview_cache = build_preview(self.oriented_cache.as_ref());
+            }
+        }
+        let use_preview = interactive
+            && self
+                .preview_cache
+                .as_ref()
+                .is_some_and(|preview| preview.width < dest.width || preview.height < dest.height);
+        if interactive && !use_preview {
+            // The request is not larger than the preview, so there is nothing to gain; end the
+            // window so the next frame samples precisely.
+            self.interaction_until = None;
+        }
+
+        let fresh = self.scaled_image.as_ref().is_some_and(|cache| {
+            cache.source_len == data.len()
+                && cache.rotation == self.rotation
+                && cache.flip_horizontal == self.flip_horizontal
+                && cache.flip_vertical == self.flip_vertical
+                && cache.preview == use_preview
+                && cache.width == dest.width
+                && cache.height == dest.height
+        });
+        if !fresh {
+            let (source, width, height) = match (use_preview, self.preview_cache.as_ref()) {
+                (true, Some(preview)) => (preview.pixels.as_slice(), preview.width, preview.height),
+                _ => {
+                    let oriented = self.oriented_cache.as_ref();
+                    match oriented {
+                        Some(oriented) => {
+                            (oriented.pixels.as_slice(), oriented.width, oriented.height)
+                        }
+                        None => return,
+                    }
+                }
+            };
+            let resampled = if dest.width == width && dest.height == height {
+                source.to_vec()
+            } else {
+                resample_bilinear(source, width, height, dest.width, dest.height)
+            };
+            self.scaled_image = Some(ScaledImageCache {
+                source_len: data.len(),
+                rotation: self.rotation,
+                flip_horizontal: self.flip_horizontal,
+                flip_vertical: self.flip_vertical,
+                preview: use_preview,
+                width: dest.width,
+                height: dest.height,
+                pixels: resampled,
+            });
+        }
+        if let Some(cache) = self.scaled_image.as_ref() {
+            context.draw_image(dest.x, dest.y, dest.width, dest.height, &cache.pixels);
+        }
+
+        // A wheel has no release event, so the preview window closes on its own. Keep asking
+        // for frames while it is open, which is what paints the precise frame when it expires.
+        if interactive {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Paints the tiled form of the image across `content`.
+    fn paint_tiles(&mut self, context: &mut RenderContext, content: Rect) {
+        let (oriented_width, oriented_height) = self.oriented_size();
+        if oriented_width == 0 || oriented_height == 0 {
+            return;
+        }
+        let zoom = self.zoom_level;
+        let tile_w = ((oriented_width as f32 * zoom).round() as u32).max(1);
+        let tile_h = ((oriented_height as f32 * zoom).round() as u32).max(1);
+        let step_x = tile_w as i32;
+        let step_y = tile_h as i32;
+        // The pattern's origin follows the pan, wrapped into one tile so a pan looks like
+        // moving a continuous sheet rather than shifting a single picture.
+        let mut y = content.y + self.pan_offset.y.rem_euclid(step_y.max(1)) - step_y;
+        context.push_clip(content.x, content.y, content.width, content.height);
+        while y < content.y + content.height as i32 {
+            let mut x = content.x + self.pan_offset.x.rem_euclid(step_x.max(1)) - step_x;
+            while x < content.x + content.width as i32 {
+                self.paint_pixels(context, Rect::new(x, y, tile_w, tile_h));
+                x += step_x;
+            }
+            y += step_y;
+        }
+        context.pop_clip();
+    }
+
     /// Sets whether the image should be scaled to fill the widget rect.
     pub fn set_scaled(&mut self, scaled: bool) {
         if self.scaled == scaled {
@@ -665,6 +999,9 @@ impl ImageView {
                     (width.max(content.width as u64) as u32, content.height)
                 }
             }
+            // A tile is drawn at its natural size and repeated; the repeat count follows
+            // from the content box in the paint path.
+            ImageAspect::Tile => (image_width, image_height),
         };
 
         let dest_x = if self.aspect == ImageAspect::Fill {
@@ -684,8 +1021,12 @@ impl ImageView {
         let mut dest = Rect::new(dest_x, dest_y, dest_width, dest_height);
 
         // Zoom and pan are applied around the laid-out picture's centre, so `zoom == 1.0` and a
-        // zero pan reproduce the historical box exactly.
-        if (self.zoom_level - 1.0).abs() > f32::EPSILON || self.pan_offset != Point::new(0, 0) {
+        // zero pan reproduce the historical box exactly. Tiling is its own geometry: the tile
+        // size and origin are derived in the paint path so the pattern repeats rather than
+        // being one enlarged picture.
+        if self.aspect != ImageAspect::Tile
+            && ((self.zoom_level - 1.0).abs() > f32::EPSILON || self.pan_offset != Point::new(0, 0))
+        {
             let scaled_width = (dest.width as f32 * self.zoom_level).round().max(1.0) as u32;
             let scaled_height = (dest.height as f32 * self.zoom_level).round().max(1.0) as u32;
             let centre_x = dest.x + (dest.width as i32) / 2;
@@ -721,6 +1062,16 @@ impl Widget for ImageView {
         } else {
             Size::new(100, 100)
         }
+    }
+
+    /// Polls a background decode once per frame; a finished picture is installed here.
+    fn tick(&mut self, _delta_ms: u32) -> bool {
+        self.poll_decode()
+    }
+
+    /// A background decode owes frames until its result arrives.
+    fn is_animating(&self) -> bool {
+        self.pending_decode.is_some()
     }
 
     /// Resolves a published event name to the signal the view emits.
@@ -876,6 +1227,57 @@ impl EventHandler for ImageView {
                 self.set_zoom_level(target);
                 self.set_pan_offset(Point::new(0, 0));
             }
+            return;
+        }
+        if !self.base.is_enabled() {
+            return;
+        }
+        match event {
+            // Dragging pans the picture. A press arms it, each move applies the pointer's
+            // own delta, and a release (or a departure, whose release never arrives) ends it
+            // and restores full-resolution sampling.
+            Event::MousePress { pos, button: 1, .. } if self.geometry().contains_point(*pos) => {
+                self.drag_last = Some(*pos);
+                self.interaction_until = None;
+            }
+            Event::MouseMove { pos } if self.drag_last.is_some() => {
+                if let Some(last) = self.drag_last {
+                    let dx = pos.x - last.x;
+                    let dy = pos.y - last.y;
+                    if dx != 0 || dy != 0 {
+                        self.set_pan_offset(Point::new(
+                            self.pan_offset.x.saturating_add(dx),
+                            self.pan_offset.y.saturating_add(dy),
+                        ));
+                    }
+                }
+                self.drag_last = Some(*pos);
+            }
+            Event::MouseRelease { button: 1, .. } => {
+                if self.drag_last.take().is_some() {
+                    self.interaction_until = None;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.drag_last.take().is_some() {
+                    self.interaction_until = None;
+                    self.base.request_redraw();
+                }
+            }
+            // One wheel notch zooms by a fixed factor, around the picture's own centre. The
+            // preview level is used for a short settle window because a notch carries no
+            // release to mark the end of the gesture.
+            Event::Wheel { delta, .. } if delta.y != 0 => {
+                let factor = if delta.y < 0 { WHEEL_ZOOM_IN } else { WHEEL_ZOOM_OUT };
+                self.set_zoom_level(self.zoom_level * factor);
+                self.interaction_until = Some(
+                    crate::compat::Instant::now()
+                        + core::time::Duration::from_millis(WHEEL_PREVIEW_HOLD_MS),
+                );
+                self.base.request_redraw();
+            }
+            _ => {}
         }
     }
 }
@@ -894,11 +1296,15 @@ impl Draw for ImageView {
         } else {
             None
         };
-        if let Some(data) = data {
+        if data.is_some() {
             // No room left for the image after its margin: nothing to paint.
             let Some((content, dest)) = self.image_layout() else {
                 return;
             };
+            if self.aspect == ImageAspect::Tile {
+                self.paint_tiles(context, content);
+                return;
+            }
             // A covering image, a zoomed one or a panned one is larger than its box, so the
             // painted copy has to be bounded to it or it spills onto whatever is behind the
             // control. Stretch and Fit at rest never exceed the box and need no clip, which
@@ -909,67 +1315,7 @@ impl Draw for ImageView {
             if covering {
                 context.push_clip(content.x, content.y, content.width, content.height);
             }
-            let source_width = self.image.width();
-            let source_height = self.image.height();
-            let (oriented_width, oriented_height) = self.oriented_size();
-            let identity = self.rotation == ImageRotation::None
-                && !self.flip_horizontal
-                && !self.flip_vertical;
-            if identity && dest.width == source_width && dest.height == source_height {
-                // An untransformed, same-size paint borrows the decoded pixels.
-                context.draw_image(dest.x, dest.y, dest.width, dest.height, data);
-            } else {
-                let cached = self.scaled_image.as_ref().is_some_and(|cache| {
-                    cache.source_len == data.len()
-                        && cache.rotation == self.rotation
-                        && cache.flip_horizontal == self.flip_horizontal
-                        && cache.flip_vertical == self.flip_vertical
-                        && cache.width == dest.width
-                        && cache.height == dest.height
-                });
-                if !cached {
-                    let (oriented, _width, _height) = if identity {
-                        (data.to_vec(), oriented_width, oriented_height)
-                    } else {
-                        orient_pixels(
-                            data,
-                            source_width,
-                            source_height,
-                            self.rotation,
-                            self.flip_horizontal,
-                            self.flip_vertical,
-                        )
-                    };
-                    let (resampled, width, height) =
-                        if dest.width == oriented_width && dest.height == oriented_height {
-                            (oriented, oriented_width, oriented_height)
-                        } else {
-                            (
-                                resample_bilinear(
-                                    &oriented,
-                                    oriented_width,
-                                    oriented_height,
-                                    dest.width,
-                                    dest.height,
-                                ),
-                                dest.width,
-                                dest.height,
-                            )
-                        };
-                    self.scaled_image = Some(ScaledImageCache {
-                        source_len: data.len(),
-                        rotation: self.rotation,
-                        flip_horizontal: self.flip_horizontal,
-                        flip_vertical: self.flip_vertical,
-                        width,
-                        height,
-                        pixels: resampled,
-                    });
-                }
-                if let Some(cache) = self.scaled_image.as_ref() {
-                    context.draw_image(dest.x, dest.y, dest.width, dest.height, &cache.pixels);
-                }
-            }
+            self.paint_pixels(context, dest);
             if covering {
                 context.pop_clip();
             }
@@ -1362,5 +1708,105 @@ mod tests {
             "an unchanged transform reuses the buffer"
         );
         backend.end_frame();
+    }
+
+    /// The Tile form repeats the picture across the box instead of stretching it.
+    #[test]
+    fn tile_repeats_the_image_across_the_box() {
+        let image = Image::try_from_rgba(vec![180; 10 * 10 * 4], 10, 10).expect("valid fixture");
+        let mut view = ImageView::new(image, Rect::new(0, 0, 40, 40));
+        view.set_aspect(ImageAspect::Tile);
+        let svg = render_to_svg(&mut view);
+        assert!(
+            svg.matches("<image ").count() >= 16,
+            "a 10 px tile in a 40 px box repeats on both axes: {}",
+            svg.matches("<image ").count()
+        );
+        assert_eq!(ImageAspect::from_token("tile"), Some(ImageAspect::Tile));
+        assert_eq!(ImageAspect::Tile.as_str(), "tile");
+    }
+
+    /// Dragging pans the picture by the pointer's own movement.
+    #[test]
+    fn dragging_pans_the_picture() {
+        let image = Image::try_from_rgba(vec![90; 20 * 20 * 4], 20, 20).expect("valid fixture");
+        let mut view = ImageView::new(image, Rect::new(0, 0, 100, 100));
+        view.set_aspect(ImageAspect::Stretch);
+        view.set_scaled(true);
+        view.set_zoom_level(2.0);
+
+        view.handle_event(&Event::mouse_press(50, 50, 1));
+        view.handle_event(&Event::mouse_move(60, 55));
+        assert_eq!(view.pan_offset(), Point::new(10, 5));
+        view.handle_event(&Event::mouse_release(60, 55, 1));
+
+        // A move after the release must not keep panning.
+        view.handle_event(&Event::mouse_move(90, 90));
+        assert_eq!(view.pan_offset(), Point::new(10, 5));
+    }
+
+    /// A wheel notch zooms in and out around the current level.
+    #[test]
+    fn the_wheel_zooms_the_picture() {
+        let image = Image::try_from_rgba(vec![90; 20 * 20 * 4], 20, 20).expect("valid fixture");
+        let mut view = ImageView::new(image, Rect::new(0, 0, 100, 100));
+        assert_eq!(view.zoom_level(), 1.0);
+
+        view.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert!((view.zoom_level() - WHEEL_ZOOM_IN).abs() < 1e-6);
+        view.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert!((view.zoom_level() - 1.0).abs() < 1e-6);
+    }
+
+    /// A gesture samples the reduced pyramid; the rest frame samples the full image again.
+    #[test]
+    fn a_gesture_uses_the_preview_and_the_rest_frame_does_not() {
+        let image =
+            Image::try_from_rgba(vec![120; 520 * 520 * 4], 520, 520).expect("valid fixture");
+        let mut view = ImageView::new(image, Rect::new(0, 0, 520, 520));
+        view.set_scaled(true);
+        view.set_zoom_level(1.2);
+        let mut backend = SoftwarePaintBackend::new(Size::new(520, 520), 1.0);
+        backend.begin_frame(Color::WHITE);
+        let mut context = RenderContext::new(&mut backend);
+
+        view.handle_event(&Event::mouse_press(10, 10, 1));
+        view.draw(&mut context);
+        assert!(
+            view.scaled_image.as_ref().is_some_and(|cache| cache.preview),
+            "a gesture must sample the preview level"
+        );
+
+        view.handle_event(&Event::mouse_release(10, 10, 1));
+        view.draw(&mut context);
+        assert!(
+            view.scaled_image.as_ref().is_some_and(|cache| !cache.preview),
+            "the resting frame samples the full-resolution image"
+        );
+        backend.end_frame();
+    }
+
+    /// A path that cannot be read reports through the signal and the result.
+    #[test]
+    fn load_path_reports_a_missing_file() {
+        let mut view = ImageView::new(Image::new(), Rect::new(0, 0, 100, 100));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let sink = std::sync::Arc::clone(&seen);
+        view.load_failed.connect(move |message| {
+            if let Ok(mut guard) = sink.lock() {
+                *guard = Some((*message).clone());
+            }
+        });
+
+        let missing = "definitely/not/a/real/image-file.png";
+        assert!(view.load_path(missing).is_err());
+        assert!(
+            seen.lock().unwrap().as_deref().is_some_and(|message| message.contains(missing)),
+            "the decoder's message names the path"
+        );
+
+        // The asynchronous entry point reads the same path and fails the same way.
+        assert!(view.load_path_async(missing).is_err());
+        assert!(!view.is_loading());
     }
 }

@@ -64,6 +64,12 @@ pub struct RangeSlider {
     focused: bool,
     /// The handle keyboard input acts on. Defaults to the lower handle.
     active_handle: bool,
+    /// Whether a Tab press already moved the keyboard target once.
+    ///
+    /// The first Tab moves between the two handles; the next one lets focus leave the
+    /// control through the existing tab-order navigation, so the handles cannot trap it
+    /// (I-111).
+    tab_cycle_complete: bool,
     /// Spacing of the track's tick marks, or `None` for no ticks (I-108).
     tick_interval: Option<f64>,
     /// Whether numeric labels are painted beside the ticks (I-108).
@@ -110,6 +116,7 @@ impl RangeSlider {
             dragging: None,
             focused: false,
             active_handle: true,
+            tab_cycle_complete: false,
             tick_interval: None,
             tick_labels: false,
             value_hint_enabled: false,
@@ -206,6 +213,9 @@ impl RangeSlider {
     /// handle (and `min_range`), and the upper one below by the lower handle, so both
     /// constraints stay in force through the ordinary setters.
     pub fn step_active_handle(&mut self, steps: f64) -> bool {
+        // An arrow press is a new keyboard interaction, so the next Tab starts the
+        // handle cycle again rather than leaving the control immediately.
+        self.tab_cycle_complete = false;
         let before = (self.lower_value, self.upper_value);
         if self.active_handle {
             self.set_lower_value(self.lower_value + steps * self.step);
@@ -1163,8 +1173,19 @@ impl EventHandler for RangeSlider {
                 if *modifiers == 0 {
                     match *key {
                         9 => {
-                            let next = !self.active_handle;
-                            self.set_active_handle(next);
+                            if self.tab_cycle_complete {
+                                // Both handles have been visited; the next Tab belongs to
+                                // the host's focus navigation (I-111).
+                                self.tab_cycle_complete = false;
+                                #[cfg(not(alloc_frugal))]
+                                {
+                                    let _ = crate::widget::runtime::focus_next(true);
+                                }
+                            } else {
+                                let next = !self.active_handle;
+                                self.set_active_handle(next);
+                                self.tab_cycle_complete = true;
+                            }
                         }
                         // Left / Down.
                         37 | 40 => {
@@ -1854,6 +1875,21 @@ mod tests {
         assert!(fresh.is_dragging(), "a track press arms a drag");
         assert!(!fresh.active_handle(), "the nearer (upper) handle was chosen");
         assert!((fresh.upper_value() - 60.0).abs() < 1.5);
+    }
+
+    /// The handle cycle ends after both handles, so the control does not trap the tab key.
+    #[test]
+    fn a_second_tab_press_stops_cycling_the_handles() {
+        let rect = Rect::new(0, 0, 200, 40);
+        let mut rs = RangeSlider::new(rect);
+        rs.set_active_handle(true);
+
+        rs.handle_event(&Event::KeyPress { key: 9, modifiers: 0 });
+        assert!(!rs.active_handle(), "the first Tab reaches the other handle");
+
+        rs.handle_event(&Event::KeyPress { key: 9, modifiers: 0 });
+        assert!(!rs.active_handle(), "the next Tab is left to focus navigation");
+        assert!(!rs.tab_cycle_complete);
     }
 
     /// Focus marks the active handle so the keyboard target is visible.

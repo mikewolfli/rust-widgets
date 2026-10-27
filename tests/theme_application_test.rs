@@ -226,3 +226,92 @@ fn a_prepared_widget_keeps_its_own_style_when_mounted() {
         "a caller-prepared widget's own style must survive mounting"
     );
 }
+
+/// A theme switch must restyle the controls that are **already mounted**, not only the ones
+/// created afterwards (G-404).
+///
+/// The path under test is the production one: the switch emits `theme_changed`, which every
+/// mounted control subscribed to at registration, and `reapply_active_theme` completes the
+/// switch exactly as `rw_set_theme` does — the same two steps the C ABI and the demos perform.
+/// The assertions are the ones the old full-registry sweep satisfied, so a pass means the
+/// subscription-driven restyle did not lose coverage relative to the scan it replaced.
+#[test]
+fn a_theme_switch_restyles_controls_already_mounted() {
+    let _guard = guard();
+    let light_primary = use_light_theme();
+
+    let window = rust_widgets::create_window("theme-live-switch", 0, 0, 320, 240);
+    let button = rust_widgets::create_button(window, "A", 10, 10, 80, 30);
+    let label = rust_widgets::create_label(window, "text", 10, 50, 80, 20);
+    assert_eq!(
+        background_of(button),
+        Some(light_primary),
+        "the button mounts themed with the light preset"
+    );
+    assert_eq!(
+        background_of(label),
+        None,
+        "the label mounts unfilled, as the light preset styles it"
+    );
+
+    {
+        let mut manager = global_theme_manager();
+        assert!(manager.set_appearance(AppearanceMode::Dark), "the dark preset must be registered");
+        // The guard is dropped before the drain: the emit ran under the theme mutex (where the
+        // subscriptions could only record intent), and the merge must not re-enter that mutex.
+        drop(manager);
+        rust_widgets::reapply_active_theme();
+    }
+
+    let dark_primary =
+        global_theme_manager().current_theme().expect("an active theme").colors.primary;
+    assert_ne!(
+        light_primary, dark_primary,
+        "the two presets must differ for this test to mean anything"
+    );
+    assert_eq!(
+        background_of(button),
+        Some(dark_primary),
+        "a button mounted before the switch must be restyled by it"
+    );
+    assert_eq!(
+        background_of(label),
+        None,
+        "a label mounted before the switch must keep the theme's unfilled treatment"
+    );
+
+    // Restore so a later test starts from the documented default.
+    global_theme_manager().set_appearance(AppearanceMode::Light);
+}
+
+/// The high-contrast override is one of the switch paths: it emits `theme_changed` too, so the
+/// mounted controls must come out exactly as the old sweep left them — forced pair, live.
+#[test]
+fn a_high_contrast_override_restyles_controls_already_mounted() {
+    let _guard = guard();
+    let _ = use_light_theme();
+
+    let window = rust_widgets::create_window("theme-live-contrast", 0, 0, 320, 240);
+    let button = rust_widgets::create_button(window, "A", 10, 10, 80, 30);
+    assert_ne!(
+        background_of(button),
+        Some(Color::BLACK),
+        "the control mounts in the ordinary palette"
+    );
+
+    global_theme_manager().set_high_contrast(HighContrastMode::WhiteOnBlack);
+    rust_widgets::reapply_active_theme();
+
+    assert_eq!(
+        background_of(button),
+        Some(Color::BLACK),
+        "a mounted control must take the forced background without a rebuild"
+    );
+    assert_eq!(
+        text_color_of(button),
+        Some(Color::WHITE),
+        "a mounted control must take the forced foreground without a rebuild"
+    );
+
+    global_theme_manager().set_high_contrast(HighContrastMode::None);
+}

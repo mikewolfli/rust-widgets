@@ -46,7 +46,7 @@
 //! the same "reported, not silently dropped" contract the JSON loader follows for a bad binding.
 //! A generator that quietly omitted a control would produce a program that looks right and is not.
 
-use crate::compat::{format, String, Vec};
+use crate::compat::{format, HashMap, RefCell, String, Vec};
 use crate::json::project::ProjectNode;
 use crate::json::JsonProject;
 use crate::widget::capability::{WidgetFactory, WIRE_RULES};
@@ -491,15 +491,23 @@ pub fn availability(name: &str, target: TargetProfile) -> Availability {
 /// The generator builds one `WidgetFactory` for the whole document. Probing availability through it
 /// (rather than constructing a fresh registry for every node) is both cheaper and the reason the
 /// emitter's `factory` parameter is live rather than threaded through and discarded.
+///
+/// The probe reads the constructor table (`constructor_for`) rather than building a throwaway
+/// control, so a per-node availability answer costs one map lookup instead of a full construction
+/// (G-500).
 pub fn availability_with(
     factory: &WidgetFactory,
     name: &str,
     target: TargetProfile,
 ) -> Availability {
-    // `create` is the availability probe: it returns `None` exactly when no constructor is
-    // registered for the name under this profile. Asking it is what makes d-1 a measurement rather
-    // than a hand-maintained list of what `mini` has.
-    if factory.create(name, crate::core::Rect::new(0, 0, 1, 1), "").is_some() {
+    // The constructor **table** is the availability probe: `constructor_for` answers with the
+    // registered `WidgetCtor` through the same normalised-name lookup `create` performs, and
+    // returns `None` exactly when no constructor is registered for the name under this profile —
+    // without paying a control construction to learn that the answer was "no". Asking the table
+    // rather than instantiating a 1×1 control is what makes d-1 a measurement rather than a
+    // hand-maintained list of what `mini` has, and stops a per-node metadata query from paying a
+    // full construction cost (G-500).
+    if factory.constructor_for(name).is_some() {
         if host_profile_matches(target) {
             Availability::Local
         } else {
@@ -528,8 +536,8 @@ fn host_profile_matches(target: TargetProfile) -> bool {
 /// [`availability`] answers "may I emit this?" with a four-state verdict tuned to generation. This
 /// answers "what is true about the target?" with a [`TargetProbe`] that names the target and states
 /// *how* the answer was reached — which is what a caller that must report a support claim (rather
-/// than decide whether to emit) needs. The two share the same underlying probe (`factory.create`),
-/// so they cannot disagree about whether a control is buildable.
+/// than decide whether to emit) needs. The two share the same underlying probe
+/// (`factory.constructor_for`), so they cannot disagree about whether a control is buildable.
 ///
 /// # Why the level is never `BuiltVerified` here
 ///
@@ -545,7 +553,10 @@ pub fn target_probe(
     target: TargetProfile,
 ) -> crate::widget::capability::TargetProbe {
     use crate::widget::capability::CurrentBuildVerdict;
-    let verdict = if factory.create(name, crate::core::Rect::new(0, 0, 1, 1), "").is_some() {
+    // The same constructor-table probe `availability_with` reads (G-500): the registered
+    // `WidgetCtor` answers whether the name is buildable under this profile without
+    // constructing a control to find out.
+    let verdict = if factory.constructor_for(name).is_some() {
         CurrentBuildVerdict::Usable
     } else if factory.capability(name).is_some() {
         CurrentBuildVerdict::Unbuildable
@@ -695,11 +706,44 @@ fn event_is_published(widget: &str, event: &str) -> bool {
 /// A control the factory cannot construct is reported by the availability check above, so `None`
 /// here means "could not ask", which is not evidence of a missing arm. Treating it as resolved
 /// keeps the two gaps separate rather than reporting the same unsupported control twice.
+///
+/// # Why this is the one probe that still constructs (G-500)
+///
+/// The arm state is the one fact the capability/property schema cannot express: `event_signal_dyn`
+/// is a method on the live control, resolution is opt-in per control (an unconverted control
+/// answers `None` for every name while its capability table may still publish events), and which
+/// controls have converted is recorded only in `tools/check_event_signal_dyn.py`'s `CONVERTED`
+/// list — no metadata surface in the crate carries that fact. Construction is therefore kept for
+/// exactly this question. What it no longer pays is construction **per declared wire**: the probe
+/// instance is memoized per canonical name, so a document with ten wires on one button asks one
+/// constructed button ten times instead of building ten throwaway buttons. The instance is never
+/// mounted — construction alone registers nothing; `JsonLoader` routes mounting through the
+/// backend creation funnel — so keeping it alive changes no run-time state, and the signal
+/// reference an arm hands out is consumed before the call returns.
 fn event_resolves_dynamically(widget: &str, event: &str) -> Option<bool> {
     let factory = WidgetFactory::shared();
     let canonical = factory.canonical_name(widget);
-    let probe = factory.create(&canonical, crate::core::Rect::new(0, 0, 1, 1), "")?;
-    Some(probe.event_signal_dyn(event).is_some())
+    PROBE_CONTROLS.with(|probes| {
+        let mut probes = probes.borrow_mut();
+        let probe = match probes.get(&canonical) {
+            Some(probe) => probe,
+            None => {
+                let probe = factory.create(&canonical, crate::core::Rect::new(0, 0, 1, 1), "")?;
+                probes.insert(canonical.clone(), probe);
+                // The entry was inserted above, so the lookup cannot miss.
+                probes.get(&canonical).expect("probe was just inserted")
+            }
+        };
+        Some(probe.event_signal_dyn(event).is_some())
+    })
+}
+
+thread_local! {
+    /// One constructed probe per canonical control name, shared by every wire the generator
+    /// checks against that control. See `event_resolves_dynamically` for why construction is
+    /// kept at all and why the instances are never mounted.
+    static PROBE_CONTROLS: RefCell<HashMap<crate::compat::String, Box<dyn crate::widget::Widget>>> =
+        RefCell::new(HashMap::new());
 }
 
 fn emit_node(

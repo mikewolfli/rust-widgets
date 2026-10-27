@@ -288,7 +288,12 @@ impl GpuManager {
     ///
     /// The whole frame update runs under one lock acquisition (G-54) and takes a
     /// single statistics snapshot (G-53), so the frame is neither half-visible to
-    /// another thread nor recomputed twice.
+    /// another thread nor recomputed twice. The utilization figures the frame
+    /// reads are the background probe's last published round (G-226): the OS
+    /// probes themselves — `/proc` reads and the Darwin `ps`/`pmset` child
+    /// processes — never run inside this lock or anywhere else on the frame
+    /// path, so a slow probe can no longer stretch the frame tail for every
+    /// thread contending on this state.
     pub fn end_frame(&self) -> Option<PerformanceStats> {
         let mut state = lock(&self.state);
         let sample = state.performance_monitor.end_frame();

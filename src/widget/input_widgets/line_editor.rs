@@ -19,7 +19,7 @@
 use core::cell::RefCell;
 
 use crate::compat::{Box, Rc, String};
-use crate::undo::{UndoStack, ValueCommand};
+use crate::undo::{TextSpliceCommand, UndoStack};
 use crate::widget::text_utils::{floor_char_boundary, next_char_boundary, previous_char_boundary};
 
 /// A single-line value: the text, the caret, the selection anchor and the undo history.
@@ -75,10 +75,13 @@ impl LineEditor {
         if self.text == text {
             return false;
         }
+        // The record is the changed interval, not the whole value: `TextSpliceCommand::new`
+        // derives it from the before/after pair (I-001).
         let before = core::mem::replace(&mut self.text, text);
+        let after = self.text.clone();
         self.cursor = self.text.len();
         self.anchor = None;
-        self.push_history(before, record);
+        self.push_history(&before, &after, record);
         true
     }
 
@@ -88,11 +91,11 @@ impl LineEditor {
             return false;
         }
         let (start, end) = self.selection().unwrap_or((self.cursor, self.cursor));
-        let before = self.text.clone();
+        let removed = self.text[start..end].to_string();
         self.text.replace_range(start..end, text);
         self.cursor = start + text.len();
         self.anchor = None;
-        self.push_history(before, true);
+        self.push_splice(start, &removed, text);
         true
     }
 
@@ -116,11 +119,11 @@ impl LineEditor {
         if start == end {
             return false;
         }
-        let before = self.text.clone();
+        let removed = self.text[start..end].to_string();
         self.text.replace_range(start..end, "");
         self.cursor = start;
         self.anchor = None;
-        self.push_history(before, true);
+        self.push_splice(start, &removed, "");
         true
     }
 
@@ -200,16 +203,39 @@ impl LineEditor {
     }
 
     /// Records `before` → the current value as one undoable step.
-    fn push_history(&mut self, before: String, record: bool) {
+    ///
+    /// Used for a programmatic write, where only the diff is needed; the normal edit paths pass
+    /// their splice directly (I-001).
+    fn push_history(&mut self, before: &str, after: &str, record: bool) {
         if !record || self.restoring {
             return;
         }
-        let after = self.text.clone();
-        *self.history_target.borrow_mut() = after.clone();
-        self.undo_stack.push(Box::new(ValueCommand::new(
+        *self.history_target.borrow_mut() = after.to_string();
+        self.undo_stack.push(Box::new(TextSpliceCommand::new(
             self.history_target.clone(),
             before,
             after,
+            "Edit text",
+            "combo_box_text",
+        )));
+    }
+
+    /// Records an in-place splice as one undoable step (I-001).
+    fn push_splice(&mut self, offset: usize, removed: &str, inserted: &str) {
+        if self.restoring {
+            return;
+        }
+        {
+            let mut target = self.history_target.borrow_mut();
+            let start = offset.min(target.len());
+            let end = (start + removed.len()).min(target.len());
+            target.replace_range(start..end, inserted);
+        }
+        self.undo_stack.push(Box::new(TextSpliceCommand::from_splice(
+            self.history_target.clone(),
+            offset,
+            removed.to_string(),
+            inserted.to_string(),
             "Edit text",
             "combo_box_text",
         )));
@@ -228,16 +254,30 @@ mod tests {
     use crate::compat::ToString;
 
     #[test]
-    fn typing_records_one_undo_step_per_edit() {
+    fn adjacent_typing_merges_into_one_undo_step() {
         let mut editor = LineEditor::new();
         assert!(editor.insert("ab"));
         assert!(editor.insert("c"));
         assert_eq!(editor.text(), "abc");
         assert_eq!(editor.cursor(), 3);
+        // Two adjacent insertions inside the merge window are one step (I-002).
         assert!(editor.undo());
-        assert_eq!(editor.text(), "ab");
+        assert_eq!(editor.text(), "");
         assert!(editor.redo());
         assert_eq!(editor.text(), "abc");
+    }
+
+    #[test]
+    fn typing_after_a_space_is_a_separate_undo_step() {
+        let mut editor = LineEditor::new();
+        editor.insert("hello");
+        editor.insert(" ");
+        editor.insert("world");
+        // Word-boundary merge: undo removes the last word, then the space, then the first word.
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "hello ");
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "hello");
     }
 
     #[test]

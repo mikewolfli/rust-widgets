@@ -22,7 +22,7 @@ use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{EventSignalRef, GenericSignal, Signal1};
-use crate::widget::capability::coercion::{expect_string, expect_u32, expect_usize};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -34,6 +34,8 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// How many values a popup remembers by default.
 const DEFAULT_CAPACITY: usize = 10;
+/// How many rows are painted at once when the host does not say otherwise.
+const DEFAULT_MAX_VISIBLE: usize = 8;
 /// Horizontal inset inside a row.
 const ROW_INSET: i32 = 8;
 
@@ -44,6 +46,14 @@ pub struct RecentValuesPopup {
     entries: Vec<String>,
     capacity: usize,
     anchor: Option<Rect>,
+    /// The host's available area, which is what makes flipping measurable.
+    viewport: Option<Rect>,
+    /// Whether the popup may flip above the anchor when there is no room below it.
+    flip_allowed: bool,
+    /// How many rows are painted at once.
+    max_visible: usize,
+    /// First painted row; keeps the highlight inside the painted window.
+    scroll_offset: usize,
     selected_index: Option<usize>,
     /// A caller-chosen row height, or `None` to derive it from the font.
     row_height: Option<u32>,
@@ -63,6 +73,10 @@ impl RecentValuesPopup {
             entries: Vec::new(),
             capacity: DEFAULT_CAPACITY,
             anchor: None,
+            viewport: None,
+            flip_allowed: true,
+            max_visible: DEFAULT_MAX_VISIBLE,
+            scroll_offset: 0,
             selected_index: None,
             row_height: None,
             empty_text: String::from("(No matches)"),
@@ -87,6 +101,7 @@ impl RecentValuesPopup {
         self.entries.insert(0, value.to_string());
         self.entries.truncate(self.capacity.max(1));
         self.clamp_highlight();
+        self.scroll_to_highlight();
         self.base.request_redraw();
     }
 
@@ -97,6 +112,7 @@ impl RecentValuesPopup {
         };
         self.entries.remove(index);
         self.clamp_highlight();
+        self.scroll_to_highlight();
         self.base.request_redraw();
         true
     }
@@ -108,6 +124,7 @@ impl RecentValuesPopup {
         }
         self.entries.clear();
         self.selected_index = None;
+        self.scroll_offset = 0;
         self.shown = false;
         self.base.request_redraw();
         self.history_cleared.emit();
@@ -122,6 +139,7 @@ impl RecentValuesPopup {
         self.capacity = capacity;
         self.entries.truncate(capacity);
         self.clamp_highlight();
+        self.scroll_to_highlight();
         self.base.request_redraw();
     }
 
@@ -149,12 +167,80 @@ impl RecentValuesPopup {
         self.anchor
     }
 
+    /// Supplies the host's available area, which is what makes flipping measurable.
+    pub fn set_viewport(&mut self, viewport: Option<Rect>) {
+        if self.viewport == viewport {
+            return;
+        }
+        self.viewport = viewport;
+        self.base.request_redraw();
+    }
+
+    /// The host's available area, if one was supplied.
+    pub fn viewport(&self) -> Option<Rect> {
+        self.viewport
+    }
+
+    /// Allows or forbids flipping the popup above the anchor.
+    pub fn set_flip_allowed(&mut self, allowed: bool) {
+        if self.flip_allowed == allowed {
+            return;
+        }
+        self.flip_allowed = allowed;
+        self.base.request_redraw();
+    }
+
+    /// Whether flipping above the anchor is allowed.
+    pub fn flip_allowed(&self) -> bool {
+        self.flip_allowed
+    }
+
+    /// Caps how many rows are painted at once.
+    pub fn set_max_visible(&mut self, max_visible: usize) {
+        let max_visible = max_visible.max(1);
+        if self.max_visible == max_visible {
+            return;
+        }
+        self.max_visible = max_visible;
+        self.scroll_to_highlight();
+        self.base.request_redraw();
+    }
+
+    /// How many rows are painted at once.
+    pub fn max_visible(&self) -> usize {
+        self.max_visible
+    }
+
+    /// The first painted row within the history.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Scrolls the painted window so the highlight stays inside it.
+    pub fn scroll_to_highlight(&mut self) {
+        let Some(highlight) = self.selected_index else {
+            self.scroll_offset = 0;
+            return;
+        };
+        if highlight < self.scroll_offset {
+            self.scroll_offset = highlight;
+        } else if highlight >= self.scroll_offset + self.max_visible {
+            self.scroll_offset = highlight + 1 - self.max_visible;
+        }
+        let max_offset = self.entries.len().saturating_sub(self.max_visible);
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
     /// Shows the popup, highlighting the newest entry when nothing is highlighted yet.
     pub fn show(&mut self) {
         if self.shown {
             return;
         }
         self.shown = true;
+        // The popup owns the press that dismisses it, matching the combo box's
+        // popup-grab contract (I-127).
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::set_popup_grab(self.base.id());
         if self.selected_index.is_none() && !self.entries.is_empty() {
             self.selected_index = Some(0);
         }
@@ -167,6 +253,8 @@ impl RecentValuesPopup {
             return;
         }
         self.shown = false;
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::clear_popup_grab_for(self.base.id());
         self.base.request_redraw();
     }
 
@@ -196,8 +284,23 @@ impl RecentValuesPopup {
             return false;
         }
         self.selected_index = Some(next);
+        self.scroll_to_highlight();
         self.base.request_redraw();
         true
+    }
+
+    /// Moves the highlight to `index`, clamped into the history, and repaints.
+    ///
+    /// A move that does not change the highlight is a no-op and queues no frame, which is
+    /// what keeps a held Home/End key from repainting an unchanged row (I-109).
+    pub fn set_highlight(&mut self, index: Option<usize>) {
+        let index = index.filter(|index| *index < self.entries.len());
+        if self.selected_index == index {
+            return;
+        }
+        self.selected_index = index;
+        self.scroll_to_highlight();
+        self.base.request_redraw();
     }
 
     /// Takes the highlighted entry: emits `entry_picked` and hides.
@@ -249,8 +352,17 @@ impl RecentValuesPopup {
         if !self.shown {
             return None;
         }
-        (0..self.entries.len())
-            .find(|row| self.row_rect(*row).is_some_and(|rect| rect.contains(pos)))
+        let popup = self.popup_rect();
+        if !popup.contains_point(pos) {
+            return None;
+        }
+        let row_height = self.row_height().max(1) as i32;
+        let window_row = ((pos.y - popup.y) / row_height) as usize;
+        if window_row >= self.window_count() {
+            return None;
+        }
+        let row = self.scroll_offset + window_row;
+        (row < self.entries.len()).then_some(row)
     }
 
     /// Keeps the highlight inside the list after a removal or a truncation.
@@ -260,15 +372,26 @@ impl RecentValuesPopup {
             Some(index) => Some(index.min(self.entries.len() - 1)),
             None => None,
         };
+        self.scroll_to_highlight();
     }
 
-    /// The popup's own box: rows tall, hanging from the anchor when one is set.
+    /// The popup's box: window rows tall, hanging under (or flipped above) the anchor.
+    ///
+    /// The flip rule and the row window are the ones `SuggestionPopup` already uses
+    /// (I-126), so a history list and a candidate list cannot disagree about where a
+    /// popup lands or which rows it shows.
     fn popup_rect(&self) -> Rect {
-        let rows = self.entries.len().max(1) as u32;
+        let rows = self.window_count() as u32;
         let height = rows.saturating_mul(self.row_height());
         match self.anchor {
             Some(anchor) => {
-                Rect::new(anchor.x, anchor.y + anchor.height as i32, anchor.width, height)
+                let below = anchor.y + anchor.height as i32;
+                let fits_below = !self.flip_allowed
+                    || self.viewport.is_none_or(|viewport| {
+                        below + height as i32 <= viewport.y + viewport.height as i32
+                    });
+                let y = if fits_below { below } else { anchor.y - height as i32 };
+                Rect::new(anchor.x, y, anchor.width, height)
             }
             None => {
                 let geometry = self.geometry();
@@ -277,18 +400,22 @@ impl RecentValuesPopup {
         }
     }
 
-    /// The box of one painted row.
+    /// How many rows the painted window holds. An empty history still has its empty row.
+    fn window_count(&self) -> usize {
+        self.entries.len().min(self.max_visible).max(1)
+    }
+
+    /// The box of one painted row, when that row is inside the painted window.
     fn row_rect(&self, row: usize) -> Option<Rect> {
+        if row < self.scroll_offset || row >= self.scroll_offset + self.window_count() {
+            return None;
+        }
         if row >= self.entries.len() {
             return None;
         }
         let popup = self.popup_rect();
-        Some(Rect::new(
-            popup.x,
-            popup.y + row as i32 * self.row_height() as i32,
-            popup.width,
-            self.row_height(),
-        ))
+        let offset = (row - self.scroll_offset) as i32 * self.row_height() as i32;
+        Some(Rect::new(popup.x, popup.y + offset, popup.width, self.row_height()))
     }
 }
 
@@ -306,8 +433,8 @@ impl EventHandler for RecentValuesPopup {
                 40 => {
                     self.move_highlight(1);
                 }
-                36 => self.selected_index = (!self.entries.is_empty()).then_some(0),
-                35 => self.selected_index = self.entries.len().checked_sub(1),
+                36 => self.set_highlight((!self.entries.is_empty()).then_some(0)),
+                35 => self.set_highlight(self.entries.len().checked_sub(1)),
                 13 => {
                     self.commit_highlighted();
                 }
@@ -367,7 +494,9 @@ impl Draw for RecentValuesPopup {
             return;
         }
 
-        for row in 0..self.entries.len() {
+        let first = self.scroll_offset;
+        let end = (self.scroll_offset + self.window_count()).min(self.entries.len());
+        for row in first..end {
             let Some(rect) = self.row_rect(row) else { continue };
             let highlighted = self.selected_index == Some(row);
             if highlighted {
@@ -402,7 +531,7 @@ impl Widget for RecentValuesPopup {
         &mut self.base
     }
     fn size_hint(&self) -> Size {
-        Size::new(200, self.row_height().saturating_mul(self.entries.len().max(1) as u32))
+        Size::new(200, self.row_height().saturating_mul(self.window_count() as u32))
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -435,6 +564,13 @@ impl WidgetProperties for RecentValuesPopup {
                 None => Ok(CapabilityValue::Null),
             },
             "row_height" => Ok(CapabilityValue::UInt(u64::from(self.row_height()))),
+            "viewport" => match self.viewport {
+                Some(viewport) => Ok(rect_value(viewport)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "flip_allowed" => Ok(CapabilityValue::Bool(self.flip_allowed)),
+            "max_visible" => Ok(CapabilityValue::UInt(self.max_visible as u64)),
+            "scroll_offset" => Ok(CapabilityValue::UInt(self.scroll_offset as u64)),
             "empty_text" => Ok(CapabilityValue::String(self.empty_text.clone())),
             "shown" => Ok(CapabilityValue::Bool(self.shown)),
             _ => base_property_get(self, name),
@@ -484,6 +620,25 @@ impl WidgetProperties for RecentValuesPopup {
                 self.set_row_height(expect_u32(value)?);
                 Ok(())
             }
+            "viewport" => match value {
+                CapabilityValue::Null => {
+                    self.set_viewport(None);
+                    Ok(())
+                }
+                other => {
+                    self.set_viewport(Some(expect_rect(other)?));
+                    Ok(())
+                }
+            },
+            "flip_allowed" => {
+                self.set_flip_allowed(expect_bool(value)?);
+                Ok(())
+            }
+            "max_visible" => {
+                self.set_max_visible(expect_usize(value)?);
+                Ok(())
+            }
+            "scroll_offset" => Err(CapabilityAccessError::ReadOnlyProperty),
             "empty_text" => {
                 let text = expect_string(value)?;
                 self.set_empty_text(&text);
@@ -508,6 +663,10 @@ impl WidgetProperties for RecentValuesPopup {
             "anchor",
             "selected_index",
             "row_height",
+            "viewport",
+            "flip_allowed",
+            "max_visible",
+            "scroll_offset",
             "empty_text",
             "shown",
             BASE_PROPERTY_NAMES
@@ -568,5 +727,57 @@ mod tests {
         let mut popup = popup();
         popup.remember("");
         assert!(popup.entries().is_empty());
+    }
+
+    #[test]
+    fn home_and_end_move_the_highlight_and_queue_a_redraw() {
+        let mut popup = popup();
+        for value in ["one", "two", "three"] {
+            popup.remember(value);
+        }
+        popup.show();
+        let redraws = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        popup.base.redraw_requested.connect({
+            let count = std::sync::Arc::clone(&redraws);
+            move || {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        popup.handle_event(&Event::KeyPress { key: 35, modifiers: 0 });
+        assert_eq!(popup.selected_index, Some(2));
+        assert!(redraws.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        popup.handle_event(&Event::KeyPress { key: 36, modifiers: 0 });
+        assert_eq!(popup.selected_index, Some(0));
+    }
+
+    #[test]
+    fn the_window_scrolls_with_the_highlight_and_flips_above_the_anchor() {
+        let mut popup = popup();
+        popup.set_max_visible(2);
+        for value in ["one", "two", "three"] {
+            popup.remember(value);
+        }
+        popup.show();
+        popup.set_highlight(Some(2));
+        assert_eq!(popup.scroll_offset(), 1);
+        // The anchor's bottom is at 100 and the viewport ends there, so two rows cannot
+        // fit below it: the popup flips above the anchor instead of overflowing.
+        popup.set_anchor(Rect::new(0, 80, 100, 20));
+        popup.set_viewport(Some(Rect::new(0, 0, 100, 100)));
+        let rect = popup.popup_rect();
+        assert!(rect.y + rect.height as i32 <= 80);
+    }
+
+    #[test]
+    fn row_hit_testing_follows_the_scrolled_window() {
+        let mut popup = popup();
+        popup.set_max_visible(2);
+        for value in ["one", "two", "three"] {
+            popup.remember(value);
+        }
+        popup.show();
+        popup.set_highlight(Some(2));
+        let popup_rect = popup.popup_rect();
+        assert_eq!(popup.row_at(Point::new(popup_rect.x + 1, popup_rect.y + 1)), Some(1));
     }
 }

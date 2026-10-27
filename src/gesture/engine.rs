@@ -427,6 +427,9 @@ pub struct GestureEngine {
     /// Explicit priorities, consulted only by [`GestureConflictPolicy::Priority`] and
     /// [`GestureConflictPolicy::Exclusive`]. A recogniser absent here has priority `0`.
     priorities: crate::compat::HashMap<GestureKind, i32>,
+    /// W-P03: scratch buffer backing [`Self::previews`], refilled in place on every call so a
+    /// per-frame preview poll does not allocate a fresh `Vec` each time.
+    previews_buffer: Vec<Event>,
 }
 
 /// How the chain resolves several recognisers producing an event in one update.
@@ -471,6 +474,7 @@ impl GestureEngine {
             last_timestamp_ms: 0,
             conflict: GestureConflictPolicy::default(),
             priorities: crate::compat::HashMap::new(),
+            previews_buffer: Vec::new(),
         }
     }
 
@@ -485,6 +489,7 @@ impl GestureEngine {
             last_timestamp_ms: 0,
             conflict: GestureConflictPolicy::default(),
             priorities: crate::compat::HashMap::new(),
+            previews_buffer: Vec::new(),
         }
     }
 
@@ -524,8 +529,13 @@ impl GestureEngine {
     /// cannot loop.
     pub fn process(&mut self, event: &Event, now_ms: u64) -> Option<Event> {
         self.last_timestamp_ms = now_ms;
+        // W-P03: the winner lives in `produced`, and the most recent output lives there too
+        // while it *is* the winner (`derived_is_winner`). Only an output that loses the
+        // specificity race moves to `derived`. Each event has exactly one home, so later
+        // recognisers share it by reference and no winning round clones any more.
         let mut produced: Option<(Event, i32, usize)> = None;
         let mut derived: Option<Event> = None;
+        let mut derived_is_winner = false;
         let conflict = self.conflict;
         let priorities = &self.priorities;
         for (index, slot) in self.recognizers.iter_mut().enumerate() {
@@ -545,7 +555,12 @@ impl GestureEngine {
             // Then the most recent semantic event, for recognizers that refine another
             // recognizer's output rather than the raw stream.
             if hit.is_none() {
-                if let Some(ref derived_event) = derived {
+                let latest = if derived_is_winner {
+                    produced.as_ref().map(|(event, _, _)| event)
+                } else {
+                    derived.as_ref()
+                };
+                if let Some(derived_event) = latest {
                     hit = r.process(derived_event, now_ms);
                 }
             }
@@ -572,12 +587,12 @@ impl GestureEngine {
                     }
                 };
                 if better {
-                    produced = Some((gesture_event.clone(), priority, index));
+                    produced = Some((gesture_event, priority, index));
+                    derived_is_winner = true;
+                } else {
+                    derived = Some(gesture_event);
+                    derived_is_winner = false;
                 }
-                // The derived event is the *most specific* output of this round, regardless
-                // of which producer wins: it is what the later refiners (double-tap building
-                // on tap) should see.
-                derived = Some(gesture_event);
             }
         }
         if conflict == GestureConflictPolicy::Exclusive {
@@ -629,15 +644,24 @@ impl GestureEngine {
         }
     }
 
-    /// The in-progress previews of every recogniser that can describe one.
+    /// The in-progress previews of every recogniser that can describe one, in chain order.
     ///
     /// This is the "partial delivery" half of [`GestureUpdate`]: a pinch reports its current
     /// scale and centre, so a consumer can follow the fingers before the recogniser commits.
-    pub fn previews(&self) -> Vec<Event> {
-        self.recognizers
-            .iter()
-            .filter_map(|recognizer| recognizer.as_recognizer_ref().partial())
-            .collect()
+    ///
+    /// W-P03: the returned slice borrows a buffer owned by the engine, refilled in place on
+    /// every call, so a per-frame poll allocates nothing after warm-up. The delivery order and
+    /// content are exactly what the previous per-call `collect` produced — one entry per
+    /// recogniser with a preview, in recogniser order. The buffer is invalidated by the next
+    /// `previews`, `process`, `process_update`, `cancel` or `reset_all` call on this engine.
+    pub fn previews(&mut self) -> &[Event] {
+        self.previews_buffer.clear();
+        for recognizer in &self.recognizers {
+            if let Some(preview) = recognizer.as_recognizer_ref().partial() {
+                self.previews_buffer.push(preview);
+            }
+        }
+        &self.previews_buffer
     }
 
     /// Cancels any in-progress gesture from outside and resets every recogniser.
@@ -802,7 +826,7 @@ mod tests {
     /// The standard chain is stored inline, not as eleven boxed trait objects (G-27).
     #[test]
     fn the_standard_chain_is_inline() {
-        let engine = GestureEngine::new();
+        let mut engine = GestureEngine::new();
         assert!(engine.recognizers.iter().all(|slot| matches!(slot, RecognizerSlot::Standard(_))));
         assert_eq!(engine.previews().len(), 0, "an idle chain has no previews");
     }
@@ -1320,5 +1344,119 @@ mod engine_policy_tests {
         assert_eq!(tuning().swipe_min_velocity, 900.0);
         set_tuning(previous);
         assert_eq!(tuning(), GestureTuning::default());
+    }
+
+    /// A recogniser that records every event it is offered, producing nothing.
+    #[derive(Debug)]
+    struct FeedsRecorder {
+        seen: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
+    }
+
+    impl GestureRecognizer for FeedsRecorder {
+        fn process(&mut self, event: &Event, _now_ms: u64) -> Option<Event> {
+            let label = match event {
+                Event::Paint => "paint",
+                Event::Tap { .. } => "tap",
+                Event::LongPress { .. } => "long_press",
+                _ => "other",
+            };
+            self.seen.lock().unwrap().push(label);
+            None
+        }
+
+        fn reset(&mut self) {
+            // Nothing to clear: the recorder keeps no per-gesture state, only the caller-owned
+            // shared log, which must survive a reset so the test can read the full history.
+        }
+    }
+
+    /// W-P03: a later output that loses the specificity race must never win, and the next
+    /// refiner must still be fed it as the most recent semantic output — the exact delivery
+    /// order the per-round clone produced, now shared by reference instead.
+    #[test]
+    fn a_losing_output_is_forwarded_but_never_wins() {
+        let (winner, _) =
+            emits(Event::Tap { pos: crate::core::Point::new(0, 0) }, GestureKind::Custom("tap"));
+        let (loser, _) = emits(
+            Event::LongPress { pos: crate::core::Point::new(0, 0) },
+            GestureKind::Custom("press"),
+        );
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let probe = Box::new(FeedsRecorder { seen: std::sync::Arc::clone(&seen) });
+        let mut engine = GestureEngine::from_recognizers(vec![winner, loser, probe]);
+
+        let produced = engine.process(&Event::Paint, 0);
+        assert!(matches!(produced, Some(Event::Tap { .. })), "got {produced:?}");
+        // The probe is offered the raw event first, then the most recent output — the LongPress
+        // that lost the race, not the Tap that won it.
+        assert_eq!(*seen.lock().unwrap(), vec!["paint", "long_press"]);
+    }
+
+    /// W-P03: the winning output is the one later refiners see when nothing supersedes it.
+    #[test]
+    fn a_winning_output_is_forwarded_to_later_refiners() {
+        let (winner, _) =
+            emits(Event::Tap { pos: crate::core::Point::new(0, 0) }, GestureKind::Custom("tap"));
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let probe = Box::new(FeedsRecorder { seen: std::sync::Arc::clone(&seen) });
+        let mut engine = GestureEngine::from_recognizers(vec![winner, probe]);
+
+        let produced = engine.process(&Event::Paint, 0);
+        assert!(matches!(produced, Some(Event::Tap { .. })), "got {produced:?}");
+        assert_eq!(*seen.lock().unwrap(), vec!["paint", "tap"]);
+    }
+
+    /// A recogniser with an in-progress preview that stops after a reset.
+    #[derive(Debug)]
+    struct Previews {
+        event: Event,
+        live: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl GestureRecognizer for Previews {
+        fn process(&mut self, _event: &Event, _now_ms: u64) -> Option<Event> {
+            None
+        }
+
+        fn reset(&mut self) {
+            self.live.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn partial(&self) -> Option<Event> {
+            self.live.load(std::sync::atomic::Ordering::SeqCst).then(|| self.event.clone())
+        }
+    }
+
+    /// W-P03: previews are reported in chain order from the reused buffer, stay stable across
+    /// repeated calls, and clear when the recognisers reset.
+    #[test]
+    fn previews_keep_chain_order_across_repeated_calls() {
+        let live_a = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let live_b = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let a = Box::new(Previews {
+            event: Event::Tap { pos: crate::core::Point::new(0, 0) },
+            live: std::sync::Arc::clone(&live_a),
+        });
+        let b = Box::new(Previews {
+            event: Event::LongPress { pos: crate::core::Point::new(0, 0) },
+            live: std::sync::Arc::clone(&live_b),
+        });
+        let mut engine = GestureEngine::from_recognizers(vec![a, b]);
+
+        let first = engine.previews().to_vec();
+        assert_eq!(first.len(), 2, "both recognisers have a preview");
+        assert!(matches!(first[0], Event::Tap { .. }), "chain order: the first recogniser first");
+        assert!(matches!(first[1], Event::LongPress { .. }));
+
+        // A second call observes the same chain order — the refill does not reorder or duplicate.
+        let second = engine.previews().to_vec();
+        // `Event` has no `PartialEq`; comparing variant discriminants in order asserts exactly
+        // what matters here: same variants, same chain order, no duplication.
+        let first_kinds: std::vec::Vec<_> = first.iter().map(core::mem::discriminant).collect();
+        let second_kinds: std::vec::Vec<_> = second.iter().map(core::mem::discriminant).collect();
+        assert_eq!(first_kinds, second_kinds);
+
+        engine.reset_all();
+        assert_eq!(engine.previews().len(), 0, "a reset recogniser previews nothing");
     }
 }

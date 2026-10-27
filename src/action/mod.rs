@@ -37,6 +37,8 @@ pub struct ActionDefinition {
     pub checkable: bool,
     /// Current checked state (meaningful only when `checkable`).
     pub checked: bool,
+    /// Whether hosts should present the command.
+    pub visible: bool,
     /// Whether the command can currently be triggered.
     pub enabled: bool,
     /// Canonical shortcut spelling, or empty when unbound.
@@ -49,11 +51,12 @@ impl ActionDefinition {
     /// The stable JSON spelling of this record.
     pub fn to_json(&self) -> String {
         format!(
-            "{{\"id\":\"{}\",\"text\":\"{}\",\"checkable\":{},\"checked\":{},\"enabled\":{},\"shortcut\":\"{}\",\"role\":\"{}\"}}",
+            "{{\"id\":\"{}\",\"text\":\"{}\",\"checkable\":{},\"checked\":{},\"visible\":{},\"enabled\":{},\"shortcut\":\"{}\",\"role\":\"{}\"}}",
             json_escape(&self.id),
             json_escape(&self.text),
             self.checkable,
             self.checked,
+            self.visible,
             self.enabled,
             json_escape(&self.shortcut),
             json_escape(&self.role),
@@ -75,6 +78,8 @@ impl ActionDefinition {
             text: label,
             checkable: json_bool_field(text, "checkable").unwrap_or(false),
             checked: json_bool_field(text, "checked").unwrap_or(false),
+            // Absent in documents written before M-018; those commands were visible.
+            visible: json_bool_field(text, "visible").unwrap_or(true),
             enabled: json_bool_field(text, "enabled").unwrap_or(true),
             shortcut: json_string_field(text, "shortcut").unwrap_or_default(),
             role: json_string_field(text, "role").unwrap_or_default(),
@@ -86,6 +91,7 @@ impl ActionDefinition {
         let mut action = Action::new(self.id.clone(), self.text.clone());
         action.set_enabled(self.enabled);
         action.set_checkable(self.checkable);
+        action.set_visible(self.visible);
         if self.checkable {
             action.set_checked(self.checked);
         }
@@ -99,6 +105,7 @@ impl ActionDefinition {
             text: action.text.clone(),
             checkable: action.is_checkable(),
             checked: action.is_checked(),
+            visible: action.is_visible(),
             enabled: action.is_enabled(),
             shortcut: String::new(),
             role: String::new(),
@@ -120,6 +127,8 @@ pub struct ActionLiveState {
     pub text: String,
     /// Whether the command can be triggered.
     pub enabled: bool,
+    /// Whether hosts should present the command.
+    pub visible: bool,
     /// Whether a checkable command is checked.
     pub checkable: bool,
     /// The current checked state.
@@ -132,6 +141,7 @@ impl ActionLiveState {
         Self {
             text: definition.text.clone(),
             enabled: definition.enabled,
+            visible: definition.visible,
             checkable: definition.checkable,
             checked: definition.checked,
         }
@@ -293,6 +303,74 @@ mod tests {
         // `normalize_shortcut`.
         assert!(mgr.trigger_shortcut("Primary+S"), "the canonical spelling must reach it");
         assert!(mgr.trigger_shortcut("Ctrl+S"), "and so must the `Ctrl` spelling");
+    }
+
+    /// W-P05: re-binding a chord to a different action hands it over atomically — the
+    /// previous owner must lose both the trigger and its `shortcut_for_action` entry, and
+    /// the new owner must answer with the exact chord spelling the trigger resolves.
+    #[test]
+    fn binding_a_chord_to_another_action_hands_it_over() {
+        let mut mgr = ActionManager::new();
+        assert!(mgr.register_action("save", "Save"));
+        assert!(mgr.register_action("save-as", "Save As"));
+        let saved = Arc::new(AtomicUsize::new(0));
+        let save_as = Arc::new(AtomicUsize::new(0));
+        {
+            let s = Arc::clone(&saved);
+            mgr.action("save").expect("action exists").connect_triggered(move || {
+                s.fetch_add(1, Ordering::SeqCst);
+            });
+            let a = Arc::clone(&save_as);
+            mgr.action("save-as").expect("action exists").connect_triggered(move || {
+                a.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert!(mgr.bind_shortcut("Ctrl+S", "save"));
+        // The API's contract (see the router-sync test) is the *normalized* chord — the exact
+        // string `trigger_shortcut` resolves — not the spelling the binder was handed.
+        assert_eq!(mgr.shortcut_for_action("save").map(String::as_str), Some("primary+s"));
+        assert!(mgr.trigger_shortcut("Ctrl+S"));
+        assert_eq!(saved.load(Ordering::SeqCst), 1);
+
+        // The handoff: the same chord now belongs to `save-as`, and `save` is unbound.
+        assert!(mgr.bind_shortcut("Ctrl+S", "save-as"));
+        assert!(mgr.shortcut_for_action("save").is_none(), "the old owner must lose the chord");
+        assert_eq!(mgr.shortcut_for_action("save-as").map(String::as_str), Some("primary+s"));
+        assert!(mgr.trigger_shortcut("Ctrl+S"), "the new owner must receive the chord");
+        assert_eq!(saved.load(Ordering::SeqCst), 1, "the previous owner must not fire");
+        assert_eq!(save_as.load(Ordering::SeqCst), 1);
+    }
+
+    /// W-P05: `bindings_for_host` must keep insertion order and survive an index rebuild —
+    /// unregistering the middle of three host bindings must leave the remaining two in
+    /// their original order, with other hosts' buckets untouched.
+    #[test]
+    fn host_bindings_keep_insertion_order_across_unregister() {
+        let mut mgr = ActionManager::new();
+        for id in ["alpha", "beta", "gamma"] {
+            assert!(mgr.register_action(id, id));
+        }
+        assert!(mgr.bind_action_to_menu("alpha", 100));
+        assert!(mgr.bind_action_to_button("alpha", 200));
+        assert!(mgr.bind_action_to_menu("beta", 100));
+        assert!(mgr.bind_action_to_menu("gamma", 100));
+
+        let actions: Vec<&str> =
+            mgr.bindings_for_host(100).iter().map(|binding| binding.action_id.as_str()).collect();
+        assert_eq!(actions, vec!["alpha", "beta", "gamma"], "insertion order before removal");
+
+        assert!(mgr.unregister_action("beta"));
+        let actions: Vec<&str> =
+            mgr.bindings_for_host(100).iter().map(|binding| binding.action_id.as_str()).collect();
+        assert_eq!(actions, vec!["alpha", "gamma"], "survivors keep their relative order");
+
+        // A host whose bucket was never rebuilt must still answer with its own bindings.
+        let button_bindings = mgr.bindings_for_host(200);
+        assert_eq!(button_bindings.len(), 1);
+        assert_eq!(button_bindings[0].action_id, "alpha");
+        assert_eq!(button_bindings[0].kind, ActionHostKind::Button);
+        assert!(!mgr.unregister_action("beta"), "unregistering again reports miss");
     }
 
     /// Modifier order and Option/Alt aliases must normalize to one chord key.
@@ -572,5 +650,66 @@ mod tests {
         assert!(!report[0].action_manager_has);
         assert!(report[0].shortcut_manager_has);
         assert_eq!(report[0].action_id, "orphan");
+    }
+
+    /// M-018: visibility is a real, persisted bit that defaults to `true`.
+    #[test]
+    fn action_visibility_defaults_to_true_and_round_trips() {
+        let mut action = crate::action::Action::new("save", "Save");
+        assert!(action.is_visible(), "an action that never asked must stay visible");
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        action.connect_visible_changed_ref(move |visible: &bool| {
+            sink.lock().unwrap().push(*visible);
+        });
+        action.set_visible(false);
+        action.set_visible(false);
+        assert_eq!(*seen.lock().unwrap(), vec![false], "only a transition emits");
+
+        let json = action.to_json();
+        assert!(json.contains("\"visible\":false"), "the bit reaches the document: {json}");
+        let restored = crate::action::Action::from_json(&json).expect("the record loads");
+        assert!(!restored.is_visible(), "and survives the round trip");
+    }
+
+    /// M-018: a scoped registration is an override layer, not a second global table.
+    #[test]
+    fn scoped_actions_do_not_shadow_the_global_registry() {
+        let mut mgr = ActionManager::new();
+        assert!(mgr.register_action("save", "Save"));
+        assert!(mgr.register_action_in_scope("window-1", "save", "Save (window)"));
+        assert!(mgr.register_action_in_scope("window-2", "save", "Save (other)"));
+
+        assert_eq!(mgr.action("save").map(|action| action.text.as_str()), Some("Save"));
+        assert_eq!(
+            mgr.action_in_scope("window-1", "save").map(|action| action.text.as_str()),
+            Some("Save (window)")
+        );
+        assert_eq!(
+            mgr.action_in_scope("window-2", "save").map(|action| action.text.as_str()),
+            Some("Save (other)")
+        );
+        assert_eq!(
+            mgr.action_in_scope("unknown", "save").map(|action| action.text.as_str()),
+            Some("Save"),
+            "an unknown scope falls back to the global command"
+        );
+
+        let fired = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&fired);
+        mgr.action_triggered.connect(move |id: Arc<String>| {
+            sink.lock().unwrap().push((*id).clone());
+        });
+        assert!(mgr.trigger_action_in_scope("window-1", "save"));
+        assert_eq!(*fired.lock().unwrap(), vec!["save".to_string()], "the payload is the id");
+
+        assert!(mgr.unregister_action_in_scope("window-1", "save"));
+        assert!(mgr.action("save").is_some(), "the global registration survives");
+        assert_eq!(
+            mgr.action_in_scope("window-1", "save").map(|action| action.text.as_str()),
+            Some("Save"),
+            "removing the override restores the global view"
+        );
     }
 }

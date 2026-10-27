@@ -87,6 +87,58 @@ struct RichTextDeltaCommand {
     delta: Rc<RefCell<RichDelta>>,
 }
 
+/// One formatting change, recorded on the same undo stack as text edits (I-016).
+///
+/// Applying a char format used to be irreversible: `apply_char_format` only pushed a span, so no
+/// stack entry described it and `Ctrl+Z` skipped straight to an earlier text edit (or did
+/// nothing). The command snapshots the span list before and after and writes the requested side
+/// back on execute/undo.
+struct RichFormatCommand {
+    id: CommandId,
+    target: Rc<RefCell<Vec<TextSpan>>>,
+    before: Vec<TextSpan>,
+    after: Vec<TextSpan>,
+}
+
+impl RichFormatCommand {
+    fn new(
+        target: Rc<RefCell<Vec<TextSpan>>>,
+        before: Vec<TextSpan>,
+        after: Vec<TextSpan>,
+    ) -> Self {
+        Self {
+            id: CommandId(NEXT_RICH_COMMAND_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed)),
+            target,
+            before,
+            after,
+        }
+    }
+}
+
+impl UndoCommand for RichFormatCommand {
+    fn id(&self) -> CommandId {
+        self.id
+    }
+
+    fn description(&self) -> CommandDescription {
+        CommandDescription {
+            text: "Format text".to_string(),
+            timestamp_ms: 0,
+            command_type: "rich_edit_format",
+        }
+    }
+
+    fn execute(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.after.clone();
+        Ok(())
+    }
+
+    fn undo(&mut self) -> Result<(), String> {
+        *self.target.borrow_mut() = self.before.clone();
+        Ok(())
+    }
+}
+
 static NEXT_RICH_COMMAND_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
 
 impl RichTextDeltaCommand {
@@ -213,6 +265,11 @@ pub struct RichEdit {
     restoring_history: bool,
     /// Styled runs painted over the value; empty by default.
     spans: Vec<TextSpan>,
+    /// The span list a formatting undo command writes back.
+    ///
+    /// The command cannot reach the editor, so the editor publishes its spans here; the replay
+    /// reads them back in [`Self::restore_history_text`] (I-016).
+    spans_target: Rc<RefCell<Vec<TextSpan>>>,
     /// The first document line the viewport paints.
     ///
     /// Zero until the user scrolls, so a document that fits moves exactly as it did.
@@ -278,6 +335,7 @@ impl RichEdit {
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
             spans: Vec::new(),
+            spans_target: Rc::new(RefCell::new(Vec::new())),
             first_visible_line: 0,
             dragging_selection: false,
             drag_anchor: 0,
@@ -405,6 +463,7 @@ impl RichEdit {
             })
             .collect();
         self.spans_revision = self.spans_revision.wrapping_add(1);
+        *self.spans_target.borrow_mut() = self.spans.clone();
     }
 
     /// Drops spans that no longer address the document after a whole-value replacement.
@@ -446,6 +505,7 @@ impl RichEdit {
         }
         self.spans = next;
         self.spans_revision = self.spans_revision.wrapping_add(1);
+        *self.spans_target.borrow_mut() = self.spans.clone();
         self.base.request_redraw();
     }
 
@@ -510,7 +570,15 @@ impl RichEdit {
             self.typing_format = Some(format);
             return;
         }
+        let before = self.spans.clone();
         self.spans.push(TextSpan { range: lo..hi, format });
+        let after = self.spans.clone();
+        *self.spans_target.borrow_mut() = after.clone();
+        self.undo_stack.push(Box::new(RichFormatCommand::new(
+            self.spans_target.clone(),
+            before,
+            after,
+        )));
         self.base.request_redraw();
     }
 
@@ -617,17 +685,41 @@ impl RichEdit {
         }
         bounds.sort_unstable();
         bounds.dedup();
-        let mut runs: Vec<(usize, usize, CharFormat)> = Vec::new();
-        for window in bounds.windows(2) {
-            let (start, end) = (window[0], window[1]);
+        let window_count = bounds.len().saturating_sub(1);
+        // Resolve the format of each window without probing every span per window.
+        //
+        // Spans are last-wins, so walking them from the newest to the oldest and filling only the
+        // windows that are still unset gives every window the same answer the reverse scan did,
+        // while each window is written at most once. The old loop scanned all spans for every
+        // boundary pair, which is O(spans²) once a document carries many styled runs (I-009).
+        let mut owners: Vec<Option<usize>> = vec![None; window_count];
+        let mut unfilled = window_count;
+        for (index, span) in self.spans.iter().enumerate().rev() {
+            if unfilled == 0 {
+                break;
+            }
+            let start = span.range.start.min(len);
+            let end = span.range.end.min(len);
             if start >= end {
                 continue;
             }
-            let format = self
-                .spans
-                .iter()
-                .rev()
-                .find(|span| span.range.contains(&start))
+            let first = bounds.partition_point(|bound| *bound < start);
+            let stop = bounds.partition_point(|bound| *bound < end);
+            for owner in owners.iter_mut().take(stop).skip(first) {
+                if owner.is_none() {
+                    *owner = Some(index);
+                    unfilled -= 1;
+                }
+            }
+        }
+        let mut runs: Vec<(usize, usize, CharFormat)> = Vec::new();
+        for (window, owner) in owners.iter().enumerate() {
+            let (start, end) = (bounds[window], bounds[window + 1]);
+            if start >= end {
+                continue;
+            }
+            let format = owner
+                .and_then(|index| self.spans.get(index))
                 .map_or_else(CharFormat::default, |span| span.format.clone());
             if let Some(last) = runs.last_mut() {
                 if last.1 == start && last.2 == format {
@@ -857,8 +949,13 @@ impl RichEdit {
         let text = self.history_target.borrow().clone();
         self.restoring_history = true;
         self.text = text;
+        // A formatting command has already written the span list it wants restored (I-016).
+        // Otherwise keep the existing behaviour: the current spans are clamped to the replayed
+        // document, which is what a text undo could always do.
+        self.spans = self.spans_target.borrow().clone();
         self.revision = self.revision.wrapping_add(1);
         self.clamp_spans();
+        *self.spans_target.borrow_mut() = self.spans.clone();
         self.typing_run = None;
         let caret = self.extend_caret.min(self.text.len());
         self.selection = Some((caret, caret));
@@ -2421,5 +2518,45 @@ mod tests {
         });
         re.set("read_only", CapabilityValue::Bool(true)).expect("the property is writable");
         assert!(seen.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// Overlapping spans keep last-wins and produce contiguous runs (I-009).
+    #[test]
+    fn overlapping_spans_resolve_last_wins() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 240, 120));
+        re.set_text("abcdef".to_string());
+        re.set_spans(vec![
+            TextSpan { range: 0..4, format: CharFormat { bold: true, ..CharFormat::default() } },
+            TextSpan { range: 2..6, format: CharFormat { italic: true, ..CharFormat::default() } },
+        ]);
+        let runs = re.format_runs();
+        let run_at = |offset: usize| {
+            runs.iter()
+                .find(|(start, end, _)| *start <= offset && offset < *end)
+                .map(|(_, _, format)| format.clone())
+                .unwrap_or_default()
+        };
+        assert!(run_at(1).bold, "the earlier span owns the non-overlapping prefix");
+        assert!(run_at(3).italic && !run_at(3).bold, "the later span wins the overlap");
+        assert!(run_at(5).italic);
+        // Adjacent windows of one format are one run, not one per boundary.
+        assert!(
+            runs.windows(2).all(|pair| pair[0].1 != pair[1].0 || pair[0].2 != pair[1].2),
+            "contiguous runs of the same format stay merged"
+        );
+    }
+
+    /// A formatting change is undoable (I-016).
+    #[test]
+    fn a_format_change_is_undoable() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 240, 120));
+        re.set_text("hello".to_string());
+        re.set_selection(0, 5);
+        re.apply_char_format(CharFormat { bold: true, ..CharFormat::default() });
+        assert_eq!(re.spans().len(), 1);
+        assert!(re.undo(), "the format change is on the undo stack");
+        assert!(re.spans().is_empty(), "undo restores the previous span list");
+        assert!(re.redo());
+        assert_eq!(re.spans().len(), 1);
     }
 }

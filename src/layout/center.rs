@@ -186,6 +186,20 @@ impl Layout for CenterLayout {
         let _ = context;
         self.arrange(rect, children, widgets);
     }
+
+    /// The single child's centred rectangle, from the same arithmetic as [`Layout::update`]
+    /// (LAY-005): a one-child query answers from the layout's own model instead of paying
+    /// for the trait default's full solve-and-capture pass.
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        if self.child != Some(id) {
+            return None;
+        }
+        let child_width = visible_extent(rect.width, self.width_factor);
+        let child_height = visible_extent(rect.height, self.height_factor);
+        let x_offset = (rect.width.saturating_sub(child_width) / 2) as i32;
+        let y_offset = (rect.height.saturating_sub(child_height) / 2) as i32;
+        Some(Rect::new(rect.x + x_offset, rect.y + y_offset, child_width, child_height))
+    }
 }
 
 #[cfg(test)]
@@ -331,5 +345,19 @@ mod tests {
         layout.clear();
         assert!(!layout.has_child(20));
         assert!(layout.child_ids().is_empty());
+    }
+
+    /// LAY-005: the one-child query answers from the layout's own model — the same
+    /// arithmetic `update` runs — instead of the trait default's full solve-and-capture.
+    #[test]
+    fn child_rect_answers_from_the_model() {
+        let mut layout = CenterLayout::with_factors(0.5, 0.5);
+        layout.add_widget(7, 0);
+        let rect = Rect::new(10, 20, 200, 100);
+        let mut emitted = None;
+        layout.update(rect, &mut |_, r| emitted = Some(r));
+        assert_eq!(layout.child_rect(7, rect), emitted);
+        assert_eq!(layout.child_rect(7, rect), Some(Rect::new(60, 45, 100, 50)));
+        assert_eq!(layout.child_rect(9, rect), None, "a foreign id is not placed");
     }
 }

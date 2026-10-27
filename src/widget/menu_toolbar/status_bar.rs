@@ -82,6 +82,11 @@ type SlotBandsCache = RefCell<Option<(u64, Rc<Vec<(usize, Rect)>>)>>;
 struct StatusSlot {
     widget: Box<dyn Widget>,
     permanent: bool,
+    /// Share of the segment's leftover width, or `0` for a fixed-width slot.
+    ///
+    /// Zero is the default, so a strip that never sets a factor keeps the exact
+    /// boxes it had before the factor existed (M-017).
+    stretch: u32,
 }
 impl StatusBar {
     /// Creates an empty status bar with the size grip enabled.
@@ -206,7 +211,16 @@ impl StatusBar {
     /// permanent segment and the grip. It does not affect the default strip: with no
     /// children installed every box is exactly where it was.
     pub fn add_widget(&mut self, widget: Box<dyn Widget>) -> usize {
-        self.widgets.push(StatusSlot { widget, permanent: false });
+        self.add_widget_with_stretch(widget, 0)
+    }
+
+    /// Appends a transient child with a stretch factor and returns its index.
+    ///
+    /// The factor distributes the message segment's leftover width: `0` is the
+    /// historical fixed box, and two slots with the same positive factor receive
+    /// equal shares (M-017).
+    pub fn add_widget_with_stretch(&mut self, widget: Box<dyn Widget>, stretch: u32) -> usize {
+        self.widgets.push(StatusSlot { widget, permanent: false, stretch });
         self.base.request_redraw();
         self.widgets.len() - 1
     }
@@ -215,7 +229,19 @@ impl StatusBar {
     ///
     /// A permanent widget sits in the permanent column, right-aligned before the grip.
     pub fn add_permanent_widget(&mut self, widget: Box<dyn Widget>) -> usize {
-        self.widgets.push(StatusSlot { widget, permanent: true });
+        self.add_permanent_widget_with_stretch(widget, 0)
+    }
+
+    /// Appends a permanent child with a stretch factor and returns its index.
+    ///
+    /// See [`Self::add_widget_with_stretch`] for how the factor shares the
+    /// segment's leftover width (M-017).
+    pub fn add_permanent_widget_with_stretch(
+        &mut self,
+        widget: Box<dyn Widget>,
+        stretch: u32,
+    ) -> usize {
+        self.widgets.push(StatusSlot { widget, permanent: true, stretch });
         self.base.request_redraw();
         self.widgets.len() - 1
     }
@@ -250,6 +276,26 @@ impl StatusBar {
         self.widgets.get(index).map(|slot| slot.permanent)
     }
 
+    /// The child's stretch factor, or `None` when the index is out of range.
+    pub fn widget_stretch(&self, index: usize) -> Option<u32> {
+        self.widgets.get(index).map(|slot| slot.stretch)
+    }
+
+    /// Sets the child's stretch factor and repaints.
+    ///
+    /// Changing the factor re-lays out the segment, so the next frame reflects the
+    /// new share immediately. An out-of-range index is ignored (M-017).
+    pub fn set_widget_stretch(&mut self, index: usize, stretch: u32) {
+        let Some(slot) = self.widgets.get_mut(index) else {
+            return;
+        };
+        if slot.stretch == stretch {
+            return;
+        }
+        slot.stretch = stretch;
+        self.base.request_redraw();
+    }
+
     /// The box every child occupies, in insertion order.
     fn slot_bands(&self) -> Rc<Vec<(usize, Rect)>> {
         let key = self.slot_signature();
@@ -275,7 +321,8 @@ impl StatusBar {
             signature = signature.rotate_left(4)
                 ^ (index as u64)
                 ^ (hint.width as u64).rotate_left(20)
-                ^ ((slot.permanent as u64) << 52);
+                ^ ((slot.permanent as u64) << 52)
+                ^ ((slot.stretch as u64) << 48);
         }
         signature
     }
@@ -287,15 +334,51 @@ impl StatusBar {
         let mut placed = Vec::with_capacity(self.widgets.len());
         for want_permanent in [true, false] {
             let area = if want_permanent { permanent } else { message };
-            let mut cursor = area.x + area.width as i32;
-            for (index, slot) in self.widgets.iter().enumerate() {
-                if slot.permanent != want_permanent {
-                    continue;
+            // The slots of this segment in insertion order, with their hint widths.
+            let members: Vec<(usize, &StatusSlot, u32)> = self
+                .widgets
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| slot.permanent == want_permanent)
+                .map(|(index, slot)| (index, slot, slot.widget.size_hint().width))
+                .collect();
+            if members.is_empty() {
+                continue;
+            }
+            // Leftover width is what the fixed boxes and the gaps leave. It is shared
+            // by the stretch factors; with no positive factor every width stays the
+            // hint width, which is the pre-factor layout exactly (M-017).
+            let gaps = 4u32.saturating_mul(members.len().saturating_sub(1) as u32);
+            let used: u32 = members.iter().map(|(_, _, width)| *width).sum::<u32>() + gaps;
+            let leftover = area.width.saturating_sub(used);
+            let total_stretch: u32 = members.iter().map(|(_, slot, _)| slot.stretch).sum();
+            let mut widths: Vec<u32> = members.iter().map(|(_, _, width)| *width).collect();
+            if leftover > 0 && total_stretch > 0 {
+                let mut assigned = 0u32;
+                for (position, (_, slot, _)) in members.iter().enumerate() {
+                    if slot.stretch == 0 {
+                        continue;
+                    }
+                    let share = (u64::from(leftover) * u64::from(slot.stretch)
+                        / u64::from(total_stretch)) as u32;
+                    widths[position] = widths[position].saturating_add(share);
+                    assigned = assigned.saturating_add(share);
                 }
-                let width = slot.widget.size_hint().width.min(area.width);
+                // Any integer-division remainder goes to the first stretched slot so
+                // the boxes exactly tile the segment instead of leaving a sliver.
+                if assigned < leftover {
+                    if let Some(position) = members.iter().position(|(_, slot, _)| slot.stretch > 0)
+                    {
+                        widths[position] = widths[position].saturating_add(leftover - assigned);
+                    }
+                }
+            }
+            let mut cursor = area.x + area.width as i32;
+            for (position, (index, _, _)) in members.iter().enumerate() {
+                let width = widths[position].min(area.width);
                 let rect = Rect::new(cursor - width as i32, area.y, width, area.height);
                 cursor = rect.x - 4;
-                placed.push((index, rect));
+                placed.push((*index, rect));
             }
         }
         placed.sort_by_key(|(index, _)| *index);
@@ -1023,5 +1106,38 @@ mod tests {
         assert!(!bar.is_grip_dragging());
         bar.handle_event(&Event::mouse_move(grip.x + 40, grip.y + 40));
         assert_eq!(drags.lock().unwrap().len(), 2, "a released grip reports nothing more");
+    }
+
+    /// M-017: a positive stretch factor shares the segment's leftover width, and the
+    /// default `0` keeps the exact fixed boxes the strip always had.
+    #[test]
+    fn a_stretch_factor_shares_the_leftover_width() {
+        use crate::widget::Label;
+
+        let mut bar = StatusBar::new(Rect::new(0, 0, 400, 24));
+        let plain = bar.add_widget(Box::new(Label::new("x".to_string(), Rect::new(0, 0, 40, 20))));
+        let expected = bar.widget(plain).expect("the widget is installed").size_hint().width;
+        let plain_rect = bar.widget_rect(plain).expect("the widget has a box");
+        assert_eq!(plain_rect.width, expected, "a factor of zero is the historical fixed width");
+
+        let mut bar = StatusBar::new(Rect::new(0, 0, 400, 24));
+        let left = bar.add_widget_with_stretch(
+            Box::new(Label::new("x".to_string(), Rect::new(0, 0, 40, 20))),
+            1,
+        );
+        let right = bar.add_widget_with_stretch(
+            Box::new(Label::new("x".to_string(), Rect::new(0, 0, 40, 20))),
+            1,
+        );
+        let left_rect = bar.widget_rect(left).expect("the first slot has a box");
+        let right_rect = bar.widget_rect(right).expect("the second slot has a box");
+        assert!(
+            left_rect.width > expected && right_rect.width > expected,
+            "the leftover width was shared"
+        );
+        assert!(
+            (left_rect.width as i32 - right_rect.width as i32).abs() <= 1,
+            "equal factors receive equal shares (one integer remainder): {left_rect:?} {right_rect:?}"
+        );
     }
 }

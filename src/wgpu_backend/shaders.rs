@@ -266,14 +266,14 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4f
     return vec4f(corners[vertex_index], 0.0, 1.0);
 }"#;
 
-/// One direction of the separable Gaussian blur.
+/// One direction of the separable Gaussian blur, with an optional tint composite.
 ///
 /// # Bindings
 ///
 /// | group | binding | type | name | stage | meaning |
 /// |---|---|---|---|---|---|
 /// | 0 | 0 | `texture_2d<f32>` | `source` | fragment | the input frame, read with `textureLoad` |
-/// | 0 | 1 | uniform | `params` | fragment | `direction` (unit x or y), `radius`, padding |
+/// | 0 | 1 | uniform | `params` | fragment | direction, radius, and the optional tint |
 ///
 /// The kernel is a Gaussian with `sigma = radius / 2`, the same 2-sigma convention
 /// [`crate::render::RenderCommand::Blur`] documents. `textureLoad` is used rather than a sampler
@@ -283,13 +283,24 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4f
 /// The two passes (horizontal then vertical) make the cost `O(radius)` per pixel rather than
 /// `O(radius²)`, which is the whole reason for separating the axes. Edge taps clamp to the
 /// nearest border texel, matching the software box blur's edge rule.
+///
+/// # Tint (G-220)
+///
+/// `apply_tint` selects whether this pass composites `tint_color` over the filtered result.
+/// Only the **second** (vertical) pass sets it, so the tint rides the pass the frame is
+/// already flowing through instead of a read-back-to-CPU tinting step: the composite is the
+/// straight-alpha over operator the former CPU tint step performed, with the same
+/// `weight`-scaled alpha and the same tiny-alpha flush to transparent. When `apply_tint`
+/// is zero the shader returns the filtered colour unchanged, so a plain blur is unaffected.
 pub(crate) const BLUR_FS: &str = r#"
 @group(0) @binding(0) var source: texture_2d<f32>;
 
 struct BlurParams {
     direction: vec2f,
     radius: f32,
-    pad: f32,
+    apply_tint: f32,
+    tint_color: vec3f,
+    tint_alpha: f32,
 };
 
 @group(0) @binding(1) var<uniform> params: BlurParams;
@@ -299,21 +310,73 @@ fn fs_main(@builtin(position) position: vec4f) -> @location(0) vec4f {
     let dimensions = vec2<i32>(textureDimensions(source));
     let center = vec2<i32>(position.xy);
     let radius = i32(params.radius);
+    var color: vec4f;
     if (radius <= 0) {
-        return textureLoad(source, center, 0);
+        color = textureLoad(source, center, 0);
+    } else {
+        let sigma = max(params.radius * 0.5, 0.5);
+        let two_sigma_squared = 2.0 * sigma * sigma;
+        var sum = vec4f(0.0);
+        var weight_sum = 0.0;
+        for (var offset = -radius; offset <= radius; offset = offset + 1) {
+            let delta = vec2<i32>(vec2f(f32(offset)) * params.direction);
+            let sample_at = clamp(center + delta, vec2<i32>(0), dimensions - vec2<i32>(1));
+            let weight = exp(-f32(offset * offset) / two_sigma_squared);
+            sum = sum + textureLoad(source, sample_at, 0) * weight;
+            weight_sum = weight_sum + weight;
+        }
+        color = sum / weight_sum;
     }
-    let sigma = max(params.radius * 0.5, 0.5);
-    let two_sigma_squared = 2.0 * sigma * sigma;
-    var sum = vec4f(0.0);
-    var weight_sum = 0.0;
-    for (var offset = -radius; offset <= radius; offset = offset + 1) {
-        let delta = vec2<i32>(vec2f(f32(offset)) * params.direction);
-        let sample_at = clamp(center + delta, vec2<i32>(0), dimensions - vec2<i32>(1));
-        let weight = exp(-f32(offset * offset) / two_sigma_squared);
-        sum = sum + textureLoad(source, sample_at, 0) * weight;
-        weight_sum = weight_sum + weight;
+    if (params.apply_tint <= 0.0) {
+        return color;
     }
-    return sum / weight_sum;
+    let one_minus = 1.0 - params.tint_alpha;
+    let out_alpha = params.tint_alpha + color.a * one_minus;
+    if (out_alpha <= 1.1920929e-7) {
+        return vec4f(0.0);
+    }
+    let rgb = (params.tint_color * params.tint_alpha + color.rgb * color.a * one_minus) / out_alpha;
+    return vec4f(rgb, out_alpha);
+}"#;
+
+/// Vertex shader for the SDF circle pipeline (G-219).
+///
+/// One **draw** covers one circle: the vertex buffer carries the six vertices of the circle's
+/// bounding quad as **pixel-space** positions (`vec2f`, 8-byte stride, `Float32x2` at location
+/// 0), and this shader does two things with each one:
+///
+/// 1. Transforms it to clip space through the group-1 `uMVP` matrix (the same pixel-to-clip
+///    matrix every other 2D pipeline in this renderer uses, so `x` maps `0..width` to `-1..1`
+///    and `y` maps `0..height` to `1..-1`).
+/// 2. Passes the raw pixel position through to [`CIRCLE_FRAG`] at location 0, whose
+///    interpolation across the quad is exactly the fragment's pixel-space position.
+///
+/// Bind group layout:
+///
+/// | group | binding | type | name | stage | meaning |
+/// |---|---|---|---|---|---|
+/// | 1 | 0 | `uniform mat4x4f` | `uMVP` | vertex | pixel space to clip space |
+///
+/// Group 0 is left to [`CIRCLE_FRAG`]'s colour and SDF parameter uniforms. The matching fragment
+/// shader is [`CIRCLE_FRAG`].
+pub(crate) const CIRCLE_VS: &str = r#"
+struct CircleVertexInput {
+    @location(0) pixel_pos: vec2f,
+};
+
+struct CircleVertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) pos: vec2f,
+};
+
+@group(1) @binding(0) var<uniform> uMVP: mat4x4f;
+
+@vertex
+fn vs_main(input: CircleVertexInput) -> CircleVertexOutput {
+    var output: CircleVertexOutput;
+    output.position = uMVP * vec4f(input.pixel_pos, 0.0, 1.0);
+    output.pos = input.pixel_pos;
+    return output;
 }"#;
 
 /// Image fragment shader.
@@ -460,6 +523,14 @@ fn fs_main(@location(0) pos: vec2f) -> @location(0) vec4f {
 /// work) as long as the centre and radius use it consistently.
 ///
 /// This module is exposed through [`ShaderModule::FillCircle`].
+///
+/// # Zero-coverage flush (G-219)
+///
+/// A fragment whose coverage reaches zero must return a fully transparent **black**: the
+/// pipeline writes with `REPLACE` blending, so returning the fill colour with zero alpha
+/// would still paint its RGB over pixels the software disc never touches. Zero-coverage
+/// fragments occur across the whole bounding quad outside the disc, and the quad is the only
+/// geometry submitted, so the flush is what keeps "the disc draws, the quad does not" true.
 pub(crate) const CIRCLE_FRAG: &str = r#"
 @group(0) @binding(0) var<uniform> color: vec4f;
 @group(0) @binding(1) var<uniform> params: vec4f;  // x=radius, y=center.x, z=center.y, w=unused
@@ -468,8 +539,11 @@ pub(crate) const CIRCLE_FRAG: &str = r#"
 fn fs_main(@location(0) pos: vec2f) -> @location(0) vec4f {
     let center = vec2f(params.y, params.z);
     let dist = distance(pos, center) - params.x;
-    let alpha = 1.0 - smoothstep(0.0, 1.0, dist);
-    return vec4f(color.rgb, color.a * alpha);
+    let coverage = 1.0 - smoothstep(0.0, 1.0, dist);
+    if (coverage <= 0.0) {
+        return vec4f(0.0);
+    }
+    return vec4f(color.rgb, color.a * coverage);
 }"#;
 
 /// Shader module identifiers for the WgpuRenderer pipeline (BLUE11 R5.2).
@@ -489,14 +563,16 @@ fn fs_main(@location(0) pos: vec2f) -> @location(0) vec4f {
 /// pipelines it actually builds use the raw constants, so a variant can be
 /// reachable here without any pipeline consuming it.
 ///
-/// # Current pipeline coverage (G-213)
+/// # Current pipeline coverage (G-213, G-219)
 ///
-/// Only [`ShaderModule::FillRect`] is consumed by a pipeline today: the single-rectangle path
-/// builds `rect_fs` from [`FILL_RECT_FS`]. The image, text, rounded-rect and circle programs are
-/// reserved — their WGSL and bind-group tables are complete, but this backend's CPU rasteriser
-/// draws those commands, so no pipeline is created for them. `ShaderModule::pipeline_cache_key`
-/// records exactly that split and the `shader_module_registry_matches_pipelines` test fails if a
-/// `Some(key)` entry does not correspond to a shader the renderer actually registers.
+/// [`ShaderModule::FillRect`] and [`ShaderModule::FillCircle`] are consumed by pipelines:
+/// the single-rectangle path builds `rect_fs` from [`FILL_RECT_FS`], and the SDF circle
+/// pipeline (G-219) builds `circle_fs` from [`CIRCLE_FRAG`]. The image, text and rounded-rect
+/// programs are reserved — their WGSL and bind-group tables are complete, but this backend's
+/// CPU rasteriser draws those commands, so no pipeline is created for them.
+/// `ShaderModule::pipeline_cache_key` records exactly that split and the
+/// `shader_module_registry_matches_pipelines` test fails if a `Some(key)` entry does not
+/// correspond to a shader the renderer actually registers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShaderModule {
     /// `FILL_RECT_FS`: a solid rectangle's colour from a uniform.
@@ -552,10 +628,10 @@ impl ShaderModule {
     pub(crate) const fn pipeline_cache_key(self) -> Option<&'static str> {
         match self {
             ShaderModule::FillRect => Some("rect_fs"),
-            ShaderModule::DrawImage
-            | ShaderModule::DrawText
-            | ShaderModule::FillRoundedRect
-            | ShaderModule::FillCircle => None,
+            ShaderModule::FillCircle => Some("circle_fs"),
+            ShaderModule::DrawImage | ShaderModule::DrawText | ShaderModule::FillRoundedRect => {
+                None
+            }
         }
     }
 }

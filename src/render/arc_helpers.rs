@@ -49,6 +49,37 @@ pub fn draw_arc_segments(
     color: crate::core::Color,
     stroke_width: u32,
 ) {
+    let mut previous: Option<Point> = None;
+    for_each_arc_sample(center, radius, start_angle, end_angle, |current| {
+        if let Some(previous) = previous {
+            context.draw_line_stroke(previous, current, color, stroke_width);
+        }
+        previous = Some(current);
+    });
+}
+
+/// The single arc-sampling kernel.
+///
+/// Emits the start point, then every subsequent sample whose rounded position differs from
+/// the previous one. Both [`draw_arc_segments`] and the software backend's command-level
+/// `draw_arc` walk the same sequence, so an arc is sampled identically whether it arrives as
+/// a widget call or as a `DrawArc` command. A sample that rounds onto the previous pixel is
+/// dropped: its chord would draw no ink, and skipping it cannot open a gap because the next
+/// sample continues from the same `previous` point.
+///
+/// This used to be a private loop inside [`draw_arc_segments`]; the software backend had a
+/// second, independent sampler (fixed `0.02` rad steps, one `Vec` allocation per call). The
+/// two disagreed about precision, endpoints, and whole-turn arcs, so the loop is now shared
+/// instead of duplicated.
+pub(crate) fn for_each_arc_sample<F>(
+    center: Point,
+    radius: f32,
+    start_angle: f32,
+    end_angle: f32,
+    mut emit: F,
+) where
+    F: FnMut(Point),
+{
     let total_angle = end_angle - start_angle;
     if total_angle.abs() < 0.001 || radius <= 0.0 {
         return;
@@ -56,17 +87,42 @@ pub fn draw_arc_segments(
     let segments = arc_sample_count(radius, total_angle);
     let step = total_angle / segments as f32;
 
-    let mut prev = point_on_circle(center, radius, start_angle);
-    for i in 1..=segments {
-        let angle = start_angle + step * i as f32;
-        let curr = point_on_circle(center, radius, angle);
-        // A chord whose endpoints round to the same pixel has no ink to contribute; the
-        // next sample continues from `prev`, so skipping it cannot open a gap.
-        if curr != prev {
-            context.draw_line_stroke(prev, curr, color, stroke_width);
-            prev = curr;
+    let mut previous = point_on_circle(center, radius, start_angle);
+    emit(previous);
+    for index in 1..=segments {
+        let angle = start_angle + step * index as f32;
+        let current = point_on_circle(center, radius, angle);
+        if current != previous {
+            emit(current);
+            previous = current;
         }
     }
+}
+
+/// Turns the command-level angles into `(start, sweep)`, both non-negative in sweep.
+///
+/// `DrawArc` carries a start and an end angle; its contract is the forward sweep from
+/// `start` to `end`, wrapping through 2π when `end` is behind `start` (350° → 10° sweeps
+/// 20°, not 340°). The SVG backend normalises the same way, so this is what keeps the two
+/// raster paths agreeing. One whole turn — the `Arc` control at 100 %, a `Canvas` full
+/// circle — normalises to `end == start`; reading that as a zero sweep was the defect that
+/// left a full-circle command drawing a single line, so it is read as one full turn.
+pub(crate) fn normalized_arc_sweep(start_angle: f32, end_angle: f32) -> (f32, f32) {
+    const TWO_PI: f32 = core::f32::consts::TAU;
+    let normalize = |angle: f32| {
+        let mut value = angle % TWO_PI;
+        if value < 0.0 {
+            value += TWO_PI;
+        }
+        value
+    };
+    let start = normalize(start_angle);
+    let end = normalize(end_angle);
+    let mut sweep = if end >= start { end - start } else { end + TWO_PI - start };
+    if sweep < 0.001 && (end_angle - start_angle).abs() >= TWO_PI - 0.001 {
+        sweep = TWO_PI;
+    }
+    (start, sweep)
 }
 
 /// How many chords an arc of `radius` over `total_angle` is sampled with.
@@ -247,5 +303,36 @@ mod tests {
             document.matches("<line ").count() > 20,
             "a 115 px arc must reach the SVG document as a real curve, not three pixels"
         );
+    }
+
+    /// The command contract's wraparound case: 350° → 10° is the 20° sweep through 0, not the
+    /// 340° arc the raw angle difference suggests. The SVG backend normalises the same way.
+    #[test]
+    fn a_wraparound_command_sweeps_the_short_way() {
+        let start_deg = 350.0f32;
+        let end_deg = 10.0f32;
+        let (start, sweep) = normalized_arc_sweep(start_deg.to_radians(), end_deg.to_radians());
+        assert!((start - start_deg.to_radians()).abs() < 1e-4);
+        assert!((sweep - 20.0f32.to_radians()).abs() < 1e-4);
+    }
+
+    /// A whole turn normalises to `end == start`, which used to read as a zero sweep. It has to
+    /// be one full turn: the command's own contract caps the sweep at 2π, not at "nothing".
+    #[test]
+    fn a_whole_turn_is_a_full_sweep() {
+        let (start, sweep) = normalized_arc_sweep(0.0, core::f32::consts::TAU);
+        assert_eq!(start, 0.0);
+        assert!((sweep - core::f32::consts::TAU).abs() < 1e-3);
+        // The same reading in the opposite direction: a whole turn is a circle either way.
+        let (_, reverse) = normalized_arc_sweep(0.0, -core::f32::consts::TAU);
+        assert!((reverse - core::f32::consts::TAU).abs() < 1e-3);
+    }
+
+    /// An ordinary forward arc keeps both of its endpoints; normalisation must not move them.
+    #[test]
+    fn a_forward_command_arc_keeps_its_endpoints() {
+        let (start, sweep) = normalized_arc_sweep(0.5, 2.5);
+        assert_eq!(start, 0.5);
+        assert!((sweep - 2.0).abs() < 1e-6);
     }
 }

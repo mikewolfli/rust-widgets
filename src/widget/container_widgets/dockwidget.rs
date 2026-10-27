@@ -20,6 +20,42 @@ use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+/// A close request that a subscriber may veto (C-013).
+///
+/// The payload is shared, so a connected slot calls [`Self::veto`] and the dock observes the
+/// result after `emit` returns. The default is `allowed`, which is what keeps a dock that never
+/// subscribed closable exactly as before.
+#[derive(Debug, Clone)]
+pub struct CloseRequest {
+    allowed: Arc<AtomicBool>,
+}
+
+impl CloseRequest {
+    /// A request that allows the close unless a subscriber vetoes it.
+    pub fn new() -> Self {
+        Self { allowed: Arc::new(AtomicBool::new(true)) }
+    }
+
+    /// Whether the close may proceed.
+    pub fn is_allowed(&self) -> bool {
+        self.allowed.load(Ordering::SeqCst)
+    }
+
+    /// Refuses the close. Any subscriber may call this; the last one wins, and the dock stays
+    /// visible.
+    pub fn veto(&self) {
+        self.allowed.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Default for CloseRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 /// Dock widget.
 pub struct DockWidget {
     base: BaseWidget,
@@ -46,6 +82,13 @@ pub struct DockWidget {
     /// Emitted when the widget is floated or re-docked, with the new top-level
     /// state (`true` = floating, `false` = docked).
     pub top_level_changed: Signal1<bool>,
+    /// Emitted immediately before the close button (or [`Self::request_close`]) hides this dock
+    /// (C-013). A subscriber may call [`CloseRequest::veto`] to keep it open.
+    ///
+    /// The capability layer's event schema is owned outside this file; this signal is therefore
+    /// reachable through its Rust field and `request_close`, and its schema row is recorded as a
+    /// remaining gap rather than declared here.
+    pub about_to_close: Signal1<CloseRequest>,
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Offset from mouse cursor to widget top-left, set when drag begins.
     drag_offset: (i32, i32),
@@ -335,6 +378,7 @@ impl DockWidget {
             dock_location_changed: Signal1::new(),
             features_changed: Signal1::new(),
             top_level_changed: Signal1::new(),
+            about_to_close: Signal1::new(),
             registry: None,
             drag_offset: (0, 0),
             dock_area: None,
@@ -352,6 +396,23 @@ impl DockWidget {
     /// Returns the shared widget registry, if set.
     pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
         self.registry.as_ref()
+    }
+
+    /// Asks to close this dock, giving subscribers a chance to veto (C-013).
+    ///
+    /// Emits [`Self::about_to_close`] with a [`CloseRequest`] that starts allowed. When no
+    /// subscriber exists, or none vetoes, the dock hides exactly as the close button used to. A
+    /// veto leaves the dock visible and returns `false`, so a host can report that the close was
+    /// refused rather than assume it happened.
+    pub fn request_close(&mut self) -> bool {
+        let request = CloseRequest::new();
+        self.about_to_close.emit(request.clone());
+        if request.is_allowed() {
+            self.hide();
+            true
+        } else {
+            false
+        }
     }
 
     /// Declares the surface the host offers for edge docking.
@@ -980,7 +1041,7 @@ impl EventHandler for DockWidget {
         match event {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 if self.is_in_close_button(*pos) && self.features.dock_widget_closable {
-                    self.hide();
+                    self.request_close();
                 } else if self.is_in_float_button(*pos) && self.features.dock_widget_floatable {
                     self.toggle_floating();
                 } else if self.is_in_title_bar(*pos) && self.features.dock_widget_movable {
@@ -1478,6 +1539,48 @@ pub struct DockArea {
 type LayoutCache = RefCell<Option<(u64, Rc<Vec<(ObjectId, Rect, bool)>>)>>;
 
 impl DockArea {
+    /// The event names this owner publishes (C-001).
+    ///
+    /// `DockArea` is not a `WidgetKind`, so it has no capability record of its own. These are the
+    /// three host-facing signals its methods emit; the names are exposed through
+    /// [`Self::event_signal_dyn`] so a host can subscribe by name, the same route sibling controls
+    /// use. Their rows in the capability event schema are owned by the capability layer and are
+    /// recorded as a remaining gap.
+    pub const EVENT_NAMES: &'static [&'static str] =
+        &["active_dock_changed", "dock_removed", "layout_changed"];
+
+    /// Resolves a published event name to the area's own signal (C-001).
+    ///
+    /// This is the same name-to-signal step `Widget::event_signal_dyn` performs for a control;
+    /// `DockArea` has no `Widget` impl, so the method is inherent and uses the identical
+    /// [`crate::signal::EventSignalRef`] payload conversions.
+    pub fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "active_dock_changed" => Some(EventSignalRef::mapped(
+                "active_dock_changed",
+                &self.active_dock_changed,
+                |id| CapabilityValue::UInt(*id),
+            )),
+            "dock_removed" => {
+                Some(EventSignalRef::mapped("dock_removed", &self.dock_removed, |id| {
+                    CapabilityValue::UInt(*id)
+                }))
+            }
+            "layout_changed" => {
+                Some(EventSignalRef::mapped("layout_changed", &self.layout_changed, |_| {
+                    CapabilityValue::Null
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    /// The event names [`Self::event_signal_dyn`] resolves.
+    pub fn event_names(&self) -> &'static [&'static str] {
+        Self::EVENT_NAMES
+    }
+
     /// Creates an empty host for `area` with a third of the shorter side as each band.
     pub fn new(area: Rect) -> Self {
         let edge_extent = (area.width.min(area.height) / DOCK_SNAP_DIVISOR).max(1);
@@ -3440,5 +3543,49 @@ mod tests {
             !source.drop_dock_payload(&payload, DockWidgetArea::LeftDockWidgetArea),
             "a transferred panel is no longer this host's to re-dock"
         );
+    }
+
+    /// C-001: every DockArea signal is reachable by name, and the emissions fire.
+    #[test]
+    fn dock_area_signals_resolve_by_name() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut area = DockArea::new(Rect::new(0, 0, 400, 300));
+        for name in DockArea::EVENT_NAMES {
+            assert!(area.event_signal_dyn(name).is_some(), "{name} must resolve");
+        }
+        assert!(area.event_signal_dyn("no_such_event").is_none());
+        assert_eq!(area.event_names(), DockArea::EVENT_NAMES);
+
+        let layout_hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&layout_hits);
+        area.layout_changed.connect(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        let active = area.event_signal_dyn("active_dock_changed").expect("resolved");
+        let active_hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&active_hits);
+        active.subscribe(Box::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        assert!(area.add_dock(7, DockWidgetArea::LeftDockWidgetArea));
+        assert!(layout_hits.load(Ordering::SeqCst) > 0, "adding a dock changes the layout");
+        assert!(active_hits.load(Ordering::SeqCst) > 0, "adding a dock activates it");
+    }
+
+    /// C-013: a close request can be vetoed, and with no subscriber it hides as before.
+    #[test]
+    fn a_dock_close_can_be_vetoed() {
+        let mut dock = DockWidget::new(Rect::new(0, 0, 200, 150));
+        assert!(dock.is_visible());
+        assert!(dock.request_close(), "no subscriber means no veto");
+        assert!(!dock.is_visible(), "the default allows the close");
+
+        let mut guarded = DockWidget::new(Rect::new(0, 0, 200, 150));
+        guarded.about_to_close.connect_ref(|request| request.veto());
+        assert!(!guarded.request_close(), "the veto is reported");
+        assert!(guarded.is_visible(), "a vetoed dock stays visible");
     }
 }

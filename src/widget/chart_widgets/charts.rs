@@ -8,6 +8,330 @@ use crate::widget::chart_widgets::types::*;
 use crate::core::{Color, Point, Rect};
 use alloc::borrow::Cow;
 
+/// How an axis maps data values to the plot area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AxisScale {
+    /// Values map proportionally to their distance from the axis minimum (the historical mode).
+    #[default]
+    Linear,
+    /// Values map by their logarithm, so equal ratios occupy equal lengths.
+    Logarithmic,
+}
+
+/// Presentation settings for one numeric axis.
+///
+/// The default value is exactly the historical layout: a linear, forward axis whose
+/// ticks are an equal division of the range. [`Self::auto_step`] and [`Self::step`]
+/// only take effect when they are set, so an unconfigured chart is bit-identical to
+/// the one this type was introduced beside.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AxisConfig {
+    /// The mapping from data values to plot fractions.
+    pub scale: AxisScale,
+    /// Whether the axis runs from its maximum to its minimum.
+    pub reversed: bool,
+    /// A manually fixed tick step, or `None` to derive one.
+    pub step: Option<f64>,
+    /// Whether to choose a 1-2-5 tick step when [`Self::step`] is `None`.
+    pub auto_step: bool,
+}
+
+impl Default for AxisConfig {
+    fn default() -> Self {
+        Self { scale: AxisScale::Linear, reversed: false, step: None, auto_step: false }
+    }
+}
+
+impl AxisConfig {
+    /// Whether these settings ask for the historical equal-division linear axis.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The fraction of the plot axis at which `value` sits, in `0.0..=1.0` for an in-range
+    /// value.
+    ///
+    /// A logarithmic axis needs a positive range. A non-positive bound would make the
+    /// logarithm undefined, so such a request falls back to the linear mapping rather
+    /// than producing `NaN` pixels.
+    pub fn fraction(&self, value: f64, minimum: f64, maximum: f64) -> f64 {
+        let span = maximum - minimum;
+        if !span.is_finite() || span.abs() <= f64::EPSILON {
+            return 0.0;
+        }
+        let raw = if self.scale == AxisScale::Logarithmic && minimum > 0.0 && maximum > 0.0 {
+            let low = minimum.log10();
+            let high = maximum.log10();
+            if (high - low).abs() <= f64::EPSILON {
+                0.0
+            } else {
+                let value = value.max(f64::MIN_POSITIVE);
+                (value.log10() - low) / (high - low)
+            }
+        } else {
+            (value - minimum) / span
+        };
+        if self.reversed {
+            1.0 - raw
+        } else {
+            raw
+        }
+    }
+}
+
+/// The largest number of axis ticks [`axis_tick_values`] can produce.
+pub const MAX_AXIS_TICKS: usize = 65;
+
+/// Chooses a tick step from the 1-2-5 sequence for a range of `span`.
+///
+/// The result is the smallest value of the form `{1,2,5} * 10^n` that keeps the
+/// number of intervals at or below `target`. A non-positive or non-finite span
+/// answers `1.0`, which is a valid step for an empty axis.
+pub fn nice_tick_step(span: f64, target: usize) -> f64 {
+    if !span.is_finite() || span <= 0.0 || target == 0 {
+        return 1.0;
+    }
+    let raw = span / target as f64;
+    if !raw.is_finite() || raw <= 0.0 {
+        return 1.0;
+    }
+    let magnitude = 10f64.powf(raw.log10().floor());
+    let normalized = raw / magnitude;
+    let multiplier = if normalized <= 1.0 {
+        1.0
+    } else if normalized <= 2.0 {
+        2.0
+    } else if normalized <= 5.0 {
+        5.0
+    } else {
+        10.0
+    };
+    multiplier * magnitude
+}
+
+/// Writes the tick values covering `minimum..=maximum` into `out`.
+///
+/// `tick_count` is the number of intervals (the historical meaning), so the
+/// equal-division mode writes `tick_count + 1` values. A manually fixed
+/// [`AxisConfig::step`] wins, then [`AxisConfig::auto_step`], then the historical
+/// equal division. Returns the number of values written.
+pub fn axis_tick_values(
+    minimum: f64,
+    maximum: f64,
+    tick_count: usize,
+    config: AxisConfig,
+    out: &mut [f64],
+) -> usize {
+    if !minimum.is_finite() || !maximum.is_finite() || maximum <= minimum || out.is_empty() {
+        return 0;
+    }
+    let tick_count = tick_count.max(2);
+
+    if config.scale == AxisScale::Logarithmic && minimum > 0.0 && maximum > 0.0 {
+        let mut written = 0usize;
+        let low_exp = minimum.log10().floor() as i32;
+        let high_exp = maximum.log10().ceil() as i32;
+        let mut value = 10f64.powi(low_exp);
+        while value <= maximum * (1.0 + 1e-12) && written < out.len() {
+            for multiplier in [1.0, 2.0, 5.0] {
+                let candidate = multiplier * value;
+                if candidate < minimum * (1.0 - 1e-12) || candidate > maximum * (1.0 + 1e-12) {
+                    continue;
+                }
+                if written > 0 && (out[written - 1] - candidate).abs() <= f64::EPSILON {
+                    continue;
+                }
+                out[written] = candidate;
+                written += 1;
+                if written == out.len() {
+                    break;
+                }
+            }
+            if value > maximum {
+                break;
+            }
+            value *= 10.0;
+            if !value.is_finite() {
+                break;
+            }
+        }
+        // A range narrower than one complete decade can yield a single candidate; a
+        // one-label axis is not a scale, so fall through to the linear rules.
+        if written >= 2 {
+            return written;
+        }
+        let _ = high_exp;
+    }
+
+    let step = match config.step {
+        Some(step) if step.is_finite() && step > 0.0 => step,
+        _ if config.auto_step => nice_tick_step(maximum - minimum, tick_count),
+        _ => {
+            let count = tick_count.min(out.len().saturating_sub(1));
+            for (index, slot) in out.iter_mut().enumerate().take(count + 1) {
+                *slot = minimum + (maximum - minimum) * index as f64 / count as f64;
+            }
+            return count + 1;
+        }
+    };
+
+    let first = (minimum / step - 1e-9).ceil() * step;
+    let mut written = 0usize;
+    let mut value = first;
+    while value <= maximum + step * 1e-9 && written < out.len() {
+        out[written] = value;
+        written += 1;
+        value += step;
+        if !value.is_finite() {
+            break;
+        }
+    }
+    // Always give the axis its lower bound when rounding produced nothing.
+    if written == 0 {
+        out[0] = minimum;
+        written = 1;
+    }
+    written
+}
+
+/// Formats one axis tick value for display.
+///
+/// The historical equal-division path keeps its single decimal place; the
+/// configured path scales the precision with the step so a `0.05` step does not
+/// print three identical labels, and a logarithmic tick prints enough digits to be
+/// distinguishable.
+fn write_tick_value(out: &mut crate::compat::String, value: f64, step: f64, config: AxisConfig) {
+    use core::fmt::Write as _;
+    out.clear();
+    if config.scale == AxisScale::Logarithmic {
+        let magnitude = value.abs();
+        if magnitude != 0.0 && (magnitude < 0.01 || magnitude >= 10_000.0) {
+            let _ = write!(out, "{value:.3e}");
+        } else if magnitude < 1.0 {
+            let _ = write!(out, "{value:.3}");
+        } else {
+            let _ = write!(out, "{value:.1}");
+        }
+    } else if step < 1.0 && step > 0.0 {
+        let decimals = (-step.log10().floor() as i32).clamp(1, 6) as usize;
+        let _ = write!(out, "{:.*}", decimals, value);
+    } else {
+        let _ = write!(out, "{value:.1}");
+    }
+}
+
+/// Draws a cartesian y axis with explicit scale, direction and tick-step settings.
+///
+/// [`draw_y_ticks`] is the historical entry point and keeps its equal-division
+/// behaviour; this variant exists so a chart can opt into a logarithmic, reversed or
+/// 1-2-5-stepped axis without changing any existing caller's picture.
+pub fn draw_y_ticks_configured(
+    context: &mut dyn ChartContext,
+    layout: &CartesianLayout,
+    min_y: f64,
+    max_y: f64,
+    tick_count: usize,
+    config: AxisConfig,
+    draw_grid: bool,
+) {
+    let (axis_color, label_color, grid_color) = axis_chrome();
+    let mut values = [0.0f64; MAX_AXIS_TICKS];
+    let count = axis_tick_values(min_y, max_y, tick_count, config, &mut values);
+    if count == 0 {
+        return;
+    }
+    let step = if count >= 2 { (values[1] - values[0]).abs() } else { 1.0 };
+    let tick_spacing = if count >= 2 { layout.plot_h / (count - 1) as f32 } else { layout.plot_h };
+    let label_line = layout.tick_label_height().max(1.0);
+    let label_stride = if tick_spacing >= label_line {
+        1
+    } else {
+        (label_line / tick_spacing.max(1.0)).ceil().max(1.0) as usize
+    };
+    for (index, &value) in values[..count].iter().enumerate() {
+        let t = config.fraction(value, min_y, max_y) as f32;
+        let y = layout.plot_y + layout.plot_h - t * layout.plot_h;
+        if draw_grid {
+            context.draw_line(
+                Point::from_f32(layout.plot_x, y),
+                Point::from_f32(layout.plot_x + layout.plot_w, y),
+                1.0,
+                grid_color,
+            );
+        }
+        context.draw_line(
+            Point::from_f32(layout.plot_x - 4.0, y),
+            Point::from_f32(layout.plot_x, y),
+            1.0,
+            axis_color,
+        );
+        if index % label_stride != 0 {
+            continue;
+        }
+        Y_TICK_LABEL.with(|label| {
+            let mut label = label.borrow_mut();
+            write_tick_value(&mut label, value, step, config);
+            context.draw_text(
+                &label,
+                Point::from_f32(layout.plot_x - 44.0, y + 4.0),
+                10.0,
+                label_color,
+            );
+        });
+    }
+}
+
+/// Draws a cartesian x axis with explicit scale, direction and tick-step settings.
+///
+/// The counterpart to [`draw_y_ticks_configured`]; [`draw_x_ticks`] remains the
+/// historical entry point.
+pub fn draw_x_ticks_configured(
+    context: &mut dyn ChartContext,
+    layout: &CartesianLayout,
+    min_x: f64,
+    max_x: f64,
+    tick_count: usize,
+    config: AxisConfig,
+    draw_grid: bool,
+) {
+    let (axis_color, label_color, grid_color) = axis_chrome();
+    let mut values = [0.0f64; MAX_AXIS_TICKS];
+    let count = axis_tick_values(min_x, max_x, tick_count, config, &mut values);
+    if count == 0 {
+        return;
+    }
+    let step = if count >= 2 { (values[1] - values[0]).abs() } else { 1.0 };
+    for &value in &values[..count] {
+        let t = config.fraction(value, min_x, max_x) as f32;
+        let x = layout.plot_x + t * layout.plot_w;
+        if draw_grid {
+            context.draw_line(
+                Point::from_f32(x, layout.plot_y),
+                Point::from_f32(x, layout.plot_y + layout.plot_h),
+                1.0,
+                grid_color,
+            );
+        }
+        context.draw_line(
+            Point::from_f32(x, layout.plot_y + layout.plot_h),
+            Point::from_f32(x, layout.plot_y + layout.plot_h + 4.0),
+            1.0,
+            axis_color,
+        );
+        X_TICK_LABEL.with(|label| {
+            let mut label = label.borrow_mut();
+            write_tick_value(&mut label, value, step, config);
+            let label_width = (label.chars().count() as f32 * 10.0 * 0.6).max(10.0);
+            let min_label_x = layout.plot_x;
+            let max_label_x = (layout.plot_x + layout.plot_w - label_width).max(min_label_x);
+            let label_x = (x - label_width / 2.0).clamp(min_label_x, max_label_x);
+            let label_y = (layout.plot_y + layout.plot_h + 16.0)
+                .min(layout.plot_y + layout.plot_h + layout.tick_label_height());
+            context.draw_text(&label, Point::from_f32(label_x, label_y), 10.0, label_color);
+        });
+    }
+}
+
 /// A line chart: one polyline per series, drawn over shared cartesian axes.
 ///
 /// Chart data lives in `ChartSeries` values added through the [`Chart`] trait;
@@ -1581,5 +1905,57 @@ mod tests {
         draw_y_ticks(&mut context, &layout, 0.0, 100.0, 4, true);
         let labels = context.commands.iter().filter(|command| command.starts_with("text:")).count();
         assert_eq!(labels, 5, "five ticks, five labels, when the plot is tall enough");
+    }
+
+    /// CH-002: an unfixed step is chosen from the 1-2-5 sequence.
+    #[test]
+    fn auto_tick_steps_follow_the_one_two_five_sequence() {
+        assert!((nice_tick_step(95.0, 5) - 20.0).abs() < 1e-9);
+        assert!((nice_tick_step(1.0, 5) - 0.2).abs() < 1e-9);
+        assert!((nice_tick_step(0.0, 5) - 1.0).abs() < 1e-9);
+        let config = AxisConfig { auto_step: true, ..AxisConfig::default() };
+        let mut values = [0.0f64; MAX_AXIS_TICKS];
+        let count = axis_tick_values(0.0, 100.0, 5, config, &mut values);
+        assert_eq!(&values[..count], &[0.0, 20.0, 40.0, 60.0, 80.0, 100.0]);
+    }
+
+    /// CH-003: a logarithmic axis maps equal ratios to equal lengths.
+    #[test]
+    fn a_logarithmic_axis_spaces_decades_evenly() {
+        let config = AxisConfig { scale: AxisScale::Logarithmic, ..AxisConfig::default() };
+        assert!((config.fraction(10.0, 1.0, 100.0) - 0.5).abs() < 1e-9);
+        let mut values = [0.0f64; MAX_AXIS_TICKS];
+        let count = axis_tick_values(1.0, 1000.0, 5, config, &mut values);
+        assert_eq!(
+            &values[..count],
+            &[1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0]
+        );
+    }
+
+    /// CH-004: a reversed axis puts its minimum at the far edge.
+    #[test]
+    fn a_reversed_axis_flips_its_fraction() {
+        let config = AxisConfig { reversed: true, ..AxisConfig::default() };
+        assert!((config.fraction(0.0, 0.0, 100.0) - 1.0).abs() < 1e-9);
+        assert!((config.fraction(100.0, 0.0, 100.0) - 0.0).abs() < 1e-9);
+        let mut values = [0.0f64; MAX_AXIS_TICKS];
+        let count = axis_tick_values(0.0, 100.0, 4, config, &mut values);
+        let layout = compute_cartesian_layout(Rect::new(0, 0, 300, 300), true, true, 0);
+        let mut context = MemoryChartContext::default();
+        draw_y_ticks_configured(&mut context, &layout, 0.0, 100.0, 4, config, false);
+        let ys: Vec<f32> = context
+            .commands
+            .iter()
+            .filter_map(|command| command.strip_prefix("text:"))
+            .filter_map(|payload| payload.split_once('@').map(|(_, position)| position))
+            .filter_map(|position| position.split_once(',').map(|(_, y)| y))
+            .filter_map(|y| y.split_once(':').map(|(y, _)| y))
+            .filter_map(|y| y.parse().ok())
+            .collect();
+        assert!(count >= 2);
+        assert_eq!(ys.len(), count, "every configured tick carries a label here");
+        let first = ys.first().copied().expect("a label");
+        let last = ys.last().copied().expect("a label");
+        assert!(first < last, "the reversed minimum is painted at the top: {ys:?}");
     }
 }

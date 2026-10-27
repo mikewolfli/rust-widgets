@@ -18,7 +18,8 @@ use crate::widget::metrics::{
     active_profile, dimensions, effective_font, estimate_line_height, estimate_text_width,
     ControlMetrics, ControlMetricsProfile, FocusRing, FOCUS_HALO_BLUR_RADIUS, FOCUS_RING_WIDTH,
 };
-use crate::widget::{BaseWidget, Draw, InteractionFade, Widget, WidgetKind};
+use crate::widget::text_utils::wrap_to_width;
+use crate::widget::{BaseWidget, Draw, IconSource, InteractionFade, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Radius of the indicator disc, in logical pixels.
@@ -97,6 +98,17 @@ pub struct RadioButton {
     /// own: it covers the whole laid-out rectangle, which may be much wider than the control's
     /// contents.
     auto_repeat_armed: bool,
+    /// An optional icon painted inside the indicator instead of the dot.
+    ///
+    /// `None` keeps the historical ring-and-dot picture byte-for-byte; a caller that wants a
+    /// state glyph supplies it through the same typed [`IconSource`] surface as the rest of
+    /// the button family.
+    icon_source: Option<IconSource>,
+    /// Whether the label wraps to the control's width instead of eliding on one line.
+    ///
+    /// Off by default, so an existing radio keeps its single-line picture. When on, the label
+    /// goes through the shared [`wrap_to_width`] greedy splitter.
+    word_wrap: bool,
     /// Emitted without a payload when this button becomes the selected member of
     /// its peer group. Only fires on a `false` -> `true` transition; deselection
     /// does not emit.
@@ -222,6 +234,8 @@ impl RadioButton {
             fade: InteractionFade::new(),
             auto_repeat: AutoRepeat::new(),
             auto_repeat_armed: false,
+            icon_source: None,
+            word_wrap: false,
             selected: GenericSignal::new(),
             checked_changed: Signal1::new(),
         }
@@ -332,6 +346,34 @@ impl RadioButton {
         self.text = text;
         self.base.request_redraw();
     }
+
+    /// The icon painted inside the indicator, if one was set.
+    pub fn icon_source(&self) -> Option<IconSource> {
+        self.icon_source
+    }
+
+    /// Sets the indicator icon, replacing the built-in dot when present.
+    pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        if self.icon_source == source {
+            return;
+        }
+        self.icon_source = source;
+        self.base.request_redraw();
+    }
+
+    /// Whether the label wraps to the control's width.
+    pub fn word_wrap(&self) -> bool {
+        self.word_wrap
+    }
+
+    /// Enables or disables label wrapping.
+    pub fn set_word_wrap(&mut self, wrap: bool) {
+        if self.word_wrap == wrap {
+            return;
+        }
+        self.word_wrap = wrap;
+        self.base.request_redraw();
+    }
     /// Sets optional group identifier.
     pub fn set_group_id(&mut self, group_id: Option<String>) {
         if self.group_id.as_deref() == group_id.as_deref() {
@@ -388,7 +430,10 @@ impl RadioButton {
             if checked {
                 self.selected.emit();
             }
-            button_group::notify_member_event(self.id(), button_group::MemberEvent::Toggled);
+            button_group::notify_member_event(
+                self.id(),
+                button_group::MemberEvent::Toggled(checked),
+            );
         }
     }
     /// Moves selection to the next enabled peer in the group and returns whether it moved.
@@ -815,6 +860,14 @@ impl WidgetProperties for RadioButton {
         }
     }
 
+    fn set_resolved_icon_source(
+        &mut self,
+        source: Option<IconSource>,
+    ) -> Result<(), CapabilityAccessError> {
+        self.set_icon_source(source);
+        Ok(())
+    }
+
     fn property_names(&self) -> &'static [&'static str] {
         property_names_of![
             "text",
@@ -987,7 +1040,21 @@ impl Draw for RadioButton {
         let ring = if enabled { ink } else { ink.with_alpha(140) };
         context.draw_circle_stroke(center, radius, ring, RING_WIDTH);
 
-        if self.is_checked() {
+        if let Some(source) = self.icon_source {
+            // A typed icon is the caller's own state glyph, so it replaces the dot. The ring
+            // stays: it is the control's indicator, and the icon is what the caller put in it.
+            let inset = (radius as i32 / 4).max(1);
+            let slot_size = (radius as i32 * 2 - inset * 2).max(1) as u32;
+            let slot = Rect::new(
+                center.x - slot_size as i32 / 2,
+                center.y - slot_size as i32 / 2,
+                slot_size,
+                slot_size,
+            );
+            if let Err(error) = crate::widget::paint_icon(context, source.into(), slot, ring) {
+                log::warn!("radio indicator icon could not be painted: {error:?}");
+            }
+        } else if self.is_checked() {
             // The dot is the control's *meaning*, and the theme **declares** what it is: the
             // `"radio_button:checked"` key carries `background: primary`. This arm is what
             // consumes that key.
@@ -1059,18 +1126,36 @@ impl Draw for RadioButton {
             } else {
                 ink.legible_on(page, 4.5).with_alpha(150)
             };
-            context.draw_text_fitted_cow(
-                Rect::new(
-                    label_x,
-                    line.y,
-                    rect.width.saturating_sub((label_x - rect.x) as u32),
-                    line.height,
-                ),
-                &self.text,
-                font,
-                label_ink,
-                HorizontalAlignment::Left,
-            );
+            let label_width = rect.width.saturating_sub((label_x - rect.x) as u32);
+            if self.word_wrap {
+                let ranges = {
+                    let mut measure = |text: &str| context.measure_text(text, font).width;
+                    wrap_to_width(&self.text, label_width, &mut measure)
+                };
+                let bottom = rect.y + rect.height as i32;
+                let mut y = line.y;
+                for range in ranges {
+                    if y + line.height as i32 > bottom {
+                        break;
+                    }
+                    context.draw_text_fitted_cow(
+                        Rect::new(label_x, y, label_width, line.height),
+                        &self.text[range],
+                        font,
+                        label_ink,
+                        HorizontalAlignment::Left,
+                    );
+                    y += line.height as i32;
+                }
+            } else {
+                context.draw_text_fitted_cow(
+                    Rect::new(label_x, line.y, label_width, line.height),
+                    &self.text,
+                    font,
+                    label_ink,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
 
         // ── Focus ring ──
@@ -2205,5 +2290,46 @@ mod tests {
         a.set_checked(true);
         b.set_checked(true);
         assert!(a.is_checked() && b.is_checked());
+    }
+
+    // ── Indicator icon and wrapped label (B-005) ───────────────────────
+
+    #[test]
+    fn an_indicator_icon_replaces_the_built_in_dot() {
+        let _guard = crate::style::theme_test_guard();
+        let mut plain = RadioButton::new(Rect::new(0, 0, 120, 32));
+        plain.set_text("Choice".to_string());
+        plain.set_checked(true);
+        let plain_svg = crate::widget::svg::render_to_svg(&mut plain);
+
+        let mut framed = RadioButton::new(Rect::new(0, 0, 120, 32));
+        framed.set_text("Choice".to_string());
+        framed.set_checked(true);
+        framed.set_icon_source(Some(IconSource::Builtin(crate::widget::IconName::Info)));
+        let icon_svg = crate::widget::svg::render_to_svg(&mut framed);
+
+        assert_ne!(plain_svg, icon_svg, "the icon must replace the drawn dot");
+        assert_eq!(framed.icon_source(), Some(IconSource::Builtin(crate::widget::IconName::Info)));
+    }
+
+    #[test]
+    fn word_wrap_paints_the_label_on_more_than_one_line() {
+        let _guard = crate::style::theme_test_guard();
+        let text = "This label is much wider than its control";
+
+        let mut single = RadioButton::new(Rect::new(0, 0, 90, 32));
+        single.set_text(text.to_string());
+        let single_svg = crate::widget::svg::render_to_svg(&mut single);
+
+        let mut wrapped = RadioButton::new(Rect::new(0, 0, 90, 64));
+        wrapped.set_text(text.to_string());
+        wrapped.set_word_wrap(true);
+        let wrapped_svg = crate::widget::svg::render_to_svg(&mut wrapped);
+
+        assert!(wrapped.word_wrap());
+        assert_ne!(
+            single_svg, wrapped_svg,
+            "wrapping must reshape a caption that does not fit its width"
+        );
     }
 }

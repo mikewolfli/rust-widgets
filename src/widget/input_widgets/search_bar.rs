@@ -13,7 +13,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::{GenericSignal, Signal1};
-use crate::undo::{UndoStack, ValueCommand};
+use crate::undo::{TextSpliceCommand, UndoStack};
 use crate::widget::capability::coercion::{
     expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
 };
@@ -31,6 +31,96 @@ use std::rc::Rc;
 const MAX_RECENT_SEARCHES: usize = 5;
 /// Height of one recent-search row in the menu below the field.
 const RECENT_ROW_HEIGHT: u32 = 24;
+
+/// Options the search family's text lookup honours (I-025).
+///
+/// The fields default to the behaviour the search controls had before the switches existed: a
+/// case-sensitive, substring, one-pass search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchOptions {
+    /// Whether letter case must match.
+    pub case_sensitive: bool,
+    /// Whether a match must be a whole word rather than part of a longer one.
+    pub whole_word: bool,
+    /// Whether a search that reaches the end continues from the start.
+    pub wrap_around: bool,
+}
+
+impl Default for SearchOptions {
+    fn default() -> Self {
+        Self { case_sensitive: true, whole_word: false, wrap_around: false }
+    }
+}
+
+/// Returns whether `ch` continues a word for [`SearchOptions::whole_word`].
+fn is_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+/// Matches `needle` at `start` in `haystack`, returning the byte end of the match.
+fn match_at(haystack: &str, start: usize, needle: &str, case_sensitive: bool) -> Option<usize> {
+    let mut end = start;
+    let mut rest = haystack[start..].chars();
+    for wanted in needle.chars() {
+        let found = rest.next()?;
+        let equal = if case_sensitive {
+            found == wanted
+        } else {
+            found.to_lowercase().eq(wanted.to_lowercase())
+        };
+        if !equal {
+            return None;
+        }
+        end += found.len_utf8();
+    }
+    Some(end)
+}
+
+/// Finds `needle` in `haystack` from byte `from`, honouring `options`.
+///
+/// `from` is snapped to a character boundary, and the returned range is always on boundaries.
+/// Wrapping performs a second pass over the skipped prefix instead of restarting the same scan,
+/// so the call still terminates on a match at `from` itself.
+pub(crate) fn find_in(
+    haystack: &str,
+    needle: &str,
+    from: usize,
+    options: SearchOptions,
+) -> Option<(usize, usize)> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    let from = crate::widget::text_utils::floor_char_boundary(haystack, from.min(haystack.len()));
+    let scan = |begin: usize, end: usize| -> Option<(usize, usize)> {
+        for (offset, _) in haystack[begin..end].char_indices() {
+            let start = begin + offset;
+            let Some(found_end) = match_at(haystack, start, needle, options.case_sensitive) else {
+                continue;
+            };
+            if found_end > end {
+                continue;
+            }
+            if options.whole_word {
+                let before_ok =
+                    haystack[..start].chars().next_back().map_or(true, |ch| !is_word_char(ch));
+                let after_ok =
+                    haystack[found_end..].chars().next().map_or(true, |ch| !is_word_char(ch));
+                if !before_ok || !after_ok {
+                    continue;
+                }
+            }
+            return Some((start, found_end));
+        }
+        None
+    };
+    if let Some(found) = scan(from, haystack.len()) {
+        return Some(found);
+    }
+    if options.wrap_around && from > 0 {
+        return scan(0, from);
+    }
+    None
+}
 
 /// iOS-style search bar widget.
 ///
@@ -83,6 +173,8 @@ pub struct SearchBar {
     preedit: String,
     /// First recent-search row the menu shows (I-111).
     recent_scroll: usize,
+    /// Lookup switches for a host that searches a document from this query (I-025).
+    search_options: SearchOptions,
 }
 
 impl SearchBar {
@@ -112,7 +204,27 @@ impl SearchBar {
             cancel_width_cache: RefCell::new(None),
             preedit: String::new(),
             recent_scroll: 0,
+            search_options: SearchOptions::default(),
         }
+    }
+
+    /// The lookup switches this bar reports to a host (I-025).
+    pub fn search_options(&self) -> SearchOptions {
+        self.search_options
+    }
+
+    /// Replaces the lookup switches (I-025).
+    pub fn set_search_options(&mut self, options: SearchOptions) {
+        self.search_options = options;
+    }
+
+    /// Finds the current query in `haystack` from `from`.
+    ///
+    /// Additive: the control previously had no lookup entry point, so a host that searched had to
+    /// reimplement case handling itself. The three switches come from [`Self::search_options`],
+    /// whose defaults reproduce a plain case-sensitive substring search (I-025).
+    pub fn find_in(&self, haystack: &str, from: usize) -> Option<(usize, usize)> {
+        find_in(haystack, &self.text, from, self.search_options)
     }
 
     /// Returns the current search text.
@@ -152,10 +264,10 @@ impl SearchBar {
             self.text = new_text.clone();
             if !self.restoring_history {
                 *self.history_target.borrow_mut() = self.text.clone();
-                self.undo_stack.push(Box::new(ValueCommand::new(
+                self.undo_stack.push(Box::new(TextSpliceCommand::new(
                     self.history_target.clone(),
-                    before,
-                    self.text.clone(),
+                    &before,
+                    &self.text,
                     "Edit text",
                     "search_bar_text",
                 )));
@@ -165,6 +277,29 @@ impl SearchBar {
             self.text_changed.emit(new_text);
             self.base.request_redraw();
         }
+    }
+
+    /// Records one in-place splice as the undo step and emits `text_changed` (I-001).
+    fn record_splice(&mut self, offset: usize, removed: &str, inserted: &str) {
+        if self.restoring_history {
+            return;
+        }
+        {
+            let mut target = self.history_target.borrow_mut();
+            let start = offset.min(target.len());
+            let end = (start + removed.len()).min(target.len());
+            target.replace_range(start..end, inserted);
+        }
+        self.undo_stack.push(Box::new(TextSpliceCommand::from_splice(
+            self.history_target.clone(),
+            offset,
+            removed.to_string(),
+            inserted.to_string(),
+            "Edit text",
+            "search_bar_text",
+        )));
+        self.text_changed.emit(self.text.clone());
+        self.base.request_redraw();
     }
 
     /// Returns the placeholder text.
@@ -461,12 +596,11 @@ impl SearchBar {
             return;
         }
         let (start, end) = self.selection_range().unwrap_or((self.cursor, self.cursor));
-        let mut next = self.text.clone();
-        next.replace_range(start..end, &filtered);
-        self.set_text(next);
+        let removed = self.text[start..end].to_string();
+        self.text.replace_range(start..end, &filtered);
         self.cursor = start + filtered.len();
         self.selection_anchor = None;
-        self.base.request_redraw();
+        self.record_splice(start, &removed, &filtered);
     }
 
     /// Removes the selection, or the character before the caret when there is none.
@@ -478,11 +612,11 @@ impl SearchBar {
         if start == end {
             return;
         }
-        let mut next = self.text.clone();
-        next.replace_range(start..end, "");
-        self.set_text(next);
+        let removed = self.text[start..end].to_string();
+        self.text.replace_range(start..end, "");
         self.cursor = start;
         self.selection_anchor = None;
+        self.record_splice(start, &removed, "");
     }
 
     /// Moves the caret by `delta` characters, extending the selection when `extend` is set.
@@ -1109,11 +1243,11 @@ impl EventHandler for SearchBar {
                         )
                     });
                     if start != end {
-                        let mut next = self.text.clone();
-                        next.replace_range(start..end, "");
-                        self.set_text(next);
+                        let removed = self.text[start..end].to_string();
+                        self.text.replace_range(start..end, "");
                         self.cursor = start;
                         self.selection_anchor = None;
+                        self.record_splice(start, &removed, "");
                     }
                 } else if *key == 37 {
                     self.move_caret(-1, shift);
@@ -1127,9 +1261,17 @@ impl EventHandler for SearchBar {
                     self.show_recent = !self.recent_searches.is_empty();
                     self.base.request_redraw();
                 } else if *key >= 32 && *key <= 126 {
-                    // Printable ASCII.
-                    if let Some(c) = char::from_u32(*key) {
-                        self.insert_text(&c.to_string());
+                    // Printable ASCII. A control chord must not be typed as text: this arm used to
+                    // run for `Ctrl+B` too, which inserted a letter instead of leaving the chord to
+                    // the host (I-021). The three modifiers are tested separately because
+                    // `Modifiers::contains` compares the whole mask.
+                    let chord_held = mods.contains(crate::shortcut::Modifiers::CTRL)
+                        || mods.contains(crate::shortcut::Modifiers::ALT)
+                        || mods.contains(crate::shortcut::Modifiers::META);
+                    if !chord_held {
+                        if let Some(c) = char::from_u32(*key) {
+                            self.insert_text(&c.to_string());
+                        }
                     }
                 }
             }
@@ -1303,7 +1445,8 @@ mod tests {
 
         let primary = primary_modifier_event_bits();
         sb.handle_event(&Event::KeyPress { key: 90, modifiers: primary });
-        assert_eq!(sb.text(), "a");
+        // The two adjacent letters merge into one undo step (I-002), so one undo clears the run.
+        assert_eq!(sb.text(), "");
         sb.handle_event(&Event::KeyPress { key: 89, modifiers: primary });
         assert_eq!(sb.text(), "ab");
     }
@@ -1317,7 +1460,10 @@ mod tests {
 
         assert_eq!(sb.text(), "你好世界");
         assert!(sb.undo());
-        assert_eq!(sb.text(), "你好");
+        // Adjacent committed runs merge into one step (I-002).
+        assert_eq!(sb.text(), "");
+        assert!(sb.redo());
+        assert_eq!(sb.text(), "你好世界");
     }
 
     /// Keystrokes only edit the bar that owns focus.
@@ -1395,5 +1541,25 @@ mod tests {
         assert_eq!(sb.tokens(), vec!["alpha".to_string(), "beta".to_string()]);
         assert!(sb.tokens().len() == 2, "tokenizing splits the value into its terms");
         assert_eq!(sb.text(), "alpha beta", "tokenizing does not alter the value");
+    }
+
+    /// The lookup switches are additive and the defaults reproduce a plain substring search (I-025).
+    #[test]
+    fn search_options_drive_the_lookup() {
+        let mut bar = make_search_bar();
+        bar.set_text("foo");
+        let haystack = "a foo b foo";
+        assert_eq!(bar.find_in(haystack, 0), Some((2, 5)));
+        assert_eq!(bar.find_in(haystack, 6), Some((8, 11)));
+
+        let mut options = bar.search_options();
+        options.wrap_around = true;
+        bar.set_search_options(options);
+        assert_eq!(bar.find_in(haystack, 11), Some((2, 5)), "wrap searches the skipped prefix");
+
+        options.whole_word = true;
+        bar.set_search_options(options);
+        bar.set_text("fo");
+        assert_eq!(bar.find_in(haystack, 0), None, "a whole-word lookup refuses a prefix");
     }
 }

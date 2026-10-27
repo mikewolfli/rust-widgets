@@ -389,11 +389,94 @@ impl Frame {
         if !self.theme_bevel {
             return None;
         }
-        let base = {
-            let manager = crate::style::theme_manager();
-            manager.current_theme()?.colors.background
-        };
+        // The cached palette snapshot rather than the theme manager's lock: `draw` asks for
+        // these tones on every frame, and the snapshot is invalidated when the active theme
+        // changes (the `CheckBox::page_surface` pattern, G-A01).
+        let base = crate::style::palette_shared()?.background;
         Some((base.blend(&Color::WHITE, 0.5), base.blend(&Color::BLACK, 0.5)))
+    }
+
+    /// The bevel this frame's `frame_shadow` calls for, or `None` for `Plain`.
+    ///
+    /// `Box` and `WinPanel` already read the shadow property; the `Panel`, `HLine` and
+    /// `VLine` shapes ignored it. This is the shared derivation those shapes now use, and
+    /// `Plain` returns `None` so their historical single border is byte-identical.
+    fn shadow_bevel(&self, style: &crate::style::WidgetStyle, border: Color) -> Option<Bevel> {
+        let direction = match self.frame_shadow {
+            FrameShadow::Plain => return None,
+            FrameShadow::Raised => BevelDirection::Raised,
+            FrameShadow::Sunken => BevelDirection::Inset,
+        };
+        let themed = style.border_color.is_some();
+        let plain =
+            themed && (border == Color::rgb(0, 0, 0) || border == Color::rgb(255, 255, 255));
+        let bevel = if plain {
+            Bevel::from_tones(border, border, border)
+        } else if let Some((light, shade)) = self.themed_bevel_tones() {
+            Bevel::from_tones(border, light, shade)
+        } else if themed {
+            Bevel::from_base(border)
+        } else {
+            // The historical hard-coded pair; see `draw_box_frame` for why it is stated
+            // rather than derived from the fallback black border.
+            Bevel::from_tones(
+                Color::rgb(128, 128, 128),
+                Color::rgb(255, 255, 255),
+                Color::rgb(128, 128, 128),
+            )
+        };
+        Some(bevel.with_direction(direction))
+    }
+
+    /// Draws a two-tone separator for a shadowed `HLine`/`VLine`.
+    ///
+    /// A separator has no four edges to bevel, so the raised/sunken relationship is
+    /// expressed as the leading and trailing tones on the two sides of the line. `Plain`
+    /// never reaches here, which is what keeps the historical single rule unchanged.
+    fn draw_shadowed_separator(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        horizontal: bool,
+        bevel: Bevel,
+    ) {
+        let width = self.painted_width();
+        if width == 0 {
+            return;
+        }
+        let thickness = (width / 2).max(1);
+        let offset = thickness as i32;
+        let leading = bevel.leading_tone();
+        let trailing = bevel.trailing_tone();
+        if horizontal {
+            let y = rect.y + rect.height as i32 / 2;
+            context.draw_line_stroke(
+                Point::new(rect.x, y - offset),
+                Point::new(rect.x + rect.width as i32, y - offset),
+                leading,
+                thickness,
+            );
+            context.draw_line_stroke(
+                Point::new(rect.x, y + offset),
+                Point::new(rect.x + rect.width as i32, y + offset),
+                trailing,
+                thickness,
+            );
+        } else {
+            let x = rect.x + rect.width as i32 / 2;
+            context.draw_line_stroke(
+                Point::new(x - offset, rect.y),
+                Point::new(x - offset, rect.y + rect.height as i32),
+                leading,
+                thickness,
+            );
+            context.draw_line_stroke(
+                Point::new(x + offset, rect.y),
+                Point::new(x + offset, rect.y + rect.height as i32),
+                trailing,
+                thickness,
+            );
+        }
     }
 
     /// Strokes a two-tone ring around a rounded rectangle.
@@ -720,8 +803,20 @@ impl Frame {
             style.resolved_corner_radii().to_array(),
             Color::BLACK,
         );
+        let raw_border = style.border_color.unwrap_or(Color::rgb(0, 0, 0));
         let border = self.interactive_border(style.border_color.unwrap_or(Color::rgb(64, 64, 64)));
         let width = self.painted_width();
+        if let Some(bevel) = self.shadow_bevel(style, raw_border) {
+            if width > 0 {
+                let radius = stroke_radius(style);
+                if radius > 0 {
+                    self.stroke_rounded_bevel(context, rect, radius, bevel, width);
+                } else {
+                    bevel.stroke(context, rect, width);
+                }
+            }
+            return;
+        }
         if width > 0 {
             let radii = stroke_radii(style);
             if radii.iter().any(|r| *r > 0) {
@@ -754,9 +849,15 @@ impl Frame {
     }
     /// Draws horizontal line frame.
     fn draw_hline_frame(&self, context: &mut RenderContext, rect: Rect) {
+        let style = self.style();
+        if let Some(bevel) =
+            self.shadow_bevel(style, style.border_color.unwrap_or(Color::rgb(0, 0, 0)))
+        {
+            self.draw_shadowed_separator(context, rect, true, bevel);
+            return;
+        }
         let y = rect.y + (rect.height as i32) / 2;
-        let color =
-            self.interactive_border(self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)));
+        let color = self.interactive_border(style.border_color.unwrap_or(Color::rgb(0, 0, 0)));
         let width = self.painted_width();
         if width == 0 {
             return;
@@ -770,9 +871,15 @@ impl Frame {
     }
     /// Draws vertical line frame.
     fn draw_vline_frame(&self, context: &mut RenderContext, rect: Rect) {
+        let style = self.style();
+        if let Some(bevel) =
+            self.shadow_bevel(style, style.border_color.unwrap_or(Color::rgb(0, 0, 0)))
+        {
+            self.draw_shadowed_separator(context, rect, false, bevel);
+            return;
+        }
         let x = rect.x + (rect.width as i32) / 2;
-        let color =
-            self.interactive_border(self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)));
+        let color = self.interactive_border(style.border_color.unwrap_or(Color::rgb(0, 0, 0)));
         let width = self.painted_width();
         if width == 0 {
             return;
@@ -1783,5 +1890,49 @@ mod tests {
             "the lit edge is the theme surface stepped toward white"
         );
         assert_ne!(top, Color::rgb(255, 255, 255), "not the fixed historical highlight");
+    }
+
+    /// `Panel`, `HLine` and `VLine` used to ignore `frame_shadow`; each must now paint a
+    /// different picture for `Raised`/`Sunken` while `Plain` keeps the historical rule.
+    #[test]
+    fn the_panel_and_separator_shapes_honour_frame_shadow() {
+        for shape in [FrameShape::Panel, FrameShape::HLine, FrameShape::VLine] {
+            let rect = Rect::new(0, 0, 120, 40);
+
+            let mut plain = Frame::new(rect);
+            plain.set_frame_shape(shape);
+            let plain_svg = crate::widget::svg::render_to_svg(&mut plain);
+
+            let mut raised = Frame::new(rect);
+            raised.set_frame_shape(shape);
+            raised.set_frame_shadow(FrameShadow::Raised);
+            let raised_svg = crate::widget::svg::render_to_svg(&mut raised);
+
+            let mut sunken = Frame::new(rect);
+            sunken.set_frame_shape(shape);
+            sunken.set_frame_shadow(FrameShadow::Sunken);
+            let sunken_svg = crate::widget::svg::render_to_svg(&mut sunken);
+
+            assert_ne!(plain_svg, raised_svg, "{} must paint its raised shadow", shape.as_str());
+            assert_ne!(plain_svg, sunken_svg, "{} must paint its sunken shadow", shape.as_str());
+            assert_ne!(raised_svg, sunken_svg, "{} raised and sunken must differ", shape.as_str());
+        }
+    }
+
+    /// The theme-derived bevel reads the cached palette snapshot rather than the theme lock.
+    #[test]
+    #[cfg(device_profile)]
+    fn themed_bevel_tones_come_from_the_cached_palette() {
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+
+        let mut frame = Frame::new(Rect::new(0, 0, 40, 40));
+        frame.set_theme_bevel(true);
+        let (light, shade) = frame.themed_bevel_tones().expect("a themed palette");
+        let base = crate::style::palette_shared().expect("the active palette").background;
+
+        assert_eq!(light, base.blend(&Color::WHITE, 0.5));
+        assert_eq!(shade, base.blend(&Color::BLACK, 0.5));
     }
 }

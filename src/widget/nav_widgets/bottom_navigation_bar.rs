@@ -10,7 +10,7 @@
 //! with the new index.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect};
-use crate::event::{Event, EventHandler};
+use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::{MotionSlot, PropertyDriver};
@@ -104,6 +104,8 @@ pub struct BottomNavigationBar {
     max_items: Option<usize>,
     /// Whether scrolling down hides the whole bar.
     hide_on_scroll: bool,
+    /// The item the pointer is currently over, when it is over the bar.
+    hovered_index: Option<usize>,
     /// How much of the bar is visible, `0.0` hidden to `1.0` shown.
     visibility: PropertyDriver,
     /// Emitted when the selected tab changes. The payload is the new index.
@@ -127,6 +129,7 @@ impl BottomNavigationBar {
             label_behavior: NavLabelBehavior::Always,
             max_items: None,
             hide_on_scroll: false,
+            hovered_index: None,
             visibility: PropertyDriver::at(1.0, MotionSlot::Normal),
             current_changed: Signal1::new(),
         }
@@ -360,6 +363,41 @@ impl BottomNavigationBar {
     pub fn item_count(&self) -> usize {
         self.items.len()
     }
+
+    /// The item index under `pos`, when `pos` is on the bar.
+    fn item_at(&self, pos: Point) -> Option<usize> {
+        if self.items.is_empty() {
+            return None;
+        }
+        let rect = self.geometry();
+        if !rect.contains_point(pos) {
+            return None;
+        }
+        let tab_width = rect.width / self.items.len() as u32;
+        if tab_width == 0 {
+            return None;
+        }
+        let relative_x = pos.x - rect.x;
+        if relative_x < 0 {
+            return None;
+        }
+        let index = (relative_x as u32 / tab_width) as usize;
+        (index < self.items.len()).then_some(index)
+    }
+
+    /// Moves the selection by one destination, wrapping at the ends.
+    fn step_selection(&mut self, forward: bool) {
+        let len = self.items.len();
+        if len == 0 {
+            return;
+        }
+        let next = if forward {
+            (self.selected_index + 1) % len
+        } else {
+            (self.selected_index + len - 1) % len
+        };
+        self.set_selected_index(next);
+    }
 }
 
 impl Widget for BottomNavigationBar {
@@ -540,6 +578,23 @@ impl Draw for BottomNavigationBar {
             // A per-item disabled destination is muted and not selectable, while the whole bar's
             // enabled flag still disables everything (N-04).
             let item_on = is_enabled && self.is_item_enabled(i);
+
+            // A hovered but unselected destination gets a faint capsule behind its icon, the
+            // same "the pointer is over me" step the preset uses for buttons. The selected
+            // item keeps its accent pill, so the two states never describe the same slot.
+            if item_on && !is_selected && self.hovered_index == Some(i) {
+                let inset = 4u32.min(tab_rect.width / 4);
+                context.fill_rounded_rect(
+                    Rect::new(
+                        tab_rect.x + inset as i32,
+                        tab_rect.y + inset as i32,
+                        tab_rect.width.saturating_sub(2 * inset),
+                        tab_rect.height.saturating_sub(2 * inset),
+                    ),
+                    8,
+                    bar_color.blend(&ink, 0.06),
+                );
+            }
 
             // Determine colors based on selection and enabled state
             let (icon_color, label_color) = if !item_on {
@@ -729,6 +784,50 @@ impl EventHandler for BottomNavigationBar {
                 // A disabled destination ignores the press entirely (N-04).
                 if index < item_count && self.is_item_enabled(index) {
                     self.set_selected_index(index);
+                }
+            }
+            Event::MouseMove { pos } => {
+                let hovered = self.item_at(*pos);
+                if hovered != self.hovered_index {
+                    self.hovered_index = hovered;
+                    self.base.request_redraw();
+                }
+                self.base.handle_event(event);
+            }
+            Event::MouseEnter { pos } => {
+                let hovered = self.item_at(*pos);
+                if hovered != self.hovered_index {
+                    self.hovered_index = hovered;
+                    self.base.request_redraw();
+                }
+                self.base.handle_event(event);
+            }
+            Event::MouseLeave { pos: _ } => {
+                if self.hovered_index.take().is_some() {
+                    self.base.request_redraw();
+                }
+                self.base.handle_event(event);
+            }
+            // Keyboard navigation follows focus, the same gate `TabView` uses. Left/Up retreats
+            // and Right/Down advances, wrapping at the ends the way a tab strip does; Home/End
+            // jump to the ends and Enter/Space re-activate the current destination.
+            Event::KeyPress { key, .. }
+                if self.base.focus_reason().is_some() && !self.items.is_empty() =>
+            {
+                match *key {
+                    key_codes::LEFT | key_codes::UP => self.step_selection(false),
+                    key_codes::RIGHT | key_codes::DOWN => self.step_selection(true),
+                    key_codes::HOME => self.set_selected_index(0),
+                    key_codes::END => {
+                        let last = self.items.len().saturating_sub(1);
+                        self.set_selected_index(last);
+                    }
+                    key_codes::ENTER | key_codes::SPACE => {
+                        if let Some(index) = self.selected_index() {
+                            self.current_changed.emit(index);
+                        }
+                    }
+                    _ => self.base.handle_event(event),
                 }
             }
             _ => {
@@ -1135,5 +1234,36 @@ mod tests {
         bar.handle_event(&Event::MousePress { pos: Point::new(140, 28), button: 1, modifiers: 0 });
         bar.handle_event(&Event::MouseRelease { pos: Point::new(140, 28), button: 1 });
         assert_eq!(bar.selected_index(), Some(1));
+    }
+
+    /// The pointer's destination is highlighted before it is clicked.
+    #[test]
+    fn hovering_a_destination_sets_and_clears_the_highlight() {
+        let mut bar = make_bar();
+        bar.handle_event(&Event::MouseMove { pos: Point::new(140, 28) });
+        assert_eq!(bar.hovered_index, Some(1), "the second tab is under the pointer");
+        bar.handle_event(&Event::MouseLeave { pos: Point::new(375, 56) });
+        assert_eq!(bar.hovered_index, None);
+    }
+
+    /// Arrow keys move the selection while the bar has focus, wrapping at the ends.
+    #[test]
+    fn keyboard_navigation_moves_the_selection() {
+        let mut bar = make_bar();
+        assert_eq!(bar.selected_index(), Some(0));
+
+        // Without focus the bar does not steal the arrow keys.
+        bar.handle_event(&Event::KeyPress { key: key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(bar.selected_index(), Some(0));
+
+        bar.handle_event(&Event::FocusGained { reason: crate::event::FocusReason::Programmatic });
+        bar.handle_event(&Event::KeyPress { key: key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(bar.selected_index(), Some(1));
+        bar.handle_event(&Event::KeyPress { key: key_codes::END, modifiers: 0 });
+        assert_eq!(bar.selected_index(), Some(3));
+        bar.handle_event(&Event::KeyPress { key: key_codes::RIGHT, modifiers: 0 });
+        assert_eq!(bar.selected_index(), Some(0), "selection wraps like a tab strip");
+        bar.handle_event(&Event::KeyPress { key: key_codes::LEFT, modifiers: 0 });
+        assert_eq!(bar.selected_index(), Some(3));
     }
 }

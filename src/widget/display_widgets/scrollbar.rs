@@ -1253,7 +1253,9 @@ impl EventHandler for ScrollBar {
                     self.request_frame_repaint(None);
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            // Keyboard stepping is reachable only while the bar holds focus: a scroll bar
+            // embedded in a page must not consume the arrows of whatever the user is editing.
+            Event::KeyPress { key, modifiers: _ } if self.base.focus_reason().is_some() => {
                 match *key {
                     37 => {
                         // Left arrow (or up arrow for vertical)
@@ -2394,5 +2396,32 @@ mod tests {
         bar.set_idle_opacity(2.0);
         assert!((bar.idle_opacity() - 1.0).abs() < f32::EPSILON);
         assert_eq!(bar.get("idle_delay_ms").unwrap(), CapabilityValue::UInt(1200));
+    }
+
+    /// Arrow and page keys step the bar only while it holds focus.
+    #[test]
+    fn the_keyboard_steps_only_while_focused() {
+        use crate::event::FocusReason;
+
+        let mut bar = ScrollBar::new(Rect::new(0, 0, 16, 200));
+        bar.set_value(50);
+        bar.set_single_step(1);
+        bar.set_page_step(10);
+
+        // Unfocused: the key belongs to whoever holds focus.
+        bar.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(bar.value(), 50, "an unfocused bar ignores the key");
+
+        bar.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        bar.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(bar.value(), 51, "a focused bar takes one line step");
+        bar.handle_event(&Event::KeyPress { key: 34, modifiers: 0 });
+        assert_eq!(bar.value(), 61, "PageDown takes one page step");
+        bar.handle_event(&Event::KeyPress { key: 33, modifiers: 0 });
+        assert_eq!(bar.value(), 51, "PageUp reverses it");
+
+        bar.handle_event(&Event::FocusLost);
+        bar.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(bar.value(), 51, "losing focus restores the gate");
     }
 }

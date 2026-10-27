@@ -939,7 +939,7 @@ impl Draw for FontDialog {
         // between "this dialog is up and the page is inert" and "a panel was drawn on the page".
         // The `modal` flag was recorded and enforced by the modal stack, and nothing painted it.
         if self.modal {
-            super::draw_modal_scrim(context, self.geometry());
+            super::draw_modal_scrim(context, self.id(), self.geometry(), self.base.parent());
         }
         // One geometry for both painting and hit-testing. A second derivation here is what
         // previously made a click land on a row the painter had not drawn: the two sides read

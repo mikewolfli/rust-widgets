@@ -11,6 +11,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -30,12 +31,23 @@ pub struct PieSlice {
     pub color: Color,
     /// Whether this slice is pulled out (exploded) from the center.
     pub exploded: bool,
+    /// Whether the slice is drawn and contributes to the total.
+    ///
+    /// A legend click flips this flag; the default is `true`, so a slice list that
+    /// never touches it renders exactly as before.
+    pub visible: bool,
 }
 
 impl PieSlice {
     /// Creates a new pie slice with the given label, value, and color.
     pub fn new(label: impl Into<String>, value: f64, color: Color) -> Self {
-        Self { label: label.into(), value, color, exploded: false }
+        Self { label: label.into(), value, color, exploded: false, visible: true }
+    }
+
+    /// Creates a slice whose initial visibility is stated explicitly.
+    pub fn with_visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
     }
 
     /// Marks this slice as exploded (pulled out from center).
@@ -43,6 +55,16 @@ impl PieSlice {
         self.exploded = exploded;
         self
     }
+}
+
+/// The legend column's geometry and clickable row count.
+#[derive(Clone, Copy)]
+struct LegendArea {
+    x: i32,
+    y: i32,
+    width: i32,
+    row_height: i32,
+    rows: usize,
 }
 
 /// A circular pie chart widget with colored sectors.
@@ -79,6 +101,20 @@ pub struct PieChart {
     cached_total: f64,
     /// Whether `angle_cache` and `cached_total` must be rebuilt from `slices`.
     angles_dirty: bool,
+    /// Whether value changes ease into place. On by default.
+    animate: bool,
+    /// Progress of the running value transition, in `0.0..=1.0`.
+    transition: PropertyDriver,
+    /// The start values of the running transition, one per slice.
+    from_values: Vec<f64>,
+    /// First legend row drawn; the legend scrolls instead of truncating (CH-009).
+    legend_scroll: usize,
+    /// The legend column's clickable rows from the last paint.
+    last_legend_area: Option<LegendArea>,
+    /// The last pointer position, used to decide whether a wheel belongs to the legend.
+    last_pointer: Option<Point>,
+    /// Emitted with `(slice, visible)` after a legend click or [`Self::set_series_visible`].
+    pub series_toggled: Signal1<(usize, bool)>,
     /// Emitted with the slice index when hover enters a slice.
     pub slice_hovered: Signal1<usize>,
     /// Emitted with the slice index when hover leaves it.
@@ -110,6 +146,13 @@ impl PieChart {
             angle_cache: Vec::new(),
             cached_total: 0.0,
             angles_dirty: true,
+            animate: true,
+            transition: PropertyDriver::at(1.0, MotionSlot::Normal),
+            from_values: Vec::new(),
+            legend_scroll: 0,
+            last_legend_area: None,
+            last_pointer: None,
+            series_toggled: Signal1::new(),
             slice_hovered: Signal1::new(),
             slice_unhovered: Signal1::new(),
             slice_clicked: Signal1::new(),
@@ -118,9 +161,15 @@ impl PieChart {
 
     /// Sets the slices to display. Clears any previous slices.
     pub fn set_slices(&mut self, entries: Vec<PieSlice>) {
+        let from = if self.animate && self.slices.len() == entries.len() {
+            Some((0..self.slices.len()).map(|index| self.displayed_value(index)).collect())
+        } else {
+            None
+        };
         self.slices = entries;
         self.angles_dirty = true;
         self.sync_explode_progress();
+        self.install_transition(from);
         self.revalidate_hover();
         self.base.request_redraw();
     }
@@ -130,6 +179,7 @@ impl PieChart {
         self.slices.push(slice);
         self.angles_dirty = true;
         self.sync_explode_progress();
+        self.clear_transition();
         self.base.request_redraw();
     }
 
@@ -140,6 +190,7 @@ impl PieChart {
             self.slices.remove(index);
             self.angles_dirty = true;
             self.sync_explode_progress();
+            self.clear_transition();
             self.revalidate_hover();
             self.base.request_redraw();
             true
@@ -154,8 +205,138 @@ impl PieChart {
         self.angle_cache.clear();
         self.angles_dirty = true;
         self.explode_progress.clear();
+        self.clear_transition();
+        self.legend_scroll = 0;
         self.revalidate_hover();
         self.base.request_redraw();
+    }
+
+    /// The value currently drawn for slice `index`, including any running transition.
+    fn displayed_value(&self, index: usize) -> f64 {
+        let Some(slice) = self.slices.get(index) else {
+            return 0.0;
+        };
+        match self.animation_progress() {
+            Some(progress) => {
+                let start = self.from_values.get(index).copied().unwrap_or(slice.value);
+                start + (slice.value - start) * f64::from(progress)
+            }
+            None => slice.value,
+        }
+    }
+
+    /// Starts a transition from `from`, or lands immediately when there is nothing to ease.
+    fn install_transition(&mut self, from: Option<Vec<f64>>) {
+        let from = match from {
+            Some(from) if !from.is_empty() => from,
+            _ => {
+                self.clear_transition();
+                return;
+            }
+        };
+        let unchanged = from.len() == self.slices.len()
+            && from.iter().zip(&self.slices).all(|(old, slice)| *old == slice.value);
+        if unchanged {
+            self.clear_transition();
+        } else {
+            self.from_values = from;
+            self.transition.jump_to(0.0);
+            self.transition.set_target(1.0);
+        }
+    }
+
+    /// Lands the running transition on its targets and drops the start values.
+    fn clear_transition(&mut self) {
+        self.transition.jump_to(1.0);
+        self.from_values.clear();
+    }
+
+    /// The transition progress, or `None` when no transition is running.
+    fn animation_progress(&self) -> Option<f32> {
+        (!self.from_values.is_empty()).then(|| self.transition.value().clamp(0.0, 1.0))
+    }
+
+    /// Enables or disables easing of slice value changes. On by default.
+    pub fn set_animate(&mut self, animate: bool) {
+        if self.animate == animate {
+            return;
+        }
+        self.animate = animate;
+        if !animate {
+            self.clear_transition();
+            self.angles_dirty = true;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether slice value changes ease into place.
+    pub fn is_animated(&self) -> bool {
+        self.animate
+    }
+
+    /// Whether slice `index` is drawn and contributes to the total.
+    pub fn is_series_visible(&self, index: usize) -> bool {
+        self.slices.get(index).is_some_and(|slice| slice.visible)
+    }
+
+    /// Shows or hides slice `index`, reporting the change through [`Self::series_toggled`].
+    ///
+    /// Returns `false` when `index` is out of bounds.
+    pub fn set_series_visible(&mut self, index: usize, visible: bool) -> bool {
+        let Some(slice) = self.slices.get_mut(index) else {
+            return false;
+        };
+        if slice.visible == visible {
+            return true;
+        }
+        slice.visible = visible;
+        self.angles_dirty = true;
+        self.revalidate_hover();
+        self.series_toggled.emit((index, visible));
+        self.base.request_redraw();
+        true
+    }
+
+    /// The first legend row currently drawn.
+    pub fn legend_scroll_offset(&self) -> usize {
+        self.legend_scroll
+    }
+
+    /// The slice index of the legend row under `pos`, when the legend is shown.
+    fn legend_entry_at(&self, pos: Point) -> Option<usize> {
+        let area = self.last_legend_area?;
+        if pos.x < area.x
+            || pos.x >= area.x + area.width
+            || pos.y < area.y
+            || pos.y >= area.y + area.row_height * area.rows as i32
+        {
+            return None;
+        }
+        let row = ((pos.y - area.y) / area.row_height.max(1)) as usize;
+        if row >= area.rows {
+            return None;
+        }
+        let index = self.legend_scroll.saturating_add(row);
+        (index < self.slices.len()).then_some(index)
+    }
+
+    /// Scrolls the legend by `rows` when it overflows.
+    fn scroll_legend(&mut self, rows: i32) -> bool {
+        let Some(area) = self.last_legend_area else {
+            return false;
+        };
+        let max_scroll = self.slices.len().saturating_sub(area.rows);
+        if max_scroll == 0 {
+            return false;
+        }
+        let next = (self.legend_scroll as i32).saturating_add(rows).clamp(0, max_scroll as i32);
+        let next = next as usize;
+        if next == self.legend_scroll {
+            return false;
+        }
+        self.legend_scroll = next;
+        self.base.request_redraw();
+        true
     }
 
     /// Enables pulling the hovered slice out of the ring.
@@ -182,9 +363,12 @@ impl PieChart {
         self.explode_progress.resize(self.slices.len(), 0.0);
     }
 
-    /// Drops a hover index the slice list no longer has.
+    /// Drops a hover index the slice list no longer has or no longer draws.
     fn revalidate_hover(&mut self) {
-        if self.hovered_slice.is_some_and(|index| index >= self.slices.len()) {
+        if self
+            .hovered_slice
+            .is_some_and(|index| !self.slices.get(index).is_some_and(|slice| slice.visible))
+        {
             if let Some(index) = self.hovered_slice.take() {
                 self.slice_unhovered.emit(index);
             }
@@ -221,18 +405,24 @@ impl PieChart {
         if angle < 0.0 {
             angle += std::f32::consts::TAU;
         }
-        let mut cursor = 0.0f32;
-        for (index, slice) in self.slices.iter().enumerate() {
-            if slice.value <= 0.0 || !slice.value.is_finite() {
+        // The cached angles are the same ones the painter uses, so a pointer cannot hit a
+        // slice at a different angle than the one drawn — including mid-transition.
+        for (index, entry) in self.angle_cache.iter().enumerate() {
+            if !self.slices[index].visible {
                 continue;
             }
-            let sweep = (slice.value / total * f64::from(std::f32::consts::TAU)) as f32;
-            if angle >= cursor && angle < cursor + sweep {
+            let Some((start, sweep)) = *entry else {
+                continue;
+            };
+            let begin = start + std::f32::consts::FRAC_PI_2;
+            if angle >= begin && angle < begin + sweep {
                 return Some(index);
             }
-            cursor += sweep;
         }
-        self.slices.len().checked_sub(1)
+        self.angle_cache
+            .iter()
+            .rposition(|entry| entry.is_some())
+            .filter(|index| self.slices.get(*index).is_some_and(|slice| slice.visible))
     }
 
     /// Returns the number of slices.
@@ -370,9 +560,15 @@ impl PieChart {
         self.donut_ratio
     }
 
-    /// Returns the total sum of all positive finite slice values.
+    /// Returns the total sum of all displayed positive finite slice values.
     fn total_value(&self) -> f64 {
-        self.slices.iter().map(|s| s.value).filter(|v| v.is_finite() && *v > 0.0).sum()
+        self.slices
+            .iter()
+            .enumerate()
+            .filter(|(_, slice)| slice.visible)
+            .map(|(index, _)| self.displayed_value(index))
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .sum()
     }
 
     /// Rebuilds the cached total and per-slice angles after the data changed.
@@ -384,8 +580,14 @@ impl PieChart {
         if !self.angles_dirty {
             return;
         }
-        let total: f64 =
-            self.slices.iter().map(|s| s.value).filter(|v| v.is_finite() && *v > 0.0).sum();
+        let total: f64 = self
+            .slices
+            .iter()
+            .enumerate()
+            .filter(|(_, slice)| slice.visible)
+            .map(|(index, _)| self.displayed_value(index))
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .sum();
         self.cached_total = total;
         self.angle_cache.clear();
         if total <= 0.0 || !total.is_finite() {
@@ -395,12 +597,13 @@ impl PieChart {
         }
         self.angle_cache.reserve(self.slices.len());
         let mut start = -std::f32::consts::FRAC_PI_2;
-        for slice in &self.slices {
-            if slice.value <= 0.0 || !slice.value.is_finite() {
+        for (index, slice) in self.slices.iter().enumerate() {
+            let value = self.displayed_value(index);
+            if !slice.visible || value <= 0.0 || !value.is_finite() {
                 self.angle_cache.push(None);
                 continue;
             }
-            let sweep = (slice.value / total * 2.0 * std::f32::consts::PI as f64) as f32;
+            let sweep = (value / total * 2.0 * std::f32::consts::PI as f64) as f32;
             self.angle_cache.push(Some((start, sweep)));
             start += sweep;
         }
@@ -677,6 +880,38 @@ fn label_box(x: i32, y: i32, width: i32, height: i32, rect: Rect) -> (Rect, bool
     (Rect::new(clamped_x, clamped_y, width.max(1) as u32, height.max(1) as u32), moved)
 }
 
+/// Whether two label boxes intersect.
+fn labels_overlap(a: Rect, b: Rect) -> bool {
+    a.x < b.x.saturating_add(b.width as i32)
+        && b.x < a.x.saturating_add(a.width as i32)
+        && a.y < b.y.saturating_add(b.height as i32)
+        && b.y < a.y.saturating_add(a.height as i32)
+}
+
+/// Moves a slice label out of the way of the labels already placed, or omits it.
+///
+/// The candidate is tried at its natural position and then at up to two rows above
+/// and below it. Returning `None` is the deliberate fallback: a label that cannot be
+/// placed without sitting on another label is dropped rather than painted twice at
+/// the same spot, which is what made a clustered pie unreadable (CH-006).
+fn place_label(candidate: Rect, occupied: &[Rect], rect: Rect, row_height: i32) -> Option<Rect> {
+    let row = row_height.max(1);
+    let offsets = [0, row, -row, 2 * row, -2 * row];
+    for offset in offsets {
+        let (clamped, _) = label_box(
+            candidate.x,
+            candidate.y + offset,
+            candidate.width as i32,
+            candidate.height as i32,
+            rect,
+        );
+        if !occupied.iter().any(|placed| labels_overlap(clamped, *placed)) {
+            return Some(clamped);
+        }
+    }
+    None
+}
+
 impl Widget for PieChart {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -693,7 +928,7 @@ impl Widget for PieChart {
         crate::core::Size::new(300, 300)
     }
 
-    /// Advances the per-slice explosion animation.
+    /// Advances the per-slice explosion animation and the value transition.
     fn tick(&mut self, delta_ms: u32) -> bool {
         self.sync_explode_progress();
         let step = (delta_ms as f32 / 150.0).clamp(0.0, 1.0);
@@ -717,13 +952,24 @@ impl Widget for PieChart {
                 moving = true;
             }
         }
+        if self.animate && !self.from_values.is_empty() {
+            moving |= self.transition.tick(delta_ms);
+            // The angles are derived from the eased values, so every advanced frame has to
+            // rebuild them; the final frame lands on the targets before the starts are dropped.
+            self.angles_dirty = true;
+            if !self.transition.is_moving() {
+                self.from_values.clear();
+                self.transition.jump_to(1.0);
+                self.angles_dirty = true;
+            }
+        }
         if moving {
             self.base.request_redraw();
         }
         moving
     }
 
-    /// Whether any slice is still exploding or collapsing.
+    /// Whether any slice is still exploding, collapsing or easing to a value.
     fn is_animating(&self) -> bool {
         let armed = |index: usize| {
             self.slices.get(index).is_some_and(|slice| slice.exploded)
@@ -732,7 +978,7 @@ impl Widget for PieChart {
         (0..self.explode_progress.len()).any(|index| {
             (self.explode_progress[index] - if armed(index) { 1.0 } else { 0.0 }).abs()
                 > f32::EPSILON
-        })
+        }) || (self.animate && !self.from_values.is_empty() && self.transition.is_moving())
     }
 
     /// Resolves a published event name to the signal this chart actually emits.
@@ -758,6 +1004,14 @@ impl Widget for PieChart {
             "slice_unhovered" => {
                 Some(EventSignalRef::mapped("slice_unhovered", &self.slice_unhovered, |v| {
                     CapabilityValue::UInt(*v as u64)
+                }))
+            }
+            "series_toggled" => {
+                Some(EventSignalRef::mapped("series_toggled", &self.series_toggled, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::Bool(v.1),
+                    ]))
                 }))
             }
             _ => None,
@@ -836,6 +1090,9 @@ impl Draw for PieChart {
         // Draw sectors
         // One reused buffer for the percentage labels: `format!` built a fresh `String` per sector
         // per frame, and the text is at most four characters.
+        // Labels are placed one at a time and must not land on an earlier label; the
+        // `angle_cache` already omits zero-share slices, so they never reach this list.
+        let mut occupied_labels: Vec<Rect> = Vec::new();
         let mut pct_text = crate::compat::String::new();
         for (slice_index, slice) in self.slices.iter().enumerate() {
             let Some((start_angle, sweep)) = self.angle_cache.get(slice_index).copied().flatten()
@@ -891,32 +1148,43 @@ impl Draw for PieChart {
                     let metrics = context.measure_text(&slice.label, &label_font);
                     let label_x = label_pos.x - metrics.width as i32 / 2;
                     let label_y = label_pos.y - metrics.height as i32 / 2;
-                    let (bounds, clamped) = label_box(
+                    let (_, clamped) = label_box(
                         label_x,
                         label_y,
                         metrics.width as i32,
                         metrics.height as i32,
                         rect,
                     );
-                    // The anchor is deliberately outside the pie, so the panel's chrome ink is
-                    // the right colour — unless the control is too small for that and the box was
-                    // pulled back inside, which lands the label on a slice. There the ink has to
-                    // come from the slice, or the label is drawn panel-on-slice (measured 1.91:1
-                    // on the dark appearance and 2.57:1 on the light one).
-                    let ink =
-                        if clamped { slice_color.contrast_color() } else { slice_label_color };
-                    context.draw_text_fitted_cow(
-                        bounds,
-                        &slice.label,
-                        &label_font,
-                        ink,
-                        HorizontalAlignment::Left,
+                    let raw = Rect::new(
+                        label_x,
+                        label_y,
+                        metrics.width.max(1) as u32,
+                        metrics.height.max(1) as u32,
                     );
+                    let row_height = metrics.height.max(1) as i32 + 2;
+                    if let Some(bounds) = place_label(raw, &occupied_labels, rect, row_height) {
+                        occupied_labels.push(bounds);
+                        // The anchor is deliberately outside the pie, so the panel's chrome ink is
+                        // the right colour — unless the control is too small for that and the box was
+                        // pulled back inside, which lands the label on a slice. There the ink has to
+                        // come from the slice, or the label is drawn panel-on-slice (measured 1.91:1
+                        // on the dark appearance and 2.57:1 on the light one).
+                        let ink =
+                            if clamped { slice_color.contrast_color() } else { slice_label_color };
+                        context.draw_text_fitted_cow(
+                            bounds,
+                            &slice.label,
+                            &label_font,
+                            ink,
+                            HorizontalAlignment::Left,
+                        );
+                    }
                 }
 
                 // Draw percentage on the arc (inside, not overlapping label)
                 if self.show_percentages && total > 0.0 {
-                    let pct = (slice.value / total * 100.0).round() as i32;
+                    let displayed = self.displayed_value(slice_index);
+                    let pct = (displayed / total * 100.0).round() as i32;
                     pct_text.clear();
                     let _ = core::fmt::Write::write_fmt(&mut pct_text, format_args!("{pct}%"));
                     // Position percentage inside the sector, halfway between center and edge
@@ -1013,10 +1281,15 @@ impl Draw for PieChart {
             let font = role_font(self.base.style(), 10.0);
             let legend_ink = crate::widget::chart_widgets::charts::axis_chrome_color(0.75);
             let row = 16i32;
-            let max_rows = ((rect.height as i32 - 16) / row).max(1) as usize;
+            let visible_rows = ((rect.height as i32 - 16) / row).max(1) as usize;
+            let max_scroll = self.slices.len().saturating_sub(visible_rows);
+            self.legend_scroll = self.legend_scroll.min(max_scroll);
+            let start = self.legend_scroll;
             let mut y = rect.y + 8;
-            for slice in self.slices.iter().take(max_rows) {
-                context.fill_rect(Rect::new(legend_x, y + 3, 10, 10), slice.color);
+            let mut drawn = 0usize;
+            for slice in self.slices.iter().skip(start).take(visible_rows) {
+                let color = if slice.visible { slice.color } else { slice.color.with_alpha(70) };
+                context.fill_rect(Rect::new(legend_x, y + 3, 10, 10), color);
                 context.draw_text_fitted_cow(
                     Rect::new(
                         legend_x + 14,
@@ -1030,7 +1303,34 @@ impl Draw for PieChart {
                     HorizontalAlignment::Left,
                 );
                 y += row;
+                drawn += 1;
             }
+            self.last_legend_area = Some(LegendArea {
+                x: legend_x - 4,
+                y: rect.y + 8,
+                width: (rect.right() - legend_x + 4).max(0),
+                row_height: row,
+                rows: drawn,
+            });
+            // A track and thumb make the hidden rows discoverable rather than silently
+            // truncated; the wheel scrolls the column (CH-009).
+            if max_scroll > 0 {
+                let track =
+                    Rect::new(rect.right() - 3, rect.y + 8, 2, (drawn as i32 * row).max(1) as u32);
+                context.fill_rect(track, legend_ink.with_alpha(40));
+                let thumb_height = ((track.height as usize * visible_rows)
+                    / self.slices.len().max(1))
+                .max(8)
+                .min(track.height as usize) as u32;
+                let travel = track.height.saturating_sub(thumb_height);
+                let thumb_y = track.y + ((travel as usize * start) / max_scroll.max(1)) as i32;
+                context.fill_rect(
+                    Rect::new(track.x, thumb_y, track.width, thumb_height.max(1)),
+                    legend_ink.with_alpha(140),
+                );
+            }
+        } else {
+            self.last_legend_area = None;
         }
 
         // ── Title and axis titles (CH-07) ──
@@ -1076,6 +1376,7 @@ impl EventHandler for PieChart {
         }
         match event {
             Event::MouseMove { pos } => {
+                self.last_pointer = Some(*pos);
                 let next = self.slice_at(*pos);
                 if next != self.hovered_slice {
                     if let Some(index) = self.hovered_slice {
@@ -1095,6 +1396,12 @@ impl EventHandler for PieChart {
                 }
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
+                // A legend row toggles its slice; it is not a pie hit, so consume it first.
+                if let Some(index) = self.legend_entry_at(*pos) {
+                    let visible = self.is_series_visible(index);
+                    self.set_series_visible(index, !visible);
+                    return;
+                }
                 self.base.set_mouse_pressed(true);
                 if let Some(index) = self.slice_at(*pos) {
                     self.slice_clicked.emit(index);
@@ -1102,6 +1409,22 @@ impl EventHandler for PieChart {
             }
             Event::MouseRelease { button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
+            }
+            Event::Wheel { delta, .. } if delta.y != 0 => {
+                // The wheel scrolls the legend only while the pointer is over it; over the
+                // ring it stays a no-op, because the pie itself has no zoom.
+                let over_legend = self.last_pointer.is_some_and(|pos| {
+                    self.legend_entry_at(pos).is_some()
+                        || self.last_legend_area.is_some_and(|area| {
+                            pos.x >= area.x
+                                && pos.x < area.x + area.width
+                                && pos.y >= area.y
+                                && pos.y < area.y + area.row_height * area.rows as i32
+                        })
+                });
+                if over_legend {
+                    self.scroll_legend(if delta.y > 0 { -3 } else { 3 });
+                }
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -1357,5 +1680,102 @@ mod tests {
             crate::widget::svg::text_ink_boxes(&svg).len() > runs_without_tooltip,
             "the tooltip adds a text run"
         );
+    }
+
+    /// CH-001: a legend click hides the slice and reports it.
+    #[test]
+    fn a_pie_legend_click_toggles_the_slice() {
+        use std::sync::{Arc, Mutex};
+        let mut pc = PieChart::new(Rect::new(0, 0, 360, 260));
+        pc.set_slices(vec![
+            PieSlice::new("Alpha", 1.0, Color::PRIMARY),
+            PieSlice::new("Beta", 2.0, Color::rgb(0, 180, 90)),
+        ]);
+        pc.set_show_legend(true);
+        let _ = render_to_svg(&mut pc);
+        let area = pc.last_legend_area.expect("the legend has a hit area");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        pc.series_toggled.connect(move |value| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*value);
+            }
+        });
+        pc.handle_event(&Event::mouse_press(area.x + 2, area.y + 2, 1));
+        assert!(!pc.is_series_visible(0));
+        assert_eq!(*seen.lock().unwrap(), vec![(0, false)]);
+        pc.ensure_angle_cache();
+        assert!(pc.angle_cache[0].is_none(), "a hidden slice drops out of the ring");
+    }
+
+    /// CH-005: pie values ease by default and can be made immediate.
+    #[test]
+    fn pie_value_changes_ease_by_default_and_can_be_disabled() {
+        let mut pc = PieChart::new(Rect::new(0, 0, 240, 240));
+        pc.set_slices(vec![
+            PieSlice::new("A", 1.0, Color::PRIMARY),
+            PieSlice::new("B", 1.0, Color::rgb(0, 180, 90)),
+        ]);
+        pc.set_slices(vec![
+            PieSlice::new("A", 3.0, Color::PRIMARY),
+            PieSlice::new("B", 1.0, Color::rgb(0, 180, 90)),
+        ]);
+        assert!(pc.is_animated());
+        assert!(pc.displayed_value(0) < 3.0, "the new value starts behind the target");
+        assert!(pc.is_animating());
+        let mut frames = 0;
+        while pc.tick(16) && frames < 200 {
+            frames += 1;
+        }
+        assert!((pc.displayed_value(0) - 3.0).abs() < 1e-6);
+        assert!(!pc.is_animating());
+
+        pc.set_animate(false);
+        pc.set_slices(vec![
+            PieSlice::new("A", 9.0, Color::PRIMARY),
+            PieSlice::new("B", 1.0, Color::rgb(0, 180, 90)),
+        ]);
+        assert!((pc.displayed_value(0) - 9.0).abs() < 1e-9);
+    }
+
+    /// CH-006: labels nudge away from an earlier label, and a zero-share slice is skipped.
+    #[test]
+    fn overlapping_labels_move_or_disappear_and_zero_slices_are_skipped() {
+        let rect = Rect::new(0, 0, 120, 120);
+        let first = Rect::new(10, 10, 30, 10);
+        let second = Rect::new(10, 12, 30, 10);
+        let placed = place_label(second, &[first], rect, 12).expect("a row below is free");
+        assert!(!labels_overlap(placed, first));
+        assert!(place_label(first, &[first], rect, 1).is_none(), "no collision-free slot");
+
+        let mut pc = PieChart::new(Rect::new(0, 0, 240, 240));
+        pc.set_slices(vec![
+            PieSlice::new("Keep", 100.0, Color::PRIMARY),
+            PieSlice::new("Zero", 0.0, Color::rgb(0, 180, 90)),
+        ]);
+        pc.ensure_angle_cache();
+        assert!(pc.angle_cache[0].is_some());
+        assert!(pc.angle_cache[1].is_none(), "a zero-share slice gets no sector or label");
+    }
+
+    /// CH-009: an overflowing legend scrolls instead of truncating.
+    #[test]
+    fn an_overflowing_pie_legend_scrolls() {
+        let mut pc = PieChart::new(Rect::new(0, 0, 320, 120));
+        pc.set_show_legend(true);
+        pc.set_slices(
+            (0..20)
+                .map(|index| PieSlice::new(format!("slice-{index}"), 1.0, Color::PRIMARY))
+                .collect(),
+        );
+        let _ = render_to_svg(&mut pc);
+        let area = pc.last_legend_area.expect("the legend has a hit area");
+        assert!(area.rows < 20, "the short control cannot show every row");
+        pc.handle_event(&Event::mouse_move(area.x + 2, area.y + 2));
+        pc.handle_event(&Event::wheel(0, -1, 0));
+        assert!(pc.legend_scroll_offset() > 0, "the wheel advances the legend");
+        let scrolled = pc.legend_scroll_offset();
+        pc.handle_event(&Event::wheel(0, 1, 0));
+        assert!(pc.legend_scroll_offset() < scrolled, "the wheel scrolls back");
     }
 }

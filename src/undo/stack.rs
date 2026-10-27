@@ -46,10 +46,18 @@ struct Entry {
     after_revision: u64,
 }
 
+/// Default number of undo entries retained by [`UndoStack::new`].
+///
+/// A typing burst is now merged into one entry (I-002), so a document edit costs many fewer
+/// entries than it used to; the previous bound of 100 was reached quickly by a single paragraph
+/// and evicted history the user still expected. The bound lives here so `new` and its
+/// documentation cannot drift, and `with_capacity` remains the explicit override.
+pub const DEFAULT_UNDO_CAPACITY: usize = 1000;
+
 impl UndoStack {
-    /// Creates a new `UndoStack` with a default capacity of 100.
+    /// Creates a new `UndoStack` with the default capacity ([`DEFAULT_UNDO_CAPACITY`]).
     pub fn new() -> Self {
-        Self::with_capacity(100)
+        Self::with_capacity(DEFAULT_UNDO_CAPACITY)
     }
 
     /// Creates a new `UndoStack` with the specified maximum capacity.

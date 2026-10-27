@@ -445,7 +445,9 @@ impl GroupBox {
         // `=> rect.x + 10` arm documented.
         let free = title.width.saturating_sub(text_width);
         let offset = match self.alignment {
-            Alignment::Left | Alignment::Top | Alignment::Bottom => 0,
+            // `Baseline` (LAY-004) is a row-container alignment, not a horizontal title
+            // position, so it takes the leading edge exactly as the vertical edges do.
+            Alignment::Left | Alignment::Top | Alignment::Bottom | Alignment::Baseline => 0,
             Alignment::Center => free / 2,
             Alignment::Right => free,
         };

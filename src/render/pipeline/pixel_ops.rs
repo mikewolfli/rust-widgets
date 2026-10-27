@@ -237,6 +237,40 @@ pub(crate) fn blend_painted_glyph(
     blend_coverage_bitmap(cell.width, cell.height, x, y, coverage, config, italic)
 }
 
+/// How a glyph-coverage buffer is laid out.
+///
+/// # Why this is a type and not a `channels: usize` argument
+///
+/// The layout is a property of what the rasteriser wrote, and the two values have different
+/// *meanings* as well as different sizes: one byte is the pixel's whole coverage, three bytes are
+/// the red, green and blue emitters' coverage in that order. Naming them keeps the `3` from being
+/// read as "subpixel addressing" by one caller and "three grey samples" by another.
+///
+/// # Why the subpixel member may be unconstructed in a build
+///
+/// It is produced by the rasteriser's `AntiAliasMode::Subpixel` and consumed here; the crate's
+/// frame path asks for [`Self::Grayscale`] because that is what the active text loop paints. The
+/// blend itself is real and tested — see `blend_coverage_bitmap_layout`.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CoverageLayout {
+    /// One byte per pixel: a single linear coverage, the default and the only layout the active
+    /// text path produces.
+    Grayscale,
+    /// Three bytes per pixel — `R`, `G`, `B` — from the rasteriser's horizontal subpixel grid.
+    Subpixel,
+}
+
+impl CoverageLayout {
+    /// Bytes of coverage this layout stores per device pixel.
+    const fn channels(self) -> usize {
+        match self {
+            Self::Grayscale => 1,
+            Self::Subpixel => 3,
+        }
+    }
+}
+
 /// Blends one coverage bitmap of `cell_width` x `cell_height` pixels into the canvas at `(x, y)`.
 ///
 /// Split out of [`blend_painted_glyph`] so a caller holding bytes that were painted **earlier** —
@@ -258,8 +292,52 @@ pub(crate) fn blend_coverage_bitmap(
     config: &mut GlyphDrawConfig,
     apply_italic: bool,
 ) -> bool {
+    blend_coverage_bitmap_layout(
+        cell_width,
+        cell_height,
+        x,
+        y,
+        coverage,
+        config,
+        apply_italic,
+        CoverageLayout::Grayscale,
+    )
+}
+
+/// [`blend_coverage_bitmap`] for either coverage layout.
+///
+/// [`CoverageLayout::Grayscale`] reproduces the single-channel loop exactly: one weight per pixel,
+/// one [`blend_pixel`] call, the same clip spans. That equivalence is pinned by a test that blends a
+/// three-channel buffer whose channels all equal a grayscale buffer and gets byte-identical pixels.
+///
+/// # What `CoverageLayout::Subpixel` does, and what it does not claim
+///
+/// Each of the three bytes is the coverage of one horizontal third of the pixel (red, green, blue),
+/// and each is blended through [`glyph_coverage_weight`] and then **into its own frame channel** by
+/// [`blend_pixel_per_channel`]. The frame is straight-alpha `RGBA8`, so a per-channel alpha is
+/// expressible: each channel composites source-over against the backdrop independently.
+///
+/// This is genuinely per-channel blending — not three grey samples averaged — but it is not a claim
+/// that the display's subpixel order or its gamma are known. The order is the rasteriser's (R, G,
+/// B from the left), which is the common stripe arrangement; a BGR panel would need the first and
+/// third channels swapped, and nothing here detects that.
+///
+/// The synthetic oblique shifts whole pixels, exactly as in grayscale: shearing each of the three
+/// channels separately is a different (and unmeasured) effect, so it is deliberately not attempted.
+fn blend_coverage_bitmap_layout(
+    cell_width: u32,
+    cell_height: u32,
+    x: i32,
+    y: i32,
+    coverage: &[u8],
+    config: &mut GlyphDrawConfig,
+    apply_italic: bool,
+    layout: CoverageLayout,
+) -> bool {
     let (width, height) = (cell_width as i32, cell_height as i32);
-    if width <= 0 || height <= 0 || coverage.len() < (width as usize) * (height as usize) {
+    let channels = layout.channels();
+    if width <= 0 || height <= 0 || coverage.len() < (width as usize) * (height as usize) * channels
+    {
         return false;
     }
     // Synthetic oblique: slide each row horizontally around the cell's vertical centre. Top rows
@@ -273,43 +351,162 @@ pub(crate) fn blend_coverage_bitmap(
         }
     };
     let mut any = false;
-    for py in 0..height {
+    // The clip∩bitmap row/column spans, resolved once instead of testing every pixel (G-010).
+    // Each bound mirrors the check it replaces exactly — including `pixel_visible`'s wrapping
+    // `clip_width as i32` cast and the saturating sum it feeds, and the wrapped `canvas_* as i32`
+    // casts — so the loops visit precisely the pixels the per-pixel tests admitted. The bounds
+    // are derived in `i64` because the glyph origin is a public `i32` and a bound outside the
+    // bitmap or canvas simply empties its span, which is what the old `continue` did for every
+    // pixel of that row or column. A missing clip is the full `i32` range rather than an
+    // infinite sentinel: it admits everything the canvas checks allow, and it keeps the
+    // subtractions below overflow-free.
+    let canvas_height = config.canvas_height as i32 as i64;
+    let canvas_width = config.canvas_width as i32 as i64;
+    let (clip_x, clip_right, clip_y, clip_bottom) = match config.clip {
+        Some((clip_x, clip_y, clip_width, clip_height)) => (
+            clip_x as i64,
+            clip_x.saturating_add(clip_width as i32) as i64,
+            clip_y as i64,
+            clip_y.saturating_add(clip_height as i32) as i64,
+        ),
+        None => (i32::MIN as i64, i32::MAX as i64, i32::MIN as i64, i32::MAX as i64),
+    };
+    // Rows whose canvas row `y + py` is a visible canvas row inside the clip.
+    let row_lower = 0i64.max(-(y as i64)).max(clip_y - y as i64);
+    let row_upper = (height as i64).min(canvas_height - y as i64).min(clip_bottom - y as i64);
+    let row_lo = row_lower.min(row_upper.max(0)) as i32;
+    let row_hi = row_upper.max(0) as i32;
+    for py in row_lo..row_hi {
         let cy = y + py;
-        if cy < 0 || cy >= config.canvas_height as i32 {
-            continue;
-        }
         let shift = italic_shift(py);
-        for px in 0..width {
+        // Columns of this row whose canvas column `x + px` is visible, inside the clip, and whose
+        // shifted source column `px - shift` stays inside the bitmap. The old loop's `px < width`
+        // and `source_px < width` bounds both survive here as the `width` and `width + shift`
+        // terms.
+        let col_lower = 0i64.max(-(x as i64)).max(clip_x - x as i64).max(shift as i64);
+        let col_upper = (width as i64)
+            .min(width as i64 + shift as i64)
+            .min(canvas_width - x as i64)
+            .min(clip_right - x as i64);
+        let col_lo = col_lower.min(col_upper.max(0)) as i32;
+        let col_hi = col_upper.max(0) as i32;
+        for px in col_lo..col_hi {
             let source_px = px - shift;
-            if source_px < 0 || source_px >= width {
-                continue;
-            }
-            let value = coverage[(py * width + source_px) as usize];
-            if value == 0 {
-                continue;
-            }
             let cx = x + px;
-            if cx < 0 || cx >= config.canvas_width as i32 {
-                continue;
+            match layout {
+                CoverageLayout::Grayscale => {
+                    let value = coverage[(py * width + source_px) as usize];
+                    if value == 0 {
+                        continue;
+                    }
+                    // The coverage is a **linear area fraction**, so it goes through the display's
+                    // transfer function before it becomes an alpha. Blending it raw is what made
+                    // small text read as thin: measured, a 0.25-coverage edge pixel was written at
+                    // 64 instead of 136. See `srgb_ramp` for the numbers and for why only glyph
+                    // ink is corrected.
+                    blend_pixel(
+                        config.canvas,
+                        config.canvas_width,
+                        cx as u32,
+                        cy as u32,
+                        config.color,
+                        glyph_coverage_weight(value),
+                    );
+                }
+                CoverageLayout::Subpixel => {
+                    let base = ((py * width + source_px) as usize) * channels;
+                    let [red, green, blue] =
+                        [coverage[base], coverage[base + 1], coverage[base + 2]];
+                    if red == 0 && green == 0 && blue == 0 {
+                        continue;
+                    }
+                    // Same transfer function per channel, then a per-channel source-over. A pixel
+                    // whose three emitters are equally covered lands on exactly the grayscale
+                    // result; the difference only appears on the column boundaries.
+                    blend_pixel_per_channel(
+                        config.canvas,
+                        config.canvas_width,
+                        cx as u32,
+                        cy as u32,
+                        config.color,
+                        [
+                            glyph_coverage_weight(red),
+                            glyph_coverage_weight(green),
+                            glyph_coverage_weight(blue),
+                        ],
+                    );
+                }
             }
-            if pixel_visible(config.clip, cx, cy) {
-                // The coverage is a **linear area fraction**, so it goes through the display's
-                // transfer function before it becomes an alpha. Blending it raw is what made small
-                // text read as thin: measured, a 0.25-coverage edge pixel was written at 64 instead
-                // of 136. See `srgb_ramp` for the numbers and for why only glyph ink is corrected.
-                blend_pixel(
-                    config.canvas,
-                    config.canvas_width,
-                    cx as u32,
-                    cy as u32,
-                    config.color,
-                    glyph_coverage_weight(value),
-                );
-                any = true;
-            }
+            any = true;
         }
     }
     any
+}
+
+/// Composites one pixel with a **per-channel** coverage, source-over against a straight-alpha
+/// backdrop.
+///
+/// # Why this is not [`blend_pixel`] called three times
+///
+/// Three calls would composite the source over the backdrop three times, so the second and third
+/// would see a backdrop the first had already changed — the red emitter would darken the pixel the
+/// green and blue emitters then blend into. One call per pixel, with all three alphas known, is the
+/// only form that composites each channel against the *original* backdrop.
+///
+/// # The arithmetic, and why it reduces to [`blend_pixel_with_mode`]'s `Normal` case
+///
+/// A straight-alpha destination has one alpha but a per-channel coverage gives three source alphas,
+/// so the output alpha is the largest of them composited over the backdrop:
+///
+/// ```text
+/// out_a   = max(a_r, a_g, a_b) + dst_a * (1 - max(a_r, a_g, a_b))
+/// out_c   = (src_c * a_c + dst_c * dst_a * (1 - a_c)) / out_a
+/// ```
+///
+/// When the three alphas are equal this is exactly the single-alpha formula `blend_pixel`
+/// evaluates, byte for byte (same rounding, same clamp), which is what makes a subpixel blend of an
+/// equally covered pixel indistinguishable from a grayscale one.
+///
+/// Only `BlendMode::Normal` is applied: the glyph path has always blended with it, and a subpixel
+/// glyph under a separable blend mode is a separate question with its own evidence to gather.
+fn blend_pixel_per_channel(
+    frame: &mut [u8],
+    width: u32,
+    x: u32,
+    y: u32,
+    color: Color,
+    coverage: [f32; 3],
+) {
+    let idx = ((y * width + x) * 4) as usize;
+    if idx + 3 >= frame.len() {
+        return;
+    }
+    let base_alpha = color.a as f32 / 255.0;
+    let mut alphas = [0.0f32; 3];
+    let mut any = false;
+    for (alpha, channel) in alphas.iter_mut().zip(coverage.iter()) {
+        *alpha = base_alpha * channel.clamp(0.0, 1.0);
+        any |= *alpha > 0.0;
+    }
+    if !any {
+        // Nothing to composite. Erasing is a separate, explicit operation (see `blend_pixel`).
+        return;
+    }
+    let dst = &mut frame[idx..idx + 4];
+    let dst_a = dst[3] as f32 / 255.0;
+    let alpha_max = alphas.iter().cloned().fold(0.0f32, f32::max);
+    let out_a = alpha_max + dst_a * (1.0 - alpha_max);
+    if out_a <= f32::EPSILON {
+        return;
+    }
+    let src = [color.r as f32 / 255.0, color.g as f32 / 255.0, color.b as f32 / 255.0];
+    for channel in 0..3 {
+        let src_a = alphas[channel];
+        let dst_c = dst[channel] as f32 / 255.0;
+        let out = (src[channel] * src_a + dst_c * dst_a * (1.0 - src_a)) / out_a;
+        dst[channel] = (out * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    dst[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
 }
 
 /// Blend one glyph's **colour** ink into a canvas.
@@ -379,22 +576,41 @@ fn blend_rgba_over_canvas(
     config: &mut GlyphDrawConfig,
 ) -> bool {
     let (width, height) = (cell.width as i32, cell.height as i32);
+    // The clip∩bitmap row/column spans, resolved once instead of testing every pixel (G-010).
+    // The bounds mirror `blend_coverage_bitmap`'s, which states the exactness argument; here the
+    // same derivation covers the straight-RGBA blit, including the italic shift's source bounds.
+    let canvas_height = config.canvas_height as i32 as i64;
+    let canvas_width = config.canvas_width as i32 as i64;
+    let (clip_x, clip_right, clip_y, clip_bottom) = match config.clip {
+        Some((clip_x, clip_y, clip_width, clip_height)) => (
+            clip_x as i64,
+            clip_x.saturating_add(clip_width as i32) as i64,
+            clip_y as i64,
+            clip_y.saturating_add(clip_height as i32) as i64,
+        ),
+        None => (i32::MIN as i64, i32::MAX as i64, i32::MIN as i64, i32::MAX as i64),
+    };
     let mut any = false;
-    for py in 0..height {
+    let row_lower = 0i64.max(-(y as i64)).max(clip_y - y as i64);
+    let row_upper = (height as i64).min(canvas_height - y as i64).min(clip_bottom - y as i64);
+    let row_lo = row_lower.min(row_upper.max(0)) as i32;
+    let row_hi = row_upper.max(0) as i32;
+    for py in row_lo..row_hi {
         let cy = y + py;
-        if cy < 0 || cy >= config.canvas_height as i32 {
-            continue;
-        }
         let shift = if config.italic {
             (((height as f32 * 0.5) - py as f32) * 0.2).round() as i32
         } else {
             0
         };
-        for px in 0..width {
+        let col_lower = 0i64.max(-(x as i64)).max(clip_x - x as i64).max(shift as i64);
+        let col_upper = (width as i64)
+            .min(width as i64 + shift as i64)
+            .min(canvas_width - x as i64)
+            .min(clip_right - x as i64);
+        let col_lo = col_lower.min(col_upper.max(0)) as i32;
+        let col_hi = col_upper.max(0) as i32;
+        for px in col_lo..col_hi {
             let source_px = px - shift;
-            if source_px < 0 || source_px >= width {
-                continue;
-            }
             let si = ((py * width + source_px) * 4) as usize;
             let Some(src) = pixels.get(si..si + 4) else {
                 continue;
@@ -405,12 +621,6 @@ fn blend_rgba_over_canvas(
                 continue;
             }
             let cx = x + px;
-            if cx < 0 || cx >= config.canvas_width as i32 {
-                continue;
-            }
-            if !pixel_visible(config.clip, cx, cy) {
-                continue;
-            }
             blend_pixel(
                 config.canvas,
                 config.canvas_width,
@@ -1363,5 +1573,364 @@ mod corner_coverage_tests {
         assert!(!point_in_rounded_rect_corners_f32(1.0, 1.0, rect, radii));
         // Centre is always inside.
         assert!(point_in_rounded_rect_corners_f32(20.0, 20.0, rect, radii));
+    }
+}
+
+/// The clip∩bitmap span hoisting in the glyph blend loops (G-010): after the loops stopped
+/// calling `pixel_visible` per pixel, they must still visit exactly the pixels that check
+/// admitted — for clips that contain, cut, miss, or precede the bitmap, at canvas edges, and
+/// under the synthetic oblique's shifted source columns.
+#[cfg(test)]
+mod glyph_blend_clip_tests {
+    use super::*;
+
+    const CANVAS: u32 = 8;
+
+    fn config<'a>(
+        canvas: &'a mut [u8],
+        clip: Option<(i32, i32, u32, u32)>,
+        italic: bool,
+    ) -> GlyphDrawConfig<'a> {
+        GlyphDrawConfig {
+            w: 4,
+            h: 10,
+            color: Color::rgb(255, 0, 0),
+            canvas_width: CANVAS,
+            canvas_height: CANVAS,
+            canvas,
+            clip,
+            weight: 400,
+            italic,
+        }
+    }
+
+    /// The destination pixels the old per-pixel tests admitted, derived independently of the
+    /// production loop: the cell closed under the canvas bounds, the clip, the oblique's
+    /// source-column restriction, and the bitmap's own ink (zero-coverage source pixels never
+    /// blended, before or after the hoisting). This is the spec the hoisted spans must reproduce.
+    fn expected_ink(
+        x: i32,
+        y: i32,
+        clip: Option<(i32, i32, u32, u32)>,
+        cell_width: i32,
+        cell_height: i32,
+        italic: bool,
+        coverage: &[u8],
+    ) -> Vec<(i32, i32)> {
+        let shift_of = |py: i32| -> i32 {
+            if italic {
+                (((cell_height as f32 * 0.5) - py as f32) * 0.2).round() as i32
+            } else {
+                0
+            }
+        };
+        let mut pixels = Vec::new();
+        for py in 0..cell_height {
+            let shift = shift_of(py);
+            for px in 0..cell_width {
+                let source_px = px - shift;
+                if source_px < 0 || source_px >= cell_width {
+                    continue;
+                }
+                if coverage[py as usize * cell_width as usize + source_px as usize] == 0 {
+                    continue;
+                }
+                let (cx, cy) = (x + px, y + py);
+                let on_canvas = cx >= 0 && cy >= 0 && cx < CANVAS as i32 && cy < CANVAS as i32;
+                let visible = clip.map_or(true, |(cl, ct, cw, ch)| {
+                    cx >= cl
+                        && cy >= ct
+                        && cx < cl.saturating_add(cw as i32)
+                        && cy < ct.saturating_add(ch as i32)
+                });
+                if on_canvas && visible {
+                    pixels.push((cx, cy));
+                }
+            }
+        }
+        pixels
+    }
+
+    /// Every fully-red pixel of the canvas, as the set of coordinates carrying ink.
+    fn ink_positions(canvas: &[u8]) -> Vec<(i32, i32)> {
+        let mut found = Vec::new();
+        for cy in 0..CANVAS as i32 {
+            for cx in 0..CANVAS as i32 {
+                let i = ((cy * CANVAS as i32 + cx) * 4) as usize;
+                if canvas[i] == 255
+                    && canvas[i + 1] == 0
+                    && canvas[i + 2] == 0
+                    && canvas[i + 3] == 255
+                {
+                    found.push((cx, cy));
+                }
+            }
+        }
+        found
+    }
+
+    fn assert_ink_matches(
+        clip: Option<(i32, i32, u32, u32)>,
+        x: i32,
+        y: i32,
+        italic: bool,
+        coverage: &[u8],
+        cell_width: u32,
+        cell_height: u32,
+    ) {
+        let mut canvas = vec![0u8; (CANVAS * CANVAS * 4) as usize];
+        let mut cfg = config(&mut canvas, clip, italic);
+        cfg.w = cell_width;
+        cfg.h = cell_height;
+        let any = blend_coverage_bitmap(cell_width, cell_height, x, y, coverage, &mut cfg, italic);
+        let expected =
+            expected_ink(x, y, clip, cell_width as i32, cell_height as i32, italic, coverage);
+        assert_eq!(ink_positions(&canvas), expected, "clip {clip:?} at ({x}, {y})");
+        assert_eq!(any, !expected.is_empty(), "the return must report real ink");
+    }
+
+    #[test]
+    fn an_unclipped_solid_bitmap_lands_exactly_on_its_cell() {
+        let coverage = vec![255u8; 4 * 10];
+        assert_ink_matches(None, 2, 2, false, &coverage, 4, 10);
+    }
+
+    #[test]
+    fn a_partial_clip_admits_only_the_intersecting_span() {
+        let coverage = vec![255u8; 4 * 10];
+        assert_ink_matches(Some((3, 3, 2, 2)), 2, 2, false, &coverage, 4, 10);
+    }
+
+    #[test]
+    fn a_disjoint_clip_draws_nothing_and_reports_no_ink() {
+        let coverage = vec![255u8; 4 * 10];
+        assert_ink_matches(Some((6, 0, 2, 8)), 2, 2, false, &coverage, 4, 10);
+    }
+
+    #[test]
+    fn a_bitmap_partly_off_canvas_is_cut_at_the_canvas_edge() {
+        let coverage = vec![255u8; 4 * 10];
+        assert_ink_matches(None, 6, 6, false, &coverage, 4, 10);
+        // A negative origin cuts the bitmap's top and left against the canvas itself.
+        assert_ink_matches(None, -2, -2, false, &coverage, 4, 10);
+    }
+
+    #[test]
+    fn a_clip_lying_before_the_canvas_origin_still_cuts_correctly() {
+        let coverage = vec![255u8; 4 * 10];
+        assert_ink_matches(Some((-2, -2, 6, 6)), 2, 2, false, &coverage, 4, 10);
+        // A clip whose saturating end sum is beyond `i32` bounds is not constructible here, but
+        // the empty clip (zero width) must draw nothing.
+        assert_ink_matches(Some((3, 3, 0, 0)), 2, 2, false, &coverage, 4, 10);
+    }
+
+    #[test]
+    fn a_sparse_bitmap_blends_only_its_ink_pixels() {
+        // One ink pixel at source (1, 1); everything else is zero coverage and must skip the
+        // blend even where the clip admits the pixel.
+        let mut coverage = vec![0u8; 4 * 10];
+        coverage[1 * 4 + 1] = 255;
+        assert_ink_matches(None, 2, 2, false, &coverage, 4, 10);
+        assert_ink_matches(Some((3, 3, 1, 1)), 2, 2, false, &coverage, 4, 10);
+    }
+
+    #[test]
+    fn the_synthetic_oblique_shifts_the_source_columns_not_the_bounds() {
+        // The 10-pixel cell makes the oblique's shift cross zero within the bitmap, so the
+        // source-column restriction moves rows both ways.
+        let coverage = vec![255u8; 4 * 10];
+        assert_ink_matches(None, 2, -3, true, &coverage, 4, 10);
+        assert_ink_matches(Some((3, 0, 3, 8)), 2, -3, true, &coverage, 4, 10);
+    }
+
+    /// The straight-RGBA blit must honour the same spans: opaque source pixels land exactly
+    /// where the old per-pixel checks admitted, transparent ones never darken the canvas.
+    #[cfg(feature = "fonts-emoji-color")]
+    #[test]
+    fn the_rgba_blit_honours_the_clip_and_canvas_spans() {
+        // Opaque red at source pixels (0, 0) and (3, 3); every other source pixel is fully
+        // transparent and must never darken the canvas.
+        let mut pixels = vec![0u8; 4 * 10 * 4];
+        for source in [0usize, 3 * 4 + 3] {
+            let base = source * 4;
+            pixels[base..base + 4].copy_from_slice(&[255, 0, 0, 255]);
+        }
+        let draw = |clip: Option<(i32, i32, u32, u32)>| {
+            let mut canvas = vec![0u8; (CANVAS * CANVAS * 4) as usize];
+            let mut cfg = config(&mut canvas, clip, false);
+            let cell = crate::render::text::Cell::new(4, 10);
+            let any = blend_rgba_over_canvas(&pixels, cell, 2, 2, &mut cfg);
+            (canvas.to_vec(), any)
+        };
+        let (canvas, any) = draw(None);
+        assert_eq!(
+            ink_positions(&canvas),
+            vec![(2, 2), (5, 5)],
+            "unclipped: the two opaque source pixels land on their cells"
+        );
+        assert!(any);
+        let (canvas, any) = draw(Some((0, 0, 4, 3)));
+        assert_eq!(ink_positions(&canvas), vec![(2, 2)], "the clip removes the second pixel");
+        assert!(any);
+        let (canvas, any) = draw(Some((6, 0, 2, 8)));
+        assert!(ink_positions(&canvas).is_empty(), "disjoint clip draws nothing");
+        assert!(!any, "and reports no ink");
+    }
+}
+
+/// The two coverage layouts the rasteriser can produce must blend through one loop, and the
+/// three-channel one must composite each emitter into its own frame channel.
+///
+/// # Why the equality case is the important one
+///
+/// A subpixel blend of a pixel whose three emitters are equally covered has to be *indistinguishable*
+/// from the grayscale blend, or the mode changes pixels it has no information about. Comparing two
+/// canvases byte for byte is what holds that: any divergence in the weight curve, the rounding or the
+/// alpha composite shows up on the first partial-coverage pixel.
+#[cfg(test)]
+mod coverage_layout_tests {
+    use super::*;
+
+    const CANVAS: u32 = 8;
+
+    fn config(canvas: &mut [u8]) -> GlyphDrawConfig<'_> {
+        GlyphDrawConfig {
+            w: 4,
+            h: 4,
+            // Black ink on the white canvas below, so a fully covered channel is unmistakable.
+            color: Color::rgb(0, 0, 0),
+            canvas_width: CANVAS,
+            canvas_height: CANVAS,
+            canvas,
+            clip: None,
+            weight: 400,
+            italic: false,
+        }
+    }
+
+    /// A canvas of opaque white, the backdrop both layouts are compared on.
+    fn white_canvas() -> Vec<u8> {
+        let mut canvas = vec![255u8; (CANVAS * CANVAS * 4) as usize];
+        for pixel in canvas.chunks_mut(4) {
+            pixel[3] = 255;
+        }
+        canvas
+    }
+
+    /// One pixel's `RGBA` at `(x, y)`.
+    fn pixel(canvas: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let index = ((y * CANVAS + x) * 4) as usize;
+        [canvas[index], canvas[index + 1], canvas[index + 2], canvas[index + 3]]
+    }
+
+    #[test]
+    fn equal_channels_reproduce_the_grayscale_blend_byte_for_byte() {
+        // A ramp that exercises partial, near-solid and solid coverage.
+        let coverage: Vec<u8> = (0..16).map(|index| (index * 17) as u8).collect();
+        let mut three_channel = Vec::with_capacity(coverage.len() * 3);
+        for value in &coverage {
+            three_channel.extend_from_slice(&[*value, *value, *value]);
+        }
+
+        let mut gray_canvas = white_canvas();
+        let mut cfg = config(&mut gray_canvas);
+        let gray_any = blend_coverage_bitmap(4, 4, 2, 2, &coverage, &mut cfg, false);
+
+        let mut sub_canvas = white_canvas();
+        let mut cfg = config(&mut sub_canvas);
+        let sub_any = blend_coverage_bitmap_layout(
+            4,
+            4,
+            2,
+            2,
+            &three_channel,
+            &mut cfg,
+            false,
+            CoverageLayout::Subpixel,
+        );
+
+        assert!(gray_any && sub_any, "both layouts must report the ink they blended");
+        assert_eq!(
+            gray_canvas, sub_canvas,
+            "three equal channels must composite exactly like one grayscale value"
+        );
+    }
+
+    #[test]
+    fn each_emitter_is_blended_into_its_own_frame_channel() {
+        // Red fully covered, green and blue untouched: black ink must reach only the red byte.
+        let coverage = [255u8, 0, 0];
+        let mut canvas = white_canvas();
+        let mut cfg = config(&mut canvas);
+        let any = blend_coverage_bitmap_layout(
+            1,
+            1,
+            3,
+            3,
+            &coverage,
+            &mut cfg,
+            false,
+            CoverageLayout::Subpixel,
+        );
+        assert!(any);
+        assert_eq!(pixel(&canvas, 3, 3), [0, 255, 255, 255], "only red carried coverage");
+
+        // And the middle emitter reaches green only.
+        let coverage = [0u8, 255, 0];
+        let mut canvas = white_canvas();
+        let mut cfg = config(&mut canvas);
+        assert!(blend_coverage_bitmap_layout(
+            1,
+            1,
+            4,
+            4,
+            &coverage,
+            &mut cfg,
+            false,
+            CoverageLayout::Subpixel,
+        ));
+        assert_eq!(pixel(&canvas, 4, 4), [255, 0, 255, 255], "only green carried coverage");
+        // Neighbouring pixels stay white: the blend is per pixel, not a row-wide wash.
+        assert_eq!(pixel(&canvas, 5, 4), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn a_buffer_too_short_for_three_channels_draws_nothing() {
+        // One byte per pixel: the grayscale length, which the subpixel layout must reject.
+        let coverage = [255u8; 16];
+        let mut canvas = white_canvas();
+        let mut cfg = config(&mut canvas);
+        assert!(
+            !blend_coverage_bitmap_layout(
+                4,
+                4,
+                2,
+                2,
+                &coverage,
+                &mut cfg,
+                false,
+                CoverageLayout::Subpixel,
+            ),
+            "a 16-byte buffer cannot describe a 4x4 three-channel cell"
+        );
+        assert_eq!(canvas, white_canvas(), "and it must not have touched the canvas");
+    }
+
+    #[test]
+    fn an_all_zero_subpixel_cell_reports_no_ink() {
+        let coverage = [0u8; 16 * 3];
+        let mut canvas = white_canvas();
+        let mut cfg = config(&mut canvas);
+        assert!(!blend_coverage_bitmap_layout(
+            4,
+            4,
+            2,
+            2,
+            &coverage,
+            &mut cfg,
+            false,
+            CoverageLayout::Subpixel,
+        ));
+        assert_eq!(canvas, white_canvas());
     }
 }

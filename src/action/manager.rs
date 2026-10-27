@@ -11,6 +11,32 @@ use crate::shortcut::Shortcut;
 use crate::signal::Signal1;
 use alloc::sync::Arc;
 use core::fmt;
+
+/// Separates a scope key from the action id inside the registry map.
+///
+/// U+001F (unit separator) cannot occur in an identifier a host writes, so a
+/// scoped entry can never collide with a global id spelled
+/// `"scope<SEP>id"` by hand.
+const SCOPE_SEPARATOR: char = '\u{001f}';
+
+/// The map key one registration occupies.
+///
+/// A global action keeps exactly the id it always had, so every existing
+/// lookup path is unchanged. A scoped action is keyed by
+/// `scope + SEP + id`, which lets two hosts hold the same command id without
+/// one shadowing the other (M-018).
+fn scoped_key(scope: Option<&str>, id: &str) -> String {
+    match scope.filter(|scope| !scope.is_empty()) {
+        Some(scope) => {
+            let mut key = String::with_capacity(scope.len() + 1 + id.len());
+            key.push_str(scope);
+            key.push(SCOPE_SEPARATOR);
+            key.push_str(id);
+            key
+        }
+        None => String::from(id),
+    }
+}
 /// Registry for actions, shortcuts, and menu/toolbar bindings.
 ///
 /// # Signals are the live-state channel
@@ -23,6 +49,18 @@ pub struct ActionManager {
     actions: HashMap<String, Action>,
     shortcut_to_action: HashMap<String, String>,
     bindings: Vec<ActionBinding>,
+    /// W-P05: reverse index of [`Self::shortcut_to_action`] — the one chord an action currently
+    /// holds.
+    ///
+    /// Every binder releases the action's previous chord before inserting, so an action owns at
+    /// most one chord and this is a 1:1 map. That is what makes `release_shortcuts_for` and
+    /// `shortcut_for_action` O(1) instead of full-table scans, and it is maintained only by
+    /// [`Self::set_chord`], [`Self::release_shortcuts_for`] and [`Self::unregister_action`].
+    action_to_chord: HashMap<String, String>,
+    /// W-P05: host → indices into [`Self::bindings`], in insertion order, so
+    /// `bindings_for_host` is a bucket walk instead of a full-list filter. Appends maintain it
+    /// incrementally; the one in-place filter (`unregister_action`) rebuilds it.
+    bindings_by_host: HashMap<ObjectId, Vec<usize>>,
     /// Emitted with the action id after an enabled action fired.
     pub action_triggered: Signal1<String>,
     /// Emitted with `(action id, new checked state)` after a checkable action toggled.
@@ -81,6 +119,8 @@ impl ActionManager {
             actions: HashMap::new(),
             shortcut_to_action: HashMap::new(),
             bindings: Vec::new(),
+            action_to_chord: HashMap::new(),
+            bindings_by_host: HashMap::new(),
             action_triggered: Signal1::new(),
             action_toggled: Signal1::new(),
             action_enabled_changed: Signal1::new(),
@@ -89,20 +129,54 @@ impl ActionManager {
     }
     /// Registers a new action and returns false if the id already exists.
     pub fn register_action(&mut self, id: impl Into<String>, text: impl Into<String>) -> bool {
-        let id = id.into();
-        if self.actions.contains_key(&id) {
+        self.register_action_in(None, id.into(), text.into())
+    }
+
+    /// Registers an action inside a host scope and returns false when that key exists.
+    ///
+    /// The scope is a caller-chosen key (a window id, a dialog id, a designer
+    /// document id). A scoped registration with the same id as a global one does
+    /// not shadow or replace it: [`Self::action_in_scope`] prefers the scoped
+    /// entry and falls back to the global one. An empty scope is the global
+    /// registration, which keeps this method additive (M-018).
+    pub fn register_action_in_scope(
+        &mut self,
+        scope: impl AsRef<str>,
+        id: impl Into<String>,
+        text: impl Into<String>,
+    ) -> bool {
+        self.register_action_in(Some(scope.as_ref()), id.into(), text.into())
+    }
+
+    /// The one registration path both public entry points share.
+    fn register_action_in(&mut self, scope: Option<&str>, id: String, text: String) -> bool {
+        let key = scoped_key(scope, &id);
+        if self.actions.contains_key(&key) {
             return false;
         }
-        self.actions.insert(id.clone(), Action::new(id, text));
+        self.actions.insert(key, Action::new(id, text));
         true
+    }
+
+    /// Removes a scoped action, leaving the global entry with the same id intact.
+    pub fn unregister_action_in_scope(&mut self, scope: &str, id: &str) -> bool {
+        let key = scoped_key(Some(scope), id);
+        self.actions.remove(&key).is_some()
     }
 
     /// Removes an action and all of its shortcut/host bindings.
     pub fn unregister_action(&mut self, id: &str) -> bool {
         let removed = self.actions.remove(id).is_some();
         if removed {
-            self.shortcut_to_action.retain(|_, action_id| action_id != id);
+            // W-P05: the chord leaves through the reverse index (the forward-index check keeps
+            // the removal exact), and the filtered binding list re-derives the host index.
+            if let Some(chord) = self.action_to_chord.remove(id) {
+                if self.shortcut_to_action.get(&chord).map_or(false, |bound| bound == id) {
+                    self.shortcut_to_action.remove(&chord);
+                }
+            }
             self.bindings.retain(|binding| binding.action_id != id);
+            self.rebuild_binding_index();
         }
         removed
     }
@@ -113,6 +187,53 @@ impl ActionManager {
     /// Returns a mutable action reference by id.
     pub fn action_mut(&mut self, id: &str) -> Option<&mut Action> {
         self.actions.get_mut(id)
+    }
+
+    /// Returns the action a scope resolves to, falling back to the global entry.
+    ///
+    /// The fallback is what makes a scope an override layer rather than a
+    /// second registry: a window-local command shadows the global one only when
+    /// it exists, so every host keeps seeing a command it could already see.
+    pub fn action_in_scope(&self, scope: &str, id: &str) -> Option<&Action> {
+        self.actions.get(&scoped_key(Some(scope), id)).or_else(|| self.actions.get(id))
+    }
+
+    /// Mutable counterpart of [`Self::action_in_scope`].
+    pub fn action_mut_in_scope(&mut self, scope: &str, id: &str) -> Option<&mut Action> {
+        let key = scoped_key(Some(scope), id);
+        if self.actions.contains_key(&key) {
+            self.actions.get_mut(&key)
+        } else {
+            self.actions.get_mut(id)
+        }
+    }
+
+    /// Sets the scoped action's enabled state, falling back to the global entry.
+    pub fn set_action_enabled_in_scope(&mut self, scope: &str, id: &str, enabled: bool) -> bool {
+        let Some(action) = self.action_mut_in_scope(scope, id) else {
+            return false;
+        };
+        let before = action.is_enabled();
+        action.set_enabled(enabled);
+        let changed = before != action.is_enabled();
+        if changed {
+            let id = String::from(id);
+            self.action_enabled_changed.emit((id, enabled));
+        }
+        true
+    }
+
+    /// Sets the scoped action's visible state, falling back to the global entry.
+    ///
+    /// The transition is published through the action's own
+    /// [`connect_visible_changed`](Action::connect_visible_changed) signal, so a
+    /// host repaints from the signal rather than polling the registry.
+    pub fn set_action_visible_in_scope(&mut self, scope: &str, id: &str, visible: bool) -> bool {
+        let Some(action) = self.action_mut_in_scope(scope, id) else {
+            return false;
+        };
+        action.set_visible(visible);
+        true
     }
     /// Sets an action's enabled state and returns false when id is unknown.
     pub fn set_action_enabled(&mut self, id: &str, enabled: bool) -> bool {
@@ -147,7 +268,7 @@ impl ActionManager {
         let chord = normalize_shortcut(&shortcut.into());
         self.observe_chord_collision(&chord, &action_id);
         self.release_shortcuts_for(&action_id);
-        self.shortcut_to_action.insert(chord, action_id);
+        self.set_chord(chord, action_id);
         true
     }
     /// Binds a `Shortcut` type to an existing action id. Bridges `shortcut` module with `action`.
@@ -172,8 +293,24 @@ impl ActionManager {
         // `Shortcut::ctrl(S)` and `Shortcut::primary(S)` occupy different keys
         // instead of colliding. The string API (`bind_shortcut`/`trigger_shortcut`)
         // keeps its own convention of folding `Ctrl` onto `Primary`.
-        self.shortcut_to_action.insert(chord, action_id);
+        self.set_chord(chord, action_id);
         true
+    }
+
+    /// Routes `chord` to `action_id`, keeping the reverse index in step (W-P05).
+    ///
+    /// If the chord was previously routed to a different action, that action loses it: the
+    /// forward index now maps the chord to `action_id` only, so the previous owner's index entry
+    /// would otherwise be a stale claim on a chord it no longer answers to.
+    fn set_chord(&mut self, chord: String, action_id: String) {
+        if let Some(previous) = self.shortcut_to_action.insert(chord.clone(), action_id.clone()) {
+            if previous != action_id
+                && self.action_to_chord.get(&previous).map_or(false, |bound| *bound == chord)
+            {
+                self.action_to_chord.remove(&previous);
+            }
+        }
+        self.action_to_chord.insert(action_id, chord);
     }
 
     /// Reports a chord that is already routed to a different action.
@@ -205,16 +342,14 @@ impl ActionManager {
     /// Drop every chord currently routed to `action_id`.
     ///
     /// Called before a (re)bind so an action holds one chord rather than accumulating
-    /// every chord it has ever been bound to.
+    /// every chord it has ever been bound to. W-P05: the reverse index answers in O(1) where
+    /// the old path filtered the whole forward table; the forward-index check keeps the removal
+    /// exact even if the two tables were ever to disagree about which chord the action holds.
     fn release_shortcuts_for(&mut self, action_id: &str) {
-        let stale: crate::compat::Vec<String> = self
-            .shortcut_to_action
-            .iter()
-            .filter(|(_, bound)| bound.as_str() == action_id)
-            .map(|(chord, _)| chord.clone())
-            .collect();
-        for chord in stale {
-            self.shortcut_to_action.remove(&chord);
+        if let Some(chord) = self.action_to_chord.remove(action_id) {
+            if self.shortcut_to_action.get(&chord).map_or(false, |bound| bound == action_id) {
+                self.shortcut_to_action.remove(&chord);
+            }
         }
     }
     /// Resolves and triggers an action by shortcut string.
@@ -243,7 +378,23 @@ impl ActionManager {
     /// A disabled action still reports `false` and emits nothing, which is the same answer a host
     /// gets from a disabled menu row: the command exists but cannot run.
     pub fn trigger_action(&mut self, action_id: &str) -> bool {
-        let Some(action) = self.actions.get_mut(action_id) else {
+        self.trigger_key(action_id, action_id)
+    }
+
+    /// Triggers the scoped action `id`, falling back to the global entry.
+    ///
+    /// The published payload is always the command id (never the internal
+    /// scoped key), so listeners receive the same id they would for a global
+    /// action.
+    pub fn trigger_action_in_scope(&mut self, scope: &str, id: &str) -> bool {
+        let scoped = scoped_key(Some(scope), id);
+        let key = if self.actions.contains_key(&scoped) { scoped } else { String::from(id) };
+        self.trigger_key(&key, id)
+    }
+
+    /// The one trigger path, keyed by the map key and publishing `publish_id`.
+    fn trigger_key(&mut self, key: &str, publish_id: &str) -> bool {
+        let Some(action) = self.actions.get_mut(key) else {
             return false;
         };
         let was_checked = action.is_checked();
@@ -253,7 +404,7 @@ impl ActionManager {
         let checkable = action.is_checkable();
         let now_checked = action.is_checked();
         let toggled = checkable && now_checked != was_checked;
-        let id = String::from(action_id);
+        let id = String::from(publish_id);
         self.action_triggered.emit(id.clone());
         if toggled {
             self.action_toggled.emit((id, now_checked));
@@ -265,7 +416,23 @@ impl ActionManager {
     /// A host building a menu or toolbar asks the registry what commands exist instead of
     /// keeping a second list; that is what makes `bind_action_to_*` the one attachment path.
     pub fn action_ids(&self) -> Vec<&String> {
-        self.actions.keys().collect()
+        // A scoped entry lives under an internal key and is deliberately not a
+        // second published command: `action_ids` names the global registry, as
+        // it did before scopes existed.
+        self.actions.keys().filter(|key| !key.contains(SCOPE_SEPARATOR)).collect()
+    }
+
+    /// Every action id registered in `scope`, in map order.
+    pub fn action_ids_in_scope(&self, scope: &str) -> Vec<&String> {
+        let prefix = String::from(scope);
+        self.actions
+            .iter()
+            .filter_map(|(key, action)| {
+                key.strip_prefix(prefix.as_str())
+                    .and_then(|rest| rest.strip_prefix(SCOPE_SEPARATOR))
+                    .map(|_| &action.id)
+            })
+            .collect()
     }
 
     /// Every registered command with its current chord, sorted by id.
@@ -274,7 +441,7 @@ impl ActionManager {
     /// byte-identical, and `HashMap` iteration order is not.
     pub fn definitions(&self) -> Vec<ActionDefinition> {
         let mut definitions: Vec<ActionDefinition> =
-            self.actions.keys().filter_map(|id| self.action_definition(id)).collect();
+            self.action_ids().into_iter().filter_map(|id| self.action_definition(id)).collect();
         definitions.sort_by(|left, right| left.id.cmp(&right.id));
         definitions
     }
@@ -373,10 +540,12 @@ impl ActionManager {
 
     /// The canonical chord currently bound to `action_id`, if any.
     pub fn shortcut_for_action(&self, action_id: &str) -> Option<&String> {
-        self.shortcut_to_action
-            .iter()
-            .find(|(_, bound)| bound.as_str() == action_id)
-            .map(|(chord, _)| chord)
+        // W-P05: the reverse index locates the action's chord in O(1), and `get_key_value`
+        // hands back the forward table's actual key — the exact chord `trigger_shortcut`
+        // resolves, which is what the old linear scan returned. A missing forward entry
+        // degrades to `None` exactly as the scan's miss did.
+        let chord = self.action_to_chord.get(action_id)?;
+        self.shortcut_to_action.get_key_value(chord).map(|(key, _)| key)
     }
 
     /// Exports one command together with the chord the registry holds for it.
@@ -421,6 +590,7 @@ impl ActionManager {
         }
         if let Some(action) = self.actions.get_mut(&definition.id) {
             action.set_enabled(definition.enabled);
+            action.set_visible(definition.visible);
             action.set_checkable(definition.checkable);
             if definition.checkable {
                 action.set_checked(definition.checked);
@@ -456,15 +626,32 @@ impl ActionManager {
         self.bind_action(action_id.into(), button_id, ActionHostKind::Button)
     }
     /// Returns all bindings associated with a host object id.
+    ///
+    /// W-P05: answered from the per-host index, whose buckets are appended in insertion order —
+    /// the same order the full-list filter produced.
     pub fn bindings_for_host(&self, host_id: ObjectId) -> Vec<&ActionBinding> {
-        self.bindings.iter().filter(|binding| binding.host_id == host_id).collect()
+        match self.bindings_by_host.get(&host_id) {
+            Some(indices) => indices.iter().map(|&index| &self.bindings[index]).collect(),
+            None => Vec::new(),
+        }
     }
     fn bind_action(&mut self, action_id: String, host_id: ObjectId, kind: ActionHostKind) -> bool {
         if !self.actions.contains_key(&action_id) {
             return false;
         }
         self.bindings.push(ActionBinding { action_id, host_id, kind });
+        self.bindings_by_host.entry(host_id).or_default().push(self.bindings.len() - 1);
         true
+    }
+
+    /// Rebuilds the per-host binding index from [`Self::bindings`] in one pass (W-P05). Only
+    /// needed when the list is filtered in place (`unregister_action`); appends maintain it
+    /// incrementally, and the pass preserves insertion order within each bucket.
+    fn rebuild_binding_index(&mut self) {
+        self.bindings_by_host.clear();
+        for (index, binding) in self.bindings.iter().enumerate() {
+            self.bindings_by_host.entry(binding.host_id).or_default().push(index);
+        }
     }
 }
 crate::impl_default_via_new!(ActionManager);

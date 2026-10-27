@@ -26,7 +26,7 @@
 //! reports `None` unless the `RUST_WIDGETS_GPU_TIME_MS` override is set, because
 //! this module has no device handle to issue a timestamp query on.
 use super::adapter::GpuDeviceType;
-use crate::compat::{format, Instant, MiniToString, OnceLock, String};
+use crate::compat::{format, lock, Instant, MiniToString, Mutex, OnceLock, String};
 use alloc::collections::VecDeque;
 use core::time::Duration;
 
@@ -74,6 +74,19 @@ fn safe_duration_secs(secs: f32) -> f32 {
 /// almost immediately (N-S-62). 60 frames is roughly one second at 60 fps, which
 /// is long enough to reflect sustained behaviour rather than a stutter.
 const ADJUST_INTERVAL_FRAMES: usize = 60;
+
+/// How often the background probe thread re-samples the OS utilization probes
+/// (G-226).
+///
+/// 1 Hz is low frequency next to the 60 Hz frame cadence it replaces: the frame
+/// path used to call `process_memory_utilization`/`process_cpu_utilization`
+/// every `end_frame`, which on Darwin forks a `ps` child process (behind the
+/// platform's own TTL) *while holding the GPU manager's state lock*, and on
+/// Linux re-read `/proc/self/status` per frame. One sample per second keeps
+/// pressure detection live to within a second — well inside the timescale on
+/// which memory pressure or CPU load actually develops — while the frame path
+/// only ever reads the last published round.
+const UTILIZATION_SAMPLE_INTERVAL: core::time::Duration = core::time::Duration::from_secs(1);
 
 /// Classification of a single frame against the adaptivity thresholds.
 ///
@@ -288,9 +301,10 @@ pub struct PerformanceSample {
 ///
 /// The *measurements* are deliberately not captured: memory and CPU utilization
 /// change over time, and freezing them would turn live pressure detection into a
-/// single stale sample. Only the override values are fixed here;
-/// `process_memory_utilization`/`process_cpu_utilization` are still called per
-/// frame (the platform layer caches its own expensive probes).
+/// single stale sample. Only the override values are fixed here; the live
+/// figures come from the process-wide background probe's last published round
+/// (see [`latest_utilization`], G-226), so a monitor still tracks pressure
+/// without ever probing the OS on the frame path.
 #[derive(Debug, Clone, Copy, Default)]
 struct EnvironmentSample {
     /// Parsed `RUST_WIDGETS_GPU_TIME_MS`, when the override is present and valid.
@@ -326,6 +340,105 @@ impl EnvironmentSample {
                 .and_then(|raw| parse_ratio_override("RUST_WIDGETS_CPU_UTIL", &raw)),
         }
     }
+}
+
+/// The last round of OS utilization probes, published by the background
+/// thread (G-226).
+///
+/// `None` means "the probe has not answered for this figure" — either it has
+/// not run yet or the platform reported no reliable measurement. Reading an
+/// empty snapshot is therefore the same honest answer the per-frame probe used
+/// to give, never a fabricated zero.
+#[derive(Debug, Clone, Copy, Default)]
+struct UtilizationSnapshot {
+    /// Last `process_memory_utilization` answer, clamped to `[0.0, 1.0]`.
+    memory: Option<f32>,
+    /// Last `process_cpu_utilization` answer, clamped to `[0.0, 1.0]`.
+    cpu: Option<f32>,
+}
+
+impl UtilizationSnapshot {
+    /// Stores one probe round, clamping both ratios into `[0.0, 1.0]`.
+    ///
+    /// Clamping here means every reader of the shared snapshot can trust the
+    /// range without re-checking, and a platform that returns a slightly
+    /// out-of-range figure cannot leak into the pressure thresholds.
+    fn publish(&mut self, memory: Option<f32>, cpu: Option<f32>) {
+        self.memory = memory.map(|ratio| ratio.clamp(0.0, 1.0));
+        self.cpu = cpu.map(|ratio| ratio.clamp(0.0, 1.0));
+    }
+}
+
+/// The shared snapshot the background probe publishes into.
+fn probe_snapshot() -> &'static Mutex<UtilizationSnapshot> {
+    // `std::sync::OnceLock`, not `compat::OnceLock`: the probe thread and the
+    // frame thread both touch this cell, and the `mini` profile's OnceLock is
+    // contracted for single-threaded use only. `std` is linked in every profile
+    // this crate builds for, and a background thread only exists where threads
+    // do.
+    static SNAPSHOT: std::sync::OnceLock<Mutex<UtilizationSnapshot>> = std::sync::OnceLock::new();
+    SNAPSHOT.get_or_init(|| Mutex::new(UtilizationSnapshot::default()))
+}
+
+/// Ensures the low-frequency background probe thread is running (G-226).
+///
+/// Called from [`AdaptivePerformanceMonitor::new`], i.e. at construction time,
+/// so the first spawn cost never lands on a frame. At most one thread exists
+/// per process: the platform handle it samples is itself a process-wide
+/// singleton, so a second thread would only duplicate its work.
+fn start_utilization_probe() {
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    STARTED.get_or_init(|| {
+        // wasm32 is single-threaded in practice and its platform backend
+        // already answers `None` for both probes, so there is nothing a
+        // background thread could measure there; the snapshot simply stays
+        // empty, which is the same honest answer the frame path used to get.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let platform = crate::platform::platform_facts();
+            let snapshot = probe_snapshot();
+            let spawned = std::thread::Builder::new()
+                .name("rust-widgets-gpu-probe".to_string())
+                .spawn(move || probe_loop(platform, snapshot));
+            if let Err(error) = spawned {
+                // The snapshot stays empty, which every reader already treats as
+                // "no measurement" — the honest answer, never a fabricated zero.
+                log::warn!("[performance] background utilization probe could not start: {error}");
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            log::debug!("[performance] utilization probe not started: no background threads here");
+        }
+    });
+}
+
+/// The background probe's body: sample both platform probes, publish, sleep.
+///
+/// Detached by design — it serves the process for its whole lifetime, and a
+/// monitor outliving it is impossible in practice (a probe panic would be a
+/// bug in the platform backend, and an empty snapshot degrades to the honest
+/// "no measurement" answer rather than a wrong figure).
+#[cfg(not(target_arch = "wasm32"))]
+fn probe_loop(
+    platform: &'static dyn crate::platform::Platform,
+    snapshot: &'static Mutex<UtilizationSnapshot>,
+) {
+    loop {
+        let memory = platform.process_memory_utilization();
+        let cpu = platform.process_cpu_utilization();
+        lock(snapshot).publish(memory, cpu);
+        std::thread::sleep(UTILIZATION_SAMPLE_INTERVAL);
+    }
+}
+
+/// Reads the last published probe round.
+///
+/// This is the only thing the frame path does for utilization: copy a tiny
+/// value out from under a leaf lock that is never held across I/O. The OS
+/// probes themselves never run here (G-226).
+fn latest_utilization() -> UtilizationSnapshot {
+    *lock(probe_snapshot())
 }
 
 /// Parses the `RUST_WIDGETS_GPU_TIME_MS` override into a `Duration`.
@@ -380,15 +493,6 @@ pub struct AdaptivePerformanceMonitor {
     frames_since_adjust: usize,
     /// Environment overrides taken from the process-wide snapshot (G-51).
     environment: EnvironmentSample,
-    /// Platform handle captured once at construction (G-51).
-    ///
-    /// `platform_facts()` is a process-wide singleton lookup, but `end_frame`
-    /// used to perform it twice per frame. Holding the `&'static` handle makes
-    /// the frame path free of the lookup. Consequence: a platform override
-    /// installed *after* this monitor was created is not observed by it; the
-    /// monitor's lifetime is the renderer's lifetime, so this is the intended
-    /// boundary.
-    platform: &'static dyn crate::platform::Platform,
     /// Running sum of the durations in `samples`, maintained on push/pop so
     /// [`Self::average_frame_time`] and [`Self::stability`] never rescan the
     /// window (G-52).
@@ -409,7 +513,7 @@ impl AdaptivePerformanceMonitor {
         strategy: PerformanceMonitorStrategy,
         thresholds: AdaptivePerformanceThresholds,
     ) -> Self {
-        Self {
+        let monitor = Self {
             strategy,
             thresholds,
             samples: VecDeque::with_capacity(120),
@@ -428,10 +532,14 @@ impl AdaptivePerformanceMonitor {
             last_quality_change: Instant::now() - Duration::from_secs(60),
             frames_since_adjust: 0,
             environment: EnvironmentSample::cached(),
-            platform: crate::platform::platform_facts(),
             total_frame_time: Duration::ZERO,
             sum_sq_frame_seconds: 0.0,
-        }
+        };
+        // The OS utilization probes live on the background thread from now on
+        // (G-226); starting it here puts the one-time spawn cost at construction
+        // instead of on the first frame.
+        start_utilization_probe();
+        monitor
     }
     #[cfg(test)]
     /// Builds a monitor with an explicit environment snapshot.
@@ -486,52 +594,56 @@ impl AdaptivePerformanceMonitor {
     ///
     /// Priority:
     /// 1. cached `RUST_WIDGETS_MEM_UTIL` override (read once at construction)
-    /// 2. Active platform backend (`Platform::process_memory_utilization`)
+    /// 2. the background probe's last published round (G-226)
     /// 3. `None` (no reliable measurement available)
     ///
-    /// The OS-specific probes (`/proc/self/status`, `ps`) live inside the
-    /// platform backends, not here — see principle #36. The platform *handle* is
-    /// cached, but the measurement itself is still taken per frame so pressure
-    /// detection stays live (G-51).
+    /// The OS-specific probes (`/proc/self/status`, the Darwin `ps` child
+    /// process) live inside the platform backends (principle #36) and are
+    /// sampled by the process-wide background thread, never here: this method
+    /// only copies the last published round out of the shared snapshot, so no
+    /// probe — and in particular no subprocess fork — can land on the frame
+    /// path or inside the GPU manager's state lock (G-226).
     ///
-    /// Returns `None` rather than `0.0` when no backend can measure: a missing measurement must not
-    /// be recorded as "no pressure", or an unmeasured platform would sail past every pressure
-    /// threshold (rule #37 — the absence of a capability is reported, never fabricated).
+    /// Returns `None` rather than `0.0` when nothing has answered yet: a missing
+    /// measurement must not be recorded as "no pressure", or an unmeasured
+    /// platform would sail past every pressure threshold (rule #37 — the absence
+    /// of a capability is reported, never fabricated).
     fn measure_memory_utilization(&self) -> Option<f32> {
         // 1. Cached env-var override
         if let Some(value) = self.environment.memory_utilization {
             return Some(value);
         }
-        // 2. Platform backend owns the OS probe
-        if let Some(ratio) = self.platform.process_memory_utilization() {
-            log::debug!("[performance] memory utilization from platform backend: {ratio:.3}");
-            return Some(ratio.clamp(0.0, 1.0));
+        // 2. The background probe's last published round
+        if let Some(ratio) = latest_utilization().memory {
+            log::debug!("[performance] memory utilization from background probe: {ratio:.3}");
+            return Some(ratio);
         }
         // 3. No reliable source: report the absence rather than a fabricated `0.0`.
-        log::debug!("[performance] measure_memory_utilization: no backend available");
+        log::debug!("[performance] measure_memory_utilization: no probe sample available");
         None
     }
     /// Measures CPU utilization as a fraction `[0.0, 1.0]`.
     ///
     /// Priority:
     /// 1. cached `RUST_WIDGETS_CPU_UTIL` override (read once at construction)
-    /// 2. Active platform backend (`Platform::process_cpu_utilization`)
+    /// 2. the background probe's last published round (G-226)
     /// 3. `None` (no reliable measurement available)
     ///
-    /// As with memory, the OS-specific sampling lives in the backend, a missing measurement is
-    /// `None` rather than a fabricated `0.0`, and the measurement is taken per frame while only
-    /// the override and the platform handle are cached (G-51).
+    /// As with memory, the OS-specific sampling lives in the platform backend
+    /// and runs on the background thread; the frame path reads the published
+    /// snapshot only (G-226). A missing measurement is `None` rather than a
+    /// fabricated `0.0`.
     fn measure_cpu_utilization(&self) -> Option<f32> {
         // 1. Cached env-var override
         if let Some(value) = self.environment.cpu_utilization {
             return Some(value);
         }
-        // 2. Platform backend owns the OS probe
-        if let Some(ratio) = self.platform.process_cpu_utilization() {
-            log::debug!("[performance] CPU utilization from platform backend: {ratio:.3}");
-            return Some(ratio.clamp(0.0, 1.0));
+        // 2. The background probe's last published round
+        if let Some(ratio) = latest_utilization().cpu {
+            log::debug!("[performance] CPU utilization from background probe: {ratio:.3}");
+            return Some(ratio);
         }
-        log::debug!("[performance] measure_cpu_utilization: no backend available");
+        log::debug!("[performance] measure_cpu_utilization: no probe sample available");
         None
     }
     /// Records a performance sample
@@ -1086,6 +1198,54 @@ mod tests {
         assert!(t.target_fps >= 10.0, "target_fps must stay usable: {}", t.target_fps);
         assert!(t.target_frame_duration() > Duration::ZERO);
         assert!(t.degrade_duration() > t.upgrade_duration());
+    }
+
+    /// G-226: the background probe's publication contract. Whatever the
+    /// platform reports, a published round must be clamped into the unit range,
+    /// and an absent measurement must stay absent rather than become a zero.
+    #[test]
+    fn utilization_snapshot_publish_clamps_and_keeps_none() {
+        let mut snapshot = UtilizationSnapshot::default();
+        assert_eq!(snapshot.memory, None, "a fresh snapshot has no measurement");
+        assert_eq!(snapshot.cpu, None);
+
+        snapshot.publish(Some(1.5), Some(-0.5));
+        assert_eq!(snapshot.memory, Some(1.0), "an over-range ratio is clamped");
+        assert_eq!(snapshot.cpu, Some(0.0), "a negative ratio is clamped");
+
+        snapshot.publish(None, Some(0.5));
+        assert_eq!(snapshot.memory, None, "an absent probe answer stays absent");
+        assert_eq!(snapshot.cpu, Some(0.5), "a fresh in-range answer is stored");
+    }
+
+    /// G-226: the env-var overrides keep their documented priority over the
+    /// background probe's snapshot. This must hold while the probe thread is
+    /// running, so the shared snapshot is started (and its thread spawned)
+    /// before the assertion; the override short-circuit makes the exact value
+    /// deterministic regardless of which round the probe has published.
+    #[test]
+    fn measure_prefers_env_overrides_over_the_probe_snapshot() {
+        start_utilization_probe();
+        let monitor = AdaptivePerformanceMonitor::with_environment(EnvironmentSample {
+            memory_utilization: Some(0.25),
+            cpu_utilization: Some(0.75),
+            ..EnvironmentSample::default()
+        });
+        assert_eq!(monitor.measure_memory_utilization(), Some(0.25));
+        assert_eq!(monitor.measure_cpu_utilization(), Some(0.75));
+    }
+
+    /// G-226: whatever the probe has published must stay inside the unit range.
+    /// The thread publishes asynchronously, so this test asserts the invariant
+    /// every round keeps instead of a particular round — the "not sampled yet"
+    /// answer (`None`) and a published round are both legal here.
+    #[test]
+    fn latest_utilization_is_a_clamped_ratio_or_absent() {
+        start_utilization_probe();
+        let snapshot = latest_utilization();
+        for ratio in [snapshot.memory, snapshot.cpu].into_iter().flatten() {
+            assert!((0.0..=1.0).contains(&ratio), "probe ratio {ratio} left the unit range");
+        }
     }
 
     /// N-S-62: the adjustment cadence must throttle repeated `auto_adjust_thresholds`

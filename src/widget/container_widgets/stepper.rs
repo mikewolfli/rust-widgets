@@ -27,6 +27,7 @@ use crate::core::{Color, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::widget::base_widgets::AutoRepeat;
 use crate::widget::capability::coercion::expect_i32_saturating;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -47,8 +48,21 @@ pub struct Stepper {
     step: i32,
     /// Whether stepping past a bound wraps to the other bound instead of clamping.
     wrapping: bool,
+    /// The button currently held, if any (C-021).
+    hold: Option<HoldDirection>,
+    /// The shared auto-repeat timer, the same one `CheckBox` uses (C-021).
+    auto_repeat: AutoRepeat,
     /// Emitted when the value changes.
     pub value_changed: Signal1<i32>,
+}
+
+/// Which button a hold is repeating (C-021).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoldDirection {
+    /// The plus button.
+    Increment,
+    /// The minus button.
+    Decrement,
 }
 
 impl Stepper {
@@ -62,7 +76,56 @@ impl Stepper {
             max: 100,
             step: 1,
             wrapping: false,
+            hold: None,
+            auto_repeat: {
+                let mut timer = AutoRepeat::new();
+                timer.set_enabled(true);
+                timer
+            },
             value_changed: Signal1::new(),
+        }
+    }
+
+    /// Whether holding a button repeats the step (C-021).
+    pub fn auto_repeat(&self) -> bool {
+        self.auto_repeat.is_enabled()
+    }
+
+    /// Enables or disables hold-to-repeat (C-021).
+    pub fn set_auto_repeat(&mut self, enabled: bool) {
+        self.auto_repeat.set_enabled(enabled);
+        if !enabled {
+            self.hold = None;
+            self.auto_repeat.reset();
+        }
+    }
+
+    /// The delay before the first repeat, in milliseconds.
+    pub fn auto_repeat_delay(&self) -> u32 {
+        self.auto_repeat.delay_ms()
+    }
+
+    /// Sets the delay before the first repeat.
+    pub fn set_auto_repeat_delay(&mut self, delay_ms: u32) {
+        self.auto_repeat.set_delay_ms(delay_ms);
+    }
+
+    /// The gap between repeats, in milliseconds.
+    pub fn auto_repeat_interval(&self) -> u32 {
+        self.auto_repeat.interval_ms()
+    }
+
+    /// Sets the gap between repeats.
+    pub fn set_auto_repeat_interval(&mut self, interval_ms: u32) {
+        self.auto_repeat.set_interval_ms(interval_ms);
+    }
+
+    /// Applies one repeat in the held direction.
+    fn repeat_hold(&mut self) {
+        match self.hold {
+            Some(HoldDirection::Increment) => self.increment(),
+            Some(HoldDirection::Decrement) => self.decrement(),
+            None => {}
         }
     }
 
@@ -222,6 +285,24 @@ impl Widget for Stepper {
             dimensions::STEPPER_ROW_HEIGHT,
         )
     }
+
+    /// Repeats the held button (C-021).
+    ///
+    /// The shared [`AutoRepeat`] owns the delay/interval arithmetic; this method only turns each
+    /// due repeat into one step in the held direction.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        let held = self.base.is_enabled() && self.hold.is_some();
+        let repeats = self.auto_repeat.advance(delta_ms, held);
+        for _ in 0..repeats {
+            self.repeat_hold();
+        }
+        held
+    }
+
+    fn is_animating(&self) -> bool {
+        self.base.is_enabled() && self.hold.is_some() && self.auto_repeat.is_enabled()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
     /// Resolves a published event name to the control's own signal.
@@ -427,9 +508,20 @@ impl EventHandler for Stepper {
                 // and the painted one could — and did — describe different controls.
                 if self.minus_rect().contains(*pos) {
                     self.decrement();
+                    self.hold = Some(HoldDirection::Decrement);
+                    self.auto_repeat.reset();
                 } else if self.plus_rect().contains(*pos) {
                     self.increment();
+                    self.hold = Some(HoldDirection::Increment);
+                    self.auto_repeat.reset();
                 }
+            }
+            Event::MouseRelease { .. } => {
+                // C-021: releasing (anywhere) ends the hold; the next press starts its delay
+                // from zero.
+                self.hold = None;
+                self.auto_repeat.reset();
+                self.base.handle_event(event);
             }
             Event::KeyPress { key, .. } => {
                 // C-24: an unfocused stepper must not swallow arrow keys that belong to
@@ -714,5 +806,27 @@ mod tests {
         let before = s.value();
         s.handle_event(&Event::KeyPress { key: crate::event::key_codes::UP, modifiers: 0 });
         assert_eq!(s.value(), before, "no focus, no keyboard step");
+    }
+
+    /// C-021: holding the plus button repeats through the shared auto-repeat timer.
+    #[test]
+    fn holding_a_button_repeats_through_the_shared_timer() {
+        let mut s = Stepper::new(Rect::new(0, 0, 120, 30));
+        assert!(s.auto_repeat());
+        let plus = s.plus_rect();
+        let pos = Point::new(plus.x + plus.width as i32 / 2, plus.y + plus.height as i32 / 2);
+        s.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(s.value(), 1, "the press itself steps once");
+        assert!(s.is_animating(), "a held button owes frames");
+        assert!(!s.tick(16), "the first tick only starts the delay");
+        assert!(s.tick(500), "the hold is still active after the delay");
+        assert_eq!(s.value(), 2, "the first repeat arrives after the delay");
+        assert!(s.tick(100));
+        assert_eq!(s.value(), 3, "subsequent repeats follow the interval");
+
+        s.handle_event(&Event::MouseRelease { pos, button: 1 });
+        assert!(!s.is_animating(), "the release ends the hold");
+        assert!(!s.tick(500), "no timer is owed after release");
+        assert_eq!(s.value(), 3);
     }
 }

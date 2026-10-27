@@ -27,8 +27,9 @@ use crate::widget::capability::coercion::{expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::input_widgets::popup_support::{expect_rect, rect_value};
+use crate::widget::input_widgets::popup_support::{clamp_rect_into, expect_rect, rect_value};
 use crate::widget::metrics::effective_font;
+use crate::widget::text_utils::wrap_char_ranges;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// How far the bubble floats above its anchor, leaving room for the pointer triangle.
@@ -89,6 +90,9 @@ pub struct ValidationBubble {
     message: String,
     severity: ValidationSeverity,
     anchor: Option<Rect>,
+    /// The host's available area; when set, the bubble is clamped into it on all four
+    /// sides (I-125).
+    viewport: Option<Rect>,
     /// `None` keeps the bubble up until it is replaced or hidden.
     show_duration_ms: Option<u32>,
     /// Milliseconds left on the current message, or `None` for a persistent one.
@@ -106,6 +110,7 @@ impl ValidationBubble {
             message: String::new(),
             severity: ValidationSeverity::Error,
             anchor: None,
+            viewport: None,
             show_duration_ms: None,
             remaining_ms: None,
             visible: false,
@@ -145,6 +150,20 @@ impl ValidationBubble {
     /// The field band the bubble points at.
     pub fn anchor(&self) -> Option<Rect> {
         self.anchor
+    }
+
+    /// Supplies the host's available area.
+    pub fn set_viewport(&mut self, viewport: Option<Rect>) {
+        if self.viewport == viewport {
+            return;
+        }
+        self.viewport = viewport;
+        self.base.request_redraw();
+    }
+
+    /// The host's available area, if one was supplied.
+    pub fn viewport(&self) -> Option<Rect> {
+        self.viewport
     }
 
     /// Shows the current message.
@@ -210,17 +229,18 @@ impl ValidationBubble {
         true
     }
 
-    /// The bubble's own box: wide enough for `width`, tall enough for one line plus padding.
+    /// The bubble's own box: wide enough for the anchor, tall enough for the wrapped message.
     fn bubble_rect(&self) -> Rect {
         let font = effective_font(self.base.style());
         let line_height = font.effective_line_height().max(1.0) as u32;
         let geometry = self.geometry();
         let width = self.anchor.map(|anchor| anchor.width).unwrap_or(geometry.width);
-        let height = line_height.saturating_add(BUBBLE_PAD_V as u32 * 2);
+        let lines = self.wrapped_lines(&font, width).len().max(1) as u32;
+        let height = line_height.saturating_mul(lines).saturating_add(BUBBLE_PAD_V as u32 * 2);
         let (x, y) = match self.anchor {
             Some(anchor) => {
                 let above = anchor.y - height as i32 - BUBBLE_GAP;
-                if above >= 0 {
+                if self.viewport.is_none_or(|viewport| above >= viewport.y) {
                     (anchor.x, above)
                 } else {
                     (anchor.x, anchor.y + anchor.height as i32 + BUBBLE_GAP)
@@ -228,7 +248,28 @@ impl ValidationBubble {
             }
             None => (geometry.x, geometry.y),
         };
-        Rect::new(x, y, width, height)
+        let rect = Rect::new(x, y, width, height);
+        // The four-way clamp is what keeps a bubble anchored near the right edge or the
+        // bottom of the window inside the visible area (I-125).
+        match self.viewport {
+            Some(viewport) => clamp_rect_into(rect, viewport),
+            None => rect,
+        }
+    }
+
+    /// The message split into visual lines for `width`.
+    ///
+    /// The split uses [`wrap_char_ranges`], which needs no renderer, so the layout box,
+    /// the hit test and the paint all measure the same lines.
+    fn wrapped_lines(
+        &self,
+        font: &crate::core::Font,
+        width: u32,
+    ) -> crate::compat::Vec<core::ops::Range<usize>> {
+        let inner = width.saturating_sub(BUBBLE_INSET as u32 * 2);
+        let char_width = (font.size().max(8.0) * 0.5).max(1.0);
+        let max_chars = ((inner as f32 / char_width) as usize).max(1);
+        wrap_char_ranges(&self.message, max_chars)
     }
 }
 
@@ -269,18 +310,21 @@ impl Draw for ValidationBubble {
         context.draw_rounded_rect_stroke(bubble, 4, tone, 1);
 
         let line = context.text_line(bubble, font);
-        context.draw_text_fitted_cow(
-            Rect::new(
-                bubble.x + BUBBLE_INSET,
-                line.y,
-                bubble.width.saturating_sub(BUBBLE_INSET as u32 * 2),
-                line.height.max(1),
-            ),
-            &self.message,
-            font,
-            ink,
-            HorizontalAlignment::Left,
-        );
+        let lines = self.wrapped_lines(font, bubble.width);
+        let inner_width = bubble.width.saturating_sub(BUBBLE_INSET as u32 * 2);
+        for (row, range) in lines.iter().enumerate() {
+            let y = bubble.y + BUBBLE_PAD_V + row as i32 * line.height.max(1) as i32;
+            let Some(text) = self.message.get(range.clone()) else {
+                continue;
+            };
+            context.draw_text_fitted_cow(
+                Rect::new(bubble.x + BUBBLE_INSET, y, inner_width, line.height.max(1)),
+                text,
+                font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
 
         // The pointer: two strokes from the bubble's edge toward the anchor, drawn only when the
         // bubble floats above it (below the field the triangle would point away from the ink).
@@ -467,5 +511,31 @@ mod tests {
         bubble.set_anchor(Rect::new(10, 80, 120, 24));
         let rect = bubble.bubble_rect();
         assert!(rect.y + rect.height as i32 <= 80);
+    }
+
+    #[test]
+    fn a_long_message_wraps_and_uses_more_than_one_line() {
+        let mut short = ValidationBubble::new(Rect::new(0, 0, 120, 20));
+        short.show_message("bad", ValidationSeverity::Error);
+        let short_height = short.size_hint().height;
+
+        let mut long = ValidationBubble::new(Rect::new(0, 0, 120, 20));
+        long.show_message(
+            "this message is long enough to need several wrapped lines in a narrow bubble",
+            ValidationSeverity::Error,
+        );
+        assert!(long.size_hint().height > short_height, "wrapping must grow the bubble");
+    }
+
+    #[test]
+    fn the_bubble_is_clamped_into_the_viewport_on_all_four_sides() {
+        let mut bubble = ValidationBubble::new(Rect::new(0, 0, 120, 20));
+        bubble.set_viewport(Some(Rect::new(0, 0, 100, 100)));
+        bubble.set_anchor(Rect::new(90, 90, 80, 20));
+        bubble.show_message("bad value", ValidationSeverity::Error);
+        let rect = bubble.bubble_rect();
+        assert!(rect.x >= 0 && rect.y >= 0);
+        assert!(rect.x + rect.width as i32 <= 100, "the right edge is clamped");
+        assert!(rect.y + rect.height as i32 <= 100, "the bottom edge is clamped");
     }
 }

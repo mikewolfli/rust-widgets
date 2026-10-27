@@ -3,7 +3,7 @@
 
 //! Form layout manager — two-column label/field row pairs.
 use super::{ChildInfo, Layout, LayoutContext};
-use crate::compat::{Any, HashMap, Vec};
+use crate::compat::{Any, HashMap, RefCell, Vec};
 use crate::core::{ObjectId, Rect};
 use crate::style::EdgeOffsets;
 
@@ -93,9 +93,21 @@ pub struct FormLayout {
     rows: Vec<(ObjectId, ObjectId)>,
     /// Standalone items added via the `Layout` trait (widget_id, stretch).
     items: Vec<(ObjectId, u32)>,
+    /// The last nominal layout, keyed by the rect it was computed from (LAY-005).
+    ///
+    /// `child_rect` answers a one-child query from this cache instead of re-running the row
+    /// solve (G-158). Only [`Layout::update`] — the nominal path — populates it, so a cached
+    /// answer is byte-identical to the trait default's update-and-capture; a rect mismatch
+    /// falls back to that same capture. Every mutator clears it.
+    last_layout: RefCell<Option<(Rect, Vec<(ObjectId, Rect)>)>>,
 }
 
 impl FormLayout {
+    /// Drops the cached nominal layout; every mutator calls it (LAY-005).
+    fn invalidate_last_layout(&mut self) {
+        self.last_layout.borrow_mut().take();
+    }
+
     /// Create a two-column form layout.
     pub fn new(spacing: u32, margin: u32) -> Self {
         Self {
@@ -108,11 +120,13 @@ impl FormLayout {
             label_alignment: FormLabelAlignment::default(),
             rows: Vec::new(),
             items: Vec::new(),
+            last_layout: RefCell::new(None),
         }
     }
 
     /// Sets how much of the row's width a field takes.
     pub fn set_field_growth_policy(&mut self, policy: FieldGrowthPolicy) {
+        self.invalidate_last_layout();
         self.growth_policy = policy;
     }
 
@@ -123,6 +137,7 @@ impl FormLayout {
 
     /// Sets when a field moves onto its own row.
     pub fn set_row_wrap_policy(&mut self, policy: RowWrapPolicy) {
+        self.invalidate_last_layout();
         self.row_wrap_policy = policy;
     }
 
@@ -133,6 +148,7 @@ impl FormLayout {
 
     /// Sets how the available height is divided between rows.
     pub fn set_row_height_policy(&mut self, policy: RowHeightPolicy) {
+        self.invalidate_last_layout();
         self.row_height_policy = policy;
     }
 
@@ -148,6 +164,7 @@ impl FormLayout {
 
     /// Sets how a label narrower than its column is positioned.
     pub fn set_label_alignment(&mut self, alignment: FormLabelAlignment) {
+        self.invalidate_last_layout();
         self.label_alignment = alignment;
     }
 
@@ -178,6 +195,7 @@ impl FormLayout {
 
     /// Sets four-way margins, overriding the uniform [`Self::margin`].
     pub fn set_margins(&mut self, margins: EdgeOffsets) {
+        self.invalidate_last_layout();
         self.margins = Some(margins);
     }
 
@@ -206,6 +224,7 @@ impl FormLayout {
 
     /// Add one form row as `(label, field)` pair.
     pub fn add_row_pair(&mut self, label_id: ObjectId, field_id: ObjectId) {
+        self.invalidate_last_layout();
         self.rows.push((label_id, field_id));
     }
 
@@ -326,8 +345,108 @@ impl FormLayout {
         if index >= self.rows.len() {
             return false;
         }
+        self.invalidate_last_layout();
         self.rows.remove(index);
         true
+    }
+
+    /// The nominal row solve, shared by [`Layout::update`] (which caches its emissions for
+    /// `child_rect`) — the historical two-column model lives here and nowhere else.
+    fn layout_entries(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        let total_rows = self.rows.len();
+        let total_items = self.items.len();
+        // D09-LAYOUT-02: `total_entries` counts child slots, so the doubling can only overflow
+        // `usize` on a build where `usize` is wider than 32 bits *and* a form holds more than
+        // 2^63 label/field rows — unreachable before memory is exhausted. Saturating keeps the
+        // arithmetic total on every target instead of relying on that argument.
+        let total_entries = total_rows.saturating_mul(2).saturating_add(total_items);
+        if total_entries == 0 {
+            return;
+        }
+
+        // D09-LAYOUT-02: `margin` and `spacing` are public `u32` values, so neither
+        // `margin * 2` nor `(n - 1) * spacing` may be evaluated in `u32`: the first panics in a
+        // build with overflow checks and wraps otherwise once `margin > u32::MAX / 2`, and the
+        // second does the same once the spacing budget exceeds `u32::MAX`. Both products are
+        // computed in `u64` and saturated back into `u32`, which defines an explicit bounded
+        // policy for huge values rather than letting the constructor's arguments escape the
+        // layout arithmetic:
+        //
+        // * a margin that cannot be paid twice consumes the whole axis, so the inner box is
+        //   zero-width/height and the entries are clipped by the parent (see the `== 0` early
+        //   return below) instead of receiving a negative/wrapped box;
+        // * a spacing budget that does not fit `u32` is saturated at the maximum, so it can
+        //   never wrap into a small number and hand entries a larger height than they earned.
+        let (left, top, right, bottom) = self.insets(rect);
+        let inner_width = rect.width.saturating_sub(left).saturating_sub(right);
+        let available_height = rect.height.saturating_sub(top).saturating_sub(bottom);
+        if available_height == 0 || inner_width == 0 {
+            return;
+        }
+        let spacing_total = Self::spacing_budget(total_entries, self.spacing);
+        // Keep every entry addressable when the form is smaller than the
+        // minimum spacing budget; the parent clip/scroll container owns the
+        // visual overflow rather than receiving zero-height child rects.
+        //
+        // `update` has no hint channel, so the desired list is empty and a `FromHints`
+        // form falls back to the same even split it has always produced (LAY-02).
+        let heights =
+            self.entry_heights(total_entries, available_height.saturating_sub(spacing_total), &[]);
+
+        // Layout rows: each row has a label (1/3 width) and a field (2/3 width), measured
+        // against the same inner box the standalone items use — the parent minus *both*
+        // margins. Allocating the full width and then adding the left margin pushed the field
+        // past the inner right edge (S-57).
+        let label_width = inner_width / 3;
+        // The gap between the label and the field is paid from the inner width, so it must be
+        // clamped to what is left after the label column: a spacing larger than that would
+        // otherwise push the field out of the parent's right edge (D09-LAYOUT-02, same policy as
+        // the margin above). Clamping to the *remaining* budget, not just the inner width, is what
+        // keeps `origin_x + label_width + gap` at or before the inner right edge.
+        let gap = self.spacing.min(inner_width.saturating_sub(label_width));
+        // `label_width + gap` is `u32 + u32` too, so it takes the same widened treatment as the
+        // other products here (D09-LAYOUT-02).
+        let field_width = inner_width.saturating_sub(Self::sum_budget(label_width, gap));
+        let margin = Self::clamped_i32(left);
+        let margin_top = Self::clamped_i32(top);
+        // `spacing` positions the field and advances the rows. Clamped to the inner box so a huge
+        // value cannot wrap the painted `x`/`y` (D09-LAYOUT-02).
+        let spacing = Self::clamped_i32(gap);
+        let origin_x = rect.x.saturating_add(margin);
+
+        // `update` gives a label and its field one row each in the entry budget, but paints
+        // them on the same line (the historical shape). The cursor therefore advances by both
+        // heights plus the two gaps that budget already reserved.
+        let mut cursor_y = rect.y.saturating_add(margin_top);
+        let mut index: usize = 0;
+        for (label, field) in &self.rows {
+            let label_height = heights.get(index).copied().unwrap_or(1);
+            let field_height = heights.get(index + 1).copied().unwrap_or(1);
+            widgets(*label, Rect::new(origin_x, cursor_y, label_width, label_height));
+            widgets(
+                *field,
+                Rect::new(
+                    origin_x.saturating_add(label_width as i32).saturating_add(spacing),
+                    cursor_y,
+                    field_width,
+                    field_height,
+                ),
+            );
+            cursor_y = cursor_y
+                .saturating_add(label_height as i32)
+                .saturating_add(field_height as i32)
+                .saturating_add(spacing.saturating_mul(2));
+            index = index.saturating_add(2);
+        }
+
+        // Layout standalone items: each gets the full inner width, sharing the same box
+        // the label/field pairs use.
+        for (id, _stretch) in &self.items {
+            let entry_height = heights.get(index).copied().unwrap_or(1);
+            widgets(*id, Rect::new(origin_x, cursor_y, inner_width, entry_height));
+            cursor_y = cursor_y.saturating_add(entry_height as i32).saturating_add(spacing);
+            index = index.saturating_add(1);
+        }
     }
 }
 
@@ -341,6 +460,7 @@ impl Layout for FormLayout {
     }
 
     fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
+        self.invalidate_last_layout();
         self.items.push((widget_id, stretch));
     }
 
@@ -503,6 +623,7 @@ impl Layout for FormLayout {
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
+        self.invalidate_last_layout();
         self.rows.retain(|(label, field)| *label != widget_id && *field != widget_id);
         self.items.retain(|(id, _)| *id != widget_id);
     }
@@ -525,105 +646,20 @@ impl Layout for FormLayout {
     }
 
     fn clear(&mut self) {
+        self.invalidate_last_layout();
         self.rows.clear();
         self.items.clear();
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
-        let total_rows = self.rows.len();
-        let total_items = self.items.len();
-        // D09-LAYOUT-02: `total_entries` counts child slots, so the doubling can only overflow
-        // `usize` on a build where `usize` is wider than 32 bits *and* a form holds more than
-        // 2^63 label/field rows — unreachable before memory is exhausted. Saturating keeps the
-        // arithmetic total on every target instead of relying on that argument.
-        let total_entries = total_rows.saturating_mul(2).saturating_add(total_items);
-        if total_entries == 0 {
-            return;
-        }
-
-        // D09-LAYOUT-02: `margin` and `spacing` are public `u32` values, so neither
-        // `margin * 2` nor `(n - 1) * spacing` may be evaluated in `u32`: the first panics in a
-        // build with overflow checks and wraps otherwise once `margin > u32::MAX / 2`, and the
-        // second does the same once the spacing budget exceeds `u32::MAX`. Both products are
-        // computed in `u64` and saturated back into `u32`, which defines an explicit bounded
-        // policy for huge values rather than letting the constructor's arguments escape the
-        // layout arithmetic:
-        //
-        // * a margin that cannot be paid twice consumes the whole axis, so the inner box is
-        //   zero-width/height and the entries are clipped by the parent (see the `== 0` early
-        //   return below) instead of receiving a negative/wrapped box;
-        // * a spacing budget that does not fit `u32` is saturated at the maximum, so it can
-        //   never wrap into a small number and hand entries a larger height than they earned.
-        let (left, top, right, bottom) = self.insets(rect);
-        let inner_width = rect.width.saturating_sub(left).saturating_sub(right);
-        let available_height = rect.height.saturating_sub(top).saturating_sub(bottom);
-        if available_height == 0 || inner_width == 0 {
-            return;
-        }
-        let spacing_total = Self::spacing_budget(total_entries, self.spacing);
-        // Keep every entry addressable when the form is smaller than the
-        // minimum spacing budget; the parent clip/scroll container owns the
-        // visual overflow rather than receiving zero-height child rects.
-        //
-        // `update` has no hint channel, so the desired list is empty and a `FromHints`
-        // form falls back to the same even split it has always produced (LAY-02).
-        let heights =
-            self.entry_heights(total_entries, available_height.saturating_sub(spacing_total), &[]);
-
-        // Layout rows: each row has a label (1/3 width) and a field (2/3 width), measured
-        // against the same inner box the standalone items use — the parent minus *both*
-        // margins. Allocating the full width and then adding the left margin pushed the field
-        // past the inner right edge (S-57).
-        let label_width = inner_width / 3;
-        // The gap between the label and the field is paid from the inner width, so it must be
-        // clamped to what is left after the label column: a spacing larger than that would
-        // otherwise push the field out of the parent's right edge (D09-LAYOUT-02, same policy as
-        // the margin above). Clamping to the *remaining* budget, not just the inner width, is what
-        // keeps `origin_x + label_width + gap` at or before the inner right edge.
-        let gap = self.spacing.min(inner_width.saturating_sub(label_width));
-        // `label_width + gap` is `u32 + u32` too, so it takes the same widened treatment as the
-        // other products here (D09-LAYOUT-02).
-        let field_width = inner_width.saturating_sub(Self::sum_budget(label_width, gap));
-        let margin = Self::clamped_i32(left);
-        let margin_top = Self::clamped_i32(top);
-        // `spacing` positions the field and advances the rows. Clamped to the inner box so a huge
-        // value cannot wrap the painted `x`/`y` (D09-LAYOUT-02).
-        let spacing = Self::clamped_i32(gap);
-        let origin_x = rect.x.saturating_add(margin);
-
-        // `update` gives a label and its field one row each in the entry budget, but paints
-        // them on the same line (the historical shape). The cursor therefore advances by both
-        // heights plus the two gaps that budget already reserved.
-        let mut cursor_y = rect.y.saturating_add(margin_top);
-        let mut index: usize = 0;
-        for (label, field) in &self.rows {
-            let label_height = heights.get(index).copied().unwrap_or(1);
-            let field_height = heights.get(index + 1).copied().unwrap_or(1);
-            widgets(*label, Rect::new(origin_x, cursor_y, label_width, label_height));
-            widgets(
-                *field,
-                Rect::new(
-                    origin_x.saturating_add(label_width as i32).saturating_add(spacing),
-                    cursor_y,
-                    field_width,
-                    field_height,
-                ),
-            );
-            cursor_y = cursor_y
-                .saturating_add(label_height as i32)
-                .saturating_add(field_height as i32)
-                .saturating_add(spacing.saturating_mul(2));
-            index = index.saturating_add(2);
-        }
-
-        // Layout standalone items: each gets the full inner width, sharing the same box
-        // the label/field pairs use.
-        for (id, _stretch) in &self.items {
-            let entry_height = heights.get(index).copied().unwrap_or(1);
-            widgets(*id, Rect::new(origin_x, cursor_y, inner_width, entry_height));
-            cursor_y = cursor_y.saturating_add(entry_height as i32).saturating_add(spacing);
-            index = index.saturating_add(1);
-        }
+        // The nominal emissions are captured so `child_rect` can answer a one-child query
+        // from the cache (LAY-005) instead of re-running the row solve.
+        let mut entries: Vec<(ObjectId, Rect)> = Vec::new();
+        self.layout_entries(rect, &mut |id, r| {
+            entries.push((id, r));
+            widgets(id, r);
+        });
+        *self.last_layout.borrow_mut() = Some((rect, entries));
     }
 
     // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
@@ -646,6 +682,28 @@ impl Layout for FormLayout {
     ) {
         let _ = context;
         self.arrange(rect, children, out);
+    }
+
+    /// The one-child query, answered from the cached nominal layout when it matches
+    /// (LAY-005): a hit test must not re-run the row solve. A rect mismatch (or a first
+    /// query before any `update`) falls back to the trait default's update-and-capture,
+    /// which is also what repopulates the cache.
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        if !self.has_child(id) {
+            return None;
+        }
+        if let Some((cached_rect, entries)) = self.last_layout.borrow().as_ref() {
+            if *cached_rect == rect {
+                return entries.iter().find(|(child, _)| *child == id).map(|(_, r)| *r);
+            }
+        }
+        let mut found = None;
+        self.update(rect, &mut |child, child_rect| {
+            if child == id && found.is_none() {
+                found = Some(child_rect);
+            }
+        });
+        found
     }
 }
 
@@ -949,5 +1007,22 @@ mod tests {
         let mut b = Vec::new();
         from_hints.update(Rect::new(0, 0, 200, 100), &mut |id, rect| b.push((id, rect)));
         assert_eq!(a, b, "update has no hints, so both policies agree");
+    }
+
+    /// LAY-005: the one-child query answers from the cached nominal layout — equal to the
+    /// full update pass — and a mutation refreshes it, so the answer never goes stale.
+    #[test]
+    fn child_rect_answers_from_the_cached_layout_and_tracks_mutations() {
+        let mut layout = FormLayout::new(0, 0);
+        layout.add_row_pair(1, 2);
+        let rect = Rect::new(0, 0, 300, 100);
+        // The fallback solve answers even before any update populated the cache; one row of
+        // two entries shares the height evenly, the label column is a third of the width.
+        assert_eq!(layout.child_rect(1, rect), Some(Rect::new(0, 0, 100, 50)));
+        assert_eq!(layout.child_rect(2, rect), Some(Rect::new(100, 0, 200, 50)));
+        assert_eq!(layout.child_rect(9, rect), None, "a foreign id is not placed");
+        // A mutation invalidates the cache: four entries share the height instead of two.
+        layout.add_row_pair(3, 4);
+        assert_eq!(layout.child_rect(1, rect), Some(Rect::new(0, 0, 100, 25)));
     }
 }

@@ -128,7 +128,7 @@ fn expect_selection_behavior(
 }
 
 /// A sort key normalised once per projected row.
-fn normalise_sort_key(text: &str) -> (String, Option<f64>) {
+pub(crate) fn normalise_sort_key(text: &str) -> (String, Option<f64>) {
     let trimmed = text.trim();
     (trimmed.to_lowercase(), trimmed.parse::<f64>().ok())
 }
@@ -139,7 +139,7 @@ fn normalise_sort_key(text: &str) -> (String, Option<f64>) {
 /// order no user would recognise. Parsing both sides is what makes the default comparison
 /// role-aware enough for the common textual-number case, while a role explicitly supplied through
 /// [`DataGrid::set_sort_role`] can expose a dedicated sort representation.
-fn compare_sort_keys(
+pub(crate) fn compare_sort_keys(
     left: &(String, Option<f64>),
     right: &(String, Option<f64>),
 ) -> core::cmp::Ordering {
@@ -154,7 +154,16 @@ fn compare_sort_keys(
 use super::filter_expr::{FilterCondition, FilterExpr};
 
 /// Rows after filtering and sorting, holding one optional cell per source column.
+///
+/// Only the explicit full-model mode (`DataGrid::set_full_model_projection(true)`) stores a
+/// matrix of these; the default virtualized mode keeps a [`ProjectedIndex`] instead.
 type ProjectedRows = Vec<Vec<Option<String>>>;
+
+/// The display order of a virtualized projection: the source row for each projected row.
+///
+/// A sort reorders these indices and a filter drops them, so a projection costs one `usize` per
+/// row and never a cloned row or cell (V-002).
+type ProjectedIndex = Vec<usize>;
 
 /// The sliced window most recently handed out from the full-model projection.
 ///
@@ -163,6 +172,14 @@ type ProjectedRows = Vec<Vec<Option<String>>>;
 /// stale window unreachable when the projection is rebuilt.
 type FullWindowCache =
     Option<(Rc<ProjectedRows>, (usize, usize, usize, usize), Rc<Vec<Vec<Option<String>>>>)>;
+
+/// The window most recently fetched for a virtualized projection.
+///
+/// Keyed by the projection allocation and the window rectangle, so a scroll reuses nothing stale
+/// and a repeated paint is a refcount bump. The matrix holds **only** the window's rows: the
+/// model itself is never materialised (V-001).
+type VirtualWindowCache =
+    Option<(Rc<ProjectedIndex>, (usize, usize, usize, usize), Rc<Vec<Vec<Option<String>>>>)>;
 
 /// Sort descriptor for a data grid column.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -356,11 +373,18 @@ pub struct DataGrid {
     /// Emitted when visible row/column window changes.
     pub visible_window_changed: Signal1<(usize, usize, usize, usize)>,
     /// Whether filtering and sorting project the whole model instead of the visible window.
+    ///
+    /// Off by default: the default path is virtualized and materialises only the visible window
+    /// (V-001). `true` keeps the historical whole-model materialisation as an explicit option.
     full_model_projection: bool,
     /// Cache for the full-model projection, keyed by the source generation/revision.
     full_projection_cache: Option<(u64, Rc<ProjectedRows>)>,
+    /// Cache for the virtualized projection's row order, keyed by the source generation/revision.
+    index_projection_cache: Option<(u64, Rc<ProjectedIndex>)>,
     /// The sliced window most recently handed out from `full_projection_cache`.
     full_window_cache: FullWindowCache,
+    /// The window most recently fetched for the virtualized projection.
+    virtual_window_cache: VirtualWindowCache,
     /// How column widths are decided.
     column_width_mode: ColumnWidthMode,
     /// Whether odd rows get the alternating wash.
@@ -381,6 +405,16 @@ pub struct DataGrid {
     pub filter_changed: Signal1<FilterExpr>,
     /// Emitted with the zero-based page when a page from the bound [`Pagination`] is applied.
     pub page_applied: Signal1<usize>,
+    /// Columns excluded from painting and hit-testing (V-014).
+    hidden_columns: BTreeSet<usize>,
+    /// Merged cells, expressed in projected coordinates (V-014).
+    cell_spans: Vec<CellSpan>,
+    /// Additional header rows painted above the title row (V-014).
+    extra_header_rows: Vec<Vec<String>>,
+    /// Per-cell tooltip source; `None` keeps the historical no-tooltip behaviour (V-014).
+    cell_tooltip: Option<Arc<dyn Fn(usize, usize) -> Option<String> + Send + Sync>>,
+    /// Per-cell paint delegate; `None` draws every cell directly (V-014).
+    cell_delegate: Option<Arc<dyn DataGridCellDelegate>>,
 }
 
 /// How a data grid decides column widths.
@@ -540,6 +574,53 @@ impl SortOrder {
             Self::Ascending => Self::Descending,
             Self::Descending => Self::Ascending,
         }
+    }
+}
+
+/// A merged cell: its origin and how many rows and columns it covers (V-014).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellSpan {
+    /// The origin's projected row.
+    pub row: usize,
+    /// The origin's projected column.
+    pub column: usize,
+    /// Rows covered, at least 1.
+    pub row_span: usize,
+    /// Columns covered, at least 1.
+    pub column_span: usize,
+}
+
+impl CellSpan {
+    /// A span of at least one row and one column.
+    pub fn new(row: usize, column: usize, row_span: usize, column_span: usize) -> Self {
+        Self { row, column, row_span: row_span.max(1), column_span: column_span.max(1) }
+    }
+
+    /// Whether `(row, column)` is covered by this span.
+    pub fn covers(&self, row: usize, column: usize) -> bool {
+        row >= self.row
+            && row < self.row.saturating_add(self.row_span)
+            && column >= self.column
+            && column < self.column.saturating_add(self.column_span)
+    }
+}
+
+/// Paint hook for a data grid cell (V-014).
+///
+/// A delegate owns a cell's ink when `paint` returns `true`; returning `false` keeps the grid's
+/// own text rendering, which is also the behaviour when no delegate is installed.
+pub trait DataGridCellDelegate: Send + Sync {
+    /// Paints `cell`, returning whether the delegate took over the cell.
+    fn paint(
+        &self,
+        context: &mut RenderContext,
+        cell: Rect,
+        row: usize,
+        column: usize,
+        text: Option<&str>,
+    ) -> bool {
+        let _ = (context, cell, row, column, text);
+        false
     }
 }
 
@@ -1117,9 +1198,11 @@ impl DataGrid {
             column_resized: Signal1::new(),
             hovered_cell: None,
             visible_window_changed: Signal1::new(),
-            full_model_projection: true,
+            full_model_projection: false,
             full_projection_cache: None,
+            index_projection_cache: None,
             full_window_cache: None,
+            virtual_window_cache: None,
             column_width_mode: ColumnWidthMode::Fixed,
             alternating_rows: false,
             edit_triggers: EditTriggers::NONE,
@@ -1130,6 +1213,11 @@ impl DataGrid {
             context_menu_requested: Signal1::new(),
             filter_changed: Signal1::new(),
             page_applied: Signal1::new(),
+            hidden_columns: BTreeSet::new(),
+            cell_spans: Vec::new(),
+            extra_header_rows: Vec::new(),
+            cell_tooltip: None,
+            cell_delegate: None,
         }
     }
 
@@ -1176,7 +1264,7 @@ impl DataGrid {
             }
         }
         self.clear_cache();
-        self.full_projection_cache = None;
+        self.invalidate_projection_cache();
         self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
         self.header_text_revision = self.header_text_revision.wrapping_add(1);
         self.base.request_layout();
@@ -1309,7 +1397,7 @@ impl DataGrid {
         self.scroll_row = 0;
         self.scroll_column = 0;
         self.clear_cache();
-        self.full_projection_cache = None;
+        self.invalidate_projection_cache();
         self.clear_selection_units();
         self.current_cell = None;
         self.normalize_projection_state();
@@ -1328,7 +1416,7 @@ impl DataGrid {
         self.scroll_column = 0;
         self.frozen_columns = 0;
         self.clear_cache();
-        self.full_projection_cache = None;
+        self.invalidate_projection_cache();
         self.clear_selection_units();
         self.current_cell = None;
         self.emit_visible_window_changed();
@@ -1585,10 +1673,13 @@ impl DataGrid {
         match self.selection_behavior {
             DataGridSelectionBehavior::Cells => self.selected_cells.contains(&(row, column)),
             DataGridSelectionBehavior::Rows => {
-                self.selected_cells.iter().any(|(selected, _)| *selected == row)
+                // Row units are stored as `(row, 0)`, so a row query is an ordered-set lookup
+                // rather than a scan of every selected cell (V-004).
+                self.selected_cells.contains(&(row, 0))
             }
             DataGridSelectionBehavior::Columns => {
-                self.selected_cells.iter().any(|(_, selected)| *selected == column)
+                // Column units are stored as `(0, column)`, the same convention (V-004).
+                self.selected_cells.contains(&(0, column))
             }
         }
     }
@@ -1798,27 +1889,217 @@ impl DataGrid {
         self.frozen_columns
     }
 
+    // ── Hidden columns (V-014) ──
+
+    /// Whether `column` is excluded from painting and hit-testing.
+    pub fn is_column_hidden(&self, column: usize) -> bool {
+        self.hidden_columns.contains(&column)
+    }
+
+    /// The hidden columns, in ascending order.
+    pub fn hidden_columns(&self) -> Vec<usize> {
+        self.hidden_columns.iter().copied().collect()
+    }
+
+    /// Replaces the hidden-column set.
+    ///
+    /// A hidden column keeps its absolute index (sort specs, filters and the data window all stay
+    /// absolute) and contributes zero width, so the columns after it close the gap. The companion
+    /// wiring that lets a `ColumnChooser` drive this is chapter 3's A32/A24 (V-014): this is the
+    /// in-widget capability only.
+    pub fn set_hidden_columns(&mut self, columns: Vec<usize>) {
+        let available = self.column_count();
+        let next: BTreeSet<usize> =
+            columns.into_iter().filter(|column| *column < available).collect();
+        if next == self.hidden_columns {
+            return;
+        }
+        self.hidden_columns = next;
+        self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Hides or shows `column`. Returns `false` for a column the source lacks.
+    pub fn set_column_hidden(&mut self, column: usize, hidden: bool) -> bool {
+        if column >= self.column_count() {
+            return false;
+        }
+        let changed = if hidden {
+            self.hidden_columns.insert(column)
+        } else {
+            self.hidden_columns.remove(&column)
+        };
+        if changed {
+            self.column_geometry_revision = self.column_geometry_revision.wrapping_add(1);
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+        true
+    }
+
+    // ── Merged cells (V-014) ──
+
+    /// The configured spans, in insertion order.
+    pub fn cell_spans(&self) -> &[CellSpan] {
+        &self.cell_spans
+    }
+
+    /// Merges `row_span` x `column_span` cells anchored at `(row, column)`.
+    ///
+    /// The span is expressed in projected coordinates (the same space selection uses). Returns
+    /// `false` when the anchor is outside the current row/column counts.
+    pub fn set_cell_span(
+        &mut self,
+        row: usize,
+        column: usize,
+        row_span: usize,
+        column_span: usize,
+    ) -> bool {
+        if row >= self.row_count() || column >= self.column_count() {
+            return false;
+        }
+        let span = CellSpan::new(row, column, row_span, column_span);
+        // One span per origin: re-setting the same anchor replaces it rather than stacking two
+        // answers for the same cell.
+        if let Some(existing) = self
+            .cell_spans
+            .iter_mut()
+            .find(|existing| existing.row == row && existing.column == column)
+        {
+            *existing = span;
+        } else {
+            self.cell_spans.push(span);
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// Removes every merged cell.
+    pub fn clear_cell_spans(&mut self) {
+        if self.cell_spans.is_empty() {
+            return;
+        }
+        self.cell_spans.clear();
+        self.base.request_redraw();
+    }
+
+    /// The span covering `(row, column)`, when one does.
+    pub fn cell_span(&self, row: usize, column: usize) -> Option<CellSpan> {
+        self.span_covering(row, column)
+    }
+
+    fn span_covering(&self, row: usize, column: usize) -> Option<CellSpan> {
+        self.cell_spans.iter().copied().find(|span| span.covers(row, column))
+    }
+
+    // ── Multi-level header (V-014) ──
+
+    /// The additional header rows painted above the title row.
+    pub fn extra_header_rows(&self) -> &[Vec<String>] {
+        &self.extra_header_rows
+    }
+
+    /// Sets additional header rows above the title row.
+    ///
+    /// Row `0` is the topmost level and the last row is adjacent to the titles. An empty list is
+    /// the historical single-row header. The cells box shrinks by one title strip per row.
+    pub fn set_extra_header_rows(&mut self, rows: Vec<Vec<String>>) {
+        let rows: Vec<Vec<String>> =
+            rows.into_iter().filter(|row| row.iter().any(|label| !label.is_empty())).collect();
+        if rows == self.extra_header_rows {
+            return;
+        }
+        self.extra_header_rows = rows;
+        self.header_text_revision = self.header_text_revision.wrapping_add(1);
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// The total header strip height: the title row plus every extra level.
+    fn header_strip_height(&self) -> u32 {
+        GRID_HEADER_HEIGHT.saturating_mul(1 + self.extra_header_rows.len() as u32)
+    }
+
+    // ── Cell tooltip (V-014) ──
+
+    /// The tooltip text for `(row, column)`, from the installed source.
+    pub fn cell_tooltip(&self, row: usize, column: usize) -> Option<String> {
+        self.cell_tooltip.as_ref().and_then(|source| source(row, column))
+    }
+
+    /// Installs the per-cell tooltip source. The callback runs only for the hovered cell.
+    pub fn set_cell_tooltip(
+        &mut self,
+        source: Arc<dyn Fn(usize, usize) -> Option<String> + Send + Sync>,
+    ) {
+        self.cell_tooltip = Some(source);
+        self.base.request_redraw();
+    }
+
+    /// Removes the tooltip source.
+    pub fn clear_cell_tooltip(&mut self) {
+        if self.cell_tooltip.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    // ── Cell delegate (V-014) ──
+
+    /// Installs a per-cell paint delegate. Without one, cells draw directly (the default).
+    pub fn set_cell_delegate(&mut self, delegate: Arc<dyn DataGridCellDelegate>) {
+        self.cell_delegate = Some(delegate);
+        self.base.request_redraw();
+    }
+
+    /// Removes the paint delegate.
+    pub fn clear_cell_delegate(&mut self) {
+        if self.cell_delegate.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Whether a paint delegate is installed.
+    pub fn has_cell_delegate(&self) -> bool {
+        self.cell_delegate.is_some()
+    }
+
     /// Whether the filter and sort projection covers the whole model.
     pub fn full_model_projection(&self) -> bool {
         self.full_model_projection
     }
 
-    /// Enables full-model filtering and sorting.
+    /// Chooses between the virtualized projection (default) and whole-model materialisation.
     ///
-    /// On by default. A window-scoped sort only ordered the rows that happened to be fetched, so
-    /// scrolling silently re-sorted the model — the same spec produced a different first row at a
-    /// different scroll offset. Projecting the whole model first makes a sort mean "the model's
-    /// order". The full fetch is proportional to the source size, so it is still switchable off for
-    /// a source that cannot afford it; a window-scoped projection then never pretends to sort the
-    /// model.
+    /// # Default: virtualized
+    ///
+    /// The default path projects the model as an **index**: filtering drops source rows and
+    /// sorting reorders their indices, then only the visible window is fetched. A 10k-row grid
+    /// therefore no longer holds a 10k-row copy of its cells, and a scroll fetches one window
+    /// (V-001/V-002). The visible order is the same as the materialised projection.
+    ///
+    /// `true` restores the historical whole-model fetch. It is kept as an explicit option for a
+    /// source that is cheap to read once and expensive to re-read per window; it materialises
+    /// every row and cell, which is why it is no longer the default.
     pub fn set_full_model_projection(&mut self, enabled: bool) {
         if self.full_model_projection == enabled {
             return;
         }
         self.full_model_projection = enabled;
-        self.full_projection_cache = None;
+        self.invalidate_projection_cache();
         self.clear_cache();
         self.base.request_redraw();
+    }
+
+    /// Drops every derived projection and window, keeping only source row identity.
+    ///
+    /// One place for the invalidation so a new cache cannot be forgotten at one of the sort,
+    /// filter or data-change call sites.
+    fn invalidate_projection_cache(&mut self) {
+        self.full_projection_cache = None;
+        self.index_projection_cache = None;
+        self.full_window_cache = None;
+        self.virtual_window_cache = None;
     }
 
     /// How columns are sized.
@@ -1908,7 +2189,7 @@ impl DataGrid {
     /// Replaces sort spec list in priority order.
     pub fn set_sort_specs(&mut self, sort_specs: Vec<SortSpec>) {
         self.sort_specs = sort_specs;
-        self.full_projection_cache = None;
+        self.invalidate_projection_cache();
         self.clear_cache();
         self.base.request_redraw();
     }
@@ -1931,7 +2212,7 @@ impl DataGrid {
         if self.sort_roles.insert(column, role) == Some(role) {
             return;
         }
-        self.full_projection_cache = None;
+        self.invalidate_projection_cache();
         self.clear_cache();
         self.base.request_redraw();
     }
@@ -1939,7 +2220,7 @@ impl DataGrid {
     /// Removes a column's sort-role override, returning to the display text.
     pub fn clear_sort_role(&mut self, column: usize) {
         if self.sort_roles.remove(&column).is_some() {
-            self.full_projection_cache = None;
+            self.invalidate_projection_cache();
             self.clear_cache();
             self.base.request_redraw();
         }
@@ -1965,13 +2246,20 @@ impl DataGrid {
     /// counterpart. `Fixed` deliberately ignores the overrides, `Stretch` divides the cells box and
     /// `Interactive` honours an explicit width before falling back to the fixed one.
     pub fn column_width_at(&self, column: usize) -> u32 {
+        // A hidden column consumes no space; every offset and hit test below reads this one
+        // answer, so hiding is a width of zero rather than a second geometry path (V-014).
+        if self.hidden_columns.contains(&column) {
+            return 0;
+        }
         match self.column_width_mode {
             ColumnWidthMode::Fixed => self.column_width,
             ColumnWidthMode::Interactive => {
                 self.column_widths.get(&column).copied().unwrap_or(self.column_width)
             }
             ColumnWidthMode::Stretch => {
-                (self.cells_box().width / self.column_count().max(1) as u32).max(1)
+                // Hidden columns do not take a share: the visible ones divide the whole box.
+                let visible = self.column_count().saturating_sub(self.hidden_columns.len()).max(1);
+                (self.cells_box().width / visible as u32).max(1)
             }
             ColumnWidthMode::StretchLast => {
                 let count = self.column_count().max(1);
@@ -1979,6 +2267,7 @@ impl DataGrid {
                     return self.column_widths.get(&column).copied().unwrap_or(self.column_width);
                 }
                 let used: u32 = (0..count - 1)
+                    .filter(|index| !self.hidden_columns.contains(index))
                     .map(|index| {
                         self.column_widths.get(&index).copied().unwrap_or(self.column_width)
                     })
@@ -2204,7 +2493,7 @@ impl DataGrid {
     /// evaluation path (principle #54).
     pub fn set_filter_expr(&mut self, filter_expr: FilterExpr) {
         self.filter_expr = filter_expr.clone();
-        self.full_projection_cache = None;
+        self.invalidate_projection_cache();
         self.clear_cache();
         self.filter_changed.emit(filter_expr);
         self.base.request_redraw();
@@ -2281,7 +2570,7 @@ impl DataGrid {
         if self.full_model_projection {
             return self.fetch_full_projected_window();
         }
-        self.fetch_window_shared()
+        self.fetch_visible_window_view().rows
     }
 
     /// The draw pass's window: a borrowed, column-sliced view of the projection.
@@ -2292,9 +2581,72 @@ impl DataGrid {
             let (row_start, row_len, col_start, col_len) = self.visible_window();
             return ProjectedWindowView { rows: projected, row_start, row_len, col_start, col_len };
         }
-        let cells = self.fetch_window_shared();
+        // With no projection in effect the window fetch *is* the virtualized path: it pulls only
+        // the visible rows and caches them. A filter or sort needs the model-wide index first.
+        if self.filter_expr.is_noop() && self.sort_specs.is_empty() {
+            let cells = self.fetch_window_shared();
+            let row_len = cells.len();
+            let col_len = cells.first().map_or(0, Vec::len);
+            return ProjectedWindowView {
+                rows: cells,
+                row_start: 0,
+                row_len,
+                col_start: 0,
+                col_len,
+            };
+        }
+        self.virtual_window_view()
+    }
+
+    /// Fetches only the window rows named by the virtualized projection.
+    ///
+    /// The sorted order is a list of source indices, so a window needs one single-row fetch per
+    /// visible row rather than a whole-model fetch followed by a slice (V-001/V-002). The result
+    /// is cached against the projection allocation and the window rectangle, so a repaint is a
+    /// refcount bump and a stale projection cannot be served after a rebuild.
+    fn virtual_window_view(&mut self) -> ProjectedWindowView {
+        let Some(source) = self.data_source.clone() else {
+            return ProjectedWindowView {
+                rows: Rc::new(Vec::new()),
+                row_start: 0,
+                row_len: 0,
+                col_start: 0,
+                col_len: 0,
+            };
+        };
+        let (row_start, row_len, col_start, col_len) = self.visible_window();
+        if row_len == 0 || col_len == 0 {
+            return ProjectedWindowView {
+                rows: Rc::new(Vec::new()),
+                row_start: 0,
+                row_len: 0,
+                col_start: 0,
+                col_len: 0,
+            };
+        }
+        let index = self.index_projection();
+        let window = (row_start, row_len, col_start, col_len);
+        if let Some((cached_index, cached_window, cells)) = self.virtual_window_cache.as_ref() {
+            if Rc::ptr_eq(cached_index, &index) && *cached_window == window {
+                let row_len = cells.len();
+                return ProjectedWindowView {
+                    rows: Rc::clone(cells),
+                    row_start: 0,
+                    row_len,
+                    col_start: 0,
+                    col_len,
+                };
+            }
+        }
+        let end = row_start.saturating_add(row_len).min(index.len());
+        let mut rows = Vec::with_capacity(end.saturating_sub(row_start));
+        for projected in row_start..end {
+            let mut fetched = source.fetch_window(index[projected], 1, col_start, col_len);
+            rows.push(fetched.pop().unwrap_or_default());
+        }
+        let cells = Rc::new(rows);
         let row_len = cells.len();
-        let col_len = cells.first().map_or(0, Vec::len);
+        self.virtual_window_cache = Some((Rc::clone(&index), window, Rc::clone(&cells)));
         ProjectedWindowView { rows: cells, row_start: 0, row_len, col_start: 0, col_len }
     }
 
@@ -2372,8 +2724,7 @@ impl DataGrid {
     /// Marks the bound source's contents as changed and drops every derived cache.
     pub fn refresh_data(&mut self) {
         self.data_generation.fetch_add(1, Ordering::Relaxed);
-        self.full_projection_cache = None;
-        self.full_window_cache = None;
+        self.invalidate_projection_cache();
         self.clear_cache();
         self.emit_visible_window_changed();
         self.base.request_redraw();
@@ -2415,6 +2766,79 @@ impl DataGrid {
         let projected = Rc::new(self.apply_filter_sort(cells, 0));
         self.full_projection_cache = Some((cache_key, Rc::clone(&projected)));
         projected
+    }
+
+    /// The virtualized projection: which source row is painted at each projected row.
+    ///
+    /// The model is read one row at a time, and the result holds only indices. Filtering drops a
+    /// row's index instead of retaining its cloned cells, and sorting reorders indices against a
+    /// key table built once per spec — so a whole-model projection allocates `usize`s and keys,
+    /// never a cloned row matrix (V-002).
+    fn index_projection(&mut self) -> Rc<ProjectedIndex> {
+        let Some(source) = self.data_source.clone() else {
+            return Rc::new(Vec::new());
+        };
+        let revision = source.revision();
+        let cache_key =
+            if revision > 0 { revision } else { self.data_generation.load(Ordering::Relaxed) };
+        if let Some((key, index)) = self.index_projection_cache.as_ref() {
+            if *key == cache_key {
+                return Rc::clone(index);
+            }
+        }
+
+        let rows = source.row_count();
+        let columns = source.column_count();
+        let mut order: Vec<usize> = Vec::with_capacity(rows);
+        if self.filter_expr.is_noop() {
+            order.extend(0..rows);
+        } else {
+            // Filtering evaluates one row at a time. The row is transient: if it is rejected its
+            // cells are dropped immediately rather than retained for a later slice.
+            for row in 0..rows {
+                let mut values = source.fetch_window(row, 1, 0, columns);
+                if values.pop().is_some_and(|values| self.filter_expr.accepts(&values)) {
+                    order.push(row);
+                }
+            }
+        }
+
+        if !self.sort_specs.is_empty() && !order.is_empty() {
+            // One normalised key per spec per surviving row, computed once. The comparator reads
+            // this table; it never re-reads the source (V-002).
+            let mut key_sets: Vec<Vec<Option<(String, Option<f64>)>>> =
+                Vec::with_capacity(self.sort_specs.len());
+            for spec in &self.sort_specs {
+                let role = self.sort_roles.get(&spec.column).copied();
+                let mut keys = Vec::with_capacity(order.len());
+                for &row in &order {
+                    let role_value = role
+                        .and_then(|role| source.data_role(row, spec.column, role))
+                        .or_else(|| source.data(row, spec.column));
+                    keys.push(Some(normalise_sort_key(role_value.as_deref().unwrap_or_default())));
+                }
+                key_sets.push(keys);
+            }
+            let empty = (String::new(), None);
+            let mut positions: Vec<usize> = (0..order.len()).collect();
+            positions.sort_by(|&left, &right| {
+                for (index, spec) in self.sort_specs.iter().enumerate() {
+                    let left_key = key_sets[index][left].as_ref().unwrap_or(&empty);
+                    let right_key = key_sets[index][right].as_ref().unwrap_or(&empty);
+                    let ordering = compare_sort_keys(left_key, right_key);
+                    if ordering != core::cmp::Ordering::Equal {
+                        return if spec.descending { ordering.reverse() } else { ordering };
+                    }
+                }
+                // Stable tie-break on the source row, exactly as the materialised path does.
+                order[left].cmp(&order[right])
+            });
+            order = positions.into_iter().map(|position| order[position]).collect();
+        }
+
+        let index = Rc::new(order);
+        self.index_projection_cache = Some((cache_key, Rc::clone(&index)));
+        index
     }
 
     fn slice_window(
@@ -2518,8 +2942,9 @@ impl DataGrid {
     /// press resolves to are the same rectangle by construction.
     fn cells_box(&self) -> Rect {
         let content = ControlMetrics::band_inset(self.base.geometry(), GRID_INSET);
-        let height = content.height.saturating_sub(GRID_HEADER_HEIGHT);
-        Rect::new(content.x, content.y + GRID_HEADER_HEIGHT as i32, content.width, height)
+        let strip = self.header_strip_height();
+        let height = content.height.saturating_sub(strip);
+        Rect::new(content.x, content.y + strip as i32, content.width, height)
     }
 
     /// The box of the cell at `(row, column)` in the *projection* — the index the data source
@@ -2582,6 +3007,79 @@ impl DataGrid {
         );
     }
 
+    /// Paints a cell through the delegate when one is installed, otherwise directly.
+    ///
+    /// The delegate's `false` answer is the documented "keep the grid's own rendering" path, so
+    /// a host can decorate selected cells and leave the rest to the control (V-014).
+    fn paint_cell_ink(
+        &self,
+        context: &mut RenderContext,
+        cell_rect: Rect,
+        value: Option<&String>,
+        row: usize,
+        column: usize,
+        cell_border: Color,
+        ink: Color,
+    ) {
+        if let Some(delegate) = self.cell_delegate.as_ref() {
+            if delegate.paint(context, cell_rect, row, column, value.map(String::as_str)) {
+                return;
+            }
+        }
+        self.paint_cell(context, cell_rect, value, cell_border, ink);
+    }
+
+    /// The union box of a merged run (V-014).
+    fn span_rect(&self, span: CellSpan) -> Rect {
+        let origin = self.cell_rect(span.row, span.column);
+        let last_row = span.row.saturating_add(span.row_span.saturating_sub(1));
+        let last_column = span.column.saturating_add(span.column_span.saturating_sub(1));
+        let last = self.cell_rect(last_row, last_column);
+        let right = last.x + last.width as i32;
+        let bottom = last.y + last.height as i32;
+        Rect::new(
+            origin.x,
+            origin.y,
+            (right - origin.x).max(0) as u32,
+            (bottom - origin.y).max(0) as u32,
+        )
+    }
+
+    /// Paints `(row, column)`, merging it with the run it anchors (V-014).
+    ///
+    /// Returns `true` when ink was laid down. A cell covered by another cell's span answers
+    /// `false`: the origin paints the whole run, including this cell's area.
+    fn paint_cell_at(
+        &self,
+        context: &mut RenderContext,
+        value: Option<&String>,
+        row: usize,
+        column: usize,
+        cell_border: Color,
+        ink: Color,
+        selected_bg: Color,
+    ) -> bool {
+        match self.span_covering(row, column) {
+            Some(span) if span.row == row && span.column == column => {
+                let rect = self.span_rect(span);
+                if self.selection_contains(row, column) {
+                    context.fill_rect(rect, selected_bg);
+                }
+                self.paint_cell_ink(context, rect, value, row, column, cell_border, ink);
+                true
+            }
+            Some(_) => false,
+            None => {
+                let rect = self.cell_rect(row, column);
+                if self.selection_contains(row, column) {
+                    context.fill_rect(rect, selected_bg);
+                }
+                self.paint_cell_ink(context, rect, value, row, column, cell_border, ink);
+                true
+            }
+        }
+    }
+
     /// The projected `(row, column)` a point falls in, or `None` when it misses every cell
     /// (including a press in the column-title strip or outside the grid).
     pub fn cell_at(&self, point: Point) -> Option<(usize, usize)> {
@@ -2599,7 +3097,15 @@ impl DataGrid {
         if column >= self.column_count() || row >= self.row_count() {
             return None;
         }
-        self.cell_rect(row, column).contains_point(point).then_some((row, column))
+        if !self.cell_rect(row, column).contains_point(point) {
+            return None;
+        }
+        // A merged cell answers as its origin, so a press anywhere inside the run selects (and
+        // draws the focus ring around) the cell that actually owns the value (V-014).
+        if let Some(span) = self.span_covering(row, column) {
+            return Some((span.row, span.column));
+        }
+        Some((row, column))
     }
 
     fn visible_column_capacity(&self) -> usize {
@@ -2614,7 +3120,8 @@ impl DataGrid {
     /// The column-title strip.
     fn header_band(&self) -> Rect {
         let cells = self.cells_box();
-        Rect::new(cells.x, cells.y - GRID_HEADER_HEIGHT as i32, cells.width, GRID_HEADER_HEIGHT)
+        let height = self.header_strip_height();
+        Rect::new(cells.x, cells.y - height as i32, cells.width, height)
     }
 
     /// The column index in the title strip under `point`.
@@ -3046,6 +3553,34 @@ impl Draw for DataGrid {
             // Header titles are static; elide each one once and reuse it (F-P04).
             let generation = self.data_generation.load(Ordering::Relaxed);
             let column_count = self.column_count();
+            // Extra header levels are drawn above the title row, one strip each (V-014). The
+            // levels share the title row's column geometry, so a hidden column leaves no gap
+            // here either.
+            for (level, labels) in self.extra_header_rows.iter().enumerate() {
+                let y = cells.y
+                    - GRID_HEADER_HEIGHT as i32 * (self.extra_header_rows.len() - level + 1) as i32;
+                for column in self.scroll_column..column_count {
+                    if self.is_column_hidden(column) {
+                        continue;
+                    }
+                    let x = cells.x + self.column_view_x(column);
+                    if x >= cells_right {
+                        break;
+                    }
+                    let width = self.column_width_at(column).max(1);
+                    let band = Rect::new(x, y, width, GRID_HEADER_HEIGHT);
+                    context.fill_rect(band, surface.blend(&ink, 0.05));
+                    if let Some(label) = labels.get(column).filter(|label| !label.is_empty()) {
+                        context.draw_text_fitted_cow(
+                            context.text_line(band, header_font),
+                            label,
+                            header_font,
+                            ink,
+                            HorizontalAlignment::Left,
+                        );
+                    }
+                }
+            }
             let mut text_cache = self.header_text_cache.borrow_mut();
             if text_cache.labels_revision != self.header_text_revision
                 || text_cache.generation != generation
@@ -3057,6 +3592,10 @@ impl Draw for DataGrid {
                 text_cache.column_count = column_count;
             }
             for column in self.scroll_column..column_count {
+                // A hidden column has no painted header section (V-014).
+                if self.is_column_hidden(column) {
+                    continue;
+                }
                 let x = cells.x + self.column_view_x(column);
                 if x >= cells_right {
                     break;
@@ -3191,17 +3730,22 @@ impl Draw for DataGrid {
                 // Frozen columns are painted by the overdraw pass below, after every scrolling
                 // cell. Skipping them here is what makes that pass the single authority for the
                 // pinned band: painting them twice would also lay their text down twice.
-                if global_column < self.frozen_columns {
+                if global_column < self.frozen_columns || self.is_column_hidden(global_column) {
                     continue;
                 }
                 let cell_rect = self.cell_rect(row_origin + row_idx, global_column);
                 if cell_rect.x >= cells_right {
                     break;
                 }
-                if self.selection_contains(row_origin + row_idx, global_column) {
-                    context.fill_rect(cell_rect, selected_bg);
-                }
-                self.paint_cell(context, cell_rect, cell.as_ref(), cell_border, ink);
+                let _ = self.paint_cell_at(
+                    context,
+                    cell.as_ref(),
+                    row_origin + row_idx,
+                    global_column,
+                    cell_border,
+                    ink,
+                    selected_bg,
+                );
             }
         }
 
@@ -3220,6 +3764,9 @@ impl Draw for DataGrid {
                     break;
                 }
                 for column in 0..self.frozen_columns {
+                    if self.is_column_hidden(column) {
+                        continue;
+                    }
                     let local = column.saturating_sub(col_origin);
                     let cell_rect = self.cell_rect(global_row, column);
                     if cell_rect.x >= cells_right {
@@ -3228,11 +3775,16 @@ impl Draw for DataGrid {
                     // `draw_rect` is a stroke, so the scrolling cell's ink underneath must be
                     // covered with the surface before this cell's own border and value go down.
                     context.fill_rect(cell_rect, surface);
-                    if self.selection_contains(global_row, column) {
-                        context.fill_rect(cell_rect, selected_bg);
-                    }
                     let value = row.get(local).and_then(|cell| cell.as_ref());
-                    self.paint_cell(context, cell_rect, value, cell_border, ink);
+                    let _ = self.paint_cell_at(
+                        context,
+                        value,
+                        global_row,
+                        column,
+                        cell_border,
+                        ink,
+                        selected_bg,
+                    );
                 }
             }
         }
@@ -3253,6 +3805,27 @@ impl Draw for DataGrid {
             if !self.selection_contains(row, column) {
                 let box_rect = self.cell_rect(row, column);
                 context.draw_rect_stroke(box_rect, accent.with_alpha(120), 1);
+            }
+            // A tooltip is drawn only for the cell under the pointer, so a large model costs
+            // nothing: the callback runs once per frame at most, and only when installed
+            // (V-014).
+            if let Some(text) = self.cell_tooltip(row, column).filter(|text| !text.is_empty()) {
+                let cell = self.cell_rect(row, column);
+                let tip_height = GRID_HEADER_HEIGHT;
+                let tip_y = (cell.y + cell.height as i32 + 2)
+                    .min(cells.y + cells.height as i32 - tip_height as i32)
+                    .max(cells.y);
+                let tip = Rect::new(cell.x, tip_y, cell.width.max(80).min(cells.width), tip_height);
+                context.fill_rect(tip, surface.blend(&ink, 0.06));
+                context.draw_rect(tip, cell_border);
+                let font = effective_font(self.style());
+                context.draw_text_fitted_cow(
+                    context.text_line(tip, font),
+                    &text,
+                    font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
             }
         }
         if let Some((row, column)) = self.current_cell.or(self.selection) {
@@ -3348,20 +3921,30 @@ impl crate::event::EventHandler for DataGrid {
             }
             if let Some(column) = self.header_column_at(*pos) {
                 self.header_clicked.emit(column);
+                // The header cycles ascending -> descending -> unsorted, matching
+                // `GridViewHeader::toggle_sort` (V-003). The third state restores the source
+                // order, which a two-state toggle could never reach.
                 let existing = self.sort_specs.iter().position(|spec| spec.column == column);
                 let descending = match existing {
                     Some(index) => {
-                        let descending = !self.sort_specs[index].descending;
-                        self.sort_specs[index].descending = descending;
-                        Some(descending)
+                        if self.sort_specs[index].descending {
+                            self.sort_specs.remove(index);
+                            None
+                        } else {
+                            self.sort_specs[index].descending = true;
+                            Some(true)
+                        }
                     }
                     None => {
                         self.sort_specs.push(SortSpec { column, descending: false });
                         Some(false)
                     }
                 };
-                self.full_projection_cache = None;
+                self.invalidate_projection_cache();
                 self.clear_cache();
+                // `sort_changed` still carries `(column, descending)`; the unsorted state is
+                // observable through `sort_specs()` and the arrow's absence. It is deliberately
+                // not signalled as `(column, false)`, which would claim an ascending sort.
                 if let Some(descending) = descending {
                     self.sort_changed.emit((column, descending));
                 }
@@ -4476,6 +5059,9 @@ mod tests {
     #[test]
     fn draw_view_shares_the_projection_across_scroll_positions() {
         let mut grid = static_grid(200, 4);
+        // The shared-projection view is the explicit full-model mode; the default virtualized
+        // mode fetches only the window (V-001).
+        grid.set_full_model_projection(true);
         let first = grid.fetch_visible_window_view();
         assert!(!first.is_empty());
         let same_projection = Rc::clone(&first.rows);
@@ -4530,6 +5116,9 @@ mod tests {
 
         let fetches = Arc::new(AtomicU64::new(0));
         let mut grid = DataGrid::new(Rect::new(0, 0, 400, 160));
+        // The full-model projection is what caches a non-observable source; without it the
+        // virtualized mode refetches its window by design (V-001).
+        grid.set_full_model_projection(true);
         grid.set_data_source(Arc::new(CountingSource {
             rows: 500,
             columns: 3,
@@ -4575,5 +5164,152 @@ mod tests {
         let _ = crate::widget::svg::render_to_svg(&mut grid);
         let cached = grid.header_text_cache.borrow();
         assert_eq!(cached.entries.get(&(0, 120)).map(String::as_str), Some("Renamed"));
+    }
+
+    /// V-001/V-002: the default is a virtualized index projection, and its visible order is the
+    /// same as the explicit full-model projection.
+    #[test]
+    fn the_default_projection_is_virtualized_and_matches_the_full_order() {
+        let data = vec![vec!["c".to_string()], vec!["a".to_string()], vec!["b".to_string()]];
+        let mut grid = DataGrid::new(Rect::new(0, 0, 300, 120));
+        grid.set_data_source(Arc::new(StaticSource { rows: 3, cols: 1, data }));
+        assert!(!grid.full_model_projection(), "virtualized rendering is the default");
+        grid.set_sort_specs(vec![SortSpec { column: 0, descending: false }]);
+
+        let virtualized = grid.fetch_visible_cells();
+        assert!(grid.full_projection_cache.is_none(), "no whole-model row matrix is held");
+        let index = Rc::clone(&grid.index_projection_cache.as_ref().expect("index cache").1);
+        assert_eq!(*index, vec![1, 2, 0], "the projection is an index, not cloned rows");
+        assert_eq!(virtualized[0][0], Some("a".to_string()));
+
+        grid.set_full_model_projection(true);
+        let materialised = grid.fetch_visible_cells();
+        assert_eq!(
+            virtualized, materialised,
+            "both strategies paint the same rows in the same order"
+        );
+    }
+
+    /// V-003: a header click cycles ascending -> descending -> unsorted.
+    #[test]
+    fn a_header_click_cycles_three_sort_states() {
+        let mut grid = static_grid(3, 1);
+        let header = grid.header_band();
+        let pos = Point::new(header.x + 2, header.y + 2);
+
+        grid.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(grid.sort_specs(), &[SortSpec { column: 0, descending: false }]);
+        grid.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert_eq!(grid.sort_specs(), &[SortSpec { column: 0, descending: true }]);
+        grid.handle_event(&Event::MousePress { pos, button: 1, modifiers: 0 });
+        assert!(grid.sort_specs().is_empty(), "the third state restores the source order");
+    }
+
+    /// V-004: row and column membership is a set lookup, and the stored unit is the row or the
+    /// column rather than every covered cell.
+    #[test]
+    fn row_and_column_selection_are_one_unit_lookups() {
+        let mut grid = static_grid(4, 3);
+        grid.set_selection_behavior(DataGridSelectionBehavior::Rows);
+        grid.apply_selection_click(1, 2, 0);
+        assert_eq!(grid.selected_cells(), vec![(1, 0)], "a row unit is (row, 0)");
+        assert!(grid.selection_contains(1, 0));
+        assert!(grid.selection_contains(1, 2), "every column of the row is selected");
+        assert!(!grid.selection_contains(2, 0));
+
+        grid.set_selection_behavior(DataGridSelectionBehavior::Columns);
+        grid.apply_selection_click(2, 1, 0);
+        assert_eq!(grid.selected_cells(), vec![(0, 1)], "a column unit is (0, column)");
+        assert!(grid.selection_contains(0, 1));
+        assert!(grid.selection_contains(3, 1));
+        assert!(!grid.selection_contains(0, 2));
+    }
+
+    /// V-014: a hidden column occupies no width, closes the gap, and is skipped by the hit test.
+    #[test]
+    fn hiding_a_column_removes_its_slot_without_renumbering() {
+        let mut grid = static_grid(3, 3);
+        assert_eq!(grid.column_view_x(2), 240);
+        assert!(grid.set_column_hidden(1, true));
+        assert_eq!(grid.column_width_at(1), 0);
+        assert_eq!(grid.column_view_x(2), 120, "the following column closes the gap");
+        assert_eq!(grid.column_at_dx(130), Some(2), "a press past the gap names column 2");
+        assert_eq!(grid.hidden_columns(), vec![1]);
+        assert!(grid.set_column_hidden(1, false));
+        assert_eq!(grid.column_view_x(2), 240);
+        assert_eq!(grid.hidden_columns(), Vec::<usize>::new());
+    }
+
+    /// V-014: a merged run answers as its origin, at the paint geometry and the hit test.
+    #[test]
+    fn a_merged_run_resolves_to_its_origin() {
+        let mut grid = static_grid(3, 3);
+        assert!(grid.set_cell_span(0, 0, 2, 2));
+        assert_eq!(grid.cell_spans().len(), 1);
+        let inside = grid.cell_rect(1, 1);
+        let centre = Point::new(inside.x + 1, inside.y + 1);
+        assert_eq!(grid.cell_at(centre), Some((0, 0)));
+        assert_eq!(grid.cell_span(1, 1), Some(CellSpan::new(0, 0, 2, 2)));
+        assert_eq!(grid.cell_span(2, 2), None);
+        assert!(!grid.set_cell_span(99, 0, 1, 1), "an anchor outside the model is refused");
+        grid.clear_cell_spans();
+        assert!(grid.cell_spans().is_empty());
+    }
+
+    /// V-014: each extra header level takes another title strip, and removing it restores the
+    /// historical geometry.
+    #[test]
+    fn extra_header_levels_take_their_own_strips() {
+        let mut grid = static_grid(3, 3);
+        let base_y = grid.cells_box().y;
+        grid.set_extra_header_rows(vec![vec!["Top".to_string()]]);
+        assert_eq!(grid.header_strip_height(), GRID_HEADER_HEIGHT * 2);
+        assert_eq!(grid.cells_box().y, base_y + GRID_HEADER_HEIGHT as i32);
+        assert_eq!(grid.header_band().height, GRID_HEADER_HEIGHT * 2);
+        grid.set_extra_header_rows(Vec::new());
+        assert_eq!(grid.cells_box().y, base_y);
+        assert_eq!(grid.header_band().height, GRID_HEADER_HEIGHT);
+    }
+
+    /// V-014: the tooltip callback is asked per cell and is removed by `clear_cell_tooltip`.
+    #[test]
+    fn a_cell_tooltip_comes_from_the_installed_callback() {
+        let mut grid = static_grid(3, 3);
+        grid.set_cell_tooltip(Arc::new(|row, column| {
+            (row == 1 && column == 2).then(|| "the tip".to_string())
+        }));
+        assert_eq!(grid.cell_tooltip(1, 2).as_deref(), Some("the tip"));
+        assert_eq!(grid.cell_tooltip(0, 0), None);
+        grid.clear_cell_tooltip();
+        assert_eq!(grid.cell_tooltip(1, 2), None);
+    }
+
+    /// V-014: a delegate is consulted for each painted cell, and its `false` answer keeps the
+    /// direct rendering.
+    #[test]
+    fn a_cell_delegate_is_invoked_for_painted_cells() {
+        struct CountingDelegate(std::sync::Arc<AtomicUsize>);
+        impl DataGridCellDelegate for CountingDelegate {
+            fn paint(
+                &self,
+                _context: &mut RenderContext,
+                _cell: Rect,
+                _row: usize,
+                _column: usize,
+                _text: Option<&str>,
+            ) -> bool {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut grid = static_grid(3, 3);
+        grid.set_cell_delegate(Arc::new(CountingDelegate(Arc::clone(&calls))));
+        assert!(grid.has_cell_delegate());
+        let _ = crate::widget::svg::render_to_svg(&mut grid);
+        assert!(calls.load(Ordering::Relaxed) > 0, "the delegate is called by the paint path");
+        grid.clear_cell_delegate();
+        assert!(!grid.has_cell_delegate());
     }
 }

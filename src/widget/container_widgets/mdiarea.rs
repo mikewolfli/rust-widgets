@@ -658,11 +658,39 @@ impl MdiArea {
     /// are translated, so a pan is reversible and a window dragged while panned still lands
     /// where the pointer puts it.
     pub fn set_scroll_offset(&mut self, offset: Point) {
+        // C-008: the pan is bounded by the content's bounding box, so a gesture cannot drag the
+        // whole desktop off the viewport and leave an empty area with no way back.
+        let offset = self.clamp_scroll_offset(offset);
         if self.scroll_offset == offset {
             return;
         }
         self.scroll_offset = offset;
         self.base.request_redraw();
+    }
+
+    /// Clamps `offset` so the content bounding box still covers the viewport where it can.
+    ///
+    /// The bounds are the union of the stored sub-window rectangles. When the content is smaller
+    /// than the area on an axis the only legal pan is zero on that axis; when it is larger, the
+    /// offset may range from the content's leading edge to its trailing edge minus the viewport.
+    fn clamp_scroll_offset(&self, offset: Point) -> Point {
+        let Some(bounds) =
+            self.subwindows.iter().map(|subwindow| subwindow.geometry).reduce(|a, b| {
+                let x = a.x.min(b.x);
+                let y = a.y.min(b.y);
+                let right = (a.x + a.width as i32).max(b.x + b.width as i32);
+                let bottom = (a.y + a.height as i32).max(b.y + b.height as i32);
+                Rect::new(x, y, (right - x).max(0) as u32, (bottom - y).max(0) as u32)
+            })
+        else {
+            return Point::new(0, 0);
+        };
+        let area = self.geometry();
+        let min_x = (bounds.x - area.x).min(0);
+        let min_y = (bounds.y - area.y).min(0);
+        let max_x = (bounds.x + bounds.width as i32 - area.x - area.width as i32).max(min_x);
+        let max_y = (bounds.y + bounds.height as i32 - area.y - area.height as i32).max(min_y);
+        Point::new(offset.x.clamp(min_x, max_x), offset.y.clamp(min_y, max_y))
     }
 
     /// Pans the work area by `(dx, dy)`.
@@ -716,6 +744,10 @@ impl MdiArea {
             let y = area_rect.y as f32 + offset as f32 * i as f32;
             subwindow.geometry = Rect::new(x as i32, y as i32, max_width, max_height);
         }
+        // C-006: arrangement changes are visible state, so the frame is owed.
+        let clamped = self.clamp_scroll_offset(self.scroll_offset);
+        self.scroll_offset = clamped;
+        self.base.request_redraw();
     }
     /// Tile sub-windows.
     pub fn tile_sub_windows(&mut self) {
@@ -735,6 +767,10 @@ impl MdiArea {
             let y = area_rect.y as f32 + cell_height as f32 * row as f32;
             subwindow.geometry = Rect::new(x as i32, y as i32, cell_width, cell_height);
         }
+        // C-006: arrangement changes are visible state, so the frame is owed.
+        let clamped = self.clamp_scroll_offset(self.scroll_offset);
+        self.scroll_offset = clamped;
+        self.base.request_redraw();
     }
     /// Arranges minimized sub-windows.
     pub fn arrange_icons(&mut self) {
@@ -1129,11 +1165,33 @@ impl Widget for MdiArea {
         &mut self.base
     }
 
+    /// Moves the work area and keeps a maximized sub-window filling it (C-007).
+    ///
+    /// A maximized window's stored geometry *is* the area at the moment it was maximized. Left
+    /// alone on a resize, it kept the old rectangle and left a gap (or overflowed) until the user
+    /// restored and maximized it again.
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        for subwindow in &mut self.subwindows {
+            if subwindow.maximized {
+                subwindow.geometry = geometry;
+            }
+        }
+        self.scroll_offset = self.clamp_scroll_offset(self.scroll_offset);
+    }
+
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(
-            crate::widget::metrics::dimensions::PANEL_DEFAULT_WIDTH,
-            crate::widget::metrics::dimensions::PANEL_DEFAULT_HEIGHT,
-        )
+        // C-019: the active sub-window's control is the content this area shows, so its size hint
+        // is the area's wish. With no mounted control the historical panel default is the floor.
+        let measured = self.active_sub_window().and_then(|widget| {
+            crate::widget::runtime::with_widget(widget, |widget| widget.size_hint())
+        });
+        measured.unwrap_or_else(|| {
+            crate::core::Size::new(
+                crate::widget::metrics::dimensions::PANEL_DEFAULT_WIDTH,
+                crate::widget::metrics::dimensions::PANEL_DEFAULT_HEIGHT,
+            )
+        })
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -3028,14 +3086,82 @@ mod tests {
         assert_eq!(geometry.y, 40);
     }
 
-    /// C-16: the wheel pans the work area in sub-window mode.
+    /// C-16/C-008: the wheel pans the work area in sub-window mode, and the pan stays inside
+    /// the content's bounding box.
     #[test]
-    fn the_wheel_pans_the_work_area() {
+    fn the_wheel_pans_the_work_area_within_the_content() {
         let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 600, 500));
+        // A pan that would reveal empty space above the content is refused.
         area.handle_event(&crate::event::Event::Wheel {
             delta: crate::core::Point::new(0, 2),
             modifiers: 0,
         });
-        assert!(area.scroll_offset().y < 0, "a downward notch scrolls the desktop up");
+        assert_eq!(area.scroll_offset().y, 0);
+        // The other direction reveals the lower part of the content.
+        area.handle_event(&crate::event::Event::Wheel {
+            delta: crate::core::Point::new(0, -5),
+            modifiers: 0,
+        });
+        assert_eq!(area.scroll_offset().y, 120);
+    }
+
+    /// C-008: a direct pan is clamped to the content bounding box.
+    #[test]
+    fn a_pan_is_clamped_to_the_content_bounds() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 600, 500));
+        area.set_scroll_offset(crate::core::Point::new(9_999, 9_999));
+        assert_eq!(area.scroll_offset(), crate::core::Point::new(200, 200));
+        area.set_scroll_offset(crate::core::Point::new(-50, -50));
+        assert_eq!(area.scroll_offset(), crate::core::Point::new(0, 0));
+    }
+
+    /// C-007: a maximized sub-window follows the area's resize.
+    #[test]
+    fn a_maximized_sub_window_follows_a_resize() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        area.add_sub_window(widget_id_1(), Rect::new(10, 10, 100, 80));
+        assert!(area.toggle_maximized_sub_window(widget_id_1()));
+        assert_eq!(area.sub_window(0).unwrap().geometry, Rect::new(0, 0, 400, 300));
+        area.set_geometry(Rect::new(0, 0, 500, 350));
+        assert_eq!(
+            area.sub_window(0).unwrap().geometry,
+            Rect::new(0, 0, 500, 350),
+            "the maximized child fills the new area"
+        );
+    }
+
+    /// C-006: cascade and tile request a frame.
+    #[test]
+    fn cascade_and_tile_request_a_repaint() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 80));
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&redraws);
+        area.base.redraw_requested.connect(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        area.cascade_sub_windows();
+        area.tile_sub_windows();
+        assert!(redraws.load(Ordering::SeqCst) >= 2, "each arrangement owes a frame");
+    }
+
+    /// C-019: the size hint aggregates the active sub-window's control.
+    #[test]
+    fn the_size_hint_follows_the_active_sub_window() {
+        use crate::widget::base_widgets::label::Label;
+
+        let label = Label::new("child".to_string(), Rect::new(0, 0, 180, 90));
+        let expected = label.size_hint();
+        let id =
+            crate::widget::runtime::register(Box::new(label)).expect("the test control mounts");
+        let mut area = MdiArea::new(Rect::new(0, 0, 400, 300));
+        area.add_sub_window(id, Rect::new(10, 10, 100, 80));
+        assert_eq!(area.size_hint(), expected);
+        let _ = crate::widget::runtime::unregister(id);
     }
 }

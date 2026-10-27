@@ -17,6 +17,8 @@
 //! write (hour into `0..24`, minute and second into `0..60`), so a caller that passes `90`
 //! minutes gets `1:30` rather than an error or a hand pointing into space.
 
+use core::fmt::Write as _;
+
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{point_on_circle, RenderContext};
@@ -75,22 +77,74 @@ impl ClockTimeSource {
     }
 }
 
+/// The clock's published form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClockDisplay {
+    /// A dial with hands — the historical form and the default.
+    #[default]
+    Dial,
+    /// A numeric `HH:MM[:SS]` reading.
+    Digital,
+}
+
+impl ClockDisplay {
+    /// Every form, in publication order.
+    pub const ALL: [Self; 2] = [Self::Dial, Self::Digital];
+
+    /// The token this form is published as.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Dial => "dial",
+            Self::Digital => "digital",
+        }
+    }
+
+    /// Parses a published token. `None` for a spelling this control does not publish.
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|form| form.token() == token)
+    }
+}
+
 /// The current wall-clock time as `(hour, minute, second, millisecond)`, in the zone the source
 /// names.
 ///
 /// `chrono` carries the platform's time-zone database, so the conversion from an instant to a local
 /// reading is not re-derived here — the widget layer asks a time library rather than inspecting an
 /// OS-specific zone file (principle #36 keeps that knowledge out of the widget layer).
+/// Test-only convenience over [`system_time_of_day_in`]; the draw path always names its offset.
+#[cfg(test)]
 fn system_time_of_day(source: ClockTimeSource) -> Option<(u32, u32, u32, u32)> {
+    system_time_of_day_in(source, None)
+}
+
+/// Reads the wall clock in `source`'s zone, shifted by `utc_offset_minutes` when one is set.
+///
+/// The offset is applied to the UTC reading rather than to the local one, so `System + offset`
+/// means "the specified zone's wall clock" and `Utc + offset` is the same arithmetic from a
+/// fixed base. A `Manual` source never reads the machine and is therefore unaffected.
+fn system_time_of_day_in(
+    source: ClockTimeSource,
+    utc_offset_minutes: Option<i32>,
+) -> Option<(u32, u32, u32, u32)> {
     use chrono::Timelike;
     match source {
-        ClockTimeSource::System => {
+        ClockTimeSource::System if utc_offset_minutes.is_none() => {
             let now = chrono::Local::now();
             Some((now.hour(), now.minute(), now.second(), now.timestamp_subsec_millis()))
         }
-        ClockTimeSource::Utc => {
+        ClockTimeSource::System | ClockTimeSource::Utc => {
             let now = chrono::Utc::now();
-            Some((now.hour(), now.minute(), now.second(), now.timestamp_subsec_millis()))
+            if let Some(offset) = utc_offset_minutes {
+                let shifted = now + chrono::Duration::minutes(i64::from(offset));
+                Some((
+                    shifted.hour(),
+                    shifted.minute(),
+                    shifted.second(),
+                    shifted.timestamp_subsec_millis(),
+                ))
+            } else {
+                Some((now.hour(), now.minute(), now.second(), now.timestamp_subsec_millis()))
+            }
         }
         // Only the two clock-backed sources reach this function; `Manual` never asks the machine.
         ClockTimeSource::Manual => None,
@@ -126,6 +180,13 @@ pub struct Clock {
     tick_cache: Option<TickCache>,
     /// Where the time comes from; see [`ClockTimeSource`].
     time_source: ClockTimeSource,
+    /// The dial or the numeric form; the dial is the default.
+    display: ClockDisplay,
+    /// An optional UTC offset in minutes applied to machine readings.
+    ///
+    /// `None` keeps the source's own zone, which is the historical behaviour. Setting an offset
+    /// makes the face show that zone's wall clock without changing the host's locale.
+    utc_offset_minutes: Option<i32>,
     /// Milliseconds accumulated toward the next whole second the `tick` signal reports.
     pending_ms: u32,
     /// Emitted once per whole second the clock's `tick` method advances, with that second count.
@@ -170,6 +231,8 @@ impl Clock {
             numeral_cache: None,
             tick_cache: None,
             time_source: ClockTimeSource::Manual,
+            display: ClockDisplay::Dial,
+            utc_offset_minutes: None,
             pending_ms: 0,
             tick: Signal1::new(),
         }
@@ -324,6 +387,39 @@ impl Clock {
         self.base.request_redraw();
     }
 
+    /// The clock's form: a dial (the default) or a numeric reading.
+    pub fn display(&self) -> ClockDisplay {
+        self.display
+    }
+
+    /// Selects the dial or the numeric form. The dial is the default and keeps the historical
+    /// picture; a digital clock paints `HH:MM` (and `:SS` when the seconds are shown).
+    pub fn set_display(&mut self, display: ClockDisplay) {
+        if self.display == display {
+            return;
+        }
+        self.display = display;
+        self.base.request_redraw();
+    }
+
+    /// The optional UTC offset applied to machine readings, in minutes.
+    pub fn utc_offset_minutes(&self) -> Option<i32> {
+        self.utc_offset_minutes
+    }
+
+    /// Sets the optional UTC offset, or clears it with `None`.
+    ///
+    /// The default is `None`, which reads the source's own zone and is therefore the historical
+    /// behaviour. The offset is clamped to ±24 hours, the range a real zone can occupy.
+    pub fn set_utc_offset_minutes(&mut self, offset: Option<i32>) {
+        let offset = offset.map(|minutes| minutes.clamp(-24 * 60, 24 * 60));
+        if self.utc_offset_minutes == offset {
+            return;
+        }
+        self.utc_offset_minutes = offset;
+        self.base.request_redraw();
+    }
+
     /// Advances the face by `delta_ms` and reports whether anything was repainted.
     ///
     /// With [`ClockTimeSource::System`] the reading is taken from the machine clock (UTC) every
@@ -333,7 +429,9 @@ impl Clock {
     pub fn tick(&mut self, delta_ms: u32) -> bool {
         let mut repainted = false;
         if matches!(self.time_source, ClockTimeSource::System | ClockTimeSource::Utc) {
-            if let Some((hour, minute, second, millis)) = system_time_of_day(self.time_source) {
+            if let Some((hour, minute, second, millis)) =
+                system_time_of_day_in(self.time_source, self.utc_offset_minutes)
+            {
                 let before = (self.hour, self.minute, self.second, self.millis);
                 self.set_time_with_millis(hour, minute, second, millis);
                 repainted = before != (self.hour, self.minute, self.second, self.millis);
@@ -554,6 +652,11 @@ impl WidgetProperties for Clock {
             "second" => Ok(CapabilityValue::UInt(u64::from(self.second))),
             "show_seconds" => Ok(CapabilityValue::Bool(self.show_seconds)),
             "time_source" => Ok(CapabilityValue::String(self.time_source().token().to_string())),
+            "display" => Ok(CapabilityValue::String(self.display().token().to_string())),
+            "utc_offset" => Ok(match self.utc_offset_minutes() {
+                Some(minutes) => CapabilityValue::Int(i64::from(minutes)),
+                None => CapabilityValue::Null,
+            }),
             _ => base_property_get(self, name),
         }
     }
@@ -583,6 +686,26 @@ impl WidgetProperties for Clock {
                 self.set_time_source(source);
                 Ok(())
             }
+            "display" => {
+                let token = expect_string(value)?;
+                let display =
+                    ClockDisplay::from_token(&token).ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_display(display);
+                Ok(())
+            }
+            "utc_offset" => match value {
+                CapabilityValue::Null => {
+                    self.set_utc_offset_minutes(None);
+                    Ok(())
+                }
+                CapabilityValue::Int(minutes) => {
+                    let minutes =
+                        i32::try_from(minutes).map_err(|_| CapabilityAccessError::OutOfRange)?;
+                    self.set_utc_offset_minutes(Some(minutes));
+                    Ok(())
+                }
+                _ => Err(CapabilityAccessError::TypeMismatch),
+            },
             _ => base_property_set(self, name, value),
         }
     }
@@ -594,6 +717,8 @@ impl WidgetProperties for Clock {
             "second",
             "show_seconds",
             "time_source",
+            "display",
+            "utc_offset",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -628,6 +753,30 @@ impl Draw for Clock {
 
         let (center, radius) = self.face();
         let radius_px = radius.round().max(1.0) as u32;
+
+        // The numeric form paints no hands and no tick ring: the reading is the whole control.
+        // It is opt-in, so every clock that never asked for it keeps the dial picture.
+        if self.display == ClockDisplay::Digital {
+            let mut text = crate::compat::String::new();
+            let _ = write!(text, "{:02}:{:02}", self.hour, self.minute);
+            if self.show_seconds {
+                let _ = write!(text, ":{:02}", self.second);
+            }
+            let size = (radius * 0.42).clamp(10.0, 96.0);
+            let font = Font::with_weight("sans-serif", size, 600, false);
+            let metrics = ctx.measure_text(&text, &font);
+            ctx.draw_text(
+                Point::new(
+                    center.x - metrics.width as i32 / 2,
+                    center.y - metrics.height as i32 / 2,
+                ),
+                &text,
+                &font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+            return;
+        }
 
         // The face is filled first, so the ticks and hands always have a surface under them.
         let face_fill = ink.blend(&surface, 0.94).legible_on(surface, 1.05);
@@ -911,5 +1060,64 @@ mod tests {
         clock.set_geometry(Rect::new(0, 0, 200, 200));
         let (center, radius) = clock.face();
         assert!(clock.ensure_tick_marks(center, radius), "a resize rebuilds the ring once");
+    }
+
+    /// The digital form is opt-in and paints the reading as text; the default is the dial.
+    #[test]
+    fn the_digital_form_is_opt_in_and_paints_a_reading() {
+        let mut clock = Clock::new(Rect::new(0, 0, 140, 140));
+        assert_eq!(clock.display(), ClockDisplay::Dial, "the dial is the historical default");
+        assert!(
+            crate::widget::svg::text_ink_boxes(&crate::widget::svg::render_to_svg(&mut clock))
+                .is_empty(),
+            "a default clock paints no reading"
+        );
+
+        clock.set_display(ClockDisplay::Digital);
+        clock.set_time(9, 5, 30);
+        let svg = crate::widget::svg::render_to_svg(&mut clock);
+        assert_eq!(crate::widget::svg::text_ink_boxes(&svg).len(), 1);
+
+        clock.set_show_seconds(true);
+        let with_seconds = crate::widget::svg::render_to_svg(&mut clock);
+        assert_ne!(with_seconds, svg, "the reading gains the seconds when shown");
+    }
+
+    /// The UTC offset is optional, defaults to the source's own zone, and round-trips.
+    #[test]
+    fn the_utc_offset_is_optional_and_round_trips() {
+        let mut clock = Clock::new(Rect::new(0, 0, 140, 140));
+        assert_eq!(clock.utc_offset_minutes(), None);
+        assert_eq!(clock.get("utc_offset"), Ok(CapabilityValue::Null));
+
+        assert!(clock.set("utc_offset", CapabilityValue::Int(330)).is_ok());
+        assert_eq!(clock.utc_offset_minutes(), Some(330));
+        assert_eq!(clock.get("utc_offset"), Ok(CapabilityValue::Int(330)));
+
+        clock.set("utc_offset", CapabilityValue::Null).expect("clearing is writable");
+        assert_eq!(clock.utc_offset_minutes(), None);
+
+        // The offset shifts a machine reading without changing the source.
+        let base = system_time_of_day_in(ClockTimeSource::Utc, None).expect("utc is readable");
+        let shifted =
+            system_time_of_day_in(ClockTimeSource::Utc, Some(60)).expect("utc is readable");
+        assert_eq!(
+            (u32::from(base.0) * 60 + base.1 + 60) % (24 * 60),
+            u32::from(shifted.0) * 60 + shifted.1,
+            "one hour east is one hour later"
+        );
+    }
+
+    /// The display and offset are published properties.
+    #[test]
+    fn the_display_property_round_trips() {
+        let mut clock = Clock::new(Rect::new(0, 0, 140, 140));
+        clock.set("display", CapabilityValue::String("digital".into())).expect("writable");
+        assert_eq!(clock.display(), ClockDisplay::Digital);
+        assert_eq!(clock.get("display"), Ok(CapabilityValue::String("digital".into())));
+        assert!(clock.set("display", CapabilityValue::String("nope".into())).is_err());
+        for form in ClockDisplay::ALL {
+            assert_eq!(ClockDisplay::from_token(form.token()), Some(form));
+        }
     }
 }

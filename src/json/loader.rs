@@ -1339,7 +1339,13 @@ fn apply_declared_styles(widget: &mut dyn Widget, obj: &serde_json::Map<String, 
     //    replace the kind, so `<button class="primary">` was classified as `Surface` (because
     //    "primary" is not a control kind) and painted as a grey panel instead of a filled
     //    brand-coloured button — the class silently discarded the role it was meant to select.
-    if let Some(theme_style) = crate::theme::resolved_theme_style_for(kind, class) {
+    //
+    //    This is the shared, revision-keyed form (G-401): a document names the same
+    //    `(kind, class)` pair on many nodes, and the owned accessor used to take the theme
+    //    mutex and rebuild the role's style for every one of them. The walk now pays one
+    //    resolution per distinct pair per theme revision; every later node gets a refcount
+    //    bump instead of a lock and a rebuild.
+    if let Some(theme_style) = crate::theme::resolved_theme_style_for_shared(kind, class) {
         style.merge(&theme_style);
         touched = true;
     }

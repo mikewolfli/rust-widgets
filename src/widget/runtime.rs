@@ -242,6 +242,19 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static SURFACE_WINDOWS: RefCell<HashMap<ObjectId, ObjectId>> = RefCell::new(HashMap::new());
 
+    /// Reverse index for [`surfaces_of`]: the surfaces linked to each window (G-314).
+    ///
+    /// `surfaces_of` used to filter the whole [`SURFACE_WINDOWS`] table per call, which made
+    /// every frame that walks a window's surfaces cost O(total surfaces) instead of
+    /// O(this window's surfaces). One map probe answers it now. Maintained by
+    /// [`set_surface_window`] and [`unregister`] — the only two places [`SURFACE_WINDOWS`]
+    /// changes — so the two cannot disagree, the same discipline [`HOST_TO_WIDGET`] follows
+    /// for `HOST_WINDOWS`. A surface that re-links keeps one entry: it is removed from its
+    /// previous window's list before being pushed onto the new one.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static SURFACES_BY_WINDOW: RefCell<HashMap<ObjectId, Vec<ObjectId>>> =
+        RefCell::new(HashMap::new());
+
     /// The authoritative keyboard-focus owner for this thread's widget tree.
     ///
     /// Before this existed, [`crate::event::FocusManager`] was fully implemented
@@ -459,6 +472,17 @@ pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
     if stored.is_err() {
         return None;
     }
+    finish_registration(id);
+    Some(id)
+}
+
+/// The bookkeeping every registration path owes a freshly mounted control (G-321).
+///
+/// `register` and `register_with_id` used to repeat these six steps verbatim after their
+/// registry inserts, and the copy was one more place the two entry points could drift.
+/// One body answers for both: once the control is in [`MOUNTED`], the id is the only
+/// difference between the two paths, so it is the only parameter.
+fn finish_registration(id: ObjectId) {
     // Record the widget's own id -> the registry id, so a producer that only has the
     // former (notably `request_redraw`, called from `&self`) can address the tracker.
     // Read through `with_widget` because the id lives on the widget, and this runs
@@ -505,7 +529,102 @@ pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
     // The parent chain is stable for the mount's lifetime; a later adoption changes the direct
     // parent and the lookup notices (see `top_level_window_of`).
     let _ = top_level_window_of(id);
-    Some(id)
+    // G-404: join the theme switch notification. The subscription is what replaces the full
+    // registry walk `crate::reapply_active_theme` used to perform on every switch: each mounted
+    // control records itself when the manager emits `theme_changed`, and the drain re-merges
+    // exactly the notified set. See `THEME_RESTYLE_PENDING` for why the slot only records intent
+    // instead of restyling synchronously.
+    #[cfg(device_profile)]
+    subscribe_widget_to_theme_changes(id);
+}
+
+// ---------------------------------------------------------------------------
+// `theme_changed` subscription (G-404)
+// ---------------------------------------------------------------------------
+
+// Restyle requests recorded by the controls' `theme_changed` subscriptions (G-404).
+//
+// Every mounted control subscribes to the theme manager's `theme_changed` signal at
+// registration, and a switch — `set_theme`, `set_appearance`, the high-contrast override, a
+// system-accent refresh, a loaded-and-activated theme — marks each subscriber here. The merge
+// does **not** happen in the slot: every emit site runs while the caller holds the theme mutex
+// (`global_theme_manager` guards each `&mut self` emit method), and re-resolving a style takes
+// that same non-reentrant mutex, so restyling inside the slot would deadlock. The slot only
+// records intent; [`drain_pending_theme_restyle`] performs the merge where no theme lock is
+// held — at the next frame, or in the switch path's own completion call.
+#[cfg(device_profile)]
+thread_local! {
+    /// Ids whose subscription fired since the last drain. Insert-only and drained whole, so a
+    /// control notified twice before one drain is styled once.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static THEME_RESTYLE_PENDING: RefCell<IdSet> = RefCell::new(IdSet::new());
+
+    /// Each control's `theme_changed` connection, so tearing the control down disconnects its
+    /// slot. Without this, a host that creates and destroys controls accumulates slots that
+    /// fire for ids that resolve to nothing, and the signal's slot list grows without bound.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static THEME_SLOT_HANDLES: RefCell<HashMap<ObjectId, crate::signal::ConnectionHandle>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Subscribes the freshly mounted `id` to the theme manager's `theme_changed` signal.
+///
+/// The slot cannot capture the widget — slots are `Send + Sync + 'static`, and widgets are
+/// `!Send` thread-local state — so it captures the registry id and records intent only.
+#[cfg(device_profile)]
+fn subscribe_widget_to_theme_changes(id: ObjectId) {
+    let handle = crate::theme::global_theme_manager()
+        .on_theme_changed()
+        .connect_ref(move |_| mark_theme_restyle_pending(id));
+    let _ = THEME_SLOT_HANDLES.try_with(|map| {
+        map.borrow_mut().insert(id, handle);
+    });
+}
+
+/// The `theme_changed` slot body: record that `id` needs its theme re-applied.
+///
+/// Only thread-local state is touched, so the slot is safe to run while the emitting caller
+/// holds the theme mutex (no lock it holds can be re-entered here) and safe against a
+/// re-entrant emit (the set is never borrowed across a call that could emit).
+#[cfg(device_profile)]
+fn mark_theme_restyle_pending(id: ObjectId) {
+    let _ = THEME_RESTYLE_PENDING.try_with(|set| set.borrow_mut().insert(id));
+}
+
+/// Disconnects `id`'s `theme_changed` slot. Called from [`unregister`], the single removal
+/// funnel, so a destroyed control stops occupying a slot on the manager's signal.
+///
+/// The disconnect takes the theme mutex, because the signal lives on the manager. No
+/// unregister caller holds that mutex — the theme layer resolves styles under short
+/// lock-and-drop windows and never tears a widget down — so the acquire cannot self-deadlock.
+#[cfg(device_profile)]
+fn disconnect_widget_theme_subscription(id: ObjectId) {
+    let handle = THEME_SLOT_HANDLES.try_with(|map| map.borrow_mut().remove(&id)).ok().flatten();
+    if let Some(handle) = handle {
+        crate::theme::global_theme_manager().on_theme_changed().disconnect(handle);
+    }
+}
+
+/// Re-applies the active theme to every control whose `theme_changed` subscription fired since
+/// the last drain, and clears the pending set.
+///
+/// Runs **outside** the theme mutex — both callers guarantee it: the frame step (`drive_frame`)
+/// and the switch paths' own completion call (`crate::reapply_active_theme`), which the FFI
+/// entry points and the demos invoke after the manager guard is dropped. The merge is
+/// `theme::apply_active_theme`, the same one a newly created control gets, through
+/// [`with_widget_mut`] so a control destroyed by its own restyle unwinds by the dispatch rules
+/// instead of aliasing the registry.
+#[cfg(device_profile)]
+pub(crate) fn drain_pending_theme_restyle() {
+    let pending = THEME_RESTYLE_PENDING
+        .try_with(|set| core::mem::replace(&mut *set.borrow_mut(), IdSet::new()))
+        .unwrap_or_else(|_| IdSet::new());
+    for id in pending.0 {
+        // An id that is gone (destroyed between the notification and this drain) or that belongs
+        // to another thread's registry resolves to nothing here and is skipped — which is
+        // precisely the set the previous full walk used to restyle.
+        with_widget_mut(id, |widget| crate::theme::apply_active_theme(widget));
+    }
 }
 
 /// Hands ownership of `widget` to the registry under `declared_id`, a **reserved** id.
@@ -572,29 +691,9 @@ pub fn register_with_id(
         }
     });
 
-    // Every step `register` does after the insert, repeated here rather than extracted, so
-    // the two entry points cannot drift: a caller reading `register` sees the same list.
-    // See `register` for why each one exists.
-    if let Some(own_id) = with_widget(declared_id, |widget| widget.base().id()) {
-        let _ = OWN_IDS.try_with(|map| {
-            map.borrow_mut().insert(own_id, declared_id);
-        });
-    }
-    let focusable = read_widget(declared_id, |widget| widget.is_focusable()).unwrap_or(false);
-    if focusable {
-        register_focusable(declared_id);
-    }
-    let _ = enable_damage_tracking_if_useful(declared_id);
-    if let Some(state) =
-        with_widget(declared_id, crate::platform::accessibility::A11yState::from_widget)
-    {
-        crate::widget::a11y_submit::submit_mounted(declared_id, &state);
-    }
-    if read_widget(declared_id, |widget| widget.is_animating()).unwrap_or(false) {
-        note_animating(declared_id, true);
-    }
-    // See `register`: resolve the mount-time window once (G-106).
-    let _ = top_level_window_of(declared_id);
+    // Every step `register` does after the insert, from the shared body (G-321) so the two
+    // entry points cannot drift. See `finish_registration` for why each one exists.
+    finish_registration(declared_id);
     Ok(declared_id)
 }
 
@@ -602,6 +701,12 @@ pub fn register_with_id(
 pub fn unregister(id: ObjectId) -> bool {
     // A destroyed control must not keep requesting frames through the animation registry.
     note_animating(id, false);
+    // G-404: the control's `theme_changed` slot must not outlive it — otherwise a host that
+    // recycles controls accumulates slots that fire for ids that resolve to nothing. Done
+    // first so both removal paths below (the dispatch tombstone and the direct removal) leave
+    // no subscription behind.
+    #[cfg(device_profile)]
+    disconnect_widget_theme_subscription(id);
     // G-304: best-effort reclamation of the dead id from its parent's child list, so a long-lived
     // container does not accumulate ids that resolve to nothing. `children()` documents the
     // traversal obligation (skip unresolvable ids) because this lookup can miss while the widget is
@@ -633,7 +738,17 @@ pub fn unregister(id: ObjectId) -> bool {
             }
         });
     }
-    let _ = SURFACE_WINDOWS.try_with(|map| map.borrow_mut().remove(&id));
+    // The reverse index must lose the link with the forward one (G-314), or `surfaces_of`
+    // would answer for a window with a surface that no longer exists.
+    let _ = SURFACE_WINDOWS.try_with(|map| {
+        if let Some(window) = map.borrow_mut().remove(&id) {
+            let _ = SURFACES_BY_WINDOW.try_with(|index| {
+                if let Some(list) = index.borrow_mut().get_mut(&window) {
+                    list.retain(|linked| *linked != id);
+                }
+            });
+        }
+    });
     // A widget that is gone must not stay in the tab order: `focus_next` would
     // hand focus to an id that resolves to nothing, and the key that triggered
     // the move would be swallowed. The manager also clears focus if this id owned
@@ -671,6 +786,9 @@ pub fn unregister(id: ObjectId) -> bool {
     // and a stale damage rect would repaint a region that no longer exists.
     forget_cached_frame(id);
     let _ = REPAINT.try_with(|map| map.borrow_mut().remove(&id));
+    // And it cannot stay classified as an open overlay, or a later window would keep painting
+    // it above siblings that should cover it (G-316).
+    note_overlay_maybe_changed(Some(id));
     // And the own-id reverse mapping, or a later widget built with the same
     // `BaseWidget::id()` would resolve to this dead registry id and file its damage
     // against a widget that no longer exists.
@@ -972,6 +1090,12 @@ thread_local! {
     // value for the duration of the reorder: a re-entrant render (user code inside `read_widget`)
     // then takes a fresh buffer instead of failing a borrow.
     static OVERLAY_CHILD_IDS: RefCell<Vec<ObjectId>> = const { RefCell::new(Vec::new()) };
+    // Cached `is_visible() && has_open_popup()` per root child (G-316), so the per-frame reorder
+    // reads a flag instead of making two virtual calls per child. An entry is cleared when its
+    // child asks for a repaint, when a popup grab is set or released (the open/close lifecycle
+    // every popup goes through), and when the child is unregistered — see `note_overlay_maybe_changed`.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static OVERLAY_CHILD_FLAGS: RefCell<HashMap<ObjectId, bool>> = RefCell::new(HashMap::new());
 }
 
 /// Takes an empty child buffer from the per-depth pool, allocating only on a cold first use.
@@ -2216,6 +2340,15 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     // Step 0 -- the device facts, so every control in this frame sees one set of them.
     crate::style::environment::refresh_environment();
 
+    // Step 0a -- controls whose `theme_changed` subscription fired since the last frame are
+    // re-merged with the active theme (G-404). The notification arrives while the switching
+    // caller holds the theme mutex, so it can only record intent; the merge happens here, where
+    // no theme lock is held, and the global repaint below publishes the re-merged styles. A
+    // switch path that restyles synchronously (the FFI entry points, the environment follow-up)
+    // drains first, which leaves this a no-op.
+    #[cfg(device_profile)]
+    drain_pending_theme_restyle();
+
     // Step 0b -- a global input changed (theme, text scale, locale) since the last frame:
     // repaint every window and mounted surface once. Armed instead of performed at the
     // mutation site to keep the non-reentrant theme lock out of the platform path.
@@ -2933,6 +3066,9 @@ pub fn set_geometry(id: ObjectId, geometry: Rect) -> bool {
     // tree-frame cache compares the same epoch, so one bump keeps both caches honest.
     if found && changed {
         note_renderable_change();
+        // The per-window frame epoch follows the global one, so the window this control lives in
+        // repaints its cached frame while the other windows keep theirs (G-311).
+        note_renderable_change_for(id);
         // A resize can leave a parent's layer rect unchanged while the child inside it shrinks,
         // so the layers are dropped wholesale rather than by rectangle.
         invalidate_widget_layers();
@@ -3243,12 +3379,17 @@ pub(crate) fn set_popup_grab(menu: ObjectId) {
     // the difference. `open_context_menu` already passes a registry id, for which the lookup
     // answers `None` and the fallback keeps it unchanged.
     let menu = registry_id_of(menu).unwrap_or(menu);
+    // A popup becoming the grab owner is a popup-layer membership change (G-316); grabs are
+    // rare next to frames, so the whole flag cache is dropped rather than reasoned about.
+    note_overlay_maybe_changed(None);
     let _ = POPUP_GRAB.try_with(|slot| slot.set(Some(menu)));
 }
 
 /// Forgets the popup grab, if there is one.
 #[cfg(not(alloc_frugal))]
 pub(crate) fn clear_popup_grab() {
+    // Releasing the grab means the popup went away (G-316); see `set_popup_grab`.
+    note_overlay_maybe_changed(None);
     let _ = POPUP_GRAB.try_with(|slot| slot.set(None));
 }
 
@@ -3261,6 +3402,8 @@ pub(crate) fn clear_popup_grab_for(popup: ObjectId) {
     let popup = registry_id_of(popup).unwrap_or(popup);
     let _ = POPUP_GRAB.try_with(|slot| {
         if slot.get() == Some(popup) {
+            // Only a real release changes popup-layer membership (G-316).
+            note_overlay_maybe_changed(None);
             slot.set(None);
         }
     });
@@ -4250,7 +4393,25 @@ pub fn set_surface_window(surface: ObjectId, window: ObjectId) -> bool {
         return false;
     }
     SURFACE_WINDOWS
-        .try_with(|map| map.borrow_mut().insert(surface, window).is_none())
+        .try_with(|map| {
+            let previous = map.borrow_mut().insert(surface, window);
+            // The reverse index moves with the forward link, in the same breath (G-314): a
+            // first link appends the surface to the window's list, a re-link moves it out of
+            // the previous window's list first. Re-linking to the window it already names
+            // leaves the list untouched, so no duplicate is pushed.
+            let _ = SURFACES_BY_WINDOW.try_with(|index| {
+                let mut index = index.borrow_mut();
+                if previous != Some(window) {
+                    if let Some(old) = previous {
+                        if let Some(list) = index.get_mut(&old) {
+                            list.retain(|linked| *linked != surface);
+                        }
+                    }
+                    index.entry(window).or_default().push(surface);
+                }
+            });
+            previous.is_none()
+        })
         .unwrap_or(false)
 }
 
@@ -4270,14 +4431,11 @@ pub fn surface_window_for(surface: ObjectId) -> Option<ObjectId> {
 /// The order is unspecified (the link is a map); a caller that needs determinism sorts by its
 /// own key.
 pub fn surfaces_of(window: ObjectId) -> Vec<ObjectId> {
-    SURFACE_WINDOWS
-        .try_with(|map| {
-            map.borrow()
-                .iter()
-                .filter(|(_, host)| **host == window)
-                .map(|(surface, _)| *surface)
-                .collect()
-        })
+    // A probe into the reverse index answers with exactly this window's surfaces (G-314);
+    // the full-table filter this used to be was O(total surfaces) on every call, which the
+    // per-frame surface walk of a multi-surface window paid in full.
+    SURFACES_BY_WINDOW
+        .try_with(|index| index.borrow().get(&window).cloned().unwrap_or_default())
         .unwrap_or_default()
 }
 
@@ -4432,7 +4590,15 @@ pub fn request_repaint_because(id: ObjectId, reason: RepaintReason) {
     // it, so a control that repaints wholesale does not throw away an unrelated neighbour's
     // layer; a widget the registry cannot answer for (it is lent out mid-tick) falls back to
     // dropping every layer, which is the safe direction.
+    // The thread-global token keeps the point-hit cache's invalidation exactly as it was (see
+    // `TREE_FRAME_EPOCH`); the window-scoped one (G-311) drops only the cached tree frame of
+    // the window this control lives in. The owner is resolved with shared borrows, so this
+    // stays safe even mid-`read_widget`.
     note_renderable_change();
+    note_renderable_change_for(id);
+    // This widget's own overlay classification may be the thing that changed: a popup opening
+    // or closing, or the control showing or hiding itself, must repaint to be seen (G-316).
+    note_overlay_maybe_changed(Some(id));
     match geometry_of(id) {
         Some(rect) => invalidate_widget_layers_in(id, grow_by_damage_margin(rect)),
         None => invalidate_widget_layers(),
@@ -4857,29 +5023,97 @@ thread_local! {
 
     /// Counts "something that affects a rendered frame changed" for this thread.
     ///
-    /// # Why an epoch rather than per-region damage for a window
+    /// # Why this no longer guards the window frame cache by itself (G-311)
     ///
-    /// A window frame is produced by walking the whole child tree. The per-widget damage tracker
-    /// answers "which rectangle of *this* widget changed", which is the right question for a
-    /// mounted surface but not for a window: the window's children each have their own trackers,
-    /// and a correct union would require either every child to opt into tracking or a second
-    /// bookkeeping path. The epoch answers the question the platform actually asks — "does the
-    /// frame I already have still describe the tree?" — with one thread-local counter. A changed
-    /// frame is repainted whole; an exposure or an occlusion with no change returns the cached
-    /// bytes without walking or rasterising anything.
+    /// This used to be the only freshness token the tree-frame cache compared, which made any
+    /// window's repaint invalidate every window's cached frame on the thread: a cursor blink in
+    /// one window re-rasterised every other window on its next paint. The tree-frame cache now
+    /// compares the **per-window** epoch in [`TREE_FRAME_EPOCHS`] instead; a change bumps only
+    /// the window it belongs to (see [`note_renderable_change_for`]).
     ///
-    /// Per-thread rather than process-wide: a window frame cache is thread-local, so another
-    /// thread's edit cannot make this thread's cached frame stale, and invalidating it anyway
-    /// would turn unrelated work on another window into a lost cache hit. It is also the hot
-    /// path (`request_redraw` reaches it), where an atomic read-modify-write is pure cost for a
-    /// value only this thread reads.
+    /// This counter stays, unconditional as before, as the freshness token for the one cache
+    /// that has no window to key on — the single-slot point-hit cache in `widget_at_point` —
+    /// so that cache keeps exactly the invalidation behaviour it has always had.
     #[allow(clippy::missing_const_for_thread_local)]
     static TREE_FRAME_EPOCH: core::cell::Cell<u64> = const { core::cell::Cell::new(1) };
+
+    /// The frame-content epoch of each window that has a cached tree frame (G-311).
+    ///
+    /// Keyed by the window's id, because that is the key [`LAST_TREE_FRAME`] caches under: a
+    /// repaint of window A bumps A's entry and leaves B's untouched, so B's next paint reuses
+    /// its cached frame instead of re-walking and re-rasterising it. A window's entry is
+    /// created when its frame is stored and removed when the frame is dropped
+    /// (see [`forget_cached_frame`]), so the map never holds more than the cached windows.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static TREE_FRAME_EPOCHS: RefCell<HashMap<ObjectId, u64>> = RefCell::new(HashMap::new());
 }
 
 /// Records that a rendered frame's content may have changed. See `TREE_FRAME_EPOCH`.
 fn note_renderable_change() {
     let _ = TREE_FRAME_EPOCH.try_with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
+}
+
+/// Records that the window tree frame `id` belongs to may have changed (G-311).
+///
+/// Bumps the owning window's entry in [`TREE_FRAME_EPOCHS`] only, so the other windows' cached
+/// frames stay valid. When the owner cannot be resolved — a widget lent out mid-tick, or a tree
+/// whose root is not a window — every window that holds a cached frame is bumped, which is what
+/// the old single global epoch did for every change; the conservative direction costs repaints,
+/// never staleness.
+fn note_renderable_change_for(id: ObjectId) {
+    let owner = repaint_frame_owner(id);
+    let _ = TREE_FRAME_EPOCHS.try_with(|epochs| {
+        let mut epochs = epochs.borrow_mut();
+        match owner {
+            Some(window) => {
+                *epochs.entry(window).or_insert(1) += 1;
+            }
+            None => {
+                for epoch in epochs.values_mut() {
+                    *epoch = epoch.wrapping_add(1);
+                }
+            }
+        }
+    });
+}
+
+/// The window whose cached tree frame a change to `id` invalidates.
+///
+/// This is [`top_level_window_of`]'s answer resolved with **shared** registry borrows only: the
+/// G-106 fast path reads the mount's cached resolution when its parent still matches, and the
+/// walk otherwise. It never takes the mutable borrow the G-106 cache *write* needs, so it is
+/// safe to call from anywhere — including inside a `read_widget` callback, where
+/// [`request_repaint_because`] and [`mark_dirty_rect`] can now arrive.
+fn repaint_frame_owner(id: ObjectId) -> Option<ObjectId> {
+    // A mounted surface has no parent in the widget tree, so the walk below cannot reach its
+    // window; the mount path recorded that link instead.
+    if let Some(window) = surface_window_for(id) {
+        return Some(window);
+    }
+    let mounted = MOUNTED
+        .try_with(|map| {
+            map.borrow()
+                .get(&id)
+                .map(|entry| (entry.widget.kind(), entry.widget.parent(), entry.top_window))
+        })
+        .ok()
+        .flatten()?;
+    let (kind, parent, cached) = mounted;
+    if let Some((resolved_parent, window)) = cached {
+        if resolved_parent == parent {
+            return window;
+        }
+    }
+    walk_top_level_window_from(id, kind, parent)
+}
+
+/// The current frame-content epoch of `window`'s cached tree frame. See [`TREE_FRAME_EPOCHS`].
+fn renderable_epoch_for(window: ObjectId) -> u64 {
+    TREE_FRAME_EPOCHS
+        .try_with(|epochs| epochs.borrow().get(&window).copied())
+        .ok()
+        .flatten()
+        .unwrap_or(1)
 }
 
 /// The current content epoch for this thread.
@@ -5112,16 +5346,20 @@ fn store_widget_layer(
                         .min_by_key(|(_, layer)| layer.insert_stamp)
                         .map(|(id, _)| *id);
                     if let Some(oldest) = oldest {
-                        layers.remove(&oldest);
+                        if let Some(old) = layers.remove(&oldest) {
+                            recycle_layer_pixels(old.pixels);
+                        }
                     }
                     break;
                 };
                 if layers.get(&oldest).is_some_and(|layer| layer.insert_stamp == old_stamp) {
-                    layers.remove(&oldest);
+                    if let Some(old) = layers.remove(&oldest) {
+                        recycle_layer_pixels(old.pixels);
+                    }
                 }
             }
         }
-        layers.insert(
+        if let Some(old) = layers.insert(
             id,
             CachedWidgetLayer {
                 rect,
@@ -5133,7 +5371,11 @@ fn store_widget_layer(
                 pixels,
                 insert_stamp: stamp,
             },
-        );
+        ) {
+            // The replaced entry's buffer returns to the pool instead of being freed, so the
+            // next same-size miss reuses the allocation rather than making a new one (G-313).
+            recycle_layer_pixels(old.pixels);
+        }
         // Keep the fast-reject union a superset of every resident layer (G-105).
         WIDGET_LAYER_BOUNDS.with(|bounds| {
             let merged = match bounds.get() {
@@ -5144,6 +5386,116 @@ fn store_widget_layer(
         });
         WIDGET_LAYER_ORDER.with(|order| order.borrow_mut().push_back((id, stamp)));
     });
+}
+
+thread_local! {
+    /// Offscreen backends pooled for layer misses, each stored with the size it was built for
+    /// (G-313).
+    ///
+    /// A layer-cache miss paints the subtree into its own transparent surface, which used to mean a
+    /// fresh [`SoftwarePaintBackend`] — two zero-filled full-size buffers — on every miss. A pooled
+    /// backend at the same size re-allocates nothing; a size change is the only reason to build a
+    /// new one. Nested layer captures hold their backend for the duration of the recursion, so the
+    /// pool is taken from and returned to like a stack (`take_paint_children`), not a single slot:
+    /// several entries of the same size may coexist.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static LAYER_BACKEND_POOL: RefCell<Vec<(Size, SoftwarePaintBackend)>> = RefCell::new(Vec::new());
+
+    /// Frame buffers recycled from dead layer-cache entries, so the copy-out of a reused backend
+    /// also allocates nothing once a layer of that size has lived and died (G-313).
+    #[allow(clippy::missing_const_for_thread_local)]
+    static LAYER_BUFFER_POOL: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
+}
+
+/// How many layer backends the pool retains; beyond it a backend is dropped, which is the
+/// pre-pool behaviour for that paint.
+const MAX_POOLED_LAYER_BACKENDS: usize = 4;
+
+/// How many frame buffers the pool retains; see [`LAYER_BUFFER_POOL`].
+const MAX_POOLED_LAYER_BUFFERS: usize = 8;
+
+/// Takes a backend ready to paint a `layer_size` layer into: a pooled one when the size
+/// matches, a fresh one only when the size changed (G-313).
+fn take_layer_backend(layer_size: Size) -> SoftwarePaintBackend {
+    LAYER_BACKEND_POOL.with(|pool| {
+        let reused = {
+            let mut pool = pool.borrow_mut();
+            pool.iter()
+                .position(|(size, _)| *size == layer_size)
+                .map(|index| pool.swap_remove(index))
+        };
+        match reused {
+            Some((_, mut backend)) => {
+                // A reused surface must present the same starting state a fresh one does:
+                // `Color::TRANSPARENT` fills every byte of the back buffer with zero, which is
+                // byte-for-byte what the fresh construction's `vec![0; …]` held, and the
+                // render-level layer-foreground cache is dropped so it cannot answer for
+                // content captured under an earlier layer. `end_frame` clears the rest of the
+                // per-frame surface state, and the paint path's push/pop pairs are balanced.
+                backend.begin_frame(crate::core::Color::TRANSPARENT);
+                backend.clear_layer_cache();
+                backend
+            }
+            None => SoftwarePaintBackend::new(layer_size, 1.0),
+        }
+    })
+}
+
+/// Returns a layer's backend to the pool for the next miss at its size (G-313).
+fn return_layer_backend(backend: SoftwarePaintBackend, layer_size: Size) {
+    let _ = LAYER_BACKEND_POOL.try_with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() < MAX_POOLED_LAYER_BACKENDS {
+            pool.push((layer_size, backend));
+        }
+    });
+}
+
+/// Takes a frame buffer of exactly `len` bytes, preferring the smallest pooled one whose
+/// capacity fits — the same rule the render-side scratch pools follow (G-313).
+fn take_layer_buffer(len: usize) -> Vec<u8> {
+    LAYER_BUFFER_POOL.with(|pool| {
+        let reused = {
+            let mut pool = pool.borrow_mut();
+            pool.iter()
+                .enumerate()
+                .filter(|(_, buffer)| buffer.capacity() >= len)
+                .min_by_key(|(_, buffer)| buffer.capacity())
+                .map(|(index, _)| index)
+                .map(|index| pool.swap_remove(index))
+        };
+        match reused {
+            Some(mut buffer) => {
+                buffer.clear();
+                buffer.resize(len, 0);
+                buffer
+            }
+            None => {
+                let mut fresh = Vec::new();
+                fresh.resize(len, 0);
+                fresh
+            }
+        }
+    })
+}
+
+/// Returns a frame buffer to the pool, keeping its capacity for the next layer of its size.
+fn return_layer_buffer(mut buffer: Vec<u8>) {
+    buffer.clear();
+    let _ = LAYER_BUFFER_POOL.try_with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() < MAX_POOLED_LAYER_BUFFERS {
+            pool.push(buffer);
+        }
+    });
+}
+
+/// Recycles a layer's pixel buffer when its cache entry dies (G-313): an `Rc` nobody else
+/// holds gives up its `Vec`, which the next same-size miss reuses instead of allocating.
+fn recycle_layer_pixels(pixels: Rc<Vec<u8>>) {
+    if let Ok(buffer) = Rc::try_unwrap(pixels) {
+        return_layer_buffer(buffer);
+    }
 }
 
 // Test-only count of layer replays, so a regression test can prove a clean control returned its
@@ -5185,6 +5537,10 @@ pub(crate) fn clear_widget_layers_for_test() {
     let _ = WIDGET_LAYER_ORDER.try_with(|order| order.borrow_mut().clear());
     let _ = WIDGET_LAYER_BOUNDS.try_with(|bounds| bounds.set(None));
     let _ = WIDGET_LAYER_REPLAYS.try_with(|count| count.set(0));
+    // The pools are part of the layer state this helper resets: a test that clears the cache
+    // must not inherit backends or buffers from whatever ran before it on the same thread.
+    let _ = LAYER_BACKEND_POOL.try_with(|pool| pool.borrow_mut().clear());
+    let _ = LAYER_BUFFER_POOL.try_with(|pool| pool.borrow_mut().clear());
 }
 
 // Counts full-frame buffer copies performed by the incremental frame cache. Test-only.
@@ -5292,8 +5648,10 @@ pub fn repaint_mode(id: ObjectId) -> RepaintMode {
 pub fn mark_dirty_rect(id: ObjectId, rect: Rect) -> bool {
     // Any damage submission is evidence that some surface's content changed, which is what the
     // tree-frame cache compares against (see `render_frame_tree_cached`). Bumped even when this
-    // widget has no tracker, because a window-level cache is not the per-widget policy.
+    // widget has no tracker, because a window-level cache is not the per-widget policy. The
+    // window-scoped bump (G-311) mirrors it: only this widget's window loses its cached frame.
     note_renderable_change();
+    note_renderable_change_for(id);
     // The layer cache is narrower: only the layers this rectangle touches can now be stale.
     invalidate_widget_layers_in(id, rect);
     let recorded = REPAINT
@@ -5666,7 +6024,10 @@ pub fn render_frame_tree_cached_shared(
     if size.width == 0 || size.height == 0 {
         return None;
     }
-    let epoch = renderable_epoch();
+    // The window's own epoch (G-311): another window's repaint no longer turns this into a
+    // miss. The process-wide repaint generation is unchanged — a global repaint still
+    // invalidates every window.
+    let epoch = renderable_epoch_for(id);
     let global_epoch = global_repaint_generation();
     let previous = LAST_TREE_FRAME
         .try_with(|map| {
@@ -5686,6 +6047,14 @@ pub fn render_frame_tree_cached_shared(
     let shared = Rc::new(render_frame_tree(id, size, clear)?);
     let _ = LAST_TREE_FRAME.try_with(|map| {
         map.borrow_mut().insert(id, (size, Rc::clone(&shared), epoch, global_epoch));
+    });
+    // Record the epoch this frame was cached at in the per-window table (G-311), so a later
+    // change whose owning window cannot be resolved can still find and bump this entry — and
+    // so `renderable_epoch_for` reads the stored value rather than the default from here on.
+    // A bump that raced the paint (a request made *during* the draw, which belongs to the next
+    // frame) already inserted a newer value; `or_insert` keeps it.
+    let _ = TREE_FRAME_EPOCHS.try_with(|epochs| {
+        epochs.borrow_mut().entry(id).or_insert(epoch);
     });
     Some(shared)
 }
@@ -5905,9 +6274,16 @@ pub fn render_frame_cached_shared(
 pub fn forget_cached_frame(id: ObjectId) {
     let _ = LAST_FRAME.try_with(|map| map.borrow_mut().remove(&id));
     let _ = LAST_TREE_FRAME.try_with(|map| map.borrow_mut().remove(&id));
+    // The per-window epoch exists to describe the cached frame that just went away (G-311);
+    // dropping it keeps the table at the windows that still hold a frame.
+    let _ = TREE_FRAME_EPOCHS.try_with(|epochs| {
+        epochs.borrow_mut().remove(&id);
+    });
     let _ = WIDGET_LAYERS.try_with(|map| {
         let mut map = map.borrow_mut();
-        map.remove(&id);
+        if let Some(old) = map.remove(&id) {
+            recycle_layer_pixels(old.pixels);
+        }
         // The fast-reject union is only a superset, so it may stay after a removal; when the
         // cache is empty it is reset, which is what restores the free "no layers" rejection.
         // The eviction ring keeps the stale entry, which the pop path skips (G-105).
@@ -5997,6 +6373,45 @@ pub fn render_frame_at_geometry(id: ObjectId, clear: crate::core::Color) -> Opti
     render_frame(id, Size::new(geometry.width, geometry.height), clear)
 }
 
+/// The cached overlay flag for one root child of [`ordered_root_children`] (G-316).
+///
+/// The two virtual calls (`is_visible`, `has_open_popup`) run only when no answer is cached —
+/// the child's first frame, or the first frame after its state changed. A child the registry
+/// cannot answer for (lent out mid-tick) is treated as an ordinary child exactly as before, and
+/// the miss is **not** cached, so the next frame asks again rather than keeping a wrong answer.
+fn overlay_child_flag(child: ObjectId) -> bool {
+    OVERLAY_CHILD_FLAGS.with(|flags| {
+        let cached = flags.borrow().get(&child).copied();
+        if let Some(flag) = cached {
+            return flag;
+        }
+        match read_widget(child, |widget| widget.is_visible() && widget.has_open_popup()) {
+            Some(flag) => {
+                flags.borrow_mut().insert(child, flag);
+                flag
+            }
+            None => false,
+        }
+    })
+}
+
+/// Drops the cached overlay flag of `id`, or the whole cache when `id` is `None` (G-316).
+///
+/// The flag reads widget-internal state the runtime cannot observe directly, so the mutation
+/// notification is the repaint the state change must request to become visible, plus the popup
+/// grab lifecycle every popup's open and close goes through.
+fn note_overlay_maybe_changed(id: Option<ObjectId>) {
+    OVERLAY_CHILD_FLAGS.with(|flags| {
+        let mut flags = flags.borrow_mut();
+        match id {
+            Some(id) => {
+                flags.remove(&id);
+            }
+            None => flags.clear(),
+        }
+    });
+}
+
 /// Orders a window's children for painting: ordinary children first, open overlays last.
 ///
 /// A drop-down list is painted by its own control, below the control's rectangle, and the window
@@ -6015,8 +6430,9 @@ fn ordered_root_children(children: &mut Vec<ObjectId>) {
     let mut overlays = OVERLAY_CHILD_IDS.with(|slot| core::mem::take(&mut *slot.borrow_mut()));
     overlays.clear();
     children.retain(|child| {
-        let overlay = read_widget(*child, |widget| widget.is_visible() && widget.has_open_popup())
-            .unwrap_or(false);
+        // The classification comes from the flag cache (G-316); the two virtual calls run once
+        // per child per membership change instead of once per child per frame.
+        let overlay = overlay_child_flag(*child);
         if overlay {
             overlays.push(*child);
             false
@@ -6322,7 +6738,7 @@ fn paint_widget_layer(
     // translated by the layer's absolute origin, exactly as the frame path translates them by
     // the frame origin. `end_frame` publishes the drawn back buffer as the frame to take.
     let layer_size = Size::new(bounds.width, bounds.height);
-    let mut offscreen = SoftwarePaintBackend::new(layer_size, 1.0);
+    let mut offscreen = take_layer_backend(layer_size);
     let mut children = take_paint_children();
     let mut child_clip = None;
     let mut self_drew = false;
@@ -6341,6 +6757,7 @@ fn paint_widget_layer(
     });
     if rendered.is_none() {
         return_paint_children(children);
+        return_layer_backend(offscreen, layer_size);
         return LayerPaint { drew: false, cacheable: true };
     }
 
@@ -6364,11 +6781,21 @@ fn paint_widget_layer(
     }
     return_paint_children(children);
     if !self_drew && !child_drew {
+        return_layer_backend(offscreen, layer_size);
         return LayerPaint { drew: false, cacheable };
     }
 
     offscreen.end_frame();
-    let pixels = Rc::new(offscreen.into_frame_rgba());
+    // The presented frame is copied into a pooled buffer rather than taken: the backend that
+    // drew it stays alive for the next layer miss, and the buffer that leaves came from (and
+    // returns to) the pool of recycled layer buffers, so a same-size miss allocates nothing
+    // at all (G-313). The bytes are identical to what `into_frame_rgba` moved out — the same
+    // presented front buffer, at the same length.
+    let frame = offscreen.surface().frame_rgba();
+    let mut pixels = take_layer_buffer(frame.len());
+    pixels.copy_from_slice(frame);
+    return_layer_backend(offscreen, layer_size);
+    let pixels = Rc::new(pixels);
     if cacheable {
         store_widget_layer(
             id,
@@ -6638,6 +7065,81 @@ mod tests {
         crate::platform::stop::TEST_SEAM_SERIAL
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    // ── G-404 -- the theme_changed subscription ─────────────────────────────
+
+    /// A theme switch restyles every mounted control at the frame, with no caller performing
+    /// a sweep: the notification marks, the frame merges. These are the assertions the old
+    /// full-registry walk satisfied, so a pass proves the subscription did not lose coverage.
+    #[cfg(device_profile)]
+    #[test]
+    fn theme_notification_restyles_mounted_controls_at_the_next_frame() {
+        let _serial = serialise_drive_frame();
+        let id = register(Box::new(crate::widget::Button::new(
+            "A".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+
+        let fill = || with_widget(id, |widget| widget.style().background_color).flatten();
+        let before = fill();
+
+        // The switch emits under the theme mutex, so the slot records intent only: the style
+        // is still the old one here. Resolving a style inside the slot would re-enter the same
+        // non-reentrant mutex and deadlock, which is why the merge is deferred.
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            assert!(
+                manager.set_appearance(crate::theme::AppearanceMode::Dark),
+                "the dark preset must be registered"
+            );
+        }
+        assert_eq!(fill(), before, "the notification alone must not restyle synchronously");
+
+        drive_frame(0);
+
+        let dark_primary = {
+            let manager = crate::theme::global_theme_manager();
+            manager.current_theme().expect("an active theme").colors.primary
+        };
+        assert_ne!(fill(), before, "the frame drained the notification into a restyle");
+        assert_eq!(
+            fill(),
+            Some(dark_primary),
+            "a mounted control must end up styled exactly as the old full sweep styled it"
+        );
+    }
+
+    /// Unmounting must disconnect the control's `theme_changed` slot: a host that recycles
+    /// controls would otherwise grow the signal's slot list without bound, each dead slot
+    /// firing for an id that resolves to nothing.
+    #[cfg(device_profile)]
+    #[test]
+    fn an_unregistered_control_leaves_no_theme_subscription_behind() {
+        let before = {
+            let manager = crate::theme::global_theme_manager();
+            manager.on_theme_changed().slot_count()
+        };
+
+        let id = register(Box::new(crate::widget::Button::new(
+            "B".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        assert_eq!(
+            { crate::theme::global_theme_manager().on_theme_changed().slot_count() },
+            before + 1,
+            "mounting subscribes the control to the theme switch notification"
+        );
+
+        assert!(unregister(id), "the control unmounts");
+        assert_eq!(
+            { crate::theme::global_theme_manager().on_theme_changed().slot_count() },
+            before,
+            "unmounting must disconnect the control's theme subscription"
+        );
     }
 
     #[test]
@@ -7906,6 +8408,38 @@ mod tests {
     #[test]
     fn unregister_unknown_id_is_false() {
         assert!(!unregister(0xDEAD_BEEF));
+    }
+
+    /// `register_with_id` keeps its contract through the shared registration body (G-321):
+    /// the zero sentinel is refused, an occupied id fails with the same id back and leaves
+    /// the incumbent mounted, and a success mounts under exactly the declared id with the
+    /// same post-mount bookkeeping `register` does — here pinned by the own-id mapping and
+    /// the auto-decision the shared tail runs.
+    #[test]
+    fn register_with_id_mounts_under_the_declared_id_and_refuses_collisions() {
+        // `0` is the API's "no widget" sentinel and must never hold a live control.
+        assert_eq!(register_with_id(sample_editor(""), 0), Err(0));
+
+        const DECLARED: ObjectId = 0x7A21_0001;
+        let id = register_with_id(auto_accepted_surface(), DECLARED).expect("a free id mounts");
+        let _unmount = MountGuard(id);
+        assert_eq!(id, DECLARED, "the control lives under the id the caller chose");
+        assert!(is_mounted(DECLARED));
+
+        // The shared tail recorded the own-id mapping and ran the auto-decision, exactly
+        // as `register` would have.
+        let own = with_widget(id, |widget| widget.base().id()).expect("widget");
+        assert_eq!(registry_id_of(own), Some(id));
+        assert_eq!(repaint_mode(id), RepaintMode::Adaptive);
+
+        // A collision reports the id that was in the way; the incumbent is untouched.
+        assert_eq!(register_with_id(sample_editor(""), DECLARED), Err(DECLARED));
+        assert!(is_mounted(DECLARED), "the failed mount must not displace the incumbent");
+        assert_eq!(
+            with_widget(DECLARED, |w| w.base().id()),
+            Some(own),
+            "the incumbent's own id is unchanged"
+        );
     }
 
     /// A widget defaults to `Full`, so adopting damage tracking is opt-in and no
@@ -11399,6 +11933,54 @@ mod tests {
             None,
             "the link must not outlive the widget it described"
         );
+    }
+
+    /// The window→surfaces reverse index answers with exactly the linked surfaces (G-314).
+    ///
+    /// `surfaces_of` used to filter the whole `SURFACE_WINDOWS` table per call; the index that
+    /// replaced it is only correct if it moves with every mutation, so this pins the four
+    /// transitions that can touch it: a first link lists the surface, a re-link moves it out
+    /// of the previous window's list, re-linking to the window it already names neither
+    /// duplicates nor reorders it, and an unregistered surface leaves every list.
+    #[test]
+    fn surfaces_of_follows_the_surface_window_link_through_relinks_and_unregister() {
+        let surface = register(Box::new(crate::widget::Label::new(
+            "surface".to_string(),
+            Rect::new(0, 0, 100, 80),
+        )))
+        .expect("mount");
+        let _unmount_surface = MountGuard(surface);
+        let first = register(Box::new(crate::widget::Label::new(
+            "first".to_string(),
+            Rect::new(0, 0, 100, 80),
+        )))
+        .expect("mount");
+        let _unmount_first = MountGuard(first);
+        let second = register(Box::new(crate::widget::Label::new(
+            "second".to_string(),
+            Rect::new(0, 0, 100, 80),
+        )))
+        .expect("mount");
+        let _unmount_second = MountGuard(second);
+
+        assert!(surfaces_of(first).is_empty() && surfaces_of(second).is_empty());
+        assert!(set_surface_window(surface, first), "the first link is reported as new");
+        assert_eq!(surfaces_of(first), vec![surface]);
+        assert!(surfaces_of(second).is_empty(), "the old window keeps nothing");
+
+        assert!(!set_surface_window(surface, first), "re-linking to the same window is not new");
+        assert_eq!(
+            surfaces_of(first),
+            vec![surface],
+            "a same-window re-link must not duplicate the surface"
+        );
+
+        assert!(!set_surface_window(surface, second), "a move is not a new link");
+        assert!(surfaces_of(first).is_empty(), "the previous window's list loses the surface");
+        assert_eq!(surfaces_of(second), vec![surface]);
+
+        unregister(surface);
+        assert!(surfaces_of(second).is_empty(), "an unregistered surface leaves the list");
     }
 
     /// A window widget's host id round-trips: `window -> host -> window`.

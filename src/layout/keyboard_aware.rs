@@ -225,6 +225,14 @@ impl Layout for KeyboardAwareLayout {
     // (shift the entire rect upward by the *animated* offset so content remains visible above the
     // keyboard) is the only wrapper-specific part.
     crate::impl_layout_forward!(inner, keyboard_adjusted_rect);
+
+    /// Forwards the one-child query with the same rect adjustment every other entry applies
+    /// (LAY-005): an inner layout that answers from its own model is not forced through this
+    /// wrapper's full `update` pass, and one that keeps the trait default reproduces exactly
+    /// what that default computed before.
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        self.inner.child_rect(id, self.keyboard_adjusted_rect(rect))
+    }
 }
 
 #[cfg(test)]
@@ -496,5 +504,24 @@ mod tests {
             30,
             "`arrange_with_context` must reach it too, not fall back to `update`"
         );
+    }
+
+    /// LAY-005: the wrapper forwards the one-child query with the same rect shift every
+    /// other entry applies, so an inner layout that answers from its own model is used
+    /// directly instead of being driven through a full `update` pass.
+    #[test]
+    fn child_rect_forwards_the_adjusted_rect_to_the_inner_layout() {
+        let inner: Box<dyn Layout> = Box::new(StackLayout::new());
+        // A zero duration is the host that wants the shift immediately.
+        let mut layout = KeyboardAwareLayout::new(inner, 0);
+        layout.add_widget(42, 0);
+        layout.set_keyboard_offset(30);
+
+        let rect = Rect::new(0, 0, 100, 200);
+        let mut emitted = None;
+        layout.update(rect, &mut |_, r| emitted = Some(r));
+        assert_eq!(emitted, Some(Rect::new(0, -30, 100, 200)), "update shifted the content up");
+        assert_eq!(layout.child_rect(42, rect), emitted, "the inner model answers the query");
+        assert_eq!(layout.child_rect(9, rect), None, "a foreign id is not placed");
     }
 }

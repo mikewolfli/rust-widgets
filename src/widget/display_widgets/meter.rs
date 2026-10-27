@@ -263,6 +263,27 @@ impl Meter {
         self.base.request_redraw();
     }
 
+    /// Adds one band, the singular spelling of [`Self::add_threshold_range`].
+    ///
+    /// The two exist because the published command is named `add_threshold`; both route
+    /// through the same clamping rule, so a band added by either name is identical.
+    pub fn add_threshold(&mut self, from: u32, to: u32, color: Color) {
+        self.add_threshold_range(from, to, color);
+    }
+
+    /// Removes the band at `index`, returning whether it existed.
+    ///
+    /// Bands are in insertion order, which is the same order [`Self::thresholds`] reports, so
+    /// a caller can find an index from the slice it already holds.
+    pub fn remove_threshold(&mut self, index: usize) -> bool {
+        if index >= self.thresholds.len() {
+            return false;
+        }
+        self.thresholds.remove(index);
+        self.base.request_redraw();
+        true
+    }
+
     /// Returns the bands, in insertion order.
     pub fn thresholds(&self) -> &[MeterThreshold] {
         &self.thresholds
@@ -1360,6 +1381,21 @@ mod tests {
         meter.clear_thresholds();
         assert!(meter.thresholds().is_empty());
         assert_eq!(meter.get("threshold_count").unwrap(), CapabilityValue::UInt(0));
+    }
+
+    /// A single band can be added and removed by index; removing an absent index is a no-op.
+    #[test]
+    fn meter_thresholds_can_be_added_and_removed_one_at_a_time() {
+        let mut meter = Meter::new(Rect::new(0, 0, 200, 200));
+        meter.add_threshold(0, 40, Color::rgb(15, 157, 88));
+        meter.add_threshold(40, 100, Color::rgb(219, 68, 55));
+        assert_eq!(meter.thresholds().len(), 2);
+        assert_eq!(meter.thresholds()[1].from, 40);
+
+        assert!(meter.remove_threshold(0));
+        assert_eq!(meter.thresholds().len(), 1);
+        assert_eq!(meter.thresholds()[0].from, 40, "the surviving band keeps its identity");
+        assert!(!meter.remove_threshold(9), "an absent index removes nothing");
     }
 
     // ── B3-2: tick labels (pixel assertion) ────────────────────────────────

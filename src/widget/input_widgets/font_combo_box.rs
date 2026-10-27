@@ -122,6 +122,16 @@ impl FontFilters {
         lower.contains("mono") || lower.contains("courier") || lower.contains("consolas")
     }
 
+    /// Whether a family name marks a scalable outline face.
+    ///
+    /// The crate ships outline faces everywhere, but a host may append a platform bitmap
+    /// family. The name heuristic is the only per-family fact available here, so a family
+    /// whose name says it is raster-only fails the filter (I-118).
+    fn is_scalable(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        !lower.contains("bitmap") && !lower.contains("pixel") && !lower.contains("raster")
+    }
+
     /// Whether `name` is listed under this filter set.
     pub fn matches(self, name: &str) -> bool {
         if self == Self::NONE {
@@ -129,6 +139,9 @@ impl FontFilters {
         }
         let mono = Self::is_monospaced(name);
         if self.contains(Self::MONOSPACED) && !mono {
+            return false;
+        }
+        if self.contains(Self::SCALABLE) && !Self::is_scalable(name) {
             return false;
         }
         if self.contains(Self::PROPORTIONAL) && mono {
@@ -257,6 +270,10 @@ pub struct FontComboBox {
     pub popup_shown: GenericSignal,
     /// Emitted when the popup list is closed.
     pub popup_hidden: GenericSignal,
+    /// Whether recently chosen families move to the top of the list (I-119).
+    mru_enabled: bool,
+    /// The existing MRU store, reused rather than reimplemented (COMP-B03).
+    recent_fonts: super::recent_values_popup::RecentValuesPopup,
 }
 impl FontComboBox {
     /// The band the control actually paints: full width, one field tall, centred.
@@ -313,6 +330,8 @@ impl FontComboBox {
             text_edited: Signal1::new(),
             popup_shown: GenericSignal::new(),
             popup_hidden: GenericSignal::new(),
+            mru_enabled: false,
+            recent_fonts: super::recent_values_popup::RecentValuesPopup::new(Rect::new(0, 0, 0, 0)),
         }
     }
 
@@ -411,6 +430,12 @@ impl FontComboBox {
                 // Update current font based on selection
                 if let Some(font_name) = self.fonts.get(clamped as usize) {
                     let new_font = Font::new(font_name, self.current_font.size(), false, false);
+                    if self.mru_enabled {
+                        // The MRU store is the same one the recent-values popup uses, so the
+                        // reorder rule has one implementation (I-119).
+                        self.recent_fonts.remember(font_name);
+                        self.refresh_visible_fonts();
+                    }
                     self.set_current_font(new_font);
                 }
             }
@@ -704,18 +729,38 @@ impl FontComboBox {
             .writing_system_filter
             .as_ref()
             .map(|filter| crate::widget::input_widgets::text_match::fold(filter));
-        self.visible_fonts.clear();
-        self.visible_indices.clear();
-        for (index, name) in self.fonts.iter().enumerate() {
-            let matches_filter = self.font_filters.matches(name)
-                && writing.as_ref().is_none_or(|filter| {
+        let accepts = |filters: FontFilters, name: &str, writing: Option<&String>| {
+            filters.matches(name)
+                && writing.is_none_or(|filter| {
                     filter.is_empty()
                         || crate::widget::input_widgets::text_match::contains(name, filter)
-                });
-            if matches_filter {
-                self.visible_fonts.push(name.clone());
+                })
+        };
+        self.visible_fonts.clear();
+        self.visible_indices.clear();
+        // Recently chosen families lead the list when the option is on. `seen` keeps the
+        // reorder linear and prevents a family from being listed twice (I-119).
+        let mut seen = vec![false; self.fonts.len()];
+        if self.mru_enabled {
+            for recent in self.recent_fonts.entries() {
+                let Some(index) = self.fonts.iter().position(|name| name == recent) else {
+                    continue;
+                };
+                if seen[index] || !accepts(self.font_filters, &self.fonts[index], writing.as_ref())
+                {
+                    continue;
+                }
+                seen[index] = true;
+                self.visible_fonts.push(self.fonts[index].clone());
                 self.visible_indices.push(index);
             }
+        }
+        for (index, name) in self.fonts.iter().enumerate() {
+            if seen[index] || !accepts(self.font_filters, name, writing.as_ref()) {
+                continue;
+            }
+            self.visible_fonts.push(name.clone());
+            self.visible_indices.push(index);
         }
         self.visible_revision = self.visible_revision.wrapping_add(1);
         self.scroll_offset = 0;
@@ -856,6 +901,26 @@ impl FontComboBox {
         self.expanded = false;
         self.popup_hidden.emit();
         self.base.request_redraw();
+    }
+
+    /// Whether recently chosen families are moved to the top of the popup.
+    pub fn mru_enabled(&self) -> bool {
+        self.mru_enabled
+    }
+
+    /// Turns the recently-used ordering on or off; off by default (I-119).
+    pub fn set_mru_enabled(&mut self, enabled: bool) {
+        if self.mru_enabled == enabled {
+            return;
+        }
+        self.mru_enabled = enabled;
+        self.refresh_visible_fonts();
+        self.base.request_redraw();
+    }
+
+    /// The recently chosen families, newest first.
+    pub fn recent_fonts(&self) -> &[String] {
+        self.recent_fonts.entries()
     }
     /// Returns the family name of the selected entry, or an empty string when
     /// nothing is selected ([`FontComboBox::current_index`] `-1`).
@@ -1205,23 +1270,14 @@ impl EventHandler for FontComboBox {
                     self.base.set_pressed(false);
                 }
             }
-            Event::MouseRelease { pos, button }
+            Event::MouseRelease { button, .. }
                 if button == &1
-                    // Cycle to next font on release, but only for a completed press on this
-                    // control. The position was previously discarded (`pos: _`) and no press was
-                    // required, so **any** left release reached here and cycled the font — a
-                    // release the host routed from a drag that began on another control, or one
-                    // with no preceding press at all.
+                    // The press path already opened the popup (or committed a row), so the
+                    // release only clears the latch. Cycling here as well made one click run two
+                    // selection paths (I-120).
                     && self.base.is_pressed() =>
             {
                 self.base.set_pressed(false);
-                // A release over a popup row has already been handled on the press; a
-                // release on the field cycles to the next family, matching the old gesture.
-                if self.geometry().contains_point(*pos) && !self.fonts.is_empty() {
-                    let next = (self.current_index + 1) % self.fonts.len() as i32;
-                    self.set_current_index(next);
-                    self.activated.emit(next);
-                }
             }
             Event::Wheel { delta, modifiers } => {
                 if self.expanded && !self.visible_fonts.is_empty() {
@@ -1714,13 +1770,14 @@ mod tests {
             (-1, -1)
         );
 
-        // A completed activation advances exactly one step.
+        // A completed press opens the popup; the release does not also advance the
+        // selection, which was the second trigger path this change removed (I-120).
         assert_eq!(
             run(&[
                 Event::MousePress { pos: inside, button: 1, modifiers: 0 },
                 Event::MouseRelease { pos: inside, button: 1 },
             ]),
-            (-1, 0)
+            (-1, -1)
         );
 
         // Focus loss abandons a held press.
@@ -1903,5 +1960,43 @@ mod tests {
             modifiers: 0,
         });
         assert!(!combo.expanded, "an outside press dismisses the popup");
+    }
+
+    #[test]
+    fn the_scalable_filter_has_a_consumption_point() {
+        assert!(FontFilters::SCALABLE.matches("Noto Sans"));
+        assert!(!FontFilters::SCALABLE.matches("Console Raster 8"));
+        assert!(FontFilters::NONE.matches("Console Raster 8"));
+    }
+
+    #[test]
+    fn recently_chosen_families_lead_the_list_when_mru_is_on() {
+        let mut combo = FontComboBox::new(Rect::new(0, 0, 200, 28));
+        for name in ["Alpha", "Bravo", "Charlie"] {
+            combo.add_font(name.to_string());
+        }
+        assert!(!combo.mru_enabled());
+        combo.set_current_index(2);
+        assert!(combo.recent_fonts().is_empty(), "off by default records nothing");
+        assert_eq!(combo.visible_fonts()[0], "Alpha");
+
+        combo.set_mru_enabled(true);
+        combo.set_current_index(1);
+        combo.set_current_index(2);
+        assert_eq!(combo.recent_fonts()[0], "Charlie");
+        assert_eq!(combo.visible_fonts()[0], "Charlie");
+    }
+
+    #[test]
+    fn one_click_on_the_field_only_opens_the_popup() {
+        let mut combo = FontComboBox::new(Rect::new(0, 0, 200, 28));
+        for name in ["Alpha", "Bravo", "Charlie"] {
+            combo.add_font(name.to_string());
+        }
+        let center = Point::new(20, 14);
+        combo.handle_event(&Event::MousePress { pos: center, button: 1, modifiers: 0 });
+        combo.handle_event(&Event::MouseRelease { pos: center, button: 1 });
+        assert!(combo.expanded, "the press opens the popup");
+        assert_eq!(combo.selected_index(), None, "the release must not also cycle the font");
     }
 }

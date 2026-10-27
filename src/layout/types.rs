@@ -11,7 +11,12 @@ use crate::layout::hints::ChildInfo;
 pub enum SizePolicy {
     /// Use fixed size defined by constraints.
     Fixed,
-    /// Prefer natural size while allowing negotiation.
+    /// Hug the natural size stated by the item's constraints and never take leftover room.
+    ///
+    /// Distinct from [`Self::Expanding`] (LAY-002): only the strategies that ask for room
+    /// participate in the distribution of the space left over after every item's floor is
+    /// paid; a `Preferred` item keeps the extent its constraints name and may only be
+    /// scaled down when the parent cannot pay for it.
     Preferred,
     /// Expand to consume remaining space.
     Expanding,

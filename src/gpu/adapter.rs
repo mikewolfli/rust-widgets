@@ -37,30 +37,34 @@ pub enum GpuType {
 }
 impl GpuType {
     /// Detects the primary GPU type from system
+    ///
+    /// # One selection path (G-230)
+    ///
+    /// Detection used to construct a fresh `wgpu::Instance` on every call and
+    /// walk the ladder privately, repeating the backend initialisation the GPU
+    /// manager had already paid for. It now routes through the same selection
+    /// path the manager uses
+    /// ([`AdapterSelector::select_adapter_with_fallback`]): the surface-
+    /// independent result is memoised in the process-wide selection cache
+    /// (G-62), so a repeat call answers from the cache without creating an
+    /// `Instance`, and a cache miss walks the shared degradation ladder once and
+    /// publishes the answer as the shared selection (G-211) that other GPU paths
+    /// read.
+    ///
+    /// The strategy mirrors the power preference this function always probed
+    /// with (`HighPerformance`), so the answer is unchanged. The only behavioural
+    /// difference is on a host where *no* rung of the ladder can produce an
+    /// adapter at all: the selection path reports its documented CPU-fallback
+    /// answer (`GpuType::Cpu`) where this function used to report `None` — the
+    /// same answer [`GpuManager`](super::manager::GpuManager) gives for the same
+    /// condition, and more honest than the caller-side `unwrap_or(GpuType::Integrated)`
+    /// that the `None` used to trigger.
     #[cfg(feature = "gpu-wgpu")]
     pub fn detect_primary() -> Option<Self> {
-        // Walk the same degradation ladder the renderer uses, so detection and
-        // rendering never disagree about which adapter is in play. Without this, a
-        // host that only offers GL would report "no GPU" here while the renderer
-        // happily ran on OpenGL ES.
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: crate::gpu::backend_ladder::instance_backends(),
-            flags: wgpu::InstanceFlags::default(),
-            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            backend_options: wgpu::BackendOptions::default(),
-            display: None,
-        });
-        let adapter =
-            match pollster::block_on(crate::gpu::backend_ladder::select_adapter_with_gl_fallback(
-                &instance,
-                wgpu::PowerPreference::HighPerformance,
-                None,
-            )) {
-                Some((adapter, _tier)) => adapter,
-                None => return None,
-            };
-        let info = adapter.get_info();
-        Some(GpuType::from(GpuDeviceType::from(info.device_type)))
+        let selector = AdapterSelector::with_strategy(AdapterSelectionStrategy::PreferPerformance);
+        pollster::block_on(selector.select_adapter_with_fallback(None))
+            .ok()
+            .map(|info| GpuType::from(info.device_type))
     }
 
     /// Detects the primary GPU type from system (no-wgpu fallback)
@@ -771,6 +775,34 @@ mod tests {
         assert_eq!(GpuType::Discrete.description(), "Discrete GPU");
         assert_eq!(GpuType::Integrated.description(), "Integrated GPU");
         assert_eq!(GpuType::Cpu.description(), "CPU Software Rendering");
+    }
+
+    /// G-230: detection must route through the shared selection path, not
+    /// build a private `wgpu::Instance` per call. Routing through
+    /// `select_adapter_with_fallback` is observable in the process-wide
+    /// selection cache (G-62): after one surface-independent detection the
+    /// memoised entry exists and carries detection's own key, and a second call
+    /// answers identically from it.
+    #[cfg(feature = "gpu-wgpu")]
+    #[test]
+    fn detect_primary_routes_through_the_selection_cache() {
+        let first = GpuType::detect_primary();
+        let cached = lock(selection_cache()).clone();
+        let cached = cached.expect("surface-independent detection must populate the cache");
+        assert_eq!(
+            cached.key.strategy,
+            AdapterSelectionStrategy::PreferPerformance,
+            "detection probes with the HighPerformance preference it always used"
+        );
+        assert!(cached.key.allow_fallback, "detection keeps the CPU fallback answer");
+        assert_eq!(
+            first,
+            cached.result.ok().map(|info| GpuType::from(info.device_type)),
+            "the answer must agree with the memoised probe"
+        );
+        // The second call reads the memoised result, so it must agree without
+        // constructing another `Instance`.
+        assert_eq!(GpuType::detect_primary(), first, "repeat detection is stable");
     }
 
     /// N-S-58: `Ord` must be a total order consistent with `Eq` — `cmp` returns

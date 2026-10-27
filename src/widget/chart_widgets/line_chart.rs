@@ -26,6 +26,7 @@ use crate::core::{Color, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_f32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -35,8 +36,9 @@ use crate::widget::chart_widgets::adapter::ChartContextAdapter;
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::charts::{
     compute_cartesian_layout_measured, draw_cartesian_axes, draw_legend_entries_iter, draw_x_ticks,
-    draw_y_ticks, CartesianLayout,
+    draw_x_ticks_configured, draw_y_ticks, draw_y_ticks_configured, CartesianLayout,
 };
+use crate::widget::chart_widgets::charts::{AxisConfig, AxisScale};
 use crate::widget::chart_widgets::{finite_samples, is_finite_sample};
 #[cfg(not(feature = "chart"))]
 use crate::widget::metrics::role_font;
@@ -77,12 +79,23 @@ pub struct LineSeries {
     /// plain ones. The chart-level [`LineChart::set_fill_area`] remains the default for series
     /// that do not state their own choice.
     pub fill: Option<bool>,
+    /// Whether the series is drawn and contributes to the resolved axis range.
+    ///
+    /// A legend click flips this flag; the default is `true`, so a series list that never
+    /// touches it renders exactly as before.
+    pub visible: bool,
 }
 
 impl LineSeries {
     /// Creates a named series from `points`.
     pub fn new(name: impl Into<String>, points: Vec<(f64, f64)>) -> Self {
-        Self { name: name.into(), points, color: None, fill: None }
+        Self { name: name.into(), points, color: None, fill: None, visible: true }
+    }
+
+    /// Creates a series whose initial visibility is stated explicitly.
+    pub fn with_visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
     }
 
     /// Sets the series colour, replacing the palette entry.
@@ -148,13 +161,32 @@ pub struct LineChart {
     flat_extents: std::cell::Cell<SeriesExtents>,
     /// Per-series point indices sorted by x, rebuilt with the extents (F-P12).
     sorted_x: std::cell::RefCell<Option<Vec<Vec<usize>>>>,
+    /// How each numeric axis maps values to the plot and chooses its ticks.
+    x_axis_config: AxisConfig,
+    y_axis_config: AxisConfig,
+    /// Whether data changes ease from the samples currently on screen.
+    animate: bool,
+    /// Progress of the running data transition, in `0.0..=1.0`.
+    transition: PropertyDriver,
+    /// The start samples of the running transition, one list per series.
+    from_series: Vec<Vec<(f64, f64)>>,
+    /// Reused scratch for interpolated samples while a transition is running.
+    animated_points: Vec<(f64, f64)>,
+    /// Key of the cached projection; `None` until the first paint.
+    projection_key: Option<ProjectionKey>,
+    /// Pixel-space points per series, rebuilt only when the key changes.
+    projection_series: Vec<Vec<Point>>,
+    /// Incremented on every projection rebuild; read by the cache test.
+    #[cfg(test)]
+    projection_builds: std::cell::Cell<u64>,
+    /// The legend column's clickable rows from the last paint.
+    last_legend_area: Option<LegendArea>,
+    /// Whether the hover read-out is delegated to an external tooltip host.
+    hover_readout_external: bool,
+    /// Bumped on every data or visibility change so the projection key cannot collide.
+    data_revision: u64,
     /// The pointer position where a press began, for the click-vs-pan threshold (CH-06).
     press_start: Option<Point>,
-    /// Reused vertex buffer for the current series' mapped points.
-    ///
-    /// `mapped_points` used to answer with a fresh `Vec` per series per frame; the draw path owns
-    /// one buffer and rewrites it instead.
-    mapped: Vec<Point>,
     /// The point under the press, reported on release when the gesture was a click (CH-06).
     pressed_point: Option<(usize, usize)>,
     /// Whether the current drag actually panned (CH-06).
@@ -186,6 +218,34 @@ pub struct LineChart {
     pub point_unhovered: Signal1<(usize, usize)>,
     /// Emitted with the `(series, point)` of a clicked point.
     pub point_clicked: Signal1<(usize, usize)>,
+    /// Emitted with `(series, visible)` after a legend click or [`Self::set_series_visible`].
+    pub series_toggled: Signal1<(usize, bool)>,
+}
+
+/// The key that makes the projection cache valid for exactly one view.
+#[derive(Clone, Copy, PartialEq)]
+struct ProjectionKey {
+    x_min_bits: u64,
+    x_max_bits: u64,
+    y_min_bits: u64,
+    y_max_bits: u64,
+    plot: Rect,
+    x_axis: AxisConfig,
+    y_axis: AxisConfig,
+    data_revision: u64,
+    /// Whether a transition is contributing interpolated samples.
+    animating: bool,
+    /// Bits of the transition progress, or zero when no transition is running.
+    animation_bits: u32,
+}
+
+/// The legend column's geometry and clickable row count.
+#[derive(Clone, Copy)]
+struct LegendArea {
+    x: i32,
+    y: i32,
+    row_height: i32,
+    rows: usize,
 }
 
 /// Cached width of the widest y-axis tick label.
@@ -238,9 +298,21 @@ impl LineChart {
             hovered: None,
             show_tooltip: false,
             zoom_enabled: false,
-            mapped: Vec::new(),
             flat_extents: std::cell::Cell::new(SeriesExtents::default()),
             sorted_x: std::cell::RefCell::new(None),
+            x_axis_config: AxisConfig::default(),
+            y_axis_config: AxisConfig::default(),
+            animate: true,
+            transition: PropertyDriver::at(1.0, MotionSlot::Normal),
+            from_series: Vec::new(),
+            animated_points: Vec::new(),
+            projection_key: None,
+            projection_series: Vec::new(),
+            #[cfg(test)]
+            projection_builds: std::cell::Cell::new(0),
+            last_legend_area: None,
+            hover_readout_external: false,
+            data_revision: 0,
             press_start: None,
             pressed_point: None,
             pan_actual: false,
@@ -257,6 +329,7 @@ impl LineChart {
             point_hovered: Signal1::new(),
             point_unhovered: Signal1::new(),
             point_clicked: Signal1::new(),
+            series_toggled: Signal1::new(),
         }
     }
 
@@ -267,7 +340,14 @@ impl LineChart {
     /// otherwise stretch the auto-range and squash every real point.
     pub fn set_data(&mut self, points: Vec<(f64, f64)>) {
         self.ensure_primary();
-        self.series[0].points = finite_samples(points);
+        let next = finite_samples(points);
+        let from = if self.animate && self.series[0].points.len() == next.len() {
+            Some(vec![self.displayed_points(0)])
+        } else {
+            None
+        };
+        self.series[0].points = next;
+        self.install_transition(from);
         self.invalidate_data_cache();
         self.revalidate_hover();
         self.base.request_redraw();
@@ -277,13 +357,22 @@ impl LineChart {
     ///
     /// Non-finite samples are dropped per series. An empty list clears the chart.
     pub fn set_series(&mut self, series: Vec<LineSeries>) {
-        self.series = series
+        let next: Vec<LineSeries> = series
             .into_iter()
             .map(|mut item| {
                 item.points = finite_samples(item.points);
                 item
             })
             .collect();
+        let same_shape = self.series.len() == next.len()
+            && self.series.iter().zip(&next).all(|(old, new)| old.points.len() == new.points.len());
+        let from = if self.animate && same_shape {
+            Some((0..self.series.len()).map(|index| self.displayed_points(index)).collect())
+        } else {
+            None
+        };
+        self.series = next;
+        self.install_transition(from);
         self.invalidate_data_cache();
         self.revalidate_hover();
         self.base.request_redraw();
@@ -294,8 +383,67 @@ impl LineChart {
         series.points = finite_samples(series.points);
         self.ensure_primary();
         self.series.push(series);
+        self.clear_transition();
         self.invalidate_data_cache();
         self.base.request_redraw();
+    }
+
+    /// The samples currently on screen for `series_index`, including any running transition.
+    fn displayed_points(&self, series_index: usize) -> Vec<(f64, f64)> {
+        let Some(series) = self.series.get(series_index) else {
+            return Vec::new();
+        };
+        let progress = self.animation_progress().map(f64::from);
+        series
+            .points
+            .iter()
+            .enumerate()
+            .map(|(point_index, target)| {
+                match progress.and_then(|progress| {
+                    self.from_series
+                        .get(series_index)
+                        .and_then(|points| points.get(point_index))
+                        .map(|from| (*from, progress))
+                }) {
+                    Some((from, progress)) => (
+                        from.0 + (target.0 - from.0) * progress,
+                        from.1 + (target.1 - from.1) * progress,
+                    ),
+                    None => *target,
+                }
+            })
+            .collect()
+    }
+
+    /// Starts a transition from `from`, or lands immediately when there is nothing to ease.
+    fn install_transition(&mut self, from: Option<Vec<Vec<(f64, f64)>>>) {
+        let from = match from {
+            Some(from) if !from.is_empty() => from,
+            _ => {
+                self.clear_transition();
+                return;
+            }
+        };
+        let unchanged = from.len() == self.series.len()
+            && from.iter().zip(&self.series).all(|(old, series)| *old == series.points);
+        if unchanged {
+            self.clear_transition();
+        } else {
+            self.from_series = from;
+            self.transition.jump_to(0.0);
+            self.transition.set_target(1.0);
+        }
+    }
+
+    /// Lands the running transition on its targets and drops the start samples.
+    fn clear_transition(&mut self) {
+        self.transition.jump_to(1.0);
+        self.from_series.clear();
+    }
+
+    /// The transition progress, or `None` when no transition is running.
+    fn animation_progress(&self) -> Option<f32> {
+        (!self.from_series.is_empty()).then(|| self.transition.value().clamp(0.0, 1.0))
     }
 
     /// Returns every series, primary first.
@@ -331,7 +479,7 @@ impl LineChart {
     /// Drops a hover index the current data no longer has a point for.
     fn revalidate_hover(&mut self) {
         let still_valid = self.hovered.is_some_and(|(series, index)| {
-            self.series.get(series).is_some_and(|item| index < item.points.len())
+            self.series.get(series).is_some_and(|item| item.visible && index < item.points.len())
         });
         if !still_valid {
             if let Some((series, index)) = self.hovered.take() {
@@ -678,7 +826,12 @@ impl LineChart {
             y_max: f64::NEG_INFINITY,
             valid: false,
         };
-        for point in self.series.iter().flat_map(|series| series.points.iter()) {
+        for point in self
+            .series
+            .iter()
+            .filter(|series| series.visible)
+            .flat_map(|series| series.points.iter())
+        {
             extents.x_min = extents.x_min.min(point.0);
             extents.x_max = extents.x_max.max(point.0);
             extents.y_min = extents.y_min.min(point.1);
@@ -699,6 +852,207 @@ impl LineChart {
     fn invalidate_data_cache(&mut self) {
         self.flat_extents.set(SeriesExtents::default());
         *self.sorted_x.borrow_mut() = None;
+        self.data_revision = self.data_revision.wrapping_add(1);
+        self.projection_key = None;
+    }
+
+    /// The axis presentation used for the x axis.
+    pub fn x_axis_config(&self) -> AxisConfig {
+        self.x_axis_config
+    }
+
+    /// The axis presentation used for the y axis.
+    pub fn y_axis_config(&self) -> AxisConfig {
+        self.y_axis_config
+    }
+
+    /// Replaces the x-axis presentation (scale, direction, tick step).
+    pub fn set_x_axis_config(&mut self, config: AxisConfig) {
+        if self.x_axis_config == config {
+            return;
+        }
+        self.x_axis_config = config;
+        self.projection_key = None;
+        self.base.request_redraw();
+    }
+
+    /// Replaces the y-axis presentation (scale, direction, tick step).
+    pub fn set_y_axis_config(&mut self, config: AxisConfig) {
+        if self.y_axis_config == config {
+            return;
+        }
+        self.y_axis_config = config;
+        self.projection_key = None;
+        self.base.request_redraw();
+    }
+
+    /// Sets the x-axis scale. [`AxisScale::Linear`] is the default.
+    pub fn set_x_scale(&mut self, scale: AxisScale) {
+        let mut config = self.x_axis_config;
+        config.scale = scale;
+        self.set_x_axis_config(config);
+    }
+
+    /// Sets the y-axis scale. [`AxisScale::Linear`] is the default.
+    pub fn set_y_scale(&mut self, scale: AxisScale) {
+        let mut config = self.y_axis_config;
+        config.scale = scale;
+        self.set_y_axis_config(config);
+    }
+
+    /// Reverses the x axis (maximum at the left) when `reversed` is set.
+    pub fn set_x_reversed(&mut self, reversed: bool) {
+        let mut config = self.x_axis_config;
+        config.reversed = reversed;
+        self.set_x_axis_config(config);
+    }
+
+    /// Reverses the y axis (minimum at the top) when `reversed` is set.
+    pub fn set_y_reversed(&mut self, reversed: bool) {
+        let mut config = self.y_axis_config;
+        config.reversed = reversed;
+        self.set_y_axis_config(config);
+    }
+
+    /// Enables 1-2-5 automatic tick steps when no manual step is set.
+    pub fn set_auto_tick_step(&mut self, auto: bool) {
+        let mut x = self.x_axis_config;
+        x.auto_step = auto;
+        let mut y = self.y_axis_config;
+        y.auto_step = auto;
+        self.set_x_axis_config(x);
+        self.set_y_axis_config(y);
+    }
+
+    /// Fixes the x-axis tick step, or restores the derived step with `None`.
+    pub fn set_x_tick_step(&mut self, step: Option<f64>) {
+        let mut config = self.x_axis_config;
+        config.step = step.filter(|value| value.is_finite() && *value > 0.0);
+        self.set_x_axis_config(config);
+    }
+
+    /// Fixes the y-axis tick step, or restores the derived step with `None`.
+    pub fn set_y_tick_step(&mut self, step: Option<f64>) {
+        let mut config = self.y_axis_config;
+        config.step = step.filter(|value| value.is_finite() && *value > 0.0);
+        self.set_y_axis_config(config);
+    }
+
+    /// Enables or disables easing of data changes. On by default.
+    pub fn set_animate(&mut self, animate: bool) {
+        if self.animate == animate {
+            return;
+        }
+        self.animate = animate;
+        if !animate {
+            self.clear_transition();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Whether data changes ease into place.
+    pub fn is_animated(&self) -> bool {
+        self.animate
+    }
+
+    /// Whether series `index` is drawn and contributes to the axis range.
+    pub fn is_series_visible(&self, index: usize) -> bool {
+        self.series.get(index).is_some_and(|series| series.visible)
+    }
+
+    /// Shows or hides series `index`, reporting the change through [`Self::series_toggled`].
+    ///
+    /// Returns `false` when `index` is out of bounds.
+    pub fn set_series_visible(&mut self, index: usize, visible: bool) -> bool {
+        let Some(series) = self.series.get_mut(index) else {
+            return false;
+        };
+        if series.visible == visible {
+            return true;
+        }
+        series.visible = visible;
+        self.invalidate_data_cache();
+        self.revalidate_hover();
+        self.series_toggled.emit((index, visible));
+        self.base.request_redraw();
+        true
+    }
+
+    /// Delegates the hover read-out to a host-owned tooltip when `external` is set.
+    ///
+    /// The inline bubble remains the default. A host that owns one
+    /// [`ChartTooltip`](crate::widget::companions::ChartTooltip) for several charts flips this
+    /// so there is a single presentation, and reads [`Self::hover_anchor`] to fill it.
+    pub fn set_hover_readout_external(&mut self, external: bool) {
+        if self.hover_readout_external == external {
+            return;
+        }
+        self.hover_readout_external = external;
+        self.base.request_redraw();
+    }
+
+    /// Whether the hover read-out is delegated to an external tooltip host.
+    pub fn hover_readout_external(&self) -> bool {
+        self.hover_readout_external
+    }
+
+    /// The hovered point's anchor and suggested tooltip content, for an external read-out.
+    ///
+    /// Returns `None` when nothing is hovered or the chart has not been painted yet.
+    pub fn hover_anchor(
+        &self,
+    ) -> Option<(Point, crate::compat::Vec<crate::widget::companions::TooltipLine>)> {
+        use crate::widget::companions::TooltipLine;
+        let (series_index, point_index) = self.hovered?;
+        let point = *self.series.get(series_index)?.points.get(point_index)?;
+        let plot = self.last_plot_area?;
+        let (x_min, x_max) = self.resolve_x_range();
+        let (y_min, y_max) = self.resolve_y_range();
+        let pixel = Self::map_to_pixel_axes(
+            point.0,
+            point.1,
+            self.x_axis_config,
+            self.y_axis_config,
+            x_min,
+            x_max,
+            y_min,
+            y_max,
+            plot,
+        );
+        let name = self
+            .series
+            .get(series_index)
+            .map(|series| series.name.as_str())
+            .filter(|name| !name.is_empty());
+        let text = match name {
+            Some(name) => format!("{name}  {:.2}, {:.2}", point.0, point.1),
+            None => format!("{:.2}, {:.2}", point.0, point.1),
+        };
+        Some((
+            pixel,
+            crate::compat::Vec::from([TooltipLine::colored(text, self.series_color(series_index))]),
+        ))
+    }
+
+    /// The series index of the legend row under `pos`, when the legend is shown.
+    fn legend_entry_at(&self, pos: Point) -> Option<usize> {
+        if !self.show_legend {
+            return None;
+        }
+        let area = self.last_legend_area?;
+        if pos.x < area.x || pos.y < area.y {
+            return None;
+        }
+        let row = ((pos.y - area.y) / area.row_height.max(1)) as usize;
+        if row >= area.rows {
+            return None;
+        }
+        self.series
+            .iter()
+            .enumerate()
+            .filter(|(_, series)| !series.name.is_empty())
+            .nth(row)
+            .map(|(index, _)| index)
     }
 
     /// Width of the widest y-axis tick label.
@@ -776,7 +1130,15 @@ impl LineChart {
             return None;
         }
         let to_data = |px: i32| -> f64 {
-            x_min + ((px - plot_area.x) as f64 / plot_area.width as f64) * span
+            let mut fraction = (px - plot_area.x) as f64 / plot_area.width as f64;
+            if self.x_axis_config.reversed {
+                fraction = 1.0 - fraction;
+            }
+            if self.x_axis_config.scale == AxisScale::Logarithmic && x_min > 0.0 {
+                x_min * 10f64.powf(fraction * (x_max / x_min).log10())
+            } else {
+                x_min + fraction * span
+            }
         };
         let left_bound = to_data(pos.x.saturating_sub(24));
         let right_bound = to_data(pos.x.saturating_add(24));
@@ -802,6 +1164,9 @@ impl LineChart {
         let sorted = cache.as_ref().expect("the x index was just built");
         let mut best: Option<(usize, usize, i64)> = None;
         for (series_index, series) in self.series.iter().enumerate() {
+            if !series.visible {
+                continue;
+            }
             let Some(order) = sorted.get(series_index) else { continue };
             let start = order.partition_point(|&index| series.points[index].0 < left_bound);
             for &index in &order[start..] {
@@ -809,8 +1174,17 @@ impl LineChart {
                 if point.0 > right_bound {
                     break;
                 }
-                let pixel =
-                    Self::map_to_pixel(point.0, point.1, x_min, x_max, y_min, y_max, plot_area);
+                let pixel = Self::map_to_pixel_axes(
+                    point.0,
+                    point.1,
+                    self.x_axis_config,
+                    self.y_axis_config,
+                    x_min,
+                    x_max,
+                    y_min,
+                    y_max,
+                    plot_area,
+                );
                 let distance =
                     i64::from((pixel.x - pos.x).abs()) + i64::from((pixel.y - pos.y).abs());
                 if distance <= 24 && best.is_none_or(|(_, _, near)| distance < near) {
@@ -821,7 +1195,29 @@ impl LineChart {
         best.map(|(series, index, _)| (series, index))
     }
 
+    /// Maps a data coordinate to a pixel position on screen using the given axis settings.
+    #[allow(clippy::too_many_arguments)]
+    fn map_to_pixel_axes(
+        x: f64,
+        y: f64,
+        x_axis: AxisConfig,
+        y_axis: AxisConfig,
+        x_min: f64,
+        x_max: f64,
+        y_min: f64,
+        y_max: f64,
+        plot_rect: Rect,
+    ) -> Point {
+        let fx = x_axis.fraction(x, x_min, x_max);
+        let fy = y_axis.fraction(y, y_min, y_max);
+        Point::new(
+            plot_rect.x + (plot_rect.width as f64 * fx) as i32,
+            plot_rect.y + (plot_rect.height as f64 * (1.0 - fy)) as i32,
+        )
+    }
+
     /// Maps a data coordinate to a pixel position on screen.
+    #[cfg(test)]
     fn map_to_pixel(
         x: f64,
         y: f64,
@@ -872,6 +1268,24 @@ impl Widget for LineChart {
         crate::core::Size::new(400, 300)
     }
 
+    /// Advances the data transition by `delta_ms`.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.animate || self.from_series.is_empty() {
+            return false;
+        }
+        let moving = self.transition.tick(delta_ms);
+        if !self.transition.is_moving() {
+            self.from_series.clear();
+            self.transition.jump_to(1.0);
+        }
+        moving
+    }
+
+    /// Whether the data transition still owes frames.
+    fn is_animating(&self) -> bool {
+        self.animate && !self.from_series.is_empty() && self.transition.is_moving()
+    }
+
     /// Resolves a published event name to the signal this chart actually emits.
     ///
     /// Each name carries the data index as a `UInt`, which is the payload kind the
@@ -902,6 +1316,14 @@ impl Widget for LineChart {
                     CapabilityValue::Tuple(crate::compat::Vec::from([
                         CapabilityValue::UInt(v.0 as u64),
                         CapabilityValue::UInt(v.1 as u64),
+                    ]))
+                }))
+            }
+            "series_toggled" => {
+                Some(EventSignalRef::mapped("series_toggled", &self.series_toggled, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::Bool(v.1),
                     ]))
                 }))
             }
@@ -984,12 +1406,48 @@ impl Draw for LineChart {
             // explicitly below to preserve this widget's denser grid.
             draw_cartesian_axes(&mut adapter, &layout);
             if self.show_labels {
-                draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, self.show_grid);
-                draw_x_ticks(&mut adapter, &layout, x_min, x_max, 4, false);
+                if self.y_axis_config.is_default() {
+                    draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, self.show_grid);
+                } else {
+                    draw_y_ticks_configured(
+                        &mut adapter,
+                        &layout,
+                        y_min,
+                        y_max,
+                        4,
+                        self.y_axis_config,
+                        self.show_grid,
+                    );
+                }
+                if self.x_axis_config.is_default() {
+                    draw_x_ticks(&mut adapter, &layout, x_min, x_max, 4, false);
+                } else {
+                    draw_x_ticks_configured(
+                        &mut adapter,
+                        &layout,
+                        x_min,
+                        x_max,
+                        4,
+                        self.x_axis_config,
+                        false,
+                    );
+                }
             } else if self.show_grid {
                 // No labels requested, but the grid is: drive it through the tick
                 // helpers with label-free positioning so the lines still appear.
-                draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, true);
+                if self.y_axis_config.is_default() {
+                    draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, true);
+                } else {
+                    draw_y_ticks_configured(
+                        &mut adapter,
+                        &layout,
+                        y_min,
+                        y_max,
+                        4,
+                        self.y_axis_config,
+                        true,
+                    );
+                }
             }
             if self.show_legend {
                 draw_legend_entries_iter(
@@ -999,8 +1457,27 @@ impl Draw for LineChart {
                         .iter()
                         .enumerate()
                         .filter(|(_, series)| !series.name.is_empty())
-                        .map(|(index, series)| (series.name.as_str(), self.series_color(index))),
+                        .map(|(index, series)| {
+                            let color = self.series_color(index);
+                            let color = if series.visible { color } else { color.with_alpha(70) };
+                            (series.name.as_str(), color)
+                        }),
                 );
+                // The engine thins its rows to those that fit and reserves the last one for
+                // its `+N more` summary. Recording the same budget here is what makes a click
+                // land on the row the user actually sees.
+                let row_height = 18i32;
+                let max_rows = ((layout.plot_h() / row_height as f32).floor() as usize).max(1);
+                let max_items = max_rows.saturating_sub(1).max(1);
+                let named = self.series.iter().filter(|series| !series.name.is_empty()).count();
+                self.last_legend_area = Some(LegendArea {
+                    x: layout.legend_x() as i32,
+                    y: layout.legend_y() as i32,
+                    row_height,
+                    rows: max_items.min(named),
+                });
+            } else {
+                self.last_legend_area = None;
             }
             plot_area
         };
@@ -1061,31 +1538,21 @@ impl Draw for LineChart {
         }
 
         // ── Data series ──
-        if self.series.iter().all(|series| series.points.len() < 2) {
+        if self.series.iter().all(|series| !series.visible || series.points.len() < 2) {
             return;
         }
 
+        // The pixel positions are a pure function of the data and the view, so they are
+        // cached per view and only rebuilt when either changes (CH-008).
+        self.ensure_projection(x_min, x_max, y_min, y_max, plot_area);
+
         for series_index in 0..self.series.len() {
-            let points = &self.series[series_index].points;
-            if points.len() < 2 {
+            if !self.series[series_index].visible || self.series[series_index].points.len() < 2 {
                 continue;
             }
             let series_color =
                 if is_enabled { self.series_color(series_index) } else { disabled_color };
-
-            // `map_to_pixel` is a pure function of the pair, so the line can be walked
-            // without materialising every point — the only allocation is the decimated
-            // copy a dense series needs, and that copy reuses this control's buffer.
-            Self::write_mapped_points(
-                points,
-                x_min,
-                x_max,
-                y_min,
-                y_max,
-                plot_area,
-                &mut self.mapped,
-            );
-            let mapped = &self.mapped;
+            let mapped = &self.projection_series[series_index];
 
             // ── Filled area under the line ──
             if self.series[series_index].fill.unwrap_or(self.fill_area) {
@@ -1130,12 +1597,21 @@ impl Draw for LineChart {
             if let Some(point) =
                 self.series.get(series_index).and_then(|series| series.points.get(index)).copied()
             {
-                let pixel =
-                    Self::map_to_pixel(point.0, point.1, x_min, x_max, y_min, y_max, plot_area);
+                let pixel = Self::map_to_pixel_axes(
+                    point.0,
+                    point.1,
+                    self.x_axis_config,
+                    self.y_axis_config,
+                    x_min,
+                    x_max,
+                    y_min,
+                    y_max,
+                    plot_area,
+                );
                 if is_enabled {
                     context.fill_circle(pixel, 3, self.series_color(series_index));
                 }
-                if self.show_tooltip && is_enabled {
+                if self.show_tooltip && !self.hover_readout_external && is_enabled {
                     self.draw_tooltip(context, pixel, point, series_index, plot_area);
                 }
             }
@@ -1160,6 +1636,7 @@ impl LineChart {
     ///
     /// The buffer is the caller's: the draw path reuses one `Vec` for every series and frame,
     /// where this used to answer with an owned `Vec` per series per frame.
+    #[cfg(test)]
     fn write_mapped_points(
         points: &[(f64, f64)],
         x_min: f64,
@@ -1177,6 +1654,126 @@ impl LineChart {
             return;
         }
 
+        let chunk = points.len().div_ceil(budget);
+        for group in points.chunks(chunk) {
+            let first = group[0];
+            let last = group[group.len() - 1];
+            let (mut lowest, mut highest) = (first, first);
+            for point in group {
+                if point.1 < lowest.1 {
+                    lowest = *point;
+                }
+                if point.1 > highest.1 {
+                    highest = *point;
+                }
+            }
+            let mut candidates = [first, lowest, highest, last];
+            candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+            out.extend(candidates.iter().map(|point| map(point.0, point.1)));
+        }
+    }
+
+    /// Rebuilds the cached pixel projection when the data, view or transition changed.
+    fn ensure_projection(
+        &mut self,
+        x_min: f64,
+        x_max: f64,
+        y_min: f64,
+        y_max: f64,
+        plot_area: Rect,
+    ) {
+        let progress = self.animation_progress();
+        let key = ProjectionKey {
+            x_min_bits: x_min.to_bits(),
+            x_max_bits: x_max.to_bits(),
+            y_min_bits: y_min.to_bits(),
+            y_max_bits: y_max.to_bits(),
+            plot: plot_area,
+            x_axis: self.x_axis_config,
+            y_axis: self.y_axis_config,
+            data_revision: self.data_revision,
+            animating: progress.is_some(),
+            animation_bits: progress.map(f32::to_bits).unwrap_or(0),
+        };
+        if self.projection_key == Some(key) {
+            return;
+        }
+        self.projection_key = Some(key);
+        self.projection_series.resize_with(self.series.len(), Vec::new);
+        for series_index in 0..self.series.len() {
+            let visible = self.series[series_index].visible;
+            let out = &mut self.projection_series[series_index];
+            out.clear();
+            if !visible {
+                continue;
+            }
+            if let Some(progress) = progress {
+                let progress = f64::from(progress);
+                self.animated_points.clear();
+                for (point_index, target) in self.series[series_index].points.iter().enumerate() {
+                    let from = self
+                        .from_series
+                        .get(series_index)
+                        .and_then(|points| points.get(point_index));
+                    self.animated_points.push(match from {
+                        Some(from) => (
+                            from.0 + (target.0 - from.0) * progress,
+                            from.1 + (target.1 - from.1) * progress,
+                        ),
+                        None => *target,
+                    });
+                }
+                Self::write_mapped_points_axes(
+                    &self.animated_points,
+                    self.x_axis_config,
+                    self.y_axis_config,
+                    x_min,
+                    x_max,
+                    y_min,
+                    y_max,
+                    plot_area,
+                    out,
+                );
+            } else {
+                Self::write_mapped_points_axes(
+                    &self.series[series_index].points,
+                    self.x_axis_config,
+                    self.y_axis_config,
+                    x_min,
+                    x_max,
+                    y_min,
+                    y_max,
+                    plot_area,
+                    out,
+                );
+            }
+        }
+        #[cfg(test)]
+        self.projection_builds.set(self.projection_builds.get().wrapping_add(1));
+    }
+
+    /// [`Self::write_mapped_points`] with explicit axis settings.
+    #[allow(clippy::too_many_arguments)]
+    fn write_mapped_points_axes(
+        points: &[(f64, f64)],
+        x_axis: AxisConfig,
+        y_axis: AxisConfig,
+        x_min: f64,
+        x_max: f64,
+        y_min: f64,
+        y_max: f64,
+        plot_area: Rect,
+        out: &mut Vec<Point>,
+    ) {
+        out.clear();
+        let map = |x: f64, y: f64| {
+            Self::map_to_pixel_axes(x, y, x_axis, y_axis, x_min, x_max, y_min, y_max, plot_area)
+        };
+        let budget = (plot_area.width as usize).saturating_mul(2).max(2);
+        if points.len() <= budget {
+            out.extend(points.iter().map(|point| map(point.0, point.1)));
+            return;
+        }
         let chunk = points.len().div_ceil(budget);
         for group in points.chunks(chunk) {
             let first = group[0];
@@ -1400,7 +1997,17 @@ impl EventHandler for LineChart {
                     let (x_min, x_max) = self.resolve_x_range();
                     let (y_min, y_max) = self.resolve_y_range();
                     (
-                        Self::map_to_pixel(point.0, point.1, x_min, x_max, y_min, y_max, plot_area),
+                        Self::map_to_pixel_axes(
+                            point.0,
+                            point.1,
+                            self.x_axis_config,
+                            self.y_axis_config,
+                            x_min,
+                            x_max,
+                            y_min,
+                            y_max,
+                            plot_area,
+                        ),
                         point,
                     )
                 });
@@ -1422,6 +2029,13 @@ impl EventHandler for LineChart {
                 }
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
+                // A legend row is a toggle, not a plot gesture: consume the press before
+                // the click/pan machinery can interpret it as a point interaction.
+                if let Some(index) = self.legend_entry_at(*pos) {
+                    let visible = self.is_series_visible(index);
+                    self.set_series_visible(index, !visible);
+                    return;
+                }
                 let hit = self.nearest_point(*pos, plot_area);
                 self.press_start = Some(*pos);
                 self.pressed_point = hit;
@@ -1894,6 +2508,117 @@ mod tests {
         assert!(
             crate::widget::svg::text_ink_boxes(&after).len() > runs_without_tooltip,
             "the tooltip adds a text run"
+        );
+    }
+
+    /// CH-001: clicking a legend row toggles the series and reports it.
+    #[test]
+    fn a_legend_click_toggles_the_series_it_names() {
+        use std::sync::{Arc, Mutex};
+        let mut lc = LineChart::new(Rect::new(0, 0, 500, 300));
+        lc.set_series(vec![
+            LineSeries::new("alpha", vec![(0.0, 1.0), (1.0, 2.0)]),
+            LineSeries::new("beta", vec![(0.0, 2.0), (1.0, 1.0)]),
+        ]);
+        lc.set_show_legend(true);
+        let _ = crate::widget::svg::render_to_svg(&mut lc);
+        let area = lc.last_legend_area.expect("the legend has a hit area");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        lc.series_toggled.connect(move |value| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*value);
+            }
+        });
+        lc.handle_event(&Event::mouse_press(area.x + 4, area.y + 4, 1));
+        assert!(!lc.is_series_visible(0), "the clicked series is hidden");
+        assert_eq!(*seen.lock().unwrap(), vec![(0, false)]);
+        // The same row toggles it back.
+        lc.handle_event(&Event::mouse_press(area.x + 4, area.y + 4, 1));
+        assert!(lc.is_series_visible(0));
+    }
+
+    /// CH-008: the projection is rebuilt only when the view or the data changes.
+    #[test]
+    fn the_projection_cache_follows_the_view_revision() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 320, 220));
+        lc.set_data(vec![(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)]);
+        let _ = crate::widget::svg::render_to_svg(&mut lc);
+        let after_first = lc.projection_builds.get();
+        let _ = crate::widget::svg::render_to_svg(&mut lc);
+        assert_eq!(
+            lc.projection_builds.get(),
+            after_first,
+            "an unchanged view reuses the cached projection"
+        );
+        lc.set_x_reversed(true);
+        let _ = crate::widget::svg::render_to_svg(&mut lc);
+        assert!(
+            lc.projection_builds.get() > after_first,
+            "a viewport revision invalidates the projection"
+        );
+    }
+
+    /// CH-005: line updates ease by default and can be made immediate.
+    #[test]
+    fn line_value_changes_ease_by_default_and_can_be_disabled() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 320, 220));
+        lc.set_data(vec![(0.0, 0.0), (1.0, 1.0)]);
+        lc.set_data(vec![(0.0, 10.0), (1.0, 10.0)]);
+        assert!(lc.is_animated());
+        assert!(lc.displayed_points(0)[0].1 < 10.0, "the new value starts behind the target");
+        assert!(lc.is_animating());
+        let mut frames = 0;
+        while lc.tick(16) && frames < 200 {
+            frames += 1;
+        }
+        assert!((lc.displayed_points(0)[0].1 - 10.0).abs() < 1e-6);
+        assert!(!lc.is_animating());
+
+        lc.set_animate(false);
+        lc.set_data(vec![(0.0, 20.0), (1.0, 20.0)]);
+        assert!((lc.displayed_points(0)[0].1 - 20.0).abs() < 1e-9);
+        assert!(!lc.is_animating());
+    }
+
+    /// CH-003/CH-004: logarithmic and reversed axes change the painted projection.
+    #[test]
+    fn logarithmic_and_reversed_axes_reach_the_projection() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 320, 220));
+        lc.set_data(vec![(1.0, 1.0), (2.0, 100.0)]);
+        let _ = crate::widget::svg::render_to_svg(&mut lc);
+        let linear_y = lc.projection_series[0][1].y;
+        lc.set_y_scale(AxisScale::Logarithmic);
+        let _ = crate::widget::svg::render_to_svg(&mut lc);
+        let log_y = lc.projection_series[0][1].y;
+        assert_ne!(linear_y, log_y, "the log axis maps the same datum differently");
+        lc.set_y_reversed(true);
+        let _ = crate::widget::svg::render_to_svg(&mut lc);
+        assert_ne!(lc.projection_series[0][1].y, log_y, "the reversed axis flips the mapping");
+    }
+
+    /// CH-010: an external read-out replaces the inline bubble and exposes its content.
+    #[test]
+    fn an_external_readout_owns_the_tooltip_presentation() {
+        let mut lc = LineChart::new(Rect::new(0, 0, 400, 300));
+        lc.set_series(vec![LineSeries::new("Revenue", vec![(0.0, 0.0), (10.0, 10.0)])]);
+        lc.set_show_tooltip(true);
+        lc.set_hover_readout_external(true);
+        let before = crate::widget::svg::render_to_svg(&mut lc);
+        let runs_without_tooltip = crate::widget::svg::text_ink_boxes(&before).len();
+        let plot = lc.last_plot_area.expect("plot area");
+        let (x_min, x_max) = lc.resolve_x_range();
+        let (y_min, y_max) = lc.resolve_y_range();
+        let pixel = LineChart::map_to_pixel(10.0, 10.0, x_min, x_max, y_min, y_max, plot);
+        lc.handle_event(&Event::MouseMove { pos: pixel });
+        let (anchor, content) = lc.hover_anchor().expect("the external host gets the read-out");
+        assert_eq!(anchor, pixel);
+        assert!(content[0].text.contains("Revenue"));
+        let after = crate::widget::svg::render_to_svg(&mut lc);
+        assert_eq!(
+            crate::widget::svg::text_ink_boxes(&after).len(),
+            runs_without_tooltip,
+            "the chart no longer paints its own tooltip"
         );
     }
 }

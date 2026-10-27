@@ -78,6 +78,10 @@ pub struct SplashScreen {
     /// *skipped* requires this to be enabled, and it is off by default because
     /// most splash screens are not skippable.
     skippable: bool,
+    /// The label drawn on the skip affordance (OV-010).
+    skip_text: String,
+    /// Whether a press on the skip affordance is waiting for a matching release (OV-001).
+    skip_armed: bool,
     /// How far the screen has faded out: `1.0` fully present, `0.0` gone.
     ///
     /// # Why the fade is opt-in and starts settled
@@ -119,6 +123,8 @@ impl SplashScreen {
             finish_pending: false,
             exit_when_finished: false,
             skippable: false,
+            skip_text: String::from("Skip"),
+            skip_armed: false,
             // At rest fully present: a splash screen is shown the moment it is mounted, so it must
             // not animate itself into existence.
             opacity: PropertyDriver::at(1.0, MotionSlot::Normal),
@@ -168,8 +174,10 @@ impl SplashScreen {
 
     /// Sets the progress fraction, clamped to `0.0..=1.0`.
     ///
-    /// A `NaN` is treated as indeterminate rather than clamping to an arbitrary
-    /// end: `NaN` cannot be ordered, so any clamp would be a silent invention.
+    /// A `NaN` falls back to `0.0` rather than clamping to an arbitrary end: `NaN` cannot be
+    /// ordered, so the documented answer is the start of the determinate range. `None` still
+    /// means indeterminate, which is the separate state a host uses when it has no progress to
+    /// report at all (OV-006).
     pub fn set_progress(&mut self, progress: Option<f32>) {
         let progress =
             progress.map(|value| if value.is_nan() { 0.0 } else { value.clamp(0.0, 1.0) });
@@ -225,6 +233,24 @@ impl SplashScreen {
             return;
         }
         self.skippable = skippable;
+        if !skippable {
+            self.skip_armed = false;
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the skip affordance's label (OV-010).
+    pub fn skip_text(&self) -> &str {
+        &self.skip_text
+    }
+
+    /// Sets the skip affordance's label (OV-010); the default is the historical `"Skip"`.
+    pub fn set_skip_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.skip_text == text {
+            return;
+        }
+        self.skip_text = text;
         self.base.request_redraw();
     }
 
@@ -546,7 +572,20 @@ impl EventHandler for SplashScreen {
 
         match event {
             Event::MousePress { pos, button: 1, .. } if self.is_over_skip(*pos) => {
-                self.skipped.emit(self.title.clone());
+                // Arm the press; the release is what commits (OV-001).
+                self.skip_armed = true;
+            }
+            Event::MouseRelease { pos, button: 1 } => {
+                if self.skip_armed {
+                    self.skip_armed = false;
+                    if self.is_over_skip(*pos) {
+                        self.skipped.emit(self.title.clone());
+                    }
+                }
+            }
+            Event::MouseLeave { .. } => {
+                self.skip_armed = false;
+                self.base.set_pressed(false);
             }
             // Escape skips only when the screen is skippable: a splash that cannot
             // be dismissed must not quietly disappear on a stray key press.
@@ -715,16 +754,16 @@ impl Draw for SplashScreen {
         if let Some(skip) = self.skip_rect() {
             context.draw_rect(skip, border);
             let skip_font = effective_font(style);
-            let label_height = crate::widget::base_widgets::measure_cache::measure_text(
-                context, "Skip", skip_font,
-            )
-            .height as i32;
+            let label = self.skip_text.as_str();
+            let label_height =
+                crate::widget::base_widgets::measure_cache::measure_text(context, label, skip_font)
+                    .height as i32;
             context.draw_text(
                 Point::new(
                     skip.x + skip.width as i32 / 2,
                     skip.y + (skip.height as i32 - label_height) / 2,
                 ),
-                "Skip",
+                label,
                 skip_font,
                 muted_ink,
                 HorizontalAlignment::Center,
@@ -885,10 +924,49 @@ mod tests {
             button: 1,
             modifiers: 0,
         });
+        assert!(seen.lock().expect("lock").is_empty(), "a press alone must not commit");
+        splash.handle_event(&Event::MouseRelease {
+            pos: Point::new(skip.x + skip.width as i32 / 2, skip.y + skip.height as i32 / 2),
+            button: 1,
+        });
         assert_eq!(seen.lock().expect("lock").as_slice(), ["Booting"]);
 
         splash.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
+        splash.handle_event(&Event::MouseRelease { pos: Point::new(5, 5), button: 1 });
         assert_eq!(seen.lock().expect("lock").len(), 1, "a click away from Skip is ignored");
+    }
+
+    /// A press on Skip that is released elsewhere is cancelled (OV-001).
+    #[test]
+    fn a_skip_press_released_outside_does_not_emit() {
+        let mut splash = screen(400, 300);
+        splash.set_skippable(true);
+        let skip = splash.skip_rect().expect("skippable screens reserve the area");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        splash.skipped.connect(move |title| {
+            sink.lock().expect("signal sink poisoned").push(title.as_ref().clone());
+        });
+
+        splash.handle_event(&Event::MousePress {
+            pos: Point::new(skip.x + 2, skip.y + 2),
+            button: 1,
+            modifiers: 0,
+        });
+        splash.handle_event(&Event::MouseRelease { pos: Point::new(5, 5), button: 1 });
+        assert!(
+            seen.lock().expect("lock").is_empty(),
+            "a release away from the affordance cancels the skip"
+        );
+    }
+
+    /// The skip label is a settable property whose default is the historical string (OV-010).
+    #[test]
+    fn the_skip_label_is_settable() {
+        let mut splash = screen(400, 300);
+        assert_eq!(splash.skip_text(), "Skip");
+        splash.set_skip_text("Continue");
+        assert_eq!(splash.skip_text(), "Continue");
     }
 
     #[test]

@@ -134,6 +134,11 @@ pub struct ScrollArea {
     content_tree_children: usize,
     /// The total size of the content (for AsNeeded scroll bar calculation).
     content_size: Size,
+    /// Whether `content_size` is still derived from the mounted children (C-015).
+    ///
+    /// A caller that writes [`ScrollArea::set_content_size`] takes ownership of the extent; until
+    /// then, mounting content derives it from the children's `size_hint`s.
+    content_size_derived: bool,
     /// Optional shared registry for child widget forwarding.
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
     /// Current scroll position (x, y) in content coordinates.
@@ -331,6 +336,7 @@ impl ScrollArea {
             content_descendants: Vec::new(),
             content_tree_children: 0,
             content_size: Size::new(0, 0),
+            content_size_derived: true,
             registry: None,
             scroll_position: (0, 0),
             content_margins: crate::style::EdgeOffsets::default(),
@@ -837,6 +843,9 @@ impl ScrollArea {
                 }
             }
         }
+        // C-015: the mounted tree is where the content extent comes from, so a refresh is also
+        // the point at which an unset size follows the children's hints.
+        self.derive_content_size_from_children();
     }
 
     /// Marks the band at the top of `group_top..group_bottom` as sticky.
@@ -1078,7 +1087,11 @@ impl ScrollArea {
     }
 
     /// Sets the total content size (used for AsNeeded scroll bar calculation).
+    ///
+    /// An explicit size stops the child-derived sizing from overwriting it (C-015); a caller that
+    /// wants the derivation back can call [`Self::fit_content_to_children`].
     pub fn set_content_size(&mut self, size: Size) {
+        self.content_size_derived = false;
         self.content_size = size;
         // The extent decides both bar visibility and the bars' ranges, so the chrome is re-derived
         // before the (possibly unchanged) offset is clamped again.
@@ -1092,6 +1105,66 @@ impl ScrollArea {
     /// Returns the total content size.
     pub fn content_size(&self) -> Size {
         self.content_size
+    }
+
+    /// The extent the mounted content asks for, aggregated from the children's `size_hint`s
+    /// (C-015).
+    ///
+    /// The content root's hint is the answer when there is one. Without a root, the directly
+    /// mounted rows contribute their maximum width and their summed height, which is the shape a
+    /// vertical stack of rows has. An id the runtime cannot measure contributes nothing.
+    pub fn content_size_from_children(&self) -> Size {
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(root) = self.widget {
+                return crate::widget::runtime::with_widget(root, |widget| widget.size_hint())
+                    .unwrap_or_else(|| Size::new(0, 0));
+            }
+            let mut width = 0u32;
+            let mut height = 0u32;
+            for child in self.base.children() {
+                if Some(*child) == self.corner_widget {
+                    continue;
+                }
+                let Some(hint) =
+                    crate::widget::runtime::with_widget(*child, |widget| widget.size_hint())
+                else {
+                    continue;
+                };
+                width = width.max(hint.width);
+                height = height.saturating_add(hint.height);
+            }
+            Size::new(width, height)
+        }
+        #[cfg(alloc_frugal)]
+        {
+            Size::new(0, 0)
+        }
+    }
+
+    /// Re-derives the content size from the mounted children (C-015).
+    ///
+    /// Returns the size that was applied. The derivation is also performed automatically when
+    /// the content tree is refreshed and the caller has not written an explicit size.
+    pub fn fit_content_to_children(&mut self) -> Size {
+        self.content_size_derived = true;
+        self.derive_content_size_from_children();
+        self.content_size
+    }
+
+    /// Applies the child-derived size when the caller has not written one.
+    fn derive_content_size_from_children(&mut self) {
+        if !self.content_size_derived {
+            return;
+        }
+        let size = self.content_size_from_children();
+        if size == self.content_size {
+            return;
+        }
+        self.content_size = size;
+        self.update_scroll_bars();
+        self.set_scroll_position(self.scroll_position.0, self.scroll_position.1);
+        self.place_content();
     }
     /// Ensures rectangle is visible.
     pub fn ensure_visible(&mut self, rect: Rect) {
@@ -1116,19 +1189,15 @@ impl ScrollArea {
     }
     /// Ensures widget is visible.
     ///
-    /// The content root retains its historical behaviour (centre it). Any other mounted
-    /// descendant is read through its absolute geometry, mapped into content coordinates and
-    /// handed to [`Self::ensure_visible`]. Returns `false` when the id is not a mounted
+    /// The control is read through its absolute geometry, mapped into content coordinates and
+    /// handed to [`Self::ensure_visible`], so the content root and every other mounted descendant
+    /// use the same minimal-scroll rule (C-014). Returns `false` when the id is not a mounted
     /// descendant or its geometry is unavailable.
     pub fn ensure_widget_visible(&mut self, widget_id: ObjectId) -> bool {
-        // If the widget is the child widget, center the content viewport by
-        // changing scroll_position rather than mutating viewport geometry.
-        if Some(widget_id) == self.widget {
-            let max_x = (self.content_size.width.saturating_sub(self.viewport.width)) as i32;
-            let max_y = (self.content_size.height.saturating_sub(self.viewport.height)) as i32;
-            self.set_scroll_position(max_x / 2, max_y / 2);
-            return true;
-        }
+        // C-014: both visibility entries share one rule — the minimal scroll that makes the
+        // rectangle visible. The content root used to be centred here while every other
+        // descendant used the minimal rule, so the same input produced two different offsets
+        // depending on which id the caller happened to hold.
         #[cfg(not(alloc_frugal))]
         {
             let Some((x, y, width, height)) = crate::widget_geometry(widget_id) else {
@@ -1520,6 +1589,10 @@ fn content_frame(
         Alignment::Top => (viewport.x + slack_x / 2, viewport.y),
         Alignment::Bottom => (viewport.x + slack_x / 2, viewport.y + slack_y),
         Alignment::Center => (viewport.x + slack_x / 2, viewport.y + slack_y / 2),
+        // LAY-004: `Baseline` aligns baselines inside a row container and has no edge
+        // meaning for a content frame, so it degrades to the start corner — the same
+        // start reading a column applies to `Baseline`.
+        Alignment::Baseline => (viewport.x, viewport.y),
     };
     Rect::new(x, y, width, height)
 }
@@ -2135,7 +2208,32 @@ mod tests {
         let viewport = sa.viewport();
         sa.ensure_widget_visible(77);
         assert_eq!(sa.viewport(), viewport);
-        assert_eq!(sa.scroll_position(), (200, 200));
+        assert_eq!(
+            sa.scroll_position(),
+            (400, 400),
+            "the content root uses the same minimal-scroll rule as any other descendant (C-014)"
+        );
+    }
+
+    /// C-015: an unset content extent follows the mounted child's size hint.
+    #[test]
+    fn the_content_size_follows_the_mounted_child_hint() {
+        use crate::widget::base_widgets::label::Label;
+
+        let label = Label::new("content".to_string(), Rect::new(0, 0, 240, 120));
+        let expected = label.size_hint();
+        let id =
+            crate::widget::runtime::register(Box::new(label)).expect("the test control mounts");
+        let mut sa = ScrollArea::new(Rect::new(0, 0, 100, 100));
+        sa.set_widget(Some(id));
+        assert_eq!(sa.content_size(), expected, "the hint is consumed, not guessed");
+
+        // An explicit size wins until the caller asks for the derivation again.
+        sa.set_content_size(Size::new(500, 500));
+        sa.refresh_content_tree();
+        assert_eq!(sa.content_size(), Size::new(500, 500));
+        assert_eq!(sa.fit_content_to_children(), expected);
+        let _ = crate::widget::runtime::unregister(id);
     }
 
     /// The bar's thickness, the corner and the track's shortening are one number.

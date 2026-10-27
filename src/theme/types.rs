@@ -469,7 +469,11 @@ impl WidgetRole {
 
 /// Semantic color palette tokens.
 #[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
-#[derive(Debug, Clone)]
+// `PartialEq` is the content identity the crossfade tick compares against (G-402): a
+// tick whose blend re-quantises to the same 8-bit palette must not invalidate the
+// revision-validated caches, so the tick needs to answer "did the palette move?".
+// Every field is a four-`u8` `Color`, so the comparison is a flat byte compare.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Colors {
     /// Default background color.
     pub background: Color,

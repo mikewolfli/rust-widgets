@@ -100,14 +100,50 @@ struct TooltipWrapCache {
     width: u32,
 }
 
-/// Cached advances of the rich-text runs.
+/// One styled run on a laid-out tooltip line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RichRun {
+    text: String,
+    color: Option<Color>,
+    bold: bool,
+}
+
+/// The rich runs laid out into lines, with the widest line's advance.
+struct RichLines {
+    /// One entry per painted line; a line is one or more runs left to right.
+    lines: Vec<Vec<RichRun>>,
+    /// The widest line's advance, which is the card's content width.
+    width: u32,
+    /// Whether this is the historical single line (wrapping off).
+    single_line: bool,
+}
+
+/// Cached rich layout keyed by the runs, the resolved font and the wrap surface.
 ///
-/// A rich tooltip measured every span twice per frame — once for the bubble width and once
-/// while painting — and repeated both on every frame that changed no text. The advances are a
-/// function of the runs and the resolved font, so they are derived once per revision (G-P10).
-struct TooltipSpanCache {
+/// A rich tooltip measured every run twice per frame — once for the card width and once while
+/// painting — and repeated both on every frame that changed no text. The layout is a function
+/// of the runs and the resolved font, so it is derived once per revision (G-P10).
+struct RichLinesCache {
     key: u64,
-    widths: Rc<Vec<u32>>,
+    lines: Rc<RichLines>,
+}
+
+/// Appends `text` to `line`, merging with the previous run when the style is identical.
+///
+/// Merging is not cosmetic: the word breaker emits a space run and a word run separately, and
+/// keeping them apart would double the paint calls for a single span. Two runs with the same
+/// colour and weight are one run by definition.
+fn push_rich_run(line: &mut Vec<RichRun>, text: &str, color: Option<Color>, bold: bool) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(last) = line.last_mut() {
+        if last.color == color && last.bold == bold {
+            last.text.push_str(text);
+            return;
+        }
+    }
+    line.push(RichRun { text: text.to_string(), color, bold });
 }
 
 /// Tooltip widget — a popup label attached to a target widget.
@@ -156,8 +192,8 @@ pub struct Tooltip {
     hide_pending: bool,
     /// Wrapped label cache keyed by text, font identity and available width (M-11).
     wrap_cache: RefCell<Option<TooltipWrapCache>>,
-    /// Rich-run advance cache keyed by the runs and the resolved font (G-P10).
-    span_cache: RefCell<Option<TooltipSpanCache>>,
+    /// Rich-run layout cache keyed by the runs, the resolved font and the wrap surface (G-P10).
+    rich_cache: RefCell<Option<RichLinesCache>>,
 }
 
 impl Tooltip {
@@ -189,7 +225,7 @@ impl Tooltip {
             show_pending: false,
             hide_pending: false,
             wrap_cache: RefCell::new(None),
-            span_cache: RefCell::new(None),
+            rich_cache: RefCell::new(None),
         }
     }
 
@@ -217,9 +253,12 @@ impl Tooltip {
 
     /// Installs rich-text runs, replacing the plain label while they are present.
     ///
-    /// An empty vector restores the plain label. The runs are painted on one line in
-    /// order; a run whose `color` is unset uses the bubble's resolved ink, and a bold run
-    /// uses the bubble font's bold face.
+    /// An empty vector restores the plain label. A run whose `color` is unset uses the bubble's
+    /// resolved ink, and a bold run uses the bubble font's bold face. Wrapping and rich runs are
+    /// **orthogonal** (DLG-010): with [`Tooltip::set_wrap`] off the runs are painted on one line
+    /// in order, exactly as before; with it on the runs break at spaces and explicit newlines
+    /// through the same line-breaking surface the plain label uses, and each run keeps its own
+    /// colour and weight on every line.
     pub fn set_spans(&mut self, spans: Vec<TooltipSpan>) {
         if self.spans == spans {
             return;
@@ -569,38 +608,110 @@ impl Tooltip {
         lines
     }
 
-    /// The advance of every rich run, served from a keyed cache.
+    /// The rich runs laid out into lines, served from a keyed cache.
     ///
-    /// The width of one run is a function of its text, its bold flag and the resolved font, so
-    /// the vector is rebuilt only when one of those facts changes (G-P10).
-    fn span_widths(&self, context: &RenderContext, font: &Font) -> Rc<Vec<u32>> {
+    /// # Why the runs break lines rather than living on one row (DLG-010)
+    ///
+    /// The two properties used to exclude each other: setting runs painted one line and ignored
+    /// `wrap`, and enabling `wrap` with runs set dropped the runs. Rich text is a *style* per
+    /// fragment, not a layout mode, so the layout is the same one the plain label takes: split
+    /// at explicit newlines, break at spaces when the next word would pass the available width,
+    /// and keep every run's colour and weight across every line it lands on.
+    ///
+    /// The layout is cached against the runs, the resolved font and the wrap surface, so a still
+    /// frame measures nothing.
+    fn rich_lines(&self, context: &RenderContext, font: &Font) -> Rc<RichLines> {
+        let control_width = self.geometry().width.saturating_sub(dimensions::TOOLTIP_PADDING_H * 2);
+        let available =
+            if self.wrap { self.max_width.min(control_width).max(1) } else { control_width.max(1) };
         let mut hasher = DefaultHasher::new();
         font.family().hash(&mut hasher);
         font.size().to_bits().hash(&mut hasher);
         font.weight().hash(&mut hasher);
         font.is_bold().hash(&mut hasher);
         font.is_italic().hash(&mut hasher);
+        self.wrap.hash(&mut hasher);
+        available.hash(&mut hasher);
         for span in &self.spans {
             span.text.hash(&mut hasher);
+            span.color.hash(&mut hasher);
             span.bold.hash(&mut hasher);
         }
         let key = hasher.finish();
-        if let Some(cache) = self.span_cache.borrow().as_ref() {
+        if let Some(cache) = self.rich_cache.borrow().as_ref() {
             if cache.key == key {
-                return Rc::clone(&cache.widths);
+                return Rc::clone(&cache.lines);
             }
         }
-        let widths: Vec<u32> = self
-            .spans
+        let lines = if self.wrap {
+            self.wrap_rich_runs(context, font, available)
+        } else {
+            let runs: Vec<RichRun> = self
+                .spans
+                .iter()
+                .filter(|span| !span.text.is_empty())
+                .map(|span| RichRun { text: span.text.clone(), color: span.color, bold: span.bold })
+                .collect();
+            // One line, preserving the inner spaces of each run exactly as the single-line path
+            // always did.
+            let width = runs
+                .iter()
+                .map(|run| context.measure_text(&run.text, &font.with_bold(run.bold)).width)
+                .fold(0u32, u32::saturating_add);
+            RichLines {
+                lines: if runs.is_empty() { Vec::new() } else { vec![runs] },
+                width,
+                single_line: true,
+            }
+        };
+        let lines = Rc::new(lines);
+        *self.rich_cache.borrow_mut() = Some(RichLinesCache { key, lines: Rc::clone(&lines) });
+        lines
+    }
+
+    /// Breaks the rich runs at explicit newlines and at spaces that would overflow `available`.
+    fn wrap_rich_runs(&self, context: &RenderContext, font: &Font, available: u32) -> RichLines {
+        let space = context.measure_text(" ", font).width.max(1);
+        let mut lines: Vec<Vec<RichRun>> = Vec::new();
+        let mut current: Vec<RichRun> = Vec::new();
+        let mut current_width: u32 = 0;
+
+        for span in &self.spans {
+            let span_font = font.with_bold(span.bold);
+            for (paragraph_index, paragraph) in span.text.split('\n').enumerate() {
+                if paragraph_index > 0 {
+                    // An explicit newline ends the line even when it is empty.
+                    lines.push(core::mem::take(&mut current));
+                    current_width = 0;
+                }
+                for word in paragraph.split(' ').filter(|word| !word.is_empty()) {
+                    let word_width = context.measure_text(word, &span_font).width;
+                    let gap = if current_width == 0 { 0 } else { space };
+                    if current_width > 0 && current_width + gap + word_width > available {
+                        lines.push(core::mem::take(&mut current));
+                        current_width = 0;
+                    }
+                    if current_width > 0 {
+                        push_rich_run(&mut current, " ", span.color, span.bold);
+                        current_width = current_width.saturating_add(space);
+                    }
+                    push_rich_run(&mut current, word, span.color, span.bold);
+                    current_width = current_width.saturating_add(word_width);
+                }
+            }
+        }
+        lines.push(current);
+
+        let width = lines
             .iter()
-            .map(|span| {
-                let span_font = font.with_bold(span.bold);
-                context.measure_text(&span.text, &span_font).width
+            .map(|line| {
+                line.iter()
+                    .map(|run| context.measure_text(&run.text, &font.with_bold(run.bold)).width)
+                    .fold(0u32, u32::saturating_add)
             })
-            .collect();
-        let widths = Rc::new(widths);
-        *self.span_cache.borrow_mut() = Some(TooltipSpanCache { key, widths: Rc::clone(&widths) });
-        widths
+            .max()
+            .unwrap_or(0);
+        RichLines { lines, width, single_line: false }
     }
 
     /// The bubble rectangle for a bubble of `size`.
@@ -895,24 +1006,25 @@ impl Draw for Tooltip {
         //
         // The plain label is wrapped into lines only when the caller enabled wrapping;
         // without it the vector holds exactly the one label the control has always drawn, so
-        // the single-line path below is byte-identical to the pre-wrap one. A rich-text run
-        // set is painted on one line in order and ignores wrapping.
+        // the single-line path below is byte-identical to the pre-wrap one. Rich runs take the
+        // same layout surface (DLG-010): with wrapping off they are one row, exactly as before;
+        // with it on they break at spaces and newlines with their styles intact.
+        let rich = if self.spans.is_empty() { None } else { Some(self.rich_lines(context, &font)) };
         let label = if self.text.is_empty() { "Tooltip" } else { self.text.as_str() };
-        let lines = if self.spans.is_empty() {
-            self.wrapped_lines(context, label, &font)
-        } else {
-            Rc::new(Vec::new())
+        let lines = match &rich {
+            Some(_) => Rc::new(Vec::new()),
+            None => self.wrapped_lines(context, label, &font),
         };
 
-        // Measured content width: the widest wrapped line, or every rich run's advance in a
-        // row. Either way the bubble is capped by `max_width` and by the control itself.
-        let text_width = if self.spans.is_empty() {
-            // The wrap cache measured every line when it built them; a still frame reads the
-            // widest one instead of measuring the whole label again (M-11).
-            self.wrap_cache.borrow().as_ref().map(|cache| cache.width).unwrap_or(0)
-        } else {
-            let widths = self.span_widths(context, &font);
-            widths.iter().fold(0u32, |total, width| total.saturating_add(*width))
+        // Measured content width: the widest wrapped line, or the widest rich line. Either way
+        // the bubble is capped by `max_width` and by the control itself.
+        let text_width = match &rich {
+            Some(rich) => rich.width,
+            None => {
+                // The wrap cache measured every line when it built them; a still frame reads the
+                // widest one instead of measuring the whole label again (M-11).
+                self.wrap_cache.borrow().as_ref().map(|cache| cache.width).unwrap_or(0)
+            }
         };
 
         // ── The bubble actually painted ──
@@ -931,12 +1043,18 @@ impl Draw for Tooltip {
         let total_width = (content_width + dimensions::TOOLTIP_PADDING_H * 2).min(rect.width);
         let single_line = self.spans.is_empty() && !self.wrap;
         let measured_line_height = context.measure_text("M", &font).height.max(1);
-        let bubble_height = if single_line || !self.spans.is_empty() {
-            dimensions::TOOLTIP_HEIGHT
-        } else {
-            measured_line_height
+        // A wrapped rich set grows one line at a time, exactly like a wrapped plain label; the
+        // unwrapped rich set keeps the single-line frame it has always painted.
+        let rich_lines =
+            rich.as_ref().filter(|rich| !rich.single_line).map(|rich| rich.lines.len());
+        let bubble_height = match rich_lines {
+            Some(count) => measured_line_height
+                .saturating_mul(count.max(1) as u32)
+                .saturating_add(dimensions::TOOLTIP_PADDING_V * 2),
+            None if single_line || !self.spans.is_empty() => dimensions::TOOLTIP_HEIGHT,
+            None => measured_line_height
                 .saturating_mul(lines.len().max(1) as u32)
-                .saturating_add(dimensions::TOOLTIP_PADDING_V * 2)
+                .saturating_add(dimensions::TOOLTIP_PADDING_V * 2),
         };
         let bubble = self.bubble_rect(rect, Size::new(total_width.max(1), bubble_height));
         // The corner is the vertical padding, so the radius scales with the bubble's own
@@ -959,33 +1077,42 @@ impl Draw for Tooltip {
         // shifted nor elided by those 3 px. This was the single-line body, and the plain
         // unwrapped case still takes exactly this path once, so its frame is unchanged.
         let fit_inset = crate::render::TEXT_FIT_MARGIN as i32;
-        if !self.spans.is_empty() {
-            // Rich runs, left to right on the bubble's one line. Each run is fitted to what
-            // is left of the bubble, so a long run elides rather than painting outside it.
-            let mut x = bubble.x + dimensions::TOOLTIP_PADDING_H as i32;
+        if let Some(rich) = &rich {
+            // Rich runs, left to right on each line. Each run is fitted to what is left of the
+            // bubble, so a long run elides rather than painting outside it.
+            let left = bubble.x + dimensions::TOOLTIP_PADDING_H as i32;
             let right = bubble.x + bubble.width as i32 - dimensions::TOOLTIP_PADDING_H as i32;
-            let widths = self.span_widths(context, &font);
-            for (index, span) in self.spans.iter().enumerate() {
-                if x >= right {
-                    break;
+            for (line_index, runs) in rich.lines.iter().enumerate() {
+                let line_y = if rich.single_line {
+                    context.text_line(bubble, &font).y
+                } else {
+                    bubble.y
+                        + dimensions::TOOLTIP_PADDING_V as i32
+                        + line_index as i32 * measured_line_height as i32
+                };
+                let mut x = left;
+                for run in runs {
+                    if x >= right {
+                        break;
+                    }
+                    let run_font = font.with_bold(run.bold);
+                    let advance = context.measure_text(&run.text, &run_font).width as i32;
+                    let remaining = (right - x).max(1) as u32;
+                    let band = Rect::new(
+                        x - fit_inset,
+                        line_y,
+                        remaining.saturating_add((2 * fit_inset) as u32),
+                        measured_line_height,
+                    );
+                    context.draw_text_fitted_cow(
+                        band,
+                        &run.text,
+                        &run_font,
+                        run.color.unwrap_or(text_color),
+                        HorizontalAlignment::Left,
+                    );
+                    x += advance;
                 }
-                let span_font = font.with_bold(span.bold);
-                let advance = widths.get(index).copied().unwrap_or(0) as i32;
-                let remaining = (right - x).max(1) as u32;
-                let band = Rect::new(
-                    x - fit_inset,
-                    context.text_line(bubble, &span_font).y,
-                    remaining.saturating_add((2 * fit_inset) as u32),
-                    measured_line_height,
-                );
-                context.draw_text_fitted_cow(
-                    band,
-                    &span.text,
-                    &span_font,
-                    span.color.unwrap_or(text_color),
-                    HorizontalAlignment::Left,
-                );
-                x += advance;
             }
         } else {
             let text_x = bubble.x + dimensions::TOOLTIP_PADDING_H as i32;
@@ -1462,6 +1589,52 @@ mod tests {
         rich.clear_spans();
         assert!(rich.spans().is_empty());
         assert_eq!(plain_svg, render_to_svg(&mut rich), "clearing restores the plain label");
+    }
+
+    /// Rich runs and wrapping are orthogonal (DLG-010).
+    ///
+    /// # The defect this pins
+    ///
+    /// Setting runs painted them on one line and ignored `wrap`; enabling `wrap` with runs set
+    /// dropped the runs. The assertions pin both halves: the runs still paint in their own
+    /// colours once wrapping is on, and the bubble actually grows the line count.
+    #[test]
+    fn rich_runs_and_wrapping_are_orthogonal() {
+        let _guard = crate::style::theme_test_guard();
+        let long = "alpha beta gamma delta epsilon zeta theta iota";
+        let mut rich = Tooltip::new("", Rect::new(0, 0, 200, 120));
+        rich.set_spans(vec![
+            TooltipSpan::new("alpha beta gamma ").with_color(Color::rgb(255, 0, 0)),
+            TooltipSpan::new("delta epsilon zeta theta iota")
+                .with_color(Color::rgb(0, 0, 255))
+                .with_bold(true),
+        ]);
+        rich.set_text(long);
+        rich.show();
+
+        let (_, single_height) = bubble_box(&render_to_svg(&mut rich));
+        assert_eq!(single_height, dimensions::TOOLTIP_HEIGHT as i32, "no wrap keeps one row");
+        let single_hint = rich.preferred_size().height;
+
+        rich.set_wrap(true);
+        let svg = render_to_svg(&mut rich);
+        let (_, wrapped_height) = bubble_box(&svg);
+        assert!(
+            wrapped_height > single_height,
+            "wrapping must apply to rich runs too: single={single_height} wrapped={wrapped_height}"
+        );
+        assert!(
+            svg.contains("rgba(255,0,0,1.00)"),
+            "the first run keeps its colour across the break: {svg}"
+        );
+        assert!(
+            svg.contains("rgba(0,0,255,1.00)"),
+            "the second run keeps its colour across the break: {svg}"
+        );
+        assert!(
+            rich.preferred_size().height > single_hint,
+            "the size hint reports the extra lines as well"
+        );
     }
 
     /// An anchor places the bubble next to the thing it describes.

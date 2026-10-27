@@ -261,20 +261,38 @@ impl ImePreedit {
         &self.segments
     }
 
-    /// The caret's rectangle in the window, for anchoring a candidate window.
+    /// The caret's top-left point in the window — the single fact the anchor is derived from.
     ///
-    /// The x is the offset measured by the most recent paint, or a font-size estimate before the
-    /// first paint. The y and height are the control's own text band, so a platform that places
-    /// its candidate list below the caret gets a sensible anchor even mid-composition.
-    pub fn caret_rect(&self) -> Rect {
+    /// The position is recomputed from the **current** geometry on every call, so a window move is
+    /// reflected immediately. The x offset comes from the memoised paint measurement when one
+    /// exists; before the first paint it is measured context-free with
+    /// [`crate::widget::metrics::estimate_text_width`] instead of reporting an unrelated `0` (I-030).
+    pub fn caret_screen_position(&self) -> Point {
         let rect = self.geometry();
-        Rect::new(rect.x + self.caret_offset, rect.y, 1, rect.height)
+        let offset = match self.composition_metrics.try_borrow() {
+            Ok(cache) if cache.is_some() => {
+                cache.as_ref().map(|metrics| metrics.caret_offset).unwrap_or(self.caret_offset)
+            }
+            _ if self.text.is_empty() => 0,
+            _ => crate::widget::metrics::estimate_text_width(
+                &self.text[..self.caret_byte()],
+                &self.font,
+                1.0,
+            ) as i32,
+        };
+        let x = (rect.x + offset).min(rect.x + rect.width as i32 - 1);
+        // The painted caret is inset two pixels from the control's top and bottom.
+        Point::new(x, rect.y + 2)
     }
 
-    /// The caret's top-left point in the window.
-    pub fn caret_screen_position(&self) -> Point {
-        let caret = self.caret_rect();
-        Point::new(caret.x, caret.y)
+    /// The caret's rectangle in the window, for anchoring a candidate window.
+    ///
+    /// Derived from [`Self::caret_screen_position`], so the rectangle and the point cannot
+    /// describe two different places (I-030).
+    pub fn caret_rect(&self) -> Rect {
+        let position = self.caret_screen_position();
+        let height = self.geometry().height.saturating_sub(4).max(1);
+        Rect::new(position.x, position.y, 1, height)
     }
 
     /// Returns the current preedit text.
@@ -775,7 +793,8 @@ mod tests {
         let mut preedit = ImePreedit::new(Rect::new(10, 20, 200, 30));
         preedit.set_text("hello");
         let at_end = preedit.caret_screen_position();
-        assert_eq!(at_end.x, 10, "before the first paint the offset is the text origin");
+        assert!(at_end.x > 10, "before the first paint the offset is the measured prefix");
+        assert!(at_end.x < 210, "and it stays inside the control");
 
         preedit.set_cursor_position(0);
         let _ = crate::widget::svg::render_to_svg(&mut preedit);
@@ -806,5 +825,20 @@ mod tests {
         preedit.set_enabled(false);
         preedit.handle_event(&Event::KeyPress { key: 8, modifiers: 0 }); // backspace
         assert_eq!(preedit.text(), "AC", "a disabled control must not accept backspace either");
+    }
+
+    /// The anchor is derived from the current geometry, so a moved window moves the caret (I-030).
+    #[test]
+    fn the_anchor_follows_the_geometry() {
+        let mut preedit = ImePreedit::new(Rect::new(10, 20, 200, 30));
+        preedit.set_text("ab");
+        let first = preedit.caret_screen_position();
+        assert_eq!(first.y, 22, "the painted caret is inset two pixels");
+        preedit.set_font(crate::core::Font::simple("monospace", 16.0));
+        preedit.set_geometry(Rect::new(50, 60, 200, 30));
+        let moved = preedit.caret_screen_position();
+        assert_eq!(moved.y, 62, "the anchor tracks the control's new top edge");
+        assert!(moved.x >= 50, "and stays inside the moved control");
+        assert_eq!(preedit.caret_rect().x, moved.x);
     }
 }

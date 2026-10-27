@@ -29,6 +29,13 @@ const DEFAULT_MENU_WIDTH: u32 = 180;
 const ITEM_HEIGHT: i32 = 28;
 /// Padding inside the button and menu.
 const PADDING: i32 = 8;
+/// How many rows the menu panel shows before it scrolls.
+///
+/// The cap keeps a long menu on screen instead of letting the panel grow past
+/// the surface. It is read through the shared menu effect policy, so a host that
+/// configures a different visible-item count moves this panel with the rest of
+/// the menu family (M-013).
+const MAX_VISIBLE_ITEMS: usize = 8;
 
 /// The record form of a `MenuButton`'s `items` property: one row per **top-level** item.
 ///
@@ -195,8 +202,22 @@ impl MenuItem {
 /// Shared by this control, its child panels and `ToolButton`, so every surface that hangs a
 /// menu below a button derives the same extent instead of repeating the literals.
 pub(crate) fn menu_panel_rect(anchor: Rect, item_count: usize) -> Rect {
+    menu_panel_rect_with_capacity(anchor, item_count, usize::MAX)
+}
+
+/// [`menu_panel_rect`] with an explicit visible-row cap.
+///
+/// A panel taller than the cap gets the cap's height; the caller paints and
+/// hit-tests the matching slice of rows, which is how a long `MenuButton` menu
+/// becomes scrollable rather than off-screen (M-013).
+pub(crate) fn menu_panel_rect_with_capacity(
+    anchor: Rect,
+    item_count: usize,
+    capacity: usize,
+) -> Rect {
     let menu_width = anchor.width.max(DEFAULT_MENU_WIDTH);
-    let menu_height = (item_count as u32 * ITEM_HEIGHT as u32).max(1);
+    let visible = item_count.min(capacity.max(1));
+    let menu_height = (visible as u32 * ITEM_HEIGHT as u32).max(1);
     Rect::new(anchor.x, anchor.y + anchor.height as i32, menu_width, menu_height)
 }
 
@@ -251,6 +272,39 @@ pub(crate) fn draw_menu_panel_with_branches(
     accent: Color,
     branches_open: bool,
 ) {
+    draw_menu_panel_range(
+        context,
+        panel,
+        items,
+        0,
+        items.len(),
+        icon_sources,
+        style,
+        accent,
+        branches_open,
+        None,
+    );
+}
+
+/// Paints the `first..end` slice of a menu panel's rows.
+///
+/// A scrolled panel passes a window instead of the whole list; the row boxes are
+/// derived from the panel and the window's first index, so the pointer hit test
+/// and the painter read the same positions (M-013).
+pub(crate) fn draw_menu_panel_range(
+    context: &mut RenderContext,
+    panel: Rect,
+    items: &[MenuItem],
+    first: usize,
+    end: usize,
+    icon_sources: &[(u64, IconSource)],
+    style: &crate::style::WidgetStyle,
+    accent: Color,
+    branches_open: bool,
+    highlight: Option<usize>,
+) {
+    let end = end.min(items.len());
+    let first = first.min(end);
     // The popup panel is chrome: a popup that stayed white in a dark theme would be the
     // brightest object on screen. It reads the resolved surface, and the literal it used to be
     // stays as the fallback.
@@ -275,8 +329,8 @@ pub(crate) fn draw_menu_panel_with_branches(
 
     // One resolved font for every row: it used to be rebuilt per item.
     let item_font = effective_font(style);
-    for (i, item) in items.iter().enumerate() {
-        let item_rect = menu_item_rect(panel, i);
+    for (offset, item) in items[first..end].iter().enumerate() {
+        let item_rect = menu_item_rect(panel, offset);
 
         // A separator owns no label and no highlight; it is the only row kind that draws a
         // full-width divider (M-06).
@@ -292,8 +346,8 @@ pub(crate) fn draw_menu_panel_with_branches(
             continue;
         }
 
-        // Highlight on checked rows
-        if item.checked {
+        // Highlight on checked rows, and on the row a popup reports as hovered.
+        if item.checked || highlight == Some(offset) {
             context.fill_rounded_rect(item_rect, 2, item_highlight);
         }
 
@@ -468,6 +522,11 @@ pub struct MenuButton {
     submenus: Vec<SubmenuPanel>,
     /// The top-level row the pointer last addressed, so Right can open its submenu.
     active_index: Option<usize>,
+    /// The first top-level row the capped panel paints.
+    ///
+    /// Zero until the wheel or keyboard moves it; with a list shorter than the cap
+    /// it stays zero and every row is painted exactly where it was before (M-013).
+    scroll_offset: usize,
     /// How the button's face and arrow divide the press.
     popup_mode: MenuButtonPopup,
     /// Which direction the disclosure arrow points.
@@ -505,6 +564,7 @@ impl MenuButton {
             reveal: PopupReveal::new(false),
             submenus: Vec::new(),
             active_index: None,
+            scroll_offset: 0,
             popup_mode: MenuButtonPopup::InstantPopup,
             arrow_type: MenuArrowType::Down,
             popup_delay_ms: 300,
@@ -572,6 +632,7 @@ impl MenuButton {
     pub fn add_item(&mut self, item: MenuItem) {
         self.item_icon_sources.retain(|(id, _)| *id != item.id);
         self.menu_items.push(item);
+        self.clamp_scroll();
         self.base.request_redraw();
     }
 
@@ -616,6 +677,7 @@ impl MenuButton {
             // Every open panel holds a snapshot of the removed row's subtree, so none of
             // them can be trusted to describe the menu that is still there.
             self.close_all_submenus();
+            self.clamp_scroll();
             self.base.request_redraw();
         }
         removed
@@ -625,6 +687,7 @@ impl MenuButton {
     pub fn clear_items(&mut self) {
         self.menu_items.clear();
         self.item_icon_sources.clear();
+        self.scroll_offset = 0;
         self.close_all_submenus();
         self.base.request_redraw();
     }
@@ -649,6 +712,11 @@ impl MenuButton {
     /// Returns whether the dropdown menu is currently open.
     pub fn is_menu_open(&self) -> bool {
         self.menu_open
+    }
+
+    /// The first top-level row the capped panel paints.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
     }
 
     /// Whether a branch's child panel is currently showing.
@@ -741,6 +809,8 @@ impl MenuButton {
         self.about_to_show.emit();
         self.menu_open = true;
         self.reveal.set_open(true);
+        self.scroll_offset = 0;
+        self.clamp_scroll();
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::set_popup_grab(self.id());
         self.base.request_redraw();
@@ -789,6 +859,23 @@ impl MenuButton {
         self.base.request_redraw();
     }
 
+    /// The configured visible-row cap, read through the shared menu effect policy.
+    fn max_visible_items(&self) -> usize {
+        super::effects::current().visible_items_or(MAX_VISIBLE_ITEMS as u32).max(1) as usize
+    }
+
+    /// Keeps the scroll window inside the list after a mutation or a cap change.
+    fn clamp_scroll(&mut self) {
+        let max_offset = self.menu_items.len().saturating_sub(self.max_visible_items());
+        self.scroll_offset = self.scroll_offset.min(max_offset);
+    }
+
+    /// The rows the capped panel currently paints: `(first, end)`.
+    fn visible_range(&self) -> core::ops::Range<usize> {
+        let first = self.scroll_offset.min(self.menu_items.len());
+        first..first.saturating_add(self.max_visible_items()).min(self.menu_items.len())
+    }
+
     /// The rows shown at `level`: the menu's own list at level 0, a panel's rows below it.
     fn items_at(&self, level: usize) -> Option<&[MenuItem]> {
         if level == 0 {
@@ -811,7 +898,15 @@ impl MenuButton {
     fn row_rect_at(&self, level: usize, index: usize) -> Option<Rect> {
         let panel = self.panel_rect_at(level)?;
         let len = self.items_at(level)?.len();
-        (index < len).then(|| menu_item_rect(panel, index))
+        if index >= len {
+            return None;
+        }
+        if level == 0 {
+            let visible = self.visible_range();
+            return (visible.contains(&index))
+                .then(|| menu_item_rect(panel, index - visible.start));
+        }
+        Some(menu_item_rect(panel, index))
     }
 
     /// Opens the child panel of the row at `index` in `level` to the right of that level.
@@ -880,6 +975,29 @@ impl MenuButton {
             }
             return;
         }
+        // A leaf's check mark is its own state, so choosing it flips it. Before this,
+        // `checked` only changed the icon and the click left the flag alone, which made
+        // every checkable menu button a dead toggle (M-014). Both the master tree and
+        // any open copy are updated, so a reopened panel shows the new state.
+        fn toggle_in(items: &mut [MenuItem], id: u64) -> bool {
+            for item in items {
+                if item.id == id {
+                    item.checked = !item.checked;
+                    return true;
+                }
+                if let Some(children) = item.submenu.as_mut() {
+                    if toggle_in(children, id) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        toggle_in(&mut self.menu_items, id);
+        for panel in &mut self.submenus {
+            toggle_in(&mut panel.items, id);
+        }
+        self.base.request_redraw();
         self.item_triggered.emit(id);
         if let Some(action_id) = action_id {
             self.action_triggered.emit(action_id);
@@ -926,12 +1044,16 @@ impl MenuButton {
 
     /// Computes the menu rectangle positioned below the button.
     fn menu_rect(&self) -> Rect {
-        menu_panel_rect(self.geometry(), self.menu_items.len())
+        menu_panel_rect_with_capacity(
+            self.geometry(),
+            self.menu_items.len(),
+            self.max_visible_items(),
+        )
     }
 
     /// Computes the rectangle for a specific menu item at the given index.
     fn item_rect(&self, index: usize) -> Rect {
-        menu_item_rect(self.menu_rect(), index)
+        menu_item_rect(self.menu_rect(), index.saturating_sub(self.scroll_offset))
     }
 
     /// Finds the index of the menu item at the given position, if any.
@@ -943,10 +1065,11 @@ impl MenuButton {
         if !menu.contains_point(pos) {
             return None;
         }
-        for (i, item) in self.menu_items.iter().enumerate() {
-            let ir = self.item_rect(i);
+        for index in self.visible_range() {
+            let item = self.menu_items.get(index)?;
+            let ir = self.item_rect(index);
             if ir.contains_point(pos) && item.enabled && !item.separator {
-                return Some(i);
+                return Some(index);
             }
         }
         None
@@ -1181,6 +1304,10 @@ impl Draw for MenuButton {
             background.blend(&ink, 0.08)
         } else if self.menu_open {
             background.blend(&accent, 0.25)
+        } else if self.base.is_hovered() {
+            // Hover is the same state face the rest of the crate reads from `BaseWidget`;
+            // a menu button that never showed it looked inert under the pointer (M-014).
+            background.blend(&accent, 0.12)
         } else {
             background
         };
@@ -1295,13 +1422,17 @@ impl Draw for MenuButton {
             if clipped {
                 context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
             }
-            draw_menu_panel(
+            draw_menu_panel_range(
                 context,
                 menu,
                 &self.menu_items,
+                self.visible_range().start,
+                self.visible_range().end,
                 &self.item_icon_sources,
                 style,
                 accent,
+                true,
+                None,
             );
             if clipped {
                 context.pop_clip();
@@ -1384,6 +1515,18 @@ impl EventHandler for MenuButton {
                 // press that the user let go is not an activation.
                 self.press_elapsed = None;
             }
+            Event::Wheel { delta, .. } if self.menu_open => {
+                let capacity = self.max_visible_items();
+                if self.menu_items.len() > capacity {
+                    let max_offset = self.menu_items.len() - capacity;
+                    if delta.y > 0 {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                    } else if delta.y < 0 {
+                        self.scroll_offset = (self.scroll_offset + 1).min(max_offset);
+                    }
+                    self.base.request_redraw();
+                }
+            }
             Event::KeyPress { key, modifiers: _ } => match *key {
                 key_codes::ESCAPE if !self.submenus.is_empty() => self.close_submenu(),
                 key_codes::ESCAPE if self.menu_open => self.close_menu(),
@@ -1399,11 +1542,18 @@ impl EventHandler for MenuButton {
                 key_codes::SPACE | key_codes::ENTER => self.toggle_menu(),
                 _ => { /* Other keys are not relevant */ }
             },
+            Event::MouseEnter { .. } => {
+                self.base.handle_event(event);
+                // The face's hover colour is read from the base flag, so entering must
+                // damage the control for the change to be visible (M-014).
+                self.base.request_redraw();
+            }
             Event::MouseLeave { .. } => {
                 // A pointer that left the button during a delayed press is no longer
                 // asking for the popup.
                 self.press_elapsed = None;
                 self.base.handle_event(event);
+                self.base.request_redraw();
             }
             _ => {
                 self.base.handle_event(event);
@@ -1501,6 +1651,46 @@ mod tests {
 
         mb.toggle_menu();
         assert!(!mb.is_menu_open());
+    }
+
+    /// M-013: a long panel is capped to the shared visible-row policy and scrolls.
+    #[test]
+    fn a_long_menu_panel_is_capped_and_scrolls() {
+        let mut mb = MenuButton::new("File", Rect::new(0, 0, 120, 30));
+        for index in 0..20 {
+            mb.add_item(MenuItem::new(index as u64, &format!("Item {index}")));
+        }
+        mb.open_menu();
+
+        let panel = mb.menu_rect();
+        assert_eq!(
+            panel.height,
+            MAX_VISIBLE_ITEMS as u32 * ITEM_HEIGHT as u32,
+            "the panel is capped instead of growing with the list"
+        );
+        mb.handle_event(&Event::Wheel { delta: Point::new(0, -1), modifiers: 0 });
+        assert_eq!(mb.scroll_offset(), 1, "the wheel walks the hidden rows");
+        mb.handle_event(&Event::Wheel { delta: Point::new(0, 1), modifiers: 0 });
+        assert_eq!(mb.scroll_offset(), 0);
+    }
+
+    /// M-014: the face paints hover and a checked leaf click flips its state.
+    #[test]
+    fn the_face_shows_hover_and_checked_rows_toggle() {
+        let mut mb = MenuButton::new("Pin", Rect::new(0, 0, 120, 30));
+        let resting = render_to_svg(&mut mb);
+        mb.base.set_hovered(true);
+        let hovered = render_to_svg(&mut mb);
+        assert_ne!(resting, hovered, "the hover state must reach the painter");
+        mb.base.set_hovered(false);
+
+        mb.add_item(MenuItem::new(7, "Pin"));
+        assert!(!mb.items()[0].checked);
+        mb.open_menu();
+        let row = mb.item_rect(0);
+        mb.handle_event(&Event::mouse_press(row.x + 4, row.y + 4, 1));
+        assert!(mb.items()[0].checked, "choosing a checked row flips it");
+        assert!(!mb.is_menu_open(), "and the popup closes");
     }
 
     #[test]

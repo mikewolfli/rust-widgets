@@ -234,6 +234,128 @@ impl TabView {
         let _ = reg.borrow_mut().forward_event(widget_id, event);
     }
 
+    /// Whether a content swipe may begin at `pos`: only the leading and trailing edges are
+    /// gesture bands, so a horizontal drag that starts mid-content belongs to that content.
+    fn swipe_starts_at_edge(&self, pos: Point) -> bool {
+        let content = self.content_rect();
+        if !content.contains_point(pos) {
+            return false;
+        }
+        let band = TAB_VIEW_SWIPE_EDGE_BAND.min(content.width as i32 / 2);
+        pos.x < content.x + band || pos.x >= content.right() - band
+    }
+
+    /// The shared press path for a mouse press and a touch begin.
+    fn begin_pointer_press(&mut self, pos: Point, event: &Event) {
+        // The band comes from the control's own derivation, so the region that accepts a press
+        // is by construction the region the renderer drew.
+        if !self.tabs.is_empty() {
+            let strip = self.tab_bar_rect();
+            if pos.y >= strip.y && pos.y < strip.y + strip.height as i32 {
+                // The boxes are the painted boxes, including the strip's scroll offset.
+                let clicked = self.visible_tab_run(strip).iter().position(|box_rect| {
+                    let left = box_rect.x;
+                    let right = left + box_rect.width as i32;
+                    pos.x >= left && pos.x < right
+                });
+                if let Some(index) = clicked {
+                    // A press inside a tab's close affordance arms the close and does not
+                    // reorder or select that tab.
+                    let close_hit = self
+                        .visible_tab_run(strip)
+                        .get(index)
+                        .copied()
+                        .and_then(|tab| self.close_box(tab))
+                        .is_some_and(|close| close.contains_point(pos));
+                    if close_hit {
+                        self.pending_close = Some(index);
+                        return;
+                    }
+                    if self.movable {
+                        self.drag = Some((pos.x as f32, index));
+                        self.drag_preview = Some(index);
+                    }
+                    self.set_current_index(index);
+                    return;
+                }
+            }
+            // The press was outside the strip, so it belongs to the content area. Only the
+            // edge bands arm the swipe; a mid-content press is forwarded and nothing more.
+            if self.swipe_starts_at_edge(pos) {
+                self.swipe = Some((pos.x as f32, pos.y as f32));
+            }
+        }
+        self.forward_to_content(event);
+    }
+
+    /// The shared move path for a mouse move and a touch move.
+    fn move_pointer(&mut self, pos: Point, event: &Event) {
+        self.forward_to_content(event);
+        // While a tab is dragged, the strip paints an insertion marker at the slot the pointer
+        // names. The preview is cleared on release, so a settled frame is byte-identical to the
+        // pre-drag one.
+        if self.drag.is_some() {
+            let preview = self.drag_insertion_at(pos);
+            if preview != self.drag_preview {
+                self.drag_preview = preview;
+                self.base.request_redraw();
+            }
+        }
+    }
+
+    /// The shared release path for a mouse release and a touch end.
+    fn end_pointer_release(&mut self, pos: Point, event: &Event) {
+        if let Some(index) = self.pending_close.take() {
+            let strip = self.tab_bar_rect();
+            let still_hit = self
+                .visible_tab_run(strip)
+                .get(index)
+                .copied()
+                .and_then(|tab| self.close_box(tab))
+                .is_some_and(|close| close.contains_point(pos));
+            if still_hit {
+                self.tab_close_requested.emit(index);
+            }
+            return;
+        }
+        if let Some((origin, index)) = self.drag.take() {
+            self.drag_preview = None;
+            let strip = self.tab_bar_rect();
+            let target = self.visible_tab_run(strip).iter().position(|box_rect| {
+                pos.x >= box_rect.x
+                    && pos.x < box_rect.x + box_rect.width as i32
+                    && pos.y >= box_rect.y
+                    && pos.y < box_rect.y + box_rect.height as i32
+            });
+            let dragged = (pos.x as f32 - origin).abs() > 4.0;
+            if dragged {
+                if let Some(target) = target {
+                    if target != index {
+                        self.move_tab(index, target);
+                    }
+                }
+                return;
+            }
+        }
+        if let Some((origin_x, origin_y)) = self.swipe.take() {
+            let dx = pos.x as f32 - origin_x;
+            let dy = pos.y as f32 - origin_y;
+            let content = self.content_rect();
+            let horizontal = dx.abs() > (content.width as f32 / 4.0) && dy.abs() < 40.0;
+            if horizontal {
+                if dx < 0.0 {
+                    if self.selected_index + 1 < self.tabs.len() {
+                        self.set_current_index(self.selected_index + 1);
+                    }
+                } else if self.selected_index > 0 {
+                    self.set_current_index(self.selected_index - 1);
+                }
+                return;
+            }
+        }
+        self.forward_to_content(event);
+    }
+
     /// Returns the number of tabs.
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
@@ -765,6 +887,11 @@ pub(crate) const TAB_MIN_WIDTH: i32 = 40;
 pub(crate) const TAB_MAX_WIDTH: i32 = 200;
 /// Gap between adjacent tabs.
 pub(crate) const TAB_SPACING: i32 = 2;
+/// Width of the content edge band that arms a page swipe, in pixels.
+///
+/// A horizontal drag that starts in the middle of the content belongs to that content; only the
+/// two edge strips are navigation affordances (N-003).
+const TAB_VIEW_SWIPE_EDGE_BAND: i32 = 32;
 /// Square side of the leading icon slot a tab reserves when its icon resolves to a glyph.
 const TAB_VIEW_ICON_SIDE: u32 = 14;
 /// Gap between that icon slot and the caption.
@@ -1171,111 +1298,28 @@ impl EventHandler for TabView {
         }
         match event {
             Event::MousePress { pos, button, .. } => {
-                if *button != 1 || self.tabs.is_empty() {
+                if *button == 1 {
+                    self.begin_pointer_press(*pos, event);
+                } else {
                     self.forward_to_content(event);
-                    return;
-                }
-                // The band comes from the control's own derivation, so the region that accepts
-                // a press is by construction the region the renderer drew.
-                let strip = self.tab_bar_rect();
-                if pos.y >= strip.y && pos.y < strip.y + strip.height as i32 {
-                    // The boxes are the painted boxes, including the strip's scroll offset.
-                    let clicked = self.visible_tab_run(strip).iter().position(|box_rect| {
-                        let left = box_rect.x;
-                        let right = left + box_rect.width as i32;
-                        pos.x >= left && pos.x < right
-                    });
-                    if let Some(index) = clicked {
-                        // A press inside a tab's close affordance arms the close and does not
-                        // reorder or select that tab.
-                        let close_hit = self
-                            .visible_tab_run(strip)
-                            .get(index)
-                            .copied()
-                            .and_then(|tab| self.close_box(tab))
-                            .is_some_and(|close| close.contains_point(*pos));
-                        if close_hit {
-                            self.pending_close = Some(index);
-                            return;
-                        }
-                        if self.movable {
-                            self.drag = Some((pos.x as f32, index));
-                            self.drag_preview = Some(index);
-                        }
-                        self.set_current_index(index);
-                        return;
-                    }
-                }
-                // The press was outside the strip, so it belongs to the content area.
-                self.swipe = Some((pos.x as f32, pos.y as f32));
-                self.forward_to_content(event);
-            }
-            Event::MouseMove { pos } => {
-                self.forward_to_content(event);
-                // While a tab is dragged, the strip paints an insertion marker at the slot the
-                // pointer names. The preview is cleared on release, so a settled frame is
-                // byte-identical to the pre-drag one.
-                if self.drag.is_some() {
-                    let preview = self.drag_insertion_at(*pos);
-                    if preview != self.drag_preview {
-                        self.drag_preview = preview;
-                        self.base.request_redraw();
-                    }
                 }
             }
+            Event::MouseMove { pos } => self.move_pointer(*pos, event),
             Event::MouseRelease { pos, button } => {
                 if *button == 1 {
-                    if let Some(index) = self.pending_close.take() {
-                        let strip = self.tab_bar_rect();
-                        let still_hit = self
-                            .visible_tab_run(strip)
-                            .get(index)
-                            .copied()
-                            .and_then(|tab| self.close_box(tab))
-                            .is_some_and(|close| close.contains_point(*pos));
-                        if still_hit {
-                            self.tab_close_requested.emit(index);
-                        }
-                        return;
-                    }
-                    if let Some((origin, index)) = self.drag.take() {
-                        self.drag_preview = None;
-                        let strip = self.tab_bar_rect();
-                        let target = self.visible_tab_run(strip).iter().position(|box_rect| {
-                            pos.x >= box_rect.x
-                                && pos.x < box_rect.x + box_rect.width as i32
-                                && pos.y >= box_rect.y
-                                && pos.y < box_rect.y + box_rect.height as i32
-                        });
-                        let dragged = (pos.x as f32 - origin).abs() > 4.0;
-                        if dragged {
-                            if let Some(target) = target {
-                                if target != index {
-                                    self.move_tab(index, target);
-                                }
-                            }
-                            return;
-                        }
-                    }
-                    if let Some((origin_x, origin_y)) = self.swipe.take() {
-                        let dx = pos.x as f32 - origin_x;
-                        let dy = pos.y as f32 - origin_y;
-                        let content = self.content_rect();
-                        let horizontal = dx.abs() > (content.width as f32 / 4.0) && dy.abs() < 40.0;
-                        if horizontal {
-                            if dx < 0.0 {
-                                if self.selected_index + 1 < self.tabs.len() {
-                                    self.set_current_index(self.selected_index + 1);
-                                }
-                            } else if self.selected_index > 0 {
-                                self.set_current_index(self.selected_index - 1);
-                            }
-                            return;
-                        }
-                    }
+                    self.end_pointer_release(*pos, event);
+                } else {
+                    self.forward_to_content(event);
                 }
-                self.forward_to_content(event);
             }
+            // A swipe is the same gesture whether it arrives as a mouse drag or a touch drag
+            // (tablet/mobile parity). Both paths share the same edge gate and helpers.
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => self.begin_pointer_press(*pos, event),
+            #[cfg(feature = "touch")]
+            Event::TouchMove { pos, .. } => self.move_pointer(*pos, event),
+            #[cfg(feature = "touch")]
+            Event::TouchEnd { pos, .. } => self.end_pointer_release(*pos, event),
             Event::Wheel { delta, .. } => {
                 // A vertical wheel is the common case, so it falls back to `delta.y` rather than
                 // being ignored just because a mouse has no horizontal axis.
@@ -1885,5 +1929,35 @@ mod tests {
         assert!(after > before, "the badge reserves its own width: {before} then {after}");
         assert!(tv.set_tab_badge(0, None));
         assert_eq!(tv.tab_badge(0), None);
+    }
+
+    /// A touch drag from the content edge changes the tab, the same as a mouse drag.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn a_touch_swipe_from_the_content_edge_changes_tab() {
+        let mut tv = make_tab_view();
+        tv.add_tab("A", None, None::<&str>);
+        tv.add_tab("B", None, None::<&str>);
+        let rect = tv.content_rect();
+        let start = Point::new(rect.x + rect.width as i32 - 20, rect.y + 20);
+        tv.handle_event(&Event::TouchBegin { pos: start, touch_id: 1 });
+        let end = Point::new(start.x - (rect.width as i32 / 2), start.y);
+        tv.handle_event(&Event::TouchEnd { pos: end, touch_id: 1 });
+        assert_eq!(tv.selected_index(), Some(1));
+    }
+
+    /// A touch drag that starts in the middle of the content is the content's, not a swipe.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn a_mid_content_touch_does_not_switch_tabs() {
+        let mut tv = make_tab_view();
+        tv.add_tab("A", None, None::<&str>);
+        tv.add_tab("B", None, None::<&str>);
+        let rect = tv.content_rect();
+        let start = Point::new(rect.x + rect.width as i32 / 2, rect.y + 20);
+        tv.handle_event(&Event::TouchBegin { pos: start, touch_id: 1 });
+        let end = Point::new(start.x - (rect.width as i32 / 2), start.y);
+        tv.handle_event(&Event::TouchEnd { pos: end, touch_id: 1 });
+        assert_eq!(tv.selected_index(), Some(0));
     }
 }

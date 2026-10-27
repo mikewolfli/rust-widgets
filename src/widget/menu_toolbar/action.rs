@@ -437,11 +437,15 @@ impl Action {
     /// Call once after construction if you want the inner action's
     /// `toggled`/`enabled_changed` to propagate to widget signals.
     ///
-    /// Calling it again is safe but leaks the previous connections: the old
-    /// handles are overwritten without being disconnected, so each call adds
-    /// another forwarding path and a single inner toggle will emit the widget
-    /// `toggled`/`changed` signals once per call.
+    /// Idempotent: the stored handles are the connection table, so a repeated
+    /// call returns without adding a second forwarding path. Before this
+    /// guard, each extra call overwrote the handles without disconnecting the
+    /// previous slots, so one inner toggle emitted the widget
+    /// `toggled`/`changed` signals once per call (M-001).
     pub fn wire_signals(&mut self) {
+        if self._toggled_handle.is_some() && self._enabled_handle.is_some() {
+            return;
+        }
         let toggled_out = self.toggled.clone();
         let changed_out = self.changed.clone();
         let handle = self.cmd.connect_toggled(move |checked| {
@@ -525,6 +529,7 @@ impl Action {
             text: self.text.clone(),
             checkable: self.cmd.is_checkable(),
             checked: self.cmd.is_checked(),
+            visible: self.cmd.is_visible(),
             enabled: self.base.is_enabled(),
             shortcut: self.shortcut.clone(),
             role: crate::compat::String::from(self.menu_role.as_str()),
@@ -546,6 +551,7 @@ impl Action {
         action.set_checkable(definition.checkable);
         action.set_checked(definition.checked);
         action.base.set_enabled(definition.enabled);
+        action.cmd_mut().set_visible(definition.visible);
         action.set_menu_role(role);
         if !definition.shortcut.is_empty() {
             let binding = Shortcut::from_string(&definition.shortcut).ok_or_else(|| {
@@ -1164,6 +1170,38 @@ mod tests {
         });
         a.set_checked(true);
         assert!(last_val.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn wiring_signals_twice_does_not_duplicate_the_forwarding_path() {
+        fn toggle_after(rewires: usize) -> (usize, usize) {
+            let mut a = Action::new("Tog", rect());
+            a.set_checkable(true);
+            let toggled = Arc::new(AtomicUsize::new(0));
+            let changed = Arc::new(AtomicUsize::new(0));
+            {
+                let toggled = Arc::clone(&toggled);
+                a.toggled.connect(move |_| {
+                    toggled.fetch_add(1, Ordering::SeqCst);
+                });
+                let changed = Arc::clone(&changed);
+                a.changed.connect(move || {
+                    changed.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+            for _ in 0..rewires {
+                a.wire_signals();
+            }
+            a.set_checked(true);
+            (toggled.load(Ordering::SeqCst), changed.load(Ordering::SeqCst))
+        }
+
+        let once = toggle_after(0);
+        let repeated = toggle_after(3);
+        assert_eq!(
+            repeated, once,
+            "a repeated `wire_signals` must not add a second forwarding path"
+        );
     }
 
     #[test]

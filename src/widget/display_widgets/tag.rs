@@ -11,6 +11,7 @@
 //! selected, and it can be closed. Modelling one tag as a one-item chip would give every tag
 //! an item list, a focus index and a multi-select flag it can never use.
 
+use crate::compat::{Cell, RefCell};
 use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{key_codes, Event, EventHandler};
 use crate::render::RenderContext;
@@ -103,10 +104,28 @@ pub struct Tag {
     /// only when the style changes, which is a real allocation on a control that repaints on
     /// every hover.
     font_cache: Option<Font>,
+    /// The measured cell and the inputs that produced it.
+    ///
+    /// The group lays its children out from `size_hint` every frame, and that hint measured
+    /// the label on every call. The cell is a function of the text, the resolved face, the
+    /// close flag and the optional icon, so it is cached until one of those changes.
+    size_hint_cache: RefCell<Option<SizeHintCache>>,
+    /// Bumped whenever the measured cell is rebuilt, so `TagGroup` can invalidate its own
+    /// layout without re-measuring every child.
+    size_hint_revision: Cell<u64>,
     /// Emitted when the close glyph is activated, with the tag's own text as the payload.
     pub closed: Signal1<String>,
     /// Emitted with the new flag when the selection actually changes.
     pub selected_changed: Signal1<bool>,
+}
+
+/// The measured cell and the four inputs that produce it.
+struct SizeHintCache {
+    text: String,
+    font: Font,
+    closable: bool,
+    icon: Option<IconName>,
+    size: Size,
 }
 
 impl Tag {
@@ -120,6 +139,8 @@ impl Tag {
             closable: false,
             icon: None,
             font_cache: None,
+            size_hint_cache: RefCell::new(None),
+            size_hint_revision: Cell::new(0),
             closed: Signal1::new(),
             selected_changed: Signal1::new(),
         }
@@ -302,6 +323,11 @@ impl Tag {
         self.font_cache = Some(font.clone());
         font
     }
+
+    /// The revision of this tag's measured cell; see [`Self::size_hint`].
+    pub(crate) fn size_hint_revision(&self) -> u64 {
+        self.size_hint_revision.get()
+    }
 }
 
 impl Widget for Tag {
@@ -323,13 +349,34 @@ impl Widget for Tag {
         // `draw` resolves it, so the hint and the painting agree on the same face.
         let font =
             self.base.style().font.clone().unwrap_or_else(|| Font::simple_interned("Arial", 12.0));
-        let label = estimate_text_width(&self.text, &font, 1.0);
-        let close = if self.closable { TAG_CLOSE_GAP + TAG_CLOSE_SIDE } else { 0 };
-        let icon = if self.icon.is_some() { TAG_ICON_SIDE + TAG_ICON_GAP } else { 0 };
-        Size::new(
-            label.saturating_add(2 * TAG_PADDING).saturating_add(close).saturating_add(icon),
-            estimate_line_height(&font, 1.0).saturating_add(8),
-        )
+        let fresh = self.size_hint_cache.borrow().as_ref().is_some_and(|cache| {
+            cache.text == self.text
+                && cache.font == font
+                && cache.closable == self.closable
+                && cache.icon == self.icon
+        });
+        if !fresh {
+            let label = estimate_text_width(&self.text, &font, 1.0);
+            let close = if self.closable { TAG_CLOSE_GAP + TAG_CLOSE_SIDE } else { 0 };
+            let icon = if self.icon.is_some() { TAG_ICON_SIDE + TAG_ICON_GAP } else { 0 };
+            let size = Size::new(
+                label.saturating_add(2 * TAG_PADDING).saturating_add(close).saturating_add(icon),
+                estimate_line_height(&font, 1.0).saturating_add(8),
+            );
+            *self.size_hint_cache.borrow_mut() = Some(SizeHintCache {
+                text: self.text.clone(),
+                font,
+                closable: self.closable,
+                icon: self.icon,
+                size,
+            });
+            self.size_hint_revision.set(self.size_hint_revision.get().wrapping_add(1));
+        }
+        self.size_hint_cache
+            .borrow()
+            .as_ref()
+            .map(|cache| cache.size)
+            .unwrap_or_else(|| Size::new(0, 0))
     }
 
     fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
@@ -695,5 +742,20 @@ mod tests {
         assert_eq!(font, first);
         let _ = tag.resolved_font(None);
         assert_eq!(tag.font_cache.as_ref(), Some(&first), "a second frame reuses the cache");
+    }
+
+    /// The measured cell is cached until one of its four inputs changes.
+    #[test]
+    fn the_cell_measurement_is_cached_until_an_input_changes() {
+        let tag = Tag::new("cache", Rect::new(0, 0, 80, 24));
+        let first = tag.size_hint();
+        let revision = tag.size_hint_revision();
+        assert_eq!(tag.size_hint(), first, "a still tag reuses its measured cell");
+        assert_eq!(tag.size_hint_revision(), revision, "a cache hit does not bump the revision");
+
+        let mut changed = tag;
+        changed.set_closable(true);
+        assert!(changed.size_hint().width > first.width, "the close slot grows the cell");
+        assert!(changed.size_hint_revision() > revision, "a rebuilt cell bumps the revision");
     }
 }

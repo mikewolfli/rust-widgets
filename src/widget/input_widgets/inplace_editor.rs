@@ -11,7 +11,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::shortcut::Key;
 use crate::signal::{GenericSignal, Signal1};
-use crate::undo::{UndoStack, ValueCommand};
+use crate::undo::{TextSpliceCommand, UndoStack};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -190,24 +190,41 @@ impl InplaceEditor {
         // The old value moves out rather than being cloned for the undo record (I-P02).
         let before = core::mem::replace(&mut self.text, text);
         self.cursor_position = self.text.chars().count();
-        self.publish_text_change(before);
-    }
-
-    /// Publishes a value already written to `self.text`, recording `before` as one undo step.
-    ///
-    /// Every edit path writes the value **in place** and hands the previous value here, instead
-    /// of building a fresh `String` from a `Vec<char>` for each keystroke (I-P02).
-    fn publish_text_change(&mut self, before: String) {
         if !self.restoring_history && before != self.text {
             *self.history_target.borrow_mut() = self.text.clone();
-            self.undo_stack.push(Box::new(ValueCommand::new(
+            self.undo_stack.push(Box::new(TextSpliceCommand::new(
                 self.history_target.clone(),
-                before,
-                self.text.clone(),
+                &before,
+                &self.text,
                 "Edit text",
                 "inplace_editor_text",
             )));
         }
+        self.base.request_redraw();
+    }
+
+    /// Records an in-place splice as one undo step (I-001).
+    ///
+    /// The previous value is no longer cloned for the record: `offset`/`removed`/`inserted`
+    /// describe the one changed run, which is all the command stores.
+    fn record_splice(&mut self, offset: usize, removed: &str, inserted: &str) {
+        if self.restoring_history {
+            return;
+        }
+        {
+            let mut target = self.history_target.borrow_mut();
+            let start = offset.min(target.len());
+            let end = (start + removed.len()).min(target.len());
+            target.replace_range(start..end, inserted);
+        }
+        self.undo_stack.push(Box::new(TextSpliceCommand::from_splice(
+            self.history_target.clone(),
+            offset,
+            removed.to_string(),
+            inserted.to_string(),
+            "Edit text",
+            "inplace_editor_text",
+        )));
         self.base.request_redraw();
     }
 
@@ -332,10 +349,10 @@ impl InplaceEditor {
             if self.cursor_position > 0 {
                 let caret = byte_index_of_char(&self.text, self.cursor_position);
                 let previous = crate::widget::text_utils::previous_char_boundary(&self.text, caret);
-                let before = self.text.clone();
+                let removed = self.text[previous..caret].to_string();
                 self.text.replace_range(previous..caret, "");
                 self.cursor_position = self.cursor_position.saturating_sub(1);
-                self.publish_text_change(before);
+                self.record_splice(previous, &removed, "");
             }
         } else if c == '\u{ffff}' {
             // Forward delete, routed through the dedicated method so the sentinel remains only a
@@ -348,10 +365,9 @@ impl InplaceEditor {
             let mut buffer = [0u8; 4];
             let encoded = c.encode_utf8(&mut buffer);
             let at = byte_index_of_char(&self.text, self.cursor_position);
-            let before = self.text.clone();
             self.text.replace_range(at..at, encoded);
             self.cursor_position = (self.cursor_position + 1).min(self.text.chars().count());
-            self.publish_text_change(before);
+            self.record_splice(at, "", encoded);
         }
     }
 
@@ -372,11 +388,11 @@ impl InplaceEditor {
         self.selection_anchor = None;
         let start = byte_index_of_char(&self.text, start_char);
         let end = byte_index_of_char(&self.text, end_char);
-        let before = self.text.clone();
+        let removed = self.text[start..end].to_string();
         self.text.replace_range(start..end, &filtered);
         self.cursor_position =
             (start_char + filtered.chars().count()).min(self.text.chars().count());
-        self.publish_text_change(before);
+        self.record_splice(start, &removed, &filtered);
     }
 
     /// Moves the cursor left by one character.
@@ -428,11 +444,11 @@ impl InplaceEditor {
         };
         let start_byte = byte_index_of_char(&self.text, start);
         let end_byte = byte_index_of_char(&self.text, end);
-        let before = self.text.clone();
+        let removed = self.text[start_byte..end_byte].to_string();
         self.text.replace_range(start_byte..end_byte, "");
         self.cursor_position = start.min(self.text.chars().count());
         self.selection_anchor = None;
-        self.publish_text_change(before);
+        self.record_splice(start_byte, &removed, "");
         true
     }
 
@@ -451,10 +467,10 @@ impl InplaceEditor {
         }
         let at = byte_index_of_char(&self.text, self.cursor_position);
         let next = crate::widget::text_utils::next_char_boundary(&self.text, at);
-        let before = self.text.clone();
+        let removed = self.text[at..next].to_string();
         self.text.replace_range(at..next, "");
         self.cursor_position = self.cursor_position.min(self.text.chars().count());
-        self.publish_text_change(before);
+        self.record_splice(at, &removed, "");
         true
     }
 

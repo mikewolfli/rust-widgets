@@ -77,6 +77,13 @@ pub struct FAB {
     label_font_cache: Option<(u32, Font)>,
     /// The cached icon-text face, keyed by its size (G-A02).
     icon_font_cache: Option<(u32, Font)>,
+    /// An optional speed dial opened by this button (OV-009).
+    ///
+    /// A slot rather than a hard dependency: a FAB with no dial is exactly the control it was,
+    /// and the dial keeps its own action list, expansion state and signals. A build without the
+    /// companion module (`full_widgets`) simply has no slot.
+    #[cfg(full_widgets)]
+    speed_dial: Option<Box<crate::widget::companions::SpeedDial>>,
 }
 
 impl FAB {
@@ -108,6 +115,8 @@ impl FAB {
             elevation: 3.0,
             label_font_cache: None,
             icon_font_cache: None,
+            #[cfg(full_widgets)]
+            speed_dial: None,
         }
     }
 
@@ -134,6 +143,11 @@ impl FAB {
 
     /// Sets a built-in or static-geometry icon, replacing the legacy icon text.
     pub fn set_icon_source(&mut self, source: Option<IconSource>) {
+        // The same typed source with no legacy text left to clear is not a change; repainting it
+        // would be a no-op frame (the guard shape `set_elevation` uses).
+        if self.icon_source == source && self.icon_text.is_empty() {
+            return;
+        }
         self.icon_text.clear();
         self.icon_source = source;
         self.base.request_redraw();
@@ -230,16 +244,62 @@ impl FAB {
         self.visibility.value()
     }
 
+    /// Attaches a speed dial this button opens and closes (OV-009).
+    ///
+    /// The slot follows the `AdaptiveScaffold` slot pattern: the host may set one, replace it,
+    /// or leave it unset, and the two controls stay independently usable. The dial is laid over
+    /// the button's own rectangle so its primary circle sits behind this button; the button
+    /// remains the hit target and toggles the dial on a completed click.
+    #[cfg(full_widgets)]
+    pub fn set_speed_dial(&mut self, dial: Option<crate::widget::companions::SpeedDial>) {
+        self.speed_dial = dial.map(Box::new);
+        let geometry = self.geometry();
+        if let Some(dial) = self.speed_dial.as_deref_mut() {
+            dial.set_geometry(geometry);
+            crate::theme::apply_theme_to_widget(dial);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the attached speed dial, if one is set (OV-009).
+    #[cfg(full_widgets)]
+    pub fn speed_dial(&self) -> Option<&crate::widget::companions::SpeedDial> {
+        self.speed_dial.as_deref()
+    }
+
+    /// Returns the attached speed dial mutably, if one is set (OV-009).
+    #[cfg(full_widgets)]
+    pub fn speed_dial_mut(&mut self) -> Option<&mut crate::widget::companions::SpeedDial> {
+        self.speed_dial.as_deref_mut()
+    }
+
+    /// Toggles the attached speed dial, if any.
+    #[cfg(full_widgets)]
+    fn toggle_speed_dial(&mut self) {
+        if let Some(dial) = self.speed_dial.as_deref_mut() {
+            dial.toggle();
+        }
+    }
+
     /// Advances the press and visibility animations; `true` while either is moving.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
         let pressed = self.press.tick(delta_ms);
         let visible = self.visibility.tick(delta_ms);
-        pressed || visible
+        #[cfg(full_widgets)]
+        let dial = self.speed_dial.as_deref_mut().map(|dial| dial.tick(delta_ms)).unwrap_or(false);
+        #[cfg(not(full_widgets))]
+        let dial = false;
+        pressed || visible || dial
     }
 
     /// Whether either animation is between two values.
     pub fn is_animating(&self) -> bool {
-        self.press.is_moving() || self.visibility.is_moving()
+        let own = self.press.is_moving() || self.visibility.is_moving();
+        #[cfg(full_widgets)]
+        let dial = self.speed_dial.as_deref().is_some_and(|dial| dial.is_animating());
+        #[cfg(not(full_widgets))]
+        let dial = false;
+        own || dial
     }
 
     /// Retargets the press driver from the control's own pressed latch.
@@ -271,6 +331,8 @@ impl FAB {
     /// Programmatically trigger a click cycle (press then release).
     pub fn click(&mut self) {
         self.base.clicked.emit();
+        #[cfg(full_widgets)]
+        self.toggle_speed_dial();
     }
 }
 
@@ -286,10 +348,26 @@ impl Widget for FAB {
         &mut self.base
     }
 
+    /// Keeps an attached speed dial on the button's rectangle (OV-009).
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        #[cfg(full_widgets)]
+        if let Some(dial) = self.speed_dial.as_deref_mut() {
+            dial.set_geometry(geometry);
+        }
+    }
+
     fn size_hint(&self) -> crate::core::Size {
         let edge = self.size_kind.edge();
         let width = match self.extended_label.as_deref() {
-            Some(label) => edge + 16 + (label.chars().count() as u32) * 8,
+            // Measure the label with the shared text ruler rather than charging eight pixels per
+            // character (OV-004). The font is the one the capsule paints the label at (the
+            // draw's `radius * 0.5` floors at 14), so the hint and the ink agree on a
+            // proportional face instead of only on a monospace one.
+            Some(label) => {
+                let font = Font::new("sans-serif", 14.0, false, false);
+                edge + 16 + crate::widget::metrics::estimate_text_width(label, &font, 1.0)
+            }
             None => edge,
         };
         crate::core::Size::new(width, edge)
@@ -412,6 +490,14 @@ impl Draw for FAB {
         if visibility <= 0.001 {
             return;
         }
+
+        // The attached speed dial paints first so this button stays on top of its own primary
+        // circle, which the dial would otherwise duplicate at the same centre (OV-009). A button
+        // that has scrolled away does not leave its dial behind.
+        #[cfg(full_widgets)]
+        if let Some(dial) = self.speed_dial.as_deref_mut() {
+            dial.draw(context);
+        }
         let radius = (base_radius as f32 * (1.0 - 0.1 * press)) as u32;
         let shadow_offset = if press > 0.0 {
             ((self.elevation - press).max(0.0) * dpi) as u32
@@ -437,7 +523,11 @@ impl Draw for FAB {
         // The theme reads take and release the global manager's lock internally, so no guard
         // is held across the draw (the mutex is not re-entrant).
         let style = self.base.style();
-        let theme = crate::style::resolved_theme_style_shared("fab");
+        // Resolve the style for the control's *current* state, so a theme's
+        // `fab:hover`/`fab:pressed`/`fab:focus` entries are reachable (OV-003). The normal state
+        // resolves to the same resting style the control painted before.
+        let state = self.widget_state();
+        let theme = crate::style::resolved_theme_style_for_state_shared("fab", state);
         // `fab` is absent from `WidgetRole::for_kind_name`'s table, so it classifies as
         // `Surface` and resolves to `theme.colors.background` — the window's own fill, not an
         // action colour. The circle is a filled call to action, so the theme's `primary` is
@@ -456,6 +546,15 @@ impl Draw for FAB {
         } else {
             style.background_color.unwrap_or(accent)
         };
+        // A hover or press answers the pointer even when the theme has no state override. At rest
+        // this is an identity, so the historical fill is byte-identical (OV-003).
+        let interaction = match state {
+            crate::style::WidgetState::Hover => 0.07,
+            crate::style::WidgetState::Pressed => 0.14,
+            _ => 0.0,
+        };
+        let base_fill =
+            if interaction > 0.0 { base_fill.blend(&themed_ink, interaction) } else { base_fill };
         let fill_color = if !is_enabled {
             Color::rgba(base_fill.r, base_fill.g, base_fill.b, 120)
         } else {
@@ -550,6 +649,21 @@ impl Draw for FAB {
                 HorizontalAlignment::Center,
             );
         }
+
+        // Keyboard focus is the shared inset ring, gated on the reason focus arrived. A circle
+        // gets a circular ring rather than a rounded box, which is what "inset" means for this
+        // shape (OV-003).
+        if self.base.draws_focus_ring() {
+            let ring = crate::widget::metrics::FocusRing::for_control(rect, radius);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    crate::widget::metrics::focus_ring_color(icon_color),
+                    crate::widget::metrics::FOCUS_RING_WIDTH,
+                );
+            }
+        }
     }
 }
 
@@ -594,6 +708,8 @@ impl EventHandler for FAB {
                     // routes an action on, so it must mean "this gesture completed here".
                     if self.base.contains_point_with_touch_expansion(*pos) {
                         self.base.clicked.emit();
+                        #[cfg(full_widgets)]
+                        self.toggle_speed_dial();
                     }
                     self.base.request_redraw();
                 }
@@ -620,6 +736,8 @@ impl EventHandler for FAB {
                     self.sync_press_driver();
                     if self.base.contains_point_with_touch_expansion(*pos) {
                         self.base.clicked.emit();
+                        #[cfg(full_widgets)]
+                        self.toggle_speed_dial();
                     }
                     self.base.request_redraw();
                 }
@@ -629,6 +747,8 @@ impl EventHandler for FAB {
             #[cfg(feature = "touch")]
             Event::Tap { .. } => {
                 self.base.clicked.emit();
+                #[cfg(full_widgets)]
+                self.toggle_speed_dial();
                 self.base.request_redraw();
             }
             Event::Wheel { delta, .. } => {
@@ -901,6 +1021,65 @@ mod tests {
         assert_eq!(fab.extended_label(), Some("Compose"));
         fab.set_extended_label(None::<String>);
         assert_eq!(fab.size_hint().width, round.width);
+    }
+
+    /// The capsule width comes from the text ruler, not from a per-character constant (OV-004).
+    #[test]
+    fn an_extended_label_is_measured_rather_than_estimated_at_eight_pixels_per_character() {
+        let mut fab = FAB::new(Rect::new(0, 0, 56, 56));
+        fab.set_extended_label(Some("iii"));
+        let narrow = fab.size_hint().width;
+        fab.set_extended_label(Some("WWW"));
+        let wide = fab.size_hint().width;
+        assert!(
+            wide > narrow,
+            "a proportional face gives wide glyphs more room than narrow ones: {narrow} vs {wide}"
+        );
+        assert_eq!(
+            wide,
+            56 + 16
+                + crate::widget::metrics::estimate_text_width(
+                    "WWW",
+                    &Font::new("sans-serif", 14.0, false, false),
+                    1.0,
+                ),
+            "the hint reports the measured advance"
+        );
+    }
+
+    /// Hover is a visible state on the button, not only a theme-table lookup (OV-003).
+    #[test]
+    fn a_hovered_fab_paints_differently_from_a_resting_one() {
+        let mut fab = make_fab();
+        let resting = render_to_svg(&mut fab);
+        fab.handle_event(&Event::MouseEnter { pos: Point::new(28, 28) });
+        let hovered = render_to_svg(&mut fab);
+        assert_ne!(resting, hovered, "the button must answer the pointer");
+    }
+
+    /// A FAB can drive its companion speed dial without either owning the other's state (OV-009).
+    #[cfg(full_widgets)]
+    #[test]
+    fn a_fab_toggles_an_attached_speed_dial() {
+        use crate::widget::companions::SpeedDial;
+
+        let mut fab = make_fab();
+        assert!(fab.speed_dial().is_none(), "the slot is opt-in");
+        fab.set_speed_dial(Some(SpeedDial::new(Rect::new(0, 0, 56, 56))));
+        assert!(fab.speed_dial().is_some());
+
+        fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1, modifiers: 0 });
+        fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1 });
+        assert!(
+            fab.speed_dial().is_some_and(|dial| dial.is_expanded()),
+            "a completed click opens the dial"
+        );
+
+        fab.click();
+        assert!(
+            fab.speed_dial().is_some_and(|dial| !dial.is_expanded()),
+            "the next click closes it again"
+        );
     }
 
     #[test]

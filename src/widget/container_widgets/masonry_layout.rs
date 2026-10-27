@@ -14,7 +14,7 @@ use crate::widget::capability::coercion::expect_u32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// An individual item in the masonry layout.
@@ -69,6 +69,20 @@ const CARD_CORNER_RADIUS: u32 = 6;
 /// only way that can go stale is the item list changing — which bumps the version and rebuilds.
 type CachedArrangement = Option<(u64, std::rc::Rc<Vec<(usize, Rect)>>)>;
 
+/// How the waterfall divides its width between columns (C-020).
+///
+/// [`Equal`](Self::Equal) is the historical behaviour and the default. [`Content`](Self::Content)
+/// gives each column a share proportional to the widest item it holds, so a column of short cards
+/// does not claim the same width as a column of long ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MasonryColumnWidth {
+    /// Every column gets the same width.
+    #[default]
+    Equal,
+    /// Column widths follow the content's measured width.
+    Content,
+}
+
 /// MasonryLayout widget — a Pinterest-style waterfall grid.
 pub struct MasonryLayout {
     base: BaseWidget,
@@ -82,6 +96,12 @@ pub struct MasonryLayout {
     item_spacing: u32,
     /// The horizontal gap between two columns (C-12).
     horizontal_gap: u32,
+    /// How the column widths are derived (C-020).
+    column_width: MasonryColumnWidth,
+    /// Shared forwarding table for the controls mounted in cards (C-004).
+    registry: Option<std::rc::Rc<std::cell::RefCell<SimpleRegistry>>>,
+    /// The card that last received a pointer press, so keyboard/focus events reach it.
+    active_item: Option<usize>,
     /// Emitted with the item index when a card is clicked.
     pub item_clicked: Signal1<usize>,
 }
@@ -97,8 +117,50 @@ impl MasonryLayout {
             cache: std::cell::RefCell::new(None),
             item_spacing: DEFAULT_ITEM_SPACING,
             horizontal_gap: DEFAULT_ITEM_SPACING,
+            column_width: MasonryColumnWidth::Equal,
+            registry: None,
+            active_item: None,
             item_clicked: Signal1::new(),
         }
+    }
+
+    /// Binds the shared forwarding table used to deliver events to card controls (C-004).
+    pub fn set_registry(&mut self, registry: std::rc::Rc<std::cell::RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+
+    /// The bound forwarding table, if any.
+    pub fn registry(&self) -> Option<&std::rc::Rc<std::cell::RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
+    }
+
+    /// The column-width strategy (C-020).
+    pub fn column_width_strategy(&self) -> MasonryColumnWidth {
+        self.column_width
+    }
+
+    /// Sets how column widths are derived (C-020).
+    ///
+    /// [`MasonryColumnWidth::Equal`] is the default, so a layout that never calls this keeps its
+    /// historical appearance.
+    pub fn set_column_width_strategy(&mut self, strategy: MasonryColumnWidth) {
+        if self.column_width == strategy {
+            return;
+        }
+        self.column_width = strategy;
+        self.layout_version = self.layout_version.wrapping_add(1);
+        self.base.request_layout();
+        self.base.request_redraw();
+    }
+
+    /// Delivers `event` to the control mounted in card `index`, if one is mounted.
+    fn forward_item_event(&self, index: usize, event: &Event) {
+        let (Some(registry), Some(widget_id)) =
+            (self.registry.as_ref(), self.items.get(index).and_then(|item| item.widget_id))
+        else {
+            return;
+        };
+        let _ = registry.borrow_mut().forward_event(widget_id, event);
     }
 
     /// Returns the number of columns.
@@ -320,8 +382,41 @@ impl MasonryLayout {
             let Some(widget_id) = self.items.get(*index).and_then(|item| item.widget_id) else {
                 continue;
             };
+            // C-005: an unchanged cell is not written again. This loop runs from `draw` and from
+            // `set_geometry`, so a repaint of a static waterfall used to perform one global
+            // geometry write per card for no new information (the same short-circuit
+            // `accordion` uses).
+            if crate::widget_geometry(widget_id) == Some((rect.x, rect.y, rect.width, rect.height))
+            {
+                continue;
+            }
             crate::set_widget_geometry(widget_id, rect.x, rect.y, rect.width, rect.height);
         }
+    }
+
+    /// The height a card occupies, measured from its mounted control when it has one (C-020).
+    ///
+    /// The declared `height` remains the fallback: a card with no control, or one whose runtime
+    /// entry is unavailable, keeps the height the caller gave it.
+    fn measured_item_height(&self, item: &MasonryItem) -> u32 {
+        let measured = item.widget_id.and_then(|widget_id| {
+            crate::widget::runtime::with_widget(widget_id, |widget| widget.size_hint().height)
+        });
+        measured.filter(|height| *height > 0).unwrap_or(item.height).max(20)
+    }
+
+    /// The width a card's content asks for (C-020).
+    fn measured_item_width(&self, item: &MasonryItem) -> u32 {
+        let measured = item.widget_id.and_then(|widget_id| {
+            crate::widget::runtime::with_widget(widget_id, |widget| widget.size_hint().width)
+        });
+        let fallback = crate::widget::metrics::estimate_text_width(
+            &item.label,
+            &Font::simple("Arial", 12.0),
+            1.0,
+        )
+        .saturating_add(12);
+        measured.filter(|width| *width > 0).unwrap_or(fallback)
     }
 
     /// Lays the cards out, returning `(item_index, cell_rect)` in insertion order.
@@ -342,12 +437,13 @@ impl MasonryLayout {
         // keeps a control narrower than its gaps from underflowing; the columns then collapse
         // to zero width rather than wrapping around.
         let total_gap = gap.saturating_mul(columns.saturating_sub(1));
-        let col_w = rect.width.saturating_sub(total_gap) / columns;
+        let budget = rect.width.saturating_sub(total_gap);
         let spacing = self.item_spacing;
 
-        // Track the current y-offset for each column.
+        // Track the current y-offset for each column, and the placement facts the width pass
+        // needs: `(item_index, start_column, span, height, y_in_content)`.
         let mut col_heights = vec![0u32; columns as usize];
-        let mut result = Vec::with_capacity(self.items.len());
+        let mut placed: Vec<(usize, u32, u32, u32, u32)> = Vec::with_capacity(self.items.len());
 
         for (index, item) in self.items.iter().enumerate() {
             // A span wider than the column count would place a card outside the control, so it
@@ -370,14 +466,8 @@ impl MasonryLayout {
                 }
             }
 
-            let x = rect.x + (best_start * (col_w + gap)) as i32;
-            let width = span.saturating_mul(col_w).saturating_add(gap.saturating_mul(span - 1));
-            let y = rect.y + best_bottom as i32;
-
-            let item_height = item.height.max(20);
-            let item_rect = Rect::new(x, y, width, item_height);
-
-            result.push((index, item_rect));
+            let item_height = self.measured_item_height(item);
+            placed.push((index, best_start, span, item_height, best_bottom));
 
             // Every spanned column advances past this card: the next card may not start above
             // the tallest of them, or the columns would overlap.
@@ -387,6 +477,46 @@ impl MasonryLayout {
             }
         }
 
+        // Column widths: equal by default; content-driven when requested (C-020). Both paths
+        // allocate the same integer budget, so the rightmost column still ends on the control's
+        // trailing edge.
+        let col_widths = match self.column_width {
+            MasonryColumnWidth::Equal => vec![budget / columns; columns as usize],
+            MasonryColumnWidth::Content => {
+                let mut needs = vec![0u32; columns as usize];
+                for (index, start, span, _, _) in &placed {
+                    let Some(item) = self.items.get(*index) else {
+                        continue;
+                    };
+                    let share = self.measured_item_width(item) / (*span).max(1);
+                    for slot in needs.iter_mut().skip(*start as usize).take(*span as usize) {
+                        *slot = (*slot).max(share);
+                    }
+                }
+                allocate_column_widths(&needs, budget)
+            }
+        };
+        let mut column_x = Vec::with_capacity(columns as usize);
+        let mut cursor = 0u32;
+        for width in &col_widths {
+            column_x.push(cursor);
+            cursor = cursor.saturating_add(*width).saturating_add(gap);
+        }
+
+        let mut result = Vec::with_capacity(placed.len());
+        for (index, start, span, item_height, y) in placed {
+            let start = start as usize;
+            let span = span as usize;
+            let width = col_widths
+                .iter()
+                .skip(start)
+                .take(span)
+                .copied()
+                .fold(0u32, u32::saturating_add)
+                .saturating_add(gap.saturating_mul(span.saturating_sub(1) as u32));
+            let x = rect.x + column_x.get(start).copied().unwrap_or(0) as i32;
+            result.push((index, Rect::new(x, rect.y + y as i32, width, item_height)));
+        }
         result
     }
 
@@ -591,9 +721,56 @@ impl Draw for MasonryLayout {
     }
 }
 
+/// Allocates `budget` pixels across columns in proportion to `needs` (C-020).
+///
+/// Integer arithmetic with the trailing column taking the remainder, so the widths always sum to
+/// exactly `budget`. A zero total (no measured content) falls back to an equal division, which is
+/// the same answer the equal strategy would give.
+fn allocate_column_widths(needs: &[u32], budget: u32) -> Vec<u32> {
+    let count = needs.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    let total: u64 = needs.iter().map(|need| *need as u64).sum();
+    if total == 0 {
+        return vec![budget / count as u32; count];
+    }
+    let mut widths = Vec::with_capacity(count);
+    let mut assigned = 0u32;
+    for (index, need) in needs.iter().enumerate() {
+        let share = if index + 1 == count {
+            budget.saturating_sub(assigned)
+        } else {
+            (budget as u64 * *need as u64 / total) as u32
+        };
+        let share = share.min(budget.saturating_sub(assigned));
+        widths.push(share);
+        assigned = assigned.saturating_add(share);
+    }
+    widths
+}
+
 impl EventHandler for MasonryLayout {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // C-004: a card with a mounted control forwards the event to it. Pointer events are
+        // routed to the card under the pointer; key/focus events go to the card that was last
+        // pressed.
+        let pointer_target = match event {
+            Event::MousePress { pos, .. }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseMove { pos }
+            | Event::MouseDoubleClick { pos, .. }
+            | Event::MouseEnter { pos }
+            | Event::MouseLeave { pos } => self.item_at(*pos),
+            _ => self.active_item,
+        };
+        if let Some(index) = pointer_target {
+            if matches!(event, Event::MousePress { .. }) {
+                self.active_item = Some(index);
+            }
+            self.forward_item_event(index, event);
+        }
         if let Event::MousePress { pos, button: 1, .. } = event {
             if let Some(index) = self.item_at(*pos) {
                 self.item_clicked.emit(index);
@@ -769,5 +946,61 @@ mod tests {
         let rects = ml.layout_items_shared();
         assert_eq!(rects[0].1.width, 300, "both columns plus the gap between them");
         assert!(rects[1].1.y >= rects[0].1.y + 50, "the next card clears the spanning one");
+    }
+
+    /// C-020: the content strategy gives a wider column to wider content, and an item control's
+    /// measured height replaces the declared hint.
+    #[test]
+    fn content_column_width_and_measured_height_follow_the_content() {
+        use crate::widget::base_widgets::label::Label;
+
+        assert_eq!(MasonryColumnWidth::default(), MasonryColumnWidth::Equal);
+        assert_eq!(allocate_column_widths(&[10, 30], 100), vec![25, 75]);
+        assert_eq!(
+            allocate_column_widths(&[0, 0], 90),
+            vec![45, 45],
+            "no measured content falls back to an equal division"
+        );
+
+        let id = crate::widget::runtime::register(Box::new(Label::new(
+            "measured".to_string(),
+            Rect::new(0, 0, 150, 90),
+        )))
+        .expect("the test control mounts");
+        let mut ml = MasonryLayout::new(Rect::new(0, 0, 400, 400));
+        ml.set_columns(1);
+        ml.add_item_with_widget("measured", 20, Color::WHITE, Some(id));
+        ml.set_column_width_strategy(MasonryColumnWidth::Content);
+        assert_eq!(ml.column_width_strategy(), MasonryColumnWidth::Content);
+        let rects = ml.layout_items_shared();
+        assert_eq!(rects[0].1.height, 90, "the card follows its control's size hint");
+        assert_eq!(rects[0].1.width, 400, "one content column takes the whole width");
+        let _ = crate::widget::runtime::unregister(id);
+    }
+
+    /// C-004: a mounted card control receives forwarded pointer and key events.
+    #[test]
+    fn a_mounted_card_receives_forwarded_events() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let registry = std::rc::Rc::new(std::cell::RefCell::new(SimpleRegistry::new()));
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        registry.borrow_mut().register(
+            21,
+            |_| {},
+            move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+
+        let mut ml = MasonryLayout::new(Rect::new(0, 0, 300, 400));
+        ml.set_columns(1);
+        ml.add_item_with_widget("card", 50, Color::WHITE, Some(21u64));
+        ml.set_registry(std::rc::Rc::clone(&registry));
+        ml.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        ml.handle_event(&Event::KeyPress { key: 65, modifiers: 0 });
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 }

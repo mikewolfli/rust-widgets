@@ -93,6 +93,14 @@ pub struct FocusManager {
     /// Per-control focus policies. A control absent from the map keeps
     /// [`FocusPolicy::StrongFocus`], which is what every control did before the policy existed.
     policies: HashMap<ObjectId, FocusPolicy>,
+    /// W-P02: each widget's slot in [`Self::focusable_widgets`], so a traversal's start position
+    /// is a map hit instead of an O(n) `position` scan.
+    ///
+    /// Rebuilt in the same pass that mutates the effective order (registration, unregister's
+    /// partition, reorder), so it cannot drift from the list it indexes. The first occurrence of
+    /// a duplicated id wins — `set_focus_order` accepts duplicates — matching the `position`
+    /// scan this replaces.
+    positions: HashMap<ObjectId, usize>,
 }
 impl FocusManager {
     /// Creates a new focus manager.
@@ -107,6 +115,7 @@ impl FocusManager {
             widget_positions: HashMap::new(),
             registered: BTreeSet::new(),
             policies: HashMap::new(),
+            positions: HashMap::new(),
         }
     }
     /// Returns the currently focused widget, if any.
@@ -170,7 +179,10 @@ impl FocusManager {
         // than re-deriving (and cloning) the whole list on every registration. A spatial policy
         // still re-sorts, because the new widget's position may belong before existing entries.
         match self.traversal_strategy {
-            FocusTraversalStrategy::TabOrder => self.focusable_widgets.push(id),
+            FocusTraversalStrategy::TabOrder => {
+                self.focusable_widgets.push(id);
+                self.positions.entry(id).or_insert(self.focusable_widgets.len() - 1);
+            }
             _ => self.reorder_by_strategy(),
         }
     }
@@ -180,8 +192,11 @@ impl FocusManager {
         if !self.registered.remove(&id) {
             return;
         }
-        self.registration_order.retain(|&x| x != id);
-        self.focusable_widgets.retain(|&x| x != id);
+        // W-P02: the two `retain` passes are two full scans with a compare-and-shift per
+        // element; each list is now partitioned once in place, and the effective order's pass
+        // rebuilds the position index for the survivors as it assigns their new slots.
+        Self::partition_out(&mut self.registration_order, id);
+        Self::partition_indexed(&mut self.focusable_widgets, &mut self.positions, id);
         self.policies.remove(&id);
         // A removal cannot move the remaining widgets relative to each other, so the effective
         // order is already correct under `TabOrder`. Spatial strategies keep their sort because
@@ -221,14 +236,14 @@ impl FocusManager {
         self.reorder_by_strategy();
     }
 
-    /// Move focus to the next widget in the tab order (wraps around).
+    /// Moves focus to the next widget in the tab order (wraps around).
     /// Returns the newly focused widget, if any.
     pub fn focus_next(&mut self) -> Option<ObjectId> {
         if self.focusable_widgets.is_empty() {
             return None;
         }
         let current = self.focused_widget;
-        let pos = current.and_then(|id| self.focusable_widgets.iter().position(|&x| x == id));
+        let pos = current.and_then(|id| self.positions.get(&id).copied());
         let next_index = match pos {
             Some(idx) => (idx + 1) % self.focusable_widgets.len(),
             None => 0,
@@ -266,8 +281,7 @@ impl FocusManager {
         if len == 0 {
             return None;
         }
-        let start =
-            self.focused_widget.and_then(|id| self.focusable_widgets.iter().position(|&x| x == id));
+        let start = self.focused_widget.and_then(|id| self.positions.get(&id).copied());
         for step in 1..=len {
             let index = match (start, forward) {
                 (Some(index), true) => (index + step) % len,
@@ -325,8 +339,7 @@ impl FocusManager {
         if len == 0 {
             return None;
         }
-        let start =
-            self.focused_widget.and_then(|id| self.focusable_widgets.iter().position(|&x| x == id));
+        let start = self.focused_widget.and_then(|id| self.positions.get(&id).copied());
         let mut chosen = None;
         for step in 1..=len {
             let index = match (start, forward) {
@@ -413,6 +426,54 @@ impl FocusManager {
                 self.focusable_widgets = order;
             }
         }
+        // W-P02: keep the traversal-start index in step with the effective order — one pass,
+        // first occurrence wins for a duplicated id, exactly like the `position` scan did.
+        self.positions.clear();
+        for (index, &id) in self.focusable_widgets.iter().enumerate() {
+            self.positions.entry(id).or_insert(index);
+        }
+    }
+
+    /// Removes every occurrence of `id` from `order` in one in-place pass, preserving the
+    /// relative order of the survivors (W-P02: the same outcome as `Vec::retain`, written as an
+    /// explicit partition so the effective order's pass can also rebuild the position index).
+    fn partition_out(order: &mut Vec<ObjectId>, id: ObjectId) {
+        let mut write = 0;
+        for read in 0..order.len() {
+            let current = order[read];
+            if current == id {
+                continue;
+            }
+            if write != read {
+                order[write] = current;
+            }
+            write += 1;
+        }
+        order.truncate(write);
+    }
+
+    /// [`Self::partition_out`] for the effective order, rebuilding `positions` in the same pass:
+    /// each survivor's new slot is recorded as the pass assigns it, so the index never needs a
+    /// second traversal.
+    fn partition_indexed(
+        order: &mut Vec<ObjectId>,
+        positions: &mut HashMap<ObjectId, usize>,
+        id: ObjectId,
+    ) {
+        positions.clear();
+        let mut write = 0;
+        for read in 0..order.len() {
+            let current = order[read];
+            if current == id {
+                continue;
+            }
+            if write != read {
+                order[write] = current;
+            }
+            positions.entry(current).or_insert(write);
+            write += 1;
+        }
+        order.truncate(write);
     }
 }
 
@@ -674,5 +735,75 @@ mod tests {
         assert_eq!(fm.focus_policy(7), FocusPolicy::ClickFocus);
         fm.unregister_focusable(7);
         assert_eq!(fm.focus_policy(7), FocusPolicy::StrongFocus);
+    }
+
+    /// W-P02: traversal starts from the position index, so the start slot must stay exact across
+    /// unregister, reorders and full order replacements — and an unknown start (a focused widget
+    /// that is not in the order) still begins at index 0, as the `position` scan did.
+    #[test]
+    fn traversal_positions_stay_exact_across_mutations() {
+        let mut fm = FocusManager::new();
+        fm.register_focusable(10);
+        fm.register_focusable(20);
+        fm.register_focusable(30);
+
+        fm.set_focus(30);
+        fm.unregister_focusable(20);
+        // 30 now sits at index 1 of [10, 30]: forward wraps to 10, backward lands on 10 too.
+        assert_eq!(fm.focus_next(), Some(10));
+        fm.set_focus(10);
+        assert_eq!(fm.focus_previous(), Some(30));
+
+        // A full replacement re-derives the positions: forward runs 30 → 40 → 10 → 30.
+        fm.set_focus_order(vec![30, 40, 10]);
+        fm.set_focus(30);
+        assert_eq!(fm.focus_next(), Some(40));
+        assert_eq!(fm.focus_next(), Some(10));
+        assert_eq!(fm.focus_next(), Some(30));
+
+        // A focused widget that is not registered starts from index 0.
+        fm.set_focus(99);
+        assert_eq!(fm.focus_next(), Some(30));
+    }
+
+    /// W-P02: the position index follows a spatial reorder, so traversal after a strategy
+    /// switch starts from the right slot.
+    #[test]
+    fn spatial_reorder_keeps_traversal_positions_exact() {
+        let mut fm = FocusManager::new();
+        fm.register_focusable(2);
+        fm.register_focusable(1);
+        fm.set_widget_position(1, 0, 0);
+        fm.set_widget_position(2, 10, 0);
+        fm.set_traversal_strategy(FocusTraversalStrategy::RowMajor);
+        assert_eq!(fm.focusable_widgets(), &[1, 2], "RowMajor sorts spatially");
+
+        fm.set_focus(2);
+        assert_eq!(fm.focus_next(), Some(1), "index 1 wraps to index 0");
+        fm.set_focus(1);
+        assert_eq!(fm.focus_next(), Some(2));
+    }
+
+    /// W-P02: `focus_next_matching` and `focus_next_for` share the position index, so their
+    /// walks stay exact after removals, and a rejecting predicate skips without moving focus.
+    #[test]
+    fn matching_traversals_use_the_position_index_after_removals() {
+        let mut fm = FocusManager::new();
+        for id in [10, 20, 30, 40] {
+            fm.register_focusable(id);
+        }
+        fm.unregister_focusable(20);
+        fm.unregister_focusable(40);
+
+        fm.set_focus(30);
+        // [10, 30]: forward from 30 wraps to 10; backward from 10 reaches 30.
+        assert_eq!(fm.focus_next_matching(true, |_| true), Some(10));
+        fm.set_focus(10);
+        assert_eq!(fm.focus_next_matching(false, |_| true), Some(30));
+
+        // From 30, only 10 is acceptable: backward stops there without moving focus otherwise.
+        fm.set_focus(30);
+        assert_eq!(fm.focus_next_matching(false, |id| id == 10), Some(10));
+        assert_eq!(fm.focus_next_for(true, FocusReason::Programmatic), Some(30));
     }
 }

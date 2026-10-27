@@ -1968,23 +1968,41 @@ fn apply_active_theme(widget: &mut Box<dyn widget::Widget>) {
     }
 }
 
-/// Applies the active theme to every widget that already exists.
+/// Completes a theme switch by re-styling the controls the switch notified (G-404).
 ///
-/// # Why a sweep is needed
+/// # How a switch reaches mounted controls
 ///
-/// A theme switch is a global change: applying it only inside the creation funnels
-/// would mean the controls on screen keep the previous palette until they are
-/// rebuilt. This walks the live registry and re-runs the same merge a newly created
-/// control gets, so an explicit per-control style still wins (see `theme::apply`).
+/// Every mounted control subscribes to the theme manager's `theme_changed` signal at
+/// registration (see `widget::runtime::finish_registration`). A switch — `set_theme`,
+/// `set_appearance`, the high-contrast override, a system-accent refresh, a loaded-and-activated
+/// theme — emits that signal, and each subscription records its control in the runtime's
+/// pending-restyle set. This call drains that set: each notified control is re-merged with the
+/// active theme through the same `theme::apply_active_theme` a newly created control gets, so an
+/// explicit per-control style still wins (see `theme::apply`).
 ///
-/// A profile without a theme module has nothing to apply and does nothing.
+/// # Why the restyle is a drain, not a synchronous notification
+///
+/// The signal fires while the switching caller holds the theme mutex, and the re-merge resolves
+/// theme styles — which takes that same non-reentrant mutex. Restyling inside the slot would
+/// deadlock, so the slot only records intent and the merge happens here, after the manager guard
+/// is released, or at the next frame (`drive_frame` step 0a) for switch paths that do not call
+/// this.
+///
+/// # Coverage
+///
+/// A control subscribes exactly once, at registration, so the pending set equals the set of
+/// controls mounted on the switching thread — the same set the previous full walk of the
+/// registry restyled, minus the blind re-merge of controls nothing notified about.
+/// `tests/theme_application_test.rs` pins the parity: mount, switch, assert restyled.
+///
+/// Without a preceding switch the set is empty and this is a no-op: nothing has notified, so no
+/// control carries a style that disagrees with the active theme. A profile without a theme
+/// module has nothing to apply and does nothing.
 #[cfg(not(alloc_frugal))]
 pub fn reapply_active_theme() {
     #[cfg(device_profile)]
     {
-        widget::runtime::for_each_mounted_widget(|_id, widget| {
-            crate::theme::apply_active_theme(widget);
-        });
+        widget::runtime::drain_pending_theme_restyle();
     }
 }
 

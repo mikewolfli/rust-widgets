@@ -15,8 +15,9 @@ use crate::render::RenderCommand;
 /// subset are rejected instead of being silently omitted or approximated.
 ///
 /// This is a command-format bridge, not a GPU rasterizer. The current
-/// [`super::WgpuRenderer::render_draw_commands_rgba8`] path rasterizes these commands on the CPU
-/// before transferring the resulting frame.
+/// [`super::WgpuRenderer::render_draw_commands_rgba8`] path draws dispatchable streams (clears,
+/// unclipped rect and circle fills) directly on the GPU and falls back to the CPU rasteriser for
+/// the rest — including the non-zero fills this adapter emits, which stay on the CPU path.
 pub fn bridge_non_zero_fill_commands(
     commands: &[RenderCommand],
 ) -> Result<Vec<WgpuDrawCommand>, String> {

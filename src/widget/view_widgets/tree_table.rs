@@ -934,23 +934,25 @@ impl TreeTable {
             self.sort_key_cache.clear();
             self.sort_key_generation = generation;
         }
-        let mut keyed: Vec<(SortKey, usize)> = children
-            .iter()
-            .map(|child| {
-                let mut path = parent.map(ToOwned::to_owned).unwrap_or_default();
-                path.push(*child);
-                let key = match self.sort_key_cache.get(path.as_slice()) {
-                    Some(key) => key.clone(),
-                    None => {
-                        let raw = model.sort_key(&path, column).unwrap_or_default();
-                        let key = normalise_sort_key(&raw, self.sort_role, self.case_sensitive);
-                        self.sort_key_cache.insert(path, key.clone());
-                        key
-                    }
-                };
-                (key, *child)
-            })
-            .collect();
+        let mut keyed: Vec<(SortKey, usize)> = Vec::with_capacity(children.len());
+        // One scratch path is reused for every child. The old form allocated a fresh `Vec` per
+        // child just to look the key up, so a wide branch cloned its parent prefix once per row
+        // (V-011). The only owned path left is the cache key itself, which must outlive the walk.
+        let mut path: Vec<usize> = parent.map(ToOwned::to_owned).unwrap_or_default();
+        for child in &children {
+            path.push(*child);
+            let key = match self.sort_key_cache.get(path.as_slice()) {
+                Some(key) => key.clone(),
+                None => {
+                    let raw = model.sort_key(&path, column).unwrap_or_default();
+                    let key = normalise_sort_key(&raw, self.sort_role, self.case_sensitive);
+                    self.sort_key_cache.insert(path.clone(), key.clone());
+                    key
+                }
+            };
+            path.pop();
+            keyed.push((key, *child));
+        }
         keyed.sort_by(|a, b| compare_sort_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
         if self.sort_descending {
             keyed.reverse();
@@ -2621,5 +2623,50 @@ mod tests {
 
         tree.handle_event(&Event::KeyPress { key: RIGHT, modifiers: 0 });
         assert_eq!(tree.is_row_expanded(0), Some(true), "RIGHT expands the branch");
+    }
+
+    /// V-011: a rebuild looks its sort keys up by borrowed path and reuses the cache.
+    ///
+    /// The old form allocated a fresh parent path per child; the observable part that survives
+    /// is the cache contract: the first sort asks the model once per child, a second rebuild with
+    /// unchanged inputs asks it no further.
+    #[test]
+    fn sort_keys_are_cached_by_a_borrowed_path() {
+        struct CountingModel {
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl TreeTableModel for CountingModel {
+            fn root_count(&self) -> usize {
+                10
+            }
+            fn child_count(&self, path: &[usize]) -> usize {
+                let _ = path;
+                0
+            }
+            fn column_count(&self) -> usize {
+                1
+            }
+            fn data(&self, path: &[usize], column: usize) -> Option<String> {
+                let _ = column;
+                path.last().map(|index| std::format!("{index:02}"))
+            }
+            fn sort_key(&self, path: &[usize], column: usize) -> Option<String> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.data(path, column)
+            }
+        }
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut tree = TreeTable::new(Rect::new(0, 0, 240, 240));
+        tree.set_model(Arc::new(CountingModel { calls: Arc::clone(&calls) }));
+        tree.set_sort_column(Some(0));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 10);
+
+        tree.rebuild_projection();
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            10,
+            "the second rebuild reuses the cache"
+        );
     }
 }

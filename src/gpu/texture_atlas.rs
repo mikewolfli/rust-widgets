@@ -2,6 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 //! Texture atlas for GPU rendering — packs small textures into a larger atlas (BLUE11 R5.8).
+//!
+//! # Status: host-side tool, outside the widget chain (G-228)
+//!
+//! This packer has no in-repo consumer: no widget, renderer or upload path
+//! allocates from it (verified repo-wide by grep, G-228), and the wgpu texture
+//! upload path it would serve lives in the renderer, which manages its own
+//! textures today. It is therefore kept as a **host-side tool**: a standalone
+//! rectangle packer a host — or the renderer, when it grows an atlas path — can
+//! drive directly at `rust_widgets::gpu::texture_atlas::TextureAtlas`.
+//! Deliberately *not* re-exported from `gpu`'s public surface, so the widget
+//! chain does not advertise an API the library itself never calls.
+//!
+//! **Integration condition:** wire it into an image/glyph upload path only when
+//! that path exists and asks for atlas packing (principle #51 — no speculative
+//! integration). **Deletion condition:** if it is still unused by the next
+//! major release, delete it together with its tests, exactly as
+//! `GpuStagingBufferPool` documents for itself (principle #49).
 use crate::compat::{HashMap, Vec};
 use crate::core::Size;
 

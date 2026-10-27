@@ -43,6 +43,12 @@ const DIALOG_REVEAL_MIN_SCALE: f32 = super::REVEAL_MIN_SCALE;
 /// The side of the square close button drawn on a closable dialog's title bar.
 const DIALOG_CLOSE_BUTTON: u32 = 16;
 
+/// The side of the square resize grip painted in a resizable dialog's bottom-right corner.
+const DIALOG_RESIZE_GRIP: u32 = 14;
+
+/// The smallest size a grip resize may produce, in logical pixels.
+const DIALOG_RESIZE_MIN: u32 = 64;
+
 /// A button a [`Dialog`] can paint in its title bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleBarButton {
@@ -137,8 +143,21 @@ pub struct Dialog {
     buttons: Vec<(String, ButtonRole)>,
     /// The index of the button Enter activates (DLG-01).
     default_button: Option<usize>,
+    /// The index of the button Escape activates (DLG-004); `None` keeps the reject fallback.
+    cancel_button: Option<usize>,
     /// The action row's painted rectangles, cached for the press path (DLG-01).
     button_rects: RefCell<Vec<Rect>>,
+    /// Whether the dialog paints a bottom-right resize grip and honours the gesture.
+    ///
+    /// Off by default: a dialog has no resize path to reuse unless the caller asks for one, so
+    /// enabling this is the only write that changes the painted frame (DLG-003).
+    resizable: bool,
+    /// The pointer position at the start of a grip resize, with the geometry it started from.
+    ///
+    /// Kept as an anchor rather than accumulated, so moving the pointer back restores the
+    /// original size exactly — the same rule the title-bar move drag uses.
+    resize_origin: Option<Point>,
+    resize_geometry: Option<Rect>,
     /// The content frame written on the last paint, so a still frame skips the write (G-P12).
     placed_content: Option<(Rect, ObjectId)>,
 }
@@ -174,7 +193,11 @@ impl Dialog {
             title_bar_actions: Vec::new(),
             buttons: Vec::new(),
             default_button: None,
+            cancel_button: None,
             button_rects: RefCell::new(Vec::new()),
+            resizable: false,
+            resize_origin: None,
+            resize_geometry: None,
             placed_content: None,
         }
     }
@@ -256,12 +279,21 @@ impl Dialog {
 
     /// Shows the dialog, emits `opened`, and — when modal — enters the modal stack.
     pub fn open(&mut self) {
+        // DLG-002: a second open starts a second round. The outcome belongs to the round that
+        // produced it, so leaving it in place let a subscriber read the previous answer before
+        // this round had one — the dialog answering a question nobody had been asked yet.
+        self.result = None;
+        self.accepted_state = false;
+        self.rejected_state = false;
         self.show();
         // Aim the reveal; the frames that follow grow and settle the frame. A dialog that appears at
         // full size on the frame it is shown and vanishes on the frame it is hidden is the one
         // gesture a dialog is *for* being skipped, and `show`/`hide` only carry the logical state.
         self.reveal.set_target(1.0);
         if self.modal {
+            // DLG-001: the scrim stack is an open order, not a paint order, so a dialog opened
+            // second owns the page's single dimming plane from this instant.
+            super::push_modal_layer(self.id());
             let _ = crate::widget::runtime::enter_modal(self.id());
         }
         self.opened.emit();
@@ -270,10 +302,13 @@ impl Dialog {
     /// Hides the dialog, pops it from the modal stack (if it was there), and emits
     /// `closed`.
     pub fn close(&mut self) {
+        super::pop_modal_layer(self.id());
         let _ = crate::widget::runtime::exit_modal(self.id());
         self.hide();
         self.reveal.set_target(0.0);
         self.drag = None;
+        self.resize_origin = None;
+        self.resize_geometry = None;
         // The base lifecycle signal is what a handle-layer `on_close` / the JSON `closed` route
         // connects to; the widget's own signal is kept for its own listeners. Emitting both means
         // a handler fires from either path that closed the dialog.
@@ -394,16 +429,19 @@ impl Dialog {
     /// Appends an action button and returns its index (DLG-01).
     ///
     /// The role states what pressing it means: a [`ButtonRole::Destructive`] button rejects
-    /// the dialog, every other role accepts it. The row is painted at the frame's bottom band
-    /// through the same `action_row_geometry` derivation the other dialogs use.
+    /// the dialog, every other role accepts it. A [`ButtonRole::Primary`] button also becomes
+    /// the default (DLG-004), so the role's documented meaning and Enter agree; otherwise the
+    /// first button is the default, which is the conventional safe answer.
     pub fn add_button(&mut self, text: impl Into<String>, role: ButtonRole) -> usize {
         self.buttons.push((text.into(), role));
-        if self.default_button.is_none() {
-            // The first button becomes the default, which is the conventional safe answer.
-            self.default_button = Some(self.buttons.len() - 1);
+        let index = self.buttons.len() - 1;
+        match role {
+            ButtonRole::Primary => self.default_button = Some(index),
+            _ if self.default_button.is_none() => self.default_button = Some(index),
+            _ => {}
         }
         self.base.request_redraw();
-        self.buttons.len() - 1
+        index
     }
 
     /// Marks `index` as the button Enter activates (DLG-01).
@@ -413,6 +451,54 @@ impl Dialog {
         }
         self.default_button = Some(index);
         self.base.request_redraw();
+    }
+
+    /// The index Enter activates, or `None` when the row is empty (DLG-004).
+    ///
+    /// The explicit default marker wins; without one, the button whose role is
+    /// [`ButtonRole::Primary`] is the caller's stated default action, and the first button is
+    /// the last resort. That ordering is what makes the role a *marker* rather than a colour.
+    pub fn enter_target(&self) -> Option<usize> {
+        if let Some(index) = self.default_button.filter(|index| *index < self.buttons.len()) {
+            return Some(index);
+        }
+        self.buttons
+            .iter()
+            .position(|(_, role)| *role == ButtonRole::Primary)
+            .or(if self.buttons.is_empty() { None } else { Some(0) })
+    }
+
+    /// Marks `index` as the button Escape activates; `None` restores the reject fallback
+    /// (DLG-004).
+    ///
+    /// An out-of-range index is ignored rather than recorded, so a stale marker cannot make
+    /// Escape reach a button the row no longer contains.
+    pub fn set_cancel_button(&mut self, index: Option<usize>) {
+        let index = index.filter(|index| *index < self.buttons.len());
+        if self.cancel_button == index {
+            return;
+        }
+        self.cancel_button = index;
+        self.base.request_redraw();
+    }
+
+    /// The index Escape activates, if the caller marked one (DLG-004).
+    pub fn cancel_button(&self) -> Option<usize> {
+        self.cancel_button
+    }
+
+    /// The index Escape activates, or `None` when Escape should reject outright (DLG-004).
+    ///
+    /// The explicit cancel marker wins. Without one, the **last** button is the fallback — the
+    /// row's rightmost action is the one a keyboard dismissal conventionally belongs to — but
+    /// only when it is a [`ButtonRole::Destructive`] action, because activating a plain button
+    /// would *accept* the dialog and that is not what Escape means.
+    fn escape_target(&self) -> Option<usize> {
+        if let Some(index) = self.cancel_button.filter(|index| *index < self.buttons.len()) {
+            return Some(index);
+        }
+        let last = self.buttons.len().checked_sub(1)?;
+        self.buttons.get(last).filter(|(_, role)| *role == ButtonRole::Destructive).map(|_| last)
     }
 
     /// The action row's labels, in order (DLG-01).
@@ -496,6 +582,91 @@ impl Dialog {
         self.set_title_bar_buttons(&buttons);
     }
 
+    /// Whether the dialog can be resized by its bottom-right grip. Off by default (DLG-003).
+    pub fn is_resizable(&self) -> bool {
+        self.resizable
+    }
+
+    /// Enables or disables the resize grip.
+    ///
+    /// Disabling also ends an in-flight resize, so a gesture cannot continue after the
+    /// permission was withdrawn. Enabling changes the frame to fill the rectangle the dialog
+    /// was given: a resizable window owns its own extent, while a fixed dialog is centred at
+    /// its intrinsic size in that rectangle. Off is the historical behaviour, to the pixel.
+    pub fn set_resizable(&mut self, resizable: bool) {
+        if self.resizable == resizable {
+            return;
+        }
+        self.resizable = resizable;
+        if !resizable {
+            self.resize_origin = None;
+            self.resize_geometry = None;
+        }
+        self.place_content_in(self.frame_rect());
+        self.base.request_redraw();
+    }
+
+    /// The bottom-right resize grip's box, or `None` when the dialog is not resizable.
+    ///
+    /// The grip is a real hit target, not just ink: a press inside it resizes the dialog
+    /// instead of moving it or reaching the content.
+    pub fn resize_grip_rect(&self) -> Option<Rect> {
+        if !self.resizable {
+            return None;
+        }
+        let frame = self.frame_rect();
+        let side = DIALOG_RESIZE_GRIP.min(frame.width).min(frame.height);
+        if side == 0 {
+            return None;
+        }
+        Some(Rect::new(
+            frame.x + frame.width as i32 - side as i32,
+            frame.y + frame.height as i32 - side as i32,
+            side,
+            side,
+        ))
+    }
+
+    /// Whether a grip resize is in flight (DLG-003).
+    pub fn is_resizing(&self) -> bool {
+        self.resize_origin.is_some()
+    }
+
+    /// Ends an in-flight resize without changing the size further.
+    pub fn end_resize(&mut self) {
+        if self.resize_origin.take().is_some() {
+            self.resize_geometry = None;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Advances an in-flight grip resize to `pos`.
+    ///
+    /// The size is recomputed from the gesture's origin rather than accumulated, so moving the
+    /// pointer back restores the original size exactly. The top-left corner is fixed and both
+    /// dimensions are clamped to [`DIALOG_RESIZE_MIN`].
+    pub fn resize_to(&mut self, pos: Point) {
+        let (Some(origin), Some(start)) = (self.resize_origin, self.resize_geometry) else {
+            return;
+        };
+        let width = (start.width as i32 + (pos.x - origin.x)).max(DIALOG_RESIZE_MIN as i32) as u32;
+        let height =
+            (start.height as i32 + (pos.y - origin.y)).max(DIALOG_RESIZE_MIN as i32) as u32;
+        self.apply_size(start, width, height);
+    }
+
+    /// Writes a new size anchored at `anchor`'s top-left corner.
+    fn apply_size(&mut self, anchor: Rect, width: u32, height: u32) {
+        let next = Rect::new(anchor.x, anchor.y, width, height);
+        if self.base.geometry() == next {
+            return;
+        }
+        // `set_geometry` also re-places the content child, so the two cannot disagree about
+        // the box a resize hands over.
+        self.set_geometry(next);
+        self.base.request_redraw();
+    }
+
     /// The title-bar buttons and their rectangles, in paint order (right to left).
     ///
     /// Drawing and hit-testing both read this, so a mark and its target cannot drift.
@@ -546,6 +717,13 @@ impl Dialog {
     /// below — the frame, the title bar and the title's line box — is derived from this one
     /// box, so the chrome and its label cannot be placed from different rectangles.
     fn frame_rect(&self) -> Rect {
+        if self.resizable {
+            // A resizable dialog owns its extent: the offered rectangle is its size, not a
+            // maximum it is centred in. This is what gives the grip something to change and
+            // is why the behaviour is opt-in — a fixed dialog keeps the exact frame it had.
+            let rect = self.base.geometry();
+            return Rect::new(rect.x, rect.y, rect.width.max(1), rect.height.max(1));
+        }
         ControlMetrics::painted_box(
             self.base.geometry(),
             Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
@@ -774,6 +952,14 @@ impl EventHandler for Dialog {
                         return;
                     }
                 }
+                // The grip wins over the title bar and over the content: it is the one
+                // affordance that says "this corner resizes me" (DLG-003).
+                if self.resize_grip_rect().is_some_and(|rect| rect.contains_point(*pos)) {
+                    self.resize_origin = Some(*pos);
+                    self.resize_geometry = Some(self.frame_rect());
+                    self.base.set_mouse_pressed(true);
+                    return;
+                }
                 // The action row is painted at the frame's bottom band; a press there is a
                 // button press, not a window move (DLG-01).
                 let pressed_button = {
@@ -792,7 +978,9 @@ impl EventHandler for Dialog {
                 self.base.set_mouse_pressed(true);
             }
             Event::MouseMove { pos } => {
-                if let Some(drag) = self.drag {
+                if self.is_resizing() {
+                    self.resize_to(*pos);
+                } else if let Some(drag) = self.drag {
                     let dx = pos.x - drag.origin.x;
                     let dy = pos.y - drag.origin.y;
                     if dx != 0 || dy != 0 {
@@ -808,17 +996,28 @@ impl EventHandler for Dialog {
             }
             Event::MouseRelease { button: 1, .. } => {
                 self.drag = None;
+                self.end_resize();
                 self.base.set_mouse_pressed(false);
             }
+            // A release outside the dialog is never delivered, so a resize is ended when the
+            // pointer leaves the control rather than left half-finished.
+            Event::MouseLeave { .. } if self.is_resizing() => self.end_resize(),
             Event::KeyPress { key, .. } if *key == crate::event::key_codes::ESCAPE => {
-                self.reject();
+                // DLG-004: a marked cancel action is what Escape means; without one the
+                // dialog rejects, which is the behaviour every caller already had.
+                match self.escape_target() {
+                    Some(index) => {
+                        self.activate_button(index);
+                    }
+                    None => self.reject(),
+                }
             }
             Event::KeyPress { key, .. }
-                if (*key == crate::event::key_codes::ENTER
-                    || *key == crate::event::key_codes::LINE_FEED)
-                    && self.default_button.is_some() =>
+                if *key == crate::event::key_codes::ENTER
+                    || *key == crate::event::key_codes::LINE_FEED =>
             {
-                if let Some(index) = self.default_button {
+                // DLG-004: the default marker, then the Primary role, then the first button.
+                if let Some(index) = self.enter_target() {
                     self.activate_button(index);
                 }
             }
@@ -846,7 +1045,13 @@ impl Draw for Dialog {
         // backdrop fades in with the reveal, so it is never fully dimmed while the frame is still
         // growing; one value drives both, so they cannot get out of step.
         if self.modal {
-            super::draw_modal_scrim_scaled(context, self.geometry(), reveal);
+            super::draw_modal_scrim_scaled(
+                context,
+                self.id(),
+                self.geometry(),
+                self.base.parent(),
+                reveal,
+            );
         }
 
         // The min-scale floor below applies to a reveal that is *in progress*, so the first visible
@@ -975,6 +1180,27 @@ impl Draw for Dialog {
             *self.button_rects.borrow_mut() = row.buttons;
         } else {
             self.button_rects.borrow_mut().clear();
+        }
+
+        // The resize grip is painted before the title-bar early return so a titleless dialog
+        // keeps it. Three short diagonals are the conventional "drag this corner" mark and
+        // need no font glyph (DLG-003).
+        if let Some(grip) = self.resize_grip_rect() {
+            let grip_ink = border.with_alpha(170);
+            for step in 1..=3 {
+                let offset = step * 4;
+                context.draw_line(
+                    Point::new(
+                        grip.x + grip.width as i32 - offset,
+                        grip.y + grip.height as i32 - 2,
+                    ),
+                    Point::new(
+                        grip.x + grip.width as i32 - 2,
+                        grip.y + grip.height as i32 - offset,
+                    ),
+                    grip_ink,
+                );
+            }
         }
 
         if self.title.is_empty() {
@@ -1136,6 +1362,96 @@ mod tests {
         assert!(!d.was_accepted());
         assert!(d.was_rejected());
         assert_eq!(*finished.lock().expect("lock"), vec![42, 0]);
+    }
+
+    #[test]
+    fn reopening_a_dialog_clears_the_previous_result() {
+        let mut d = dialog();
+        d.open();
+        d.done(42);
+        assert_eq!(d.result(), Some(42));
+        assert!(d.was_accepted());
+
+        // DLG-002: a second round starts with no answer, so a subscriber cannot read the
+        // previous round's outcome before this one has one.
+        d.open();
+        assert_eq!(d.result(), None);
+        assert!(!d.was_accepted());
+        assert!(!d.was_rejected());
+        d.close();
+    }
+
+    #[test]
+    fn enter_prefers_the_primary_role_and_escape_the_cancel_marker() {
+        let mut d = dialog();
+        d.add_button("Back", ButtonRole::Normal);
+        d.add_button("Apply", ButtonRole::Primary);
+        d.add_button("Cancel", ButtonRole::Destructive);
+        d.set_cancel_button(Some(2));
+        d.open();
+
+        // Enter follows the Primary marker rather than the first button.
+        assert_eq!(d.enter_target(), Some(1));
+        d.handle_event(&Event::key_press(crate::event::key_codes::ENTER, 0));
+        assert_eq!(d.result(), Some(1), "Enter must activate the Primary button");
+
+        d.open();
+        // Escape follows the cancel marker, which is the destructive action here.
+        assert_eq!(d.escape_target(), Some(2));
+        d.handle_event(&Event::key_press(crate::event::key_codes::ESCAPE, 0));
+        assert_eq!(d.result(), Some(0), "Escape must activate the marked cancel button");
+    }
+
+    #[test]
+    fn escape_falls_back_to_reject_and_enter_to_the_first_button() {
+        let mut d = dialog();
+        d.add_button("Only", ButtonRole::Normal);
+        d.open();
+        assert_eq!(d.cancel_button(), None);
+        // The last button is not a cancellation marker, so Escape keeps its reject meaning
+        // rather than accepting the dialog through a plain action.
+        assert_eq!(d.escape_target(), None);
+        d.handle_event(&Event::key_press(crate::event::key_codes::ESCAPE, 0));
+        assert_eq!(d.result(), Some(0));
+
+        let mut empty = dialog();
+        empty.open();
+        assert_eq!(empty.enter_target(), None, "an empty row has nothing to activate");
+        empty.close();
+    }
+
+    #[test]
+    fn a_resizable_dialog_paints_and_drags_a_size_grip() {
+        let mut d = Dialog::with_title("Resize", Rect::new(0, 0, 400, 320));
+        d.set_resizable(true);
+        let grip = d.resize_grip_rect().expect("a resizable dialog paints a grip");
+        assert_eq!(grip.x + grip.width as i32, 400);
+        assert_eq!(grip.y + grip.height as i32, 320);
+
+        d.handle_event(&Event::MousePress {
+            pos: Point::new(grip.x + 1, grip.y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        assert!(d.is_resizing(), "a press on the grip starts a resize, not a move");
+        d.handle_event(&Event::MouseMove { pos: Point::new(grip.x + 41, grip.y + 21) });
+        assert_eq!(d.geometry(), Rect::new(0, 0, 440, 340));
+        d.handle_event(&Event::MouseRelease { pos: Point::new(440, 340), button: 1 });
+        assert!(!d.is_resizing());
+
+        // A shrink clamps to the minimum rather than to zero.
+        let grip = d.resize_grip_rect().expect("still resizable");
+        d.handle_event(&Event::MousePress {
+            pos: Point::new(grip.x + 1, grip.y + 1),
+            button: 1,
+            modifiers: 0,
+        });
+        d.handle_event(&Event::MouseMove { pos: Point::new(-1000, -1000) });
+        assert_eq!(d.geometry().width, DIALOG_RESIZE_MIN);
+        assert_eq!(d.geometry().height, DIALOG_RESIZE_MIN);
+
+        d.set_resizable(false);
+        assert!(d.resize_grip_rect().is_none(), "a fixed dialog advertises no grip");
     }
 
     #[test]

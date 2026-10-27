@@ -26,6 +26,14 @@ pub struct ShortcutManager {
     scoped_shortcuts: HashMap<(String, Shortcut), String>,
     /// Map from action ID to entry.
     entries: HashMap<String, ShortcutEntry>,
+    /// W-P01: candidate index from `(main key, normalized event modifier set)` to the bindings
+    /// that can answer to that chord, in registration order.
+    ///
+    /// The index only *narrows candidates*: every candidate is still judged by
+    /// [`Self::matches_binding`], the single matching rule, so the runtime platform style keeps
+    /// the final word. A `primary` binding is indexed under the desktop lift bucket too, and a
+    /// platform whose style declines the lift simply rejects that candidate at match time.
+    index: HashMap<(Key, Modifiers), Vec<IndexedBinding>>,
     /// Active scope stack, bottom first. Resolution walks it in reverse (top first).
     scopes: Vec<ActiveScope>,
     /// Emitted when a shortcut is triggered.
@@ -43,6 +51,22 @@ struct ActiveScope {
     modal: bool,
 }
 
+/// One entry of the chord index: the facts `lookup` needs before the matching rule runs.
+///
+/// `shortcut` mirrors the authoritative copy in `entries`; the index is a derived structure
+/// maintained only by [`ShortcutManager::register_scoped`], [`ShortcutManager::remove_binding`],
+/// [`ShortcutManager::unregister_shortcut`] and [`ShortcutManager::clear`], so the copy cannot
+/// drift from the entry it mirrors.
+#[derive(Clone)]
+struct IndexedBinding {
+    /// `None` for a global binding, the owning scope's id otherwise.
+    scope: Option<String>,
+    /// The action the chord routes to.
+    action_id: String,
+    /// Copy of the registered binding, handed to `matches_binding` unchanged.
+    shortcut: Shortcut,
+}
+
 impl ShortcutManager {
     /// Creates a new shortcut manager.
     pub fn new() -> Self {
@@ -50,6 +74,7 @@ impl ShortcutManager {
             shortcuts: HashMap::new(),
             scoped_shortcuts: HashMap::new(),
             entries: HashMap::new(),
+            index: HashMap::new(),
             scopes: Vec::new(),
             shortcut_triggered: Signal1::new(),
             conflict_detected: Signal1::new(),
@@ -118,6 +143,11 @@ impl ShortcutManager {
             enabled: true,
             scope: scope.clone(),
         };
+        let indexed = IndexedBinding {
+            scope: scope.clone(),
+            action_id: action_id.clone(),
+            shortcut: shortcut.clone(),
+        };
         match scope {
             Some(scope) => {
                 self.scoped_shortcuts.insert((scope, shortcut), action_id.clone());
@@ -127,6 +157,7 @@ impl ShortcutManager {
             }
         }
         self.entries.insert(action_id, entry);
+        self.index_binding(indexed);
         true
     }
 
@@ -139,6 +170,60 @@ impl ShortcutManager {
             None => {
                 self.shortcuts.remove(&entry.shortcut);
             }
+        }
+        self.remove_indexed(entry.scope.as_deref(), &entry.shortcut, &entry.action_id);
+    }
+
+    /// Adds one binding to every index bucket it can answer from (W-P01).
+    ///
+    /// A binding is indexed under its own modifier set. A `primary` binding is additionally
+    /// indexed under the desktop lift (`modifiers - PRIMARY + CTRL`), because that is the other
+    /// normalized event `matches_binding` can answer yes from. The extra bucket is a candidate
+    /// list only: on a platform whose style declines the lift, `matches_binding` rejects the
+    /// candidate exactly as the linear scan did.
+    fn index_binding(&mut self, binding: IndexedBinding) {
+        let direct = (binding.shortcut.key, binding.shortcut.modifiers);
+        self.index.entry(direct).or_default().push(binding.clone());
+        if binding.shortcut.modifiers.contains(Modifiers::PRIMARY) {
+            let lifted = (
+                binding.shortcut.key,
+                binding.shortcut.modifiers.without(Modifiers::PRIMARY) | Modifiers::CTRL,
+            );
+            self.index.entry(lifted).or_default().push(binding);
+        }
+    }
+
+    /// Removes one binding from every bucket [`Self::index_binding`] may have placed it in.
+    fn remove_indexed(&mut self, scope: Option<&str>, shortcut: &Shortcut, action_id: &str) {
+        Self::remove_from_bucket(
+            &mut self.index,
+            (shortcut.key, shortcut.modifiers),
+            scope,
+            action_id,
+        );
+        if shortcut.modifiers.contains(Modifiers::PRIMARY) {
+            let lifted =
+                (shortcut.key, shortcut.modifiers.without(Modifiers::PRIMARY) | Modifiers::CTRL);
+            Self::remove_from_bucket(&mut self.index, lifted, scope, action_id);
+        }
+    }
+
+    /// Drops one `(scope, action)` pair from a bucket, removing the bucket when it empties so a
+    /// churning registry cannot accumulate empty vectors.
+    fn remove_from_bucket(
+        index: &mut HashMap<(Key, Modifiers), Vec<IndexedBinding>>,
+        key: (Key, Modifiers),
+        scope: Option<&str>,
+        action_id: &str,
+    ) {
+        let Some(bucket) = index.get_mut(&key) else {
+            return;
+        };
+        bucket.retain(|binding| {
+            !(binding.action_id == action_id && binding.scope.as_deref() == scope)
+        });
+        if bucket.is_empty() {
+            index.remove(&key);
         }
     }
 
@@ -154,6 +239,7 @@ impl ShortcutManager {
     /// Unregisters a shortcut by key combination.
     pub fn unregister_shortcut(&mut self, shortcut: &Shortcut) -> bool {
         if let Some(action_id) = self.shortcuts.remove(shortcut) {
+            self.remove_indexed(None, shortcut, &action_id);
             self.entries.remove(&action_id);
             true
         } else {
@@ -244,19 +330,28 @@ impl ShortcutManager {
     /// or not it matched, which is what shields the layers below a modal dialog. After the stack is
     /// exhausted, global bindings are consulted exactly as before scopes existed.
     ///
-    /// The global fallback is still a linear scan over the entries **on purpose**: the hash map is
-    /// the reverse index ([`Self::get_action`]), but a second matching path would be a second rule.
-    /// Every entry is judged by the one function, so registry dispatch and an unregistered widget
-    /// action cannot disagree about a chord.
+    /// The global fallback used to be a linear scan over the entries **on purpose**: the hash map
+    /// is the reverse index ([`Self::get_action`]), but a second matching path would be a second
+    /// rule. That property is kept (W-P01): the chord index only fetches the candidates for the
+    /// pressed `(key, normalized modifiers)` in O(1) — every candidate is still judged by the one
+    /// function, [`Self::matches_binding`], so registry dispatch and an unregistered widget action
+    /// cannot disagree about a chord. When two bindings in one scope can answer to the same press
+    /// (a physical-Control binding and a `primary` binding under the desktop lift), the bucket
+    /// keeps their registration order, so the winner is deterministic.
     fn lookup(&self, key: Key, modifiers: Modifiers) -> Option<String> {
+        // The same normalization `matches_binding` applies, used here only to pick the bucket;
+        // acceptance is still decided per candidate by `matches_binding` below.
+        let style = crate::platform::platform_facts().shortcut_style();
+        let normalized = Self::normalize_event_modifiers(modifiers, style);
+        let bucket = self.index.get(&(key, normalized))?;
         for active in self.scopes.iter().rev() {
-            let matched = self
-                .scoped_shortcuts
+            let matched = bucket
                 .iter()
-                .find(|((scope, shortcut), _)| {
-                    scope == &active.id && Self::matches_binding(shortcut, key, modifiers)
+                .find(|binding| {
+                    binding.scope.as_deref() == Some(active.id.as_str())
+                        && Self::matches_binding(&binding.shortcut, key, modifiers)
                 })
-                .map(|(_, action_id)| action_id.clone());
+                .map(|binding| binding.action_id.clone());
             if matched.is_some() {
                 return matched;
             }
@@ -264,12 +359,12 @@ impl ShortcutManager {
                 return None;
             }
         }
-        self.entries
-            .values()
-            .find(|entry| {
-                entry.scope.is_none() && Self::matches_binding(&entry.shortcut, key, modifiers)
+        bucket
+            .iter()
+            .find(|binding| {
+                binding.scope.is_none() && Self::matches_binding(&binding.shortcut, key, modifiers)
             })
-            .map(|entry| entry.action_id.clone())
+            .map(|binding| binding.action_id.clone())
     }
 
     /// Pushes a non-modal scope onto the active stack.
@@ -387,6 +482,7 @@ impl ShortcutManager {
         self.shortcuts.clear();
         self.scoped_shortcuts.clear();
         self.entries.clear();
+        self.index.clear();
         self.scopes.clear();
     }
     /// Returns true if a **global** shortcut is registered.

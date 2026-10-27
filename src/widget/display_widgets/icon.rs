@@ -77,12 +77,12 @@ pub fn draw_icon_at(ctx: &mut RenderContext, rect: Rect, color: Color, name: Ico
     }
     #[cfg(feature = "icons")]
     if let Some(data) = name.data_opt() {
-        if let Err(error) = draw_outline_in(ctx, rect, color, &data) {
+        if let Err(error) = draw_outline_in(ctx, rect, color, &data, IconTransform::IDENTITY) {
             log::error!("icon '{}' could not be painted: {error:?}", data.name);
         }
         return;
     }
-    draw_fallback_in(ctx, rect, color, name.as_str());
+    draw_fallback_in(ctx, rect, color, name.as_str(), IconTransform::IDENTITY);
 }
 
 /// The resolved, borrowed view of an icon source.
@@ -356,7 +356,7 @@ pub fn paint_icon(
         IconRef::Builtin(name) => {
             #[cfg(feature = "icons")]
             if let Some(data) = name.data_opt() {
-                draw_outline_in(ctx, slot, color, &data)?;
+                draw_outline_in(ctx, slot, color, &data, IconTransform::IDENTITY)?;
                 return Ok(IconPaintOutcome::Drawn);
             }
             // The generated table is what a build without the bundled outlines draws. Its `false`
@@ -364,7 +364,7 @@ pub fn paint_icon(
             // `EmptyGeometry` failure, not a draw. Ignoring the return would make "nothing was
             // drawn" indistinguishable from "an icon was drawn", which is what §19.4 forbids an
             // outcome from doing.
-            if draw_fallback_in(ctx, slot, color, name.as_str()) {
+            if draw_fallback_in(ctx, slot, color, name.as_str(), IconTransform::IDENTITY) {
                 Ok(IconPaintOutcome::Drawn)
             } else {
                 Err(IconPaintError::EmptyGeometry)
@@ -373,7 +373,7 @@ pub fn paint_icon(
         IconRef::StaticGeometry(data) => {
             #[cfg(any(feature = "icons", widgets_unstripped))]
             {
-                draw_outline_in(ctx, slot, color, data)?;
+                draw_outline_in(ctx, slot, color, data, IconTransform::IDENTITY)?;
                 Ok(IconPaintOutcome::Drawn)
             }
             #[cfg(not(any(feature = "icons", widgets_unstripped)))]
@@ -415,13 +415,13 @@ pub fn draw_icon_named(ctx: &mut RenderContext, rect: Rect, color: Color, name: 
     match resolve_named_icon(name) {
         #[cfg(any(feature = "icons", widgets_unstripped))]
         Some(NamedIcon::Outline(data)) => {
-            if let Err(error) = draw_outline_in(ctx, rect, color, &data) {
+            if let Err(error) = draw_outline_in(ctx, rect, color, &data, IconTransform::IDENTITY) {
                 log::error!("icon '{}' could not be painted: {error:?}", data.name);
             }
             true
         }
         Some(NamedIcon::Fallback) => {
-            draw_fallback_in(ctx, rect, color, name);
+            draw_fallback_in(ctx, rect, color, name, IconTransform::IDENTITY);
             true
         }
         None => false,
@@ -558,6 +558,7 @@ fn draw_outline_in(
     rect: Rect,
     color: Color,
     data: &IconData,
+    transform: IconTransform,
 ) -> Result<(), IconPaintError> {
     #[cfg(all(not(alloc_frugal), any(feature = "icons", widgets_unstripped)))]
     use crate::render::path::flatten::flatten_static_paths;
@@ -583,13 +584,78 @@ fn draw_outline_in(
         return Err(IconPaintError::EmptyGeometry);
     }
     let point_count = contours[..count].iter().map(|&(_, end)| end).max().unwrap_or(0);
+    let centre = Point::new(
+        rect.x.saturating_add((rect.width / 2) as i32),
+        rect.y.saturating_add((rect.height / 2) as i32),
+    );
+    transform.apply(&mut points[..point_count], centre);
     ctx.fill_path_non_zero(&points[..point_count], &contours[..count], color)
         .map_err(IconPaintError::Backend)
 }
 
+/// A draw-time transform for icon geometry: mirroring and a plane rotation.
+///
+/// The default is the identity, which leaves the historical picture byte-identical. The
+/// transform is applied to the flattened outline's points around the glyph box's centre, so a
+/// flip mirrors the artwork rather than moving the box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IconTransform {
+    /// Clockwise rotation in radians.
+    pub rotation: f32,
+    /// Mirror the artwork horizontally (about the vertical centre line).
+    pub flip_horizontal: bool,
+    /// Mirror the artwork vertically (about the horizontal centre line).
+    pub flip_vertical: bool,
+}
+
+impl IconTransform {
+    /// The identity transform: no rotation, no mirroring.
+    pub const IDENTITY: Self = Self { rotation: 0.0, flip_horizontal: false, flip_vertical: false };
+
+    /// Whether this transform leaves every point where it was.
+    pub fn is_identity(&self) -> bool {
+        self.rotation == 0.0 && !self.flip_horizontal && !self.flip_vertical
+    }
+
+    /// Maps `point` around `centre`.
+    fn map(&self, point: Point, centre: Point) -> Point {
+        if self.is_identity() {
+            return point;
+        }
+        let mut dx = (point.x - centre.x) as f32;
+        let mut dy = (point.y - centre.y) as f32;
+        if self.flip_horizontal {
+            dx = -dx;
+        }
+        if self.flip_vertical {
+            dy = -dy;
+        }
+        let (sin, cos) = self.rotation.sin_cos();
+        let x = dx * cos - dy * sin;
+        let y = dx * sin + dy * cos;
+        Point::new(centre.x + x.round() as i32, centre.y + y.round() as i32)
+    }
+
+    /// Applies the transform to every point in `points`.
+    fn apply(&self, points: &mut [Point], centre: Point) {
+        if self.is_identity() {
+            return;
+        }
+        for point in points {
+            *point = self.map(*point, centre);
+        }
+    }
+}
+
 /// Draws `token`'s generated fallback geometry into `rect`; unknown tokens draw nothing here
 /// (the caller falls back to the placeholder).
-fn draw_fallback_in(ctx: &mut RenderContext, rect: Rect, color: Color, token: &str) -> bool {
+fn draw_fallback_in(
+    ctx: &mut RenderContext,
+    rect: Rect,
+    color: Color,
+    token: &str,
+    transform: IconTransform,
+) -> bool {
     use crate::widget::icon_fallback_data::ICON_FALLBACK;
 
     // The table is indexed by `IconName`'s declaration order, so a token that parses to a variant
@@ -627,6 +693,11 @@ fn draw_fallback_in(ctx: &mut RenderContext, rect: Rect, color: Color, token: &s
         }));
         contours.push((start, points.len()));
     }
+    let centre = Point::new(
+        rect.x.saturating_add((rect.width / 2) as i32),
+        rect.y.saturating_add((rect.height / 2) as i32),
+    );
+    transform.apply(&mut points, centre);
     if let Err(error) = ctx.fill_path_non_zero(&points, &contours, color) {
         log::error!("fallback icon '{}' could not be submitted: {error:?}", fallback.name);
     }
@@ -779,6 +850,11 @@ pub struct Icon {
     /// that triple; a hit means the buffer already holds the picture.
     #[cfg(feature = "image")]
     frame_tint_key: Option<(u64, usize, bool, bool)>,
+    /// The draw-time mirror and rotation applied to the icon's geometry.
+    ///
+    /// The identity is the default, so an icon that never asks for a transform paints exactly
+    /// as it always did.
+    transform: IconTransform,
 }
 
 #[cfg(widgets_unstripped)]
@@ -811,6 +887,7 @@ impl Icon {
             frames_generation: 0,
             #[cfg(feature = "image")]
             frame_tint_key: None,
+            transform: IconTransform::IDENTITY,
         }
     }
 
@@ -931,6 +1008,43 @@ impl Icon {
         }
         self.size = size;
         self.base.request_redraw();
+    }
+
+    /// The draw-time transform applied to the icon's geometry.
+    pub fn icon_transform(&self) -> IconTransform {
+        self.transform
+    }
+
+    /// Sets a mirror on either axis. The default is no mirroring.
+    pub fn set_icon_flip(&mut self, horizontal: bool, vertical: bool) {
+        if self.transform.flip_horizontal == horizontal && self.transform.flip_vertical == vertical
+        {
+            return;
+        }
+        self.transform.flip_horizontal = horizontal;
+        self.transform.flip_vertical = vertical;
+        self.base.request_redraw();
+    }
+
+    /// Rotates the drawn geometry clockwise by `degrees`.
+    ///
+    /// The rotation happens about the glyph box's centre at draw time, so the control's
+    /// geometry and hit area do not change. A non-finite angle is refused.
+    pub fn set_icon_rotation(&mut self, degrees: f32) {
+        if !degrees.is_finite() {
+            return;
+        }
+        let radians = degrees.to_radians();
+        if (self.transform.rotation - radians).abs() <= f32::EPSILON {
+            return;
+        }
+        self.transform.rotation = radians;
+        self.base.request_redraw();
+    }
+
+    /// The clockwise rotation in degrees.
+    pub fn icon_rotation_degrees(&self) -> f32 {
+        self.transform.rotation.to_degrees()
     }
 
     /// Returns the icon size in logical pixels.
@@ -1218,7 +1332,7 @@ impl Icon {
             return;
         }
         let token = self.icon_name.as_str();
-        if !draw_fallback_in(ctx, rect, self.draw_color(), token) {
+        if !draw_fallback_in(ctx, rect, self.draw_color(), token, self.transform) {
             self.draw_unknown(ctx);
         }
     }
@@ -1241,7 +1355,7 @@ impl Icon {
         }
         // One geometry path, shared with the free `draw_icon_at` a control uses to paint an icon
         // inline, so an `Icon` widget and a control-drawn icon cannot render differently.
-        if let Err(error) = draw_outline_in(ctx, rect, self.draw_color(), data) {
+        if let Err(error) = draw_outline_in(ctx, rect, self.draw_color(), data, self.transform) {
             log::error!("icon '{}' could not be painted: {error:?}", data.name);
         }
     }
@@ -1408,6 +1522,16 @@ impl WidgetProperties for Icon {
             // colour a draw would use, whether that came from a setter or the
             // theme.
             "color" => Ok(CapabilityValue::String(self.resolve_color().to_hex_rgba())),
+            "icon_rotation" => Ok(CapabilityValue::Float(f64::from(self.icon_rotation_degrees()))),
+            "icon_flip" => Ok(CapabilityValue::String(
+                match (self.transform.flip_horizontal, self.transform.flip_vertical) {
+                    (false, false) => "none",
+                    (true, false) => "horizontal",
+                    (false, true) => "vertical",
+                    (true, true) => "both",
+                }
+                .to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -1454,12 +1578,36 @@ impl WidgetProperties for Icon {
                     Ok(())
                 }
             },
+            "icon_rotation" => {
+                self.set_icon_rotation(expect_f64(value)? as f32);
+                Ok(())
+            }
+            "icon_flip" => {
+                let token = expect_string(value)?;
+                let (horizontal, vertical) = match token.as_str() {
+                    "none" => (false, false),
+                    "horizontal" => (true, false),
+                    "vertical" => (false, true),
+                    "both" => (true, true),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                self.set_icon_flip(horizontal, vertical);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["icon_name", "icon_source", "size", "color", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "icon_name",
+            "icon_source",
+            "size",
+            "color",
+            "icon_rotation",
+            "icon_flip",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Applies resolver-produced content through the same `icon_source` property the host reads.
@@ -2409,5 +2557,39 @@ mod tests {
         .expect("the fixture is valid");
         icon.set_frames(crate::compat::vec![other]);
         assert!(icon.frame_tint_key.is_none(), "a new movie invalidates the tint");
+    }
+
+    /// The transform defaults to identity and a rotation or mirror changes the drawn geometry.
+    #[test]
+    fn the_icon_transform_defaults_to_identity() {
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        icon.set_icon("check");
+        assert_eq!(icon.icon_transform(), IconTransform::IDENTITY);
+        let plain = crate::widget::svg::render_to_svg(&mut icon);
+
+        icon.set_icon_rotation(90.0);
+        assert!((icon.icon_rotation_degrees() - 90.0).abs() < 1e-4);
+        let rotated = crate::widget::svg::render_to_svg(&mut icon);
+        assert_ne!(plain, rotated, "a quarter turn must change the geometry");
+
+        icon.set_icon_rotation(0.0);
+        icon.set_icon_flip(true, false);
+        assert_eq!(icon.icon_transform().flip_horizontal, true);
+        let mirrored = crate::widget::svg::render_to_svg(&mut icon);
+        assert_ne!(plain, mirrored, "a mirror must change the geometry");
+
+        icon.set_icon_flip(false, false);
+        assert_eq!(crate::widget::svg::render_to_svg(&mut icon), plain, "identity restores it");
+    }
+
+    /// The transform is published through the property route.
+    #[test]
+    fn the_icon_transform_properties_round_trip() {
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        icon.set("icon_rotation", CapabilityValue::Float(45.0)).expect("writable");
+        icon.set("icon_flip", CapabilityValue::String("both".into())).expect("writable");
+        assert!((icon.icon_rotation_degrees() - 45.0).abs() < 1e-4);
+        assert_eq!(icon.get("icon_flip"), Ok(CapabilityValue::String("both".to_string())));
+        assert!(icon.set("icon_flip", CapabilityValue::String("sideways".into())).is_err());
     }
 }

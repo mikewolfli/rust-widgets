@@ -46,6 +46,7 @@
 //! ```
 
 use crate::core::{Color, Point, Rect};
+use crate::render::core::command::{LineCap, LineJoin};
 use crate::render::pipeline::u32_to_i32_saturating;
 use crate::render::RenderContext;
 
@@ -160,6 +161,19 @@ pub struct Bevel {
     pub base: Color,
     /// Which way the face is turned.
     pub direction: BevelDirection,
+    /// How each edge's ends terminate (G-017).
+    ///
+    /// The default is [`LineCap::Butt`], which is what every bevel has always
+    /// drawn: the brush stops at the endpoint's own coordinate. Exposed because
+    /// a theme that rounds a face's corners should be able to round the bevel's
+    /// line ends the same way.
+    pub cap: LineCap,
+    /// How two edges meeting at a corner connect (G-017).
+    ///
+    /// The default is [`LineJoin::Miter`], the historical behaviour: the two
+    /// segments' own brushes overlap over the corner pixel, with the trailing
+    /// pair's tone winning, exactly as the hand-written call sites drew.
+    pub join: LineJoin,
 }
 
 impl Bevel {
@@ -173,6 +187,8 @@ impl Bevel {
             shade: base.blend(&Color::BLACK, BEVEL_WEIGHT),
             base,
             direction: BevelDirection::default(),
+            cap: LineCap::default(),
+            join: LineJoin::default(),
         }
     }
 
@@ -190,7 +206,24 @@ impl Bevel {
     /// A theme may want to state the tones rather than have them derived — that is the difference
     /// between "a bevel on this palette" and "a Mac OS 9 bevel on any palette".
     pub fn from_tones(base: Color, light: Color, shade: Color) -> Self {
-        Self { light, shade, base, direction: BevelDirection::default() }
+        Self {
+            light,
+            shade,
+            base,
+            direction: BevelDirection::default(),
+            cap: LineCap::default(),
+            join: LineJoin::default(),
+        }
+    }
+
+    /// Returns this bevel with the edge lines' end and corner style set (G-017).
+    ///
+    /// The default (`Butt`, `Miter`) is the historical picture, so a bevel that
+    /// never calls this draws exactly what it always drew.
+    pub fn with_line_style(mut self, cap: LineCap, join: LineJoin) -> Self {
+        self.cap = cap;
+        self.join = join;
+        self
     }
 
     /// Returns this bevel turned the other way.
@@ -260,6 +293,23 @@ impl Bevel {
         // same precedence the hand-written call sites had.
         self.edge(context, Point::from_f32(x0, y1), Point::from_f32(x1, y1), trailing, width);
         self.edge(context, Point::from_f32(x1, y0), Point::from_f32(x1, y1), trailing, width);
+        // A round join rounds each corner off with a disc of the stroke's width (G-017).
+        // The tone follows the same precedence as the pixels above: the trailing pair wins
+        // everywhere but the leading corner, because that is the edge whose paint lands last.
+        if self.join == LineJoin::Round {
+            let radius = width / 2;
+            if radius > 0 {
+                let corners = [
+                    (Point::from_f32(x0, y0), leading),
+                    (Point::from_f32(x1, y0), trailing),
+                    (Point::from_f32(x0, y1), trailing),
+                    (Point::from_f32(x1, y1), trailing),
+                ];
+                for (corner, tone) in corners {
+                    context.fill_circle(corner, radius, tone);
+                }
+            }
+        }
     }
 
     /// Strokes the bevel's four edges offset inward by one line width, using the softer pair.
@@ -286,6 +336,22 @@ impl Bevel {
         self.edge(context, Point::from_f32(x0, y0), Point::from_f32(x0, y1), leading, width);
         self.edge(context, Point::from_f32(x0, y1), Point::from_f32(x1, y1), trailing, width);
         self.edge(context, Point::from_f32(x1, y0), Point::from_f32(x1, y1), trailing, width);
+        // The inner pair meets at corners too, so a round join rounds them with the same
+        // trailing-wins precedence as the outer pair (G-017).
+        if self.join == LineJoin::Round {
+            let radius = width / 2;
+            if radius > 0 {
+                let corners = [
+                    (Point::from_f32(x0, y0), leading),
+                    (Point::from_f32(x1, y0), trailing),
+                    (Point::from_f32(x0, y1), trailing),
+                    (Point::from_f32(x1, y1), trailing),
+                ];
+                for (corner, tone) in corners {
+                    context.fill_circle(corner, radius, tone);
+                }
+            }
+        }
     }
 
     /// One edge, at the requested thickness.
@@ -293,7 +359,10 @@ impl Bevel {
         // Always the stroked form: a bevel is a line of a stated width, and the plain `draw_line`
         // the call sites used could only ever be one pixel — so a `line_width` of 2 on a themed
         // frame silently drew a 1-pixel bevel beside a 2-pixel border.
-        context.draw_line_stroke(from, to, color, width);
+        //
+        // The styled form carries the bevel's cap through (G-017); with the default `Butt` it
+        // emits exactly the plain stroke this edge has always drawn.
+        context.draw_line_stroke_styled(from, to, color, width, self.cap, self.join);
     }
 }
 
@@ -579,5 +648,111 @@ mod tests {
         // brighter than the outer one).
         assert_eq!(inner_light, base.blend(&Color::WHITE, BEVEL_INNER_WEIGHT));
         assert_eq!(inner_shade, base.blend(&Color::BLACK, BEVEL_INNER_SHADE_WEIGHT));
+    }
+
+    // ── G-017: line caps and joins ─────────────────────────────────────
+
+    /// The default line style draws exactly what the bevel always drew.
+    ///
+    /// This is the additive claim: `resolve()` now threads the line style
+    /// through explicitly, and the default (`Butt`/`Miter`) must be pixel-for-
+    /// pixel the historical picture.
+    #[test]
+    fn the_default_line_style_matches_the_historical_stroke() {
+        let base = Color::rgb(128, 128, 128);
+        let resolved = Bevel::from_base(base);
+        let styled = resolved.with_line_style(
+            crate::render::core::command::LineCap::Butt,
+            crate::render::core::command::LineJoin::Miter,
+        );
+        let px_plain = painted(SURFACE, |c| resolved.stroke(c, RECT, 1));
+        let px_styled = painted(SURFACE, |c| styled.stroke(c, RECT, 1));
+        assert_eq!(px_plain, px_styled, "the default style must not change any pixel");
+    }
+
+    /// A square cap extends the stroke half a width past each endpoint, a
+    /// round cap caps it with half-discs, and butt caps keep the historical
+    /// stamp.
+    ///
+    /// # What the software raster can and cannot distinguish
+    ///
+    /// The raster brush is a `width × width` square stamp **centred** on each
+    /// point of the line, so the historical butt stroke already overhangs each
+    /// endpoint by `width / 2`. Two consequences, both asserted:
+    ///
+    /// * `Square` extends the segment itself by half a width, which lands past
+    ///   even the stamp overhang — visibly longer than butt;
+    /// * `Round`'s half-disc of radius `width / 2` is inscribed in the
+    ///   endpoint's own stamp at odd widths, so it draws the same pixels as
+    ///   butt there; at even widths the stamp is asymmetric and the disc pokes
+    ///   out by one pixel. The disc is the geometric contract a vector or
+    ///   coverage backend honours (the SVG backend draws it as a `<circle>`),
+    ///   not a promise to fatten today's raster.
+    #[test]
+    fn the_line_caps_terminate_the_stroke_differently() {
+        use crate::render::core::command::LineCap;
+        let stroke = |cap: LineCap, width: u32, from: Point, to: Point| {
+            painted(Size::new(30, 30), |c| {
+                c.draw_line_stroke_styled(
+                    from,
+                    to,
+                    Color::rgb(200, 60, 60),
+                    width,
+                    cap,
+                    crate::render::core::command::LineJoin::Miter,
+                );
+            })
+        };
+        let has = |px: &[(i32, i32, Color)], x: i32, y: i32| {
+            px.iter().any(|(px_x, px_y, _)| *px_x == x && *px_y == y)
+        };
+        let horizontal = (Point::new(10, 10), Point::new(20, 10));
+        let butt = stroke(LineCap::Butt, 3, horizontal.0, horizontal.1);
+        let square = stroke(LineCap::Square, 3, horizontal.0, horizontal.1);
+        let round = stroke(LineCap::Round, 3, horizontal.0, horizontal.1);
+        // Butt's own stamp overhangs one pixel past each endpoint, no further.
+        assert!(has(&butt, 9, 10) && has(&butt, 21, 10), "butt overhangs half a width");
+        assert!(!has(&butt, 8, 10) && !has(&butt, 22, 10), "butt stops there");
+        // Square extends the segment by half a width first, so it reaches one
+        // pixel further out on both ends than butt does.
+        assert!(
+            has(&square, 8, 10) && has(&square, 22, 10),
+            "square caps reach past the butt overhang"
+        );
+        // Round at this odd width is contained in the endpoint stamps.
+        assert!(has(&round, 9, 10) && !has(&round, 8, 10), "round stays inside the stamp");
+        // At an even width the stamp is asymmetric and the disc adds the one
+        // column the stamp misses: a vertical line's brush covers x 8..11, the
+        // disc reaches x 12.
+        let vertical = (Point::new(10, 10), Point::new(10, 20));
+        let butt4 = stroke(LineCap::Butt, 4, vertical.0, vertical.1);
+        let round4 = stroke(LineCap::Round, 4, vertical.0, vertical.1);
+        assert!(!has(&butt4, 12, 10), "the butt stamp misses x = 12");
+        assert!(has(&round4, 12, 10), "the round disc fills it");
+    }
+
+    /// A round join only ever **adds** ink at the corners: each edge's square
+    /// stamp already covers the full corner square around the shared vertex,
+    /// and the join disc is inscribed in it, so a rounded bevel is a superset
+    /// of the mitred one — pixel for pixel, nothing disappears.
+    #[test]
+    fn a_round_join_never_removes_ink_from_a_mitered_bevel() {
+        let base = Color::rgb(128, 128, 128);
+        let mitred = Bevel::from_base(base);
+        let rounded = mitred.with_line_style(
+            crate::render::core::command::LineCap::Butt,
+            crate::render::core::command::LineJoin::Round,
+        );
+        let px_mitred = painted(SURFACE, |c| mitred.stroke(c, RECT, 5));
+        let px_rounded = painted(SURFACE, |c| rounded.stroke(c, RECT, 5));
+        let has = |px: &[(i32, i32, Color)], x: i32, y: i32| {
+            px.iter().any(|(px_x, px_y, _)| *px_x == x && *px_y == y)
+        };
+        for (x, y, _) in &px_mitred {
+            assert!(
+                has(&px_rounded, *x, *y),
+                "the round join dropped the mitered pixel at {x},{y}"
+            );
+        }
     }
 }

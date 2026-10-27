@@ -341,8 +341,14 @@ impl Popover {
     }
 
     /// Sets the content widget displayed inside the popover.
+    ///
+    /// The child has never been laid out: a control is constructed at a caller-chosen rectangle
+    /// (usually `0x0`), and this card is the only thing that knows the box it should occupy. The
+    /// first layout request is issued here rather than left to the first paint, so a host that
+    /// is waiting for layout to settle before it shows the card sees that request (DLG-007).
     pub fn set_content(&mut self, widget: Box<dyn Widget>) {
         self.content = Some(widget);
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -456,77 +462,147 @@ impl Popover {
 
     /// Computes the popover body rectangle beside the anchor and the arrow's tip.
     ///
-    /// `Auto` derives the side from the available space (below first, above when below does
-    /// not fit), which is the historical rule. A fixed direction is honoured even when it
-    /// places the card outside the control, because the caller asked for that side.
+    /// `Auto` derives the side from the available space (below first, flipped above when below
+    /// does not fit), which is the historical rule. A fixed direction is honoured as the
+    /// *preference*, then the card is clamped inside the viewport on all four edges (DLG-011) —
+    /// a card pinned to a caller-chosen side still belongs on the page.
     fn compute_layout(&self) -> (Rect, Point, ArrowDirection) {
-        let geom = self.geometry();
-        let body_width = geom.width.clamp(100, 400);
-        let body_height = geom.height.clamp(60, 400);
+        let viewport = self.geometry();
+        let body_size = Size::new(viewport.width.clamp(100, 400), viewport.height.clamp(60, 400));
+        // The card never grows past the area it is drawn into; an oversized card is clipped by
+        // the clamp below rather than painted outside the control.
+        let body_size =
+            Size::new(body_size.width.min(viewport.width), body_size.height.min(viewport.height));
 
-        // Position popover below the anchor by default; flip above if not enough room
-        let below_space =
-            geom.y + geom.height as i32 - (self.anchor_rect.y + self.anchor_rect.height as i32);
-        let above_space = self.anchor_rect.y - geom.y;
-
-        let auto_dir = if below_space >= body_height as i32 + ARROW_SIZE {
-            ArrowDirection::Up
-        } else if above_space >= body_height as i32 + ARROW_SIZE {
-            ArrowDirection::Down
-        } else {
-            ArrowDirection::Up
-        };
-        let arrow_dir = match self.arrow {
-            PopoverArrow::Auto => auto_dir,
+        let preferred = match self.arrow {
+            PopoverArrow::Auto => {
+                // Position below the anchor by default; flip above if that side does not fit.
+                let below_space = viewport.y + viewport.height as i32
+                    - (self.anchor_rect.y + self.anchor_rect.height as i32);
+                let above_space = self.anchor_rect.y - viewport.y;
+                let below_fits = below_space >= body_size.height as i32 + ARROW_SIZE;
+                let above_fits = above_space >= body_size.height as i32 + ARROW_SIZE;
+                if below_fits {
+                    ArrowDirection::Up
+                } else if above_fits {
+                    ArrowDirection::Down
+                } else {
+                    ArrowDirection::Up
+                }
+            }
             PopoverArrow::Up => ArrowDirection::Up,
             PopoverArrow::Down => ArrowDirection::Down,
             PopoverArrow::Left => ArrowDirection::Left,
             PopoverArrow::Right => ArrowDirection::Right,
         };
 
-        // Center on the anchor along the cross axis of the chosen side.
-        let anchor_center_x = self.anchor_rect.x + self.anchor_rect.width as i32 / 2;
-        let anchor_center_y = self.anchor_rect.y + self.anchor_rect.height as i32 / 2;
-        let body_rect = match arrow_dir {
-            ArrowDirection::Up => Rect::new(
-                (anchor_center_x - body_width as i32 / 2).max(geom.x),
-                self.anchor_rect.y + self.anchor_rect.height as i32 + ARROW_SIZE,
-                body_width,
-                body_height,
-            ),
-            ArrowDirection::Down => Rect::new(
-                (anchor_center_x - body_width as i32 / 2).max(geom.x),
-                self.anchor_rect.y - body_height as i32 - ARROW_SIZE,
-                body_width,
-                body_height,
-            ),
-            ArrowDirection::Left => Rect::new(
-                self.anchor_rect.x + self.anchor_rect.width as i32 + ARROW_SIZE,
-                (anchor_center_y - body_height as i32 / 2).max(geom.y),
-                body_width,
-                body_height,
-            ),
-            ArrowDirection::Right => Rect::new(
-                self.anchor_rect.x - body_width as i32 - ARROW_SIZE,
-                (anchor_center_y - body_height as i32 / 2).max(geom.y),
-                body_width,
-                body_height,
-            ),
+        // The opposite side is the flip target. When the preferred side does not fit but its
+        // opposite does, the card flips rather than being shoved away from the anchor.
+        let opposite = match preferred {
+            ArrowDirection::Up => ArrowDirection::Down,
+            ArrowDirection::Down => ArrowDirection::Up,
+            ArrowDirection::Left => ArrowDirection::Right,
+            ArrowDirection::Right => ArrowDirection::Left,
+        };
+        let preferred_rect = self.place_beside(self.anchor_rect, body_size, preferred);
+        let arrow_dir = if fits(preferred_rect, viewport) {
+            preferred
+        } else {
+            let flipped = self.place_beside(self.anchor_rect, body_size, opposite);
+            if fits(flipped, viewport) {
+                opposite
+            } else {
+                preferred
+            }
         };
 
+        let raw = self.place_beside(self.anchor_rect, body_size, arrow_dir);
+        let body_rect = clamp_into(raw, viewport);
+
+        // The tip follows the **clamped** card, not the preferred position, and is kept inside
+        // the card's own width so a card shifted off the anchor still points at something.
+        let half_base = ARROW_SIZE / 2;
+        let anchor_center_x = self.anchor_rect.x + self.anchor_rect.width as i32 / 2;
+        let anchor_center_y = self.anchor_rect.y + self.anchor_rect.height as i32 / 2;
+        let min_x = body_rect.x + half_base;
+        let max_x = (body_rect.x + body_rect.width as i32 - half_base).max(min_x);
+        let min_y = body_rect.y + half_base;
+        let max_y = (body_rect.y + body_rect.height as i32 - half_base).max(min_y);
         let arrow_tip = match arrow_dir {
-            ArrowDirection::Up => Point::new(anchor_center_x, body_rect.y - ARROW_SIZE),
-            ArrowDirection::Down => {
-                Point::new(anchor_center_x, body_rect.y + body_rect.height as i32 + ARROW_SIZE)
+            ArrowDirection::Up => {
+                Point::new(anchor_center_x.clamp(min_x, max_x), body_rect.y - ARROW_SIZE)
             }
-            ArrowDirection::Left => Point::new(body_rect.x - ARROW_SIZE, anchor_center_y),
-            ArrowDirection::Right => {
-                Point::new(body_rect.x + body_rect.width as i32 + ARROW_SIZE, anchor_center_y)
+            ArrowDirection::Down => Point::new(
+                anchor_center_x.clamp(min_x, max_x),
+                body_rect.y + body_rect.height as i32 + ARROW_SIZE,
+            ),
+            ArrowDirection::Left => {
+                Point::new(body_rect.x - ARROW_SIZE, anchor_center_y.clamp(min_y, max_y))
             }
+            ArrowDirection::Right => Point::new(
+                body_rect.x + body_rect.width as i32 + ARROW_SIZE,
+                anchor_center_y.clamp(min_y, max_y),
+            ),
         };
 
         (body_rect, arrow_tip, arrow_dir)
     }
+
+    /// The unclamped card position for `dir`, centred on the anchor's cross axis.
+    fn place_beside(&self, anchor: Rect, body: Size, dir: ArrowDirection) -> Rect {
+        let anchor_center_x = anchor.x + anchor.width as i32 / 2;
+        let anchor_center_y = anchor.y + anchor.height as i32 / 2;
+        match dir {
+            ArrowDirection::Up => Rect::new(
+                anchor_center_x - body.width as i32 / 2,
+                anchor.y + anchor.height as i32 + ARROW_SIZE,
+                body.width,
+                body.height,
+            ),
+            ArrowDirection::Down => Rect::new(
+                anchor_center_x - body.width as i32 / 2,
+                anchor.y - body.height as i32 - ARROW_SIZE,
+                body.width,
+                body.height,
+            ),
+            ArrowDirection::Left => Rect::new(
+                anchor.x + anchor.width as i32 + ARROW_SIZE,
+                anchor_center_y - body.height as i32 / 2,
+                body.width,
+                body.height,
+            ),
+            ArrowDirection::Right => Rect::new(
+                anchor.x - body.width as i32 - ARROW_SIZE,
+                anchor_center_y - body.height as i32 / 2,
+                body.width,
+                body.height,
+            ),
+        }
+    }
+}
+
+/// Whether `rect` lies entirely inside `viewport`.
+fn fits(rect: Rect, viewport: Rect) -> bool {
+    rect.x >= viewport.x
+        && rect.y >= viewport.y
+        && rect.x + rect.width as i32 <= viewport.x + viewport.width as i32
+        && rect.y + rect.height as i32 <= viewport.y + viewport.height as i32
+}
+
+/// Clamps `rect` fully inside `viewport` on all four edges (DLG-011).
+///
+/// # Why four edges and not two
+///
+/// The placement path only floored the card at the viewport's left/top edge
+/// (`.max(geom.x)`), so an anchor near the right or bottom edge pushed the card out the other
+/// side of the page. Clamping both ends of both axes is the placement every popup in this
+/// crate needs, so the arithmetic is one function rather than four `max` calls per side.
+fn clamp_into(rect: Rect, viewport: Rect) -> Rect {
+    let width = rect.width.min(viewport.width);
+    let height = rect.height.min(viewport.height);
+    let max_x = (viewport.x + viewport.width as i32 - width as i32).max(viewport.x);
+    let max_y = (viewport.y + viewport.height as i32 - height as i32).max(viewport.y);
+    Rect::new(rect.x.clamp(viewport.x, max_x), rect.y.clamp(viewport.y, max_y), width, height)
 }
 
 impl Widget for Popover {
@@ -819,6 +895,30 @@ impl Draw for Popover {
         if content_rect.height == 0 {
             return;
         }
+
+        // ── The content child ──
+        //
+        // DLG-007: the content was mounted and never visited by the paint path, so an open
+        // popover with real content showed the empty-state placeholder and nothing else. The
+        // card owns the box the child is drawn into (the child keeps its own internal layout),
+        // and the child is drawn here because this control is the one that knows the unfolded
+        // body rectangle. `popover content` is `Box<dyn Widget>`, so the paint entry point is
+        // the shared `as_draw_mut` bridge the mounted tree uses.
+        if let Some(content) = self.content.as_mut() {
+            content.set_geometry(content_rect);
+            content.show();
+            if let Some(drawable) = content.as_draw_mut() {
+                drawable.draw(context);
+            }
+        }
+
+        // The placeholder says "this card is empty". Once real content is installed it would
+        // paint over that content, so it is drawn only when the card is empty — unless the
+        // caller explicitly set a placeholder (which is documented as their choice to keep).
+        if self.content.is_some() && self.placeholder.is_none() {
+            return;
+        }
+
         // The **effective font** — the resolved theme/caller font — rather than the fixed 13 px
         // sans-serif this used to build (D09-STYLE-01).
         let font = effective_font(style);
@@ -1015,6 +1115,44 @@ mod tests {
         fn handle_event(&mut self, _event: &Event) {}
     }
 
+    /// A content stand-in that records the box it was painted into and lays down one colour.
+    struct PaintedContent {
+        base: BaseWidget,
+        painted: std::rc::Rc<std::cell::Cell<Option<Rect>>>,
+    }
+
+    impl PaintedContent {
+        fn new(painted: std::rc::Rc<std::cell::Cell<Option<Rect>>>) -> Self {
+            Self {
+                base: BaseWidget::new(WidgetKind::Label, Rect::new(0, 0, 0, 0), "PaintedContent"),
+                painted,
+            }
+        }
+    }
+
+    impl Widget for PaintedContent {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+            Some(self)
+        }
+    }
+
+    impl Draw for PaintedContent {
+        fn draw(&mut self, context: &mut RenderContext) {
+            self.painted.set(Some(self.geometry()));
+            context.fill_rect(self.geometry(), Color::rgb(3, 4, 5));
+        }
+    }
+
+    impl EventHandler for PaintedContent {
+        fn handle_event(&mut self, _event: &Event) {}
+    }
+
     #[test]
     fn popover_default_creation() {
         let popover = Popover::new(Rect::new(0, 0, 300, 200));
@@ -1056,6 +1194,57 @@ mod tests {
         let content = TestContent::new("Hello", Rect::new(0, 0, 100, 30));
         popover.set_content(Box::new(content));
         assert!(popover.content().is_some());
+    }
+
+    /// The content child is visited by the paint path and placed in the card's body (DLG-007).
+    ///
+    /// # The defect this pins
+    ///
+    /// `set_content` mounted the child and the draw path never asked it to paint, so an open
+    /// popover with real content showed the empty-state placeholder over a blank body.
+    #[test]
+    fn the_card_paints_its_content_child_inside_the_body() {
+        let painted = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut popover = Popover::new(Rect::new(0, 0, 300, 200));
+        popover.set_content(Box::new(PaintedContent::new(std::rc::Rc::clone(&painted))));
+        popover.show(Rect::new(100, 40, 50, 20));
+        while popover.tick(1000) {}
+
+        let svg = render_to_svg(&mut popover);
+        assert!(
+            svg.contains("rgba(3,4,5,1.00)"),
+            "the installed content must reach the pixels: {svg}"
+        );
+        let inner = painted.get().expect("the content child was painted");
+        let body = popover.body_rect;
+        assert!(inner.width > 0 && inner.height > 0, "the child must get a real box: {inner:?}");
+        assert!(
+            inner.x >= body.x
+                && inner.y >= body.y
+                && inner.x + inner.width as i32 <= body.x + body.width as i32
+                && inner.y + inner.height as i32 <= body.y + body.height as i32,
+            "the child is placed inside the card: {inner:?} vs {body:?}"
+        );
+    }
+
+    /// Installing content asks for its first layout (DLG-007).
+    #[test]
+    fn installing_content_requests_its_first_layout() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let mut popover = Popover::new(Rect::new(0, 0, 300, 200));
+        let asked = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&asked);
+        popover.base.layout_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        popover.set_content(Box::new(PaintedContent::new(std::rc::Rc::new(std::cell::Cell::new(
+            None,
+        )))));
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "the new child has never been laid out");
     }
 
     #[test]
@@ -1342,34 +1531,67 @@ mod tests {
     }
 
     /// The horizontal arrow variants place the card beside the anchor, not above/below it.
+    ///
+    /// The fixtures leave room on the requested side: a card clamped inside the viewport
+    /// (DLG-011) cannot sit beside an anchor that has no space beside it.
     #[test]
     fn a_horizontal_arrow_places_the_card_beside_the_anchor() {
-        let anchor = Rect::new(150, 150, 40, 20);
-
-        let mut left = Popover::new(Rect::new(0, 0, 400, 400));
+        let mut left = Popover::new(Rect::new(0, 0, 700, 500));
         left.set_arrow_direction(PopoverArrow::Left);
-        left.show(anchor);
+        left.show(Rect::new(100, 100, 40, 20));
         while left.tick(1000) {}
         let _ = render_to_svg(&mut left);
         assert!(
-            left.body_rect.x >= anchor.x + anchor.width as i32,
-            "a left-pointing arrow puts the card to the anchor's right: card x={}, anchor right={}",
-            left.body_rect.x,
-            anchor.x + anchor.width as i32
+            left.body_rect.x >= 140,
+            "a left-pointing arrow puts the card to the anchor's right: card x={}",
+            left.body_rect.x
         );
 
-        let mut right = Popover::new(Rect::new(0, 0, 400, 400));
+        let mut right = Popover::new(Rect::new(0, 0, 700, 500));
         right.set_arrow_direction(PopoverArrow::Right);
-        right.show(anchor);
+        right.show(Rect::new(450, 100, 40, 20));
         while right.tick(1000) {}
         let _ = render_to_svg(&mut right);
         assert!(
-            right.body_rect.x + right.body_rect.width as i32 <= anchor.x,
-            "a right-pointing arrow puts the card to the anchor's left: card right={}, anchor x={}",
-            right.body_rect.x + right.body_rect.width as i32,
-            anchor.x
+            right.body_rect.x + right.body_rect.width as i32 <= 450,
+            "a right-pointing arrow puts the card to the anchor's left: card right={}",
+            right.body_rect.x + right.body_rect.width as i32
         );
         assert_eq!(PopoverArrow::from_token("left"), Some(PopoverArrow::Left));
+    }
+
+    /// The card is clamped on all four edges, and an auto-placement flips when its first side
+    /// does not fit (DLG-011).
+    #[test]
+    fn the_card_is_clamped_into_the_viewport_and_flips_when_it_must() {
+        // The viewport is larger than the card's 400 px cap, so the clamp has room to act.
+        let mut clamped = Popover::new(Rect::new(0, 0, 700, 900));
+        clamped.set_arrow_direction(PopoverArrow::Left);
+        clamped.show(Rect::new(650, 100, 40, 20));
+        while clamped.tick(1000) {}
+        let _ = render_to_svg(&mut clamped);
+        let card = clamped.body_rect;
+        assert!(card.x >= 0, "the left edge stays inside the page: {card:?}");
+        assert!(card.y >= 0, "the top edge stays inside the page: {card:?}");
+        assert!(
+            card.x + card.width as i32 <= 700,
+            "the right edge is clamped instead of overflowing: {card:?}"
+        );
+        assert!(
+            card.y + card.height as i32 <= 900,
+            "the bottom edge is clamped instead of overflowing: {card:?}"
+        );
+
+        // An anchor near the bottom has no room below: the card flips above it.
+        let mut flipped = Popover::new(Rect::new(0, 0, 700, 900));
+        flipped.show(Rect::new(100, 600, 40, 20));
+        while flipped.tick(1000) {}
+        let _ = render_to_svg(&mut flipped);
+        let card = flipped.body_rect;
+        assert!(
+            card.y + card.height as i32 <= 600,
+            "the card flips to the anchor's other side: {card:?}"
+        );
     }
 
     /// The placeholder is caller-configurable instead of hard-coded.

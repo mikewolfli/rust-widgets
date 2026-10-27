@@ -419,6 +419,10 @@ impl SuggestionPopup {
             return;
         }
         self.shown = true;
+        // The popup owns the press that dismisses it, matching the combo box's
+        // popup-grab contract (I-127).
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::set_popup_grab(self.base.id());
         if self.selected_index.is_none() && !self.visible.is_empty() {
             self.set_highlight(Some(0));
         }
@@ -431,6 +435,8 @@ impl SuggestionPopup {
             return;
         }
         self.shown = false;
+        #[cfg(not(alloc_frugal))]
+        crate::widget::runtime::clear_popup_grab_for(self.base.id());
         self.base.request_redraw();
     }
 

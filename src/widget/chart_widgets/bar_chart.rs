@@ -31,7 +31,8 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::chart_widgets::adapter::ChartContextAdapter;
 #[cfg(feature = "chart")]
 use crate::widget::chart_widgets::charts::{
-    compute_cartesian_layout_measured, draw_legend_entries_iter, draw_y_ticks, CartesianLayout,
+    compute_cartesian_layout_measured, draw_legend_entries_iter, draw_y_ticks,
+    draw_y_ticks_configured, AxisConfig, AxisScale, CartesianLayout,
 };
 use crate::widget::metrics::role_font;
 // The chrome derivation is shared with the engine-backed path deliberately: the
@@ -116,12 +117,23 @@ pub struct BarSeries {
     pub values: Vec<f64>,
     /// The caller's fill colour, or `None` to follow the chart's palette.
     pub color: Option<Color>,
+    /// Whether the series is drawn and contributes to the value range.
+    ///
+    /// A legend click flips this flag; the default is `true`, so a series list that
+    /// never touches it renders exactly as before.
+    pub visible: bool,
 }
 
 impl BarSeries {
     /// Creates a named series from its per-category values.
     pub fn new(name: impl Into<String>, values: Vec<f64>) -> Self {
-        Self { name: name.into(), values, color: None }
+        Self { name: name.into(), values, color: None, visible: true }
+    }
+
+    /// Creates a series whose initial visibility is stated explicitly.
+    pub fn with_visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
     }
 
     /// Sets the series colour, replacing the palette entry.
@@ -166,6 +178,12 @@ pub struct BarChart {
     value_from_series: Vec<Vec<f64>>,
     /// The plot area from the last paint, reused for hit testing.
     last_plot_area: Option<Rect>,
+    /// How the value axis maps values and chooses ticks.
+    value_axis: AxisConfig,
+    /// Whether the category slots run from right/last to left/first.
+    category_reversed: bool,
+    /// The legend column's clickable rows from the last paint.
+    last_legend_area: Option<LegendArea>,
     /// Cached y-axis label width; `None` until the first measured paint.
     #[cfg(feature = "chart")]
     y_label_cache: Option<YAxisLabelCache>,
@@ -184,6 +202,8 @@ pub struct BarChart {
     pub bar_unhovered_with_series: Signal1<(usize, usize)>,
     /// Emitted with `(series, category)` of a clicked bar (CH-04).
     pub bar_clicked_with_series: Signal1<(usize, usize)>,
+    /// Emitted with `(series, visible)` after a legend click or [`Self::set_series_visible`].
+    pub series_toggled: Signal1<(usize, bool)>,
     /// The chart title, painted centred at the top (CH-07).
     title: Option<String>,
     /// The x-axis title, painted under the plot (CH-07).
@@ -218,6 +238,15 @@ impl YAxisLabelCache {
             && self.dpi_bits == dpi_scale.to_bits()
             && &self.font == font
     }
+}
+
+/// The legend column's geometry and clickable row count.
+#[derive(Clone, Copy)]
+struct LegendArea {
+    x: i32,
+    y: i32,
+    row_height: i32,
+    rows: usize,
 }
 
 /// Font size of the value label drawn above each bar, in points.
@@ -296,6 +325,9 @@ impl BarChart {
             value_from_bars: Vec::new(),
             value_from_series: Vec::new(),
             last_plot_area: None,
+            value_axis: AxisConfig::default(),
+            category_reversed: false,
+            last_legend_area: None,
             #[cfg(feature = "chart")]
             y_label_cache: None,
             bar_hovered: Signal1::new(),
@@ -304,6 +336,7 @@ impl BarChart {
             bar_hovered_with_series: Signal1::new(),
             bar_unhovered_with_series: Signal1::new(),
             bar_clicked_with_series: Signal1::new(),
+            series_toggled: Signal1::new(),
             title: None,
             x_axis_label: None,
             y_axis_label: None,
@@ -404,6 +437,100 @@ impl BarChart {
     /// Returns whether the legend is shown.
     pub fn show_legend(&self) -> bool {
         self.show_legend
+    }
+
+    /// The value axis presentation (scale, direction, tick step).
+    pub fn value_axis_config(&self) -> AxisConfig {
+        self.value_axis
+    }
+
+    /// Replaces the value axis presentation.
+    pub fn set_value_axis_config(&mut self, config: AxisConfig) {
+        if self.value_axis == config {
+            return;
+        }
+        self.value_axis = config;
+        self.base.request_redraw();
+    }
+
+    /// Sets the value axis scale. [`AxisScale::Linear`] is the default.
+    pub fn set_value_scale(&mut self, scale: AxisScale) {
+        let mut config = self.value_axis;
+        config.scale = scale;
+        self.set_value_axis_config(config);
+    }
+
+    /// Reverses the value axis when `reversed` is set.
+    pub fn set_value_reversed(&mut self, reversed: bool) {
+        let mut config = self.value_axis;
+        config.reversed = reversed;
+        self.set_value_axis_config(config);
+    }
+
+    /// Enables 1-2-5 automatic tick steps when no manual value step is set.
+    pub fn set_auto_tick_step(&mut self, auto: bool) {
+        let mut config = self.value_axis;
+        config.auto_step = auto;
+        self.set_value_axis_config(config);
+    }
+
+    /// Fixes the value-axis tick step, or restores the derived step with `None`.
+    pub fn set_value_tick_step(&mut self, step: Option<f64>) {
+        let mut config = self.value_axis;
+        config.step = step.filter(|value| value.is_finite() && *value > 0.0);
+        self.set_value_axis_config(config);
+    }
+
+    /// Reverses the category order (right-to-left / bottom-to-top) when set.
+    pub fn set_category_reversed(&mut self, reversed: bool) {
+        if self.category_reversed == reversed {
+            return;
+        }
+        self.category_reversed = reversed;
+        self.base.request_redraw();
+    }
+
+    /// Whether series `index` is drawn and contributes to the value range.
+    pub fn is_series_visible(&self, index: usize) -> bool {
+        self.series.get(index).is_some_and(|series| series.visible)
+    }
+
+    /// Shows or hides series `index`, reporting the change through [`Self::series_toggled`].
+    ///
+    /// Returns `false` when `index` is out of bounds.
+    pub fn set_series_visible(&mut self, index: usize, visible: bool) -> bool {
+        let Some(series) = self.series.get_mut(index) else {
+            return false;
+        };
+        if series.visible == visible {
+            return true;
+        }
+        series.visible = visible;
+        self.revalidate_hover();
+        self.series_toggled.emit((index, visible));
+        self.base.request_redraw();
+        true
+    }
+
+    /// The series index of the legend row under `pos`, when the legend is shown.
+    fn legend_entry_at(&self, pos: Point) -> Option<usize> {
+        if !self.show_legend {
+            return None;
+        }
+        let area = self.last_legend_area?;
+        if pos.x < area.x || pos.y < area.y {
+            return None;
+        }
+        let row = ((pos.y - area.y) / area.row_height.max(1)) as usize;
+        if row >= area.rows {
+            return None;
+        }
+        self.series
+            .iter()
+            .enumerate()
+            .filter(|(_, series)| !series.name.is_empty())
+            .nth(row)
+            .map(|(index, _)| index)
     }
 
     /// Enables the hover tooltip.
@@ -659,24 +786,65 @@ impl BarChart {
 
     /// The series a pointer position names inside `category` (CH-04).
     ///
-    /// Grouped mode divides the category slot into one strip per series; stacked mode cannot
-    /// attribute a height to a series without its stack offset, so it reports series 0, which is
-    /// the same compatibility mapping the single-index signals keep.
+    /// Grouped mode divides the category slot into one strip per series. Stacked mode
+    /// walks the stack with the same cumulative arithmetic the painter uses, so the
+    /// hover names the segment the pointer is actually over instead of always series 0
+    /// (CH-007).
     fn series_at(&self, pos: Point, plot_area: Rect, category: usize) -> usize {
         let series_count = self.series.len();
-        if series_count <= 1 || self.grouping == BarGrouping::Stacked {
+        if series_count <= 1 {
             return 0;
         }
         let categories = self.category_count().max(1);
+        if self.grouping == BarGrouping::Stacked {
+            let (y_min, y_max) = self.resolve_y_range();
+            let growth = f64::from(self.growth_progress());
+            let (mut positive, mut negative) = (0.0f64, 0.0f64);
+            for series_index in 0..self.series.len() {
+                if !self.series[series_index].visible {
+                    continue;
+                }
+                let Some(value) = self.rendered_series_value(series_index, category) else {
+                    continue;
+                };
+                let start = if value >= 0.0 { positive } else { negative };
+                let end = start + value * growth;
+                let hit = match self.orientation {
+                    BarOrientation::Vertical => {
+                        let top = self.value_pixel(end.max(start), y_min, y_max, plot_area);
+                        let bottom = self.value_pixel(end.min(start), y_min, y_max, plot_area);
+                        pos.y >= top && pos.y <= bottom
+                    }
+                    BarOrientation::Horizontal => {
+                        let x0 = self.horizontal_value_pixel(start, y_min, y_max, plot_area);
+                        let x1 = self.horizontal_value_pixel(end, y_min, y_max, plot_area);
+                        pos.x >= x0.min(x1) && pos.x <= x0.max(x1)
+                    }
+                };
+                if hit {
+                    return series_index;
+                }
+                if value >= 0.0 {
+                    positive = end;
+                } else {
+                    negative = end;
+                }
+            }
+            return 0;
+        }
         let fraction = match self.orientation {
             BarOrientation::Vertical => {
                 let slot = (plot_area.width as f32 / categories as f32).max(1.0);
-                let start = plot_area.x as f32 + slot * category as f32;
+                let slot_index =
+                    if self.category_reversed { categories - 1 - category } else { category };
+                let start = plot_area.x as f32 + slot * slot_index as f32;
                 ((pos.x as f32 - start) / slot).clamp(0.0, 0.999)
             }
             BarOrientation::Horizontal => {
                 let slot = (plot_area.height as f32 / categories as f32).max(1.0);
-                let start = plot_area.y as f32 + slot * category as f32;
+                let slot_index =
+                    if self.category_reversed { categories - 1 - category } else { category };
+                let start = plot_area.y as f32 + slot * slot_index as f32;
                 ((pos.y as f32 - start) / slot).clamp(0.0, 0.999)
             }
         };
@@ -895,6 +1063,9 @@ impl BarChart {
             for category in 0..categories {
                 let (mut positive, mut negative) = (0.0f64, 0.0f64);
                 for series_index in 0..self.series.len() {
+                    if !self.series[series_index].visible {
+                        continue;
+                    }
                     if let Some(value) = self.rendered_series_value(series_index, category) {
                         if value >= 0.0 {
                             positive += value;
@@ -908,6 +1079,9 @@ impl BarChart {
             }
         } else {
             for series_index in 0..self.series.len() {
+                if !self.series[series_index].visible {
+                    continue;
+                }
                 for category in 0..self.series[series_index].values.len() {
                     if let Some(value) = self.rendered_series_value(series_index, category) {
                         min = min.min(value);
@@ -1033,6 +1207,14 @@ impl Widget for BarChart {
                     ]))
                 },
             )),
+            "series_toggled" => {
+                Some(EventSignalRef::mapped("series_toggled", &self.series_toggled, |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::Bool(v.1),
+                    ]))
+                }))
+            }
             _ => None,
         }
     }
@@ -1114,7 +1296,19 @@ impl Draw for BarChart {
 
             // `draw_y_ticks` emits the grid lines *and* their value labels, so the
             // tick density is no longer hard-coded in this widget.
-            draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, self.show_grid);
+            if self.value_axis.is_default() {
+                draw_y_ticks(&mut adapter, &layout, y_min, y_max, 4, self.show_grid);
+            } else {
+                draw_y_ticks_configured(
+                    &mut adapter,
+                    &layout,
+                    y_min,
+                    y_max,
+                    4,
+                    self.value_axis,
+                    self.show_grid,
+                );
+            }
             if self.show_legend {
                 draw_legend_entries_iter(
                     &mut adapter,
@@ -1123,8 +1317,24 @@ impl Draw for BarChart {
                         .iter()
                         .enumerate()
                         .filter(|(_, series)| !series.name.is_empty())
-                        .map(|(index, series)| (series.name.as_str(), self.series_color(index))),
+                        .map(|(index, series)| {
+                            let color = self.series_color(index);
+                            let color = if series.visible { color } else { color.with_alpha(70) };
+                            (series.name.as_str(), color)
+                        }),
                 );
+                let row_height = 18i32;
+                let max_rows = ((layout.plot_h() / row_height as f32).floor() as usize).max(1);
+                let max_items = max_rows.saturating_sub(1).max(1);
+                let named = self.series.iter().filter(|series| !series.name.is_empty()).count();
+                self.last_legend_area = Some(LegendArea {
+                    x: layout.legend_x() as i32,
+                    y: layout.legend_y() as i32,
+                    row_height,
+                    rows: max_items.min(named),
+                });
+            } else {
+                self.last_legend_area = None;
             }
             plot_area
         };
@@ -1196,8 +1406,6 @@ impl Draw for BarChart {
         let bar_width = bar_slot_width.max(1.0);
 
         let baseline_y = plot_area.y + plot_area.height as i32;
-        let height_range = plot_area.height as f64;
-        let value_span = (y_max - y_min).max(f64::EPSILON);
         let growth = f64::from(self.growth_progress());
 
         // # Why the label's face and its line height are resolved once
@@ -1223,10 +1431,18 @@ impl Draw for BarChart {
             let bar_color = bar.color.unwrap_or(self.bar_color);
             let effective_color = if is_enabled { bar_color } else { disabled_color };
 
-            let bar_x = plot_area.x
-                + (spacing_pixels * (i as f32 + 1.0) + bar_slot_width * i as f32) as i32;
-            let bar_height = ((value - y_min) * growth / value_span * height_range) as i32;
-            let bar_y = baseline_y - bar_height;
+            let bar_x = if self.category_reversed {
+                plot_area.x
+                    + (spacing_pixels * ((n - 1 - i) as f32 + 1.0)
+                        + bar_slot_width * (n - 1 - i) as f32) as i32
+            } else {
+                plot_area.x + (spacing_pixels * (i as f32 + 1.0) + bar_slot_width * i as f32) as i32
+            };
+            let start = y_min;
+            let end = start + (value - start) * growth;
+            let bar_y = self.value_pixel(end.max(start), y_min, y_max, plot_area);
+            let bottom = self.value_pixel(end.min(start), y_min, y_max, plot_area);
+            let bar_height = (bottom - bar_y).max(0);
 
             if bar_height > 0 {
                 context.fill_rect(
@@ -1295,19 +1511,24 @@ impl BarChart {
         }
         let disabled = Color::DISABLED_FOREGROUND;
         let growth = f64::from(self.growth_progress());
-        let span = (y_max - y_min).max(f64::EPSILON);
         let font = role_font(self.base.style(), CATEGORY_FONT_SIZE);
         let line_height = context.measure_text("M", &font).height.max(1) as i32;
-        let series_count = self.series.len().max(1);
+        let series_count = self.series.iter().filter(|series| series.visible).count().max(1);
 
         match self.orientation {
             BarOrientation::Vertical => {
                 let slot = (plot_area.width as f32 / categories as f32).max(1.0);
                 let baseline = plot_area.y + plot_area.height as i32;
                 for category in 0..categories {
-                    let slot_x = plot_area.x + (slot * category as f32) as i32;
+                    let slot_index =
+                        if self.category_reversed { categories - 1 - category } else { category };
+                    let slot_x = plot_area.x + (slot * slot_index as f32) as i32;
                     let (mut positive, mut negative) = (0.0f64, 0.0f64);
+                    let mut visible_index = 0usize;
                     for series_index in 0..self.series.len() {
+                        if !self.series[series_index].visible {
+                            continue;
+                        }
                         let Some(value) = self.rendered_series_value(series_index, category) else {
                             continue;
                         };
@@ -1316,7 +1537,7 @@ impl BarChart {
                         let (x, bar_width) = match self.grouping {
                             BarGrouping::Grouped => {
                                 let width = (slot / series_count as f32).max(1.0);
-                                (slot_x as f32 + width * series_index as f32, width - 1.0)
+                                (slot_x as f32 + width * visible_index as f32, width - 1.0)
                             }
                             BarGrouping::Stacked => (slot_x as f32, (slot - 2.0).max(1.0)),
                         };
@@ -1326,8 +1547,8 @@ impl BarChart {
                             BarGrouping::Stacked => negative,
                         };
                         let end = start + value * growth;
-                        let top = Self::value_pixel(end.max(start), y_min, span, plot_area);
-                        let bottom = Self::value_pixel(end.min(start), y_min, span, plot_area);
+                        let top = self.value_pixel(end.max(start), y_min, y_max, plot_area);
+                        let bottom = self.value_pixel(end.min(start), y_min, y_max, plot_area);
                         let height = (bottom - top).max(1) as u32;
                         if is_enabled {
                             context.fill_rect(
@@ -1340,6 +1561,7 @@ impl BarChart {
                         } else {
                             negative = end;
                         }
+                        visible_index += 1;
                     }
                     if let Some(label) = self.category_labels.get(category) {
                         let band = Rect::new(
@@ -1354,11 +1576,16 @@ impl BarChart {
             }
             BarOrientation::Horizontal => {
                 let slot = (plot_area.height as f32 / categories as f32).max(1.0);
-                let axis_x = plot_area.x;
                 for category in 0..categories {
-                    let slot_y = plot_area.y + (slot * category as f32) as i32;
+                    let slot_index =
+                        if self.category_reversed { categories - 1 - category } else { category };
+                    let slot_y = plot_area.y + (slot * slot_index as f32) as i32;
                     let (mut positive, mut negative) = (0.0f64, 0.0f64);
+                    let mut visible_index = 0usize;
                     for series_index in 0..self.series.len() {
+                        if !self.series[series_index].visible {
+                            continue;
+                        }
                         let Some(value) = self.rendered_series_value(series_index, category) else {
                             continue;
                         };
@@ -1367,7 +1594,7 @@ impl BarChart {
                         let (y, bar_height) = match self.grouping {
                             BarGrouping::Grouped => {
                                 let height = (slot / series_count as f32).max(1.0);
-                                (slot_y as f32 + height * series_index as f32, height - 1.0)
+                                (slot_y as f32 + height * visible_index as f32, height - 1.0)
                             }
                             BarGrouping::Stacked => (slot_y as f32, (slot - 2.0).max(1.0)),
                         };
@@ -1377,8 +1604,8 @@ impl BarChart {
                             BarGrouping::Stacked => negative,
                         };
                         let end = start + value * growth;
-                        let x0 = axis_x + ((start - 0.0) / span * plot_area.width as f64) as i32;
-                        let x1 = axis_x + ((end - 0.0) / span * plot_area.width as f64) as i32;
+                        let x0 = self.horizontal_value_pixel(start, y_min, y_max, plot_area);
+                        let x1 = self.horizontal_value_pixel(end, y_min, y_max, plot_area);
                         let left = x0.min(x1);
                         let width = (x0 - x1).unsigned_abs().max(1);
                         if is_enabled {
@@ -1392,6 +1619,7 @@ impl BarChart {
                         } else {
                             negative = end;
                         }
+                        visible_index += 1;
                     }
                     if let Some(label) = self.category_labels.get(category) {
                         let band = Rect::new(
@@ -1408,10 +1636,19 @@ impl BarChart {
     }
 
     /// The y pixel for a value in a vertical plot.
-    fn value_pixel(value: f64, y_min: f64, span: f64, plot_area: Rect) -> i32 {
-        let baseline = plot_area.y + plot_area.height as i32;
-        let height = plot_area.height as f64;
-        baseline - (((value - y_min) / span) * height) as i32
+    fn value_pixel(&self, value: f64, y_min: f64, y_max: f64, plot_area: Rect) -> i32 {
+        let fraction = self.value_axis.fraction(value, y_min, y_max);
+        plot_area.y + (plot_area.height as f64 * (1.0 - fraction)) as i32
+    }
+
+    /// The x pixel for a value in a horizontal plot.
+    fn horizontal_value_pixel(&self, value: f64, y_min: f64, y_max: f64, plot_area: Rect) -> i32 {
+        let span = (y_max - y_min).max(f64::EPSILON);
+        let mut fraction = value / span;
+        if self.value_axis.reversed {
+            fraction = 1.0 - fraction;
+        }
+        plot_area.x + (plot_area.width as f64 * fraction) as i32
     }
 
     /// Paints the hover highlight and, when enabled, its tooltip.
@@ -1427,17 +1664,18 @@ impl BarChart {
             BarOrientation::Vertical => plot_area.width as f32 / categories as f32,
             BarOrientation::Horizontal => plot_area.height as f32 / categories as f32,
         };
+        let slot_index = if self.category_reversed { categories - 1 - index } else { index };
         let highlight = axis_chrome_color(0.10);
         let band = match self.orientation {
             BarOrientation::Vertical => Rect::new(
-                plot_area.x + (slot * index as f32) as i32,
+                plot_area.x + (slot * slot_index as f32) as i32,
                 plot_area.y,
                 slot.max(1.0) as u32,
                 plot_area.height,
             ),
             BarOrientation::Horizontal => Rect::new(
                 plot_area.x,
-                plot_area.y + (slot * index as f32) as i32,
+                plot_area.y + (slot * slot_index as f32) as i32,
                 plot_area.width,
                 slot.max(1.0) as u32,
             ),
@@ -1463,6 +1701,9 @@ impl BarChart {
         } else {
             lines.push((category_label, ink));
             for (series_index, series) in self.series.iter().enumerate() {
+                if !series.visible {
+                    continue;
+                }
                 let value = series.values.get(index).copied().unwrap_or(0.0);
                 let name = if series.name.is_empty() {
                     std::format!("Series {}", series_index + 1)
@@ -1518,7 +1759,10 @@ impl BarChart {
                 ((pos.y - plot_area.y) as f32 / slot) as usize
             }
         };
-        (index < categories).then_some(index)
+        if index >= categories {
+            return None;
+        }
+        Some(if self.category_reversed { categories - 1 - index } else { index })
     }
 }
 
@@ -1656,6 +1900,12 @@ impl EventHandler for BarChart {
                 }
             }
             Event::MousePress { pos, button, .. } if *button == 1 => {
+                // A legend row is a visibility toggle; consume it before the bar hit path.
+                if let Some(index) = self.legend_entry_at(*pos) {
+                    let visible = self.is_series_visible(index);
+                    self.set_series_visible(index, !visible);
+                    return;
+                }
                 self.base.set_mouse_pressed(true);
                 if let Some(index) = self.category_at(*pos, plot_area) {
                     self.bar_clicked.emit(index);
@@ -2251,5 +2501,66 @@ mod tests {
             crate::widget::svg::text_ink_boxes(&svg).len() > runs_without_tooltip,
             "the tooltip adds text runs"
         );
+    }
+
+    /// CH-001: a legend click toggles the series and reports it.
+    #[test]
+    fn a_bar_legend_click_toggles_the_series() {
+        use std::sync::{Arc, Mutex};
+        let mut chart = BarChart::new(Rect::new(0, 0, 480, 300));
+        chart.set_series(
+            vec![BarSeries::new("Revenue", vec![10.0]), BarSeries::new("Cost", vec![5.0])],
+            vec!["Q1".to_string()],
+        );
+        chart.set_show_legend(true);
+        let _ = crate::widget::svg::render_to_svg(&mut chart);
+        let area = chart.last_legend_area.expect("the legend has a hit area");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        chart.series_toggled.connect(move |value| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*value);
+            }
+        });
+        chart.handle_event(&Event::mouse_press(area.x + 4, area.y + 4, 1));
+        assert!(!chart.is_series_visible(0));
+        assert_eq!(*seen.lock().unwrap(), vec![(0, false)]);
+    }
+
+    /// CH-007: a stacked hover names the segment's own series.
+    #[test]
+    fn a_stacked_hover_names_the_segment_series() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 400, 300));
+        chart.set_grouping(BarGrouping::Stacked);
+        chart.set_series(
+            vec![BarSeries::new("a", vec![10.0]), BarSeries::new("b", vec![20.0])],
+            vec!["Q1".to_string()],
+        );
+        let _ = crate::widget::svg::render_to_svg(&mut chart);
+        let plot = chart.last_plot_area.expect("plot area");
+        let (y_min, y_max) = chart.resolve_y_range();
+        let x = plot.x + plot.width as i32 / 2;
+        let first_mid = (chart.value_pixel(0.0, y_min, y_max, plot)
+            + chart.value_pixel(10.0, y_min, y_max, plot))
+            / 2;
+        let second_mid = (chart.value_pixel(10.0, y_min, y_max, plot)
+            + chart.value_pixel(30.0, y_min, y_max, plot))
+            / 2;
+        assert_eq!(chart.series_at(Point::new(x, first_mid), plot, 0), 0);
+        assert_eq!(chart.series_at(Point::new(x, second_mid), plot, 0), 1);
+    }
+
+    /// CH-003/CH-004: the value axis honours logarithmic and reversed modes.
+    #[test]
+    fn the_bar_value_axis_honours_log_and_reverse() {
+        let mut chart = BarChart::new(Rect::new(0, 0, 400, 300));
+        let plot = Rect::new(0, 0, 400, 300);
+        let linear = chart.value_pixel(20.0, 1.0, 100.0, plot);
+        chart.set_value_scale(AxisScale::Logarithmic);
+        let logarithmic = chart.value_pixel(20.0, 1.0, 100.0, plot);
+        assert_ne!(linear, logarithmic, "a log value axis maps the datum differently");
+        chart.set_value_reversed(true);
+        let reversed = chart.value_pixel(20.0, 1.0, 100.0, plot);
+        assert_ne!(reversed, logarithmic, "a reversed value axis flips the mapping");
     }
 }

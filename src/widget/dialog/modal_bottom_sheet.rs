@@ -198,10 +198,12 @@ impl ModalBottomSheet {
 
     /// Sets the child content widget displayed in the sheet body.
     ///
-    /// The sheet places the child in its content well on every frame it is painted (or one
-    /// whose geometry changed), the same arrangement `BottomSheet` uses (DLG-17).
+    /// The child has never been laid out, so the first layout request is issued here rather
+    /// than deferred to the first paint (DLG-008). The sheet places the child in its content
+    /// well and paints it in the same pass that paints the chrome.
     pub fn set_content(&mut self, widget: Box<dyn Widget>) {
         self.content = Some(widget);
+        self.base.request_layout();
         self.base.request_redraw();
     }
 
@@ -574,9 +576,17 @@ impl Draw for ModalBottomSheet {
             // Place the child in the well it is drawn into. Writing the geometry every frame
             // is idempotent; the child owns its own internal layout, and this control owns only
             // the box handed to it (DLG-17).
+            //
+            // DLG-008: placing the child was all this did — the paint path returned without
+            // asking it to draw, so a mounted child left the content well as an empty tinted
+            // rectangle. The child is drawn here, through the same `as_draw_mut` bridge the
+            // mounted tree uses, because the sheet is the one object that knows the well.
             if let Some(content) = self.content.as_mut() {
                 content.set_geometry(content_rect);
                 content.show();
+                if let Some(drawable) = content.as_draw_mut() {
+                    drawable.draw(context);
+                }
             }
         } else if let Some(content) = self.content.as_mut() {
             content.hide();
@@ -675,6 +685,90 @@ mod tests {
 
         sheet.hide();
         assert!(!sheet.is_visible());
+    }
+
+    /// A content stand-in that records the box it was painted into and lays down one colour.
+    struct PaintedContent {
+        base: BaseWidget,
+        painted: std::rc::Rc<std::cell::Cell<Option<Rect>>>,
+    }
+
+    impl PaintedContent {
+        fn new(painted: std::rc::Rc<std::cell::Cell<Option<Rect>>>) -> Self {
+            Self {
+                base: BaseWidget::new(WidgetKind::Label, Rect::new(0, 0, 0, 0), "PaintedContent"),
+                painted,
+            }
+        }
+    }
+
+    impl Widget for PaintedContent {
+        fn base(&self) -> &BaseWidget {
+            &self.base
+        }
+        fn base_mut(&mut self) -> &mut BaseWidget {
+            &mut self.base
+        }
+        fn as_draw_mut(&mut self) -> Option<&mut dyn Draw> {
+            Some(self)
+        }
+    }
+
+    impl Draw for PaintedContent {
+        fn draw(&mut self, context: &mut RenderContext) {
+            self.painted.set(Some(self.geometry()));
+            context.fill_rect(self.geometry(), Color::rgb(3, 4, 5));
+        }
+    }
+
+    impl EventHandler for PaintedContent {
+        fn handle_event(&mut self, _event: &Event) {}
+    }
+
+    /// The sheet paints its content child inside the content well (DLG-008).
+    ///
+    /// # The defect this pins
+    ///
+    /// `draw` placed the child and then returned without asking it to paint, so a mounted
+    /// child left the content well as an empty tinted rectangle — the same defect as the
+    /// popover's (DLG-007).
+    #[test]
+    fn the_sheet_paints_its_content_child_inside_the_well() {
+        let painted = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut sheet = ModalBottomSheet::new(Rect::new(0, 0, 400, 600));
+        sheet.set_content(Box::new(PaintedContent::new(std::rc::Rc::clone(&painted))));
+        sheet.show();
+
+        let svg = render_to_svg(&mut sheet);
+        assert!(
+            svg.contains("rgba(3,4,5,1.00)"),
+            "the installed content must reach the pixels: {svg}"
+        );
+        let inner = painted.get().expect("the content child was painted");
+        let sheet_rect = sheet.geometry();
+        assert!(inner.width > 0 && inner.height > 0, "the child must get a real box: {inner:?}");
+        assert!(
+            inner.x >= sheet_rect.x
+                && inner.y >= sheet_rect.y
+                && inner.x + inner.width as i32 <= sheet_rect.x + sheet_rect.width as i32
+                && inner.y + inner.height as i32 <= sheet_rect.y + sheet_rect.height as i32,
+            "the child is placed inside the sheet: {inner:?} vs {sheet_rect:?}"
+        );
+    }
+
+    /// Installing content asks for its first layout (DLG-008).
+    #[test]
+    fn installing_sheet_content_requests_its_first_layout() {
+        let mut sheet = make_sheet();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&asked);
+        sheet.base.layout_requested.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+        sheet.set_content(Box::new(PaintedContent::new(std::rc::Rc::new(std::cell::Cell::new(
+            None,
+        )))));
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "the new child has never been laid out");
     }
 
     #[test]

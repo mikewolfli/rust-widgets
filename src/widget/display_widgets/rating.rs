@@ -18,7 +18,9 @@ use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{
+    dimensions, focus_ring_color, ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
+};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -594,6 +596,24 @@ impl Draw for Rating {
         // contain stars" rather than as the rating control itself.
         let row = self.star_row();
         context.fill_rect(row, background);
+
+        // ── Focus ring ──
+        //
+        // The stars are keyboard-operable, so focus has to be visible. The ring follows the
+        // same reason-gated rule every other control uses: Tab and Shortcut draw it, a pointer
+        // press focuses without one. It is inset inside the control, so a rating flush against
+        // its neighbour cannot paint over it.
+        if self.base.draws_focus_ring() {
+            let ring = FocusRing::for_control(self.geometry(), 4);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(background.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
+            }
+        }
 
         if self.max_rating == 0 {
             // Nothing to rate: the row band above is the whole control, so there is no
@@ -1361,5 +1381,27 @@ mod tests {
         assert_eq!(r.hover_preview(), None);
 
         assert_eq!(*seen.lock().unwrap(), vec![Some(2), None]);
+    }
+
+    /// Keyboard focus draws a ring; a pointer press focuses without one.
+    #[test]
+    fn rating_draws_a_focus_ring_for_keyboard_focus_only() {
+        use crate::event::FocusReason;
+        let _theme_guard = crate::style::theme_test_guard();
+
+        let mut rating = Rating::new(Rect::new(0, 0, 200, 40));
+        let resting = crate::widget::svg::render_to_svg(&mut rating);
+
+        rating.handle_event(&Event::FocusGained { reason: FocusReason::Pointer });
+        let pointer_focused = crate::widget::svg::render_to_svg(&mut rating);
+        assert_eq!(resting, pointer_focused, "pointer focus draws no ring");
+
+        rating.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        let tab_focused = crate::widget::svg::render_to_svg(&mut rating);
+        assert_ne!(resting, tab_focused, "keyboard focus must be visible");
+
+        rating.handle_event(&Event::FocusLost);
+        let blurred = crate::widget::svg::render_to_svg(&mut rating);
+        assert_eq!(resting, blurred, "losing focus restores the resting picture");
     }
 }

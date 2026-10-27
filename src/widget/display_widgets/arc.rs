@@ -4,10 +4,10 @@
 //! Arc widget — circular progress/indicator (BLUE13 R2.1).
 use core::fmt::Write as _;
 
-use crate::compat::{String, ToString};
+use crate::compat::{String, ToString, Vec};
 use crate::core::{deg_to_rad, Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
-use crate::render::{RenderCommand, RenderContext, TextMetrics};
+use crate::render::{RenderContext, TextMetrics};
 use crate::widget::capability::coercion::{
     expect_bool, expect_f64, expect_string, expect_u16_saturating, expect_u32,
 };
@@ -28,6 +28,47 @@ const DEFAULT_SPIN_PERIOD_MS: u32 = 1400;
 
 /// How many `slow` tokens one revolution is worth.
 const SPIN_SLOW_MULTIPLE: u32 = 5;
+
+/// Fills the annulus between `inner` and `outer` over `start..end` as one contour.
+///
+/// The contour runs along the outer edge and back along the inner edge, so the hole is real
+/// geometry rather than an opaque disc painted over the centre: whatever sits behind the
+/// control stays visible through it. The outline is sampled from the swept arc length, so a
+/// quarter-turn spinner and a full track are both smooth without a fixed vertex count.
+fn fill_annulus(
+    context: &mut RenderContext,
+    center: Point,
+    outer: u32,
+    inner: u32,
+    start: f32,
+    end: f32,
+    color: Color,
+) {
+    if outer == 0 || inner >= outer || (end - start).abs() < 0.001 {
+        return;
+    }
+    let sweep = end - start;
+    let steps = (((sweep.abs() * outer as f32) / 3.0).ceil() as u32).clamp(8, 256) as usize;
+    let mut points = Vec::with_capacity(steps * 2 + 2);
+    for index in 0..=steps {
+        let t = index as f32 / steps as f32;
+        let angle = start + sweep * t;
+        points.push(Point::new(
+            center.x + (outer as f32 * angle.cos()) as i32,
+            center.y + (outer as f32 * angle.sin()) as i32,
+        ));
+    }
+    for index in (0..=steps).rev() {
+        let t = index as f32 / steps as f32;
+        let angle = start + sweep * t;
+        points.push(Point::new(
+            center.x + (inner as f32 * angle.cos()) as i32,
+            center.y + (inner as f32 * angle.sin()) as i32,
+        ));
+    }
+    let contours = [(0usize, points.len())];
+    let _ = context.fill_path_non_zero(&points, &contours, color);
+}
 
 /// Arc widget for displaying circular progress or angular values.
 pub struct Arc {
@@ -700,11 +741,25 @@ impl Draw for Arc {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let center = Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 / 2);
+        let is_enabled = self.base.is_enabled();
 
-        // Resolve colors from style overrides, falling back to defaults.
-        let track_color = self.style().background_color.unwrap_or(Color::rgb(220, 220, 220));
+        // Resolve colors from style overrides, falling back to defaults. A disabled arc
+        // follows the same family rule as `progress_circle`: the track fades toward the
+        // disabled foreground and the value ink is the disabled tone.
+        let track_color = if is_enabled {
+            self.style().background_color.unwrap_or(Color::rgb(220, 220, 220))
+        } else {
+            self.style()
+                .background_color
+                .unwrap_or(Color::rgb(220, 220, 220))
+                .blend(&Color::DISABLED_FOREGROUND, 0.5)
+        };
 
-        let arc_color = self.style().text_color.unwrap_or(Color::rgb(0, 120, 215));
+        let arc_color = if is_enabled {
+            self.style().text_color.unwrap_or(Color::rgb(0, 120, 215))
+        } else {
+            Color::DISABLED_FOREGROUND
+        };
 
         // Radius is half the smaller dimension minus a small inset.
         let outer_radius = rect.width.min(rect.height).saturating_sub(2) / 2;
@@ -758,60 +813,62 @@ impl Draw for Arc {
                 }
             }
         } else {
-            // Draw the background track as a filled circle (pancake style).
-            context.fill_circle(center, outer_radius, track_color);
+            // The pancake form is a real ring: the track and the value arc are both drawn as
+            // an annulus, so the centre is a hole in the geometry rather than an opaque disc
+            // painted over whatever sits behind the control.
+            fill_annulus(
+                context,
+                center,
+                outer_radius,
+                inner_radius,
+                0.0,
+                std::f32::consts::TAU,
+                track_color,
+            );
 
             if self.indeterminate {
                 // In indeterminate mode, draw a quarter-circle arc as a spinning indicator.
-                context.execute_command(RenderCommand::DrawArc {
+                fill_annulus(
+                    context,
                     center,
-                    radius: outer_radius,
-                    start_angle: arc_start,
-                    end_angle: arc_end,
-                    color: arc_color,
-                    filled: true,
-                });
+                    outer_radius,
+                    inner_radius,
+                    arc_start,
+                    arc_end,
+                    arc_color,
+                );
             } else {
                 // Draw the progress arc from start_angle to start_angle + sweep * progress.
                 if (arc_end - arc_start).abs() > 0.001 {
-                    context.execute_command(RenderCommand::DrawArc {
+                    fill_annulus(
+                        context,
                         center,
-                        radius: outer_radius,
-                        start_angle: arc_start,
-                        end_angle: arc_end,
-                        color: arc_color,
-                        filled: true,
-                    });
+                        outer_radius,
+                        inner_radius,
+                        arc_start,
+                        arc_end,
+                        arc_color,
+                    );
                 }
 
                 // When rounded ends are enabled, draw small filled circles at the start and
-                // end of the arc to create a rounded cap appearance.
+                // end of the arc to create a rounded cap appearance. The caps sit on the
+                // ring's centreline, which is the same radius the annulus occupies.
                 if self.rounded && (arc_end - arc_start).abs() > 0.001 {
                     let half_thick = (self.thickness as f32 / 2.0).max(1.0) as u32;
                     let cap_radius = half_thick.max(2);
+                    let centre_radius = inner_radius as f32 + self.thickness as f32 / 2.0;
 
                     // Cap at the start of the arc.
-                    let sx = center.x + (outer_radius as f32 * arc_start.cos()) as i32;
-                    let sy = center.y + (outer_radius as f32 * arc_start.sin()) as i32;
+                    let sx = center.x + (centre_radius * arc_start.cos()) as i32;
+                    let sy = center.y + (centre_radius * arc_start.sin()) as i32;
                     context.fill_circle(Point::new(sx, sy), cap_radius, arc_color);
 
                     // Cap at the end of the arc.
-                    let ex = center.x + (outer_radius as f32 * arc_end.cos()) as i32;
-                    let ey = center.y + (outer_radius as f32 * arc_end.sin()) as i32;
+                    let ex = center.x + (centre_radius * arc_end.cos()) as i32;
+                    let ey = center.y + (centre_radius * arc_end.sin()) as i32;
                     context.fill_circle(Point::new(ex, ey), cap_radius, arc_color);
                 }
-            }
-
-            // Draw the inner hole (clear center) so the arc looks like a ring.
-            // We draw a filled circle in the background color over the center,
-            // simulating a donut punch-out.
-            if inner_radius > 0 {
-                // Use the style background color, or fall back to the track color
-                // (which was already drawn as the full background circle). This
-                // creates a visible donut hole rather than relying on TRANSPARENT
-                // which can't erase the filled circle behind it.
-                let bg = self.style().background_color.unwrap_or(Color::WHITE);
-                context.fill_circle(center, inner_radius, bg);
             }
         }
 
@@ -865,7 +922,11 @@ impl Draw for Arc {
             if fits {
                 let text_x = center.x - (metrics.width as i32 / 2);
                 let text_y = center.y - (metrics.height as i32 / 2);
-                let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
+                let text_color = if is_enabled {
+                    self.style().text_color.unwrap_or(Color::rgb(0, 0, 0))
+                } else {
+                    Color::DISABLED_FOREGROUND
+                };
                 context.draw_text(
                     Point::new(text_x, text_y),
                     text.as_str(),
@@ -1236,5 +1297,52 @@ mod tests {
             arc.get("value_format").unwrap(),
             CapabilityValue::String("{value} ({percent}%)".to_string())
         );
+    }
+
+    /// The pancake form's hole is real geometry: the backdrop shows through it.
+    #[test]
+    fn the_pancake_hole_is_transparent() {
+        let backdrop = Color::rgb(10, 20, 30);
+        let mut arc = Arc::new(Rect::new(0, 0, 120, 120));
+        arc.set_show_value(false);
+        arc.set_value(50);
+        arc.set_style(
+            crate::style::WidgetStyle::default()
+                .with_background(Color::rgb(200, 200, 200))
+                .with_text_color(Color::rgb(0, 120, 215)),
+        );
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(120, 120), 1.0);
+        backend.begin_frame(backdrop);
+        {
+            let mut context = RenderContext::new(&mut backend);
+            arc.draw(&mut context);
+        }
+        backend.end_frame();
+        let pixels = backend.frame_rgba().to_vec();
+        let centre = ((60 * 120 + 60) * 4) as usize;
+        assert_eq!(
+            &pixels[centre..centre + 3],
+            &[backdrop.r, backdrop.g, backdrop.b],
+            "the hole must not paint an opaque background over the backdrop"
+        );
+
+        // The ring itself is still painted.
+        let ring = ((60 * 120 + 6) * 4) as usize;
+        assert_ne!(&pixels[ring..ring + 3], &[backdrop.r, backdrop.g, backdrop.b]);
+    }
+
+    /// A disabled arc paints the same family's disabled tone and differs from the enabled one.
+    #[test]
+    fn a_disabled_arc_has_a_disabled_visual() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut arc = Arc::new(Rect::new(0, 0, 120, 120));
+        arc.set_value(60);
+        let enabled = crate::widget::svg::render_to_svg(&mut arc);
+
+        arc.set_enabled(false);
+        assert!(!arc.is_enabled());
+        let disabled = crate::widget::svg::render_to_svg(&mut arc);
+        assert_ne!(enabled, disabled, "a disabled arc must not paint the enabled colours");
     }
 }

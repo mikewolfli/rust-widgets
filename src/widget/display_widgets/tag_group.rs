@@ -16,7 +16,7 @@
 //! added. Until then it is reachable as
 //! `crate::widget::display_widgets::tag_group::TagGroup`.
 
-use crate::compat::{Arc, String, Vec};
+use crate::compat::{Arc, RefCell, String, Vec};
 use crate::core::{Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -75,6 +75,25 @@ pub struct TagGroup {
     pub tag_closed: Signal1<String>,
     /// Emitted whenever the selected set changes; read [`Self::selected_indices`].
     pub selection_changed: GenericSignal,
+    /// The placed child rectangles and the revision set that produced them.
+    ///
+    /// `draw` and the event path both lay the children out, and the layout measured every
+    /// label every frame. The cache is invalidated by the group's box, the wrap/spacing
+    /// settings, and each child's own measurement revision (which covers text, face,
+    /// closable and icon changes).
+    layout_cache: RefCell<Option<LayoutCache>>,
+    /// How many times the layout has actually been rebuilt. Test-only evidence that a still
+    /// group reuses its cached layout.
+    #[cfg(test)]
+    layout_epoch: core::cell::Cell<u64>,
+}
+
+/// The last layout and the inputs that produced it.
+struct LayoutCache {
+    rect: Rect,
+    wrap: bool,
+    spacing: u32,
+    revisions: Vec<u64>,
 }
 
 impl TagGroup {
@@ -90,6 +109,9 @@ impl TagGroup {
             selected: Vec::new(),
             tag_closed: Signal1::new(),
             selection_changed: GenericSignal::new(),
+            layout_cache: RefCell::new(None),
+            #[cfg(test)]
+            layout_epoch: Cell::new(0),
         }
     }
 
@@ -243,7 +265,27 @@ impl TagGroup {
     /// Each tag's own `size_hint` is the cell, so a group never invents a size the tag would not
     /// declare. Wrapping is row-major and the last row's height is not reserved.
     fn layout_tags(&mut self) {
+        // Ask each child for its cell first: `Tag::size_hint` revalidates its own cache and
+        // bumps its revision if a measurement input changed, so this read is what makes a
+        // face or text change visible to the group's own cache.
+        let revisions: Vec<u64> = self
+            .tags
+            .iter()
+            .map(|tag| {
+                let _ = tag.size_hint();
+                tag.size_hint_revision()
+            })
+            .collect();
         let rect = self.geometry();
+        let fresh = self.layout_cache.borrow().as_ref().is_some_and(|cache| {
+            cache.rect == rect
+                && cache.wrap == self.wrap
+                && cache.spacing == self.spacing
+                && cache.revisions == revisions
+        });
+        if fresh {
+            return;
+        }
         let spacing = self.spacing as i32;
         let mut x = rect.x;
         let mut y = rect.y;
@@ -261,6 +303,10 @@ impl TagGroup {
             x += width as i32 + spacing;
             row_height = row_height.max(height);
         }
+        *self.layout_cache.borrow_mut() =
+            Some(LayoutCache { rect, wrap: self.wrap, spacing: self.spacing, revisions });
+        #[cfg(test)]
+        self.layout_epoch.set(self.layout_epoch.get().wrapping_add(1));
     }
 
     /// Reads the children's selection and emits once when it changed.
@@ -517,6 +563,29 @@ mod tests {
         // signal when the child was added.
         group.tags[0].closed.emit("draft".to_string());
         assert_eq!(*seen.lock().unwrap(), vec!["draft".to_string()]);
+    }
+
+    /// A still group reuses its layout; each input change rebuilds it exactly once.
+    #[test]
+    fn the_layout_is_cached_until_an_input_changes() {
+        let mut group = TagGroup::new(Rect::new(0, 0, 300, 40));
+        group.add_tag("alpha");
+        group.add_tag("beta");
+        group.layout_tags();
+        let first = group.layout_epoch.get();
+        let placed = group.tags[1].geometry();
+
+        group.layout_tags();
+        assert_eq!(group.layout_epoch.get(), first, "a still group does not re-measure");
+        assert_eq!(group.tags[1].geometry(), placed);
+
+        group.set_spacing(4);
+        group.layout_tags();
+        assert_eq!(group.layout_epoch.get(), first + 1, "a spacing change rebuilds once");
+
+        group.tags[0].set_text("a much longer label".to_string());
+        group.layout_tags();
+        assert_eq!(group.layout_epoch.get(), first + 2, "a child measurement change rebuilds");
     }
 
     #[test]

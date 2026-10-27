@@ -95,12 +95,25 @@ pub struct ConstraintLayout {
     /// computed"; a cyclic graph is not cached, because its fallback is declaration order and
     /// the warning is part of the observable behaviour.
     order_cache: RefCell<Option<Rc<ConstraintOrder>>>,
+    /// The last nominal layout, keyed by the rect it was computed from (LAY-005).
+    ///
+    /// `child_rect` answers a one-child query from this cache instead of re-running the
+    /// constraint resolution (G-158). Only [`Layout::update`] — the nominal path — populates
+    /// it, so a cached answer is byte-identical to the trait default's update-and-capture; a
+    /// rect mismatch falls back to that same capture. Every mutator clears it, through
+    /// [`Self::invalidate_order`] for constraint changes and directly for child-list ones.
+    last_layout: RefCell<Option<(Rect, Vec<(ObjectId, Rect)>)>>,
 }
 
 impl ConstraintLayout {
     /// Create a new empty constraint layout.
     pub fn new() -> Self {
-        Self { constraints: Vec::new(), children: Vec::new(), order_cache: RefCell::new(None) }
+        Self {
+            constraints: Vec::new(),
+            children: Vec::new(),
+            order_cache: RefCell::new(None),
+            last_layout: RefCell::new(None),
+        }
     }
 
     /// Adds a constraint with an explicit priority.
@@ -147,8 +160,12 @@ impl ConstraintLayout {
     }
 
     /// Drops the cached resolution order after a constraint mutation.
+    ///
+    /// This is also the one invalidation point every constraint mutator funnels through, so
+    /// it clears the nominal-layout cache `child_rect` reads (LAY-005) as well.
     fn invalidate_order(&mut self) {
         self.order_cache.get_mut().take();
+        self.last_layout.get_mut().take();
     }
 
     /// Orders the constraints with Kahn's algorithm.
@@ -346,59 +363,10 @@ impl ConstraintLayout {
             }
         }
     }
-}
 
-crate::impl_default_via_new!(ConstraintLayout);
-
-impl Layout for ConstraintLayout {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    /// Drops the cached resolution order, so the next `update` recomputes it from the
-    /// current constraint graph.
-    fn invalidate(&mut self) {
-        self.invalidate_order();
-    }
-
-    fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
-        if !self.children.contains(&widget_id) {
-            self.children.push(widget_id);
-        }
-    }
-
-    fn remove_widget(&mut self, widget_id: ObjectId) {
-        self.children.retain(|id| *id != widget_id);
-        self.remove_constraints(widget_id);
-    }
-
-    fn child_ids(&self) -> Vec<ObjectId> {
-        self.children.clone()
-    }
-
-    fn has_child(&self, id: ObjectId) -> bool {
-        self.children.contains(&id)
-    }
-
-    fn widget_count(&self) -> usize {
-        self.children.len()
-    }
-
-    fn index_of(&self, id: ObjectId) -> Option<usize> {
-        self.children.iter().position(|child| *child == id)
-    }
-
-    fn clear(&mut self) {
-        self.children.clear();
-        self.constraints.clear();
-        self.invalidate_order();
-    }
-
-    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+    /// The nominal constraint resolution, shared by [`Layout::update`] (which caches its
+    /// emissions for `child_rect`) — the resolution model lives here and nowhere else.
+    fn solve(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         if self.constraints.is_empty() {
             // No constraints: just lay out children filling the parent.
             for &child_id in &self.children {
@@ -460,6 +428,69 @@ impl Layout for ConstraintLayout {
             }
         }
     }
+}
+
+crate::impl_default_via_new!(ConstraintLayout);
+
+impl Layout for ConstraintLayout {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    /// Drops the cached resolution order, so the next `update` recomputes it from the
+    /// current constraint graph.
+    fn invalidate(&mut self) {
+        self.invalidate_order();
+    }
+
+    fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
+        if !self.children.contains(&widget_id) {
+            self.last_layout.get_mut().take();
+            self.children.push(widget_id);
+        }
+    }
+
+    fn remove_widget(&mut self, widget_id: ObjectId) {
+        self.children.retain(|id| *id != widget_id);
+        self.remove_constraints(widget_id);
+    }
+
+    fn child_ids(&self) -> Vec<ObjectId> {
+        self.children.clone()
+    }
+
+    fn has_child(&self, id: ObjectId) -> bool {
+        self.children.contains(&id)
+    }
+
+    fn widget_count(&self) -> usize {
+        self.children.len()
+    }
+
+    fn index_of(&self, id: ObjectId) -> Option<usize> {
+        self.children.iter().position(|child| *child == id)
+    }
+
+    fn clear(&mut self) {
+        self.children.clear();
+        self.constraints.clear();
+        self.invalidate_order();
+    }
+
+    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        // The nominal emissions are captured so `child_rect` can answer a one-child query
+        // from the cache (LAY-005) instead of re-running the constraint resolution.
+        let mut entries: Vec<(ObjectId, Rect)> = Vec::new();
+        self.solve(rect, &mut |id, r| {
+            entries.push((id, r));
+            widgets(id, r);
+        });
+        *self.last_layout.borrow_mut() = Some((rect, entries));
+    }
 
     // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
     fn update_with_context(
@@ -486,6 +517,28 @@ impl Layout for ConstraintLayout {
     ) {
         let _ = context;
         self.arrange(rect, children, widgets);
+    }
+
+    /// The one-child query, answered from the cached nominal layout when it matches
+    /// (LAY-005): a hit test must not re-run the constraint resolution. A rect mismatch
+    /// (or a first query before any `update`) falls back to the trait default's
+    /// update-and-capture, which is also what repopulates the cache.
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        if !self.has_child(id) {
+            return None;
+        }
+        if let Some((cached_rect, entries)) = self.last_layout.borrow().as_ref() {
+            if *cached_rect == rect {
+                return entries.iter().find(|(child, _)| *child == id).map(|(_, r)| *r);
+            }
+        }
+        let mut found = None;
+        self.update(rect, &mut |child, child_rect| {
+            if child == id && found.is_none() {
+                found = Some(child_rect);
+            }
+        });
+        found
     }
 }
 
@@ -712,5 +765,22 @@ mod tests {
         let mut placed = Vec::new();
         ranked.update(Rect::new(0, 0, 100, 100), &mut |id, rect| placed.push((id, rect)));
         assert_eq!(placed[0].1.x, 40, "the higher-priority rule wins");
+    }
+
+    /// LAY-005: the one-child query answers from the cached nominal layout — equal to the
+    /// full update pass — and a mutation refreshes it, so the answer never goes stale.
+    #[test]
+    fn child_rect_answers_from_the_cached_layout_and_tracks_mutations() {
+        let mut layout = ConstraintLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        let rect = Rect::new(0, 0, 200, 100);
+        // No constraints: every child fills the parent.
+        assert_eq!(layout.child_rect(1, rect), Some(rect));
+        // A constraint mutation flows through `invalidate_order`, which clears the cache.
+        layout.add_constraint(2, 1, ConstraintType::LeftToRight, 0, 1.0);
+        // Child 2's left edge is child 1's right edge; its width is unchanged (the parent's).
+        assert_eq!(layout.child_rect(2, rect), Some(Rect::new(200, 0, 200, 100)));
+        assert_eq!(layout.child_rect(9, rect), None, "a foreign id is not placed");
     }
 }

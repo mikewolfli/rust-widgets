@@ -203,7 +203,25 @@ impl Widget for SafeArea {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(300, 200)
+        // C-019: the content control's hint plus the insets this area adds around it. The
+        // historical 300x200 is the floor when no content is mounted.
+        let content = self.content_child.and_then(|child| {
+            crate::widget::runtime::with_widget(child, |child| child.size_hint())
+        });
+        content
+            .map(|content| {
+                Size::new(
+                    content
+                        .width
+                        .saturating_add(self.insets.left)
+                        .saturating_add(self.insets.right),
+                    content
+                        .height
+                        .saturating_add(self.insets.top)
+                        .saturating_add(self.insets.bottom),
+                )
+            })
+            .unwrap_or(Size::new(300, 200))
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -553,5 +571,27 @@ mod tests {
         // just asserted, so the child cannot stay in the old band.
         area.apply();
         assert_eq!(area.content_rect().y, 50);
+    }
+
+    /// C-019: the hint adds the insets around the mounted content's own hint.
+    #[test]
+    fn the_size_hint_aggregates_content_and_insets() {
+        use crate::widget::base_widgets::label::Label;
+
+        let label = Label::new("content".to_string(), Rect::new(0, 0, 160, 70));
+        let expected = label.size_hint();
+        let id = crate::widget::runtime::register(Box::new(label))
+            .expect("the test control mounts");
+        let mut area = SafeArea::new(Rect::new(0, 0, 300, 200));
+        area.set_content(Some(id));
+        let insets = area.insets();
+        assert_eq!(
+            area.size_hint(),
+            Size::new(
+                expected.width + insets.left + insets.right,
+                expected.height + insets.top + insets.bottom,
+            )
+        );
+        let _ = crate::widget::runtime::unregister(id);
     }
 }

@@ -80,6 +80,21 @@ pub fn strip_menu_mnemonic(text: &str) -> String {
     stripped
 }
 
+/// The first character a mnemonic label shows, skipping its `&` marker.
+///
+/// Type-ahead matches what the user reads, not the raw stored text: `"&File"`
+/// starts with `F`, and `"&&File"` starts with the literal `&` it paints.
+fn first_menu_label_char(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    match chars.next()? {
+        '&' => match chars.next()? {
+            '&' => Some('&'),
+            first => Some(first),
+        },
+        first => Some(first),
+    }
+}
+
 /// The ASCII letter or digit a key code names, for mnemonic accelerators.
 ///
 /// Only letters and digits are mnemonics; every other key belongs to the menu's
@@ -641,6 +656,13 @@ pub struct Menu {
     hovered_index: Option<usize>,
     /// Screen position the popup was opened at, for diagnostics and tests.
     invoker_position: Option<Point>,
+    /// The area the popup and its cascading panels must stay inside.
+    ///
+    /// [`Self::open_at`] receives the host surface rectangle, and nested panels
+    /// are clamped and flipped against the same rectangle. `None` keeps the
+    /// historical right-hanging layout, which is what a menu opened by a path
+    /// that supplied no viewport still gets (M-006).
+    viewport: Option<Rect>,
     /// Emitted with the text of the entry that was chosen.
     ///
     /// Fires once per successful press on an enabled, non-separator entry; the
@@ -738,6 +760,13 @@ pub struct Menu {
     popup_metrics_cache: core::cell::Cell<Option<(PopupMetricsKey, f32)>>,
     /// The cached mnemonic rows, keyed by `(items revision, font size bits)`.
     mnemonic_cache: RefCell<Option<(u64, u32, Rc<Vec<MnemonicRow>>)>>,
+    /// The cached trailing-column width, keyed by `(items revision, font size bits)`.
+    ///
+    /// `draw` reads the trailing column once per row and `label_box` reads it again,
+    /// so measuring every shortcut per row was O(n²) in the entry count (M-003).
+    /// The width is a pure function of the list and the font, and every list mutation
+    /// bumps `items_version`, so one pass fills it and later rows hit the cell.
+    trailing_width_cache: core::cell::Cell<Option<(u64, u32, u32)>>,
     /// The branch row the pointer is resting on, awaiting the hover-open delay.
     hover_open_pending: Option<(usize, usize)>,
     /// How long the pointer has rested on [`Self::hover_open_pending`], in milliseconds.
@@ -786,6 +815,7 @@ impl Menu {
             items: Vec::new(),
             hovered_index: None,
             invoker_position: None,
+            viewport: None,
             triggered: Signal1::new(),
             triggered_index: Signal1::new(),
             action_triggered: Signal1::new(),
@@ -803,6 +833,7 @@ impl Menu {
             item_bands_cache: RefCell::new(None),
             popup_metrics_cache: core::cell::Cell::new(None),
             mnemonic_cache: RefCell::new(None),
+            trailing_width_cache: core::cell::Cell::new(None),
             hover_open_pending: None,
             hover_open_elapsed_ms: 0,
             submenu_path: Vec::new(),
@@ -874,6 +905,9 @@ impl Menu {
         // 0x0 box.
         self.set_geometry(Rect::new(x, y, popup_w as u32, popup_h.max(1) as u32));
         self.invoker_position = Some(position);
+        // A nested panel is placed against the same surface bound; storing it here is
+        // what lets `submenu_panel_rect_at` clamp and flip before the panel is popped.
+        self.viewport = Some(viewport);
         // A newly opened popup starts at the top of its list; the previous open may have
         // left it scrolled.
         self.scroll_offset = 0;
@@ -1155,12 +1189,16 @@ impl Menu {
             }
             return;
         };
-        let text = entry.tooltip.clone();
-        let text = (!text.is_empty()).then_some(text);
+        let text = (!entry.tooltip.is_empty()).then_some(entry.tooltip.as_str());
         match text {
             Some(text) => {
                 let id = child_hover_id(self.base.id(), index);
-                self.tooltips.register(id, text);
+                // Compare against the registration before copying: a pointer move within
+                // one row used to clone the hint on every event (M-004). The copy now
+                // happens only when the text actually changed.
+                if self.tooltips.text_for(id) != Some(text) {
+                    self.tooltips.register(id, text);
+                }
                 self.tooltips.note_hover(id);
                 self.tooltip_source = Some(id);
             }
@@ -1892,10 +1930,33 @@ impl Menu {
         // Every panel hangs 6 px over its parent's trailing edge, the same overlap the first
         // level has always used. Keeping the relation for each level is what makes a
         // four-deep cascade one shape rather than four hardcoded offsets.
-        let x = self.geometry().x + self.geometry().width as i32 - 6
-            + (level as i32 - 1) * (width as i32 - 6);
+        let parent =
+            if level == 1 { self.geometry() } else { self.submenu_panel_rect_at(level - 1)? };
+        let mut x = parent.x + parent.width as i32 - 6;
         let height = Self::submenu_panel_height(self.level_entries(level)?);
-        Some(Rect::new(x, anchor.y, width, height))
+        let mut y = anchor.y;
+        // A panel that would leave the surface is flipped to its parent's leading edge
+        // when that side has room, and clamped inside the surface otherwise. Without
+        // this, a branch near the right or bottom edge painted the rest of the cascade
+        // off-screen (M-006).
+        if let Some(viewport) = self.viewport {
+            let right = viewport.x + viewport.width as i32;
+            let bottom = viewport.y + viewport.height as i32;
+            if x + width as i32 > right {
+                let flipped = parent.x - width as i32 + 6;
+                x = if flipped >= viewport.x {
+                    flipped
+                } else {
+                    (right - width as i32).max(viewport.x)
+                };
+            }
+            x = x.max(viewport.x);
+            if y + height as i32 > bottom {
+                y = (bottom - height as i32).max(viewport.y);
+            }
+            y = y.max(viewport.y);
+        }
+        Some(Rect::new(x, y, width, height))
     }
 
     /// Row `row` of `level` in the menu's coordinate space.
@@ -1983,6 +2044,53 @@ impl Menu {
         self.submenu_path.push(SubmenuLevel { row: index, hovered });
         self.base.request_redraw();
         true
+    }
+
+    /// Moves the highlight of `level` to the next selectable row whose label starts
+    /// with `letter`.
+    ///
+    /// This is the menu's half of the type-ahead `DropdownMenu` already has: a bare
+    /// letter or digit jumps to a row, and repeating the same letter cycles forward
+    /// from the current row so two rows sharing a first letter are both reachable.
+    /// The comparison uses [`first_menu_label_char`], so a `&` mnemonic marker is
+    /// skipped but never mistaken for part of the label.
+    fn type_ahead_at(&mut self, level: usize, letter: char) {
+        let wanted = letter.to_ascii_lowercase();
+        let Some(count) = self.level_entries(level).map(<[MenuEntry]>::len) else {
+            return;
+        };
+        if count == 0 {
+            return;
+        }
+        let start = match self.level_hovered(level) {
+            Some(index) if index + 1 < count => index + 1,
+            Some(_) => 0,
+            None if level == 0 => self.scroll_offset.min(count - 1),
+            None => 0,
+        };
+        let mut landed = None;
+        for offset in 0..count {
+            let index = (start + offset) % count;
+            let Some(entry) = self.level_entries(level).and_then(|entries| entries.get(index))
+            else {
+                continue;
+            };
+            if entry.is_selectable()
+                && first_menu_label_char(entry.text())
+                    .is_some_and(|first| first.to_ascii_lowercase() == wanted)
+            {
+                landed = Some(index);
+                break;
+            }
+        }
+        let Some(index) = landed else {
+            return;
+        };
+        self.set_level_hovered(level, Some(index));
+        if level == 0 {
+            self.ensure_hovered_visible();
+        }
+        self.base.request_redraw();
     }
 
     /// Moves the highlight of `level` by `delta`, skipping unselectable rows.
@@ -2196,6 +2304,12 @@ impl Menu {
     /// holds, and keeps the label box from stealing the text's room.
     fn trailing_width(&self) -> u32 {
         let font = effective_font(self.style());
+        let font_bits = font.size().to_bits();
+        if let Some((version, cached_bits, width)) = self.trailing_width_cache.get() {
+            if version == self.items_version && cached_bits == font_bits {
+                return width;
+            }
+        }
         let widest = self
             .items
             .iter()
@@ -2205,7 +2319,9 @@ impl Menu {
             })
             .max()
             .unwrap_or(0);
-        widest.max(dimensions::MENU_ROW_TRAILING_WIDTH)
+        let width = widest.max(dimensions::MENU_ROW_TRAILING_WIDTH);
+        self.trailing_width_cache.set(Some((self.items_version, font_bits, width)));
+        width
     }
 
     /// The box the submenu arrow may occupy: what is left of the row after the label.
@@ -2345,6 +2461,7 @@ impl Widget for Menu {
         // can change the family/weight at the same size, so the cache is dropped with it.
         self.heading_line_cache.set(None);
         self.popup_metrics_cache.set(None);
+        self.trailing_width_cache.set(None);
         *self.mnemonic_cache.borrow_mut() = None;
         crate::style::reapply_active_theme_state(self);
     }
@@ -2390,6 +2507,7 @@ impl Widget for Menu {
         // Clear the invoker position with the popup: it describes an open menu, and
         // leaving it set would make a reopened menu report a stale origin.
         self.invoker_position = None;
+        self.viewport = None;
         self.hovered_index = None;
         self.clear_hover_branch();
         self.submenu_path.clear();
@@ -2731,6 +2849,17 @@ impl EventHandler for Menu {
                 if modifiers & 0b0100 != 0 {
                     if let Some(letter) = mnemonic_letter(*key) {
                         self.activate_mnemonic(letter);
+                        return;
+                    }
+                }
+                // Type-ahead: a bare letter or digit jumps to the next row starting with
+                // it. Chorded presses belong to the application's shortcuts, not to the
+                // menu, which is the same rule `DropdownMenu` follows (M-005).
+                if *modifiers == 0 {
+                    if let Some(letter) =
+                        char::from_u32(*key).filter(|letter| letter.is_ascii_alphanumeric())
+                    {
+                        self.type_ahead_at(self.focus_level(), letter);
                         return;
                     }
                 }
@@ -4340,5 +4469,75 @@ mod tests {
         let row = bands[3];
         let pos = Point::new(menu.geometry().x + row.x + 2, menu.body_top() + row.y + 2);
         assert_eq!(menu.item_index_at(pos), Some(3), "the hit test addresses the column");
+    }
+
+    /// M-005: a bare letter jumps the menu highlight, and an `&` marker is not part
+    /// of the compared label.
+    #[test]
+    fn a_bare_letter_runs_type_ahead_over_the_menu_rows() {
+        let mut menu = Menu::new("Edit", Rect::new(0, 0, 200, 160));
+        menu.add_action("&Alpha");
+        menu.add_action("Beta");
+        menu.add_action("Charlie");
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 600, 600));
+
+        menu.handle_event(&Event::KeyPress { key: 67, modifiers: 0 });
+        assert_eq!(menu.hovered_index(), Some(2), "C jumps to Charlie");
+
+        // Repeating the letter cycles from the current row, so two rows sharing a
+        // first letter are both reachable without a timing window.
+        assert!(menu.set_active_action(0));
+        menu.handle_event(&Event::KeyPress { key: 65, modifiers: 0 });
+        assert_eq!(menu.hovered_index(), Some(0), "A wraps forward to the marked label");
+    }
+
+    /// M-006: a cascading panel near the right edge flips to its parent's leading edge.
+    #[test]
+    fn a_submenu_panel_flips_before_it_leaves_the_viewport() {
+        let mut menu = Menu::new("File", Rect::new(0, 0, 180, 120));
+        menu.add_item(MenuEntry::new("Export").with_submenu(vec![MenuEntry::new("PDF")]));
+        menu.open_at(Point::new(200, 0), Rect::new(0, 0, 500, 400));
+        assert!(menu.open_submenu(0), "the branch opens");
+
+        let panel = menu.submenu_panel_rect().expect("the panel exists");
+        assert!(
+            panel.x < menu.geometry().x,
+            "the panel flips to the parent's leading edge: {panel:?} vs {:?}",
+            menu.geometry()
+        );
+        assert!(panel.x >= 0 && panel.x + panel.width as i32 <= 500, "and stays on screen");
+    }
+
+    /// M-003: the trailing column is measured once per list revision, not once per row.
+    #[test]
+    fn the_trailing_column_is_cached_until_the_list_changes() {
+        let mut menu = Menu::new("Edit", Rect::new(0, 0, 200, 120));
+        menu.add_action_with_shortcut("Save", "Ctrl+S");
+        let first = menu.trailing_width();
+        assert!(menu.trailing_width_cache.get().is_some(), "the first pass fills the cache");
+        assert_eq!(menu.trailing_width(), first, "a second read is the cached answer");
+
+        menu.add_action_with_shortcut("Save As", "Ctrl+Shift+S");
+        let second = menu.trailing_width();
+        assert!(second > first, "a wider shortcut invalidates and widens the column");
+    }
+
+    /// M-004: moving within one row does not re-register its hint on every event.
+    #[test]
+    fn hovering_the_same_row_keeps_one_tooltip_registration() {
+        let mut menu = Menu::new("Edit", Rect::new(0, 0, 200, 120));
+        let mut entry = MenuEntry::new("Open");
+        entry.set_tooltip("Open a document");
+        menu.add_item(entry);
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 600, 600));
+        menu.hovered_index = Some(0);
+        menu.sync_hover_tooltip();
+        let id = menu.tooltip_source.expect("the row registered a hint");
+        assert_eq!(menu.tooltips.text_for(id), Some("Open a document"));
+
+        // A second move on the same row compares the stored text and does not copy it
+        // again; the registration is still the one hint for that row.
+        menu.sync_hover_tooltip();
+        assert_eq!(menu.tooltips.text_for(id), Some("Open a document"));
     }
 }

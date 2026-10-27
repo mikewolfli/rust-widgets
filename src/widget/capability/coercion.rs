@@ -599,6 +599,9 @@ pub fn expect_alignment(value: CapabilityValue) -> Result<Alignment, CapabilityA
         "right" => Ok(Alignment::Right),
         "top" => Ok(Alignment::Top),
         "bottom" => Ok(Alignment::Bottom),
+        // LAY-004: a row-container alignment; horizontal-only controls still refuse it
+        // through `expect_horizontal_alignment`, which `to_horizontal` gates.
+        "baseline" => Ok(Alignment::Baseline),
         _ => Err(CapabilityAccessError::TypeMismatch),
     }
 }
@@ -1059,6 +1062,7 @@ pub const fn alignment_to_str(alignment: Alignment) -> &'static str {
         Alignment::Right => "right",
         Alignment::Top => "top",
         Alignment::Bottom => "bottom",
+        Alignment::Baseline => "baseline",
     }
 }
 

@@ -134,17 +134,35 @@ impl MentionCandidate {
 
     /// Whether this candidate matches the typed query, case-insensitively.
     pub fn matches(&self, query: &str) -> bool {
+        self.match_rank(query).is_some()
+    }
+
+    /// How well this candidate matches `query`, lower being better (I-130).
+    ///
+    /// A display-prefix match ranks above a prefix on the id, which ranks above a
+    /// substring anywhere. `None` means no match. Sorting by this rank keeps the
+    /// declaration order among equally good matches.
+    fn match_rank(&self, query: &str) -> Option<u8> {
         if query.is_empty() {
-            return true;
+            return Some(0);
         }
         let query = query.to_lowercase();
-        // Shared ASCII fast path: three `to_lowercase()` allocations per candidate per
-        // keystroke used to run here. The query is still folded once per call, which is
-        // the per-filter-pass cost the other filter controls also pay.
-        use crate::widget::text_utils::contains_ignore_ascii_case;
-        contains_ignore_ascii_case(&self.display, &query)
+        use crate::widget::text_utils::{
+            contains_ignore_ascii_case, starts_with_ignore_ascii_case,
+        };
+        if starts_with_ignore_ascii_case(&self.display, &query) {
+            return Some(0);
+        }
+        if starts_with_ignore_ascii_case(&self.id, &query) {
+            return Some(1);
+        }
+        if contains_ignore_ascii_case(&self.display, &query)
             || contains_ignore_ascii_case(&self.id, &query)
             || contains_ignore_ascii_case(&self.description, &query)
+        {
+            return Some(2);
+        }
+        None
     }
 }
 
@@ -171,6 +189,28 @@ const MAX_VISIBLE: usize = 6;
 
 /// The height the caret is drawn with, and its x offset inside the field.
 const CARET_HEIGHT: u32 = 16;
+
+/// Per-character advances of the field's text, memoised per revision (I-107).
+///
+/// `byte_offsets[i]` is the byte index where character `i` starts and `widths[i]` is the
+/// advance of everything before it; the final entry is the text's end. Any byte offset is
+/// therefore answered by binary search, and the expensive per-character measurement happens
+/// once per edit rather than once per frame.
+struct TextWidthCache {
+    revision: u64,
+    font: Font,
+    dpi_bits: u32,
+    byte_offsets: Vec<usize>,
+    widths: Vec<u32>,
+}
+
+impl TextWidthCache {
+    /// The advance before `offset`, clamped to the text.
+    fn width_at(&self, offset: usize) -> u32 {
+        let index = self.byte_offsets.partition_point(|start| *start <= offset).saturating_sub(1);
+        self.widths.get(index).copied().unwrap_or(0)
+    }
+}
 
 /// Mention — `@`-triggered completion inside free text.
 pub struct Mention {
@@ -220,6 +260,15 @@ pub struct Mention {
     cursor_blink: crate::style::CursorBlink,
     /// Whether the field owns focus, which starts and stops the caret blink (I-101).
     focused: bool,
+    /// Bumped on every text mutation, so the width cache invalidates (I-107).
+    text_revision: u64,
+    /// Per-character advance cache, keyed by the text revision, font and scale (I-107).
+    width_cache: RefCell<Option<TextWidthCache>>,
+    /// The earliest byte offset the completed-mention table must rescan (I-106).
+    ///
+    /// A text edit sets it to the edit's start; a caret-only refresh sets it past the
+    /// end of the text, which keeps every existing mention without scanning.
+    dirty_from: usize,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
@@ -252,6 +301,9 @@ impl Mention {
             popup_flipped: false,
             cursor_blink: crate::style::CursorBlink::new(),
             focused: false,
+            text_revision: 0,
+            width_cache: RefCell::new(None),
+            dirty_from: 0,
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
@@ -283,6 +335,7 @@ impl Mention {
             return false;
         }
         self.trigger = trigger;
+        self.dirty_from = 0;
         self.refresh();
         self.base.request_redraw();
         true
@@ -295,6 +348,7 @@ impl Mention {
     /// id nothing can resolve.
     pub fn set_candidates(&mut self, candidates: Vec<MentionCandidate>) {
         self.candidates = candidates;
+        self.dirty_from = 0;
         self.refresh();
         let known: Vec<&str> = self.candidates.iter().map(|c| c.id.as_str()).collect();
         self.completed.retain(|mention| known.contains(&mention.id.as_str()));
@@ -347,6 +401,7 @@ impl Mention {
         self.record_edit(before);
         self.caret = self.text.len();
         self.selection_anchor = None;
+        self.dirty_from = 0;
         self.refresh();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
@@ -413,21 +468,21 @@ impl Mention {
     /// on the character the pointer is over rather than at a count-derived guess.
     fn byte_index_at_x(&self, x: i32) -> usize {
         let font = self.field_font();
-        let target = (x - (self.geometry().x + 8)).max(0) as f32;
-        // I-P66: one accumulated prefix instead of re-measuring the whole prefix per glyph
-        // (which was O(line²) for a click).
+        let target = (x - (self.geometry().x + 8)).max(0) as u32;
+        // I-131: the click reads the same renderer-derived advance table the painter uses.
+        let widths = Self::with_measurement(|context| {
+            self.text_widths(&font, 1.0f32.to_bits(), &mut |text| {
+                context.measure_text(text, &font).width
+            })
+        });
         let mut best = 0usize;
-        let mut prefix = 0.0f32;
-        let mut glyph = [0u8; 4];
-        for (index, ch) in self.text.char_indices() {
-            let advance =
-                crate::widget::metrics::estimate_text_width(ch.encode_utf8(&mut glyph), &font, 1.0)
-                    as f32;
-            if target < prefix + advance / 2.0 {
+        for index in 0..widths.widths.len().saturating_sub(1) {
+            let next_start = widths.byte_offsets[index + 1];
+            let advance = widths.widths[index + 1].saturating_sub(widths.widths[index]);
+            if target < widths.widths[index] + advance / 2 {
                 break;
             }
-            prefix += advance;
-            best = index + ch.len_utf8();
+            best = next_start;
         }
         best.min(self.text.len())
     }
@@ -453,10 +508,12 @@ impl Mention {
             self.caret = self.text.len();
         }
         let before = self.text.clone();
+        let insert_at = self.caret;
         self.text.insert_str(self.caret, text);
         self.caret += text.len();
         self.selection_anchor = None;
         self.record_edit(before);
+        self.dirty_from = insert_at;
         self.refresh();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
@@ -467,6 +524,7 @@ impl Mention {
         if self.restoring_history {
             return;
         }
+        self.text_revision = self.text_revision.wrapping_add(1);
         *self.history_target.borrow_mut() = self.text.clone();
         self.undo_stack.push(Box::new(ValueCommand::new(
             self.history_target.clone(),
@@ -501,6 +559,8 @@ impl Mention {
         self.caret = self.text.len();
         self.selection_anchor = None;
         self.restoring_history = false;
+        self.text_revision = self.text_revision.wrapping_add(1);
+        self.dirty_from = 0;
         self.refresh();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
@@ -545,6 +605,7 @@ impl Mention {
         self.caret = start;
         self.selection_anchor = None;
         self.record_edit(before);
+        self.dirty_from = start;
         self.refresh();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
@@ -564,6 +625,7 @@ impl Mention {
         self.caret = previous;
         self.selection_anchor = None;
         self.record_edit(before);
+        self.dirty_from = previous;
         self.refresh();
         self.text_changed.emit(self.text.clone());
         self.base.request_redraw();
@@ -588,6 +650,7 @@ impl Mention {
     pub fn move_caret_left(&mut self) {
         if self.caret > 0 {
             self.caret = self.previous_char_boundary(self.caret);
+            self.dirty_from = usize::MAX;
             self.refresh();
             self.base.request_redraw();
         }
@@ -601,6 +664,7 @@ impl Mention {
                 cursor += 1;
             }
             self.caret = cursor;
+            self.dirty_from = usize::MAX;
             self.refresh();
             self.base.request_redraw();
         }
@@ -635,7 +699,7 @@ impl Mention {
         self.trigger_offset = None;
         self.filtered.clear();
         self.highlighted = None;
-        self.rebuild_completed();
+        self.rebuild_completed_from(start);
         self.text_changed.emit(self.text.clone());
         self.mention_inserted.emit(candidate_id.clone());
         self.popup_toggled.emit(false);
@@ -695,7 +759,9 @@ impl Mention {
     /// the popup stayed open would make the signal a keystroke counter rather than a
     /// state-change notification.
     fn refresh(&mut self) {
-        self.completed.clear();
+        // The completed-mention table is maintained incrementally by
+        // `rebuild_completed_from`; clearing it here would throw away the prefix an edit
+        // did not touch (I-106).
         // I-102: a new filter starts at the top of its own candidate list.
         self.scroll_offset = 0;
         let was_open = self.trigger_offset.is_some();
@@ -704,13 +770,18 @@ impl Mention {
             Some((trigger_offset, query_start)) => {
                 self.trigger_offset = Some(trigger_offset);
                 let query = self.text.get(query_start..self.caret).unwrap_or("");
-                self.filtered = self
+                // Prefix matches rank above substring matches; the sort is stable, so
+                // candidates of equal rank keep their declaration order (I-130).
+                let mut matches: Vec<(usize, u8)> = self
                     .candidates
                     .iter()
                     .enumerate()
-                    .filter(|(_, candidate)| candidate.matches(query))
-                    .map(|(index, _)| index)
+                    .filter_map(|(index, candidate)| {
+                        candidate.match_rank(query).map(|rank| (index, rank))
+                    })
                     .collect();
+                matches.sort_by_key(|(_, rank)| *rank);
+                self.filtered = matches.into_iter().map(|(index, _)| index).collect();
                 if self.filtered.is_empty() {
                     // An empty popup reads as a broken control, so it closes — and
                     // that is a state change, reported as one.
@@ -732,7 +803,8 @@ impl Mention {
         if is_open != was_open {
             self.popup_toggled.emit(is_open);
         }
-        self.rebuild_completed();
+        let dirty = core::mem::replace(&mut self.dirty_from, usize::MAX);
+        self.rebuild_completed_from(dirty);
     }
 
     /// The trigger that opens the token containing the caret, if any.
@@ -766,9 +838,22 @@ impl Mention {
     /// Scans for `trigger` + a display string that matches a known candidate, which
     /// is what keeps the reported mentions true after the text is edited around them
     /// rather than only when a completion was performed.
-    fn rebuild_completed(&mut self) {
-        self.completed.clear();
-        let mut search_from = 0usize;
+    /// Rebuilds the completed-mention table after an edit starting at `from` (I-106).
+    ///
+    /// Mentions entirely before the edit are kept; anything overlapping or after it is
+    /// rescanned from the last kept mention's end. An edit in the middle of a long field
+    /// therefore costs the suffix rather than the whole document.
+    fn rebuild_completed_from(&mut self, from: usize) {
+        let keep = self
+            .completed
+            .iter()
+            .position(|mention| mention.end > from)
+            .unwrap_or(self.completed.len());
+        self.completed.truncate(keep);
+        let mut search_from = self.completed.last().map_or(from, |mention| mention.end);
+        if search_from >= self.text.len() {
+            return;
+        }
         while let Some(relative) = self.text[search_from..].find(self.trigger) {
             let start = search_from + relative;
             // Only a trigger at the start of the text or after whitespace can begin a
@@ -898,6 +983,53 @@ impl Mention {
     /// is what keeps the caret on the glyph the pointer lands on.
     fn field_font(&self) -> Font {
         effective_font(self.style()).clone()
+    }
+
+    /// Runs `f` against a throwaway measurement surface.
+    fn with_measurement<R>(f: impl FnOnce(&RenderContext) -> R) -> R {
+        let mut measurement =
+            crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
+        f(&RenderContext::new(&mut measurement))
+    }
+
+    /// The per-character advances of the current text, measured once per revision (I-107).
+    ///
+    /// `measure` is the caller's renderer measurement, so the paint path and the click path
+    /// use the same ruler — the click must not guess with a second model (I-131).
+    fn text_widths(
+        &self,
+        font: &Font,
+        dpi_bits: u32,
+        measure: &mut dyn FnMut(&str) -> u32,
+    ) -> core::cell::Ref<'_, TextWidthCache> {
+        let stale = self.width_cache.borrow().as_ref().is_none_or(|cache| {
+            cache.revision != self.text_revision
+                || cache.font != *font
+                || cache.dpi_bits != dpi_bits
+        });
+        if stale {
+            let mut byte_offsets = Vec::with_capacity(self.text.chars().count() + 1);
+            let mut widths = Vec::with_capacity(self.text.chars().count() + 1);
+            let mut prefix = 0u32;
+            let mut glyph = [0u8; 4];
+            for (index, ch) in self.text.char_indices() {
+                byte_offsets.push(index);
+                widths.push(prefix);
+                prefix = prefix.saturating_add(measure(ch.encode_utf8(&mut glyph)));
+            }
+            byte_offsets.push(self.text.len());
+            widths.push(prefix);
+            *self.width_cache.borrow_mut() = Some(TextWidthCache {
+                revision: self.text_revision,
+                font: font.clone(),
+                dpi_bits,
+                byte_offsets,
+                widths,
+            });
+        }
+        core::cell::Ref::map(self.width_cache.borrow(), |cache| {
+            cache.as_ref().expect("the width cache was just filled")
+        })
     }
 }
 
@@ -1129,40 +1261,13 @@ impl Draw for Mention {
         // clip is popped, so it is unaffected.
         context.push_clip(rect.x, rect.y, rect.width, rect.height);
         // I-P66: one measured prefix table shared by the selection edges, every completed
-        // mention's underline and the caret. Each of them used to re-measure a prefix from the
-        // document start on every frame.
-        let mut offsets = vec![0usize, self.text.len(), self.caret];
-        for mention in &self.completed {
-            offsets.push(mention.start.min(self.text.len()));
-            offsets.push(mention.end.min(self.text.len()));
-        }
-        if let Some((start, end)) = self.selection_range() {
-            offsets.push(start.min(self.text.len()));
-            offsets.push(end.min(self.text.len()));
-        }
-        offsets.sort_unstable();
-        offsets.dedup();
-        let mut widths = vec![0u32; offsets.len()];
-        let mut next = 0usize;
-        let mut prefix = 0u32;
-        let mut glyph = [0u8; 4];
-        for (index, ch) in self.text.char_indices() {
-            while next < offsets.len() && offsets[next] == index {
-                widths[next] = prefix;
-                next += 1;
-            }
-            prefix += context.measure_text(ch.encode_utf8(&mut glyph), &field_font).width;
-        }
-        while next < offsets.len() {
-            widths[next] = prefix;
-            next += 1;
-        }
-        let width_at = |offset: usize| -> u32 {
-            match offsets.binary_search(&offset) {
-                Ok(index) => widths[index],
-                Err(index) => widths[index.saturating_sub(1)],
-            }
-        };
+        // mention's underline and the caret. The table itself is memoised per text revision
+        // and text scale, so an unchanged frame measures no character again (I-107).
+        let dpi_bits = context.dpi_scale().to_bits();
+        let widths = self.text_widths(&field_font, dpi_bits, &mut |text| {
+            context.measure_text(text, &field_font).width
+        });
+        let width_at = |offset: usize| -> u32 { widths.width_at(offset.min(self.text.len())) };
         // The selection band sits under the glyphs, measured with the same shaper the text uses.
         if let Some((start, end)) = self.selection_range() {
             let from = start.min(self.text.len());
@@ -1221,6 +1326,8 @@ impl Draw for Mention {
                 );
             }
             context.pop_clip();
+            // The width table borrows the cache; release it before mutating the control.
+            drop(widths);
             // I-102: remember the placement the hit test will derive from the same inputs.
             self.popup_flipped = self.popup_top(self.visible_row_count()).1;
             self.draw_popup(context);
@@ -2135,5 +2242,54 @@ mod tests {
         m.set("max_visible", crate::widget::capability::CapabilityValue::UInt(4))
             .expect("`max_visible` is writable");
         assert_eq!(m.max_visible(), 4);
+    }
+
+    #[test]
+    fn an_edit_rescans_only_the_touched_suffix() {
+        let mut m = mention();
+        m.set_text("@Alice and @Bob");
+        assert_eq!(m.completed_mentions().len(), 2);
+        // Deleting the last character invalidates only the second mention; the first is
+        // kept without a rescan.
+        assert!(m.backspace());
+        assert_eq!(m.completed_mentions().len(), 1);
+        assert_eq!(m.completed_mentions()[0].id, "alice");
+    }
+
+    #[test]
+    fn prefix_matches_rank_above_substring_matches() {
+        let mut m = Mention::new(Rect::new(0, 0, 240, 30));
+        m.set_candidates(vec![
+            MentionCandidate::new("alice", "Alice"),
+            MentionCandidate::new("malice", "Malice"),
+        ]);
+        m.set_text("@ali");
+        let visible: Vec<&str> =
+            m.visible_candidates().iter().map(|candidate| candidate.display.as_str()).collect();
+        assert_eq!(visible, ["Alice", "Malice"], "a display prefix outranks a substring");
+    }
+
+    #[test]
+    fn the_advance_cache_follows_the_text_revision() {
+        let mut m = mention();
+        m.set_text("hello @ali");
+        let font = m.field_font();
+        let first = Mention::with_measurement(|context| {
+            m.text_widths(&font, 1.0f32.to_bits(), &mut |text| {
+                context.measure_text(text, &font).width
+            })
+            .revision
+        });
+        assert_eq!(first, 1, "the first edit advanced the revision");
+        // A second frame with the same text reuses the same table.
+        Mention::with_measurement(|context| {
+            let widths = m.text_widths(&font, 1.0f32.to_bits(), &mut |text| {
+                context.measure_text(text, &font).width
+            });
+            assert_eq!(widths.revision, first);
+            assert_eq!(widths.widths.len(), m.text().chars().count() + 1);
+        });
+        m.insert_char('c');
+        assert_eq!(m.text_revision, 2, "another edit advances the revision");
     }
 }

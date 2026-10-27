@@ -23,6 +23,28 @@ use crate::{impl_widget_property_hooks, property_names_of};
 pub trait WidgetDraw: Widget + Draw {}
 impl<T: Widget + Draw> WidgetDraw for T {}
 
+/// The direction a swipe crossed its dismiss threshold toward (OV-007).
+///
+/// Named to match the existing `leading_action_text` / `trailing_action_text` labels: a negative
+/// offset reveals the leading side and a positive one the trailing side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwipeDirection {
+    /// Toward the leading edge (a negative offset).
+    Leading,
+    /// Toward the trailing edge (a positive offset).
+    Trailing,
+}
+
+impl SwipeDirection {
+    /// The lower-case token a host can publish for this direction.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SwipeDirection::Leading => "leading",
+            SwipeDirection::Trailing => "trailing",
+        }
+    }
+}
+
 /// SwipeToDismiss widget — swipe gesture to reveal actions and dismiss.
 ///
 /// Wraps a child widget. The user can drag left/right to reveal an action
@@ -71,6 +93,23 @@ pub struct SwipeToDismiss {
     velocity: f32,
     /// The previous pointer x during a drag, used to estimate velocity.
     last_x: Option<f32>,
+    /// Whether the live drag is currently past the dismiss threshold (OV-007).
+    ///
+    /// The signal below reports the *edge* into this state, so a host receives one event per
+    /// crossing rather than one per pointer sample.
+    threshold_armed: bool,
+    /// Emitted with the direction each time a live drag crosses the dismiss threshold (OV-007).
+    ///
+    /// This is the intermediate-state signal the control was missing: `dismissed` only tells a
+    /// host that the gesture completed, so feedback such as a haptic tick or a coloured edge had
+    /// nothing to subscribe to while the finger was still down.
+    pub threshold_crossed: Signal1<SwipeDirection>,
+    /// An optional multi-action background driven by this row's offset (OV-009).
+    ///
+    /// A slot, not a hard dependency: the wrapper keeps painting its own single-label background
+    /// when none is set, and the companion keeps its own action list and signal.
+    #[cfg(full_widgets)]
+    actions_background: Option<Box<crate::widget::companions::SwipeActions>>,
     /// Emitted when the item is dismissed.
     pub dismissed: Signal1<()>,
 }
@@ -93,6 +132,10 @@ impl SwipeToDismiss {
             settle: PropertyDriver::at(0.0, MotionSlot::Normal),
             velocity: 0.0,
             last_x: None,
+            threshold_armed: false,
+            threshold_crossed: Signal1::new(),
+            #[cfg(full_widgets)]
+            actions_background: None,
             dismissed: Signal1::new(),
         }
     }
@@ -119,9 +162,73 @@ impl SwipeToDismiss {
         self.child.as_deref_mut().map(|c| c as &mut dyn Widget)
     }
 
+    /// Returns the threshold-crossing signal (OV-007).
+    pub fn threshold_crossed_signal(&self) -> &Signal1<SwipeDirection> {
+        &self.threshold_crossed
+    }
+
+    /// Attaches a multi-action background driven by this row's offset (OV-009).
+    ///
+    /// The slot follows the `AdaptiveScaffold` slot pattern: the host may set one, replace it, or
+    /// leave it unset. The wrapper reports its drawn offset and forwards a release over an exposed
+    /// action to the companion's own signal; the companion keeps owning what an action means.
+    #[cfg(full_widgets)]
+    pub fn set_actions_background(
+        &mut self,
+        background: Option<crate::widget::companions::SwipeActions>,
+    ) {
+        self.actions_background = background.map(Box::new);
+        let geometry = self.geometry();
+        if let Some(background) = self.actions_background.as_deref_mut() {
+            background.set_geometry(geometry);
+            crate::theme::apply_theme_to_widget(background);
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the attached multi-action background, if one is set (OV-009).
+    #[cfg(full_widgets)]
+    pub fn actions_background(&self) -> Option<&crate::widget::companions::SwipeActions> {
+        self.actions_background.as_deref()
+    }
+
+    /// Returns the attached multi-action background mutably, if one is set (OV-009).
+    #[cfg(full_widgets)]
+    pub fn actions_background_mut(
+        &mut self,
+    ) -> Option<&mut crate::widget::companions::SwipeActions> {
+        self.actions_background.as_deref_mut()
+    }
+
+    /// Reports the row's current drawn offset to an attached action background (OV-009).
+    #[cfg(full_widgets)]
+    fn sync_actions_offset(&mut self) {
+        let offset = self.drawn_offset();
+        if let Some(background) = self.actions_background.as_deref_mut() {
+            background.set_offset(offset);
+        }
+    }
+
+    /// No companion in this profile, so there is nothing to report.
+    #[cfg(not(full_widgets))]
+    fn sync_actions_offset(&mut self) {}
+
     /// Sets the dismiss threshold in pixels.
+    ///
+    /// The value is clamped to at least one pixel and a non-finite write is ignored, the same
+    /// guard `FAB::set_elevation` uses. A zero threshold would make every tap a dismissal, and a
+    /// negative one would make the comparison meaningless; both fall back to the nearest legal
+    /// value, which [`Self::dismiss_threshold`] reports.
     pub fn set_dismiss_threshold(&mut self, threshold: f32) {
+        if !threshold.is_finite() {
+            return;
+        }
+        let threshold = threshold.max(1.0);
+        if (self.dismiss_threshold - threshold).abs() < f32::EPSILON {
+            return;
+        }
         self.dismiss_threshold = threshold;
+        self.base.request_redraw();
     }
 
     /// Returns the dismiss threshold.
@@ -187,14 +294,15 @@ impl SwipeToDismiss {
     pub fn reset_swipe(&mut self) {
         self.swipe_offset = 0.0;
         self.is_dismissed = false;
+        self.threshold_armed = false;
         self.settle.jump_to(0.0);
         self.velocity = 0.0;
         // The same reasoning as `dismiss`: undoing the decision must also un-aim the departure, or
         // `is_animating()` would keep reporting a journey the control is no longer making.
         self.exit.set_target(self.exit_target());
         self.base.request_redraw();
+        self.sync_actions_offset();
     }
-
     /// Programmatically triggers the dismiss.
     ///
     /// The row does **not** jump: it keeps the offset the gesture left it at and slides the rest of
@@ -227,6 +335,7 @@ impl SwipeToDismiss {
         let settling = self.settle.tick(delta_ms);
         self.exit.set_target(self.exit_target());
         let exiting = self.exit.tick(delta_ms);
+        self.sync_actions_offset();
         settling || exiting
     }
 
@@ -277,7 +386,9 @@ impl SwipeToDismiss {
             }
         }
         self.velocity = 0.0;
+        self.threshold_armed = false;
         self.base.request_redraw();
+        self.sync_actions_offset();
     }
 
     /// Advances an in-flight swipe to pointer `x`, with the shared damping and velocity
@@ -308,7 +419,22 @@ impl SwipeToDismiss {
             let sign = raw.signum();
             sign * (self.dismiss_threshold + (magnitude - self.dismiss_threshold) * 0.35)
         };
+        // Report the *edge* into the armed state once per crossing (OV-007). The direction is the
+        // side the row is travelling toward, which is also the side whose action label is shown.
+        let armed = self.swipe_offset.abs() >= self.dismiss_threshold;
+        if armed != self.threshold_armed {
+            self.threshold_armed = armed;
+            if armed {
+                let direction = if self.swipe_offset < 0.0 {
+                    SwipeDirection::Leading
+                } else {
+                    SwipeDirection::Trailing
+                };
+                self.threshold_crossed.emit(direction);
+            }
+        }
         self.base.request_redraw();
+        self.sync_actions_offset();
     }
 
     fn drawn_offset(&self) -> f32 {
@@ -362,6 +488,10 @@ impl Widget for SwipeToDismiss {
         self.base.set_geometry(geometry);
         if let Some(child) = self.child.as_deref_mut().map(|child| child as &mut dyn Widget) {
             child.set_geometry(geometry);
+        }
+        #[cfg(full_widgets)]
+        if let Some(background) = self.actions_background.as_deref_mut() {
+            background.set_geometry(geometry);
         }
     }
 
@@ -463,8 +593,23 @@ impl Draw for SwipeToDismiss {
         // settled frame must not rewrite either (G-A12).
         let offset = self.drawn_offset();
 
+        // Keep an attached action background on the same offset the row is drawn at (OV-009).
+        #[cfg(full_widgets)]
+        if let Some(background) = self.actions_background.as_deref_mut() {
+            background.set_offset(offset);
+        }
+
         // ── Action background revealed behind the child as it slides ──
-        if offset.abs() > 2.0 {
+        #[cfg(full_widgets)]
+        let has_background = self.actions_background.is_some();
+        #[cfg(not(full_widgets))]
+        let has_background = false;
+        if has_background {
+            #[cfg(full_widgets)]
+            if let Some(background) = self.actions_background.as_deref_mut() {
+                background.draw(context);
+            }
+        } else if offset.abs() > 2.0 {
             let bg_rect = if offset < 0.0 {
                 // Swiping left: reveal action on the right side
                 let reveal_w = (-offset) as u32;
@@ -562,6 +707,7 @@ impl EventHandler for SwipeToDismiss {
                     self.last_x = Some(pos.x as f32);
                     self.swipe_offset = 0.0;
                     self.velocity = 0.0;
+                    self.threshold_armed = false;
                     self.settle.jump_to(0.0);
                     // The child sees the press straight away. A swipe that never moves is a
                     // tap, and the release below completes it; without this the wrapper
@@ -579,6 +725,7 @@ impl EventHandler for SwipeToDismiss {
                 self.last_x = Some(pos.x as f32);
                 self.swipe_offset = 0.0;
                 self.velocity = 0.0;
+                self.threshold_armed = false;
                 self.settle.jump_to(0.0);
             }
             Event::MouseMove { pos } => {
@@ -589,11 +736,30 @@ impl EventHandler for SwipeToDismiss {
                 // The touch path shares the mouse path's damping and velocity estimate (OV-06).
                 self.drag_to(pos.x as f32);
             }
-            Event::MouseRelease { pos: _, button } => {
+            Event::MouseRelease { pos, button } => {
                 if *button == 1 {
                     let offset = self.swipe_offset;
                     self.drag_origin_x = None;
                     self.last_x = None;
+                    // A release over an exposed companion action belongs to that action, and the
+                    // wrapper springs back rather than committing its own dismissal (OV-009).
+                    #[cfg(full_widgets)]
+                    if let Some((side, index)) = self
+                        .actions_background
+                        .as_deref()
+                        .and_then(|background| background.action_at(offset, *pos))
+                    {
+                        if let Some(background) = self.actions_background.as_deref_mut() {
+                            background.action_triggered.emit((side, index));
+                        }
+                        self.settle.jump_to(offset);
+                        self.swipe_offset = 0.0;
+                        self.settle.set_target(0.0);
+                        self.velocity = 0.0;
+                        self.threshold_armed = false;
+                        self.base.request_redraw();
+                        return;
+                    }
                     self.commit_swipe_offset(offset, Some(event));
                 }
             }
@@ -603,6 +769,20 @@ impl EventHandler for SwipeToDismiss {
                 self.drag_origin_x = None;
                 self.last_x = None;
                 self.commit_swipe_offset(offset, None);
+            }
+            // A pointer that leaves during a drag ends the gesture where it last was: past the
+            // threshold the row departs, below it the row springs back. Without this arm the
+            // drag stayed live and a later unrelated move kept moving the row (OV-008).
+            Event::MouseLeave { .. } => {
+                if let Some(_origin) = self.drag_origin_x.take() {
+                    self.last_x = None;
+                    let offset = self.swipe_offset;
+                    self.commit_swipe_offset(offset, None);
+                }
+                if let Some(child) = &mut self.child {
+                    child.handle_event(event);
+                }
+                self.base.handle_event(event);
             }
             // Delegate remaining events to child
             evt => {
@@ -691,6 +871,101 @@ mod tests {
         let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
         sw.set_dismiss_threshold(80.0);
         assert_eq!(sw.dismiss_threshold(), 80.0);
+    }
+
+    /// The threshold rejects non-finite and non-positive writes and stays queryable (OV-005).
+    #[test]
+    fn the_dismiss_threshold_falls_back_to_the_nearest_legal_value() {
+        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
+        sw.set_dismiss_threshold(-30.0);
+        assert_eq!(sw.dismiss_threshold(), 1.0, "a negative threshold would disable the gesture");
+        sw.set_dismiss_threshold(0.0);
+        assert_eq!(sw.dismiss_threshold(), 1.0, "zero would make every tap a dismissal");
+        sw.set_dismiss_threshold(f32::NAN);
+        assert_eq!(sw.dismiss_threshold(), 1.0, "a non-finite write is ignored");
+        sw.set_dismiss_threshold(64.0);
+        assert_eq!(sw.dismiss_threshold(), 64.0);
+    }
+
+    /// Crossing the threshold reports the direction once, and re-arms only after leaving it
+    /// (OV-007).
+    #[test]
+    fn crossing_the_threshold_reports_the_direction_once_per_crossing() {
+        use std::sync::Mutex;
+
+        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        sw.threshold_crossed_signal().connect(move |direction| {
+            sink.lock().expect("signal sink poisoned").push(*direction);
+        });
+
+        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1, modifiers: 0 });
+        sw.handle_event(&Event::MouseMove { pos: Point::new(150, 25) });
+        assert!(seen.lock().expect("lock").is_empty(), "below the threshold is not a crossing");
+
+        sw.handle_event(&Event::MouseMove { pos: Point::new(20, 25) });
+        assert_eq!(
+            seen.lock().expect("lock").as_slice(),
+            [SwipeDirection::Leading],
+            "the negative offset reveals the leading side"
+        );
+
+        // Further travel past the threshold is still the same crossing.
+        sw.handle_event(&Event::MouseMove { pos: Point::new(10, 25) });
+        assert_eq!(seen.lock().expect("lock").len(), 1);
+
+        // Crossing back and out again is a new event.
+        sw.handle_event(&Event::MouseMove { pos: Point::new(150, 25) });
+        sw.handle_event(&Event::MouseMove { pos: Point::new(300, 25) });
+        assert_eq!(
+            seen.lock().expect("lock").as_slice(),
+            [SwipeDirection::Leading, SwipeDirection::Trailing],
+            "the positive offset reports the trailing side"
+        );
+    }
+
+    /// A pointer that leaves mid-drag ends the gesture at its last position (OV-008).
+    #[test]
+    fn a_pointer_leaving_mid_drag_settles_or_commits() {
+        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
+        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1, modifiers: 0 });
+        sw.handle_event(&Event::MouseMove { pos: Point::new(150, 25) });
+        // A second sample makes this a slow drag rather than a flick, so the release below the
+        // threshold cannot commit by velocity alone.
+        sw.handle_event(&Event::MouseMove { pos: Point::new(149, 25) });
+        sw.handle_event(&Event::MouseLeave { pos: Point::new(500, 500) });
+        assert!(!sw.is_dismissed(), "a short drag springs back instead of dismissing");
+        assert_eq!(sw.swipe_offset(), 0.0, "the gesture is over once the pointer leaves");
+
+        // A drag that was already past the threshold commits on leave.
+        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
+        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1, modifiers: 0 });
+        sw.handle_event(&Event::MouseMove { pos: Point::new(20, 25) });
+        sw.handle_event(&Event::MouseLeave { pos: Point::new(500, 500) });
+        assert!(sw.is_dismissed(), "a drag past the threshold commits at the last position");
+    }
+
+    /// An attached `SwipeActions` background follows the row's offset (OV-009).
+    #[cfg(full_widgets)]
+    #[test]
+    fn a_swipe_drives_an_attached_actions_background() {
+        use crate::widget::companions::{SwipeAction, SwipeActions};
+
+        let mut background = SwipeActions::new();
+        background.set_trailing_actions(vec![SwipeAction::new("Delete")]);
+        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
+        sw.set_actions_background(Some(background));
+        assert!(sw.actions_background().is_some());
+
+        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1, modifiers: 0 });
+        sw.handle_event(&Event::MouseMove { pos: Point::new(60, 25) });
+        let background = sw.actions_background().expect("the slot stays set");
+        assert!(
+            background.offset() < 0.0,
+            "the companion follows the row toward its leading edge: {}",
+            background.offset()
+        );
     }
 
     #[test]

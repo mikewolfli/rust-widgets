@@ -11,7 +11,7 @@ use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{
-    expect_bool, expect_i32_saturating, expect_orientation, orientation_to_str,
+    expect_bool, expect_i32_saturating, expect_orientation, expect_string, orientation_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -279,6 +279,8 @@ pub struct Slider {
     tick_position: TickPosition,
     tick_interval: i32,
     tracking: bool,
+    /// What a groove click does outside the handle; see [`SliderTrackClick`].
+    track_click: SliderTrackClick,
     slider_position: i32,
     mouse_pressed: bool,
     /// Whether the part of the groove already passed is highlighted.
@@ -339,6 +341,34 @@ pub enum TickPosition {
     TicksBelow,
     /// Tick marks on both sides
     TicksBothSides,
+}
+
+/// What a click on the groove (outside the handle) does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SliderTrackClick {
+    /// Advance by one `page_step` in the clicked direction — the default.
+    #[default]
+    Page,
+    /// Jump the handle to the clicked position — the pre-page-step behaviour.
+    Jump,
+}
+
+impl SliderTrackClick {
+    /// Every mode, in publication order.
+    pub const ALL: [Self; 2] = [Self::Page, Self::Jump];
+
+    /// The token this mode is published as.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Page => "page",
+            Self::Jump => "jump",
+        }
+    }
+
+    /// Parses a published token. `None` for a spelling this control does not publish.
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.token() == token)
+    }
 }
 
 /// One formatted tick label with the metrics `draw` positions it by.
@@ -443,6 +473,7 @@ impl Slider {
             tick_position: TickPosition::NoTicks,
             tick_interval: 0,
             tracking: true,
+            track_click: SliderTrackClick::Page,
             slider_position: 0,
             mouse_pressed: false,
             track_highlight: false,
@@ -766,6 +797,20 @@ impl Slider {
     /// Returns whether tracking is enabled.
     pub fn tracking(&self) -> bool {
         self.tracking
+    }
+
+    /// What a groove click outside the handle does.
+    pub fn track_click(&self) -> SliderTrackClick {
+        self.track_click
+    }
+
+    /// Chooses between a page step (the default) and a jump to the clicked position.
+    pub fn set_track_click(&mut self, mode: SliderTrackClick) {
+        if self.track_click == mode {
+            return;
+        }
+        self.track_click = mode;
+        self.base.request_redraw();
     }
     /// Sets tracking state.
     pub fn set_tracking(&mut self, tracking: bool) {
@@ -1261,6 +1306,7 @@ impl WidgetProperties for Slider {
             }
             "tick_interval" => Ok(CapabilityValue::Int(self.tick_interval() as i64)),
             "tracking" => Ok(CapabilityValue::Bool(self.tracking())),
+            "track_click" => Ok(CapabilityValue::String(self.track_click().token().to_string())),
             "slider_position" => Ok(CapabilityValue::Int(self.slider_position() as i64)),
             _ => base_property_get(self, name),
         }
@@ -1304,6 +1350,13 @@ impl WidgetProperties for Slider {
                 self.set_tracking(expect_bool(value)?);
                 Ok(())
             }
+            "track_click" => {
+                let token = expect_string(value)?;
+                let mode = SliderTrackClick::from_token(&token)
+                    .ok_or(CapabilityAccessError::OutOfRange)?;
+                self.set_track_click(mode);
+                Ok(())
+            }
             "slider_position" => {
                 self.set_slider_position(expect_i32_saturating(value)?);
                 Ok(())
@@ -1325,6 +1378,7 @@ impl WidgetProperties for Slider {
             "tick_position",
             "tick_interval",
             "tracking",
+            "track_click",
             "slider_position",
             BASE_PROPERTY_NAMES
         ]
@@ -1362,6 +1416,25 @@ impl EventHandler for Slider {
                     Orientation::Horizontal => pos.x as f32,
                     Orientation::Vertical => pos.y as f32,
                 };
+                // A click outside the handle is a page step by default. It is a discrete
+                // gesture, not the start of a drag, so the press is consumed here.
+                if self.track_click == SliderTrackClick::Page
+                    && !self.handle_rect().contains_point(*pos)
+                {
+                    let clicked = self.pixel_pos_to_value(pixel);
+                    let action = if clicked > self.value() {
+                        Some(SliderAction::SliderPageStepAdd)
+                    } else if clicked < self.value() {
+                        Some(SliderAction::SliderPageStepSub)
+                    } else {
+                        None
+                    };
+                    if let Some(action) = action {
+                        self.trigger_action(action);
+                    }
+                    self.mouse_pressed = false;
+                    return;
+                }
                 let value = self.pixel_pos_to_value(pixel);
                 self.set_slider_position(value);
             }
@@ -1373,6 +1446,23 @@ impl EventHandler for Slider {
                     Orientation::Horizontal => pos.x as f32,
                     Orientation::Vertical => pos.y as f32,
                 };
+                if self.track_click == SliderTrackClick::Page
+                    && !self.handle_rect().contains_point(*pos)
+                {
+                    let clicked = self.pixel_pos_to_value(pixel);
+                    let action = if clicked > self.value() {
+                        Some(SliderAction::SliderPageStepAdd)
+                    } else if clicked < self.value() {
+                        Some(SliderAction::SliderPageStepSub)
+                    } else {
+                        None
+                    };
+                    if let Some(action) = action {
+                        self.trigger_action(action);
+                    }
+                    self.mouse_pressed = false;
+                    return;
+                }
                 let value = self.pixel_pos_to_value(pixel);
                 self.set_slider_position(value);
             }
@@ -3184,5 +3274,39 @@ mod tests {
         assert_eq!(spin_hits.load(Ordering::SeqCst), 2);
         assert_eq!(slider_hits.load(Ordering::SeqCst), 2);
         assert_eq!(slider.value(), 80);
+    }
+
+    /// A groove click pages by default and can be configured to jump instead.
+    #[test]
+    fn a_groove_click_pages_by_default_and_can_jump() {
+        let mut slider = make_slider();
+        slider.set_range(0, 100);
+        slider.set_page_step(10);
+        slider.set_value(0);
+        assert_eq!(slider.track_click(), SliderTrackClick::Page, "page is the new default");
+
+        // A point that maps well past the handle: the first page step, not a jump to it.
+        let x = slider.value_to_pixel_pos(60) as i32;
+        let y = slider.geometry().y + slider.geometry().height as i32 / 2;
+        slider.handle_event(&Event::mouse_press(x, y, 1));
+        assert_eq!(slider.value(), 10, "one visible page per groove click");
+
+        // Clicking ahead again pages forward once more.
+        let ahead = slider.value_to_pixel_pos(40) as i32;
+        slider.handle_event(&Event::mouse_press(ahead, y, 1));
+        assert_eq!(slider.value(), 20, "a click still ahead pages forward");
+
+        // The historical jump remains available.
+        slider.set_track_click(SliderTrackClick::Jump);
+        assert_eq!(slider.get("track_click"), Ok(CapabilityValue::String("jump".to_string())));
+        slider.set_value(0);
+        slider.handle_event(&Event::mouse_press(x, y, 1));
+        assert_eq!(slider.value(), 60, "jump mode restores the old geometry");
+
+        slider.set_track_click(SliderTrackClick::Page);
+        slider.set_value(100);
+        let behind = slider.value_to_pixel_pos(40) as i32;
+        slider.handle_event(&Event::mouse_press(behind, y, 1));
+        assert_eq!(slider.value(), 90, "a click behind the handle pages back");
     }
 }

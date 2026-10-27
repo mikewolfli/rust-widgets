@@ -564,18 +564,15 @@ impl GridTableWidget {
     }
 
     /// Adds the selection unit under `(row, column)` without touching the rest.
-    fn push_selection_unit(&mut self, row: usize, column: usize) {
+    ///
+    /// Returns whether the set actually gained a unit, so the caller can report a change without
+    /// snapshotting the whole selection first (V-007).
+    fn push_selection_unit(&mut self, row: usize, column: usize) -> bool {
         match self.selection_mode {
-            GridTableSelectionMode::None => {}
-            GridTableSelectionMode::Cell => {
-                self.selected_cells.insert((row, column));
-            }
-            GridTableSelectionMode::Row => {
-                self.selected_rows.insert(row);
-            }
-            GridTableSelectionMode::Column => {
-                self.selected_columns.insert(column);
-            }
+            GridTableSelectionMode::None => false,
+            GridTableSelectionMode::Cell => self.selected_cells.insert((row, column)),
+            GridTableSelectionMode::Row => self.selected_rows.insert(row),
+            GridTableSelectionMode::Column => self.selected_columns.insert(column),
         }
     }
 
@@ -602,13 +599,17 @@ impl GridTableWidget {
     }
 
     /// Adds every unit between the anchor and `(row, column)`.
+    ///
+    /// Returns whether any unit was new, which is what lets `apply_selection` decide whether to
+    /// emit without cloning the previous selection (V-007).
     fn push_selection_range(
         &mut self,
         anchor_row: usize,
         anchor_column: usize,
         row: usize,
         column: usize,
-    ) {
+    ) -> bool {
+        let mut changed = false;
         match self.selection_mode {
             GridTableSelectionMode::None => {}
             GridTableSelectionMode::Cell => {
@@ -616,19 +617,49 @@ impl GridTableWidget {
                 let columns = anchor_column.min(column)..=anchor_column.max(column);
                 for r in rows {
                     for c in columns.clone() {
-                        self.selected_cells.insert((r, c));
+                        changed |= self.selected_cells.insert((r, c));
                     }
                 }
             }
             GridTableSelectionMode::Row => {
                 for r in anchor_row.min(row)..=anchor_row.max(row) {
-                    self.selected_rows.insert(r);
+                    changed |= self.selected_rows.insert(r);
                 }
             }
             GridTableSelectionMode::Column => {
                 for c in anchor_column.min(column)..=anchor_column.max(column) {
-                    self.selected_columns.insert(c);
+                    changed |= self.selected_columns.insert(c);
                 }
+            }
+        }
+        changed
+    }
+
+    /// Whether the selection currently consists of exactly `(row, column)`'s unit.
+    ///
+    /// The comparison is done against the live sets instead of a cloned snapshot. This is the
+    /// predicate a replace-click needs: if the unit is already the only thing selected, the click
+    /// changes nothing and must not emit (V-007).
+    fn selection_is_exactly(&self, row: usize, column: usize) -> bool {
+        match self.selection_mode {
+            GridTableSelectionMode::None => true,
+            GridTableSelectionMode::Cell => {
+                self.selected_cells.len() == 1
+                    && self.selected_cells.contains(&(row, column))
+                    && self.selected_rows.is_empty()
+                    && self.selected_columns.is_empty()
+            }
+            GridTableSelectionMode::Row => {
+                self.selected_rows.len() == 1
+                    && self.selected_rows.contains(&row)
+                    && self.selected_cells.is_empty()
+                    && self.selected_columns.is_empty()
+            }
+            GridTableSelectionMode::Column => {
+                self.selected_columns.len() == 1
+                    && self.selected_columns.contains(&column)
+                    && self.selected_cells.is_empty()
+                    && self.selected_rows.is_empty()
             }
         }
     }
@@ -644,19 +675,18 @@ impl GridTableWidget {
         let toggle = self.multi_select
             && (modifiers.contains(Modifiers::CTRL) || modifiers.contains(Modifiers::META));
         let extend = self.multi_select && modifiers.contains(Modifiers::SHIFT);
-        let before = (
-            self.selected_cell,
-            self.selected_cells.clone(),
-            self.selected_rows.clone(),
-            self.selected_columns.clone(),
-        );
 
-        if !self.multi_select || (!toggle && !extend) {
+        // Change detection reads the live sets. The old form cloned all three sets (and the
+        // anchor) on both sides of the mutation — four full copies per mouse press (V-007).
+        let changed = if !self.multi_select || (!toggle && !extend) {
+            let changed = self.selected_cell != Some((row, column))
+                || !self.selection_is_exactly(row, column);
             self.selected_cells.clear();
             self.selected_rows.clear();
             self.selected_columns.clear();
             self.selected_cell = Some((row, column));
-            self.push_selection_unit(row, column);
+            let _ = self.push_selection_unit(row, column);
+            changed
         } else if extend {
             match self.selected_cell {
                 Some((anchor_row, anchor_column)) => {
@@ -664,20 +694,16 @@ impl GridTableWidget {
                 }
                 None => {
                     self.selected_cell = Some((row, column));
-                    self.push_selection_unit(row, column);
+                    self.push_selection_unit(row, column)
                 }
             }
         } else {
+            // A toggle always changes membership: either the unit was removed or it was added.
             self.toggle_selection_unit(row, column);
             self.selected_cell = Some((row, column));
-        }
-        let after = (
-            self.selected_cell,
-            self.selected_cells.clone(),
-            self.selected_rows.clone(),
-            self.selected_columns.clone(),
-        );
-        if after != before {
+            true
+        };
+        if changed {
             self.cell_selected.emit((row, column));
             self.base.request_redraw();
         }
@@ -2059,10 +2085,12 @@ impl EventHandler for GridTableWidget {
                 let page = self.visible_rows.max(1) as isize;
                 let last = self.row_count().saturating_sub(1) as isize;
                 match *key {
-                    37 => self.move_current_cell(0, -1, *modifiers),
-                    39 => self.move_current_cell(0, 1, *modifiers),
-                    38 => self.move_current_cell(-1, 0, *modifiers),
-                    40 => self.move_current_cell(1, 0, *modifiers),
+                    // The navigation keys are named constants, the same set `tree_table` uses
+                    // (V-008): a bare `37` does not say which direction it means.
+                    crate::event::key_codes::LEFT => self.move_current_cell(0, -1, *modifiers),
+                    crate::event::key_codes::RIGHT => self.move_current_cell(0, 1, *modifiers),
+                    crate::event::key_codes::UP => self.move_current_cell(-1, 0, *modifiers),
+                    crate::event::key_codes::DOWN => self.move_current_cell(1, 0, *modifiers),
                     crate::event::key_codes::HOME => {
                         let current = self.selected_cell.map_or(0, |(row, _)| row) as isize;
                         self.move_current_cell(-current, 0, *modifiers);
@@ -2077,7 +2105,7 @@ impl EventHandler for GridTableWidget {
                     crate::event::key_codes::PAGE_DOWN => {
                         self.move_current_cell(page, 0, *modifiers)
                     }
-                    13 => {
+                    crate::event::key_codes::ENTER => {
                         if let Some(cell) = self.selected_cell {
                             if self.edit_triggers.contains(TableEditTriggers::EDIT_KEY) {
                                 self.edit_requested.emit(cell);
@@ -2872,5 +2900,78 @@ mod tests {
             "Home returns to the first row"
         );
         assert_eq!(tbl.scroll_row(), 0, "the viewport followed the cell back");
+    }
+
+    /// V-006: a sort reads each key once per row and spec, not once per comparison.
+    ///
+    /// The comparator used to call `data_role`/`data` for both operands of every comparison,
+    /// which is `O(n log n)` source reads for one sort. The key table makes it `O(n)`; this
+    /// counts the reads at the source so a future refactor cannot reintroduce the old shape.
+    #[test]
+    fn sorting_reads_each_sort_key_once_per_row() {
+        struct CountingSource {
+            rows: usize,
+            reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        impl IncrementalTableDataSource for CountingSource {
+            fn row_count(&self) -> usize {
+                self.rows
+            }
+            fn column_count(&self) -> usize {
+                2
+            }
+            fn data(&self, row: usize, column: usize) -> Option<String> {
+                Some(format!("{row}:{column}"))
+            }
+            fn data_role(&self, row: usize, column: usize, _role: DataRole) -> Option<String> {
+                self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.data(row, column)
+            }
+        }
+
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 200));
+        tbl.set_data_source(Arc::new(CountingSource { rows: 50, reads: reads.clone() }));
+        tbl.toggle_sort_column(0);
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::Relaxed),
+            50,
+            "one key read per row for the single sort spec"
+        );
+        // The projection is cached: asking again with unchanged inputs reads nothing.
+        tbl.ensure_sort_order();
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::Relaxed),
+            50,
+            "a cache hit does not walk the source again"
+        );
+    }
+
+    /// V-007: a repeat click on the already-selected cell emits nothing.
+    ///
+    /// The change test used to clone all three selection sets and the anchor on both sides of the
+    /// mutation. The live-set predicate must reach the same answer: the first click changes the
+    /// selection, the second does not.
+    #[test]
+    fn a_repeat_click_on_the_same_cell_does_not_re_emit() {
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 200));
+        tbl.set_data_source(Arc::new(TestSource { rows: 10, cols: 3 }));
+        let emitted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sink = emitted.clone();
+        tbl.cell_selected.connect(move |_| {
+            sink.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        tbl.apply_selection(1, 1, 0);
+        assert_eq!(emitted.load(std::sync::atomic::Ordering::Relaxed), 1);
+        tbl.apply_selection(1, 1, 0);
+        assert_eq!(
+            emitted.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "selecting the same unit twice is not a change"
+        );
+        tbl.apply_selection(1, 2, 0);
+        assert_eq!(emitted.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 }

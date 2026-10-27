@@ -39,7 +39,7 @@
 //! alone still works — it simply has no structure to report, which the queries express
 //! as `None`/empty rather than as a panic.
 
-use crate::compat::HashMap;
+use crate::compat::{Arc, HashMap};
 
 use core::fmt;
 
@@ -58,7 +58,14 @@ use crate::core::ObjectId;
 /// Provides typed widget access via [`widget_by_name`](BoundJsonLayout::widget_by_name)
 /// and structural queries via [`parent`](Self::parent) / [`children`](Self::children).
 pub struct BoundJsonLayout {
-    name_map: HashMap<String, ObjectId>,
+    /// The name→id face, keyed by the JSON `"id"` attribute.
+    ///
+    /// The key is the **single holder** of a node's id/name text (G-502): one `Arc<str>` per
+    /// node, which [`Self::register_node`]'s key face references instead of storing a second
+    /// copy of the same string. The loader passes a node's `id` attribute as both the name and
+    /// the key (`id_str` doubles as the key because the schema requires it to be unique per
+    /// document), so the two faces share one allocation and stay byte-identical by construction.
+    name_map: HashMap<Arc<str>, ObjectId>,
     root: Option<ObjectId>,
     /// The **overlay layer**, if one exists: a second host root that is not a child of `root`.
     ///
@@ -77,7 +84,13 @@ pub struct BoundJsonLayout {
     parent_of: HashMap<ObjectId, ObjectId>,
     children_of: HashMap<ObjectId, Vec<ObjectId>>,
     kind_of: HashMap<ObjectId, String>,
-    key_of: HashMap<ObjectId, String>,
+    /// The key→id face, keyed by node id.
+    ///
+    /// Values are the same `Arc<str>` allocation the [`Self::name_map`] key holds whenever the
+    /// key text is a registered name, so per node the id/name text is held once (G-502). Keys
+    /// that are not registered names — the view engine's dynamic nodes, whose keys are
+    /// sibling-scoped rather than globally unique — own their own allocation.
+    key_of: HashMap<ObjectId, Arc<str>>,
 }
 
 impl fmt::Debug for BoundJsonLayout {
@@ -134,9 +147,15 @@ impl BoundJsonLayout {
     /// the document author could not see. The first answer is kept (matching [`Self::set_overlay_root`]'s
     /// first-wins rule) and a warning names the collision, so a duplicate is fixable rather than
     /// mysterious. Re-registering the *same* (name, id) pair is not a collision and stays quiet.
+    ///
+    /// The name text is stored once, as the [`Self::name_map`] key's `Arc<str>`: when
+    /// [`Self::register_node`] later records the same text as the node's key (the loader's
+    /// shape), it derives its face from this allocation rather than duplicating the string.
     pub fn register(&mut self, name: impl Into<String>, id: ObjectId) {
-        let name = name.into();
-        if let Some(existing) = self.name_map.get(&name) {
+        // The `String` from `Into` is the staging buffer; the `Arc<str>` is what the map keeps,
+        // so the signature can stay `impl Into<String>` while the held text is shareable.
+        let name: Arc<str> = Arc::from(name.into().as_str());
+        if let Some(existing) = self.name_map.get(name.as_ref()) {
             if *existing != id {
                 log::warn!(
                     "[json] duplicate widget id '{name}': already bound to widget {existing}, \
@@ -159,6 +178,10 @@ impl BoundJsonLayout {
     /// Re-registering the same `id` **replaces** its structural entry, matching
     /// [`register`](Self::register)'s overwrite semantics for names — an id identifies
     /// one node, so two entries for it would make every query ambiguous.
+    ///
+    /// A `key` that is a registered name of this same id (the loader's shape: the document's
+    /// `"id"` attribute doubles as the key) shares the [`Self::name_map`] entry's text
+    /// allocation rather than storing a second copy (G-502).
     pub fn register_node(
         &mut self,
         id: ObjectId,
@@ -177,7 +200,17 @@ impl BoundJsonLayout {
         if key.is_empty() {
             self.key_of.remove(&id);
         } else {
-            self.key_of.insert(id, key);
+            // Single holder (G-502): when this key is a registered name of *this* id — always
+            // the case on the loader path, which passes the document's `id` attribute to both
+            // registrations — the key face references the name face's `Arc<str>` instead of
+            // storing a second copy of the text. Any other key (sibling-scoped dynamic keys,
+            // or the same text bound to a different id) is held on its own allocation.
+            let derived = self
+                .name_map
+                .get_key_value(key.as_str())
+                .filter(|(_, &mapped)| mapped == id)
+                .map(|(held, _)| held.clone());
+            self.key_of.insert(id, derived.unwrap_or_else(|| Arc::from(key.as_str())));
         }
         self.children_of.entry(id).or_default();
         match parent {
@@ -363,7 +396,7 @@ impl BoundJsonLayout {
     /// matched positionally by a diff, which is a degradation the diff is required to
     /// *report* rather than paper over.
     pub fn node_key(&self, id: ObjectId) -> Option<&str> {
-        self.key_of.get(&id).map(String::as_str)
+        self.key_of.get(&id).map(|key| &**key)
     }
 
     /// The `ObjectId` whose recorded `key` is `key` within `parent`'s children.
@@ -443,7 +476,7 @@ impl BoundJsonLayout {
     /// available (e.g. [`widget_by_name`](Self::widget_by_name)'s error), instead
     /// of leaving the reader to guess.
     pub fn ids(&self) -> impl Iterator<Item = &str> {
-        self.name_map.keys().map(String::as_str)
+        self.name_map.keys().map(|name| &**name)
     }
 
     /// Number of registered widgets.

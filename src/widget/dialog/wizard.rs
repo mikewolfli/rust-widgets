@@ -167,12 +167,28 @@ pub struct WizardDialog {
     pressed_button: Option<NavAction>,
     /// The navigation action the keyboard is on, for the focus ring and Enter.
     focused_button: Option<NavAction>,
+    /// Per-step validation hooks, parallel to `steps` (DLG-012).
+    ///
+    /// An absent slot (or a step with no hook) always passes, which is the behaviour every
+    /// existing caller had.
+    validators: Vec<Option<PageValidator>>,
+    /// The message from the most recent failed validation, if any (DLG-012).
+    validation_message: Option<String>,
     /// Cached navigation slots, keyed by the row's geometry and the action set (G-P17).
     nav_cache: NavCache,
 }
 
-/// The cached navigation slots and the key they were built under.
+/// The type of the navigation slots and the key they were built under.
 type NavCache = RefCell<Option<(u64, Rc<Vec<(NavAction, Rect)>>)>>;
+
+/// A page validation hook (DLG-012): `Ok(())` lets the wizard leave the page, `Err(message)`
+/// pins it there with the reason a host can display.
+///
+/// The hook runs before a **forward** move (Next, Finish, or a sidebar jump to a later step).
+/// It is boxed and reference-counted so [`WizardDialog::validate_step`] can take it out of the
+/// table before calling it with `&self` — the closure needs to read the wizard's own state
+/// (the fields it was registered against), so it cannot take `&mut self`.
+type PageValidator = Rc<RefCell<Box<dyn FnMut(&WizardDialog) -> Result<(), String>>>>;
 
 impl WizardDialog {
     /// Creates a new WizardDialog with geometry and no title.
@@ -205,6 +221,8 @@ impl WizardDialog {
             custom_button_clicked: Signal1::new(),
             pressed_button: None,
             focused_button: None,
+            validators: Vec::new(),
+            validation_message: None,
             nav_cache: RefCell::new(None),
         }
     }
@@ -232,6 +250,7 @@ impl WizardDialog {
     pub fn add_step(&mut self, title: impl Into<String>, optional: bool) {
         self.steps.push(WizardStep::new(title, optional));
         self.pages.push(None);
+        self.validators.push(None);
         self.base.request_redraw();
     }
 
@@ -256,6 +275,9 @@ impl WizardDialog {
         }
         let step = self.steps.remove(index);
         let page = if index < self.pages.len() { self.pages.remove(index) } else { None };
+        if index < self.validators.len() {
+            self.validators.remove(index);
+        }
         if let Some(id) = page {
             self.base.remove_child_linked(id);
             crate::set_widget_visible(id, false);
@@ -533,11 +555,86 @@ impl WizardDialog {
         }
     }
 
+    /// Installs the validation hook for the step at `index` (DLG-012).
+    ///
+    /// The hook is what a wizard uses to keep a required field from being skipped. It runs
+    /// before the wizard moves **forward** off that page — [`Self::next`], Finish, and a sidebar
+    /// jump to a later step — and answers `Ok(())` to allow the move or `Err(message)` to stay
+    /// on the page and store the reason for the host to display
+    /// ([`Self::validation_message`]).
+    ///
+    /// The closure receives `&WizardDialog`, so it can read the fields registered with
+    /// [`Self::register_field`] (or any state the host shares with it). An out-of-range index is
+    /// ignored, and a page with no hook always passes — which is the behaviour of every wizard
+    /// that never opts in.
+    pub fn set_page_validator(
+        &mut self,
+        index: usize,
+        validator: impl FnMut(&WizardDialog) -> Result<(), String> + 'static,
+    ) {
+        if index >= self.steps.len() {
+            return;
+        }
+        self.validators.resize_with(self.steps.len(), || None);
+        self.validators[index] = Some(Rc::new(RefCell::new(Box::new(validator))));
+    }
+
+    /// Removes the validation hook for the step at `index`, restoring "always passes".
+    pub fn clear_page_validator(&mut self, index: usize) {
+        if let Some(slot) = self.validators.get_mut(index) {
+            *slot = None;
+        }
+        if index == self.current_step {
+            self.validation_message = None;
+        }
+    }
+
+    /// The message from the most recent failed validation, if any (DLG-012).
+    ///
+    /// `None` after a successful validation, and after [`Self::reset`]. The message is the one
+    /// the hook supplied; the wizard does not invent copy for it.
+    pub fn validation_message(&self) -> Option<&str> {
+        self.validation_message.as_deref()
+    }
+
+    /// Runs the hook for `index`, answering whether the wizard may leave that page.
+    ///
+    /// A step with no hook clears any stale message and passes. The hook is cloned out of the
+    /// table before it is called, so the closure may read the wizard (its fields and its
+    /// current step) without a borrow conflict.
+    fn validate_step(&mut self, index: usize) -> bool {
+        let validator = match self.validators.get(index) {
+            Some(Some(validator)) => Rc::clone(validator),
+            _ => {
+                self.validation_message = None;
+                return true;
+            }
+        };
+        let outcome = (validator.borrow_mut())(self);
+        match outcome {
+            Ok(()) => {
+                self.validation_message = None;
+                true
+            }
+            Err(message) => {
+                self.validation_message = Some(message);
+                self.base.request_redraw();
+                false
+            }
+        }
+    }
+
     /// Advances to the next step if not already on the last step.
     /// Returns `true` if the step actually changed.
+    ///
+    /// The current page's validator must pass first (DLG-012); a failed validation leaves the
+    /// wizard where it is and records the message.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> bool {
         if self.current_step < self.steps.len().saturating_sub(1) {
+            if !self.validate_step(self.current_step) {
+                return false;
+            }
             // Mark current step as completed
             if let Some(step) = self.steps.get_mut(self.current_step) {
                 step.completed = true;
@@ -568,8 +665,14 @@ impl WizardDialog {
 
     /// Jumps to a specific step index. Clamps to valid range.
     /// Returns `true` if the step actually changed.
+    ///
+    /// A **forward** jump runs the current page's validator first (DLG-012); going back is
+    /// always allowed, because a page the user already left cannot be made unreachable.
     pub fn go_to_step(&mut self, index: usize) -> bool {
         let clamped = index.min(self.steps.len().saturating_sub(1));
+        if clamped > self.current_step && !self.validate_step(self.current_step) {
+            return false;
+        }
         if self.current_step != clamped {
             self.current_step = clamped;
             self.step_changed.emit(self.current_step);
@@ -619,6 +722,7 @@ impl WizardDialog {
     /// Resets the wizard to the first step and marks all steps as incomplete.
     pub fn reset(&mut self) {
         self.current_step = 0;
+        self.validation_message = None;
         for step in &mut self.steps {
             step.completed = false;
         }
@@ -628,7 +732,13 @@ impl WizardDialog {
     }
 
     /// Called when the Finish button is clicked.
+    ///
+    /// The current page's validator must pass first (DLG-012): a wizard that finishes with an
+    /// invalid page is the same defect as one that advances past it.
     fn do_finish(&mut self) {
+        if !self.validate_step(self.current_step) {
+            return;
+        }
         // Mark all steps as completed
         for step in &mut self.steps {
             step.completed = true;
@@ -1633,8 +1743,11 @@ impl EventHandler for WizardDialog {
                 // A sidebar row is a navigation target of its own: activating it jumps to that
                 // step and reports the jump distinctly from `step_changed`.
                 if let Some(index) = self.sidebar_row_at(*pos) {
-                    self.go_to_step(index);
-                    self.sidebar_page_activated.emit(index);
+                    // A failed validation keeps the wizard on its page, so the jump is not
+                    // reported as an activation that happened (DLG-012).
+                    if self.go_to_step(index) {
+                        self.sidebar_page_activated.emit(index);
+                    }
                     return;
                 }
                 let target = self.nav_button_at(*pos);
@@ -1878,6 +1991,72 @@ mod tests {
         wiz.handle_event(&Event::MouseRelease { pos, button: 1 });
         assert_eq!(wiz.current_step(), 1, "the release commits the advance");
         assert_eq!(changes.load(Ordering::SeqCst), 1, "one click emits step_changed once");
+    }
+
+    /// A failed page validation keeps the wizard on its page and records the reason
+    /// (DLG-012).
+    ///
+    /// # The defect this pins
+    ///
+    /// `next`, Finish and the sidebar jump moved unconditionally, so a required field could be
+    /// skipped without the caller having any hook to stop it.
+    #[test]
+    fn a_failed_page_validation_keeps_the_wizard_on_its_page() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        wiz.add_step("Name", false);
+        wiz.add_step("Details", false);
+        wiz.add_step("Done", false);
+
+        let required = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&required);
+        wiz.set_page_validator(0, move |_wizard| {
+            if sink.load(Ordering::SeqCst) == 0 {
+                Err("Name is required".to_string())
+            } else {
+                Ok(())
+            }
+        });
+
+        assert!(!wiz.next(), "a failed validation must not advance");
+        assert_eq!(wiz.current_step(), 0);
+        assert_eq!(wiz.validation_message(), Some("Name is required"));
+
+        // A sidebar jump forward is the same rule: it does not skip the page either.
+        assert!(!wiz.go_to_step(2), "a forward jump validates the current page too");
+        assert_eq!(wiz.current_step(), 0);
+
+        required.fetch_add(1, Ordering::SeqCst);
+        assert!(wiz.next(), "a passing validation advances");
+        assert_eq!(wiz.current_step(), 1);
+        assert_eq!(wiz.validation_message(), None, "success clears the message");
+
+        // Going back was always allowed and still is.
+        assert!(wiz.previous());
+        assert_eq!(wiz.current_step(), 0);
+    }
+
+    /// Finish runs the last page's validation (DLG-012).
+    #[test]
+    fn a_failed_finish_validation_does_not_finish_the_wizard() {
+        let mut wiz = WizardDialog::new(Rect::new(0, 0, 400, 300));
+        wiz.add_step("Only", false);
+        wiz.set_page_validator(0, |_wizard| Err("Still incomplete".to_string()));
+
+        let finished = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&finished);
+        wiz.finished.connect(move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        wiz.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert_eq!(finished.load(Ordering::SeqCst), 0, "Finish must honour the validator");
+        assert_eq!(wiz.validation_message(), Some("Still incomplete"));
+        assert!(!wiz.steps()[0].completed, "a blocked finish completes nothing");
+
+        wiz.clear_page_validator(0);
+        assert_eq!(wiz.validation_message(), None);
+        wiz.handle_event(&Event::key_press(key_codes::ENTER, 0));
+        assert_eq!(finished.load(Ordering::SeqCst), 1, "no hook means the page always passes");
     }
 
     #[test]

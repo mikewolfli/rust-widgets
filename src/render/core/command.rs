@@ -180,6 +180,109 @@ pub enum MatteMode {
     LumaInverted,
 }
 
+/// Which text decorations a [`RenderCommand::DrawTextDecorated`] carries.
+///
+/// A bitfield rather than three booleans: a span can want an underline *and* a
+/// strikethrough at once, and the flags compose with a single `|`. The zero
+/// value is `NONE` and draws the text exactly as [`RenderCommand::DrawText`]
+/// would, so the field's default is the current behaviour (G-013).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TextDecoration(pub u8);
+
+impl TextDecoration {
+    /// No decoration: the glyphs alone, identical to `DrawText`.
+    pub const NONE: Self = Self(0);
+    /// A horizontal rule under the text's baseline.
+    pub const UNDERLINE: Self = Self(1 << 0);
+    /// A horizontal rule through the middle of the glyph box.
+    pub const STRIKETHROUGH: Self = Self(1 << 1);
+    /// A zigzag rule under the baseline (a spell-checker squiggle).
+    pub const WAVY: Self = Self(1 << 2);
+
+    /// Returns whether `flag` is set.
+    pub fn contains(self, flag: u8) -> bool {
+        self.0 & flag == flag && flag != 0
+    }
+
+    /// Returns whether any decoration bit is set.
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl core::ops::BitOr for TextDecoration {
+    type Output = Self;
+
+    /// Unions two decoration sets, so a caller can write
+    /// `TextDecoration::UNDERLINE | TextDecoration::WAVY`.
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for TextDecoration {
+    /// Adds the right-hand side's flags into this set.
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+/// The repeating mark/gap period a [`RenderCommand::DrawPathDashed`] stroke
+/// walks along its path (G-014).
+///
+/// `mark` is the length of inked run in pixels and `gap` the length of the
+/// hole after it, both in path length. A `mark` of zero is rejected at draw
+/// time (it would contribute no ink); a `gap` of zero degenerates to a solid
+/// stroke, which a caller should express with [`RenderCommand::DrawPath`]
+/// instead. The pattern restarts at each vertex, the same convention the
+/// border dash pattern uses per edge, so the two agree on shared geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DashPattern {
+    /// Length of one inked run, in pixels.
+    pub mark: u32,
+    /// Length of the gap after each run, in pixels.
+    pub gap: u32,
+}
+
+impl DashPattern {
+    /// The toolkit's default dash: a mark three times the stroke width with a
+    /// gap of two, matching [`crate::style::BorderStyle::Dashed`]'s period.
+    pub fn dashed(width: u32) -> Self {
+        Self { mark: (width * 3).max(1), gap: (width * 2).max(1) }
+    }
+}
+
+/// How the ends of a stroke terminate (G-017).
+///
+/// The default is [`LineCap::Butt`], which is what every stroke in this crate
+/// has always drawn: the brush stops at the endpoint's own coordinate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineCap {
+    /// The stroke ends flush at each endpoint. The historical behaviour.
+    #[default]
+    Butt,
+    /// Each endpoint gains a half-disc of the stroke's width.
+    Round,
+    /// Each endpoint is extended outward by half the stroke's width, so the
+    /// stroke ends in a square the width of the line.
+    Square,
+}
+
+/// How two stroked segments meet at a shared vertex (G-017).
+///
+/// The default is [`LineJoin::Miter`], which is what today's per-segment
+/// brush overlap produces: the two segments' brushes cover the corner
+/// between them, exactly as every polyline stroke in this crate has drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineJoin {
+    /// The segments' own brushes cover the corner. The historical behaviour.
+    #[default]
+    Miter,
+    /// Each interior vertex gains a disc of the stroke's width, rounding the
+    /// corner off.
+    Round,
+}
+
 /// Draw command recorded by a render layer.
 #[derive(Debug, Clone)]
 pub enum RenderCommand {
@@ -475,6 +578,29 @@ pub enum RenderCommand {
         /// How `text` is placed horizontally relative to `origin.x`.
         alignment: HorizontalAlignment,
     },
+    /// Draw a single line of text with baseline decorations (G-013).
+    ///
+    /// This is [`RenderCommand::DrawText`] plus a [`TextDecoration`] bitfield that
+    /// asks the backend to also draw an underline, a strikethrough and/or a wavy
+    /// underline under/through the glyphs. It is a separate variant rather than a
+    /// field on `DrawText` so every existing construction site stays valid: the
+    /// plain variant remains exactly what it was, and callers that want decoration
+    /// opt in explicitly.
+    DrawTextDecorated {
+        /// Anchor point in logical pixels. `y` is the top of the text box;
+        /// horizontal placement is controlled by `alignment`.
+        origin: Point,
+        /// Text to draw; supports combining marks and variation selectors.
+        text: Arc<str>,
+        /// Font family, size, weight and style used to rasterize the glyphs.
+        font: Font,
+        /// Glyph color.
+        color: Color,
+        /// How `text` is placed horizontally relative to `origin.x`.
+        alignment: HorizontalAlignment,
+        /// Bitfield naming the decorations to draw in addition to the glyphs.
+        decoration: TextDecoration,
+    },
     /// Draw an image at the specified position and size.
     DrawImage {
         /// Top-left screen position in logical pixels.
@@ -498,6 +624,29 @@ pub enum RenderCommand {
         width: u32,
         /// Clip height in logical pixels.
         height: u32,
+    },
+    /// Push a rounded-rectangle clip onto the clip stack (G-015).
+    ///
+    /// This is [`RenderCommand::PushClip`] with rounded corners: everything drawn
+    /// until the matching [`RenderCommand::PopClip`] is masked to the rounded
+    /// region instead of the axis-aligned rectangle. The backend computes the
+    /// corner coverage from the same path machinery a filled rounded rect uses, so
+    /// the mask geometry matches [`RenderCommand::FillRoundedRect`]. It is a
+    /// separate variant rather than a field on `PushClip` so the historical
+    /// rectangle command keeps its exact shape.
+    PushClipRoundedRect {
+        /// Left edge in logical pixels.
+        x: i32,
+        /// Top edge in logical pixels.
+        y: i32,
+        /// Clip width in logical pixels.
+        width: u32,
+        /// Clip height in logical pixels.
+        height: u32,
+        /// Per-corner radii in pixels, ordered top-left, top-right,
+        /// bottom-right, bottom-left (STY-01). Radii that overrun an edge are
+        /// resolved per CSS `border-radius` like a filled rounded rect.
+        radii: [u32; 4],
     },
     /// Pop the top clipping rectangle from the clip stack.
     PopClip,
@@ -598,6 +747,27 @@ pub enum RenderCommand {
         /// Stroke width in pixels; ignored when `filled` is true.
         width: u32,
     },
+    /// Stroke a polyline with a repeating dash pattern (G-014).
+    ///
+    /// This is the stroked form of [`RenderCommand::DrawPath`] with a
+    /// [`DashPattern`]: each open run between vertices is broken into alternating
+    /// `mark` and `gap` pixel runs (a closed path also dashes the closing edge).
+    /// It is a separate variant rather than an `Option<DashPattern>` field on
+    /// `DrawPath` so every existing `DrawPath` construction and destructure stays
+    /// valid untouched.
+    DrawPathDashed {
+        /// Vertices in logical pixels, connected in order. Fewer than two points
+        /// draws nothing.
+        points: Arc<[Point]>,
+        /// Connects the last point back to the first before dashing.
+        closed: bool,
+        /// Stroke color.
+        color: Color,
+        /// Stroke width in pixels; a zero width draws nothing.
+        width: u32,
+        /// Alternating mark/gap lengths in pixels along the polyline.
+        dash: DashPattern,
+    },
     /// Fill multiple closed contours together using the non-zero winding rule.
     ///
     /// Unlike [`RenderCommand::DrawPath`], all contours participate in one fill, so
@@ -612,6 +782,30 @@ pub enum RenderCommand {
     BoxShadow {
         /// The shadow's rectangular bounds.
         rect: Rect,
+        /// Shadow color with alpha.
+        color: Color,
+        /// Horizontal offset in pixels.
+        offset_x: i32,
+        /// Vertical offset in pixels.
+        offset_y: i32,
+        /// Blur radius in pixels.
+        blur_radius: u32,
+        /// Spread radius in pixels (positive expands, negative contracts).
+        spread: i32,
+    },
+    /// Draw a drop shadow behind a rounded rectangle (G-016).
+    ///
+    /// This is [`RenderCommand::BoxShadow`] for a shadow caster whose corners are
+    /// rounded: the blur source is the rounded rectangle itself rather than the
+    /// bounding box, so a rounded card no longer gets rectangular shadow corners
+    /// spilling past its outline. The radii describe the caster's corners and are
+    /// resolved per CSS `border-radius` before use.
+    BoxShadowRounded {
+        /// The shadow caster's rectangular bounds.
+        rect: Rect,
+        /// Per-corner radii of the caster in pixels, ordered top-left, top-right,
+        /// bottom-right, bottom-left (STY-01).
+        radii: [u32; 4],
         /// Shadow color with alpha.
         color: Color,
         /// Horizontal offset in pixels.
@@ -704,6 +898,7 @@ impl RenderCommand {
             | Self::DrawRoundedRectStroke { rect, .. }
             | Self::DrawRoundedRectStrokeAA { rect, .. }
             | Self::BoxShadow { rect, .. }
+            | Self::BoxShadowRounded { rect, .. }
             | Self::DrawGradient { rect, .. }
             | Self::PushLayer { bounds: rect, .. }
             | Self::PushLayerGroup { bounds: rect, .. }
@@ -742,11 +937,19 @@ impl RenderCommand {
                 Some(bounds_around_point(*center, radius.saturating_add(*width)))
             }
             Self::DrawArc { center, radius, .. } => Some(bounds_around_point(*center, *radius)),
-            Self::DrawText { origin, text, font, alignment, .. } => {
+            Self::DrawText { origin, text, font, alignment, .. }
+            | Self::DrawTextDecorated { origin, text, font, alignment, .. } => {
+                // The generous box already pads one em on every side, which covers
+                // an underline/wavy stroke sitting below the baseline.
                 Some(bounds_of_text(*origin, text, font, *alignment))
             }
-            Self::PushClip { x, y, width, height } => Some(Rect::new(*x, *y, *width, *height)),
-            Self::DrawPath { points, width, .. } => Some(bounds_of_points(points, *width)),
+            Self::PushClip { x, y, width, height }
+            | Self::PushClipRoundedRect { x, y, width, height, .. } => {
+                Some(Rect::new(*x, *y, *width, *height))
+            }
+            Self::DrawPath { points, width, .. } | Self::DrawPathDashed { points, width, .. } => {
+                Some(bounds_of_points(points, *width))
+            }
             Self::FillPathNonZero { path, .. } => Some(bounds_of_points(path.points(), 0)),
             Self::ClipPath { points } => Some(bounds_of_points(points, 0)),
             // State commands, and conic gradients whose extent comes from the clip rather than

@@ -26,6 +26,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, effective_font, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -197,7 +198,11 @@ pub struct SelectionModel {
     /// Current selection mode.
     mode: SelectionMode,
     /// Currently selected rows.
-    selected_rows: Vec<usize>,
+    ///
+    /// An ordered set rather than a `Vec`: membership is asked once per painted row, so the old
+    /// linear `contains` made a multi-thousand-row selection cost O(rows x selected). The set
+    /// answers in O(log n) and keeps iteration in visual order (V-005).
+    selected_rows: BTreeSet<usize>,
     /// Currently focused row.
     current_row: Option<usize>,
     /// The row a `Shift`-extend grows from in [`SelectionMode::Extended`].
@@ -212,7 +217,7 @@ impl SelectionModel {
     pub fn new() -> Self {
         Self {
             mode: SelectionMode::Single,
-            selected_rows: Vec::new(),
+            selected_rows: BTreeSet::new(),
             current_row: None,
             anchor: None,
         }
@@ -247,22 +252,20 @@ impl SelectionModel {
         match self.mode {
             SelectionMode::Single => {
                 self.selected_rows.clear();
-                self.selected_rows.push(row);
+                self.selected_rows.insert(row);
                 self.current_row = Some(row);
             }
             SelectionMode::Multi => {
-                if !self.selected_rows.contains(&row) {
-                    self.selected_rows.push(row);
-                }
+                // The set rejects duplicates itself, so no explicit membership check is needed.
+                self.selected_rows.insert(row);
                 self.current_row = Some(row);
             }
             SelectionMode::Extended => {
-                // A plain click starts a new selection from here. Pushing instead of
-                // replacing would make `Extended` indistinguishable from `Multi`, and
-                // pushing without a duplicate check would let `selected_rows()` report
-                // the same row twice.
+                // A plain click starts a new selection from here. Adding instead of
+                // replacing would make `Extended` indistinguishable from `Multi`, and the
+                // set's own uniqueness is what keeps `selected_rows()` duplicate-free.
                 self.selected_rows.clear();
-                self.selected_rows.push(row);
+                self.selected_rows.insert(row);
                 self.current_row = Some(row);
                 self.anchor = Some(row);
             }
@@ -296,13 +299,9 @@ impl SelectionModel {
         if modifiers.contains(crate::shortcut::Modifiers::CTRL)
             || modifiers.contains(crate::shortcut::Modifiers::PRIMARY)
         {
-            if let Some(pos) = self.selected_rows.iter().position(|&i| i == row) {
-                self.selected_rows.remove(pos);
-            } else {
-                self.selected_rows.push(row);
-                // Keep the list ordered so it reads as a set of rows in visual order
-                // rather than in click order.
-                self.selected_rows.sort_unstable();
+            if !self.selected_rows.remove(&row) {
+                // The set keeps every row in visual order, rather than in click order.
+                self.selected_rows.insert(row);
             }
             self.current_row = Some(row);
             self.anchor = Some(row);
@@ -329,7 +328,7 @@ impl SelectionModel {
                 self.selected_rows.clear();
                 self.anchor = None;
                 if row_count > 0 {
-                    self.selected_rows.push(0);
+                    self.selected_rows.insert(0);
                     self.current_row = Some(0);
                 } else {
                     self.current_row = None;
@@ -341,7 +340,7 @@ impl SelectionModel {
                 self.anchor = Some(0);
             }
         }
-        self.selected_rows.clone()
+        self.selected_rows.iter().copied().collect()
     }
     /// Clears selection.
     pub fn clear(&mut self) {
@@ -357,9 +356,9 @@ impl SelectionModel {
     pub fn current_row(&self) -> Option<usize> {
         self.current_row
     }
-    /// Returns all selected rows.
+    /// Returns all selected rows in ascending order.
     pub fn rows(&self) -> Vec<usize> {
-        self.selected_rows.clone()
+        self.selected_rows.iter().copied().collect()
     }
 
     /// Whether `row` is selected, without materialising the whole selection.
@@ -368,10 +367,10 @@ impl SelectionModel {
     }
     fn normalize(&mut self) {
         if self.mode == SelectionMode::Single && self.selected_rows.len() > 1 {
-            if let Some(&last) = self.selected_rows.last() {
-                self.selected_rows = vec![last];
-            } else {
-                self.selected_rows.clear();
+            let last = self.selected_rows.last().copied();
+            self.selected_rows.clear();
+            if let Some(last) = last {
+                self.selected_rows.insert(last);
             }
         }
     }
@@ -2014,6 +2013,23 @@ mod tests {
 
         v.select_row_with_modifiers(1, Modifiers::NONE);
         assert_eq!(v.selected_rows(), vec![1], "and a plain click replaces again");
+    }
+
+    /// The selection is an ordered set, not a click-ordered list (V-005).
+    ///
+    /// Both properties the storage change buys are asserted: duplicates cannot be represented,
+    /// and iteration is in visual order regardless of the order rows were added.
+    #[test]
+    fn selection_is_an_ordered_set_regardless_of_insertion_order() {
+        let mut model = SelectionModel::new();
+        model.set_mode(SelectionMode::Multi);
+        model.select_row(5);
+        model.select_row(1);
+        model.select_row(5);
+        model.select_row(3);
+        assert_eq!(model.rows(), vec![1, 3, 5], "ascending order, no duplicate for row 5");
+        assert!(model.is_selected(3));
+        assert!(!model.is_selected(4));
     }
 
     /// `PRIMARY` toggles exactly like `CTRL`, as the `Extended` documentation promises.

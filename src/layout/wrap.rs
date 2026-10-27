@@ -12,7 +12,7 @@
 //! The two layouts keep their own size sources and configuration surfaces, but not two
 //! algorithms — see LAY-N08.
 use super::{ChildInfo, Layout, LayoutContext};
-use crate::compat::{Any, Vec};
+use crate::compat::{Any, RefCell, Vec};
 use crate::core::{ObjectId, Rect, Size, TextDirection};
 
 /// Direction in which items flow before wrapping.
@@ -59,6 +59,13 @@ pub struct WrapLayout {
     text_direction: TextDirection,
     /// Managed children with size tracking.
     children: Vec<WrapChild>,
+    /// The last nominal layout, keyed by the rect it was computed from (LAY-005).
+    ///
+    /// `child_rect` answers a one-child query from this cache instead of re-running the
+    /// line-breaking solve (G-158). Only [`Layout::update`] — the nominal path — populates
+    /// it, so a cached answer is byte-identical to the trait default's update-and-capture;
+    /// a rect mismatch falls back to that same capture. Every mutator clears it.
+    last_layout: RefCell<Option<(Rect, Vec<(ObjectId, Rect)>)>>,
 }
 
 impl Default for WrapLayout {
@@ -318,6 +325,11 @@ pub(crate) fn mirror_horizontally(rects: &mut [Rect], content: Rect) {
 }
 
 impl WrapLayout {
+    /// Drops the cached nominal layout; every mutator calls it (LAY-005).
+    fn invalidate_last_layout(&mut self) {
+        self.last_layout.borrow_mut().take();
+    }
+
     /// Create a new wrap layout with the given parameters.
     pub fn new(
         direction: WrapDirection,
@@ -336,6 +348,7 @@ impl WrapLayout {
             padding,
             text_direction: TextDirection::default(),
             children: Vec::new(),
+            last_layout: RefCell::new(None),
         }
     }
 
@@ -350,6 +363,7 @@ impl WrapLayout {
     /// break decision, spacing and sizes are untouched, so an RTL layout wraps exactly as
     /// its LTR counterpart and only the physical origin changes.
     pub fn set_text_direction(&mut self, direction: TextDirection) {
+        self.invalidate_last_layout();
         self.text_direction = direction;
     }
 
@@ -358,6 +372,7 @@ impl WrapLayout {
     /// `None` (the default) means the item spacing is used on both axes, which is the
     /// behaviour this layout had before the two were separable.
     pub fn set_run_spacing(&mut self, spacing: Option<i32>) {
+        self.invalidate_last_layout();
         self.run_spacing = spacing;
     }
 
@@ -398,6 +413,7 @@ impl WrapLayout {
 
     /// Set the size hint for a child widget (call before update).
     pub fn set_child_size(&mut self, widget_id: ObjectId, size: Size) {
+        self.invalidate_last_layout();
         if let Some(child) = self.children.iter_mut().find(|c| c.widget_id == widget_id) {
             child.size = size;
         }
@@ -486,6 +502,56 @@ impl WrapLayout {
             out(widget_id, child_rect);
         }
     }
+    /// The hint-aware arrangement with the gaps and padding as parameters (LAY-003).
+    ///
+    /// [`Layout::arrange`](Layout::arrange) passes the configured values (the nominal path)
+    /// and [`Layout::arrange_with_context`](Layout::arrange_with_context) the device-scaled
+    /// ones; the child-size resolution and the solver are shared so the two entries cannot
+    /// disagree about anything but the scale.
+    fn arrange_sized_with(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        spacing: i32,
+        run_spacing: i32,
+        padding: i32,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let sized: Vec<WrapChild> = self
+            .children
+            .iter()
+            .enumerate()
+            .map(|(index, child)| WrapChild {
+                widget_id: child.widget_id,
+                size: match ChildInfo::find_at(children, index, child.widget_id) {
+                    Some(info) => info.resolved_size(child.size),
+                    None => child.size,
+                },
+            })
+            .collect();
+        // Reuse `compute_rects` rather than a second solver: scaling, alignment and the line
+        // arithmetic must stay in one place (see the module's `break_lines` note).
+        let sized = WrapLayout {
+            direction: self.direction,
+            alignment: self.alignment,
+            spacing,
+            // `Some` with the resolved value is what `compute_rects` would derive from
+            // `None` anyway (the item spacing), so the two spellings agree.
+            run_spacing: Some(run_spacing),
+            padding,
+            text_direction: self.text_direction,
+            children: sized,
+            // The temporary solver owns no cache: it exists for one arrangement.
+            last_layout: RefCell::new(None),
+        };
+        let content = sized.content_rect(rect);
+        if content.width == 0 || content.height == 0 {
+            return;
+        }
+        for (wid, child_rect) in sized.compute_rects(content) {
+            out(wid, child_rect);
+        }
+    }
 }
 
 impl Layout for WrapLayout {
@@ -571,10 +637,12 @@ impl Layout for WrapLayout {
     }
 
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
+        self.invalidate_last_layout();
         self.children.push(WrapChild { widget_id, size: Size::new(0, 0) });
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
+        self.invalidate_last_layout();
         self.children.retain(|c| c.widget_id != widget_id);
     }
 
@@ -587,11 +655,19 @@ impl Layout for WrapLayout {
     }
 
     fn clear(&mut self) {
+        self.invalidate_last_layout();
         self.children.clear();
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
-        self.solve(rect, self.spacing, self.run_spacing(), self.padding, None, widgets);
+        // The nominal emissions are captured so `child_rect` can answer a one-child query
+        // from the cache (LAY-005) instead of re-running the solve.
+        let mut entries: Vec<(ObjectId, Rect)> = Vec::new();
+        self.solve(rect, self.spacing, self.run_spacing(), self.padding, None, &mut |id, r| {
+            entries.push((id, r));
+            widgets(id, r);
+        });
+        *self.last_layout.borrow_mut() = Some((rect, entries));
     }
 
     // G-403: the trait no longer defaults these entries; each forward reproduces the previous fallback behaviour.
@@ -602,8 +678,20 @@ impl Layout for WrapLayout {
         context: &LayoutContext,
         out: &mut dyn FnMut(ObjectId, Rect),
     ) {
-        let _ = context;
-        self.arrange(rect, children, out);
+        // LAY-003: the context is consumed, not dropped. Gap, run gap and padding follow the
+        // **larger** of the layout scale and the text scale, rounded the same way
+        // `update_with_context` rounds them so the two entries agree per gap. The context's
+        // remaining field, `min_touch_size`, has no meaningful use on this entry: the
+        // hint-aware path is a geometry query callers pin against exact rects, so growing a
+        // child here would break that contract — the touch floor stays an update-path concern.
+        let scale = context.layout_scale.max(context.font_scale);
+        let spacing = (self.spacing as f32 * scale).round() as i32;
+        let run_spacing = self
+            .run_spacing
+            .map(|spacing| (spacing as f32 * scale).round() as i32)
+            .unwrap_or(spacing);
+        let padding = (self.padding.max(0) as f32 * scale).round() as i32;
+        self.arrange_sized_with(rect, children, spacing, run_spacing, padding, out);
     }
 
     /// Lays the children out from their own hints (LAY-N01).
@@ -618,36 +706,17 @@ impl Layout for WrapLayout {
     /// child at that size — a *wrapping* container does not stretch its items to the line, which
     /// is `Wrap`'s contract in Flutter and the behaviour every existing caller of `update` gets.
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
-        let sized: Vec<WrapChild> = self
-            .children
-            .iter()
-            .enumerate()
-            .map(|(index, child)| WrapChild {
-                widget_id: child.widget_id,
-                size: match ChildInfo::find_at(children, index, child.widget_id) {
-                    Some(info) => info.resolved_size(child.size),
-                    None => child.size,
-                },
-            })
-            .collect();
-        // Reuse `compute_rects` rather than a second solver: scaling, alignment and the line
-        // arithmetic must stay in one place (see the module's `break_lines` note).
-        let sized = WrapLayout {
-            direction: self.direction,
-            alignment: self.alignment,
-            spacing: self.spacing,
-            run_spacing: self.run_spacing,
-            padding: self.padding,
-            text_direction: self.text_direction,
-            children: sized,
-        };
-        let content = sized.content_rect(rect);
-        if content.width == 0 || content.height == 0 {
-            return;
-        }
-        for (wid, child_rect) in sized.compute_rects(content) {
-            out(wid, child_rect);
-        }
+        // The nominal path keeps the configured gaps and padding so every existing caller's
+        // geometry is byte-identical; `LayoutContext::default()` is deliberately not used
+        // here, because it reads the platform's text scale and is not the nominal answer.
+        self.arrange_sized_with(
+            rect,
+            children,
+            self.spacing,
+            self.run_spacing(),
+            self.padding,
+            out,
+        );
     }
 
     fn update_with_context(
@@ -686,6 +755,28 @@ impl Layout for WrapLayout {
             Some(context.min_touch_size),
             widgets,
         );
+    }
+
+    /// The one-child query, answered from the cached nominal layout when it matches
+    /// (LAY-005): the line-breaking solve must not run again for a hit test. A rect
+    /// mismatch (or a first query before any `update`) falls back to the trait default's
+    /// update-and-capture, which is also what repopulates the cache.
+    fn child_rect(&self, id: ObjectId, rect: Rect) -> Option<Rect> {
+        if !self.has_child(id) {
+            return None;
+        }
+        if let Some((cached_rect, entries)) = self.last_layout.borrow().as_ref() {
+            if *cached_rect == rect {
+                return entries.iter().find(|(child, _)| *child == id).map(|(_, r)| *r);
+            }
+        }
+        let mut found = None;
+        self.update(rect, &mut |child, child_rect| {
+            if child == id && found.is_none() {
+                found = Some(child_rect);
+            }
+        });
+        found
     }
 }
 
@@ -1181,5 +1272,50 @@ mod tests {
         assert_eq!(layout.height_for_width(90, 500), 20, "two rows at 90 px");
         assert_eq!(layout.height_for_width(200, 500), 10, "one row at 200 px");
         assert_eq!(layout.height_for_width(0, 500), 500, "a degenerate width has no answer");
+    }
+
+    /// LAY-005: the one-child query answers from the cached nominal layout — equal to the
+    /// full update pass — and a mutation refreshes it, so the answer never goes stale.
+    #[test]
+    fn child_rect_answers_from_the_cached_layout_and_tracks_mutations() {
+        let mut layout = WrapLayout::new(WrapDirection::Horizontal, WrapAlignment::Start, 4, 0);
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.set_child_size(1, Size::new(30, 10));
+        layout.set_child_size(2, Size::new(30, 10));
+        let rect = Rect::new(0, 0, 100, 40);
+        // The fallback solve answers even before any update populated the cache.
+        assert_eq!(layout.child_rect(1, rect), Some(Rect::new(0, 0, 30, 10)));
+        let mut placed = Vec::new();
+        layout.update(rect, &mut |id, r| placed.push((id, r)));
+        for (id, r) in &placed {
+            assert_eq!(layout.child_rect(*id, rect), Some(*r));
+        }
+        assert_eq!(layout.child_rect(9, rect), None, "a foreign id is not placed");
+        // A mutation invalidates the cache: the answer tracks the new state instead of
+        // the layout the cache was populated from.
+        layout.set_child_size(1, Size::new(60, 10));
+        assert_eq!(layout.child_rect(2, rect), Some(Rect::new(64, 0, 30, 10)));
+    }
+
+    /// LAY-003: `arrange_with_context` consumes the context — a 2x device scale doubles the
+    /// gap on the hint-aware path, while the nominal `arrange` keeps the configured one.
+    #[test]
+    fn arrange_with_context_scales_the_gap() {
+        let mut layout = WrapLayout::new(WrapDirection::Horizontal, WrapAlignment::Start, 4, 0);
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.set_child_size(1, Size::new(30, 10));
+        layout.set_child_size(2, Size::new(30, 10));
+        let rect = Rect::new(0, 0, 100, 40);
+        let mut nominal = Vec::new();
+        layout.arrange(rect, &[], &mut |id, r| nominal.push((id, r)));
+        assert_eq!(nominal[1].1, Rect::new(34, 0, 30, 10));
+
+        let context =
+            LayoutContext { layout_scale: 2.0, font_scale: 1.0, min_touch_size: Size::new(0, 0) };
+        let mut scaled = Vec::new();
+        layout.arrange_with_context(rect, &[], &context, &mut |id, r| scaled.push((id, r)));
+        assert_eq!(scaled[1].1, Rect::new(38, 0, 30, 10), "the gap doubled to 8");
     }
 }

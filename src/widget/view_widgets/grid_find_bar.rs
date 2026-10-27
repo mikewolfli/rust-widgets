@@ -316,15 +316,54 @@ impl Draw for GridFindBar {
 
 impl crate::event::EventHandler for GridFindBar {
     fn handle_event(&mut self, event: &crate::event::Event) {
+        use crate::event::key_codes::{BACKSPACE, ENTER, ESCAPE};
         self.base.handle_event(event);
-        if let crate::event::Event::KeyPress { key, .. } = event {
-            match *key {
-                crate::event::key_codes::ESCAPE => self.close(),
-                crate::event::key_codes::ENTER => {
+        if !self.base.is_enabled() || !self.visible {
+            return;
+        }
+        match event {
+            crate::event::Event::KeyPress { key: ESCAPE, .. } => self.close(),
+            crate::event::Event::KeyPress { key: ENTER, modifiers } => {
+                // Enter advances; the shift bit means "go back", matching the web find bar.
+                if *modifiers & 1 != 0 {
+                    let _ = self.find_previous();
+                } else {
                     let _ = self.find_next();
                 }
-                _ => {}
             }
+            // The text channel: the bar used to ignore typed characters entirely, so the only
+            // way to set a query was the programmatic setter and the control was unusable from
+            // the keyboard (V-009).
+            crate::event::Event::KeyPress { key: BACKSPACE, .. } => {
+                if self.query.pop().is_some() {
+                    self.forward_typed_query();
+                }
+            }
+            crate::event::Event::TextInput { text } => {
+                self.query.push_str(text);
+                self.forward_typed_query();
+            }
+            // An IME commit is the same channel: the composed text becomes query text.
+            crate::event::Event::ImeCommit { text } => {
+                self.query.push_str(text);
+                self.forward_typed_query();
+            }
+            _ => {}
+        }
+    }
+}
+
+impl GridFindBar {
+    /// Restarts the search over the query the text channel just produced.
+    ///
+    /// A typed edit invalidates the remembered match (the row it named may no longer match), so
+    /// the search restarts at the first row and forwards the result through `match_found` /
+    /// `no_match`, the same signals a programmatic [`Self::find_next`] uses.
+    fn forward_typed_query(&mut self) {
+        self.current_match = None;
+        self.base.request_redraw();
+        if !self.query.is_empty() {
+            let _ = self.find_next();
         }
     }
 }
@@ -393,6 +432,37 @@ mod tests {
         assert_eq!(bar.find_next(), None);
         bar.set_query("alpha");
         assert_eq!(bar.find_next(), Some(0));
+    }
+
+    /// V-009: typed text, an IME commit and Backspace all reach the query.
+    ///
+    /// The bar previously consumed only Escape and Enter, so the keyboard could not enter a
+    /// query at all. Each edit restarts the search and forwards its result through
+    /// `match_found` / `no_match`, the same signal a programmatic `find_next` uses.
+    #[test]
+    fn typed_input_reaches_the_query_and_forwards_the_match() {
+        use crate::event::{Event, EventHandler};
+
+        let mut bar = bar();
+        bar.open();
+        let matched = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&matched);
+        bar.match_found.connect(move |row| {
+            *sink.lock().expect("match sink") = Some(*row);
+        });
+
+        bar.handle_event(&Event::TextInput { text: "bravo".into() });
+        assert_eq!(bar.query(), "bravo");
+        assert_eq!(*matched.lock().expect("match sink"), Some(2), "the match is forwarded");
+
+        bar.handle_event(&Event::KeyPress {
+            key: crate::event::key_codes::BACKSPACE,
+            modifiers: 0,
+        });
+        assert_eq!(bar.query(), "brav", "Backspace removes one character");
+
+        bar.handle_event(&Event::ImeCommit { text: "o".into() });
+        assert_eq!(bar.query(), "bravo", "an IME commit extends the same query");
     }
 
     #[test]
