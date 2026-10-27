@@ -31,7 +31,7 @@ include = [
     # shrinking ~250 KB elsewhere re-breaks publishing.
     # "benches/**/*",
     # "examples/**/*",
-    "include/**/*",
+    # "include/**/*",
     "language/**/*",
     "crates/**/*",
     "themes/**/*",
@@ -42,14 +42,14 @@ include = [
     # and a consumer building from the tarball then has no such target at all.
     # The rest of `tools/` is gates and generators that are not part of the crate's
     # build surface and stays excluded.
-    "tools/widget_gallery.rs",
-    "tools/view_platform_gate_probe.rs",
-    "tools/generator_agreement_probe.rs",
+    # "tools/widget_gallery.rs",
+    # "tools/view_platform_gate_probe.rs",
+    # "tools/generator_agreement_probe.rs",
     # The designer's generation entry point (D7-b-3). Declared as an example below, so
     # it must ship for the same reason: without it, a consumer who takes the crate from
     # the tarball has the `designer` feature and the `designer_generate` binary it
     # documents, but not the target that writes a project's committed sources.
-    "tools/designer_generate.rs",
+    # "tools/designer_generate.rs",
     # The entries below are **anchored** with a leading `/`. That is not cosmetic.
     #
     # An unanchored `"README.md"` / `"LICENSE"` / `"CHANGELOG.md"` is a gitignore-style
