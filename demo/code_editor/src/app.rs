@@ -861,11 +861,43 @@ fn run_inner() -> Result<(), String> {
     );
     app.init();
     log.append("[App] init 完成");
+
+    let DemoWindow { win, menu_bindings, toolbar_buttons, editor } =
+        build_demo_window(&mut app, true, &log)?;
+
+    win.show();
+    log.append("[Window] shown");
+
+    print_usage();
+    run_loop(&app, win.raw_id(), &menu_bindings, &toolbar_buttons, &editor, &log);
+    Ok(())
+}
+
+/// The handles the live event loop and the offscreen preview both need.
+struct DemoWindow {
+    win: rust_widgets::app::WindowHandle,
+    menu_bindings: Vec<(u64, MenuBinding)>,
+    toolbar_buttons: Vec<ObjectId>,
+    editor: CustomWidgetHandle,
+}
+
+/// Builds the demo's window and every control in it.
+///
+/// # Why one function
+///
+/// `render_offscreen` (the preview binary) must show the composition a user actually sees. A
+/// second copy of this sequence in the preview would be free to drift — mount the editor before
+/// the tree, forget the nested split layout — and a preview of a drifted layout proves nothing.
+/// The live entry and the preview therefore call the same builder (principle #101).
+///
+/// The appearance is applied here because it must be registered before any control exists: a
+/// control created before the theme is registered resolves the previous palette's colours.
+fn build_demo_window(app: &mut App, dark: bool, log: &Arc<EventLog>) -> Result<DemoWindow, String> {
     // Before any control is created: the sample source below is Chinese, and a face resolved
     // after the first paint would leave the first frame in tofu.
-    register_cjk_face(&log);
+    register_cjk_face(log);
     // The demo's appearance, registered by the host before any control is created.
-    apply_appearance(true);
+    apply_appearance(dark);
 
     let win = app.new_window("rust_widgets — CodeEditor", 80, 80, WINDOW_W, WINDOW_H);
     log.append(format!("[Window] 创建 id={:?}", win.raw_id()));
@@ -874,7 +906,7 @@ fn run_inner() -> Result<(), String> {
     let (tree_rect, rect) = pane_rects();
 
     // ── 挂载项目树 ──────────────────────────────────────────────────────
-    let tree_box: Box<dyn Widget> = Box::new(build_project_tree(tree_rect, &log));
+    let tree_box: Box<dyn Widget> = Box::new(build_project_tree(tree_rect, log));
     let tree = match win.mount_surface(tree_box, tree_rect) {
         Ok(handle) => {
             log.append(format!(
@@ -898,8 +930,7 @@ fn run_inner() -> Result<(), String> {
     // The status bar is created after the editor but the editor's signals are wired
     // before mounting, so the target id travels through a shared slot.
     let status_target: Arc<Mutex<Option<ObjectId>>> = Arc::new(Mutex::new(None));
-    let editor_box: Box<dyn Widget> =
-        Box::new(build_editor(rect, &log, Arc::clone(&status_target)));
+    let editor_box: Box<dyn Widget> = Box::new(build_editor(rect, log, Arc::clone(&status_target)));
     let editor = match win.mount_surface(editor_box, rect) {
         Ok(handle) => {
             log.append(format!(
@@ -926,8 +957,8 @@ fn run_inner() -> Result<(), String> {
     }
 
     // ── 菜单栏 + 工具栏 + 状态栏 ────────────────────────────────────────
-    let (menu_bar_id, bindings) = build_menu_bar(&win, &log);
-    let (tool_bar_id, toolbar_buttons) = build_tool_bar(&win, &editor, &log);
+    let (menu_bar_id, bindings) = build_menu_bar(&win, log);
+    let (tool_bar_id, toolbar_buttons) = build_tool_bar(&win, &editor, log);
 
     // 状态栏横跨整个窗口，而不是只对齐编辑器：它报告的是整个应用的状态（光标位置、
     // 已处理事件数），不是某一栏的。它是窗口布局的一行，因此天然占满宽度。
@@ -959,15 +990,38 @@ fn run_inner() -> Result<(), String> {
         &tree,
         &editor,
         initial_client(),
-        &log,
+        log,
     );
 
-    win.show();
-    log.append("[Window] shown");
+    Ok(DemoWindow { win, menu_bindings: bindings, toolbar_buttons, editor })
+}
 
-    print_usage();
-    run_loop(&app, win.raw_id(), &bindings, &toolbar_buttons, &editor, &log);
-    Ok(())
+/// Renders the demo's window offscreen at `width`x`height`, for the preview binary.
+///
+/// Same construction as [`build_demo_window`] — only the presentation differs. The returned
+/// buffer is the window's whole client area in straight RGBA, which is what
+/// `render_window_frame` gives the platform painters (tree *and* mounted surfaces).
+pub fn render_offscreen(dark: bool, width: u32, height: u32) -> Option<Vec<u8>> {
+    let log = Arc::new(EventLog::new());
+    let mut app = App::with_config(
+        AppConfig::default()
+            .with_app_name("Code Editor Demo preview")
+            .with_organization("rust_widgets"),
+    );
+    app.init();
+    let built = build_demo_window(&mut app, dark, &log).ok()?;
+
+    // The same backdrop the other demos' previews use: the active theme's own background, so a
+    // region the editor does not paint shows the surface it would really sit on.
+    let clear = global_theme_manager()
+        .current_theme()
+        .map(|theme| theme.colors.background)
+        .unwrap_or(rust_widgets::core::Color::WHITE);
+    rust_widgets::widget::runtime::render_window_frame(
+        built.win.raw_id(),
+        rust_widgets::core::Size::new(width, height),
+        clear,
+    )
 }
 
 /// 一次性应用两层布局：窗口三行 + 分栏两栏。
