@@ -2879,6 +2879,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-widgets-font"
+version = "2.9.4"
+
+[[package]]
 name = "rust_widgets"
 version = "2.9.4"
 dependencies = [
@@ -2905,6 +2909,7 @@ dependencies = [
  "objc2-core-text",
  "orbclient",
  "resvg",
+ "rust-widgets-font",
  "rustybuzz",
  "serde",
  "serde_json",

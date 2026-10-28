@@ -146,6 +146,53 @@ def main(argv=None) -> int:
     if not font_features:
         findings.append("no `fonts-*` feature is declared at all, so the scan proves nothing")
 
+    # ── The payloads' new home ───────────────────────────────────────────────────────────────
+    #
+    # The payloads moved into `crates/rust-widgets-font` when this package reached crates.io's
+    # 10 MiB ceiling (they cannot be excluded in place: they are `include_bytes!`d by the default
+    # profile). That crate has no feature of *this* manifest controlling it, so the placement
+    # check above now finds nothing in `src/` and would report a vacuous green. What must hold
+    # instead is that the bytes are only reachable through an **optional** dependency that a
+    # `fonts-*` feature names: without that, a build could carry every face without asking for
+    # one, which is exactly what this gate exists to forbid.
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    if re.search(
+        r"^rust-widgets-font\s*=\s*\{[^}]*optional\s*=\s*true",
+        manifest_text,
+        re.MULTILINE,
+    ) is None:
+        findings.append(
+            "rust-widgets-font must be an optional dependency: the font payloads live there,"
+            " and a mandatory dependency would put them in every build"
+        )
+
+    def reaches_data_crate(name: str) -> bool:
+        """Whether `name`, or a feature it names, enables the optional `rust-widgets-font`.
+
+        `\"rust-widgets-font/latin\"` is a weak-enough spelling that also enables the optional
+        dependency, so a member with that prefix counts.
+        """
+        members = features.get(name, [])
+        if any(m == "dep:rust-widgets-font" or m.startswith("rust-widgets-font/") for m in members):
+            return True
+        return any(
+            m == "dep:rust-widgets-font" or m.startswith("rust-widgets-font/")
+            for member in members
+            for m in features.get(member, [])
+        )
+
+    # `fonts-cjk-bitmap` is a generated Rust table rather than a payload, and `fonts-cjk-shards`
+    # is a meta-feature whose members carry the payload; every other `fonts-*` feature must reach
+    # the dependency itself.
+    for name in font_features:
+        if name in ("fonts-cjk-bitmap", "fonts-cjk-shards"):
+            continue
+        if not reaches_data_crate(name):
+            findings.append(
+                f"{name!r} does not enable the `rust-widgets-font` dependency; its face's bytes"
+                " are either unreachable or reachable by a build that did not ask for them"
+            )
+
     for finding in findings:
         print(f"finding: {finding}")
     print(f"fonts={len(font_features)} payloads={len(payloads)} findings={len(findings)}")
